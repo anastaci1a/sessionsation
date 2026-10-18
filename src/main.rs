@@ -31,6 +31,10 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    #[command(hide = true)]
+    LaunchWorker { request_id: String },
+    #[command(hide = true)]
+    LaunchRun { request_id: String },
     /// Versioned machine-readable backend contract (JSON/NDJSON).
     Api {
         #[arg(long, default_value_t=1, value_parser=clap::value_parser!(u32).range(1..=1))]
@@ -414,6 +418,12 @@ async fn run(cli: Cli) -> Result<()> {
     }
     let paths = Paths::new(cli.data_dir)?;
     match cli.command {
+        Commands::LaunchWorker { request_id } => {
+            sessionsation::launch::worker(&paths, &request_id).await?
+        }
+        Commands::LaunchRun { request_id } => {
+            sessionsation::launch::run(&paths, &request_id).await?
+        }
         Commands::Api { command, .. } => sessionsation::api::run(&paths, command).await?,
         Commands::Session { session } => {
             print_json(&sessionsation::cli_views::session(&paths, &session).await?)?;

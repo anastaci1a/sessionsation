@@ -1,6 +1,8 @@
 //! Synthetic servers and isolated tmux only: these tests never touch real accounts.
 #[path = "external_move/autostart.rs"]
 mod autostart;
+#[path = "external_move/launch.rs"]
+mod launch;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sessionsation::{

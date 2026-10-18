@@ -21,3 +21,5 @@ pub mod store;
 pub mod usage_history;
 
 mod terminal;
+
+pub mod launch;

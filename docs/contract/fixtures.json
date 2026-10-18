@@ -243,5 +243,60 @@
       "freshness": "stale",
       "error_code": null
     }
+  },
+  "launch_request": {
+    "version": 1,
+    "request_id": "11111111-2222-4333-8444-555555555555",
+    "account_id": "codex:fixture",
+    "name": "Example",
+    "host": {
+      "session": "fixture",
+      "socket": "/tmp/fixture/herdr.sock"
+    },
+    "space": {
+      "kind": "existing",
+      "id": "w1"
+    },
+    "directory": {
+      "path": "/tmp/projects/Example",
+      "create": [
+        "/tmp/projects/Example"
+      ],
+      "confirmed_existing": false
+    }
+  },
+  "launch_receipt": {
+    "version": 1,
+    "request": {
+      "version": 1,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "account_id": "codex:fixture",
+      "name": "Example",
+      "host": {
+        "session": "fixture",
+        "socket": "/tmp/fixture/herdr.sock"
+      },
+      "space": {
+        "kind": "existing",
+        "id": "w1"
+      },
+      "directory": {
+        "path": "/tmp/projects/Example",
+        "create": [
+          "/tmp/projects/Example"
+        ],
+        "confirmed_existing": false
+      }
+    },
+    "phase": "admitted",
+    "detail": null,
+    "workspace_id": null,
+    "tab_id": null,
+    "pane_id": null,
+    "conversation_id": null,
+    "session_id": null,
+    "generation": null,
+    "created_directories": [],
+    "updated_at": 1
   }
 }

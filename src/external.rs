@@ -1025,6 +1025,24 @@ pub async fn run_account_thread_guarded(
     options: &[String],
     expected: Option<(&str, &str)>,
 ) -> Result<()> {
+    run_account_thread_inner(paths, account, thread, options, expected, None).await
+}
+pub async fn run_account_new_named(
+    paths: &Paths,
+    account: &str,
+    request: &str,
+    name: &str,
+) -> Result<()> {
+    run_account_thread_inner(paths, account, None, &[], None, Some((request, name))).await
+}
+async fn run_account_thread_inner(
+    paths: &Paths,
+    account: &str,
+    thread: Option<&str>,
+    options: &[String],
+    expected: Option<(&str, &str)>,
+    creation: Option<(&str, &str)>,
+) -> Result<()> {
     validate_name(account)?;
     let _account_operation = crate::accounts::launch_lock(paths, account)?;
     crate::accounts::ensure_available(paths, account)?;
@@ -1169,7 +1187,9 @@ pub async fn run_account_thread_guarded(
                 .unwrap_or("Codex session")
                 .to_owned()
         };
-        let name = if name.is_empty() {
+        let name = if let Some((_, selected_name)) = creation {
+            selected_name
+        } else if name.is_empty() {
             "Codex session"
         } else {
             &name
@@ -1219,15 +1239,19 @@ pub async fn run_account_thread_guarded(
     if requested.is_some() {
         catalog::set_stop_intent(paths, id, None)?;
     }
-    crate::catalog::record_launch(
-        paths,
-        account,
-        id,
-        cwd.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("session"),
-        attachment,
-    )?;
+    if let Some((request, _)) = creation {
+        crate::launch::attached(paths, request, id, attachment)?;
+    } else {
+        crate::catalog::record_launch(
+            paths,
+            account,
+            id,
+            cwd.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("session"),
+            attachment,
+        )?;
+    }
     let socket = home.join("app-server-control/app-server-control.sock");
     let error = Command::new(&config.codex_binary)
         .args(["resume", id, "--remote"])
@@ -2033,6 +2057,40 @@ pub async fn queue_snapshot(
             ..Default::default()
         },
     )
+}
+
+/// Positive post-exec observation, supporting native binaries and packaged wrappers.
+pub(crate) fn new_launch_observed(
+    paths: &Paths,
+    session: &crate::catalog::Session,
+) -> Result<bool> {
+    let Some(a) = &session.attachment else {
+        return Ok(false);
+    };
+    let process = process_info(a.pid)?;
+    if process.start_time != a.process_start || matches!(process.state, 'Z' | 'X') {
+        return Ok(false);
+    }
+    let args = fs::read(format!("/proc/{}/cmdline", a.pid))?
+        .split(|b| *b == 0)
+        .filter(|a| !a.is_empty())
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect::<Vec<_>>();
+    let socket = format!(
+        "unix://{}",
+        paths
+            .account(&session.account)?
+            .join("app-server-control/app-server-control.sock")
+            .display()
+    );
+    Ok(args.windows(4).any(|a| {
+        a == [
+            "resume",
+            session.conversation_id.as_str(),
+            "--remote",
+            socket.as_str(),
+        ]
+    }))
 }
 
 #[cfg(test)]

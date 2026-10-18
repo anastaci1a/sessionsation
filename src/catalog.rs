@@ -38,6 +38,8 @@ impl Session {
 struct Catalog {
     schema_version: u32,
     sessions: BTreeMap<String, Session>,
+    #[serde(default)]
+    reservations: BTreeMap<String, String>,
 }
 
 fn transaction<T>(paths: &Paths, change: impl FnOnce(&mut Catalog) -> Result<T>) -> Result<T> {
@@ -109,7 +111,7 @@ pub fn record_launch(
         let base = if base.is_empty() { "session" } else { base };
         let mut name = base.to_owned();
         let mut suffix = 2;
-        while c.sessions.values().any(|s| s.name == name) {
+        while c.sessions.values().any(|s| s.name == name) || c.reservations.contains_key(&name) {
             name = format!("{base}-{suffix}");
             suffix += 1;
         }
@@ -220,7 +222,8 @@ pub fn rename(paths: &Paths, id: &str, generation: &str, name: &str) -> Result<S
     validate_name(name)?;
     transaction(paths, |c| {
         ensure!(
-            !c.sessions.values().any(|s| s.id != id && s.name == name),
+            !c.sessions.values().any(|s| s.id != id && s.name == name)
+                && !c.reservations.contains_key(name),
             "SESSION_NAME_EXISTS"
         );
         let s = c.sessions.get_mut(id).context("SESSION_NOT_FOUND")?;
@@ -333,5 +336,99 @@ mod tests {
         assert_eq!(result[0].id, s.id);
         assert!(result[0].attachment.is_none());
         assert!(resolve(&p, &s.id, &s.generation()).is_err());
+    }
+}
+
+pub fn check_name(paths: &Paths, name: &str, request: &str) -> Result<()> {
+    validate_name(name)?;
+    transaction(paths, |c| {
+        ensure!(
+            !c.sessions.values().any(|s| s.name == name)
+                && c.reservations.get(name).is_none_or(|r| r == request),
+            "SESSION_NAME_EXISTS"
+        );
+        Ok(())
+    })
+}
+pub fn reserve_name(paths: &Paths, name: &str, request: &str) -> Result<()> {
+    validate_name(name)?;
+    transaction(paths, |c| {
+        ensure!(
+            !c.sessions.values().any(|s| s.name == name)
+                && c.reservations.get(name).is_none_or(|r| r == request),
+            "SESSION_NAME_EXISTS"
+        );
+        c.reservations.insert(name.into(), request.into());
+        Ok(())
+    })
+}
+pub fn complete_reserved(
+    paths: &Paths,
+    request: &str,
+    name: &str,
+    account: &str,
+    conversation: &str,
+    attachment: Option<Attachment>,
+) -> Result<Session> {
+    transaction(paths, |c| {
+        ensure!(
+            c.reservations.get(name).is_some_and(|r| r == request),
+            "NAME_RESERVATION_LOST"
+        );
+        ensure!(
+            !c.sessions
+                .values()
+                .any(|s| s.name == name || s.conversation_id == conversation),
+            "SESSION_NAME_EXISTS"
+        );
+        let s = Session {
+            id: request.into(),
+            name: name.into(),
+            provider: "codex".into(),
+            account: account.into(),
+            conversation_id: conversation.into(),
+            revision: 1,
+            attachment,
+        };
+        c.reservations.remove(name);
+        c.sessions.insert(s.id.clone(), s.clone());
+        Ok(s)
+    })
+}
+
+pub fn release_reservation(paths: &Paths, request: &str, name: &str) -> Result<()> {
+    transaction(paths, |c| {
+        if c.reservations.get(name).is_some_and(|r| r == request) {
+            c.reservations.remove(name);
+        }
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod reservation_tests {
+    use super::*;
+    #[test]
+    fn reserved_names_are_unique_and_convert_without_rename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("root"))).unwrap();
+        reserve_name(&paths, "chosen", "request-a").unwrap();
+        assert!(reserve_name(&paths, "chosen", "request-b").is_err());
+        let other = record_launch(&paths, "account", "conversation-b", "chosen", None).unwrap();
+        assert_eq!(other.name, "chosen-2");
+        assert!(rename(&paths, &other.id, &other.generation(), "chosen").is_err());
+        let s = complete_reserved(
+            &paths,
+            "request-a",
+            "chosen",
+            "account",
+            "conversation-a",
+            None,
+        )
+        .unwrap();
+        assert_eq!(s.id, "request-a");
+        assert_eq!(s.name, "chosen");
+        assert_eq!(s.account, "account");
+        assert!(check_name(&paths, "chosen", "request-a").is_err());
     }
 }

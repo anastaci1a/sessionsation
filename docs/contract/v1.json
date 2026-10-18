@@ -837,6 +837,207 @@
         "reply_observed"
       ],
       "additionalProperties": true
+    },
+    "LaunchRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "request_id",
+        "account_id",
+        "name",
+        "host",
+        "space",
+        "directory"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^codex:[A-Za-z0-9_-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session",
+            "socket"
+          ],
+          "properties": {
+            "session": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "socket": {
+              "type": "string",
+              "pattern": "^/"
+            }
+          }
+        },
+        "space": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "existing"
+                },
+                "id": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "label"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "new"
+                },
+                "label": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "directory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "create",
+            "confirmed_existing"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "create": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "pattern": "^/"
+              }
+            },
+            "confirmed_existing": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "LaunchReceipt": {
+      "type": "object",
+      "required": [
+        "version",
+        "request",
+        "phase",
+        "detail",
+        "workspace_id",
+        "tab_id",
+        "pane_id",
+        "conversation_id",
+        "session_id",
+        "generation",
+        "created_directories",
+        "updated_at"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "request": {
+          "$ref": "#/$defs/LaunchRequest"
+        },
+        "phase": {
+          "enum": [
+            "admitted",
+            "preparing",
+            "creating_terminal",
+            "dispatching",
+            "starting_provider",
+            "attached",
+            "running",
+            "failed",
+            "uncertain"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tab_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pane_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conversation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_directories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "updated_at": {
+          "type": "integer"
+        }
+      }
     }
   }
 }

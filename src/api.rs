@@ -14,6 +14,10 @@ pub const VERSION: u32 = 1;
 #[derive(Subcommand)]
 pub enum Command {
     Capabilities,
+    Launch {
+        #[command(subcommand)]
+        command: crate::launch::Command,
+    },
     Account {
         #[command(subcommand)]
         command: AccountCommand,
@@ -231,6 +235,11 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             a["membership"] = json!(if removed { "removed" } else { "enrolled" });
             a["selectable"] =
                 json!(!removed && a["enabled"] == true && a["auth_required"] == false);
+            a["prefill"] = account_prefill(
+                &a,
+                daemon::now(),
+                crate::store::load_config(paths)?.stale_seconds,
+            );
             Ok(a)
         })
         .collect()
@@ -304,7 +313,7 @@ pub fn capabilities() -> Value {
          "enrollment":false,"usage":false,"new":false,"resume":false,
          "account_switch":false,"restart":false,"submit":false,"queue":false,
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false}
-    ],"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
+    ],"launch":{"version":1,"validate":true,"start":true,"status":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true},
@@ -414,6 +423,7 @@ pub fn print(result: Value) -> Result<()> {
 pub async fn run(paths: &Paths, command: Command) -> Result<()> {
     let result = match command {
         Command::Capabilities => capabilities(),
+        Command::Launch { command } => crate::launch::api(paths, command).await?,
         Command::Account { command } => account(paths, command).await?,
         Command::Launcher { command } => launcher(paths, command).await?,
         Command::Observe {
@@ -598,4 +608,64 @@ fn managed_operation(paths: &Paths, id: &str) -> Result<external::Job> {
         .context("OPERATION_NOT_FOUND")?;
     ensure!(job.non_steering, "OPERATION_NOT_MANAGED");
     Ok(job)
+}
+
+/// Conservative preference policy, separate from permission to explicitly launch.
+pub fn account_prefill(a: &Value, now: i64, stale_seconds: u64) -> Value {
+    let usage = &a["usage"];
+    let mut until = usage["observed_at"]
+        .as_i64()
+        .unwrap_or(0)
+        .saturating_add(stale_seconds as i64)
+        .min(now + 5);
+    let mut reason = if a["selectable"] != true {
+        Some("ACCOUNT_UNAVAILABLE")
+    } else if a["usage_fresh"] != true {
+        Some("USAGE_STALE")
+    } else {
+        None
+    };
+    if a["switch_thresholds"]["needs_plan_review"] != false {
+        reason = Some("LIMITS_UNVERIFIED");
+    }
+    for (window, limit) in [("short", "short_percent"), ("weekly", "weekly_percent")] {
+        if !usage[window].is_null() {
+            until = until.min(usage[window]["resets_at"].as_i64().unwrap_or(0));
+            if !usage[window]["used_percent"]
+                .as_f64()
+                .zip(a["switch_thresholds"][limit].as_f64())
+                .is_some_and(|(used, ceiling)| used.is_finite() && used < ceiling)
+            {
+                reason = Some("LIMIT_REACHED");
+            }
+        }
+    }
+    if usage["exhausted"] == true
+        || usage["ordinary_usage_allowed"] == false
+        || usage["spend_control_reached"] == true
+    {
+        reason = Some("ALLOWANCE_UNAVAILABLE");
+    }
+    if until <= now {
+        reason = Some("USAGE_STALE");
+    }
+    json!({"eligible":reason.is_none(),"reason":reason,"observed_at":now,"valid_until":until})
+}
+#[cfg(test)]
+mod prefill_tests {
+    use super::*;
+    #[test]
+    fn stale_thresholds_and_credits_do_not_auto_select() {
+        let mut a = json!({"selectable":true,"usage_fresh":true,"switch_thresholds":{"needs_plan_review":false,"short_percent":90.,"weekly_percent":90.},"usage":{"observed_at":100,"short":{"used_percent":20.,"resets_at":500},"weekly":{"used_percent":20.,"resets_at":500}}});
+        assert_eq!(account_prefill(&a, 101, 210)["eligible"], true);
+        a["usage"]["short"]["used_percent"] = json!(90.);
+        assert_eq!(account_prefill(&a, 101, 210)["eligible"], false);
+        assert_eq!(a["selectable"], true);
+        a["usage"]["short"]["used_percent"] = json!(20.);
+        a["usage"]["credits"] = json!({"has_credits":true});
+        a["usage"]["exhausted"] = json!(true);
+        assert_eq!(account_prefill(&a, 101, 210)["eligible"], false);
+        a["usage"]["exhausted"] = json!(false);
+        assert_eq!(account_prefill(&a, 311, 210)["eligible"], false);
+    }
 }

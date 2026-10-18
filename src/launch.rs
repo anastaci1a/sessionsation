@@ -1,0 +1,565 @@
+//! Durable new-session admission. No message receipts or supervisor ownership here.
+use crate::{
+    catalog, daemon,
+    paths::{Paths, atomic_write, lock_file, private_dir},
+};
+use anyhow::{Context, Result, ensure};
+use clap::Subcommand;
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    fs,
+    io::Read,
+    os::unix::fs::FileTypeExt,
+    path::{Component, Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// Validate a JSON creation request from stdin without creating resources.
+    Validate,
+    /// Admit a JSON creation request exactly once; reconcile using status.
+    Start,
+    Status {
+        #[arg(long)]
+        request_id: String,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Host {
+    pub session: String,
+    pub socket: PathBuf,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Space {
+    Existing { id: String },
+    New { label: String },
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Directory {
+    pub path: PathBuf,
+    pub create: Vec<PathBuf>,
+    pub confirmed_existing: bool,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    pub version: u32,
+    pub request_id: String,
+    pub account_id: String,
+    pub name: String,
+    pub host: Host,
+    pub space: Space,
+    pub directory: Directory,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Receipt {
+    pub version: u32,
+    pub request: Request,
+    pub phase: String,
+    pub detail: Option<String>,
+    pub workspace_id: Option<String>,
+    pub tab_id: Option<String>,
+    pub pane_id: Option<String>,
+    pub conversation_id: Option<String>,
+    pub session_id: Option<String>,
+    pub generation: Option<String>,
+    pub created_directories: Vec<PathBuf>,
+    pub updated_at: i64,
+}
+fn validate_id(id: &str) -> Result<()> {
+    ensure!(uuid::Uuid::parse_str(id).is_ok(), "INVALID_REQUEST_ID");
+    Ok(())
+}
+fn folder(path: &Path) -> bool {
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+}
+pub fn validate_name(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty()
+            && name.len() <= 128
+            && name.trim() == name
+            && !name.chars().any(char::is_control)
+            && !name.contains('/')
+            && name != "."
+            && name != "..",
+        "INVALID_SESSION_NAME"
+    );
+    Ok(())
+}
+fn shape(r: &Request) -> Result<()> {
+    ensure!(r.version == 1, "UNSUPPORTED_LAUNCH_VERSION");
+    validate_id(&r.request_id)?;
+    validate_name(&r.name)?;
+    crate::paths::validate_name(&r.host.session)?;
+    crate::paths::validate_name(
+        r.account_id
+            .strip_prefix("codex:")
+            .context("UNSUPPORTED_PROVIDER_OPERATION")?,
+    )?;
+    ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
+    if let Space::New { label } = &r.space {
+        validate_name(label)?;
+    }
+    ensure!(
+        folder(&r.directory.path) && r.directory.create.len() <= 32,
+        "INVALID_DIRECTORY"
+    );
+    let mut previous: Option<&Path> = None;
+    for p in &r.directory.create {
+        ensure!(
+            folder(p) && r.directory.path.starts_with(p),
+            "INVALID_DIRECTORY_PLAN"
+        );
+        if let Some(parent) = previous {
+            ensure!(p.parent() == Some(parent), "INVALID_DIRECTORY_PLAN");
+        }
+        previous = Some(p);
+    }
+    if let Some(last) = previous {
+        ensure!(last == r.directory.path, "INVALID_DIRECTORY_PLAN");
+    }
+    Ok(())
+}
+fn directory_check(d: &Directory) -> Result<()> {
+    if d.create.is_empty() {
+        ensure!(
+            d.confirmed_existing && d.path.is_dir(),
+            "DIRECTORY_CONFIRMATION_REQUIRED"
+        );
+        ensure!(fs::canonicalize(&d.path)? == d.path, "DIRECTORY_CHANGED");
+    } else {
+        ensure!(!d.confirmed_existing, "INVALID_DIRECTORY_PLAN");
+        let parent = d.create[0].parent().context("INVALID_DIRECTORY_PLAN")?;
+        ensure!(
+            parent.is_dir() && fs::canonicalize(parent)? == parent,
+            "DIRECTORY_PARENT_CHANGED"
+        );
+        for p in &d.create {
+            ensure!(
+                fs::symlink_metadata(p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
+                "DIRECTORY_ALREADY_EXISTS"
+            );
+        }
+    }
+    Ok(())
+}
+fn location(paths: &Paths, id: &str) -> Result<PathBuf> {
+    validate_id(id)?;
+    Ok(paths.root.join("launches").join(format!("{id}.json")))
+}
+fn lock(paths: &Paths) -> Result<fs::File> {
+    private_dir(&paths.root.join("launches"))?;
+    let f = lock_file(&paths.root.join("launches/admission.lock"))?;
+    f.lock_exclusive()?;
+    Ok(f)
+}
+fn save(paths: &Paths, r: &mut Receipt) -> Result<()> {
+    r.updated_at = daemon::now();
+    atomic_write(
+        &location(paths, &r.request.request_id)?,
+        &serde_json::to_vec_pretty(r)?,
+    )
+}
+pub fn status(paths: &Paths, id: &str) -> Result<Receipt> {
+    let file = location(paths, id)?;
+    ensure!(file.is_file(), "LAUNCH_NOT_FOUND");
+    Ok(serde_json::from_slice(&fs::read(file)?)?)
+}
+fn change(paths: &Paths, id: &str, f: impl FnOnce(&mut Receipt) -> Result<()>) -> Result<Receipt> {
+    let _lock = lock(paths)?;
+    let mut r = status(paths, id)?;
+    f(&mut r)?;
+    save(paths, &mut r)?;
+    Ok(r)
+}
+pub async fn host_call(host: &Host, args: &[&str]) -> Result<Value> {
+    ensure!(
+        fs::metadata(&host.socket)?.file_type().is_socket(),
+        "HOST_SOCKET_UNAVAILABLE"
+    );
+    let mut command = tokio::process::Command::new("herdr");
+    command
+        .args(["--session", &host.session])
+        .args(args)
+        .env("HERDR_SOCKET_PATH", &host.socket)
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(15), command.output())
+        .await
+        .context("HOST_RESPONSE_UNCERTAIN")??;
+    ensure!(
+        output.status.success(),
+        "HOST_REJECTED: {}",
+        String::from_utf8_lossy(&output.stderr)
+            .chars()
+            .take(300)
+            .collect::<String>()
+    );
+    if output.stdout.is_empty() && args.starts_with(&["pane", "run"]) {
+        return Ok(json!({"admitted":true}));
+    }
+    ensure!(
+        output.stdout.len() <= 8 * 1024 * 1024,
+        "HOST_RESPONSE_TOO_LARGE"
+    );
+    let body: Value = serde_json::from_slice(&output.stdout).context("HOST_PROTOCOL")?;
+    ensure!(body.get("error").is_none(), "HOST_REJECTED");
+    Ok(body.get("result").unwrap_or(&body).clone())
+}
+async fn validate(paths: &Paths, r: &Request) -> Result<()> {
+    shape(r)?;
+    directory_check(&r.directory)?;
+    catalog::check_name(paths, &r.name, &r.request_id)?;
+    let name = r.account_id.strip_prefix("codex:").unwrap();
+    crate::accounts::ensure_available(paths, name)?;
+    let state = daemon::call(paths, "status", json!({})).await?;
+    ensure!(
+        state["accounts"].as_array().is_some_and(|a| a
+            .iter()
+            .any(|a| a["name"] == name && a["enabled"] == true && a["auth_required"] == false)),
+        "ACCOUNT_UNAVAILABLE"
+    );
+    let spaces = host_call(&r.host, &["workspace", "list"]).await?;
+    let spaces = spaces["workspaces"].as_array().context("HOST_PROTOCOL")?;
+    match &r.space {
+        Space::Existing { id } => ensure!(
+            spaces.iter().any(|w| w["workspace_id"] == *id),
+            "WORKSPACE_NOT_FOUND"
+        ),
+        Space::New { label } => ensure!(
+            !spaces.iter().any(|w| w["label"] == *label),
+            "WORKSPACE_NAME_EXISTS"
+        ),
+    }
+    Ok(())
+}
+pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
+    if let Command::Status { request_id } = command {
+        return Ok(serde_json::to_value(status(paths, &request_id)?)?);
+    }
+    let mut bytes = Vec::new();
+    std::io::stdin().take(65537).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= 65536, "REQUEST_TOO_LARGE");
+    let r: Request = serde_json::from_slice(&bytes).context("INVALID_LAUNCH_REQUEST")?;
+    shape(&r)?;
+    if matches!(command, Command::Validate) {
+        validate(paths, &r).await?;
+        return Ok(json!({"valid":true,"request_id":r.request_id}));
+    }
+    // The same request is never dispatched twice, even after a timeout.
+    let _lock = lock(paths)?;
+    if location(paths, &r.request_id)?.exists() {
+        let existing = status(paths, &r.request_id)?;
+        ensure!(existing.request == r, "REQUEST_ID_CONFLICT");
+        return Ok(serde_json::to_value(existing)?);
+    }
+    validate(paths, &r).await?;
+    catalog::reserve_name(paths, &r.name, &r.request_id)?;
+    let mut receipt = Receipt {
+        version: 1,
+        request: r,
+        phase: "admitted".into(),
+        detail: None,
+        workspace_id: None,
+        tab_id: None,
+        pane_id: None,
+        conversation_id: None,
+        session_id: None,
+        generation: None,
+        created_directories: Vec::new(),
+        updated_at: daemon::now(),
+    };
+    save(paths, &mut receipt)?;
+    let spawned = std::process::Command::new(std::env::current_exe()?)
+        .arg("--data-dir")
+        .arg(&paths.root)
+        .args(["launch-worker", &receipt.request.request_id])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if spawned.is_err() {
+        catalog::release_reservation(paths, &receipt.request.request_id, &receipt.request.name)?;
+        receipt.phase = "failed".into();
+        receipt.detail = Some("Worker could not start; no resources created".into());
+        save(paths, &mut receipt)?;
+    }
+    Ok(serde_json::to_value(receipt)?)
+}
+pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
+    // This process owns only a new-launch request, never a provider supervisor.
+    let _worker = {
+        let f = lock_file(
+            &paths
+                .root
+                .join("launches")
+                .join(format!("{id}.worker.lock")),
+        )?;
+        f.try_lock_exclusive()?;
+        f
+    };
+    let receipt = change(paths, id, |r| {
+        ensure!(r.phase == "admitted", "LAUNCH_ALREADY_DISPATCHED");
+        r.phase = "preparing".into();
+        Ok(())
+    })?;
+    if let Err(error) = prepare(paths, &receipt).await {
+        change(paths, id, |r| {
+            if !matches!(r.phase.as_str(), "running" | "failed") {
+                if r.phase == "preparing" {
+                    catalog::release_reservation(paths, id, &r.request.name)?;
+                    r.phase = "failed".into();
+                } else {
+                    r.phase = "uncertain".into();
+                }
+                r.detail = Some(format!("{error:#}"));
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
+    let r = &receipt.request;
+    let id = &r.request_id;
+    validate(paths, r).await?;
+    for p in &r.directory.create {
+        fs::create_dir(p).context("DIRECTORY_CREATE_FAILED")?;
+        change(paths, id, |r| {
+            r.created_directories.push(p.clone());
+            Ok(())
+        })?;
+    }
+    let env = "SESSIONSATION_LAUNCHER_BYPASS=1";
+    // Record uncertainty before the first external mutation: a lost reply is not rejection.
+    change(paths, id, |r| {
+        r.phase = "creating_terminal".into();
+        Ok(())
+    })?;
+    let created = match &r.space {
+        Space::Existing { id: workspace } => {
+            host_call(
+                &r.host,
+                &[
+                    "tab",
+                    "create",
+                    "--workspace",
+                    workspace,
+                    "--cwd",
+                    r.directory.path.to_str().context("INVALID_DIRECTORY")?,
+                    "--label",
+                    &r.name,
+                    "--env",
+                    env,
+                    "--no-focus",
+                ],
+            )
+            .await?
+        }
+        Space::New { label } => {
+            host_call(
+                &r.host,
+                &[
+                    "workspace",
+                    "create",
+                    "--cwd",
+                    r.directory.path.to_str().context("INVALID_DIRECTORY")?,
+                    "--label",
+                    label,
+                    "--env",
+                    env,
+                    "--no-focus",
+                ],
+            )
+            .await?
+        }
+    };
+    let pane = created["root_pane"]["pane_id"]
+        .as_str()
+        .context("HOST_PANE_ID_MISSING")?
+        .to_owned();
+    let tab = created["tab"]["tab_id"]
+        .as_str()
+        .context("HOST_TAB_ID_MISSING")?
+        .to_owned();
+    let workspace = created["tab"]["workspace_id"]
+        .as_str()
+        .or_else(|| created["workspace"]["workspace_id"].as_str())
+        .context("HOST_WORKSPACE_ID_MISSING")?
+        .to_owned();
+    if let Space::Existing { id } = &r.space {
+        ensure!(*id == workspace, "HOST_WRONG_WORKSPACE");
+    }
+    change(paths, id, |r| {
+        r.workspace_id = Some(workspace.clone());
+        r.tab_id = Some(tab.clone());
+        r.pane_id = Some(pane.clone());
+        Ok(())
+    })?;
+    if matches!(r.space, Space::New { .. }) {
+        host_call(&r.host, &["tab", "rename", &tab, &r.name]).await?;
+    }
+    // Wait for the newly created shell only, never inspect/control an existing pane.
+    let mut ready = false;
+    for _ in 0..50 {
+        let info = host_call(&r.host, &["pane", "process-info", "--pane", &pane]).await?;
+        let i = &info["process_info"];
+        if i["foreground_processes"].as_array().is_some_and(|p| {
+            p.len() == 1
+                && p[0]["pid"] == i["shell_pid"]
+                && matches!(p[0]["name"].as_str(), Some("bash" | "sh" | "zsh" | "fish"))
+        }) {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    ensure!(ready, "NEW_TERMINAL_NOT_READY");
+    let quote = crate::terminal::shell_quote;
+    let exe = std::env::current_exe()?;
+    let command = format!(
+        "cd -- {} && SESSIONSATION_HERDR_SESSION={} SESSIONSATION_LAUNCHER_BYPASS=1 {} --data-dir {} launch-run {}",
+        quote(r.directory.path.to_str().unwrap()),
+        quote(&r.host.session),
+        quote(exe.to_str().context("INVALID_EXECUTABLE")?),
+        quote(paths.root.to_str().context("INVALID_DATA_ROOT")?),
+        quote(id)
+    );
+    change(paths, id, |r| {
+        r.phase = "dispatching".into();
+        Ok(())
+    })?;
+    host_call(&r.host, &["pane", "run", &pane, &command]).await?;
+    // launch-run confirms exact pane identity before touching a provider.
+    for _ in 0..300 {
+        let status = status(paths, id)?;
+        if status.phase == "attached" {
+            let session = catalog::list(paths)?.into_iter().find(|s| s.id == *id);
+            if !session
+                .as_ref()
+                .is_some_and(|s| crate::external::new_launch_observed(paths, s).unwrap_or(false))
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            change(paths, id, |r| {
+                r.phase = "running".into();
+                Ok(())
+            })?;
+            host_call(&r.host, &["tab", "focus", &tab]).await?;
+            return Ok(());
+        }
+        ensure!(status.phase != "failed", "PROVIDER_LAUNCH_FAILED");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("LAUNCH_ACK_UNCERTAIN")
+}
+pub async fn run(paths: &Paths, id: &str) -> Result<()> {
+    let receipt = change(paths, id, |r| {
+        ensure!(r.phase == "dispatching", "LAUNCH_ALREADY_DISPATCHED");
+        ensure!(
+            std::env::var("HERDR_PANE_ID").ok().as_ref() == r.pane_id.as_ref(),
+            "HOST_WRONG_PANE"
+        );
+        ensure!(
+            std::env::var("SESSIONSATION_HERDR_SESSION").ok().as_deref()
+                == Some(&r.request.host.session),
+            "HOST_WRONG_SESSION"
+        );
+        r.phase = "starting_provider".into();
+        Ok(())
+    })?;
+    let result = crate::external::run_account_new_named(
+        paths,
+        receipt.request.account_id.strip_prefix("codex:").unwrap(),
+        id,
+        &receipt.request.name,
+    )
+    .await;
+    if let Err(error) = result {
+        change(paths, id, |r| {
+            r.phase = "uncertain".into();
+            r.detail = Some(format!("{error:#}"));
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+pub fn attached(
+    paths: &Paths,
+    id: &str,
+    conversation: &str,
+    attachment: Option<catalog::Attachment>,
+) -> Result<()> {
+    let receipt = status(paths, id)?;
+    let session = catalog::complete_reserved(
+        paths,
+        id,
+        &receipt.request.name,
+        receipt
+            .request
+            .account_id
+            .strip_prefix("codex:")
+            .context("UNSUPPORTED_PROVIDER_OPERATION")?,
+        conversation,
+        attachment,
+    )?;
+    change(paths, id, |r| {
+        r.phase = "attached".into();
+        r.conversation_id = Some(conversation.into());
+        r.session_id = Some(session.id.clone());
+        r.generation = Some(session.generation());
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn directory_preview_does_not_create_and_rejects_late_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("new");
+        let d = Directory {
+            path: p.clone(),
+            create: vec![p.clone()],
+            confirmed_existing: false,
+        };
+        directory_check(&d).unwrap();
+        assert!(!p.exists());
+        fs::create_dir(&p).unwrap();
+        assert!(directory_check(&d).is_err());
+        assert!(
+            directory_check(&Directory {
+                path: p.clone(),
+                create: vec![],
+                confirmed_existing: false
+            })
+            .is_err()
+        );
+        directory_check(&Directory {
+            path: p,
+            create: vec![],
+            confirmed_existing: true,
+        })
+        .unwrap();
+    }
+    #[test]
+    fn request_id_and_name_cannot_be_paths() {
+        assert!(validate_id("../x").is_err());
+        for n in ["../x", ".", "..", " x", "x/y"] {
+            assert!(validate_name(n).is_err());
+        }
+    }
+}

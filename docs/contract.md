@@ -202,3 +202,35 @@ fixtures include reconnect errors, acceptance after expiry and projection recove
 credential purging or disabling the original switcher enrollment. No permanent purge
 operation is exposed in v1. Claude is explicitly `SETUP_REQUIRED`; no enrollment,
 usage, account switching or cross-provider conversion is claimed for it.
+
+## New-session popup admission
+
+The additive `api launch validate|start` commands read one JSON request from stdin;
+`api launch status --request-id UUID` reconciles its durable record. Request v1 has
+`version`, UUID `request_id`, provider-qualified `account_id`, unique `name`,
+`host: {session, socket}`, `space: {kind: "existing", id}` or
+`{kind: "new", label}`, and `directory: {path, create, confirmed_existing}`.
+Paths are absolute. `create` is an ordered contiguous list of explicitly staged
+missing directories ending at `path`; an existing directory requires an empty list
+and `confirmed_existing: true`. Validation creates no project directories or HERDR
+resources. Start revalidates, reserves the name and dispatches once. Reusing a UUID
+with different input fails; repeating identical input returns its original record.
+
+Launch records are separate from message receipts. Phases are admitted, preparing,
+creating_terminal, dispatching, starting_provider, attached, running, failed and
+uncertain. `attached` means catalog/native identity was recorded; `running` requires
+post-exec process evidence. Records expose created directory paths, selected/new
+workspace/tab/pane IDs, stable session ID, generation and native conversation ID
+when known. A failure or timeout must not trigger an automatic new Start. Preserve
+created resources and reconcile the original request; uncertain operations retain
+their name reservation. No credentials are in requests or receipts.
+
+`api account list` additionally reports `prefill: {eligible, reason, observed_at,
+valid_until}`. This conservative preference respects usage freshness, existing
+account thresholds and ordinary allowance. Purchased credits do not justify
+prefill. Explicit `selectable` remains separate; the popup can explain and permit
+manual selection without rewriting thresholds. The installed supervisor remains
+the sole account-data/credential owner.
+
+This contract is under isolated host acceptance; no production artifact is promoted
+by adding these commands. The existing `launcher` exec-plan interface is unchanged.
