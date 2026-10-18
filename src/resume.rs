@@ -403,6 +403,11 @@ pub(crate) fn attached(paths: &Paths, id: &str, session: &catalog::Session) -> R
 }
 pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
     let r = read(paths, id)?;
+    // A completed launch receipt is historical admission evidence. A later stop
+    // or generation must not rewrite it as uncertainty or change Space ordering.
+    if matches!(r.phase.as_str(), "running" | "failed" | "recovered") {
+        return Ok(r);
+    }
     if let Some(job_id) = &r.operation_id {
         if let Some(job) = external::jobs(paths)?.into_iter().find(|j| j.id == *job_id) {
             if matches!(

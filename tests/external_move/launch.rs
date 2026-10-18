@@ -335,6 +335,23 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             .unwrap();
         assert_eq!(unsafe { libc::kill(agent as i32, libc::SIGTERM) }, 0);
         tokio::time::sleep(Duration::from_millis(200)).await;
+        let stopped_receipt: Value = serde_json::from_slice(
+            &api(
+                &f,
+                &["resume-launch", "status", "--request-id", request_id],
+                None,
+            )
+            .stdout,
+        )
+        .unwrap();
+        assert_eq!(
+            stopped_receipt["result"]["phase"], "running",
+            "completed handoff is historical evidence, not current liveness"
+        );
+        assert_eq!(
+            stopped_receipt["result"]["updated_at"],
+            resumed["updated_at"]
+        );
         assert_eq!(
             host.call(&["pane", "process-info", "--pane", origin_pane])["process_info"]["shell_pid"],
             origin_before["process_info"]["shell_pid"]

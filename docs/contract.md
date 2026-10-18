@@ -285,3 +285,5 @@ retains `previous_name`. Tabs and history are retained on partial failure. There
 is no implicit cancellation, cleanup, or credential change. Closing the popup
 only detaches its observer. List/status reconcile records without resubmitting.
 Existing `api resume`, launcher plans and message receipts retain their semantics.
+Once a Resume receipt reaches `running`, it records the completed handoff. A later
+Stop does not regress that receipt; read the session catalog for current liveness.
