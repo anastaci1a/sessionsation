@@ -40,8 +40,24 @@ Add/login return the provider's verification URL and user code. Complete the log
 as the user; never copy credentials between homes. Disabled accounts remain listed;
 disabling prevents future selection and does not stop existing agents. Usage and
 reported reset timestamps are in account snapshots; do not invent missing windows.
+New public account names allow 1–12 ASCII letters, digits, hyphens or underscores
+(excluding `codex:`). Existing longer names remain valid for other operations.
 Historical usage uses `api account usage codex:personal --start UNIX --end UNIX
 --step 1800`.
+
+Read or save account thresholds through the existing supervisor:
+
+```sh
+sessionsation api account limits codex:personal
+sessionsation api account limits codex:personal --short-used 80 --weekly-used 90
+```
+
+Both values must be finite percentages from 0 through 100 and supplied together.
+These are maximum **used** percentages: 80 used corresponds to 20 remaining in
+the UI. Saving delegates to the existing account writer; it does not start a
+supervisor, alter credentials, enable automation or resolve an unknown plan tier.
+Concurrent edits use the supervisor's serialized last-write behavior. After an
+uncertain response, read the limits before deciding whether another save is needed.
 
 Removal previews affected catalog sessions, active/loaded conversations, pending
 operations and stored-data counts/paths. It requires exact ID and fresh revision:

@@ -106,6 +106,40 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
     }
     assert!(observed, "account polling did not populate usage");
     assert!(paths.root.join("accounts/first/auth.json").exists());
+    let api = |args: &[&str]| {
+        let out = Command::new(binary())
+            .arg("--data-dir")
+            .arg(&paths.root)
+            .arg("api")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
+    };
+    let saved = api(&[
+        "account",
+        "limits",
+        "codex:first",
+        "--short-used",
+        "80",
+        "--weekly-used",
+        "90",
+    ]);
+    assert_eq!(saved["saved"], true);
+    assert_eq!(saved["limits"]["short_percent"], 80.);
+    assert_eq!(
+        api(&["account", "limits", "codex:first"])["limits"],
+        saved["limits"]
+    );
+    assert_eq!(
+        daemon::call(&paths, "status", json!({})).await.unwrap()["automatic_switch_preferences"],
+        json!({})
+    );
     daemon::call(&paths, "account/add", json!({"name":"second"}))
         .await
         .unwrap();
@@ -129,6 +163,39 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
             .to_string()
             .contains("NATIVE_HANDOFF_UNVERIFIED")
     );
+}
+#[test]
+fn public_account_creation_limit_and_invalid_limits_have_no_owner_side_effects() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (args, code) in [
+        (
+            vec!["account", "add", "codex:thirteenchars"],
+            "ACCOUNT_NAME_TOO_LONG",
+        ),
+        (
+            vec![
+                "account",
+                "limits",
+                "codex:old-long-account",
+                "--short-used",
+                "101",
+                "--weekly-used",
+                "90",
+            ],
+            "INVALID_ACCOUNT_LIMIT",
+        ),
+    ] {
+        let out = Command::new(binary())
+            .arg("--data-dir")
+            .arg(tmp.path())
+            .arg("api")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains(code));
+        assert!(!tmp.path().join("registry.db").exists());
+    }
 }
 #[test]
 fn daemon_configuration_singleton_and_status_contract() {

@@ -197,11 +197,20 @@ fixtures include reconnect errors, acceptance after expiry and projection recove
 
 ## Account operations
 
-`api account list|add|login|enable|disable|usage|remove|restore` are documented in
+`api account list|add|login|enable|disable|usage|limits|remove|restore` are documented in
 [the CLI guide](cli.md). Removal is local membership removal, not provider deletion,
 credential purging or disabling the original switcher enrollment. No permanent purge
 operation is exposed in v1. Claude is explicitly `SETUP_REQUIRED`; no enrollment,
 usage, account switching or cross-provider conversion is claimed for it.
+
+Codex capability `account_limits` enables `account limits ID`, returning
+`{account_id,limits,saved:false}`. Supplying both `--short-used` and `--weekly-used`
+saves through the existing supervisor and returns its limits with `saved:true`.
+The `limits` object is the existing account snapshot's `switch_thresholds` object;
+clients display remaining-position markers as `100 - *_percent` and only mark
+custom limits when `customized:true`. Saving does not acknowledge plan changes.
+`new_account_name_max:12` limits new public enrollments only; longer existing IDs
+continue to work. Clients must gate new commands on published capabilities.
 
 ## New-session popup admission
 

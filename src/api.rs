@@ -215,6 +215,14 @@ pub enum AccountCommand {
         #[arg(long, default_value_t = 1800)]
         step: i64,
     },
+    /// Read limits, or explicitly save both used-percentage limits via the owner.
+    Limits {
+        id: String,
+        #[arg(long, requires = "weekly_used")]
+        short_used: Option<f64>,
+        #[arg(long, requires = "short_used")]
+        weekly_used: Option<f64>,
+    },
 }
 fn codex_account(id: &str) -> Result<&str> {
     let name = id
@@ -247,6 +255,38 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
 
 async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
     match command {
+        AccountCommand::Limits {
+            id,
+            short_used,
+            weekly_used,
+        } => {
+            let name = codex_account(&id)?;
+            crate::accounts::ensure_available(paths, name)?;
+            if let (Some(short), Some(weekly)) = (short_used, weekly_used) {
+                ensure!(
+                    [short, weekly]
+                        .iter()
+                        .all(|n| n.is_finite() && (0. ..=100.).contains(n)),
+                    "INVALID_ACCOUNT_LIMIT"
+                );
+                // Delegate to the existing single writer; never edit account files
+                // or start/replace a supervisor just to save preferences.
+                let value = daemon::call(
+                    paths,
+                    "account/thresholds",
+                    json!({"name":name,"short":short,"weekly":weekly}),
+                )
+                .await?;
+                Ok(json!({"account_id":id,"limits":value["thresholds"],"saved":value["saved"]}))
+            } else {
+                let status = daemon::call(paths, "status", json!({})).await?;
+                let a = status["accounts"]
+                    .as_array()
+                    .and_then(|items| items.iter().find(|a| a["name"] == name))
+                    .context("ACCOUNT_NOT_FOUND")?;
+                Ok(json!({"account_id":id,"limits":a["switch_thresholds"],"saved":false}))
+            }
+        }
         AccountCommand::List => {
             let v = daemon::call(paths, "status", json!({})).await?;
             Ok(json!(project_accounts(
@@ -289,7 +329,10 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
         }
         command => {
             let (method, id) = match command {
-                AccountCommand::Add { id } => ("account/add", id),
+                AccountCommand::Add { id } => {
+                    ensure!(codex_account(&id)?.len() <= 12, "ACCOUNT_NAME_TOO_LONG");
+                    ("account/add", id)
+                }
                 AccountCommand::Login { id } => ("account/login", id),
                 AccountCommand::Enable { id } => ("account/enable", id),
                 AccountCommand::Disable { id } => ("account/disable", id),
@@ -308,7 +351,7 @@ pub fn capabilities() -> Value {
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
-         "account_removal":true,"purge":false,"force_interrupt":false,"steer":false,"cross_provider_conversion":false},
+         "account_removal":true,"account_limits":true,"new_account_name_max":12,"purge":false,"force_interrupt":false,"steer":false,"cross_provider_conversion":false},
         {"id":"claude","implemented":false,"reason":"SETUP_REQUIRED",
          "enrollment":false,"usage":false,"new":false,"resume":false,
          "account_switch":false,"restart":false,"submit":false,"queue":false,
