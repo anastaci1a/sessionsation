@@ -16,3 +16,5 @@ credentials.json
 /herdr-panes/
 /managed-panes/
 /messaging/
+
+/target-*/

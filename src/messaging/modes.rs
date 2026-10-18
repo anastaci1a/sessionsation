@@ -4,7 +4,7 @@ use super::*;
 mod engine;
 mod native_evidence;
 pub(super) mod queue;
-mod session_status;
+pub(super) mod session_status;
 mod submit;
 #[cfg(test)]
 mod tests;

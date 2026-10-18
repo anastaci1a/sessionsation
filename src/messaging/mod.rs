@@ -1,7 +1,9 @@
 //! Switcher-owned, transport-independent messaging boundary. Never launches Codex.
 mod modes;
 mod public;
+mod readiness;
 pub use public::{PublicMode, PublicRequest, receipt_public, send_public};
+pub use readiness::observe_public;
 mod observe;
 mod transport;
 use crate::{

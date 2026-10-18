@@ -20,7 +20,10 @@ Ask Ana before spending or changing access.
 
 ## Codex/HERDR evidence and limits
 
-The server's Codex build reports `0.162.1`; HERDR reports `0.9.5` (API protocol 22).
+The terminal Codex client reports `0.162.1`; the separately owned account app-server
+reports `0.163.0`. Their paths/hashes are recorded in the verification manifest.
+The native transport verifies the app-server initialize profile, not the terminal
+client version. HERDR reports `0.9.5` (API protocol 22).
 Version strings alone do not prove another binary has the same native methods.
 One disposable conversation has verified:
 
@@ -86,3 +89,23 @@ v1 delivery facts or completion. Submit/Queue semantic changes and any legacy
 receipt mapping require explicit coordination before implementation; compatibility
 adapters remain separate projects. Clients should consume capabilities and the
 published schema rather than inherited commands.
+
+
+## Legacy coexistence and review gates
+
+Agent DM production continues to observe old jobs/receipts through its original
+installed Switcher interface and existing application database. Preserve their
+original request IDs, native identifiers, modes, generations and observer cursors.
+The sessionsation v1 adapter uses a separate application-tagged database and new
+requests only. It must not fall back between interfaces, infer a backend ID from a
+provider conversation, replay an old request, or reuse a legacy cursor. Existing
+receipt records remain intact; v1 stores its request binding/observation metadata
+in its own table in the existing ledger and refuses unbound legacy receipt IDs.
+No migration or compatibility mapping is implemented by these additions.
+
+[Review response](contract/review-response.json) tracks the pinned Agent DM request,
+exact identity evidence and unresolved acceptance gates. Added readiness and public
+observer fields require adapter review, not automatic production activation.
+An accepted immutable installed artifact, explicit semantic adoption, separately
+approved disposable adapter/runtime tests and a reviewed cutover remain distinct
+gates. No review build replaces the launcher-selected artifact or its supervisor.

@@ -25,6 +25,9 @@
 - Rust changes: `cargo fmt --check`,
   `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`.
   Add safety-boundary regression tests and commit lockfile changes.
+- `scripts/check.sh` uses `target-review/` by default. Do not overwrite an artifact
+  currently selected by the UI/another consumer. Artifact promotion is separate
+  from building/testing and requires the applicable deployment approval.
 - Documentation changes: `python3 scripts/check_docs.py`; validate examples
   against help. Documentation-only work does not require the Rust suite.
 - Distinguish fixture evidence from live evidence. Launching alone is not complete

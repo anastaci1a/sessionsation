@@ -19,8 +19,41 @@
   "verification": {
     "command": "scripts/check.sh",
     "passed": true,
-    "checks": ["cargo fmt --check", "cargo clippy --offline --locked --all-targets -- -D warnings", "cargo test --offline --locked", "python3 scripts/check_docs.py", "python3 scripts/check_contract.py"],
-    "tests": {"lib": 101, "binary": 0, "cli": 6, "external_move": 57, "messaging_cli": 8, "persistence": 6, "scheduling": 29, "transport": 3, "doctests": 0, "total": 210, "failed": 0, "ignored": 0},
+    "checks": [
+      "cargo fmt --check",
+      "cargo clippy --offline --locked --all-targets -- -D warnings",
+      "cargo test --offline --locked",
+      "python3 scripts/check_docs.py",
+      "python3 scripts/check_contract.py"
+    ],
+    "tests": {
+      "lib": 101,
+      "binary": 0,
+      "cli": 6,
+      "external_move": 57,
+      "messaging_cli": 8,
+      "persistence": 6,
+      "scheduling": 29,
+      "transport": 3,
+      "doctests": 0,
+      "total": 210,
+      "failed": 0,
+      "ignored": 0
+    },
     "scope": "offline suite; live evidence and limits are separately maintained in operations.md"
+  },
+  "native_runtime": {
+    "terminal_client": {
+      "path": "/mnt/user/appdata/codex/bin/codex",
+      "version": "0.162.1",
+      "sha256": "628e35487d888a28f0427fc37501da529dd3d81fcbad7a2c3421c1e8670d92e1"
+    },
+    "account_app_server": {
+      "account": "codex:personal",
+      "path": "/mnt/user/appdata/codex-switcher/accounts/personal/packages/app-server-daemon/releases/0.163.0-x86_64-unknown-linux-musl/bin/codex",
+      "version": "0.163.0",
+      "sha256": "399ff69c431c066e40de318fba45c2b07f45a76b19939d247ee4828fc70c4215",
+      "provenance": "Existing supervisor-owned app-server executable verified through /proc/PID/exe; daemon pid-update-loop helper is separate from the managed --listen unix:// app-server. Neither was started/replaced by sessionsation acceptance."
+    }
   }
 }

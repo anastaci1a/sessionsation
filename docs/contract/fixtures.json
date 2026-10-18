@@ -23,5 +23,225 @@
     "result": {
       "api_version": 1
     }
+  },
+  "session": {
+    "id": "22222222-2222-4222-8222-222222222222",
+    "name": "example",
+    "provider": "codex",
+    "account": "fixture",
+    "account_id": "codex:fixture",
+    "conversation_id": "provider-conversation",
+    "revision": 1,
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "attachment": {
+      "host": "herdr",
+      "target": "herdr/fixture/w1:p1",
+      "pid": 123,
+      "process_start": 42
+    },
+    "availability": "running",
+    "capabilities": {
+      "rename": true,
+      "resume": false,
+      "switch_account": true,
+      "restart": true,
+      "stop": true
+    }
+  },
+  "snapshot": {
+    "observed_at": 100,
+    "account_source": "uninitialized",
+    "accounts": [],
+    "sessions": [
+      {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "name": "example",
+        "provider": "codex",
+        "account": "fixture",
+        "account_id": "codex:fixture",
+        "conversation_id": "provider-conversation",
+        "revision": 1,
+        "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "attachment": {
+          "host": "herdr",
+          "target": "herdr/fixture/w1:p1",
+          "pid": 123,
+          "process_start": 42
+        },
+        "availability": "running",
+        "capabilities": {
+          "rename": true,
+          "resume": false,
+          "switch_account": true,
+          "restart": true,
+          "stop": true
+        }
+      }
+    ],
+    "capabilities": {
+      "api_version": 1
+    }
+  },
+  "readiness": {
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "provider": "codex",
+    "provider_conversation_id": "provider-conversation",
+    "account_id": "codex:fixture",
+    "state": "idle",
+    "reason": null,
+    "observed_at": 100,
+    "valid_until": 105,
+    "freshness": "fresh",
+    "runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "previous_turn_id": "turn-0",
+    "explicit_intent": {
+      "state": "unknown",
+      "id": null
+    },
+    "queued_work_count": null,
+    "evidence": "native_read_only_snapshot_not_reservation",
+    "delivery_semantics": "non_steering_native_queue",
+    "actions": {
+      "submit": {
+        "available": true,
+        "reason": null
+      },
+      "queue": {
+        "available": true,
+        "reason": null
+      }
+    }
+  },
+  "readiness_stopped": {
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "provider": "codex",
+    "provider_conversation_id": "provider-conversation",
+    "account_id": "codex:fixture",
+    "state": "interrupted",
+    "reason": null,
+    "observed_at": 100,
+    "valid_until": 105,
+    "freshness": "fresh",
+    "runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "previous_turn_id": "turn-0",
+    "explicit_intent": {
+      "state": "stop_requested",
+      "id": "stop-token"
+    },
+    "queued_work_count": null,
+    "evidence": "native_read_only_snapshot_not_reservation",
+    "delivery_semantics": "non_steering_native_queue",
+    "actions": {
+      "submit": {
+        "available": false,
+        "reason": "explicit_resume_required"
+      },
+      "queue": {
+        "available": false,
+        "reason": "explicit_resume_required"
+      }
+    }
+  },
+  "receipt_accepted_after_expiry": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "accepted_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "accepted_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "provider": "codex",
+    "provider_conversation_id": "provider-conversation",
+    "mode": "queue",
+    "delivery_semantics": "non_steering_native_queue",
+    "state": "native_accepted",
+    "reason": null,
+    "native_queue_id": "queue-1",
+    "correlation": null,
+    "reply": null,
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": true,
+      "input_recorded": false,
+      "input_consumed": "unknown",
+      "reply_observed": false
+    },
+    "observation": {
+      "state": "uncorrelated",
+      "checked_at": 2000000200,
+      "native_attempted_at": 2000000200,
+      "evidence_observed_at": null,
+      "freshness": "unknown",
+      "error_code": null
+    }
+  },
+  "receipt_reconnect": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "accepted_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "accepted_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "provider": "codex",
+    "provider_conversation_id": "provider-conversation",
+    "mode": "queue",
+    "delivery_semantics": "non_steering_native_queue",
+    "state": "delivery_unknown",
+    "reason": "submission_uncertain",
+    "native_queue_id": null,
+    "correlation": null,
+    "reply": null,
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": false,
+      "input_recorded": false,
+      "input_consumed": "unknown",
+      "reply_observed": false
+    },
+    "observation": {
+      "state": "unavailable",
+      "checked_at": 101,
+      "native_attempted_at": 101,
+      "evidence_observed_at": null,
+      "freshness": "unknown",
+      "error_code": "endpoint_unavailable"
+    }
+  },
+  "receipt_projection_recovered": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "accepted_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "accepted_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "provider": "codex",
+    "provider_conversation_id": "provider-conversation",
+    "mode": "queue",
+    "delivery_semantics": "non_steering_native_queue",
+    "state": "completed_with_reply",
+    "reason": null,
+    "native_queue_id": "queue-1",
+    "correlation": {
+      "native_turn_id": "turn-1",
+      "original_input_item_id": "item-41",
+      "completion_input_item_id": "item-1",
+      "observed_runtime_generation": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "reply_item_id": "reply-1"
+    },
+    "reply": {
+      "item_id": "reply-1",
+      "text": "Public final answer.",
+      "phase": "final_answer"
+    },
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": true,
+      "input_recorded": true,
+      "input_consumed": "unknown",
+      "reply_observed": true
+    },
+    "observation": {
+      "state": "cached",
+      "checked_at": 2000000300,
+      "native_attempted_at": null,
+      "evidence_observed_at": 2000000210,
+      "freshness": "stale",
+      "error_code": null
+    }
   }
 }

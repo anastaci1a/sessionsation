@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "review_repository": "https://github.com/anastaci1a/agent-dm",
+  "review_commit": "f5b845dad2910b09097eb2f984f1f5b270c78191",
+  "review_request": "contracts/sessionsation/REVIEW_REQUEST.json",
+  "api_version": 1,
+  "cutover_authorized": false,
+  "semantic_changes": false,
+  "legacy_receipt_mapping": false,
+  "requests": [
+    {
+      "id": "artifact-and-runtime",
+      "status": "partially_resolved",
+      "evidence": "../verification.json",
+      "resolved": [
+        "Exact development artifact/source/toolchain/container provenance published; launcher-selected artifact unchanged",
+        "Explicit original data-root ownership and existing sole credential supervisor documented in ../operations.md",
+        "Terminal client and account app-server independently verified; native version discrepancy is distinct binaries, not an inferred compatibility change"
+      ],
+      "gates": [
+        "No accepted immutable production installation exists",
+        "Owner approval is required to promote a reviewed candidate; Agent DM remains on original Switcher"
+      ]
+    },
+    {
+      "id": "identity-and-legacy",
+      "status": "mixed_live_and_fixture_evidence",
+      "live_snapshots": [
+        {
+          "id": "15850224-2717-4602-8e6e-efb478a35604",
+          "name": "codex-sessionsation-acceptance-20261017",
+          "account_id": "codex:personal",
+          "conversation_id": "01a14d05-b3b2-7132-8dc0-46b8277d669a",
+          "generation": "9a7619514bae3b3bf16b819cfbe6620e0f6e21f2a8aea94a0a5ef936dccd1710",
+          "revision": 1,
+          "attachment": {
+            "host": "herdr",
+            "pid": 74520,
+            "process_start": 59042298,
+            "target": "herdr/sessionsation-acceptance-20261017/w3:p1"
+          }
+        },
+        {
+          "id": "15850224-2717-4602-8e6e-efb478a35604",
+          "name": "sessionsation-acceptance",
+          "account_id": "codex:personal",
+          "conversation_id": "01a14d05-b3b2-7132-8dc0-46b8277d669a",
+          "generation": "26fbe940148fd18d9348de159ce115bf28c87a958e00694ca9e0dc19c6c259e4",
+          "revision": 4,
+          "attachment": {
+            "host": "herdr",
+            "pid": 318181,
+            "process_start": 59216652,
+            "target": "herdr/sessionsation-acceptance-20261017/w4:p1"
+          }
+        },
+        {
+          "id": "15850224-2717-4602-8e6e-efb478a35604",
+          "name": "sessionsation-acceptance",
+          "account_id": "codex:personal",
+          "conversation_id": "01a14d05-b3b2-7132-8dc0-46b8277d669a",
+          "generation": "a0b3e82822e63e9ac20026807a9ee50c9342fd3b61cb9649cabae875aa3d1cd5",
+          "revision": 6,
+          "attachment": {
+            "host": "herdr",
+            "pid": 338627,
+            "process_start": 59308154,
+            "target": "herdr/sessionsation-ui-acceptance-20261018/w4:p1"
+          }
+        },
+        {
+          "id": "15850224-2717-4602-8e6e-efb478a35604",
+          "name": "sessionsation-acceptance",
+          "account_id": "codex:personal",
+          "conversation_id": "01a14d05-b3b2-7132-8dc0-46b8277d669a",
+          "generation": "424d295f6b2619d02fb314c913198aaec92119bca6132b9acf6805ff51c8c887",
+          "revision": 8,
+          "attachment": null
+        }
+      ],
+      "live_scope": "Stable backend UUID/provider conversation/name preserved across rename, stop/resume, new UI attachment, retained-shell restart and final stop. Revision1 precedes rename; revision4 includes stop/resume. Intermediate rename-only generation is not separately published. Final attachment loss is an explicit stop, not a simulated unplanned crash.",
+      "additional_live_scope": "Account transfer personal -> gate1 -> personal, persisted-history verification, destination marker recall and rollback were verified before the stable catalog snapshots. They prove provider UUID/history preservation, not a live backend-ID movement trace.",
+      "fixture_tests": [
+        "catalog::tests::rename_is_atomic_unique_and_rejects_old_generations",
+        "catalog::tests::stable_identity_follows_account_and_runtime_replacements",
+        "catalog::tests::disappeared_attachment_retains_owner_and_conversation"
+      ],
+      "legacy_plan": "../operations.md#legacy-coexistence-and-review-gates",
+      "gates": [
+        "A full live backend-ID/generation trace across account movement and unplanned replacement remains an adapter acceptance gate; do not present fixtures as that trace"
+      ]
+    },
+    {
+      "id": "passive-readiness",
+      "status": "implemented_fixture_verified",
+      "public_command": "api observe --session BACKEND-ID --expected-generation GENERATION",
+      "schema": "v1.json#/$defs/Readiness",
+      "behavior": "Content-free read-only native snapshot, five-second native timeout/freshness, explicit stop token or unknown, conservative Submit/Queue hints and reasons; no probing sends or process launch",
+      "gates": [
+        "Approved disposable runtime acceptance before activation"
+      ]
+    },
+    {
+      "id": "public-receipt-evidence",
+      "status": "implemented_fixture_verified",
+      "schema": "v1.json#/$defs/Receipt",
+      "behavior": "Separate original backend/runtime generations, original input/turn/completion/reply IDs, public final reply, observer status/timestamps/errors, durable v1 evidence age; no legacy receipt import or dispatch change",
+      "fixtures": [
+        "receipt_reconnect",
+        "receipt_accepted_after_expiry",
+        "receipt_projection_recovered"
+      ],
+      "gates": [
+        "Approved public-v1 native end-to-end observation acceptance"
+      ]
+    },
+    {
+      "id": "activation-and-live-acceptance",
+      "status": "blocked_pending_explicit_owner_approval",
+      "requirements": [
+        "Accept pinned candidate artifact/path/hash and existing data-root owner",
+        "Explicitly adopt idle non-steering Submit versus legacy busy Steer; never translate existing drafts/requests/modes automatically",
+        "Approve exact disposable backend UUID/provider UUID and generations with bounded Submit-idle, Submit-busy rejection, Queue, retry/restart and movement identity tests",
+        "Review preserved legacy observers/database boundary, then approve cutover separately"
+      ],
+      "current_runtime": "Production Agent DM and original Switcher remain untouched; no new native sends or cutover from this review candidate"
+    }
+  ],
+  "validation": {
+    "command": "scripts/check.sh",
+    "result": "passed",
+    "checks": "formatting, Clippy all targets with warnings denied, locked offline tests, documentation links, schema/fixtures and real CLI envelopes",
+    "candidate_artifact": "../verification.json (launcher artifact remains unchanged; review artifact provenance published separately after source commit)"
+  }
+}

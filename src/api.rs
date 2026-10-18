@@ -29,6 +29,13 @@ pub enum Command {
         #[arg(long, default_value_t=2, value_parser=clap::value_parser!(u64).range(1..=3600))]
         interval: u64,
     },
+    /// Bounded read-only native readiness; never sends input or starts a process.
+    Observe {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+    },
     Rename {
         #[arg(long)]
         session: String,
@@ -299,6 +306,8 @@ pub fn capabilities() -> Value {
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false}
     ],"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
+    "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
+    "receipt_observation":{"poll_min_seconds":5,"public_correlation":true},
     "detach_stops_agent":false})
 }
 
@@ -407,6 +416,13 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         Command::Capabilities => capabilities(),
         Command::Account { command } => account(paths, command).await?,
         Command::Launcher { command } => launcher(paths, command).await?,
+        Command::Observe {
+            session,
+            expected_generation,
+        } => {
+            selected(paths, &session, &expected_generation).await?;
+            crate::messaging::observe_public(paths, &session, &expected_generation).await?
+        }
         Command::State { watch, interval } => loop {
             print(state(paths).await?)?;
             if !watch {

@@ -135,6 +135,41 @@
               "$ref": "#/$defs/Attachment"
             }
           ]
+        },
+        "availability": {
+          "enum": [
+            "running",
+            "saved",
+            "unavailable"
+          ]
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "rename": {
+              "type": "boolean"
+            },
+            "resume": {
+              "type": "boolean"
+            },
+            "switch_account": {
+              "type": "boolean"
+            },
+            "restart": {
+              "type": "boolean"
+            },
+            "stop": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "rename",
+            "resume",
+            "switch_account",
+            "restart",
+            "stop"
+          ],
+          "additionalProperties": true
         }
       },
       "required": [
@@ -146,7 +181,9 @@
         "conversation_id",
         "revision",
         "generation",
-        "attachment"
+        "attachment",
+        "availability",
+        "capabilities"
       ],
       "additionalProperties": true
     },
@@ -310,7 +347,17 @@
           "const": "non_steering_native_queue"
         },
         "state": {
-          "type": "string"
+          "enum": [
+            "pending_local",
+            "native_accepted",
+            "execution_started",
+            "completed_with_reply",
+            "delivery_unknown",
+            "rejected",
+            "failed",
+            "cancelled",
+            "expired"
+          ]
         },
         "reason": {
           "type": [
@@ -319,13 +366,47 @@
           ]
         },
         "facts": {
-          "type": "object"
+          "$ref": "#/$defs/ReceiptFacts"
         },
         "reply": {
-          "type": [
-            "object",
-            "null"
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PublicReply"
+            }
           ]
+        },
+        "accepted_runtime_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "native_queue_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            }
+          ]
+        },
+        "correlation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PublicCorrelation"
+            }
+          ]
+        },
+        "observation": {
+          "$ref": "#/$defs/ReceiptObservation"
         }
       },
       "required": [
@@ -339,7 +420,11 @@
         "state",
         "reason",
         "facts",
-        "reply"
+        "reply",
+        "accepted_runtime_generation",
+        "native_queue_id",
+        "correlation",
+        "observation"
       ],
       "additionalProperties": true
     },
@@ -418,6 +503,340 @@
           "const": false
         }
       }
+    },
+    "ActionHint": {
+      "type": "object",
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "available",
+        "reason"
+      ],
+      "additionalProperties": true
+    },
+    "Readiness": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "provider": {
+          "const": "codex"
+        },
+        "provider_conversation_id": {
+          "type": "string"
+        },
+        "account_id": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "idle",
+            "working",
+            "interrupted",
+            "errored",
+            "disconnected",
+            "unknown"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "valid_until": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale"
+          ]
+        },
+        "runtime_generation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          ]
+        },
+        "previous_turn_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            }
+          ]
+        },
+        "explicit_intent": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": [
+                "stop_requested",
+                "unknown"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "id"
+          ],
+          "additionalProperties": true
+        },
+        "queued_work_count": {
+          "type": "null"
+        },
+        "evidence": {
+          "const": "native_read_only_snapshot_not_reservation"
+        },
+        "delivery_semantics": {
+          "const": "non_steering_native_queue"
+        },
+        "actions": {
+          "type": "object",
+          "properties": {
+            "submit": {
+              "$ref": "#/$defs/ActionHint"
+            },
+            "queue": {
+              "$ref": "#/$defs/ActionHint"
+            }
+          },
+          "required": [
+            "submit",
+            "queue"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "session_id",
+        "generation",
+        "provider",
+        "provider_conversation_id",
+        "account_id",
+        "state",
+        "reason",
+        "observed_at",
+        "valid_until",
+        "freshness",
+        "runtime_generation",
+        "previous_turn_id",
+        "explicit_intent",
+        "queued_work_count",
+        "evidence",
+        "delivery_semantics",
+        "actions"
+      ],
+      "additionalProperties": true
+    },
+    "PublicCorrelation": {
+      "type": "object",
+      "properties": {
+        "native_turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "original_input_item_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "completion_input_item_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            }
+          ]
+        },
+        "observed_runtime_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "reply_item_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            }
+          ]
+        }
+      },
+      "required": [
+        "native_turn_id",
+        "original_input_item_id",
+        "completion_input_item_id",
+        "observed_runtime_generation",
+        "reply_item_id"
+      ],
+      "additionalProperties": true
+    },
+    "PublicReply": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "phase": {
+          "enum": [
+            "final_answer",
+            null
+          ]
+        }
+      },
+      "required": [
+        "item_id",
+        "text",
+        "phase"
+      ],
+      "additionalProperties": true
+    },
+    "ReceiptObservation": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "not_checked",
+            "observed",
+            "uncorrelated",
+            "unavailable",
+            "cached",
+            "not_applicable"
+          ]
+        },
+        "checked_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "native_attempted_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "evidence_observed_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown"
+          ]
+        },
+        "error_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "checked_at",
+        "native_attempted_at",
+        "evidence_observed_at",
+        "freshness",
+        "error_code"
+      ],
+      "additionalProperties": true
+    },
+    "ReceiptFacts": {
+      "type": "object",
+      "properties": {
+        "accepted_local": {
+          "const": true
+        },
+        "accepted_native": {
+          "type": "boolean"
+        },
+        "input_recorded": {
+          "type": "boolean"
+        },
+        "input_consumed": {
+          "const": "unknown"
+        },
+        "reply_observed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "accepted_local",
+        "accepted_native",
+        "input_recorded",
+        "input_consumed",
+        "reply_observed"
+      ],
+      "additionalProperties": true
     }
   }
 }

@@ -47,6 +47,34 @@ offline metadata does not prove an account can presently launch.
 Session capabilities are fresh snapshot hints; the backend revalidates them at the
 mutation boundary. Unmanaged external sessions are not lifecycle targets through v1.
 
+## Passive readiness
+
+Aggregate state/watch reports attachment availability, not native activity. For a
+selected session use:
+
+```sh
+sessionsation api observe --session BACKEND-ID --expected-generation GENERATION
+```
+
+This performs read-only native status/public-summary requests on the existing
+owner-managed socket. It never sends input, resumes/loads a thread, starts a worker
+or probes with a message. Native observation is bounded to five seconds, in
+addition to normal host/catalog discovery. The result is typed by `Readiness` in
+the schema: idle/working/interrupted/errored/disconnected/unknown, diagnostic reason,
+`observed_at`, `valid_until`, freshness and a separate `runtime_generation`.
+Freshness expires five seconds after observation starts; it is not a reservation.
+A changed catalog or runtime rejects the result as `STALE_TARGET`.
+
+`explicit_intent` reports a positively recorded stop token or unknown; an idle
+process never proves absence of deliberate stop/pause intent. Interrupted/error
+turns require review in these conservative hints. Unknown queue depth remains null.
+Submit is available only for positively idle eligible observations; Queue may be
+available while working. Sending-disabled, removed-account, stale, explicit-stop
+and unknown observations withhold readiness with reasons. These are conservative
+hints, not a new dispatch policy: actual sending still rechecks its existing gates.
+No legacy busy-Steer capability or messaging Resume is adopted. Poll a selected
+session no faster than every five seconds; use backoff after errors.
+
 ## Session and operation commands
 
 ```sh
@@ -103,6 +131,45 @@ remain bound to the original conversation/runtime even after rename or transfer.
 An uncertain write is journaled before socket I/O and is never resent. Receipt and
 idempotency storage is bounded at 10,000 and never silently evicts replay protection.
 Expiry is an unsent submission deadline, not cancellation of accepted native work.
+
+### Receipt evidence
+
+`accepted_generation` is the original backend generation; the independent
+`accepted_runtime_generation` is the original native attachment generation.
+`correlation` is null until positively matched by request ID, or contains
+`native_turn_id`, `original_input_item_id`, optional `completion_input_item_id`,
+`observed_runtime_generation` and optional `reply_item_id`. Completion projection
+IDs never overwrite original input IDs. Runtime replacement may change the observed
+runtime generation without rebinding the request. `native_queue_id` is separate.
+Only public final reply item/text/phase are projected; histories, tools and reasoning
+are excluded.
+
+`observation` reports not_checked, observed, uncorrelated, unavailable, cached or
+not_applicable. `checked_at` is the receipt-query time; `native_attempted_at` is
+null when no native read occurred. `evidence_observed_at` is durably recorded for
+v1 when correlation was positively observed; old bindings may have unknown age.
+Cached queries do not refresh it. Freshness is fresh for less than five seconds,
+otherwise stale; missing evidence time is unknown. `error_code` is a bounded
+observer diagnostic, not proof that delivery failed. Correlation, acceptance and
+completed replies survive observation errors and restarts. Poll receipts no faster
+than every five seconds, backing off after errors; there is no public event cursor.
+
+| State | Evidence |
+| --- | --- |
+| pending_local | Durable local admission; no confirmed native acceptance |
+| native_accepted | Positive queue acceptance; consumption/completion unproven |
+| execution_started | Correlated native input/turn; no terminal reply yet |
+| completed_with_reply | Correlated public terminal reply observed |
+| delivery_unknown | Submission may have occurred; never automatically replay |
+| rejected | Preflight refused this request |
+| expired | Submission deadline passed while provably unsent |
+| cancelled | Local cancellation or positive supported native cancellation |
+| failed | Correlated native turn failed/interrupted; no successful reply |
+
+`facts` contains bounded positive booleans for local admission, native acceptance,
+recorded input and observed reply. `input_consumed` remains unknown. Native
+acceptance survives expiry; TTL is not native execution cancellation. The schema
+fixtures include reconnect errors, acceptance after expiry and projection recovery.
 
 ## Account operations
 

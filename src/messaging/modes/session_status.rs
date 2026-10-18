@@ -126,7 +126,7 @@ fn actions(state: &str, reason: Option<&str>, submit_supported: bool, enabled: b
         };
     json!({"submit":{"available":submit,"reason":if submit {None}else{Some(blocked)},"effective_action":if submit && state=="working" {Some("steer")}else{None},"requires_expected_turn_id":state=="working","receipt_guarantee":"acceptance_only_consumption_and_reply_unknown"},"queue":{"available":queue,"reason":if queue {None}else{Some(blocked)},"starts_eligible_idle_session":true},"resume":{"available":resume,"reason":if resume {None}else{Some(resume_reason)},"mode":"submit","requires_explicit_resume":true,"new_input_only":true,"starts_process":false}})
 }
-pub(super) async fn target(paths: &Paths, id: &str) -> Result<Value> {
+pub(in crate::messaging) async fn target(paths: &Paths, id: &str) -> Result<Value> {
     uuid(id)?;
     let ids = external::messaging_inventory(paths).map_err(|_| Fault("discovery_unavailable"))?;
     if !ids.iter().any(|known| known == id) {

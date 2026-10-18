@@ -1,5 +1,6 @@
 """Validate the published schema, fixtures and real CLI envelopes offline."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -17,8 +18,13 @@ fixtures = json.loads((root / "docs/contract/fixtures.json").read_text())
 validate(fixtures["request"], "MessageRequest")
 validate(fixtures["error"])
 validate(fixtures["capabilities"])
+for name, definition in [("session", "Session"), ("snapshot", "Snapshot"), ("readiness", "Readiness"), ("readiness_stopped", "Readiness")]:
+    validate(fixtures[name], definition)
+for name, value in fixtures.items():
+    if name.startswith("receipt_"):
+        validate(value, "Receipt")
 with tempfile.TemporaryDirectory() as directory:
-    command = [str(root / "target/debug/sessionsation"), "--data-dir", directory, "api"]
+    command = [str(Path(os.environ.get("CARGO_TARGET_DIR", root / "target")) / "debug/sessionsation"), "--data-dir", directory, "api"]
     for args in [["capabilities"], ["state"]]:
         value = json.loads(subprocess.check_output(command + args, text=True))
         validate(value)
