@@ -256,3 +256,32 @@ the sole account-data/credential owner.
 
 This contract is under isolated host acceptance; no production artifact is promoted
 by adding these commands. The existing `launcher` exec-plan interface is unchanged.
+
+### Saved-session popup Resume
+
+`capabilities.resume.version == 1` exposes `api resume-launch validate|start`
+with JSON stdin, plus `status --request-id UUID` and `list`. See `ResumeRequest`
+and `ResumeReceipt` in the schema. The request has version, request UUID, stable
+`session_id`, `expected_generation`, account ID, editable name, host and Space.
+It deliberately has no directory: the backend requires the saved conversation's
+existing directory. Session details report the last verified launch/resume Space;
+a client may prefer it only when the host and Space still match its inventory.
+
+Start journals the intent before creating a new normal tab. A repeated UUID with
+identical input returns its original receipt; different input is a conflict. A
+second unfinished Resume for the same stable session is rejected. Generation,
+saved state, account availability and operation ownership are checked again before
+provider execution. Same-account Resume uses the existing exact-conversation
+launcher. A changed account delegates to the existing non-steering transfer worker,
+retaining history, permissions and stable ID; `operation_id` identifies that job
+for its normal confirmation/recovery APIs. It creates no model turn.
+
+Receipts distinguish admission, preparation, terminal creation, rename, dispatch,
+transfer, provider start, attachment and positively observed running. `failed`
+before host effects is safe failure; `uncertain` after effects requires inspection,
+never automatic replay. `recovered` describes the transfer worker's rollback.
+The selected name may already be committed if a later transfer fails; the receipt
+retains `previous_name`. Tabs and history are retained on partial failure. There
+is no implicit cancellation, cleanup, or credential change. Closing the popup
+only detaches its observer. List/status reconcile records without resubmitting.
+Existing `api resume`, launcher plans and message receipts retain their semantics.

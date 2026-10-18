@@ -35,6 +35,10 @@ enum Commands {
     LaunchWorker { request_id: String },
     #[command(hide = true)]
     LaunchRun { request_id: String },
+    #[command(hide = true)]
+    ResumeWorker { request_id: String },
+    #[command(hide = true)]
+    ResumeRun { request_id: String },
     /// Versioned machine-readable backend contract (JSON/NDJSON).
     Api {
         #[arg(long, default_value_t=1, value_parser=clap::value_parser!(u32).range(1..=1))]
@@ -418,6 +422,12 @@ async fn run(cli: Cli) -> Result<()> {
     }
     let paths = Paths::new(cli.data_dir)?;
     match cli.command {
+        Commands::ResumeWorker { request_id } => {
+            sessionsation::resume::worker(&paths, &request_id).await?
+        }
+        Commands::ResumeRun { request_id } => {
+            sessionsation::resume::run(&paths, &request_id).await?
+        }
         Commands::LaunchWorker { request_id } => {
             sessionsation::launch::worker(&paths, &request_id).await?
         }

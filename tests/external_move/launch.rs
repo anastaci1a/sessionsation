@@ -211,6 +211,145 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
         after["process_info"]["foreground_processes"][0]["pid"],
         shell_pid
     );
+    // Resume this same synthetic conversation twice: original account, then
+    // transferred account. Every terminal belongs to this isolated HERDR server.
+    for (account, name) in [
+        ("personal", "Resumed original"),
+        ("work", "Resumed transferred"),
+    ] {
+        let output = api(&f, &["state"], None);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let state: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let saved = state["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap();
+        let resume = json!({"version":1,"request_id":uuid::Uuid::new_v4().to_string(),"session_id":id,
+            "expected_generation":saved["generation"],"account_id":format!("codex:{account}"),"name":name,
+            "host":{"session":"fixture","socket":socket},"space":{"kind":"existing","id":workspace}});
+        let request_id = resume["request_id"].as_str().unwrap();
+        let preview = api(&f, &["resume-launch", "validate"], Some(&resume));
+        assert!(
+            preview.status.success(),
+            "{}",
+            String::from_utf8_lossy(&preview.stderr)
+        );
+        let mut stale = resume.clone();
+        stale["expected_generation"] = json!("stale");
+        let rejected = api(&f, &["resume-launch", "start"], Some(&stale));
+        assert!(!rejected.status.success());
+        assert!(
+            !f.paths
+                .root
+                .join("resumptions")
+                .join(format!("{request_id}.json"))
+                .exists()
+        );
+        let started = api(&f, &["resume-launch", "start"], Some(&resume));
+        assert!(
+            started.status.success(),
+            "{}",
+            String::from_utf8_lossy(&started.stderr)
+        );
+        assert!(
+            api(&f, &["resume-launch", "start"], Some(&resume))
+                .status
+                .success()
+        );
+        let mut conflict = resume.clone();
+        conflict["name"] = json!("Different intent");
+        let rejected = api(&f, &["resume-launch", "start"], Some(&conflict));
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("REQUEST_ID_CONFLICT"));
+        let until = Instant::now() + Duration::from_secs(45);
+        let resumed = loop {
+            let out = api(
+                &f,
+                &["resume-launch", "status", "--request-id", request_id],
+                None,
+            );
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let out: Value = serde_json::from_slice(&out.stdout).unwrap();
+            let r = out["result"].clone();
+            if r["phase"] == "running" {
+                break r;
+            }
+            assert!(
+                !matches!(r["phase"].as_str(), Some("failed" | "uncertain"))
+                    && Instant::now() < until,
+                "{r}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert_eq!(resumed["conversation_id"], receipt["conversation_id"]);
+        assert_eq!(resumed["directory"], r["directory"]["path"]);
+        assert_eq!(resumed["workspace_id"], workspace);
+        let state: Value = serde_json::from_slice(&api(&f, &["state"], None).stdout).unwrap();
+        let running = state["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap();
+        assert_eq!(running["name"], name);
+        assert_eq!(running["account"], account);
+        let detail: Value = serde_json::from_slice(
+            &api(
+                &f,
+                &[
+                    "session",
+                    "--session",
+                    id,
+                    "--expected-generation",
+                    running["generation"].as_str().unwrap(),
+                ],
+                None,
+            )
+            .stdout,
+        )
+        .unwrap();
+        assert_eq!(
+            detail["result"]["original_host"]["pane_id"],
+            resumed["pane_id"]
+        );
+        let new_pane = resumed["pane_id"].as_str().unwrap();
+        assert_ne!(new_pane, pane);
+        let info = host.call(&["pane", "process-info", "--pane", new_pane]);
+        let agent = info["process_info"]["foreground_processes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "codex")
+            .unwrap()["pid"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(unsafe { libc::kill(agent as i32, libc::SIGTERM) }, 0);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            host.call(&["pane", "process-info", "--pane", origin_pane])["process_info"]["shell_pid"],
+            origin_before["process_info"]["shell_pid"]
+        );
+    }
+    for server in [&f.a, &f.b] {
+        assert!(
+            !server
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|(m, _)| m == "turn/start" || m == "turn/steer")
+        );
+    }
     println!(
         "installed HERDR: exact workspace/new tab/account/UUID/socket, no duplicate launch, origin unchanged, retained shell; model turns=0"
     );

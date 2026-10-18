@@ -136,3 +136,10 @@ Passive native readiness is available through `sessionsation api observe --sessi
 BACKEND-ID --expected-generation GENERATION`; see the authoritative
 [readiness and receipt contract](contract.md#passive-readiness). Aggregate state/watch
 remains attachment discovery, not proof of idle activity.
+
+Popup clients resume a saved session into a new HERDR tab using `api resume-launch
+validate` and `api resume-launch start` with a versioned JSON request on stdin.
+Use `api resume-launch list` or `api resume-launch status --request-id UUID` to
+inspect the original request after detaching. The backend fixes the directory to
+the saved conversation; account, name and destination Space are explicit choices.
+See [the request and failure contract](contract.md#saved-session-popup-resume).

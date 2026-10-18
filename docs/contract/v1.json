@@ -1038,6 +1038,193 @@
           "type": "integer"
         }
       }
+    },
+    "ResumeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "request_id",
+        "session_id",
+        "expected_generation",
+        "account_id",
+        "name",
+        "host",
+        "space"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^codex:[A-Za-z0-9_-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session",
+            "socket"
+          ],
+          "properties": {
+            "session": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "socket": {
+              "type": "string",
+              "pattern": "^/"
+            }
+          }
+        },
+        "space": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "existing"
+                },
+                "id": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "label"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "new"
+                },
+                "label": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_generation": {
+          "type": "string"
+        }
+      }
+    },
+    "ResumeReceipt": {
+      "type": "object",
+      "required": [
+        "version",
+        "request",
+        "directory",
+        "previous_name",
+        "conversation_id",
+        "generation",
+        "phase",
+        "detail",
+        "workspace_id",
+        "tab_id",
+        "pane_id",
+        "operation_id",
+        "updated_at"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "request": {
+          "$ref": "#/$defs/ResumeRequest"
+        },
+        "phase": {
+          "enum": [
+            "admitted",
+            "preparing",
+            "creating_terminal",
+            "renaming",
+            "dispatching",
+            "transferring",
+            "starting_provider",
+            "attached",
+            "running",
+            "failed",
+            "recovered",
+            "uncertain"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tab_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pane_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conversation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated_at": {
+          "type": "integer"
+        },
+        "directory": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "previous_name": {
+          "type": "string"
+        },
+        "operation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
     }
   }
 }

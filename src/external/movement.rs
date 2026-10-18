@@ -779,21 +779,29 @@ pub(super) async fn launch_target(
     )?;
     if job.source.inactive {
         super::catalog::remember(paths, &job.source)?;
-        let name = super::opening::session_name(paths, &cwd, &job.source.thread_id, None)?;
-        let pane = tmux(&[
-            "new-session",
-            "-d",
-            "-P",
-            "-F",
-            "#{pane_id}",
-            "-s",
-            &name,
-            "-c",
-            &cwd,
-            &command,
-        ])?;
-        job.source.pane = pane;
-        job.source.tmux_session = name;
+        if let Some(pane) = job.resume_destination.clone() {
+            // The caller created this destination without focus. A retained shell
+            // must still occupy it; relaunch refuses an agent/editor replacement.
+            hosting::relaunch(&pane, &cwd, &command)?;
+            job.source.tmux_session = crate::terminal::target(&pane)?.0.into();
+            job.source.pane = pane;
+        } else {
+            let name = super::opening::session_name(paths, &cwd, &job.source.thread_id, None)?;
+            let pane = tmux(&[
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-s",
+                &name,
+                "-c",
+                &cwd,
+                &command,
+            ])?;
+            job.source.pane = pane;
+            job.source.tmux_session = name;
+        }
     } else {
         hosting::relaunch(&job.source.pane, &cwd, &command)?;
     }

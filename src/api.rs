@@ -18,6 +18,10 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::launch::Command,
     },
+    ResumeLaunch {
+        #[command(subcommand)]
+        command: crate::resume::Command,
+    },
     Account {
         #[command(subcommand)]
         command: AccountCommand,
@@ -363,7 +367,7 @@ pub fn capabilities() -> Value {
          "enrollment":false,"usage":false,"new":false,"resume":false,
          "account_switch":false,"restart":false,"submit":false,"queue":false,
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false}
-    ],"launch":{"version":1,"validate":true,"start":true,"status":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
+    ],"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true},
@@ -476,26 +480,33 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
     // Persisted launch receipts supply positive location provenance. Never guess
     // the original Space from a display name, current focus or a missing pane.
     let mut latest: Option<(i64, Value)> = None;
-    let root = paths.root.join("launches");
-    if root.is_dir() {
-        for entry in std::fs::read_dir(root)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|e| e != "json")
-            {
-                continue;
-            }
-            let Ok(record) = serde_json::from_slice::<Value>(&std::fs::read(entry.path())?) else {
-                continue;
-            };
-            if record["session_id"] != id || !record["workspace_id"].is_string() {
-                continue;
-            }
-            let at = record["updated_at"].as_i64().unwrap_or(0);
-            if latest.as_ref().is_none_or(|(old, _)| at > *old) {
-                latest = Some((
-                    at,
-                    json!({"session":record["request"]["host"]["session"],"socket":record["request"]["host"]["socket"],"workspace_id":record["workspace_id"],"tab_id":record["tab_id"],"pane_id":record["pane_id"]}),
-                ));
+    for directory in ["launches", "resumptions"] {
+        let root = paths.root.join(directory);
+        if root.is_dir() {
+            for entry in std::fs::read_dir(root)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_file()
+                    || entry.path().extension().is_none_or(|e| e != "json")
+                {
+                    continue;
+                }
+                let Ok(record) = serde_json::from_slice::<Value>(&std::fs::read(entry.path())?)
+                else {
+                    continue;
+                };
+                if (record["session_id"] != id && record["request"]["session_id"] != id)
+                    || !record["workspace_id"].is_string()
+                    || !matches!(record["phase"].as_str(), Some("running" | "attached"))
+                {
+                    continue;
+                }
+                let at = record["updated_at"].as_i64().unwrap_or(0);
+                if latest.as_ref().is_none_or(|(old, _)| at > *old) {
+                    latest = Some((
+                        at,
+                        json!({"session":record["request"]["host"]["session"],"socket":record["request"]["host"]["socket"],"workspace_id":record["workspace_id"],"tab_id":record["tab_id"],"pane_id":record["pane_id"]}),
+                    ));
+                }
             }
         }
     }
@@ -516,6 +527,7 @@ pub fn print(result: Value) -> Result<()> {
 
 pub async fn run(paths: &Paths, command: Command) -> Result<()> {
     let result = match command {
+        Command::ResumeLaunch { command } => crate::resume::api(paths, command).await?,
         Command::Session {
             session,
             expected_generation,

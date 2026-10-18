@@ -23,3 +23,4 @@ pub mod usage_history;
 mod terminal;
 
 pub mod launch;
+pub mod resume;

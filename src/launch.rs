@@ -404,50 +404,12 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
             Ok(())
         })?;
     }
-    let env = "SESSIONSATION_LAUNCHER_BYPASS=1";
     // Record uncertainty before the first external mutation: a lost reply is not rejection.
     change(paths, id, |r| {
         r.phase = "creating_terminal".into();
         Ok(())
     })?;
-    let created = match &r.space {
-        Space::Existing { id: workspace } => {
-            host_call(
-                &r.host,
-                &[
-                    "tab",
-                    "create",
-                    "--workspace",
-                    workspace,
-                    "--cwd",
-                    r.directory.path.to_str().context("INVALID_DIRECTORY")?,
-                    "--label",
-                    &r.name,
-                    "--env",
-                    env,
-                    "--no-focus",
-                ],
-            )
-            .await?
-        }
-        Space::New { label } => {
-            host_call(
-                &r.host,
-                &[
-                    "workspace",
-                    "create",
-                    "--cwd",
-                    r.directory.path.to_str().context("INVALID_DIRECTORY")?,
-                    "--label",
-                    label,
-                    "--env",
-                    env,
-                    "--no-focus",
-                ],
-            )
-            .await?
-        }
-    };
+    let created = create_terminal(&r.host, &r.space, &r.directory.path, &r.name).await?;
     let pane = created["root_pane"]["pane_id"]
         .as_str()
         .context("HOST_PANE_ID_MISSING")?
@@ -588,6 +550,54 @@ pub fn attached(
         Ok(())
     })?;
     Ok(())
+}
+
+pub(crate) async fn create_terminal(
+    host: &Host,
+    space: &Space,
+    directory: &Path,
+    name: &str,
+) -> Result<Value> {
+    let env = "SESSIONSATION_LAUNCHER_BYPASS=1";
+    let created = match space {
+        Space::Existing { id: workspace } => {
+            host_call(
+                host,
+                &[
+                    "tab",
+                    "create",
+                    "--workspace",
+                    workspace,
+                    "--cwd",
+                    directory.to_str().context("INVALID_DIRECTORY")?,
+                    "--label",
+                    name,
+                    "--env",
+                    env,
+                    "--no-focus",
+                ],
+            )
+            .await?
+        }
+        Space::New { label } => {
+            host_call(
+                host,
+                &[
+                    "workspace",
+                    "create",
+                    "--cwd",
+                    directory.to_str().context("INVALID_DIRECTORY")?,
+                    "--label",
+                    label,
+                    "--env",
+                    env,
+                    "--no-focus",
+                ],
+            )
+            .await?
+        }
+    };
+    Ok(created)
 }
 
 #[cfg(test)]

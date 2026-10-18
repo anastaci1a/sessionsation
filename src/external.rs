@@ -347,6 +347,9 @@ fn snapshot(items: Vec<Instance>) -> Value {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
+    /// Explicit new HERDR terminal for a saved-session transfer. Older jobs have none.
+    #[serde(default)]
+    pub resume_destination: Option<String>,
     #[serde(default)]
     pub non_steering: bool,
     pub id: String,
@@ -1025,7 +1028,7 @@ pub async fn run_account_thread_guarded(
     options: &[String],
     expected: Option<(&str, &str)>,
 ) -> Result<()> {
-    run_account_thread_inner(paths, account, thread, options, expected, None).await
+    run_account_thread_inner(paths, account, thread, options, expected, None, None).await
 }
 pub async fn run_account_new_named(
     paths: &Paths,
@@ -1033,7 +1036,25 @@ pub async fn run_account_new_named(
     request: &str,
     name: &str,
 ) -> Result<()> {
-    run_account_thread_inner(paths, account, None, &[], None, Some((request, name))).await
+    run_account_thread_inner(paths, account, None, &[], None, Some((request, name)), None).await
+}
+pub(crate) async fn run_account_resume_requested(
+    paths: &Paths,
+    account: &str,
+    thread: &str,
+    expected: (&str, &str),
+    request: &str,
+) -> Result<()> {
+    run_account_thread_inner(
+        paths,
+        account,
+        Some(thread),
+        &[],
+        Some(expected),
+        None,
+        Some(request),
+    )
+    .await
 }
 async fn run_account_thread_inner(
     paths: &Paths,
@@ -1042,6 +1063,7 @@ async fn run_account_thread_inner(
     options: &[String],
     expected: Option<(&str, &str)>,
     creation: Option<(&str, &str)>,
+    resumption: Option<&str>,
 ) -> Result<()> {
     validate_name(account)?;
     let _account_operation = crate::accounts::launch_lock(paths, account)?;
@@ -1242,7 +1264,7 @@ async fn run_account_thread_inner(
     if let Some((request, _)) = creation {
         crate::launch::attached(paths, request, id, attachment)?;
     } else {
-        crate::catalog::record_launch(
+        let recorded = crate::catalog::record_launch(
             paths,
             account,
             id,
@@ -1251,6 +1273,9 @@ async fn run_account_thread_inner(
                 .unwrap_or("session"),
             attachment,
         )?;
+        if let Some(request) = resumption {
+            crate::resume::attached(paths, request, &recorded)?;
+        }
     }
     let socket = home.join("app-server-control/app-server-control.sock");
     let error = Command::new(&config.codex_binary)
@@ -1571,6 +1596,7 @@ pub async fn queue_automatic(
         EnqueuePolicy {
             automatic_id: Some(id),
             non_steering: false,
+            ..Default::default()
         },
     )
 }
@@ -1579,6 +1605,8 @@ pub async fn queue_automatic(
 struct EnqueuePolicy<'a> {
     automatic_id: Option<&'a str>,
     non_steering: bool,
+    resume_destination: Option<&'a str>,
+    expected: Option<(&'a str, &'a str)>,
 }
 
 fn enqueue_with_id(
@@ -1610,6 +1638,15 @@ fn enqueue_with_id(
     } else {
         None
     };
+    if let Some((id, generation)) = policy.expected {
+        let selected = crate::catalog::resolve(paths, id, generation)?;
+        ensure!(
+            selected.conversation_id == source.thread_id
+                && selected.account == source.account
+                && selected.attachment.is_none(),
+            "STALE_TARGET"
+        );
+    }
     if let Some(existing) = jobs(paths)?
         .into_iter()
         .find(|j| job_conflicts_with_source(paths, j, &source))
@@ -1660,6 +1697,7 @@ fn enqueue_with_id(
     }
     let phase = "queued";
     let job = Job {
+        resume_destination: policy.resume_destination.map(str::to_owned),
         non_steering: policy.non_steering,
         id: automatic_id
             .map(str::to_owned)
@@ -2055,6 +2093,38 @@ pub async fn queue_snapshot(
         EnqueuePolicy {
             non_steering: true,
             ..Default::default()
+        },
+    )
+}
+
+/// Transfer saved history using the existing non-steering worker into a newly
+/// created, explicitly owned HERDR pane. The journal precedes all provider writes.
+pub(crate) async fn queue_saved_resume(
+    paths: &Paths,
+    source: Instance,
+    target: &str,
+    pane: &str,
+    expected: (&str, &str),
+    request: &str,
+) -> Result<Job> {
+    ensure!(
+        source.inactive && !source.thread_id.is_empty(),
+        "SESSION_ALREADY_RUNNING"
+    );
+    crate::terminal::target(pane)?;
+    ensure!(hosting::state(pane)?.0, "NEW_TERMINAL_NOT_READY");
+    enqueue_with_id(
+        paths,
+        source,
+        target,
+        MoveOptions::default(),
+        None,
+        "account",
+        EnqueuePolicy {
+            automatic_id: Some(request),
+            non_steering: true,
+            resume_destination: Some(pane),
+            expected: Some(expected),
         },
     )
 }
@@ -2640,6 +2710,7 @@ mod tests {
             Some("unfinished")
         );
         let mut prior = Job {
+            resume_destination: None,
             non_steering: false,
             id: "prior".into(),
             kind: "account".into(),
