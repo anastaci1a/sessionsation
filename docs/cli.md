@@ -115,3 +115,8 @@ sessionsation api cancel-operation OPERATION-ID
 No automatic switching, forced-steer messaging, cross-provider conversion or Claude
 runtime is enabled. Claude is prepared as a separate capability boundary pending
 installation/account verification. See [architecture](architecture.md).
+
+Passive native readiness is available through `sessionsation api observe --session
+BACKEND-ID --expected-generation GENERATION`; see the authoritative
+[readiness and receipt contract](contract.md#passive-readiness). Aggregate state/watch
+remains attachment discovery, not proof of idle activity.

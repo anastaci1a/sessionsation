@@ -13,7 +13,8 @@ local account removal. The original installation remains independent.
 
 Use Linux (including Unraid), Codex CLI, Rust 1.95, and tmux or HERDR.
 Claude runtime is not configured; its capabilities explicitly report setup required.
-The separate `sessionsation-ui` project consumes the public backend contract.
+The separate [sessionsation-ui](https://github.com/anastaci1a/sessionsation-ui)
+provides a thin HERDR management viewer and future-terminal launcher.
 
 Build with `cargo build --locked`, then `export PATH="$PWD/target/debug:$PATH"`.
 Inspect `sessionsation --help`.
