@@ -54,3 +54,13 @@ Account removal/restore has fixture evidence; no real account membership or
 credentials were changed to test it. Claude remains preparation-only by Ana's
 direction. Live model evidence is limited to the disposable Codex conversation
 above. No new credential owner or deployment of the original switcher is implied.
+
+HERDR discovery rejects dead/replaced process bindings before socket queries,
+avoiding per-binding timeouts against stopped servers. Bindings and recoverable
+history are retained; live candidates still require current host/PID/start/home/UUID
+confirmation. No freshness checks are skipped for a live attachment.
+
+Menu activity hints read at most the last 64 KiB of a live rollout, not its entire
+history. A partial first record is skipped; damaged tails or no retained activity
+event remain unknown. Native idle, process ownership and full history verification
+at lifecycle boundaries are unchanged. No cached idle state authorizes a mutation.
