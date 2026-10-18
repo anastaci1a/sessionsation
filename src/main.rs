@@ -261,6 +261,12 @@ enum Commands {
     },
     /// Start Codex with a selected enrolled account; managed switching remains gated.
     Run {
+        /// Terminal hosting; inline retains the invoking terminal.
+        #[arg(long, value_enum, default_value = "inline")]
+        host: Host,
+        /// Existing named headless HERDR server (required with --host herdr).
+        #[arg(long)]
+        herdr_session: Option<String>,
         #[arg(long)]
         account: Option<String>,
         /// Resume an exact conversation under the selected account.
@@ -285,6 +291,12 @@ enum Commands {
         session: String,
     },
 }
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Host {
+    Inline,
+    Herdr,
+}
+
 #[derive(Subcommand)]
 enum DaemonCommand {
     Start,
@@ -794,6 +806,8 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::HandoffWorker { job } => external::worker(&paths, &job).await?,
         Commands::Run {
+            host,
+            herdr_session,
             account,
             thread,
             session,
@@ -804,8 +818,33 @@ async fn run(cli: Cli) -> Result<()> {
                     session.is_none(),
                     "--session is reserved for managed launching"
                 );
-                external::run_account_thread(&paths, &account, thread.as_deref(), &codex_options)
-                    .await?;
+                match host {
+                    Host::Inline => {
+                        anyhow::ensure!(
+                            herdr_session.is_none(),
+                            "--herdr-session requires --host herdr"
+                        );
+                        external::run_account_thread(
+                            &paths,
+                            &account,
+                            thread.as_deref(),
+                            &codex_options,
+                        )
+                        .await?;
+                    }
+                    Host::Herdr => print_json(
+                        &external::hosting::launch(
+                            &paths,
+                            herdr_session
+                                .as_deref()
+                                .context("--host herdr requires --herdr-session")?,
+                            &account,
+                            thread.as_deref(),
+                            &codex_options,
+                        )
+                        .await?,
+                    )?,
+                }
             } else {
                 compatibility::require_native_handoff()?;
             }

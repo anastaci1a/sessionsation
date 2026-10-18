@@ -389,11 +389,26 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
             risks(paths,job,"This saved conversation ended during a turn. Open the recorded history anyway? Unfinished operations may need review; the switcher will not replay the interrupted request.").await?;
             busy = false;
         }
-        if working && !job.source.inactive && job.kind == "account" && !job.resume_after_move {
+        if working
+            && !job.source.pane.starts_with("herdr/")
+            && !job.source.inactive
+            && job.kind == "account"
+            && !job.resume_after_move
+        {
             job.resume_after_move = true;
             save_job(paths, job)?;
         }
         if busy || job.pause_delivery == "sending" {
+            if job.source.pane.starts_with("herdr/") {
+                phase(
+                    paths,
+                    job,
+                    "waiting_for_idle",
+                    "Waiting for positive idle state; no interruption or steer is sent.",
+                )?;
+                stable = None;
+                continue;
+            }
             if !job.source.inactive {
                 if let Err(error) = pause(paths, job, control.as_mut()).await {
                     if error.to_string().contains("confirmation declined") || cancelled(paths, job)
@@ -779,58 +794,11 @@ pub(super) async fn launch_target(
         job.source.pane = pane;
         job.source.tmux_session = name;
     } else {
-        tmux(&[
-            "respawn-pane",
-            "-k",
-            "-t",
-            &job.source.pane,
-            "-c",
-            &cwd,
-            &command,
-        ])?;
+        hosting::relaunch(&job.source.pane, &cwd, &command)?;
     }
     save_job(paths, job)?;
-    tmux(&[
-        "set-option",
-        "-p",
-        "-t",
-        &job.source.pane,
-        "remain-on-exit",
-        "on",
-    ])?;
-    let mut verified_pid = None;
-    for _ in 0..50 {
-        let (dead, pid) = pane_state(&job.source.pane)?;
-        if dead {
-            bail!(
-                "destination Codex exited during startup; source history is available for recovery"
-            );
-        }
-        if process_home(pid).is_ok_and(|home| home == target_home)
-            && resumed_thread(pid)?.as_deref() == Some(&job.source.thread_id)
-        {
-            verified_pid = Some(pid);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let pid = verified_pid
-        .context("destination did not confirm the expected account and conversation")?;
-    let identity = process_info(pid)?;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    ensure!(
-        !pane_state(&job.source.pane)?.0
-            && process_info(pid)
-                .is_ok_and(|p| p.start_time == identity.start_time && p.state != 'Z'),
-        "destination exited during startup; source history is available for recovery"
-    );
-    bind_pane(
-        paths,
-        &job.source.pane,
-        pid,
-        target_home,
-        &job.source.thread_id,
-    )?;
+    hosting::retain(&job.source.pane, true)?;
+    confirm_runtime(paths, &job.source.pane, target_home, &job.source.thread_id).await?;
     job.source_lease_released = true;
     super::catalog::remember(paths, &job.source)?;
     super::relocation::record_location(paths, job)?;
@@ -963,14 +931,7 @@ pub(super) async fn stop_source(
             // Handoffs retain their panes for respawn. An explicit session end
             // must release that pane/name, including after a previous move.
             if owned {
-                tmux(&[
-                    "set-option",
-                    "-p",
-                    "-t",
-                    &job.source.pane,
-                    "remain-on-exit",
-                    "off",
-                ])?;
+                hosting::retain(&job.source.pane, false)?;
             }
         }
         stop_exact_process(info)?;
@@ -1291,14 +1252,14 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
             &job.source.rollout,
         )
     };
-    tmux(&[
-        "respawn-pane",
-        "-t",
+    hosting::relaunch(&job.source.pane, &job.source.cwd, &command)?;
+    confirm_runtime(
+        paths,
         &job.source.pane,
-        "-c",
-        &job.source.cwd,
-        &command,
-    ])?;
+        &job.source.home,
+        &job.source.thread_id,
+    )
+    .await?;
     phase(
         paths,
         &mut job,
@@ -1322,7 +1283,7 @@ pub(super) fn remote_resume_shell(
         .collect::<Vec<_>>()
         .join(" ");
     let mut command = format!(
-        "exec env CODEX_HOME={} {} resume {} {}",
+        "exec env -u OPENAI_API_KEY -u CODEX_API_KEY -u CODEX_ACCESS_TOKEN CODEX_HOME={} {} resume {} {}",
         shell_quote(&home.to_string_lossy()),
         shell_quote(binary),
         options,
@@ -1335,6 +1296,41 @@ pub(super) fn remote_resume_shell(
             .display()
     )));
     command
+}
+
+async fn confirm_runtime(paths: &Paths, pane: &str, home: &Path, thread: &str) -> Result<u32> {
+    let mut verified_pid = None;
+    for _ in 0..50 {
+        let (dead, pid) = pane_state(pane)?;
+        if dead && pane.starts_with("herdr/") {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+        if dead {
+            bail!(
+                "destination Codex exited during startup; source history is available for recovery"
+            );
+        }
+        if process_home(pid).is_ok_and(|actual| actual == home)
+            && resumed_thread(pid)?.as_deref() == Some(thread)
+        {
+            verified_pid = Some(pid);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let pid = verified_pid
+        .context("destination did not confirm the expected account and conversation")?;
+    let identity = process_info(pid)?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    ensure!(
+        !pane_state(pane)?.0
+            && process_info(pid)
+                .is_ok_and(|p| p.start_time == identity.start_time && p.state != 'Z'),
+        "destination exited during startup; source history is available for recovery"
+    );
+    bind_pane(paths, pane, pid, home, thread)?;
+    Ok(pid)
 }
 
 #[cfg(test)]

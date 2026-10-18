@@ -360,7 +360,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             if restarting {
                                 let mut control=crate::control::Control::connect(&home).await?;
                                 ensure!(control.loaded().await?.is_empty(), "account backend is still serving conversations; source retained for recovery");
-                                ensure!(!crate::external::instances()?.iter().any(|i|i.home==home), "another Codex terminal is using the account backend");
+                                ensure!(!crate::external::host_instances(&paths)?.iter().any(|i|i.home==home), "another Codex terminal is using the account backend");
                             }
                             if let Some(helper) = helpers.remove(name) { helper.stop_idle().await?; }
                             if restarting || !shared_ready {

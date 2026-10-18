@@ -73,7 +73,10 @@ pub enum Activity {
 }
 impl Instance {
     pub fn needs_prefix(&self) -> bool {
-        !self.tmux_only && !self.inactive && !self.tmux_session.starts_with("codex-")
+        !self.tmux_only
+            && !self.inactive
+            && !self.pane.starts_with("herdr/")
+            && !self.tmux_session.starts_with("codex-")
     }
     pub fn key(&self) -> String {
         if self.tmux_only {
@@ -395,6 +398,9 @@ fn bind_pane(paths: &Paths, pane: &str, pid: u32, home: &Path, thread: &str) -> 
         home: home.to_path_buf(),
         thread: thread.into(),
     };
+    if pane.starts_with("herdr/") {
+        return hosting::bind(paths, pane, binding);
+    }
     atomic_write(&binding_path(paths, pane)?, &serde_json::to_vec(&binding)?)?;
     let name = tmux(&["display-message", "-p", "-t", pane, "#{session_name}"])?;
     catalog::remember_name(paths, thread, &name)
@@ -716,6 +722,11 @@ pub fn instances() -> Result<Vec<Instance>> {
     });
     Ok(result)
 }
+pub fn host_instances(paths: &Paths) -> Result<Vec<Instance>> {
+    let mut result = instances()?;
+    result.extend(hosting::instances(paths)?);
+    Ok(result)
+}
 pub fn all_instances(paths: &Paths) -> Result<Vec<Instance>> {
     inventory(paths, true)
 }
@@ -723,7 +734,7 @@ fn inventory(paths: &Paths, include_inactive: bool) -> Result<Vec<Instance>> {
     inventory_kind(paths, include_inactive, false)
 }
 fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Result<Vec<Instance>> {
-    let mut result = instances()?;
+    let mut result = host_instances(paths)?;
     let state = crate::store::load_state_snapshot(paths).ok();
     for instance in &mut result {
         if instance.thread_id.is_empty() {
@@ -1152,6 +1163,13 @@ pub async fn run_account_thread(
     if let Ok(pane) = std::env::var("TMUX_PANE") {
         bind_pane(paths, &pane, std::process::id(), &home, id)?;
     }
+    if let (Ok(session), Ok(pane)) = (
+        std::env::var("SESSIONSATION_HERDR_SESSION"),
+        std::env::var("HERDR_PANE_ID"),
+    ) {
+        let key = hosting::herdr_target(&session, &pane)?;
+        bind_pane(paths, &key, std::process::id(), &home, id)?;
+    }
     let socket = home.join("app-server-control/app-server-control.sock");
     let error = Command::new(&config.codex_binary)
         .args(["resume", id, "--remote"])
@@ -1515,14 +1533,7 @@ fn enqueue_with_id(
         return Ok(existing);
     }
     if !source.inactive && !matches!(kind, "terminate" | "pause") {
-        tmux(&[
-            "set-option",
-            "-p",
-            "-t",
-            &source.pane,
-            "remain-on-exit",
-            "on",
-        ])?;
+        hosting::retain(&source.pane, true)?;
     }
     if let Some(id) = automatic_id {
         ensure!(
@@ -1599,6 +1610,9 @@ fn enqueue_with_id(
     Ok(job)
 }
 fn pane_state(pane: &str) -> Result<(bool, u32)> {
+    if pane.starts_with("herdr/") {
+        return hosting::state(pane);
+    }
     let output = tmux(&[
         "display-message",
         "-p",
@@ -1921,6 +1935,7 @@ pub mod autostart;
 pub mod catalog;
 pub mod deletion;
 mod history;
+pub mod hosting;
 mod movement;
 pub mod opening;
 pub mod relocation;
@@ -2041,7 +2056,7 @@ fn resume_shell(
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        "exec env CODEX_HOME={} {} resume {} {}",
+        "exec env -u OPENAI_API_KEY -u CODEX_API_KEY -u CODEX_ACCESS_TOKEN CODEX_HOME={} {} resume {} {}",
         shell_quote(&home.to_string_lossy()),
         shell_quote(binary),
         options,
@@ -2054,6 +2069,11 @@ fn resume_shell(
 pub(crate) fn messaging_bindings(paths: &Paths) -> Result<Vec<(String, PathBuf, u32, u64)>> {
     let dir = paths.root.join("managed-panes");
     let mut result = Vec::new();
+    for i in hosting::instances(paths)? {
+        if catalog::messaging_owner(paths, &i.thread_id, &i.home)? {
+            result.push((i.thread_id, i.home, i.pid, i.start_time));
+        }
+    }
     if !dir.exists() {
         return Ok(result);
     }

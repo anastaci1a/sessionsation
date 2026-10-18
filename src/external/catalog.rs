@@ -209,7 +209,7 @@ pub async fn rename(paths: &Paths, key: &str, name: &str) -> Result<Value> {
             .find(|s| s.pane == source.pane && s.thread_id == source.thread_id)
             .context("session changed; refresh and rename it again")?;
         tmux_name = name.clone();
-        if tmux_name != current.tmux_session {
+        if tmux_name != current.tmux_session && !source.pane.starts_with("herdr/") {
             tmux_inventory::release_ended_name(&tmux_name)?;
             tmux(&["rename-session", "-t", &source.pane, &tmux_name])?;
         }

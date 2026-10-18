@@ -95,7 +95,7 @@ fn journal(paths: &Paths, id: &str) -> Result<PathBuf> {
 }
 fn homes(paths: &Paths, source: &Instance) -> Result<BTreeSet<PathBuf>> {
     let mut homes = BTreeSet::from([source.home.clone()]);
-    homes.extend(instances()?.into_iter().map(|s| s.home));
+    homes.extend(host_instances(paths)?.into_iter().map(|s| s.home));
     if let Some(home) = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))

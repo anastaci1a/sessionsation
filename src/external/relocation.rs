@@ -519,7 +519,9 @@ pub(super) async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
         let mut current = Control::connect(&home).await?;
         let other_panes = live_sessions(paths).await?.iter().any(|i| i.home == home);
         let other_threads = !current.loaded().await?.is_empty();
-        let note = if other_panes || other_threads {
+        let note = if job.source.pane.starts_with("herdr/") {
+            "The HERDR terminal was restarted; the existing account backend remains owned by its supervisor."
+        } else if other_panes || other_threads {
             "The shared backend stays running because other sessions use it. This terminal uses the installed Codex binary."
         } else if matches!(job.source.account.as_str(), "external" | "unknown") {
             "The external shared backend stays running; its lifecycle is not owned by this switcher."

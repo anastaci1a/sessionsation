@@ -17,3 +17,25 @@ Live acceptance uses disposable conversations and authorized test accounts. Veri
 launch, HERDR recognition, usage, account transfer, retained history, restart/resume
 and rollback. Launch and mocks alone do not establish complete integration.
 Ask Ana before spending or changing access.
+
+## Codex/HERDR evidence and limits
+
+The server's Codex build reports `0.162.1`; HERDR reports `0.9.5` (API protocol 22).
+Version strings alone do not prove another binary has the same native methods.
+One disposable conversation has verified:
+
+- Account-specific launch and HERDR recognition on a headless named server.
+- Native queue acceptance followed by a correlated completed reply.
+- Fresh account usage with reported windows and reset timestamps.
+- Account transfer with complete persisted-history comparison and successful recall
+  of an earlier marker on the destination account.
+- Same-account restart, explicit stop and exact-UUID resume; read-only sandbox and
+  `never` approval settings retained.
+- A host rejection before destination admission, followed by automatic recovery
+  to the source account and renewed process ownership/messaging discovery.
+- Attaching and detaching a HERDR viewer while the agent remains alive.
+
+Offline regressions additionally exercise lost replies, stale process ownership,
+history divergence, active tools, cancellation, and recovery. This does not verify
+automatic switching, arbitrary native versions, live subagent coordination, or
+preservation of unsent terminal drafts. Clear drafts before lifecycle operations.

@@ -506,6 +506,12 @@ pub(super) fn fixture(s: Scenario) -> Result<Value> {
             Err(e) => json!({"ok":false,"error":{"code":e.0}}),
         });
         if restart {
+            // The fixture simulates owner exit. Concurrent process-spawning tests
+            // can transiently inherit a descriptor between fork and exec; release
+            // this fixture lock explicitly before simulating the new owner.
+            if let Some(owner) = journal.as_ref() {
+                let _ = FileExt::unlock(&owner._lock);
+            }
             drop(journal.take());
             journal = Some(Journal::open(tmp.path())?);
         }
