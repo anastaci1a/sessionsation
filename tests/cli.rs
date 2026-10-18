@@ -89,10 +89,25 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert!(
+        daemon::call(&paths, "account/add", json!({"name":"thirteenchars"}))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("ACCOUNT_NAME_TOO_LONG")
+    );
+    assert!(!paths.account("thirteenchars").unwrap().exists());
     let login = daemon::call(&paths, "account/add", json!({"name":"first"}))
         .await
         .unwrap();
     assert_eq!(login["login"]["userCode"], "TEST-ONLY");
+    assert!(
+        daemon::call(&paths, "account/add", json!({"name":"first"}))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("already exists")
+    );
     let mut observed = false;
     for _ in 0..100 {
         let v = daemon::call(&paths, "status", json!({})).await.unwrap();
@@ -423,7 +438,7 @@ async fn account_delete_is_async_preserves_conversations_and_removes_only_dispos
         b"native paginated history fixture",
     )
     .unwrap();
-    let saved = catalog::record_launch(&paths, "disposable", &id, "Retained name", None).unwrap();
+    let saved = catalog::record_launch(&paths, "disposable", &id, "RetainedName", None).unwrap();
     // A preview must not traverse even an unsafe history subtree. No mutation occurs.
     let outside = tmp.path().join("outside");
     fs::create_dir(&outside).unwrap();
@@ -566,7 +581,7 @@ async fn account_delete_is_async_preserves_conversations_and_removes_only_dispos
     let state: Value = serde_json::from_slice(&out.stdout).unwrap();
     let sessions = state["result"]["sessions"].as_array().unwrap();
     let kept = sessions.iter().find(|s| s["id"] == saved.id).unwrap();
-    assert_eq!(kept["name"], "Retained name");
+    assert_eq!(kept["name"], "RetainedName");
     assert_eq!(kept["availability"], "saved");
     assert!(sessions.iter().any(|s| s["conversation_id"] == archived));
     assert!(

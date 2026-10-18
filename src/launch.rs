@@ -98,10 +98,16 @@ pub fn validate_name(name: &str) -> Result<()> {
     );
     Ok(())
 }
+/// User-assigned session names count Unicode scalar values, not UTF-8 bytes.
+pub fn validate_session_name(name: &str) -> Result<()> {
+    validate_name(name)?;
+    ensure!(name.chars().count() <= 12, "INVALID_SESSION_NAME");
+    Ok(())
+}
 fn shape(r: &Request) -> Result<()> {
     ensure!(r.version == 1, "UNSUPPORTED_LAUNCH_VERSION");
     validate_id(&r.request_id)?;
-    validate_name(&r.name)?;
+    validate_session_name(&r.name)?;
     crate::paths::validate_name(&r.host.session)?;
     crate::paths::validate_name(
         r.account_id
@@ -630,6 +636,16 @@ mod tests {
             confirmed_existing: true,
         })
         .unwrap();
+    }
+    #[test]
+    fn session_limit_is_separate_from_directory_and_space_names() {
+        for name in ["a".repeat(12), "界".repeat(12)] {
+            validate_session_name(&name).unwrap();
+        }
+        for name in ["a".repeat(13), "界".repeat(13)] {
+            assert!(validate_session_name(&name).is_err());
+            validate_name(&name).unwrap();
+        }
     }
     #[test]
     fn request_id_and_name_cannot_be_paths() {

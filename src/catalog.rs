@@ -71,7 +71,7 @@ fn validate_name(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty()
             && name == name.trim()
-            && name.len() <= 128
+            && name.chars().count() <= 12
             && !name.chars().any(char::is_control),
         "INVALID_SESSION_NAME"
     );
@@ -105,14 +105,19 @@ pub fn record_launch(
         let base = label
             .chars()
             .filter(|c| !c.is_control())
-            .take(80)
+            .take(12)
             .collect::<String>();
         let base = base.trim();
         let base = if base.is_empty() { "session" } else { base };
         let mut name = base.to_owned();
         let mut suffix = 2;
         while c.sessions.values().any(|s| s.name == name) || c.reservations.contains_key(&name) {
-            name = format!("{base}-{suffix}");
+            let tail = format!("-{suffix}");
+            let prefix: String = base
+                .chars()
+                .take(12usize.saturating_sub(tail.len()))
+                .collect();
+            name = format!("{prefix}{tail}");
             suffix += 1;
         }
         let s = Session {
@@ -260,6 +265,40 @@ mod tests {
         })
         .unwrap();
         s
+    }
+    #[test]
+    fn names_are_twelve_characters_but_legacy_identity_is_readable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let s = seed(&p);
+        transaction(&p, |c| {
+            c.sessions.get_mut(&s.id).unwrap().name = "legacy-long-session".into();
+            Ok(())
+        })
+        .unwrap();
+        let legacy = list(&p).unwrap().remove(0);
+        assert_eq!(legacy.name, "legacy-long-session");
+        assert_eq!(
+            resolve(&p, &legacy.id, &legacy.generation())
+                .unwrap()
+                .conversation_id,
+            s.conversation_id
+        );
+        assert!(rename(&p, &s.id, &legacy.generation(), "thirteenchars").is_err());
+        let renamed = rename(&p, &s.id, &legacy.generation(), "界".repeat(12).as_str()).unwrap();
+        assert_eq!(renamed.id, s.id);
+        for conversation in ["a", "b"] {
+            let assigned = record_launch(
+                &p,
+                "selected",
+                conversation,
+                "long-provider-session-label",
+                None,
+            )
+            .unwrap();
+            assert!(assigned.name.chars().count() <= 12);
+        }
+        assert_eq!(list(&p).unwrap().len(), 3);
     }
     #[test]
     fn rename_is_atomic_unique_and_rejects_old_generations() {

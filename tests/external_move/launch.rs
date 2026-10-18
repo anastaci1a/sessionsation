@@ -141,7 +141,7 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
     let workspace = original["workspace"]["workspace_id"].as_str().unwrap();
     let origin_pane = original["root_pane"]["pane_id"].as_str().unwrap();
     let origin_before = host.call(&["pane", "process-info", "--pane", origin_pane]);
-    let mut r = request(&f, &socket, "Owned popup fixture");
+    let mut r = request(&f, &socket, "Owned popup");
     r["space"]["id"] = json!(workspace);
     let id = r["request_id"].as_str().unwrap();
     let preview = api(&f, &["launch", "validate"], Some(&r));
@@ -150,7 +150,7 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
         "{}",
         String::from_utf8_lossy(&preview.stderr)
     );
-    assert!(!f.tmp.path().join("Owned popup fixture").exists());
+    assert!(!f.tmp.path().join("Owned popup").exists());
     let start = api(&f, &["launch", "start"], Some(&r));
     assert!(
         start.status.success(),
@@ -229,10 +229,7 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
     );
     // Resume this same synthetic conversation twice: original account, then
     // transferred account. Every terminal belongs to this isolated HERDR server.
-    for (account, name) in [
-        ("personal", "Resumed original"),
-        ("work", "Resumed transferred"),
-    ] {
+    for (account, name) in [("personal", "Resumed orig"), ("work", "Transferred")] {
         let output = api(&f, &["state"], None);
         assert!(
             output.status.success(),
@@ -282,7 +279,7 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
                 .success()
         );
         let mut conflict = resume.clone();
-        conflict["name"] = json!("Different intent");
+        conflict["name"] = json!("Other intent");
         let rejected = api(&f, &["resume-launch", "start"], Some(&conflict));
         assert!(!rejected.status.success());
         assert!(String::from_utf8_lossy(&rejected.stderr).contains("REQUEST_ID_CONFLICT"));
@@ -522,7 +519,7 @@ async fn installed_herdr_resumes_preserved_paginated_archive_after_account_delet
         assert_eq!(saved["id"], old["id"]);
     }
     let request = uuid::Uuid::new_v4().to_string();
-    let resume = json!({"version":1,"request_id":request,"session_id":saved["id"],"expected_generation":saved["generation"],"account_id":"codex:work","name":"Retained archive","host":{"session":"fixture","socket":socket},"space":{"kind":"existing","id":workspace}});
+    let resume = json!({"version":1,"request_id":request,"session_id":saved["id"],"expected_generation":saved["generation"],"account_id":"codex:work","name":"Archive kept","host":{"session":"fixture","socket":socket},"space":{"kind":"existing","id":workspace}});
     let out = api(&f, &["resume-launch", "start"], Some(&resume));
     assert!(
         out.status.success(),

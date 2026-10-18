@@ -336,6 +336,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         }
                         "account/add" => {
                             let name = params["name"].as_str().context("missing account name")?; validate_name(name)?;
+                            ensure!(name.len() <= 12, "ACCOUNT_NAME_TOO_LONG");
                             ensure!(!state.accounts.contains_key(name), "account name already exists; use account login to reauthenticate");
                             let home = paths.account(name)?; private_dir(&home)?;
                             let rpc = Rpc::spawn(&config.codex_binary,&home,&paths.root).await?;

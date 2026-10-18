@@ -102,7 +102,7 @@ fn shape(r: &Request) -> Result<()> {
     uuid::Uuid::parse_str(&r.session_id).context("INVALID_SESSION_ID")?;
     ensure!(
         !r.name.is_empty()
-            && r.name.len() <= 128
+            && r.name.chars().count() <= 12
             && r.name.trim() == r.name
             && !r.name.chars().any(char::is_control),
         "INVALID_SESSION_NAME"

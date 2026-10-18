@@ -89,8 +89,9 @@ above. No new credential owner or deployment of the original switcher is implied
 Updating the popup client does not replace the running root supervisor. Local
 account deletion remains gated until that sole owner advertises its capability.
 Activation is a separate, explicitly approved live owner handoff: stop the old
-supervisor through its public daemon command, wait for its socket/registry lock
-release, then start the selected immutable backend against the **same** explicit
+supervisor through its public daemon command, wait for its socket disappearance
+**and** registry lock release (`flock -w 15 /explicit/root/daemon.lock true`), then
+start the selected immutable backend against the **same** explicit
 root. Preserve the original executable/startup configuration and a private rollback
 record. Recheck account/session identity and native PID/start ticks before/after;
 never stop provider agents or introduce a second owner to obtain the capability.
@@ -102,11 +103,15 @@ mounts the hash-pinned original Switcher executable read-only at
 `SESSIONSATION_ISOLATED_HOST_TEST=1`. In the network-disabled check container,
 run `cargo test --offline --locked --test external_move installed_owner_handoff
 -- --ignored --nocapture`. Use isolated state and synthetic native servers only;
-never mount production homes or sockets. It passed in 1.13 seconds: the active
+never mount production homes or sockets. The original on-disk binary passed in
+1.13 seconds; the exact replaced live-owner
+image (`ccb423d09545ebd1fd2b7e776ad18d62764df9689ea69be341364f38346ef728`)
+passed in 1.07 seconds: the active
 native thread, control socket, client PID/start ticks, account/conversation,
 backend ID and tmux pane survived the original/new supervisor handoff, with zero
-model turns. This verifies the pinned binaries' isolated procedure; it does not
-authorize production activation.
+model turns. These are isolated procedure checks; live activation requires operator approval.
+The approved installed activation and current immutable owner are recorded in the
+[sibling UI deployment evidence](https://github.com/anastaci1a/sessionsation-ui/blob/main/docs/deployment.json).
 
 ## Artifact provenance and adapter handoff
 

@@ -954,10 +954,12 @@ async fn installed_owner_handoff_preserves_native_agent_and_catalog() {
         Ok("1")
     );
     let original = "/usr/local/bin/original-codex-switcher";
-    assert_eq!(
-        format!("{:x}", Sha256::digest(fs::read(original).unwrap())),
+    let hash = format!("{:x}", Sha256::digest(fs::read(original).unwrap()));
+    assert!(matches!(
+        hash.as_str(),
         "1bd4386a22007b55bad70fbd9e3cc54a8fb0939486a4db32874da73ee5a2c60a"
-    );
+            | "ccb423d09545ebd1fd2b7e776ad18d62764df9689ea69be341364f38346ef728"
+    ));
     let f = Fixture::new().await;
     let pane = f.live(ID, true);
     let before = f.invoke(&["api", "state"]);
