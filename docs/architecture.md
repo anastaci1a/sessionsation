@@ -14,8 +14,9 @@ never imply stopping an agent.
 
 ## Reuse
 
-Reuse the MIT-licensed account-aware launcher and safety mechanisms from
-`anastaci1a/codex-switcher`, retaining attribution. Ignore its UI. Keep one
+The MIT-licensed backend and regression fixtures are imported from
+`anastaci1a/codex-switcher`; [NOTICE](../NOTICE) records the pinned source revision
+and [LICENSE](../LICENSE) retains attribution. Its UI is excluded. Keep one
 supervisor and credential writer per account home.
 
 ## Separate UI

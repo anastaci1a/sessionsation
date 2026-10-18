@@ -1,0 +1,204 @@
+{
+  "contract_version": "1.2.1",
+  "now": 2000000000,
+  "enqueue": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "text": "Please summarize the public result when ready.",
+    "expires_at": 2000000300,
+    "expected_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "local_receipt": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "state": "pending_local",
+    "native_queue_id": null,
+    "reason": null
+  },
+  "native_receipt": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "state": "native_accepted",
+    "native_queue_id": "queue-1",
+    "reason": null
+  },
+  "unknown_receipt": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "state": "unknown",
+    "native_queue_id": null,
+    "reason": "submission_uncertain"
+  },
+  "conflicting_enqueue": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "text": "Different immutable content",
+    "expires_at": 2000000300,
+    "expected_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "unsupported": {
+    "contract_version": "1.2.1",
+    "ok": false,
+    "error": {
+      "code": "unsupported"
+    }
+  },
+  "cancelled_receipt": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "state": "cancelled",
+    "native_queue_id": null,
+    "reason": null
+  },
+  "expired_receipt": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "state": "expired",
+    "native_queue_id": null,
+    "reason": null
+  },
+  "cursor_epoch": "33333333-3333-4333-8333-333333333333",
+  "event_page": {
+    "contract_version": "1.2.1",
+    "ok": true,
+    "result": {
+      "events": [
+        {
+          "cursor": "33333333-3333-4333-8333-333333333333:1",
+          "receipt": {
+            "message_id": "11111111-1111-4111-8111-111111111111",
+            "session_id": "22222222-2222-4222-8222-222222222222",
+            "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "pending_local",
+            "native_queue_id": null,
+            "reason": null
+          }
+        }
+      ],
+      "cursor": "33333333-3333-4333-8333-333333333333:1",
+      "has_more": false,
+      "public_replies": "correlated_terminal_summary"
+    }
+  },
+  "completed_receipt": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "state": "completed_with_reply",
+    "native_queue_id": "queue-1",
+    "reason": null,
+    "correlation": {
+      "turn_id": "turn-1",
+      "user_item_id": "user-1",
+      "observed_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "reply": {
+      "item_id": "assistant-1",
+      "text": "Visible answer.",
+      "phase": "final_answer"
+    }
+  },
+  "native_summary": {
+    "data": [
+      {
+        "id": "turn-1",
+        "status": "completed",
+        "itemsView": "summary",
+        "items": [
+          {
+            "type": "userMessage",
+            "id": "user-1",
+            "clientId": "11111111-1111-4111-8111-111111111111",
+            "content": [
+              {
+                "type": "text",
+                "text": "ignored input"
+              }
+            ]
+          },
+          {
+            "type": "agentMessage",
+            "id": "assistant-1",
+            "text": "Visible answer.",
+            "phase": "final_answer"
+          }
+        ]
+      }
+    ],
+    "nextCursor": null
+  },
+  "named_session": {
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "display_name": "研究 café",
+    "account_name": "work",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "availability": "idle"
+  },
+  "unnamed_session": {
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "display_name": null,
+    "account_name": null,
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "availability": "idle"
+  },
+  "duplicate_name_session": {
+    "session_id": "44444444-4444-4444-8444-444444444444",
+    "display_name": "研究 café",
+    "account_name": "work",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "availability": "idle"
+  },
+  "reindexed_summary": {
+    "data": [
+      {
+        "id": "turn-1",
+        "status": "completed",
+        "itemsView": "summary",
+        "items": [
+          {
+            "type": "userMessage",
+            "id": "item-110",
+            "clientId": "11111111-1111-4111-8111-111111111111",
+            "content": [
+              {
+                "type": "text",
+                "text": "ignored input"
+              }
+            ]
+          },
+          {
+            "type": "agentMessage",
+            "id": "assistant-1",
+            "text": "Visible answer.",
+            "phase": "final_answer"
+          }
+        ]
+      }
+    ],
+    "nextCursor": null
+  },
+  "reindexed_receipt": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "state": "completed_with_reply",
+    "native_queue_id": "queue-1",
+    "reason": null,
+    "correlation": {
+      "turn_id": "turn-1",
+      "user_item_id": "item-1",
+      "observed_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "completed_user_item_id": "item-110"
+    },
+    "reply": {
+      "item_id": "assistant-1",
+      "text": "Visible answer.",
+      "phase": "final_answer"
+    }
+  }
+}

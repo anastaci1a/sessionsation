@@ -1,16 +1,21 @@
 # sessionsation
 
 A CLI-first account and session manager for Codex and Claude, with provider behavior
-separate from terminal hosting. The backend will reuse
+separate from terminal hosting. The backend reuses
 [Codex Switcher](https://github.com/anastaci1a/codex-switcher).
 
-**Status:** repository foundations only; no sessionsation runtime is implemented yet.
-The original switcher installation and live sessions remain independent.
+**Status:** the Codex backend and its CLI have been imported without the UI.
+Account enrollment/monitoring, exact-conversation launch, tmux discovery and manual
+history-preserving moves are inherited. HERDR integration and the unified public
+contract are under development. The original installation remains independent.
 
 The initial target is Linux (including Unraid), Codex CLI, Rust, and tmux or HERDR.
 Claude and a separate `sessionsation-ui` consumer follow verified Codex integration.
 These are plans, not current capabilities.
 
-For now, validate documentation with `python3 scripts/check_docs.py`.
+Build with `cargo build --locked`. Inspect `target/debug/sessionsation --help`.
+Use `--data-dir /absolute/disposable/path` for experiments; the default on Unraid
+is `/mnt/user/appdata/sessionsation`. Do not point an experimental supervisor at
+live account data. Run the isolated checks with `scripts/check.sh` on this server.
 
 See [documentation](docs/README.md) and [contributor workflow](agents/README.md).

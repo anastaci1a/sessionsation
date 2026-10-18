@@ -1,0 +1,73 @@
+{
+  "contract_version": "1.4.0",
+  "request": {
+    "request_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "mode": "submit",
+    "text": "Please report your current status briefly.",
+    "expected_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expected_turn_id": null,
+    "capability_id": "fixture-capability-v1",
+    "created_at": 2000000000,
+    "expires_at": 2000000300
+  },
+  "snapshot": {
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "capability_id": "fixture-capability-v1",
+    "build": "0.163.0",
+    "state": "idle",
+    "turn_id": null,
+    "observed_at": 2000000000,
+    "capability_expires_at": 2000000030,
+    "modal": false,
+    "atomic_idle_start": true
+  },
+  "scenario": {
+    "now": 2000000000,
+    "authenticated": true,
+    "csrf_valid": true,
+    "origin": "https://satellite.bleak-opaleye.ts.net:10000",
+    "sending_enabled": true,
+    "steps": [
+      {
+        "op": "accept",
+        "request": {
+          "request_id": "11111111-1111-4111-8111-111111111111",
+          "session_id": "22222222-2222-4222-8222-222222222222",
+          "mode": "submit",
+          "text": "Please report your current status briefly.",
+          "expected_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected_turn_id": null,
+          "capability_id": "fixture-capability-v1",
+          "created_at": 2000000000,
+          "expires_at": 2000000300
+        }
+      },
+      {
+        "op": "dispatch",
+        "request_id": "11111111-1111-4111-8111-111111111111",
+        "snapshot": {
+          "session_id": "22222222-2222-4222-8222-222222222222",
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capability_id": "fixture-capability-v1",
+          "build": "0.163.0",
+          "state": "idle",
+          "turn_id": null,
+          "observed_at": 2000000000,
+          "capability_expires_at": 2000000030,
+          "modal": false,
+          "atomic_idle_start": true
+        },
+        "native_result": "ack"
+      },
+      {
+        "op": "restart"
+      },
+      {
+        "op": "status",
+        "request_id": "11111111-1111-4111-8111-111111111111"
+      }
+    ]
+  }
+}

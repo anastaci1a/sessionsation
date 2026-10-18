@@ -1,0 +1,88 @@
+{
+  "contract_version": "1.4.0",
+  "synthetic": true,
+  "target": {
+    "session_id": "11111111-1111-4111-8111-111111111111",
+    "display_name": "Example session",
+    "account_name": "personal",
+    "state": "interrupted",
+    "availability": "idle",
+    "reason": null,
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "observed_at": 2000000000,
+    "valid_until": 2000000005,
+    "queued_work_count": null,
+    "paused_or_stopped": "interrupted_explicit_resume_required",
+    "check_in_eligible": false,
+    "native_sending_enabled": true,
+    "capability_id": "067761f27bb4519090342838ff2c061031e2ad40106305b32c3d5521288489eb",
+    "submit_capability_id": "98f3b4fe2056b31875222f4e3e198c15f7259087b92e01ecce84740a27288a5b",
+    "previous_turn_id": "previous-turn",
+    "conditional_start_supported": false,
+    "stop_intent_id": null,
+    "evidence": "native_read_only_snapshot_not_reservation",
+    "actions": {
+      "submit": {
+        "available": false,
+        "reason": "explicit_resume_required",
+        "effective_action": null,
+        "requires_expected_turn_id": false,
+        "receipt_guarantee": "acceptance_only_consumption_and_reply_unknown"
+      },
+      "queue": {
+        "available": false,
+        "reason": "explicit_resume_required",
+        "starts_eligible_idle_session": true
+      },
+      "resume": {
+        "available": true,
+        "reason": null,
+        "mode": "submit",
+        "requires_explicit_resume": true,
+        "new_input_only": true,
+        "starts_process": false
+      }
+    },
+    "idle_submit_supported": true,
+    "idle_submit_race": "may_steer_a_concurrently_started_turn"
+  },
+  "request": {
+    "request_id": "22222222-2222-4222-8222-222222222222",
+    "session_id": "11111111-1111-4111-8111-111111111111",
+    "mode": "submit",
+    "text": "Continue with this new request.",
+    "expected_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expected_turn_id": null,
+    "expected_previous_turn_id": "previous-turn",
+    "resume": true,
+    "expected_stop_id": null,
+    "capability_id": "98f3b4fe2056b31875222f4e3e198c15f7259087b92e01ecce84740a27288a5b",
+    "created_at": 2000000000,
+    "expires_at": 2000000300
+  },
+  "result": {
+    "request_id": "22222222-2222-4222-8222-222222222222",
+    "session_id": "11111111-1111-4111-8111-111111111111",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "requested_mode": "submit",
+    "effective_action": null,
+    "native_operation": "turn/start",
+    "dispatch_semantics": "idle_checked_start_or_steer",
+    "idle_race": "may_steer_a_concurrently_started_turn",
+    "state": "native_accepted",
+    "reason": "consumption_and_reply_unknown",
+    "expected_turn_id": null,
+    "expected_previous_turn_id": "previous-turn",
+    "acknowledged_turn_id": "fixture-acknowledged-turn",
+    "facts": {
+      "adapter_accepted": true,
+      "native_input_accepted": true,
+      "input_consumed": "unknown",
+      "turn_completed": "unknown",
+      "reply_observed": false
+    },
+    "reply": null,
+    "resume": true,
+    "reconciliation": "unsupported_submit_reply_evidence"
+  }
+}

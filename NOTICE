@@ -1,0 +1,8 @@
+sessionsation includes backend code and regression fixtures derived from:
+  Codex Switcher — https://github.com/anastaci1a/codex-switcher
+  revision 8fd7aa8e78526f0b23908465a75d6c13ff116ec1
+  Copyright (c) 2026 Ana Jahnel — MIT License (see LICENSE).
+
+The original UI is excluded. Backend-derived files are in src/, tests/, and
+versioned messaging JSON fixtures in docs/messaging/. Subsequent modifications
+are maintained in this repository's Git history.
