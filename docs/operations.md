@@ -84,6 +84,30 @@ gated. A client artifact update does not replace the root's sole supervisor. Cla
 direction. Live model evidence is limited to the disposable Codex conversation
 above. No new credential owner or deployment of the original switcher is implied.
 
+## Existing-owner activation gate
+
+Updating the popup client does not replace the running root supervisor. Local
+account deletion remains gated until that sole owner advertises its capability.
+Activation is a separate, explicitly approved live owner handoff: stop the old
+supervisor through its public daemon command, wait for its socket/registry lock
+release, then start the selected immutable backend against the **same** explicit
+root. Preserve the original executable/startup configuration and a private rollback
+record. Recheck account/session identity and native PID/start ticks before/after;
+never stop provider agents or introduce a second owner to obtain the capability.
+A managed-session reconciliation requirement blocks the stop.
+
+The ignored `installed_owner_handoff_preserves_native_agent_and_catalog` fixture
+mounts the hash-pinned original Switcher executable read-only at
+`/usr/local/bin/original-codex-switcher`, with
+`SESSIONSATION_ISOLATED_HOST_TEST=1`. In the network-disabled check container,
+run `cargo test --offline --locked --test external_move installed_owner_handoff
+-- --ignored --nocapture`. Use isolated state and synthetic native servers only;
+never mount production homes or sockets. It passed in 1.13 seconds: the active
+native thread, control socket, client PID/start ticks, account/conversation,
+backend ID and tmux pane survived the original/new supervisor handoff, with zero
+model turns. This verifies the pinned binaries' isolated procedure; it does not
+authorize production activation.
+
 ## Artifact provenance and adapter handoff
 
 [Verification manifest](verification.json) records the exact source commit, build

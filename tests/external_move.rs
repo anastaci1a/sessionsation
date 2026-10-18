@@ -943,6 +943,127 @@ fn paginated(f: &Fixture, id: &str) {
     f.a.lock().unwrap().threads.get_mut(id).unwrap()["historyMode"] = json!("paginated");
 }
 
+/// Only the pinned executable is mounted; every home, account and server here
+/// belongs to this disposable fixture. No production owner is contacted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires read-only original switcher executable; see docs/operations.md"]
+async fn installed_owner_handoff_preserves_native_agent_and_catalog() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        std::env::var("SESSIONSATION_ISOLATED_HOST_TEST").as_deref(),
+        Ok("1")
+    );
+    let original = "/usr/local/bin/original-codex-switcher";
+    assert_eq!(
+        format!("{:x}", Sha256::digest(fs::read(original).unwrap())),
+        "1bd4386a22007b55bad70fbd9e3cc54a8fb0939486a4db32874da73ee5a2c60a"
+    );
+    let f = Fixture::new().await;
+    let pane = f.live(ID, true);
+    let before = f.invoke(&["api", "state"]);
+    let source = before["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap()
+        .clone();
+    let pid = source["attachment"]["pid"].as_u64().unwrap() as u32;
+    let process_start = || {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        stat[stat.rfind(')').unwrap() + 2..]
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .to_owned()
+    };
+    let started = process_start();
+    let home = f.paths.account("personal").unwrap();
+    f.invoke(&["daemon", "stop"]);
+    async fn wait_for_owner_stop(paths: &Paths) {
+        for _ in 0..500 {
+            if daemon::call(paths, "status", json!({})).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("fixture owner did not stop");
+    }
+    wait_for_owner_stop(&f.paths).await;
+    let legacy = |args: &[&str]| {
+        let out = Command::new(original)
+            .arg("--data-dir")
+            .arg(&f.paths.root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    legacy(&["daemon", "start"]);
+    assert_ne!(
+        daemon::call(&f.paths, "status", json!({})).await.unwrap()["capabilities"]["account_deletion"],
+        true
+    );
+    assert_eq!(process_start(), started);
+    assert!(sessionsation::control::available(&home));
+    legacy(&["daemon", "stop"]);
+    wait_for_owner_stop(&f.paths).await;
+    assert_eq!(process_start(), started);
+    assert!(sessionsation::control::available(&home));
+    assert!(
+        command(&f.paths.root, &f.socket, &["daemon", "start"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        daemon::call(&f.paths, "status", json!({})).await.unwrap()["capabilities"]["account_deletion"],
+        true
+    );
+    assert_eq!(
+        sessionsation::control::Control::connect(&home)
+            .await
+            .unwrap()
+            .thread(ID, false)
+            .await
+            .unwrap()["status"]["type"],
+        "active"
+    );
+    let after = f.invoke(&["api", "state"]);
+    let current = after["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap();
+    assert_eq!(current["id"], source["id"]);
+    assert_eq!(current["attachment"], source["attachment"]);
+    assert_eq!(current["account_id"], source["account_id"]);
+    assert_eq!(
+        tmux(
+            &f.socket,
+            &["display-message", "-p", "-t", &pane, "#{pane_dead}"]
+        ),
+        "0"
+    );
+    for server in [&f.a, &f.b] {
+        assert!(
+            !server
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|(m, _)| m == "turn/start" || m == "turn/steer")
+        );
+    }
+    println!(
+        "isolated pinned-original/new owner handoff: native client PID/start, account, conversation, backend ID and tmux pane unchanged; model turns=0"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn paginated_history_is_verified_across_pages_and_can_move_back() {
     let f = Fixture::new().await;
