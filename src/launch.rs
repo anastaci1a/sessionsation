@@ -175,6 +175,36 @@ pub fn status(paths: &Paths, id: &str) -> Result<Receipt> {
     ensure!(file.is_file(), "LAUNCH_NOT_FOUND");
     Ok(serde_json::from_slice(&fs::read(file)?)?)
 }
+fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
+    let r = status(paths, id)?;
+    if !matches!(r.phase.as_str(), "attached" | "uncertain") {
+        return Ok(r);
+    }
+    let session = catalog::list(paths)?.into_iter().find(|s| {
+        s.id == id
+            && r.session_id.as_deref() == Some(s.id.as_str())
+            && r.conversation_id.as_deref() == Some(s.conversation_id.as_str())
+            && r.generation.as_deref() == Some(s.generation().as_str())
+            && r.request.account_id == format!("codex:{}", s.account)
+    });
+    if !session
+        .as_ref()
+        .is_some_and(|s| crate::external::new_launch_observed(paths, s).unwrap_or(false))
+    {
+        return Ok(r);
+    }
+    // Positive observation only: never resend a host/provider command or refocus
+    // a viewer. Generation is checked again while holding the admission lock.
+    change(paths, id, |current| {
+        if matches!(current.phase.as_str(), "attached" | "uncertain")
+            && current.generation == r.generation
+        {
+            current.phase = "running".into();
+            current.detail = Some("Exact provider process observed; no launch replay".into());
+        }
+        Ok(())
+    })
+}
 fn change(paths: &Paths, id: &str, f: impl FnOnce(&mut Receipt) -> Result<()>) -> Result<Receipt> {
     let _lock = lock(paths)?;
     let mut r = status(paths, id)?;
@@ -245,7 +275,7 @@ async fn validate(paths: &Paths, r: &Request) -> Result<()> {
 }
 pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     if let Command::Status { request_id } = command {
-        return Ok(serde_json::to_value(status(paths, &request_id)?)?);
+        return Ok(serde_json::to_value(reconcile_status(paths, &request_id)?)?);
     }
     let mut bytes = Vec::new();
     std::io::stdin().take(65537).read_to_end(&mut bytes)?;
@@ -334,6 +364,11 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     let id = &r.request_id;
     validate(paths, r).await?;
     for p in &r.directory.create {
+        let parent = p.parent().context("INVALID_DIRECTORY_PLAN")?;
+        ensure!(
+            fs::canonicalize(parent)? == parent,
+            "DIRECTORY_PARENT_CHANGED"
+        );
         fs::create_dir(p).context("DIRECTORY_CREATE_FAILED")?;
         change(paths, id, |r| {
             r.created_directories.push(p.clone());
@@ -443,6 +478,9 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     // launch-run confirms exact pane identity before touching a provider.
     for _ in 0..300 {
         let status = status(paths, id)?;
+        if status.phase == "running" {
+            return Ok(());
+        }
         if status.phase == "attached" {
             let session = catalog::list(paths)?.into_iter().find(|s| s.id == *id);
             if !session
@@ -456,7 +494,6 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
                 r.phase = "running".into();
                 Ok(())
             })?;
-            host_call(&r.host, &["tab", "focus", &tab]).await?;
             return Ok(());
         }
         ensure!(status.phase != "failed", "PROVIDER_LAUNCH_FAILED");

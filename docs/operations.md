@@ -4,6 +4,16 @@ Development uses isolated state. Preserve the original installation, account dat
 and live tmux sessions. Never silently migrate them or start competing supervisors
 against their homes. Restart must retain account, exact conversation and permissions.
 
+The ignored `installed_herdr_new_tab_handoff_retains_exact_account_and_shell` test
+in `tests/external_move/launch.rs` uses a fresh HERDR config/socket, synthetic
+accounts/native server and inert compiled provider. Run only in the offline check
+container with the installed HERDR binary mounted at `/usr/local/bin/herdr` and
+`SESSIONSATION_ISOLATED_HOST_TEST=1`, using `cargo test --offline --locked --test
+external_move installed_herdr_new_tab_handoff_retains_exact_account_and_shell --
+--ignored --nocapture`. It verifies exact destination, new tab, account/UUID/socket,
+duplicate admission, unchanged origin pane and retained shell; no model turn occurs.
+This backend handoff test is separate from UI popup/visual acceptance.
+
 Account removal is distinct from disabling: preview affected sessions and stored
 data, require explicit confirmation, handle active sessions safely, and retain
 recoverable history by default. Permanent local-data/credential purging requires a

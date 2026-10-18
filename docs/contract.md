@@ -225,6 +225,11 @@ when known. A failure or timeout must not trigger an automatic new Start. Preser
 created resources and reconcile the original request; uncertain operations retain
 their name reservation. No credentials are in requests or receipts.
 
+Status can reconcile a late attachment after a worker timeout using the same
+catalog generation, account, native UUID, PID/start time and remote socket argv.
+It never replays provider/terminal commands. Terminal focus is a client presentation
+action after `running`; status itself does not change the user's focused tab.
+
 `api account list` additionally reports `prefill: {eligible, reason, observed_at,
 valid_until}`. This conservative preference respects usage freshness, existing
 account thresholds and ordinary allowance. Purchased credits do not justify
