@@ -390,6 +390,7 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
             busy = false;
         }
         if working
+            && !job.non_steering
             && !job.source.pane.starts_with("herdr/")
             && !job.source.inactive
             && job.kind == "account"
@@ -399,7 +400,7 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
             save_job(paths, job)?;
         }
         if busy || job.pause_delivery == "sending" {
-            if job.source.pane.starts_with("herdr/") {
+            if job.non_steering || job.source.pane.starts_with("herdr/") {
                 phase(
                     paths,
                     job,

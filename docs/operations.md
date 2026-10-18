@@ -34,8 +34,23 @@ One disposable conversation has verified:
 - A host rejection before destination admission, followed by automatic recovery
   to the source account and renewed process ownership/messaging discovery.
 - Attaching and detaching a HERDR viewer while the agent remains alive.
+- Public v1 rename with unchanged backend identity, rejection of a stale restart
+  without changing the process, and stop/resume retaining both IDs and account.
 
 Offline regressions additionally exercise lost replies, stale process ownership,
 history divergence, active tools, cancellation, and recovery. This does not verify
 automatic switching, arbitrary native versions, live subagent coordination, or
 preservation of unsent terminal drafts. Clear drafts before lifecycle operations.
+
+## Public contract verification
+
+`scripts/check.sh` runs formatting, Clippy, the Rust suite, documentation links,
+and JSON Schema/fixture checks against real CLI envelopes. Tests cover concurrent
+unique renames and launches, generation changes, complete watch snapshots,
+non-steering busy operations, durable Submit/Queue idempotency, removal previews,
+active-account refusal, reversible membership and original-service preservation.
+
+Account removal/restore has fixture evidence; no real account membership or
+credentials were changed to test it. Claude remains preparation-only by Ana's
+direction. Live model evidence is limited to the disposable Codex conversation
+above. No new credential owner or deployment of the original switcher is implied.

@@ -1,2 +1,2 @@
 FROM codex-switcher-native-tools:local
-RUN apt-get update && apt-get install -y --no-install-recommends tmux rsync && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends tmux rsync python3-jsonschema && rm -rf /var/lib/apt/lists/*

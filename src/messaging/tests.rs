@@ -751,3 +751,75 @@ async fn session_labels_are_bounded_metadata_not_identity_or_credentials() {
         );
     }
 }
+
+#[tokio::test]
+async fn public_requests_deduplicate_without_retargeting_or_steering() {
+    for (mode, busy, lost) in [
+        (PublicMode::Submit, true, false),
+        (PublicMode::Queue, true, false),
+        (PublicMode::Submit, false, true),
+    ] {
+        let (_dir, paths, mut input, _) = fixture();
+        input.expires_at = crate::daemon::now() + 120;
+        let mut a = attachment_fixture(&paths, &input);
+        a.pid = std::process::id();
+        a.start = fs::read_to_string(format!("/proc/{}/stat", a.pid))
+            .unwrap()
+            .rsplit_once(") ")
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .parse()
+            .unwrap();
+        fs::create_dir_all(paths.root.join("managed-panes")).unwrap();
+        fs::write(
+            paths.root.join("managed-panes/1.json"),
+            json!({"pid":a.pid,"start_time":a.start,"home":a.home,"thread":a.id}).to_string(),
+        )
+        .unwrap();
+        let fake = server(&a.endpoint(), "0.163.0", busy, lost, true).await;
+        let instance:external::Instance=serde_json::from_value(json!({"pane":"%1","tmux_session":"test","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
+        let session = crate::catalog::reconcile(&paths, &[instance])
+            .unwrap()
+            .remove(0);
+        let request = PublicRequest {
+            api_version: 1,
+            message_id: input.message_id.clone(),
+            session_id: session.id.clone(),
+            expected_generation: session.generation(),
+            mode: mode.clone(),
+            text: "hello".into(),
+            expires_at: input.expires_at,
+        };
+        let first = send_public(&paths, request.clone()).await.unwrap();
+        assert_eq!(first["session_id"], session.id);
+        if mode == PublicMode::Submit && busy {
+            assert_eq!(first["state"], "rejected");
+            assert_eq!(first["reason"], "target_busy");
+        } else if lost {
+            assert_eq!(first["state"], "delivery_unknown");
+        } else {
+            assert_eq!(first["state"], "native_accepted");
+        }
+        // A new backend generation cannot turn a retry into new delivery.
+        crate::catalog::rename(&paths, &session.id, &session.generation(), "changed").unwrap();
+        send_public(&paths, request.clone()).await.unwrap();
+        let mut changed = request;
+        changed.text = "changed".into();
+        assert!(
+            send_public(&paths, changed)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("MESSAGE_ID_CONFLICT")
+        );
+        let calls = fake.methods.lock().unwrap();
+        assert_eq!(
+            calls.iter().filter(|m| *m == "thread/queue/add").count(),
+            usize::from(!(mode == PublicMode::Submit && busy))
+        );
+        assert!(!calls.iter().any(|m| m == "turn/steer" || m == "turn/start"));
+    }
+}

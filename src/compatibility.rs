@@ -207,6 +207,6 @@ pub fn save_report(path: &Path, report: &Report) -> Result<()> {
 /// Fail closed. No boolean in user configuration can certify a runtime.
 pub fn require_native_handoff() -> Result<()> {
     anyhow::bail!(
-        "NATIVE_HANDOFF_UNVERIFIED: automatic switching is unavailable until cross-account, terminal draft, subagent restoration, and tool-quiescence gates pass. Run `codex-switcher doctor --probe`; see docs/COMPATIBILITY.md. Account monitoring and simulation are available."
+        "NATIVE_HANDOFF_UNVERIFIED: automatic switching is unavailable until cross-account, terminal draft, subagent restoration, and tool-quiescence gates pass. Run `sessionsation doctor --probe`; see docs/operations.md. Account monitoring and simulation are available."
     )
 }

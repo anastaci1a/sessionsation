@@ -1,5 +1,8 @@
+pub mod accounts;
+pub mod api;
 pub mod automatic;
 pub mod autostart;
+pub mod catalog;
 pub mod cli_views;
 pub mod compatibility;
 pub mod config;
@@ -16,3 +19,5 @@ mod self_executable;
 pub mod simulation;
 pub mod store;
 pub mod usage_history;
+
+mod terminal;

@@ -63,7 +63,7 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
         ..Default::default()
     };
     sessionsation::store::save_config(&paths, &config).unwrap();
-    let _server = Process(
+    let mut _server = Process(
         Command::new(binary())
             .arg("--data-dir")
             .arg(&paths.root)
@@ -74,10 +74,19 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
             .spawn()
             .unwrap(),
     );
-    for _ in 0..100 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
         if daemon::call(&paths, "status", json!({})).await.is_ok() {
             break;
         }
+        assert!(
+            _server.0.try_wait().unwrap().is_none(),
+            "fixture supervisor exited before readiness"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fixture supervisor did not become ready"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let login = daemon::call(&paths, "account/add", json!({"name":"first"}))
@@ -214,4 +223,58 @@ fn daemon_configuration_singleton_and_status_contract() {
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("daemon failed to exit after acknowledging stop");
+}
+
+#[test]
+fn public_state_watch_flushes_complete_snapshots_and_stops_independently() {
+    use std::io::{BufRead, BufReader};
+    let dir = tempfile::tempdir().unwrap();
+    let mut watcher = Process(
+        Command::new(binary())
+            .arg("--data-dir")
+            .arg(dir.path())
+            .args(["api", "state", "--watch", "--interval", "1"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut reader = BufReader::new(watcher.0.stdout.take().unwrap());
+    for _ in 0..2 {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["api_version"], 1);
+        assert_eq!(value["ok"], true);
+        assert!(value["result"]["accounts"].is_array());
+        assert!(value["result"]["sessions"].is_array());
+    }
+    drop(watcher);
+    assert!(!dir.path().join("registry.db").exists());
+}
+
+#[test]
+fn optional_service_setup_preserves_original_switcher_service() {
+    let dir = tempfile::tempdir().unwrap();
+    let services = dir.path().join(".config/systemd/user");
+    std::fs::create_dir_all(&services).unwrap();
+    let original = services.join("codex-switcher.service");
+    std::fs::write(&original, "original service").unwrap();
+    let result = Command::new(binary())
+        .env("HOME", dir.path())
+        .arg("--data-dir")
+        .arg(dir.path().join("private-state"))
+        .args(["setup", "--systemd"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(original).unwrap(),
+        "original service"
+    );
+    assert!(services.join("sessionsation.service").is_file());
+    assert!(!dir.path().join("private-state/registry.db").exists());
 }

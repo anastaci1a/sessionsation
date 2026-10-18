@@ -16,8 +16,8 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     version,
-    about = "Local Codex account monitor and handoff development harness",
-    long_about = "Local Codex account monitor and durable scheduling/handoff harness. Native automatic switching is gated pending compatibility verification. See doctor --probe and docs/COMPATIBILITY.md."
+    about = "CLI-first account and session manager",
+    long_about = "Account-aware Codex sessions in tmux and HERDR. Use api for the versioned JSON contract. Claude runtime support requires separate setup."
 )]
 struct Cli {
     #[arg(
@@ -31,7 +31,15 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Versioned machine-readable backend contract (JSON/NDJSON).
+    Api {
+        #[arg(long, default_value_t=1, value_parser=clap::value_parser!(u32).range(1..=1))]
+        api_version: u32,
+        #[command(subcommand)]
+        command: sessionsation::api::Command,
+    },
     /// Transport-neutral, attach-only messaging API (JSON).
+    #[command(hide = true)]
     Message {
         #[command(subcommand)]
         command: sessionsation::messaging::Command,
@@ -54,17 +62,22 @@ enum Commands {
         json: bool,
     },
     /// Exit successfully only when managed native launching is available (currently unavailable).
+    #[command(hide = true)]
     Ready,
     /// List live tmux instances and completed inactive conversations available to move.
+    #[command(hide = true)]
     Instances,
     /// Inspect one exact inventory ID, its account usage and automation settings (JSON).
+    #[command(hide = true)]
     Session {
         #[arg(long)]
         session: String,
     },
     /// List archived conversations available for explicit restoration (JSON).
+    #[command(hide = true)]
     Archives,
     /// Open a live or saved inventory ID in tmux, without sending a prompt (JSON).
+    #[command(hide = true)]
     Open {
         #[arg(long)]
         session: String,
@@ -73,6 +86,7 @@ enum Commands {
         name: Option<String>,
     },
     /// Rename a live or saved conversation; the name survives moves and reopening.
+    #[command(hide = true)]
     Rename {
         #[arg(long)]
         session: String,
@@ -80,6 +94,7 @@ enum Commands {
         name: String,
     },
     /// Preview permanent deletion of an inactive conversation and its local history copies.
+    #[command(hide = true)]
     DeleteSession {
         #[arg(long)]
         session: String,
@@ -91,6 +106,7 @@ enum Commands {
         revision: Option<String>,
     },
     /// Read the menu-facing session inventory as JSON (live tmux sessions by default).
+    #[command(hide = true)]
     Sessions {
         /// Include ordinary and exited tmux panes, without Codex management actions.
         #[arg(long)]
@@ -106,8 +122,10 @@ enum Commands {
         interval: u64,
     },
     /// Show queued or completed manual pane moves.
+    #[command(hide = true)]
     Moves,
     /// Move a live pane or completed inactive thread to another account.
+    #[command(hide = true)]
     Move {
         #[arg(long, help = "Live tmux pane ID from instances")]
         pane: Option<String>,
@@ -127,6 +145,7 @@ enum Commands {
         accept_risks: bool,
     },
     /// Answer the current confirmation dialog for a queued move.
+    #[command(hide = true)]
     MoveResponse {
         job: String,
         #[arg(value_parser = ["yes", "no"])]
@@ -136,10 +155,10 @@ enum Commands {
         sequence: Option<u64>,
     },
     /// Cancel a queued move before the source restart begins.
-    CancelMove {
-        job: String,
-    },
+    #[command(hide = true)]
+    CancelMove { job: String },
     /// Restart a live Codex terminal using the installed binary and its exact conversation.
+    #[command(hide = true)]
     Restart {
         #[arg(long)]
         pane: String,
@@ -149,6 +168,7 @@ enum Commands {
         accept_risks: bool,
     },
     /// Pause a live session and clean up approved background work, leaving Codex open.
+    #[command(hide = true)]
     PauseSession {
         #[arg(long)]
         pane: String,
@@ -159,6 +179,7 @@ enum Commands {
         accept_risks: bool,
     },
     /// End an active Codex session, retaining its conversation for resume.
+    #[command(hide = true)]
     Terminate {
         #[arg(long)]
         pane: String,
@@ -169,6 +190,7 @@ enum Commands {
         accept_risks: bool,
     },
     /// Change a conversation's working directory, optionally moving the project folder.
+    #[command(hide = true)]
     Relocate {
         #[arg(long, conflicts_with = "thread")]
         pane: Option<String>,
@@ -188,29 +210,30 @@ enum Commands {
         accept_risks: bool,
     },
     /// Respond to a queued move's background-process termination prompt.
+    #[command(hide = true)]
     BackgroundResponse {
         job: String,
         #[arg(value_parser = ["yes", "no"])]
         answer: String,
     },
     /// Relaunch a failed move from the original account home.
-    Recover {
-        job: String,
-    },
+    #[command(hide = true)]
+    Recover { job: String },
     /// Retry a stopped job with fresh session discovery and new confirmations.
-    Retry {
-        job: String,
-    },
+    #[command(hide = true)]
+    Retry { job: String },
     #[command(hide = true)]
     HandoffWorker {
         #[arg(long)]
         job: String,
     },
+    #[command(hide = true)]
     Config {
         #[command(subcommand)]
         command: Option<ConfigCommand>,
     },
     /// Configure experimental automatic moves, or disable them immediately.
+    #[command(hide = true)]
     AutoSwitch {
         #[arg(long)]
         thread: String,
@@ -228,6 +251,7 @@ enum Commands {
         accept_experimental: bool,
     },
     /// Resume unfinished work after a confirmed usage stop and verified reset.
+    #[command(hide = true)]
     AutoStart {
         #[arg(long)]
         thread: String,
@@ -239,6 +263,7 @@ enum Commands {
         accept_experimental: bool,
     },
     /// Set an account's used-percentage thresholds or confirm its plan ratio.
+    #[command(hide = true)]
     Thresholds {
         account: String,
         #[arg(long, requires = "weekly")]
@@ -256,9 +281,8 @@ enum Commands {
         json: bool,
     },
     /// Run a deterministic offline scenario. Never starts Codex or reads credentials.
-    Simulate {
-        scenario: PathBuf,
-    },
+    #[command(hide = true)]
+    Simulate { scenario: PathBuf },
     /// Start Codex with a selected enrolled account; managed switching remains gated.
     Run {
         /// Terminal hosting; inline retains the invoking terminal.
@@ -278,18 +302,23 @@ enum Commands {
         codex_options: Vec<String>,
     },
     /// Reserved conversation import; refuses unsafe copying while compatibility is unverified.
+    #[command(hide = true)]
     Import {
         #[arg(long)]
         thread: String,
         #[arg(long)]
         from: PathBuf,
     },
-    Pause {
-        session: String,
-    },
+    #[command(hide = true)]
+    Pause { session: String },
+    /// Resume a saved stable backend ID on its recorded account in this terminal.
     Resume {
         session: String,
+        #[arg(long)]
+        expected_generation: String,
     },
+    /// Open a plain interactive shell; never re-enter the terminal launcher.
+    Shell,
 }
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Host {
@@ -351,8 +380,30 @@ async fn main() {
     unsafe {
         libc::umask(0o077);
     }
-    if let Err(error) = run(Cli::parse()).await {
-        eprintln!("codex-switcher: {error:#}");
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            let _ = error.print();
+            return;
+        }
+        Err(error) => {
+            eprintln!(
+                "{}",
+                json!({"api_version":1,"ok":false,"error":{"code":"INVALID_ARGUMENT","message":error.to_string(),"retryable":false}})
+            );
+            std::process::exit(2);
+        }
+    };
+    if let Err(error) = run(cli).await {
+        eprintln!(
+            "{}",
+            json!({"api_version":1,"ok":false,"error":{"code":error_code(&error),"message":format!("{error:#}"),"retryable":false}})
+        );
         std::process::exit(1);
     }
 }
@@ -363,6 +414,7 @@ async fn run(cli: Cli) -> Result<()> {
     }
     let paths = Paths::new(cli.data_dir)?;
     match cli.command {
+        Commands::Api { command, .. } => sessionsation::api::run(&paths, command).await?,
         Commands::Session { session } => {
             print_json(&sessionsation::cli_views::session(&paths, &session).await?)?;
         }
@@ -419,7 +471,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             daemon::ensure_started(&paths).await?;
             println!(
-                "Initialized {}\nSupervisor running. Enroll accounts with `codex-switcher account add <name>`.\nNative switching remains blocked; inspect `codex-switcher doctor --probe`.",
+                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add <name>`.\nNative switching remains blocked; inspect `sessionsation doctor --probe`.",
                 paths.root.display()
             );
         }
@@ -557,6 +609,9 @@ async fn run(cli: Cli) -> Result<()> {
                     unreachable!("read-only account views handled above")
                 }
             };
+            if let Some(name) = name.as_deref() {
+                sessionsation::accounts::ensure_available(&paths, name)?;
+            }
             let value = daemon::call(&paths, method, json!({"name":name})).await?;
             if method == "account/add" || method == "account/login" {
                 println!(
@@ -569,7 +624,13 @@ async fn run(cli: Cli) -> Result<()> {
                         .unwrap_or("(no code returned)")
                 );
             } else if method == "status" {
-                print_json(&value["accounts"])?;
+                print_json(&json!(sessionsation::api::project_accounts(
+                    &paths,
+                    value["accounts"]
+                        .as_array()
+                        .context("INVALID_SUPERVISOR_RESPONSE")?
+                        .clone()
+                )?))?;
             } else {
                 print_json(&value)?;
             }
@@ -849,7 +910,22 @@ async fn run(cli: Cli) -> Result<()> {
                 compatibility::require_native_handoff()?;
             }
         }
-        Commands::Import { .. } | Commands::Pause { .. } | Commands::Resume { .. } => {
+        Commands::Resume {
+            session,
+            expected_generation,
+        } => sessionsation::api::resume_current(&paths, &session, &expected_generation).await?,
+        Commands::Shell => {
+            use std::os::unix::process::CommandExt;
+            let shell =
+                std::env::var("SESSIONSATION_PLAIN_SHELL").unwrap_or_else(|_| "/bin/bash".into());
+            anyhow::ensure!(std::path::Path::new(&shell).is_absolute(), "INVALID_SHELL");
+            return Err(std::process::Command::new(shell)
+                .arg("-i")
+                .env("SESSIONSATION_LAUNCHER_BYPASS", "1")
+                .exec())
+            .context("could not open shell");
+        }
+        Commands::Import { .. } | Commands::Pause { .. } => {
             compatibility::require_native_handoff()?
         }
         Commands::Simulate { .. } => unreachable!(),
@@ -915,11 +991,29 @@ fn install_systemd(paths: &Paths) -> Result<()> {
         quote(&executable)?,
         quote(&paths.root)?
     );
-    let path = PathBuf::from(home).join(".config/systemd/user/codex-switcher.service");
+    let path = PathBuf::from(home).join(".config/systemd/user/sessionsation.service");
     atomic_write(&path, service.as_bytes())?;
     println!(
-        "Wrote {}. Enable with: systemctl --user daemon-reload && systemctl --user enable --now codex-switcher",
+        "Wrote {}. Enable with: systemctl --user daemon-reload && systemctl --user enable --now sessionsation",
         path.display()
     );
     Ok(())
+}
+
+fn error_code(error: &anyhow::Error) -> String {
+    if let Some(fault) = error.downcast_ref::<sessionsation::messaging::Fault>() {
+        return fault.0.to_ascii_uppercase();
+    }
+    let text = error.to_string();
+    let candidate = text.split(':').next().unwrap_or_default();
+    if !candidate.is_empty()
+        && candidate.len() <= 64
+        && candidate
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    {
+        candidate.into()
+    } else {
+        "OPERATION_FAILED".into()
+    }
 }

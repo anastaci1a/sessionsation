@@ -1,0 +1,423 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/anastaci1a/sessionsation/main/docs/contract/v1.json",
+  "title": "sessionsation CLI v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Success"
+    },
+    {
+      "$ref": "#/$defs/Error"
+    }
+  ],
+  "$defs": {
+    "Error": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": 1
+        },
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]*$"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "api_version",
+        "ok",
+        "error"
+      ],
+      "additionalProperties": true
+    },
+    "Success": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": 1
+        },
+        "ok": {
+          "const": true
+        },
+        "result": {}
+      },
+      "required": [
+        "api_version",
+        "ok",
+        "result"
+      ],
+      "additionalProperties": true
+    },
+    "Attachment": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "enum": [
+            "tmux",
+            "herdr"
+          ]
+        },
+        "target": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "process_start": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "host",
+        "target",
+        "pid",
+        "process_start"
+      ],
+      "additionalProperties": true
+    },
+    "Session": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "provider": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        },
+        "account_id": {
+          "type": "string"
+        },
+        "conversation_id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "attachment": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Attachment"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "provider",
+        "account",
+        "account_id",
+        "conversation_id",
+        "revision",
+        "generation",
+        "attachment"
+      ],
+      "additionalProperties": true
+    },
+    "Account": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "auth_required": {
+          "type": "boolean"
+        },
+        "membership": {
+          "enum": [
+            "enrolled",
+            "removed"
+          ]
+        },
+        "selectable": {
+          "type": "boolean"
+        },
+        "usage": {
+          "type": "object"
+        },
+        "usage_fresh": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "provider",
+        "enabled",
+        "auth_required",
+        "membership",
+        "selectable",
+        "usage",
+        "usage_fresh"
+      ],
+      "additionalProperties": true
+    },
+    "Snapshot": {
+      "type": "object",
+      "properties": {
+        "observed_at": {
+          "type": "integer"
+        },
+        "account_source": {
+          "enum": [
+            "supervisor",
+            "offline_snapshot",
+            "uninitialized"
+          ]
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Account"
+          }
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Session"
+          }
+        },
+        "capabilities": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "observed_at",
+        "account_source",
+        "accounts",
+        "sessions",
+        "capabilities"
+      ],
+      "additionalProperties": true
+    },
+    "MessageRequest": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": 1
+        },
+        "message_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "mode": {
+          "enum": [
+            "submit",
+            "queue"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "expires_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "api_version",
+        "message_id",
+        "session_id",
+        "expected_generation",
+        "mode",
+        "text",
+        "expires_at"
+      ],
+      "additionalProperties": false
+    },
+    "Receipt": {
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "accepted_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "provider": {
+          "const": "codex"
+        },
+        "provider_conversation_id": {
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "submit",
+            "queue"
+          ]
+        },
+        "delivery_semantics": {
+          "const": "non_steering_native_queue"
+        },
+        "state": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "facts": {
+          "type": "object"
+        },
+        "reply": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "message_id",
+        "session_id",
+        "accepted_generation",
+        "provider",
+        "provider_conversation_id",
+        "mode",
+        "delivery_semantics",
+        "state",
+        "reason",
+        "facts",
+        "reply"
+      ],
+      "additionalProperties": true
+    },
+    "Operation": {
+      "type": "object",
+      "required": [
+        "id",
+        "source_session_id",
+        "kind",
+        "phase",
+        "detail",
+        "confirmation_seq",
+        "non_steering"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source_session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "confirmation_seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "non_steering": {
+          "const": true
+        },
+        "source_account_id": {
+          "type": "string"
+        },
+        "target_account_id": {
+          "type": "string"
+        },
+        "provider_conversation_id": {
+          "type": "string"
+        }
+      }
+    },
+    "LauncherPlan": {
+      "type": "object",
+      "required": [
+        "action",
+        "argv",
+        "cwd"
+      ],
+      "properties": {
+        "action": {
+          "const": "exec"
+        },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credentials_in_client": {
+          "const": false
+        }
+      }
+    }
+  }
+}

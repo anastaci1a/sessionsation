@@ -1,5 +1,7 @@
 //! Switcher-owned, transport-independent messaging boundary. Never launches Codex.
 mod modes;
+mod public;
+pub use public::{PublicMode, PublicRequest, receipt_public, send_public};
 mod observe;
 mod transport;
 use crate::{
@@ -579,13 +581,25 @@ async fn deliver(
     receipt: &mut Receipt,
     input: Option<&Enqueue>,
 ) -> Result<()> {
+    deliver_with_policy(paths, ledger, receipt, input, false).await
+}
+async fn deliver_with_policy(
+    paths: &Paths,
+    ledger: &mut Ledger,
+    receipt: &mut Receipt,
+    input: Option<&Enqueue>,
+    require_idle: bool,
+) -> Result<()> {
     let _guard = mutation_lock(paths, &receipt.session_id)?;
     let selected = attachment(paths, &receipt.session_id)?;
     if selected.generation() != receipt.generation {
         return Err(Fault("generation_mismatch"));
     }
     let mut control = selected.connect().await?;
-    activity(&mut control, &receipt.session_id).await?;
+    let current = activity(&mut control, &receipt.session_id).await?;
+    if require_idle && current != "idle" && receipt.state == "pending_local" {
+        return Err(Fault("target_busy"));
+    }
     // Re-resolve at the mutation boundary while holding switcher's ownership locks.
     if attachment(paths, &receipt.session_id)?.generation() != receipt.generation {
         return Err(Fault("generation_mismatch"));

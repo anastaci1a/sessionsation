@@ -7,4 +7,4 @@ docker run --rm --network none \
   -v "$PWD:/work" \
   -v /mnt/user/appdata/codex-switcher-build/cargo/registry:/usr/local/cargo/registry:ro \
   -w /work sessionsation-build-tools:local \
-  sh -c 'cargo fmt --check && cargo clippy --offline --locked --all-targets -- -D warnings && cargo test --offline --locked && python3 scripts/check_docs.py'
+  sh -c 'cargo fmt --check && cargo clippy --offline --locked --all-targets -- -D warnings && cargo test --offline --locked && python3 scripts/check_docs.py && python3 scripts/check_contract.py'

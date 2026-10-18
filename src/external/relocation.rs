@@ -667,6 +667,10 @@ pub(super) async fn recover(paths: &Paths, mut job: Job) -> Result<Job> {
     restore_source(paths, job).await
 }
 
+pub(super) fn restart_plan(paths: &Paths, source: &Instance) -> Result<Relocation> {
+    plan_for(paths, source, Path::new(&source.cwd), false, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,7 +9,6 @@ license = "MIT"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.29"
 fs2 = "0.4"
 futures-util = { version = "0.3", features = ["sink"] }
 libc = "0.2"
@@ -21,10 +20,6 @@ tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.28"
 uuid = { version = "1", features = ["v4", "serde"] }
-unicode-width = "0.2"
-unicode-segmentation = "1.12"
-portable-pty = "0.9"
-vt100 = "0.15"
 
 [profile.release]
 lto = "thin"

@@ -1,4 +1,5 @@
-//! Explicit, idle-boundary handoff for an existing tmux Codex TUI.
+//! Account-aware Codex lifecycle, independent of terminal placement.
+pub(crate) use crate::terminal::{shell_quote, tmux};
 use crate::{
     daemon,
     paths::{Paths, atomic_write, private_dir, validate_name},
@@ -316,6 +317,8 @@ fn snapshot(items: Vec<Instance>) -> Value {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
+    #[serde(default)]
+    pub non_steering: bool,
     pub id: String,
     #[serde(default = "default_job_kind")]
     pub kind: String,
@@ -406,27 +409,6 @@ fn bind_pane(paths: &Paths, pane: &str, pid: u32, home: &Path, thread: &str) -> 
     catalog::remember_name(paths, thread, &name)
 }
 
-pub(crate) fn tmux(args: &[&str]) -> Result<String> {
-    let output = Command::new("tmux")
-        .args(args)
-        .output()
-        .context("tmux unavailable")?;
-    let error = String::from_utf8_lossy(&output.stderr);
-    if args.first() == Some(&"list-panes")
-        && !output.status.success()
-        && (error.contains("no server running")
-            || error.contains("no sessions")
-            || (error.contains("error connecting") && error.contains("No such file")))
-    {
-        return Ok(String::new());
-    }
-    ensure!(
-        output.status.success(),
-        "tmux operation failed: {}",
-        error.chars().take(200).collect::<String>().trim()
-    );
-    Ok(String::from_utf8(output.stdout)?.trim_end().to_owned())
-}
 fn rollout_for(pid: u32) -> Result<Option<(String, PathBuf, PathBuf)>> {
     let mut found = Vec::new();
     for entry in fs::read_dir(format!("/proc/{pid}/fd"))? {
@@ -986,6 +968,7 @@ pub async fn run_account(paths: &Paths, account: &str, options: &[String]) -> Re
     run_account_thread(paths, account, None, options).await
 }
 pub async fn account_control(paths: &Paths, account: &str) -> Result<crate::control::Control> {
+    crate::accounts::ensure_available(paths, account)?;
     for _ in 0..50 {
         match daemon::call(paths, "account/prepare", json!({"name":account})).await {
             Ok(_) => return crate::control::Control::connect(&paths.account(account)?).await,
@@ -1003,7 +986,18 @@ pub async fn run_account_thread(
     thread: Option<&str>,
     options: &[String],
 ) -> Result<()> {
+    run_account_thread_guarded(paths, account, thread, options, None).await
+}
+pub async fn run_account_thread_guarded(
+    paths: &Paths,
+    account: &str,
+    thread: Option<&str>,
+    options: &[String],
+    expected: Option<(&str, &str)>,
+) -> Result<()> {
     validate_name(account)?;
+    let _account_operation = crate::accounts::launch_lock(paths, account)?;
+    crate::accounts::ensure_available(paths, account)?;
     daemon::ensure_started(paths).await?;
     let status = daemon::call(paths, "status", json!({})).await?;
     ensure!(
@@ -1026,7 +1020,6 @@ pub async fn run_account_thread(
         cwd = fs::canonicalize(cwd.join(dir)).context("working directory is unavailable")?;
     }
     ensure!(cwd.is_dir(), "working directory is not a directory");
-    let mut control = account_control(paths, account).await?;
     let requested = thread.or(launch.thread.as_deref());
     let _conversation_lock = if let Some(id) = requested {
         let lock = catalog::operation_lock(paths, id)?;
@@ -1041,6 +1034,17 @@ pub async fn run_account_thread(
             "--thread requires an exact conversation UUID"
         );
     }
+    if let Some((id, generation)) = expected {
+        crate::catalog::reconcile(paths, &discover(paths).await?)?;
+        let selected = crate::catalog::resolve(paths, id, generation)?;
+        ensure!(
+            selected.account == account
+                && Some(selected.conversation_id.as_str()) == requested
+                && selected.attachment.is_none(),
+            "STALE_TARGET"
+        );
+    }
+    let mut control = account_control(paths, account).await?;
     let mut params = json!({"cwd":cwd});
     if let Some(id) = requested {
         let saved = control.thread_for_state(id).await?;
@@ -1160,16 +1164,40 @@ pub async fn run_account_thread(
             .context("the new conversation was saved but Codex could not reopen it")?;
     }
     access::record(paths, id)?;
+    let mut attachment = None;
     if let Ok(pane) = std::env::var("TMUX_PANE") {
         bind_pane(paths, &pane, std::process::id(), &home, id)?;
-    }
-    if let (Ok(session), Ok(pane)) = (
-        std::env::var("SESSIONSATION_HERDR_SESSION"),
-        std::env::var("HERDR_PANE_ID"),
-    ) {
+        attachment = Some(crate::catalog::Attachment {
+            host: "tmux".into(),
+            target: pane,
+            pid: std::process::id(),
+            process_start: process_info(std::process::id())?.start_time,
+        });
+    } else if std::env::var("HERDR_ENV").as_deref() == Ok("1") {
+        let session = std::env::var("SESSIONSATION_HERDR_SESSION")
+            .or_else(|_| std::env::var("HERDR_SESSION"))?;
+        let pane = std::env::var("HERDR_PANE_ID")?;
         let key = hosting::herdr_target(&session, &pane)?;
         bind_pane(paths, &key, std::process::id(), &home, id)?;
+        attachment = Some(crate::catalog::Attachment {
+            host: "herdr".into(),
+            target: key,
+            pid: std::process::id(),
+            process_start: process_info(std::process::id())?.start_time,
+        });
     }
+    if requested.is_some() {
+        catalog::set_stop_intent(paths, id, None)?;
+    }
+    crate::catalog::record_launch(
+        paths,
+        account,
+        id,
+        cwd.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("session"),
+        attachment,
+    )?;
     let socket = home.join("app-server-control/app-server-control.sock");
     let error = Command::new(&config.codex_binary)
         .args(["resume", id, "--remote"])
@@ -1438,7 +1466,15 @@ fn enqueue(
     relocation: Option<relocation::Relocation>,
     kind: &str,
 ) -> Result<Job> {
-    enqueue_with_id(paths, source, target, options, relocation, kind, None)
+    enqueue_with_id(
+        paths,
+        source,
+        target,
+        options,
+        relocation,
+        kind,
+        EnqueuePolicy::default(),
+    )
 }
 
 pub async fn queue_automatic(
@@ -1478,8 +1514,17 @@ pub async fn queue_automatic(
         },
         None,
         if target == from { "pause" } else { "account" },
-        Some(id),
+        EnqueuePolicy {
+            automatic_id: Some(id),
+            non_steering: false,
+        },
     )
+}
+
+#[derive(Default)]
+struct EnqueuePolicy<'a> {
+    automatic_id: Option<&'a str>,
+    non_steering: bool,
 }
 
 fn enqueue_with_id(
@@ -1489,8 +1534,9 @@ fn enqueue_with_id(
     options: MoveOptions,
     relocation: Option<relocation::Relocation>,
     kind: &str,
-    automatic_id: Option<&str>,
+    policy: EnqueuePolicy<'_>,
 ) -> Result<Job> {
+    let automatic_id = policy.automatic_id;
     let queue_lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -1500,6 +1546,9 @@ fn enqueue_with_id(
         .custom_flags(libc::O_NOFOLLOW)
         .open(jobs_dir(paths)?.join("queue.lock"))?;
     queue_lock.lock_exclusive()?;
+    if !matches!(kind, "terminate" | "pause") {
+        crate::accounts::ensure_available(paths, target)?;
+    }
     let _conversation_lock = if !source.thread_id.is_empty() {
         let lock = catalog::operation_lock(paths, &source.thread_id)?;
         catalog::ensure_available(paths, &source.thread_id)?;
@@ -1514,6 +1563,10 @@ fn enqueue_with_id(
         ensure!(
             automatic_id.is_none(),
             "another session operation is already in progress"
+        );
+        ensure!(
+            !policy.non_steering || existing.non_steering,
+            "OPERATION_POLICY_CONFLICT"
         );
         let same_relocation = match (&existing.relocation, &relocation) {
             (None, None) => true,
@@ -1553,11 +1606,13 @@ fn enqueue_with_id(
     }
     let phase = "queued";
     let job = Job {
+        non_steering: policy.non_steering,
         id: automatic_id
             .map(str::to_owned)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         kind: kind.into(),
-        resume_after_move: kind == "account"
+        resume_after_move: !policy.non_steering
+            && kind == "account"
             && !source.inactive
             && source.activity == Activity::Busy,
         continuation_delivery: String::new(),
@@ -1896,6 +1951,60 @@ fn descendants(home: &Path, root: &str) -> Result<Vec<PathBuf>> {
     );
     Ok(selected)
 }
+
+pub async fn queue_snapshot(
+    paths: &Paths,
+    source: Instance,
+    target: &str,
+    options: MoveOptions,
+    kind: &str,
+) -> Result<Job> {
+    ensure!(
+        !source.inactive && !source.thread_id.is_empty(),
+        "SESSION_NOT_RUNNING"
+    );
+    let owner = source.account.clone();
+    let target = if kind == "account" { target } else { &owner };
+    validate_name(target)?;
+    if kind == "terminate" {
+        session_control::disable_autostart(paths, &source).await?;
+    } else {
+        let status = daemon::call(paths, "status", json!({})).await?;
+        ensure!(
+            status["accounts"]
+                .as_array()
+                .is_some_and(|accounts| accounts.iter().any(|a| a["name"] == target
+                    && a["enabled"] == true
+                    && a["auth_required"] == false)),
+            "ACCOUNT_UNAVAILABLE"
+        );
+    }
+    if kind == "account" {
+        ensure!(source.account != target, "ACCOUNT_ALREADY_SELECTED");
+    }
+    let plan = if kind == "restart" {
+        Some(relocation::restart_plan(paths, &source)?)
+    } else {
+        None
+    };
+    ensure!(
+        matches!(kind, "account" | "restart" | "terminate"),
+        "UNSUPPORTED_OPERATION"
+    );
+    enqueue_with_id(
+        paths,
+        source,
+        target,
+        options,
+        plan,
+        kind,
+        EnqueuePolicy {
+            non_steering: true,
+            ..Default::default()
+        },
+    )
+}
+
 #[cfg(test)]
 fn copy_rollout(source: &Path, home: &Path, target_home: &Path) -> Result<()> {
     let relative = source
@@ -1927,9 +2036,7 @@ fn copy_rollout(source: &Path, home: &Path, target_home: &Path) -> Result<()> {
     File::open(target.parent().unwrap())?.sync_all()?;
     Ok(())
 }
-pub(crate) fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
+
 pub mod access;
 pub mod autostart;
 pub mod catalog;
@@ -2400,6 +2507,7 @@ mod tests {
             Some("unfinished")
         );
         let mut prior = Job {
+            non_steering: false,
             id: "prior".into(),
             kind: "account".into(),
             source: latest.clone(),

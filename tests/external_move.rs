@@ -2872,3 +2872,247 @@ async fn opening_live_session_skips_blocked_unrelated_saved_history() {
             .any(|(m, _)| matches!(m.as_str(), "turn/start" | "thread/resume"))
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_catalog_ids_names_and_stale_targets_survive_runtime_changes() {
+    let f = Fixture::new().await;
+    let pane = f.live(ID, false);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let state = f.invoke(&["api", "state"]);
+    assert_eq!(state["api_version"], 1);
+    let session = state["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap()
+        .clone();
+    let id = session["id"].as_str().unwrap();
+    assert_ne!(id, ID);
+    let old = session["generation"].as_str().unwrap();
+    let renamed = f.invoke(&[
+        "api",
+        "rename",
+        "--session",
+        id,
+        "--expected-generation",
+        old,
+        "--name",
+        "unique-name",
+    ]);
+    assert_eq!(renamed["result"]["id"], id);
+    assert_eq!(renamed["result"]["conversation_id"], ID);
+    let rejected = command(
+        &f.paths.root,
+        &f.socket,
+        &[
+            "api",
+            "restart",
+            "--session",
+            id,
+            "--expected-generation",
+            old,
+        ],
+    );
+    assert!(!rejected.status.success());
+    let error: Value = serde_json::from_slice(&rejected.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "STALE_TARGET");
+    let generation = renamed["result"]["generation"].as_str().unwrap();
+    let stopped = f.invoke(&[
+        "api",
+        "stop",
+        "--session",
+        id,
+        "--expected-generation",
+        generation,
+    ]);
+    let job = stopped["result"]["id"].as_str().unwrap();
+    f.wait(job, "complete").await;
+    let state = f.invoke(&["api", "state"]);
+    let saved = state["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap();
+    assert_eq!(saved["name"], "unique-name");
+    assert_eq!(saved["account"], "personal");
+    assert!(saved["attachment"].is_null());
+    assert!(
+        command(
+            &f.paths.root,
+            &f.socket,
+            &[
+                "api",
+                "stop",
+                "--session",
+                id,
+                "--expected-generation",
+                generation
+            ]
+        )
+        .status
+        .code()
+        .is_some_and(|c| c != 0)
+    );
+    assert!(!pane.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_busy_switch_waits_without_steering_and_keeps_original_process() {
+    let f = Fixture::new().await;
+    let pane = f.live(ID, true);
+    f.a.lock().unwrap().hold_busy = true;
+    let state = f.invoke(&["api", "state"]);
+    let session = state["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap();
+    let job = f.invoke(&[
+        "api",
+        "switch",
+        "--session",
+        session["id"].as_str().unwrap(),
+        "--expected-generation",
+        session["generation"].as_str().unwrap(),
+        "--to",
+        "codex:work",
+    ]);
+    let id = job["result"]["id"].as_str().unwrap();
+    f.wait(id, "waiting_for_idle").await;
+    assert!(
+        !f.a.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(m, _)| m == "turn/steer")
+    );
+    f.invoke(&["cancel-move", id]);
+    f.wait(id, "cancelled").await;
+    assert_eq!(f.invoke(&["sessions"])["sessions"][0]["pane"], pane);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn account_removal_requires_fresh_confirmation_and_retains_recoverable_data() {
+    let f = Fixture::new().await;
+    let home = f.paths.account("personal").unwrap();
+    history(&home, f.tmp.path(), ID);
+    let preview = f.invoke(&["api", "account", "remove", "codex:personal"]);
+    assert_eq!(preview["result"]["can_remove"], true);
+    assert_eq!(preview["result"]["effects"]["delete_credentials"], false);
+    let old = preview["result"]["revision"].as_str().unwrap();
+    fs::write(home.join("new-history.jsonl"), b"retained fixture").unwrap();
+    let rejected = command(
+        &f.paths.root,
+        &f.socket,
+        &[
+            "api",
+            "account",
+            "remove",
+            "codex:personal",
+            "--confirm",
+            "codex:personal",
+            "--revision",
+            old,
+        ],
+    );
+    assert!(!rejected.status.success());
+    let err: Value = serde_json::from_slice(&rejected.stderr).unwrap();
+    assert_eq!(err["error"]["code"], "STALE_ACCOUNT_PREVIEW");
+    let preview = f.invoke(&["api", "account", "remove", "codex:personal"]);
+    let credentials = fs::read(home.join("auth.json")).unwrap();
+    f.invoke(&[
+        "api",
+        "account",
+        "remove",
+        "codex:personal",
+        "--confirm",
+        "codex:personal",
+        "--revision",
+        preview["result"]["revision"].as_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(home.join("auth.json")).unwrap(), credentials);
+    assert_eq!(
+        fs::read(home.join("new-history.jsonl")).unwrap(),
+        b"retained fixture"
+    );
+    let accounts = f.invoke(&["api", "account", "list"]);
+    let removed = accounts["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "codex:personal")
+        .unwrap();
+    assert_eq!(removed["membership"], "removed");
+    assert_eq!(removed["selectable"], false);
+    assert!(
+        !command(&f.paths.root, &f.socket, &["run", "--account", "personal"])
+            .status
+            .success()
+    );
+    assert!(store::load_state_snapshot(&f.paths).unwrap().accounts["personal"].enabled);
+    f.invoke(&["api", "account", "restore", "codex:personal"]);
+    assert!(sessionsation::accounts::ensure_available(&f.paths, "personal").is_ok());
+    let pane = f.live(ID, false);
+    let preview = f.invoke(&["api", "account", "remove", "codex:personal"]);
+    assert_eq!(preview["result"]["can_remove"], false);
+    assert!(
+        !command(
+            &f.paths.root,
+            &f.socket,
+            &[
+                "api",
+                "account",
+                "remove",
+                "codex:personal",
+                "--confirm",
+                "codex:personal",
+                "--revision",
+                preview["result"]["revision"].as_str().unwrap()
+            ]
+        )
+        .status
+        .success()
+    );
+    assert!(
+        !tmux(
+            &f.socket,
+            &["display-message", "-p", "-t", &pane, "#{pane_pid}"]
+        )
+        .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_stop_preserves_manual_intent_even_when_account_is_disabled() {
+    let f = Fixture::new().await;
+    f.live(ID, false);
+    let state = f.invoke(&["api", "state"]);
+    let s = state["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap();
+    f.invoke(&["account", "disable", "personal"]);
+    let job = f.invoke(&[
+        "api",
+        "stop",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+    ]);
+    f.wait(job["result"]["id"].as_str().unwrap(), "complete")
+        .await;
+    assert!(!store::load_state_snapshot(&f.paths).unwrap().accounts["personal"].enabled);
+    assert!(
+        !f.a.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(m, _)| m == "turn/start" || m == "turn/steer")
+    );
+}

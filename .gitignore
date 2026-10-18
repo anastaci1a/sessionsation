@@ -6,3 +6,13 @@ auth.json
 .env
 /test-results/
 __pycache__/
+.credentials.json
+credentials.json
+*.jsonl
+/accounts/
+/account-catalog/
+/session-catalog/
+/handoff-jobs/
+/herdr-panes/
+/managed-panes/
+/messaging/
