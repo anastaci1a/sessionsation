@@ -113,6 +113,17 @@ An accepted immutable installed artifact, explicit semantic adoption, separately
 approved disposable adapter/runtime tests and a reviewed cutover remain distinct
 gates. No review build replaces the launcher-selected artifact or its supervisor.
 
+Agent DM owns the separately authorized isolated runtime acceptance. Its
+[numbered results](https://github.com/anastaci1a/agent-dm/blob/77cea576da9075558ec73b0cc55308a117edb5e1/contracts/sessionsation/NUMBERED_RESULTS.json)
+prove busy Submit rejection; the original Queue attempt was uncertain locally.
+[Backend read-only reconciliation](contract/queue-reconciliation.json) records the
+exact root/instance, retained records and admission finding. No Queue replay or
+native resume was performed for reconciliation. The initial send error and exact
+lock contender remain unknown; a receipt-time busy diagnostic cannot identify
+either. The [contract](contract.md#admission-and-contention) specifies the shared
+ledger concurrency boundary. This investigation does not change dispatch semantics,
+old receipts, the installed candidate or production selection.
+
 HERDR discovery rejects dead/replaced process bindings before socket queries;
 bindings/history remain recoverable and live candidates still require full current
 host/PID/start/home/UUID confirmation. Menu activity hints read a bounded 64 KiB

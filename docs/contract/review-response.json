@@ -118,14 +118,24 @@
     },
     {
       "id": "activation-and-live-acceptance",
-      "status": "blocked_pending_explicit_owner_approval",
+      "status": "partial_isolated_acceptance_production_gated",
       "requirements": [
         "Accept pinned candidate artifact/path/hash and existing data-root owner",
         "Explicitly adopt idle non-steering Submit versus legacy busy Steer; never translate existing drafts/requests/modes automatically",
         "Approve exact disposable backend UUID/provider UUID and generations with bounded Submit-idle, Submit-busy rejection, Queue, retry/restart and movement identity tests",
         "Review preserved legacy observers/database boundary, then approve cutover separately"
       ],
-      "current_runtime": "Production Agent DM and original Switcher remain untouched; no new native sends or cutover from this review candidate"
+      "current_runtime": "Agent DM performed separately owner-authorized isolated acceptance; see its pinned NUMBERED_RESULTS.json via queue-reconciliation.json. Production Agent DM and original Switcher remain unchanged. Agent DM owns runtime tests; no new native sends or repeat authority here."
+    },
+    {
+      "id": "queue-reconciliation-and-coexistence",
+      "status": "read_only_reconciled_no_backend_admission",
+      "evidence": "queue-reconciliation.json",
+      "gates": [
+        "Agent DM owner review of original uncertain local row; do not modify automatically",
+        "Successful native Queue acceptance/reply remains unproved; no repeat authorization",
+        "No production activation or legacy receipt mapping"
+      ]
     }
   ],
   "validation": {
@@ -134,42 +144,11 @@
     "checks": "formatting, Clippy all targets with warnings denied, locked offline tests, documentation links, schema/fixtures and real CLI envelopes",
     "candidate_artifact": "../verification.json#/review_candidate"
   },
-  "proposed_acceptance": {
-    "authorization": "pending Ana; this plan is not execution authority",
-    "candidate_commit": "8b77639c44e0bf026acf1f23c308461b0968d737",
-    "artifact_manifest": "../verification.json#/review_candidate",
-    "proposed_install_path": "/mnt/user/live/packages/sessionsation/review/8b77639c44e0bf026acf1f23c308461b0968d737/sessionsation",
-    "replace_original_switcher": false,
-    "change_launcher_selected_backend": false,
-    "data_root": "/mnt/user/appdata/codex-switcher",
-    "supervisor": "Existing sole original data-root owner; verify its existing lock/socket, never start another owner",
-    "backend_session_id": "15850224-2717-4602-8e6e-efb478a35604",
-    "provider_conversation_id": "01a14d05-b3b2-7132-8dc0-46b8277d669a",
-    "last_saved_generation": "424d295f6b2619d02fb314c913198aaec92119bca6132b9acf6805ff51c8c887",
-    "headless_host": "sessionsation-dm-acceptance-20261018",
-    "accounts": [
-      "codex:personal",
-      "codex:gate1"
-    ],
-    "fresh_generation_policy": "Re-read the same exact backend/provider/account target; reject changed identity. Every lifecycle/input uses its captured current generation.",
-    "requests": {
-      "submit_idle": "d0a2150a-7d38-4a3d-a9ee-208d460715d0",
-      "submit_busy_expected_rejected": "6fba7755-7890-4f4a-9363-1843e03584e3",
-      "queue": "2731a603-aa94-41b3-9a5e-da5744e94bd2"
-    },
-    "max_intentional_accepted_new_inputs": 2,
-    "steps": [
-      "Resume only this saved disposable conversation on personal in the owned headless server; verify native observation/account/socket, identity and permissions",
-      "Idle Submit asks for one bounded local wait and a short fixed public reply; observe working without probing input",
-      "Attempt busy Submit only after positive working evidence. If it unexpectedly admits due to an idle race, count it as the second admitted input, skip Queue and report the busy gate incomplete",
-      "If busy Submit is rejected, Queue the second short fixed-reply request; inspect public original-input/turn/completion/reply IDs and observer time/error fields",
-      "Withhold a local acknowledgement once, reopen/poll the original ID, retry identical content across deadline/restart; never introduce a replacement ID for uncertain delivery",
-      "After positive idle, move personal -> gate1 -> personal and record every stable backend ID/provider ID/generation/runtime attachment; compare retained history without publishing raw contents",
-      "Verify restart and explicit stop/resume generation changes on the same exact account; finish stopped with history retained, close only owned server"
-    ],
-    "polling": "At least five seconds between per-session/receipt polls; backoff on errors",
+  "runtime_acceptance": {
+    "owner": "Agent DM",
+    "results": "https://github.com/anastaci1a/agent-dm/blob/77cea576da9075558ec73b0cc55308a117edb5e1/contracts/sessionsation/NUMBERED_RESULTS.json",
+    "backend_reconciliation": "queue-reconciliation.json",
     "production_cutover": false,
-    "legacy_receipt_or_job_import": false,
-    "credential_or_access_changes": false
+    "repeat_authorized": false
   }
 }

@@ -132,6 +132,30 @@ An uncertain write is journaled before socket I/O and is never resent. Receipt a
 idempotency storage is bounded at 10,000 and never silently evicts replay protection.
 Expiry is an unsent submission deadline, not cancellation of accepted native work.
 
+### Admission and contention
+
+The messaging ledger has one exclusive `adapter.lock` across legacy and v1
+send/status/receipt/cancel operations. It is held through native dispatch or
+observation. Contention returns `ADAPTER_BUSY` without waiting; an adapter-local
+serialized lane reduces self-contention but cannot coordinate other processes.
+Do not remove locks, stop legacy observers or introduce another owner to bypass it.
+
+For **that invocation of `api send`**, `ADAPTER_BUSY` precedes request binding,
+admission and native dispatch. It does not negate an earlier admission of the same ID.
+The public binding and receipt are durable before any native write; submission
+uncertainty is saved before touching the socket. There is no automatic receipt or
+binding eviction. For `api receipt`, `ADAPTER_BUSY` means lookup could not run;
+it says nothing about whether the send succeeded. Preserve operation context and
+the original error instead of converting a receipt error into a send rejection.
+
+After contention clears, `RECEIPT_NOT_FOUND` means no v1 binding exists for that ID
+in the selected root. Verify the exact root/instance and original immutable request
+before drawing an admission conclusion. A wrong root, unbound legacy ID or lost
+original error must not trigger a replacement send. This is not a Queue retry or
+new model-use authorization. Receipt polling may resume with backoff; uncertain
+delivery is never automatically replayed. Historical backend reconciliation and
+its limits are linked from [operations](operations.md#legacy-coexistence-and-review-gates).
+
 ### Receipt evidence
 
 `accepted_generation` is the original backend generation; the independent
