@@ -54,3 +54,35 @@ Account removal/restore has fixture evidence; no real account membership or
 credentials were changed to test it. Claude remains preparation-only by Ana's
 direction. Live model evidence is limited to the disposable Codex conversation
 above. No new credential owner or deployment of the original switcher is implied.
+
+## Artifact provenance and adapter handoff
+
+[Verification manifest](verification.json) records the exact source commit, build
+artifact path/hash, toolchain/image and passing test counts. There is **no installed
+standalone sessionsation artifact**. The listed debug binary is a development
+artifact; verify its hash before acceptance because rebuilding can replace it.
+The original installed `codex-switcher` binary has not been replaced.
+
+Adapters must receive an explicit data root from the operator. For existing Ana
+accounts this is `/mnt/user/appdata/codex-switcher`; its existing supervisor remains
+the sole credential/enrollment writer. Use that owner's existing socket namespace
+and locks through the backend. An adapter must not start its own provider server,
+copy credentials, or run another backend owner against the same homes. All clients
+of those accounts share this root's session catalog, operation journals and receipt
+ledger. UI configuration is separate and owns no account data. Run as the existing
+filesystem owner; changing ownership/access is outside this handoff.
+
+The new default `/mnt/user/appdata/sessionsation` is an independent, initially empty
+root. It does not discover/import the old root automatically. Selecting a different
+root creates a different catalog/receipt domain, not an alias for existing IDs.
+Never merge these domains in an adapter.
+
+The [v1 messaging contract](contract.md#messaging) is the coordination boundary for
+Agent DM: Submit performs idle preflight then uses the non-steering native queue;
+Queue admits eligible busy or idle targets. Legacy receipts are not automatically
+imported or mapped. A public receipt requires its durable v1 request binding, and a
+legacy message-ID collision is refused. Legacy status names must not be equated to
+v1 delivery facts or completion. Submit/Queue semantic changes and any legacy
+receipt mapping require explicit coordination before implementation; compatibility
+adapters remain separate projects. Clients should consume capabilities and the
+published schema rather than inherited commands.

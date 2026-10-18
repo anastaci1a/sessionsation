@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/anastaci1a/sessionsation",
+    "commit": "e4d7833e83e652dd87c02568e03fa6f9f786412f",
+    "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265"
+  },
+  "artifact": {
+    "installed": false,
+    "kind": "development build; original installation unchanged",
+    "path": "/mnt/user/live/projects/sessionsation/target/debug/sessionsation",
+    "sha256": "e2ded46544041635266dc2217fd02e03ef4a8b75078df6f6ecc932986b809483",
+    "profile": "debug",
+    "rust_version": "1.95.0",
+    "container_image": "sessionsation-build-tools:local",
+    "container_image_id": "sha256:4524fc318ec3fe78073bcf4573f940862031035901da2f46391c273a1a5bf320",
+    "build": "cargo test --offline --locked; source mounted at /work, network disabled, cached dependencies mounted read-only, no credentials or live sockets mounted"
+  },
+  "verification": {
+    "command": "scripts/check.sh",
+    "passed": true,
+    "checks": ["cargo fmt --check", "cargo clippy --offline --locked --all-targets -- -D warnings", "cargo test --offline --locked", "python3 scripts/check_docs.py", "python3 scripts/check_contract.py"],
+    "tests": {"lib": 101, "binary": 0, "cli": 6, "external_move": 57, "messaging_cli": 8, "persistence": 6, "scheduling": 29, "transport": 3, "doctests": 0, "total": 210, "failed": 0, "ignored": 0},
+    "scope": "offline suite; live evidence and limits are separately maintained in operations.md"
+  }
+}
