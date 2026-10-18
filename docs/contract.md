@@ -103,7 +103,18 @@ Risk/background-stop consent is separate. `api respond OPERATION-ID yes|no
 --sequence CURRENT-SEQUENCE` rejects stale confirmations. `api cancel-operation
 OPERATION-ID` requests cancellation before an unsafe transition.
 
-`api operations` exposes v1 operations; it does not adopt legacy switcher jobs.
+`api operations` exposes v1 lifecycle and local account deletion operations; it
+does not adopt legacy switcher jobs. Account deletion records have
+`kind:"account_delete"`, `account_id`, `id`, `phase`, `detail`, `updated_at`,
+`history_home`, `history_preserved` and `can_cancel:false`; they have no source
+session or conversation ID. Their terminal phases are `complete` and `failed`.
+`api account delete ID` previews intent without scanning account files;
+`--confirm ID --request-id UUID` admits the asynchronous operation. The ID binds
+one account permanently; reuse for another account rejects `REQUEST_ID_CONFLICT`.
+`api account deletions [--request-id UUID]` reads receipts; `api recover UUID`
+explicitly resumes a failed/interrupted worker after acquiring its operation lock.
+Do not call `cancel-operation` or `respond` on account deletion records.
+See [local deletion semantics](cli.md) for preservation and sole-owner gates.
 `source_session_id` is the stable backend ID; `provider_conversation_id` remains
 explicitly separate. Public recovery rejects jobs outside this contract.
 
@@ -204,10 +215,12 @@ fixtures include reconnect errors, acceptance after expiry and projection recove
 
 ## Account operations
 
-`api account list|add|login|enable|disable|usage|limits|remove|restore` are documented in
+`api account list|add|login|enable|disable|usage|limits|remove|restore|delete|deletions` are documented in
 [the CLI guide](cli.md). Removal is local membership removal, not provider deletion,
-credential purging or disabling the original switcher enrollment. No permanent purge
-operation is exposed in v1. Claude is explicitly `SETUP_REQUIRED`; no enrollment,
+credential purging or disabling the original switcher enrollment. The separately
+confirmed `delete` operation deletes local credentials/data while preserving
+conversations; it requires a capable sole owner. Arbitrary history purging remains
+unsupported. Claude is explicitly `SETUP_REQUIRED`; no enrollment,
 usage, account switching or cross-provider conversion is claimed for it.
 
 Codex capability `account_limits` enables `account limits ID`, returning

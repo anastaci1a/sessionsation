@@ -134,7 +134,7 @@ fn monitoring_pause_reason(paths: &Paths, name: &str) -> Option<&'static str> {
 pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> Value {
     let at = now();
     let accounts: Vec<_> = state.accounts.values().map(|a|json!({
-        "name":a.name,"enabled":a.enabled,"auth_required":a.auth_required,
+        "name":a.name,"enabled":a.enabled,"auth_required":a.auth_required,"deletion_id":a.deletion_id,
         "switch_thresholds":a.switch_thresholds,
         "usage":a.usage,"usage_fresh":a.usage.fresh(at,config.stale_seconds),
         "credit_fresh":a.usage.credits.is_some() && a.usage.observed_fresh(at,config.stale_seconds),
@@ -144,7 +144,7 @@ pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> V
     })).collect();
     let sessions: Vec<_> = state.sessions.values().map(|s|json!({"id":s.id,"thread_id":s.root_thread,"cwd":s.cwd,"account":s.account,"phase":s.phase,"reason":s.reason,"tmux_pane":s.tmux_pane,"manual_pause":s.manual_pause,"resume_work":s.resume_work})).collect();
     json!({"schema_version":1,"daemon":{"running":true},"codex_version":version,
-        "capabilities":{"account_monitoring":true,"scheduler_simulation":true,"manual_exit_handoff":true,"manual_moves":true,"explicit_account_launch":true,"session_inventory":true,"session_open":true,"archive_recovery":true,"project_relocation":true,"session_restart":true,"session_termination":true,"session_pause":true,"job_retry":true,"verified_paginated_moves":true,"managed_launch":false,"experimental_auto_start":true,"experimental_auto_switching":true,"automatic_switching":false,"conversation_import":false},
+        "capabilities":{"account_deletion":true,"account_monitoring":true,"scheduler_simulation":true,"manual_exit_handoff":true,"manual_moves":true,"explicit_account_launch":true,"session_inventory":true,"session_open":true,"archive_recovery":true,"project_relocation":true,"session_restart":true,"session_termination":true,"session_pause":true,"job_retry":true,"verified_paginated_moves":true,"managed_launch":false,"experimental_auto_start":true,"experimental_auto_switching":true,"automatic_switching":false,"conversation_import":false},
         "readiness":{"ready":false,"code":"NATIVE_HANDOFF_UNVERIFIED","detail":"Native handoff compatibility gates have not passed. See docs/COMPATIBILITY.md."},
         "automatic_switch_preferences":state.automatic_switching,
         "automatic_start_preferences":state.automatic_start,
@@ -283,6 +283,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         "account/thresholds" => {
                             let name = params["name"].as_str().context("missing account name")?;
                             let account = state.accounts.get_mut(name).context("unknown account")?;
+                            ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             let mut thresholds = account.switch_thresholds.clone();
                             thresholds.observe_plan(account.usage.plan_type.as_deref());
                             if let Some(multiplier) = params.get("multiplier") {thresholds.set_multiplier(multiplier.as_f64().context("invalid plan ratio")?)?;}
@@ -304,6 +305,35 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             ensure!(new.codex_binary == config.codex_binary || helpers.is_empty(), "restart supervisor before changing an active Codex binary");
                             save_config(&paths,&new)?; config = new; Ok(json!({"saved":true}))
                         }
+                        "account/delete/prepare" => {
+                            let name=params["name"].as_str().context("missing account name")?;
+                            let id=params["request_id"].as_str().context("missing deletion request")?;
+                            uuid::Uuid::parse_str(id)?;
+                            let record=crate::account_deletion::status(&paths,id)?;
+                            ensure!(record.account_id==format!("codex:{name}"),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
+                            let account=state.accounts.get(name).context("ACCOUNT_NOT_FOUND")?;
+                            ensure!(account.deletion_id.as_deref().is_none_or(|current|current==id),"ACCOUNT_DELETION_IN_PROGRESS");
+                            ensure!(!pending.contains(name),"ACCOUNT_POLL_IN_PROGRESS");
+                            let home=paths.account(name)?;
+                            let lease=OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(home.join(".switcher-lease"))?;
+                            ensure!(lease.try_lock_exclusive().is_err(),"ACCOUNT_DELETION_LEASE_REQUIRED");
+                            crate::account_deletion::idle(&paths,&home).await?;
+                            let account=state.accounts.get_mut(name).unwrap();account.deletion_id=Some(id.into());account.enabled=false;
+                            store.save(&state,now(),"account_deletion_reserved",name)?;
+                            if let Some(helper)=helpers.get(name){helper.stop_idle().await?;}helpers.remove(name);
+                            Ok(json!({"reserved":true}))
+                        }
+                        "account/delete/finish" => {
+                            let name=params["name"].as_str().context("missing account name")?;
+                            let id=params["request_id"].as_str().context("missing deletion request")?;
+                            let record=crate::account_deletion::status(&paths,id)?;
+                            ensure!(record.account_id==format!("codex:{name}")&&record.history_preserved&&record.phase=="deleting_local_data","ACCOUNT_DELETION_UNVERIFIED");
+                            ensure!(!paths.account(name)?.exists(),"ACCOUNT_DATA_STILL_PRESENT");
+                            if let Some(account)=state.accounts.get(name){ensure!(account.deletion_id.as_deref()==Some(id),"ACCOUNT_DELETION_IDENTITY_MISMATCH");}
+                            state.accounts.remove(name);helpers.remove(name);last_poll.remove(name);
+                            store.save(&state,now(),"account_deleted",name)?;
+                            Ok(json!({"deleted":true}))
+                        }
                         "account/add" => {
                             let name = params["name"].as_str().context("missing account name")?; validate_name(name)?;
                             ensure!(!state.accounts.contains_key(name), "account name already exists; use account login to reauthenticate");
@@ -323,6 +353,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         "account/login" => {
                             let name = params["name"].as_str().context("missing account name")?;
                             ensure!(state.accounts.contains_key(name), "unknown account");
+                            ensure!(state.accounts[name].deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             ensure!(!pending.contains(name), "account poll is in progress; retry shortly");
                             if !helpers.contains_key(name) {let rpc = Rpc::spawn(&config.codex_binary,&paths.account(name)?,&paths.root).await?; helpers.insert(name.into(),rpc);}
                             let login = helpers[name].request("account/login/start",json!({"type":"chatgptDeviceCode"})).await?;
@@ -332,12 +363,13 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         }
                         "account/enable" | "account/disable" => {
                             let name = params["name"].as_str().context("missing account name")?;
-                            state.accounts.get_mut(name).context("unknown account")?.enabled = method == "account/enable";
+                            let account=state.accounts.get_mut(name).context("unknown account")?;ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");account.enabled = method == "account/enable";
                             store.save(&state,now(),"account_enabled_changed",name)?; Ok(json!({"saved":true}))
                         }
                         "account/lease" => {
                             let name = params["name"].as_str().context("missing account name")?;
                             ensure!(state.accounts.contains_key(name), "unknown account");
+                            ensure!(state.accounts[name].deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             ensure!(!pending.contains(name), "account poll in progress; retry shortly");
                             let lease = OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(paths.account(name)?.join(".switcher-lease"))?;
                             ensure!(lease.try_lock_exclusive().is_err(), "account lease is not held by launcher");

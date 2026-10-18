@@ -71,6 +71,8 @@ impl Usage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Account {
     #[serde(default)]
+    pub deletion_id: Option<String>,
+    #[serde(default)]
     pub switch_thresholds: crate::automatic::Thresholds,
     pub name: String,
     pub identity: String,
@@ -86,6 +88,7 @@ pub struct Account {
 impl Account {
     pub fn new(name: String, identity: String) -> Self {
         Self {
+            deletion_id: None,
             switch_thresholds: crate::automatic::Thresholds::default(),
             name,
             identity,

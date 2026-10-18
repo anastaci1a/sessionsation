@@ -70,6 +70,7 @@ struct Server {
     reject_continuation: bool,
     lose_continuation_reply: bool,
     history_mismatch: bool,
+    load_during_history: bool,
     history_timings: bool,
     history_content_mismatch: bool,
     fail_delete: bool,
@@ -173,6 +174,9 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                             json!({})
                         }
                         "thread/turns/list" | "thread/items/list" => {
+                            if s.load_during_history && m == "thread/items/list" {
+                                s.threads.get_mut(id).unwrap()["status"]["type"] = json!("idle");
+                            }
                             if m=="thread/turns/list" && p["sortDirection"]=="desc" {
                                 json!({"data":s.threads.get(id).and_then(|t|t["turns"].as_array()).and_then(|a|a.last()).cloned().into_iter().collect::<Vec<_>>(),"nextCursor":null})
                             } else {
@@ -380,7 +384,7 @@ impl Fixture {
 #include <stdlib.h>
 #include <string.h>
 #include <glob.h>
-int main(int argc,char**argv){char path[4096];if(argc>1 && strcmp(argv[1],"app-server")==0){snprintf(path,sizeof(path),"%s/backend-restart",getenv("CODEX_HOME"));FILE*f=fopen(path,"w");fclose(f);return 0;}snprintf(path,sizeof(path),"%s/launch-args",getenv("CODEX_HOME"));FILE*f=fopen(path,"w");int remote=0,permissions=0;for(int i=1;i<argc;i++){fprintf(f,"%s\n",argv[i]);if(strcmp(argv[i],"--remote")==0)remote=1;if(strcmp(argv[i],"--sandbox")==0||strcmp(argv[i],"--ask-for-approval")==0||strcmp(argv[i],"--dangerously-bypass-approvals-and-sandbox")==0||strcmp(argv[i],"--approve-for-me")==0||strcmp(argv[i],"--full-auto")==0||strncmp(argv[i],"approval_policy=",16)==0||strncmp(argv[i],"sandbox_mode=",13)==0)permissions=1;}fclose(f);if(remote&&permissions){fprintf(stderr,"Permission overrides are not supported when resuming a remote task.\n");return 42;}if(argc>2&&strcmp(argv[1],"resume")==0&&strlen(argv[2])==36){glob_t g={0};snprintf(path,sizeof(path),"%s/sessions/**/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);int found=glob(path,0,NULL,&g)==0;globfree(&g);snprintf(path,sizeof(path),"%s/sessions/*/*/*/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);found|=glob(path,0,NULL,&g)==0;globfree(&g);snprintf(path,sizeof(path),"%s/sessions/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);found|=glob(path,0,NULL,&g)==0;globfree(&g);if(!found){fprintf(stderr,"no rollout found for thread id %s\n",argv[2]);return 43;}}if(getenv("SESSIONSATION_FIXTURE_EXIT")){char line[128];while(fgets(line,sizeof(line),stdin)){if(strcmp(line,"/exit\n")==0)return 0;}}for(;;)pause();}"#).unwrap();
+int main(int argc,char**argv){char path[4096];if(argc>3 && strcmp(argv[1],"app-server")==0 && strcmp(argv[2],"daemon")==0 && strcmp(argv[3],"stop")==0){snprintf(path,sizeof(path),"%s/app-server-control/app-server-control.sock",getenv("CODEX_HOME"));unlink(path);return 0;}if(argc>1 && strcmp(argv[1],"app-server")==0){snprintf(path,sizeof(path),"%s/backend-restart",getenv("CODEX_HOME"));FILE*f=fopen(path,"w");fclose(f);return 0;}snprintf(path,sizeof(path),"%s/launch-args",getenv("CODEX_HOME"));FILE*f=fopen(path,"w");int remote=0,permissions=0;for(int i=1;i<argc;i++){fprintf(f,"%s\n",argv[i]);if(strcmp(argv[i],"--remote")==0)remote=1;if(strcmp(argv[i],"--sandbox")==0||strcmp(argv[i],"--ask-for-approval")==0||strcmp(argv[i],"--dangerously-bypass-approvals-and-sandbox")==0||strcmp(argv[i],"--approve-for-me")==0||strcmp(argv[i],"--full-auto")==0||strncmp(argv[i],"approval_policy=",16)==0||strncmp(argv[i],"sandbox_mode=",13)==0)permissions=1;}fclose(f);if(remote&&permissions){fprintf(stderr,"Permission overrides are not supported when resuming a remote task.\n");return 42;}if(argc>2&&strcmp(argv[1],"resume")==0&&strlen(argv[2])==36){glob_t g={0};snprintf(path,sizeof(path),"%s/sessions/**/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);int found=glob(path,0,NULL,&g)==0;globfree(&g);snprintf(path,sizeof(path),"%s/sessions/*/*/*/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);found|=glob(path,0,NULL,&g)==0;globfree(&g);snprintf(path,sizeof(path),"%s/sessions/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);found|=glob(path,0,NULL,&g)==0;globfree(&g);if(!found){fprintf(stderr,"no rollout found for thread id %s\n",argv[2]);return 43;}}if(getenv("SESSIONSATION_FIXTURE_EXIT")){char line[128];while(fgets(line,sizeof(line),stdin)){if(strcmp(line,"/exit\n")==0)return 0;}}for(;;)pause();}"#).unwrap();
         let bin = tmp.path().join("codex");
         assert!(
             Command::new("cc")

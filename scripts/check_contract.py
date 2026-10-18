@@ -16,6 +16,8 @@ def validate(value, definition=None):
 
 fixtures = json.loads((root / "docs/contract/fixtures.json").read_text())
 validate(fixtures["request"], "MessageRequest")
+validate(fixtures["account_deletion"], "AccountDeletion")
+validate(fixtures["account_deletion_preview"], "AccountDeletionPreview")
 validate(fixtures["launch_request"], "LaunchRequest")
 validate(fixtures["launch_receipt"], "LaunchReceipt")
 validate(fixtures["resume_request"], "ResumeRequest")

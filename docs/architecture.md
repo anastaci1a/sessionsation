@@ -12,6 +12,13 @@ session catalog is a separate atomic JSON store; it does not repurpose provider
 conversation IDs or pane IDs. Account snapshots project the existing Codex owner's
 registry into one provider-qualified list. Local removal markers retain recoverable
 membership without modifying the original enrollment or adding a credential writer.
+Actual local account deletion uses a durable CLI worker and the existing owner
+for reservation and final deregistration. Account/queue/lease locks exclude new
+launches and transfers; active processes or loaded conversations block deletion.
+After confirmation, private history storage retains rollouts, native databases
+and page fingerprints outside the credential home. Later explicit-account resume
+uses the existing transfer worker and verifies preserved history, without creating
+a credential owner in that storage.
 
 Provider adapters own enrollment, capabilities, usage, conversation history and
 delivery receipts. Terminal hosts own attachment and process placement. HERDR and

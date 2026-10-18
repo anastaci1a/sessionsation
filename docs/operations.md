@@ -4,12 +4,12 @@ Development uses isolated state. Preserve the original installation, account dat
 and live tmux sessions. Never silently migrate them or start competing supervisors
 against their homes. Restart must retain account, exact conversation and permissions.
 
-The ignored `installed_herdr_new_tab_handoff_retains_exact_account_and_shell` test
-in `tests/external_move/launch.rs` uses a fresh HERDR config/socket, synthetic
+The ignored `installed_herdr_*` tests in `tests/external_move/launch.rs` use a fresh
+HERDR config/socket, synthetic
 accounts/native server and inert compiled provider. Run only in the offline check
 container with the installed HERDR binary mounted at `/usr/local/bin/herdr` and
 `SESSIONSATION_ISOLATED_HOST_TEST=1`, using `cargo test --offline --locked --test
-external_move installed_herdr_new_tab_handoff_retains_exact_account_and_shell --
+external_move installed_herdr_ --
 --ignored --nocapture`. It verifies exact destination, new tab, account/UUID/socket,
 duplicate admission, unchanged origin pane and retained shell; no model turn occurs.
 This backend handoff test is separate from UI popup/visual acceptance.
@@ -63,8 +63,24 @@ unique renames and launches, generation changes, complete watch snapshots,
 non-steering busy operations, durable Submit/Queue idempotency, removal previews,
 active-account refusal, reversible membership and original-service preservation.
 
-Account removal/restore has fixture evidence; no real account membership or
-credentials were changed to test it. Claude remains preparation-only by Ana's
+Account removal/restore and local deletion have isolated fixture evidence; no
+real account membership or credentials were changed to test them. The deletion
+regression verifies asynchronous admission, refusal of an unhosted account-home
+process, explicit interrupted-worker recovery, request-ID deduplication, credential
+removal and stable saved/archived discovery. The additional installed-HERDR fixture
+`installed_herdr_resumes_preserved_paginated_archive_after_account_deletion`
+passed alongside the normal-exit/handoff fixture in 12.16 seconds. It rejects a
+conversation becoming loaded during history verification before stopping its
+metadata server or removing credentials. Explicit recovery then resumes the
+synthetic archived conversation on an explicit destination after local credential
+deletion, with all 70 turns/270 items matching and zero model turns. These are synthetic native servers, not live Codex evidence.
+
+A read-only preview against the existing personal account took 38.57/38.94/39.28 ms;
+`file_scanning:false` in every result. The old deregistration preview measured
+5639.23 ms for its file/revision inventory; deletion's intent preview deliberately
+does not perform that work. The existing production account owner lacks deletion
+support: previews report `owner_upgrade_required:true` and admission remains
+gated. A client artifact update does not replace the root's sole supervisor. Claude remains preparation-only by Ana's
 direction. Live model evidence is limited to the disposable Codex conversation
 above. No new credential owner or deployment of the original switcher is implied.
 

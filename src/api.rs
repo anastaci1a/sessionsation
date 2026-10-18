@@ -214,6 +214,17 @@ pub enum AccountCommand {
         #[arg(long, requires = "confirm")]
         revision: Option<String>,
     },
+    Delete {
+        id: String,
+        #[arg(long, requires = "request_id")]
+        confirm: Option<String>,
+        #[arg(long, requires = "confirm")]
+        request_id: Option<String>,
+    },
+    Deletions {
+        #[arg(long)]
+        request_id: Option<String>,
+    },
     Restore {
         id: String,
     },
@@ -266,6 +277,25 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
 
 async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
     match command {
+        AccountCommand::Delete {
+            id,
+            confirm,
+            request_id,
+        } => {
+            let name = codex_account(&id)?;
+            if let (Some(confirm), Some(request)) = (confirm, request_id) {
+                crate::account_deletion::start(paths, name, &request, &confirm).await
+            } else {
+                crate::account_deletion::preview(paths, name).await
+            }
+        }
+        AccountCommand::Deletions { request_id } => {
+            if let Some(id) = request_id {
+                Ok(json!(crate::account_deletion::status(paths, &id)?))
+            } else {
+                Ok(json!(crate::account_deletion::list(paths)?))
+            }
+        }
         AccountCommand::Limits {
             id,
             short_used,
@@ -362,7 +392,7 @@ pub fn capabilities() -> Value {
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
-         "account_removal":true,"account_limits":true,"new_account_name_max":12,"purge":false,"force_interrupt":false,"steer":false,"cross_provider_conversion":false},
+         "account_deletion":true,"account_removal":true,"account_limits":true,"new_account_name_max":12,"purge":false,"force_interrupt":false,"steer":false,"cross_provider_conversion":false},
         {"id":"claude","implemented":false,"reason":"SETUP_REQUIRED",
          "enrollment":false,"usage":false,"new":false,"resume":false,
          "account_switch":false,"restart":false,"submit":false,"queue":false,
@@ -677,13 +707,19 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             )
             .await?
         }
-        Command::Operations => json!(
-            external::jobs(paths)?
+        Command::Operations => {
+            let mut ops = external::jobs(paths)?
                 .into_iter()
                 .filter(|j| j.non_steering)
                 .map(|j| operation(paths, j))
-                .collect::<Result<Vec<_>>>()?
-        ),
+                .collect::<Result<Vec<_>>>()?;
+            ops.extend(
+                crate::account_deletion::list(paths)?
+                    .into_iter()
+                    .map(|r| json!(r)),
+            );
+            json!(ops)
+        }
         Command::Respond {
             operation: id,
             sequence,
@@ -697,6 +733,11 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             managed_operation(paths, &id)?;
             external::cancel_move(paths, &id)?;
             json!({"id":id,"cancellation_requested":true})
+        }
+        Command::Recover { operation: id }
+            if crate::account_deletion::status(paths, &id).is_ok() =>
+        {
+            crate::account_deletion::recover(paths, &id)?
         }
         Command::Recover { operation: id } => {
             managed_operation(paths, &id)?;

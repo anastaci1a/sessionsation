@@ -32,6 +32,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     #[command(hide = true)]
+    AccountDeleteWorker { request_id: String },
+    #[command(hide = true)]
     LaunchWorker { request_id: String },
     #[command(hide = true)]
     LaunchRun { request_id: String },
@@ -422,6 +424,9 @@ async fn run(cli: Cli) -> Result<()> {
     }
     let paths = Paths::new(cli.data_dir)?;
     match cli.command {
+        Commands::AccountDeleteWorker { request_id } => {
+            sessionsation::account_deletion::worker(&paths, &request_id).await?
+        }
         Commands::ResumeWorker { request_id } => {
             sessionsation::resume::worker(&paths, &request_id).await?
         }

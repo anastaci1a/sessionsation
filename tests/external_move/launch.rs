@@ -57,6 +57,36 @@ struct ActualHost {
     config: PathBuf,
 }
 impl ActualHost {
+    async fn start(f: &Fixture) -> Self {
+        let config = f.tmp.path().join("host-config");
+        let file = f.tmp.path().join("host.toml");
+        fs::write(&file, "[terminal]\ndefault_shell = \"/bin/bash\"\n").unwrap();
+        let log = fs::File::create(f.tmp.path().join("herdr.log")).unwrap();
+        let process = Command::new("herdr")
+            .args(["--session", "fixture", "server"])
+            .env("XDG_CONFIG_HOME", &config)
+            .env("HERDR_CONFIG_PATH", &file)
+            .env("SESSIONSATION_FIXTURE_EXIT", "1")
+            .stdin(Stdio::null())
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .unwrap();
+        let host = Self { process, config };
+        let socket = host.config.join("herdr/sessions/fixture/herdr.sock");
+        for _ in 0..100 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            socket.exists(),
+            "{}",
+            fs::read_to_string(f.tmp.path().join("herdr.log")).unwrap()
+        );
+        host
+    }
     fn call(&self, args: &[&str]) -> Value {
         let out = Command::new("herdr")
             .args(["--session", "fixture"])
@@ -98,33 +128,8 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
         Ok("1")
     );
     let f = Fixture::new().await;
-    let config = f.tmp.path().join("host-config");
-    let file = f.tmp.path().join("host.toml");
-    fs::write(&file, "[terminal]\ndefault_shell = \"/bin/bash\"\n").unwrap();
-    let log = fs::File::create(f.tmp.path().join("herdr.log")).unwrap();
-    let process = Command::new("herdr")
-        .args(["--session", "fixture", "server"])
-        .env("XDG_CONFIG_HOME", &config)
-        .env("HERDR_CONFIG_PATH", &file)
-        .env("SESSIONSATION_FIXTURE_EXIT", "1")
-        .stdin(Stdio::null())
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .unwrap();
-    let host = ActualHost { process, config };
+    let host = ActualHost::start(&f).await;
     let socket = host.config.join("herdr/sessions/fixture/herdr.sock");
-    for _ in 0..100 {
-        if socket.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        socket.exists(),
-        "{}",
-        fs::read_to_string(f.tmp.path().join("herdr.log")).unwrap()
-    );
     let original = host.call(&[
         "workspace",
         "create",
@@ -385,6 +390,206 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
         "installed HERDR: exact workspace/new tab/account/UUID/socket, no duplicate launch, origin unchanged, retained shell; model turns=0"
     );
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires isolated HERDR binary; see docs/operations.md"]
+async fn installed_herdr_resumes_preserved_paginated_archive_after_account_deletion() {
+    assert_eq!(
+        std::env::var("SESSIONSATION_ISOLATED_HOST_TEST").as_deref(),
+        Ok("1")
+    );
+    let f = Fixture::new().await;
+    let home = f.paths.account("personal").unwrap();
+    let original = history(&home, f.tmp.path(), ID);
+    f.a.lock()
+        .unwrap()
+        .threads
+        .insert(ID.into(), thread_value(&original, ID, "notLoaded"));
+    paginated(&f, ID);
+    let bytes = fs::read(&original).unwrap();
+    let archived = home
+        .join("archived_sessions")
+        .join(original.file_name().unwrap());
+    fs::create_dir_all(archived.parent().unwrap()).unwrap();
+    fs::rename(&original, &archived).unwrap();
+    f.a.lock().unwrap().threads.get_mut(ID).unwrap()["path"] = json!(archived);
+    f.a.lock().unwrap().load_during_history = true;
+    // Give the discovered archive a stable identity before its account is deleted.
+    let before: Value = serde_json::from_slice(&api(&f, &["state"], None).stdout).unwrap();
+    // Archived entries are normally a separate inventory. Deletion makes them
+    // discoverable as retained saved sessions under the same conversation identity.
+    let deletion = uuid::Uuid::new_v4().to_string();
+    let admitted = api(
+        &f,
+        &[
+            "account",
+            "delete",
+            "codex:personal",
+            "--confirm",
+            "codex:personal",
+            "--request-id",
+            &deletion,
+        ],
+        None,
+    );
+    assert!(
+        admitted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&admitted.stderr)
+    );
+    // Simulate a conversation becoming loaded during slow native pagination.
+    // The fresh pre-stop check must retain its metadata server and credentials.
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        let r = sessionsation::account_deletion::status(&f.paths, &deletion).unwrap();
+        if r.phase == "failed" {
+            assert!(
+                r.detail.contains("ACCOUNT_HAS_LOADED_CONVERSATIONS"),
+                "{}",
+                r.detail
+            );
+            break;
+        }
+        assert!(Instant::now() < until, "{}", r.phase);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert!(home.join("auth.json").exists());
+    assert!(sessionsation::control::available(&home));
+    {
+        let mut a = f.a.lock().unwrap();
+        a.load_during_history = false;
+        a.threads.get_mut(ID).unwrap()["status"]["type"] = json!("notLoaded");
+    }
+    let lock = sessionsation::paths::lock_file(
+        &f.paths
+            .root
+            .join("account-deletions")
+            .join(format!("{deletion}.worker.lock")),
+    )
+    .unwrap();
+    for _ in 0..100 {
+        if fs2::FileExt::try_lock_exclusive(&lock).is_ok() {
+            fs2::FileExt::unlock(&lock).unwrap();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let recovered = api(&f, &["recover", &deletion], None);
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    let until = Instant::now() + Duration::from_secs(15);
+    let receipt = loop {
+        let r = sessionsation::account_deletion::status(&f.paths, &deletion).unwrap();
+        if r.phase == "complete" {
+            break r;
+        }
+        assert!(
+            r.phase != "failed" && Instant::now() < until,
+            "{}: {}",
+            r.phase,
+            r.detail
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(!home.exists());
+    assert!(!receipt.history_home.join("auth.json").exists());
+    let host = ActualHost::start(&f).await;
+    let socket = host.config.join("herdr/sessions/fixture/herdr.sock");
+    let created = host.call(&[
+        "workspace",
+        "create",
+        "--label",
+        "Retained",
+        "--cwd",
+        f.tmp.path().to_str().unwrap(),
+    ]);
+    let workspace = created["workspace"]["workspace_id"].as_str().unwrap();
+    let state: Value = serde_json::from_slice(&api(&f, &["state"], None).stdout).unwrap();
+    let saved = state["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap();
+    if let Some(old) = before["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+    {
+        assert_eq!(saved["id"], old["id"]);
+    }
+    let request = uuid::Uuid::new_v4().to_string();
+    let resume = json!({"version":1,"request_id":request,"session_id":saved["id"],"expected_generation":saved["generation"],"account_id":"codex:work","name":"Retained archive","host":{"session":"fixture","socket":socket},"space":{"kind":"existing","id":workspace}});
+    let out = api(&f, &["resume-launch", "start"], Some(&resume));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let until = Instant::now() + Duration::from_secs(30);
+    let running = loop {
+        let out: Value = serde_json::from_slice(
+            &api(
+                &f,
+                &["resume-launch", "status", "--request-id", &request],
+                None,
+            )
+            .stdout,
+        )
+        .unwrap();
+        let r = &out["result"];
+        if r["phase"] == "running" {
+            break r.clone();
+        }
+        assert!(
+            !matches!(r["phase"].as_str(), Some("failed" | "uncertain")) && Instant::now() < until,
+            "{r}"
+        );
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    };
+    assert_eq!(
+        fs::read(find_rollout(&f.paths.account("work").unwrap(), ID).unwrap()).unwrap(),
+        bytes
+    );
+    assert_eq!(
+        fs::read(
+            receipt
+                .history_home
+                .join("archived_sessions")
+                .join(archived.file_name().unwrap())
+        )
+        .unwrap(),
+        bytes
+    );
+    let jobs = f.invoke(&["moves"]);
+    let job = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["id"] == request)
+        .unwrap();
+    assert_eq!(job["history_checks"][0]["turns"], 70);
+    assert_eq!(job["history_checks"][0]["items"], 270);
+    assert_eq!(running["conversation_id"], ID);
+    for server in [&f.a, &f.b] {
+        assert!(
+            !server
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|(m, _)| m == "turn/start" || m == "turn/steer")
+        );
+    }
+    host.call(&["pane", "run", running["pane_id"].as_str().unwrap(), "/exit"]);
+    println!(
+        "isolated HERDR: local credentials deleted; archived paginated conversation resumed on explicit destination with matching 70 turns/270 items; model turns=0"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn new_popup_request_is_staged_named_and_never_replayed() {
     let f = Fixture::new().await;

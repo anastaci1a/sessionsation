@@ -313,7 +313,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
         Ok(())
     })?;
     let account = r.account_id.strip_prefix("codex:").unwrap();
-    if account != source.account {
+    if account != source.account || paths.account(account)? != source.home {
         // Bind the transfer's durable job ID before enqueue; a lost acknowledgment
         // is reconciled by identity, never by starting another transfer.
         change(paths, id, |r| {

@@ -24,3 +24,5 @@ mod terminal;
 
 pub mod launch;
 pub mod resume;
+
+pub mod account_deletion;

@@ -1225,6 +1225,128 @@
           ]
         }
       }
+    },
+    "AccountDeletion": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^codex:"
+        },
+        "kind": {
+          "const": "account_delete"
+        },
+        "phase": {
+          "enum": [
+            "admitted",
+            "checking_active",
+            "disabling_account",
+            "stopping_metadata",
+            "preserving_history",
+            "deleting_local_data",
+            "complete",
+            "failed"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "integer"
+        },
+        "history_home": {
+          "type": "string"
+        },
+        "history_preserved": {
+          "type": "boolean"
+        },
+        "can_cancel": {
+          "const": false
+        },
+        "source_inode": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "account_id",
+        "kind",
+        "phase",
+        "detail",
+        "updated_at",
+        "history_home",
+        "history_preserved",
+        "can_cancel"
+      ],
+      "additionalProperties": true
+    },
+    "AccountDeletionPreview": {
+      "type": "object",
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "pattern": "^codex:"
+        },
+        "can_delete": {
+          "type": "boolean"
+        },
+        "owner_upgrade_required": {
+          "type": "boolean"
+        },
+        "affected_sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "running": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "running"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "deletes_local_credentials": {
+          "const": true
+        },
+        "upstream_account_unchanged": {
+          "const": true
+        },
+        "file_scanning": {
+          "const": false
+        },
+        "preserves_history": {
+          "const": true
+        }
+      },
+      "required": [
+        "account_id",
+        "can_delete",
+        "owner_upgrade_required",
+        "affected_sessions",
+        "preserves_history",
+        "deletes_local_credentials",
+        "upstream_account_unchanged",
+        "file_scanning"
+      ],
+      "additionalProperties": true
     }
   }
 }

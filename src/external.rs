@@ -742,6 +742,25 @@ pub fn host_instances(paths: &Paths) -> Result<Vec<Instance>> {
     result.extend(hosting::instances(paths)?);
     Ok(result)
 }
+pub(crate) fn home_has_processes(home: &Path, clients_only: bool) -> Result<bool> {
+    for e in fs::read_dir("/proc")? {
+        let e = e?;
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if clients_only
+            && process_args(pid).is_ok_and(|args| args.iter().any(|a| a == "app-server"))
+        {
+            continue;
+        }
+        if process_info(pid).is_ok_and(|i| !matches!(i.state, 'Z' | 'X'))
+            && process_home(pid).is_ok_and(|h| h == home)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 pub fn all_instances(paths: &Paths) -> Result<Vec<Instance>> {
     inventory(paths, true)
 }
@@ -809,6 +828,8 @@ fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Resu
             }
         }
     }
+    let preserved = crate::account_deletion::preserved_homes(paths)?;
+    homes.extend(preserved.iter().map(|(_, h)| h.clone()));
     if archived {
         result.clear();
     }
@@ -825,6 +846,9 @@ fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Resu
             }),
             &mut files,
         )?;
+        if !archived && preserved.iter().any(|(_, h)| *h == home) {
+            collect_rollouts(&home.join("archived_sessions"), &mut files)?;
+        }
         for rollout in files {
             let Ok(meta) = session_meta(&rollout) else {
                 continue;
@@ -946,6 +970,11 @@ fn account_for_home(paths: &Paths, home: &Path) -> String {
     let Ok(home) = fs::canonicalize(home) else {
         return "unknown".into();
     };
+    if let Ok(homes) = crate::account_deletion::preserved_homes(paths)
+        && let Some((name, _)) = homes.into_iter().find(|(_, h)| *h == home)
+    {
+        return name;
+    }
     let Ok(accounts) = fs::read_dir(paths.root.join("accounts")) else {
         return "external".into();
     };
@@ -2009,6 +2038,15 @@ fn descendants(home: &Path, root: &str) -> Result<Vec<PathBuf>> {
         Ok(())
     }
     walk(&home.join("sessions"), &mut files)?;
+    // A deleted account's private vault retains archived conversations too.
+    // Its fingerprints are revalidated before transfer; no provider owner or
+    // credentials are recreated in the vault.
+    if home
+        .parent()
+        .is_some_and(|p| p.join("history-checks.json").is_file())
+    {
+        walk(&home.join("archived_sessions"), &mut files)?;
+    }
     let mut ids = std::collections::BTreeSet::from([root.to_owned()]);
     let mut selected = Vec::new();
     loop {
@@ -2200,6 +2238,8 @@ pub mod autostart;
 pub mod catalog;
 pub mod deletion;
 mod history;
+pub(crate) use history::preserve_history_checks;
+pub(crate) use history::verify_preserved_history;
 pub mod hosting;
 mod movement;
 pub mod opening;
@@ -2450,6 +2490,18 @@ pub(crate) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preserved_archive_is_a_resume_source_without_recreating_account_credentials() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("vault/home");
+        fs::create_dir_all(home.join("archived_sessions")).unwrap();
+        let rollout = home.join("archived_sessions/saved.jsonl");
+        fs::write(&rollout, format!("{}\n",json!({"type":"session_meta","payload":{"id":"saved","cwd":d.path(),"source":"cli"}}))).unwrap();
+        assert!(descendants(&home, "saved").is_err());
+        fs::write(home.parent().unwrap().join("history-checks.json"), "[]").unwrap();
+        assert_eq!(descendants(&home, "saved").unwrap(), vec![rollout]);
+        assert!(!home.join("auth.json").exists());
+    }
     #[test]
     fn activity_recovers_after_old_damage_but_never_trusts_a_damaged_tail() {
         let tmp = tempfile::tempdir().unwrap();

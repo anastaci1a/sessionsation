@@ -59,7 +59,7 @@ supervisor, alter credentials, enable automation or resolve an unknown plan tier
 Concurrent edits use the supervisor's serialized last-write behavior. After an
 uncertain response, read the limits before deciding whether another save is needed.
 
-Removal previews affected catalog sessions, active/loaded conversations, pending
+Deregistration (`account remove`) previews affected catalog sessions, active/loaded conversations, pending
 operations and stored-data counts/paths. It requires exact ID and fresh revision:
 
 ```sh
@@ -72,8 +72,37 @@ Removal refuses active/loaded conversations or pending lifecycle jobs. Stop or
 move them explicitly first. It unregisters the account from sessionsation selection
 without disabling the original provider enrollment, stopping agents or deleting
 credentials/history. The original switcher remains independent. Restore reverses
-the membership change. Permanent credential/local-data purging is unsupported;
-it must never be inferred from removal. No upstream provider account is deleted.
+the membership change. No upstream provider account is deleted.
+
+Actual local account deletion is separate and never deletes saved conversations:
+
+```sh
+sessionsation api account delete codex:personal
+sessionsation api account delete codex:personal --confirm codex:personal --request-id NEW-UUID
+sessionsation api account deletions --request-id ORIGINAL-UUID
+sessionsation api operations
+sessionsation api recover ORIGINAL-UUID
+```
+
+The first command is a fast intent preview: no account file scanning. Confirmation
+admits a durable background operation. Only then does the CLI check active/loaded
+sessions and pending work, reserve the account through its sole owner, preserve
+saved/archived rollouts and native history metadata in private
+`preserved-conversations/REQUEST-ID/home`, and delete the remaining account files
+and credentials. Active processes block deletion; it never stops agents to proceed.
+The upstream provider account is unchanged. Preserved histories remain discoverable
+with their stable session IDs; resume requires an explicit enrolled destination
+account. Paginated history requires native verification before credentials can be
+deleted; unavailable verification blocks deletion while retaining data.
+
+The account owner must advertise `account_deletion`; an older running owner returns
+`owner_upgrade_required:true` in the preview and refuses admission with
+`OWNER_UPGRADE_REQUIRED`. Updating a CLI client alone does not replace that owner.
+Repeat the same request ID to inspect its original admission, never to resend.
+Inspect a failed/interrupted operation before explicitly recovering its original
+ID. A running worker rejects recovery. Deletion cannot be cancelled once admitted;
+closing a progress viewer only detaches it. Failed operations retain original or
+preserved histories and are never automatically retried.
 
 ## Terminal hosting
 

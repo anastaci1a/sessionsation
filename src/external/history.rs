@@ -14,6 +14,133 @@ pub struct HistoryCheck {
     pub digest: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct PreservedCheck {
+    relative: PathBuf,
+    digest: String,
+    native: Option<HistoryCheck>,
+}
+fn rollout_digest(path: &Path) -> Result<String> {
+    let mut hash = Sha256::new();
+    let mut file = File::open(path)?;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+fn proof_path(vault: &Path) -> Result<PathBuf> {
+    Ok(vault
+        .parent()
+        .context("INVALID_HISTORY_VAULT")?
+        .join("history-checks.json"))
+}
+fn preserved_checks(vault: &Path, files: &[PathBuf]) -> Result<Vec<HistoryCheck>> {
+    let checks: Vec<PreservedCheck> = serde_json::from_slice(&fs::read(proof_path(vault)?)?)?;
+    let mut native = vec![];
+    for file in files {
+        let relative = file.strip_prefix(vault)?;
+        let check = checks
+            .iter()
+            .find(|c| c.relative == relative)
+            .context("PRESERVED_HISTORY_PROOF_MISSING")?;
+        ensure!(
+            rollout_digest(file)? == check.digest,
+            "PRESERVED_HISTORY_CHANGED"
+        );
+        if let Some(check) = &check.native {
+            native.push(check.clone());
+        }
+    }
+    Ok(native)
+}
+pub(crate) fn verify_preserved_history(vault: &Path) -> Result<()> {
+    let checks: Vec<PreservedCheck> = serde_json::from_slice(&fs::read(proof_path(vault)?)?)?;
+    for check in checks {
+        ensure!(
+            check
+                .relative
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+                && (check.relative.starts_with("sessions")
+                    || check.relative.starts_with("archived_sessions")),
+            "INVALID_HISTORY_PROOF_PATH"
+        );
+        let file = vault.join(&check.relative);
+        ensure!(
+            !fs::symlink_metadata(&file)?.file_type().is_symlink()
+                && rollout_digest(&file)? == check.digest,
+            "PRESERVED_HISTORY_CHANGED"
+        );
+    }
+    Ok(())
+}
+/// Run only after confirmation and account reservation. Preserve native page
+/// fingerprints before removing the account's idle server or credentials.
+pub(crate) async fn preserve_history_checks(home: &Path, vault: &Path) -> Result<()> {
+    let mut files = vec![];
+    collect_rollouts(&home.join("sessions"), &mut files)?;
+    collect_rollouts(&home.join("archived_sessions"), &mut files)?;
+    let proof = proof_path(vault)?;
+    if proof.exists() {
+        let checks: Vec<PreservedCheck> = serde_json::from_slice(&fs::read(proof)?)?;
+        for file in files {
+            let relative = file.strip_prefix(home)?;
+            ensure!(
+                checks.iter().any(|c| c.relative == relative
+                    && rollout_digest(&file).ok().as_ref() == Some(&c.digest)),
+                "PRESERVED_HISTORY_CHANGED"
+            );
+        }
+        return Ok(());
+    }
+    let mut control = if crate::control::available(home) {
+        Some(Control::connect(home).await?)
+    } else {
+        None
+    };
+    let mut checks = vec![];
+    for file in files {
+        let meta = session_meta(&file)?;
+        let id = meta["id"].as_str().context("missing history identity")?;
+        let digest = rollout_digest(&file)?;
+        let paginated = if let Some(c) = control.as_mut() {
+            c.thread(id, false).await?["historyMode"] == "paginated"
+                || meta["history_mode"] == "paginated"
+        } else {
+            meta["history_mode"] == "paginated"
+        };
+        let native = if paginated {
+            Some(
+                fingerprint(
+                    control
+                        .as_mut()
+                        .context("PAGINATED_HISTORY_SERVER_REQUIRED")?,
+                    id,
+                    1,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        ensure!(
+            digest == rollout_digest(&file)?,
+            "HISTORY_CHANGED_DURING_VERIFICATION"
+        );
+        checks.push(PreservedCheck {
+            relative: file.strip_prefix(home)?.into(),
+            digest,
+            native,
+        });
+    }
+    atomic_write(&proof, &serde_json::to_vec(&checks)?)
+}
+
 fn canonical_entry(entry: &Value, items: bool, version: u8) -> Value {
     let mut entry = entry.clone();
     if items && version == 1 {
@@ -78,6 +205,13 @@ async fn fingerprint(control: &mut Control, id: &str, version: u8) -> Result<His
 }
 
 pub(super) async fn capture(paths: &Paths, job: &mut Job, files: &[PathBuf]) -> Result<()> {
+    if crate::account_deletion::preserved_homes(paths)?
+        .iter()
+        .any(|(_, home)| *home == job.source.home)
+    {
+        job.history_checks = preserved_checks(&job.source.home, files)?;
+        return save_job(paths, job);
+    }
     let mut control = if crate::control::available(&job.source.home) {
         Some(Control::connect(&job.source.home).await?)
     } else {
@@ -172,6 +306,62 @@ pub(super) async fn prepare_children(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn deletion_reuses_original_native_proofs_and_rejects_changed_rollouts() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("account");
+        let vault = d.path().join("preserved/home");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let relative = Path::new("sessions/saved.jsonl");
+        let file = home.join(relative);
+        fs::write(
+            &file,
+            format!(
+                "{}\n",
+                json!({"type":"session_meta","payload":{"id":"test","history_mode":"paginated"}})
+            ),
+        )
+        .unwrap();
+        assert!(
+            preserve_history_checks(&home, &vault)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("PAGINATED_HISTORY_SERVER_REQUIRED")
+        );
+        let native = HistoryCheck {
+            version: 1,
+            thread_id: "test".into(),
+            turns: 2,
+            items: 5,
+            digest: "native-page-fingerprint".into(),
+        };
+        let proof = vec![PreservedCheck {
+            relative: relative.into(),
+            digest: rollout_digest(&file).unwrap(),
+            native: Some(native.clone()),
+        }];
+        atomic_write(
+            &proof_path(&vault).unwrap(),
+            &serde_json::to_vec(&proof).unwrap(),
+        )
+        .unwrap();
+        // Explicit recovery reuses a previously verified proof without credentials
+        // or another native server, even after the original metadata owner stopped.
+        preserve_history_checks(&home, &vault).await.unwrap();
+        fs::create_dir_all(vault.join("sessions")).unwrap();
+        let saved = vault.join(relative);
+        fs::rename(&file, &saved).unwrap();
+        verify_preserved_history(&vault).unwrap();
+        assert_eq!(
+            preserved_checks(&vault, std::slice::from_ref(&saved)).unwrap(),
+            vec![native]
+        );
+        fs::write(&saved, "changed").unwrap();
+        assert!(verify_preserved_history(&vault).is_err());
+        assert!(preserved_checks(&vault, &[saved]).is_err());
+    }
 
     #[test]
     fn history_normalization_only_excludes_item_envelope_timings() {
