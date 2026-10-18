@@ -60,16 +60,42 @@ fn files(root: &Path, path: &Path, output: &mut Vec<Value>) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let mut entries = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(|e| e.file_name());
-    for e in entries {
-        let m = fs::symlink_metadata(e.path())?;
-        if m.is_dir() && !m.file_type().is_symlink() {
-            files(root, &e.path(), output)?;
-        } else {
-            output.push(json!({"path":e.path().strip_prefix(root)?,"bytes":m.len(),"inode":m.ino(),"modified":m.mtime(),"modified_ns":m.mtime_nsec()}));
+    fn collect(path: &Path, paths: &mut Vec<std::path::PathBuf>) -> Result<()> {
+        let mut entries = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            // readdir supplies the entry type; never resolve a symlink target.
+            if entry.file_type()?.is_dir() {
+                collect(&entry.path(), paths)?;
+            } else {
+                paths.push(entry.path());
+            }
         }
+        Ok(())
     }
+    let mut entries = vec![];
+    collect(path, &mut entries)?;
+    // Unraid metadata calls have substantial per-file latency. Bound concurrency
+    // to four reads and preserve the original deterministic DFS fingerprint order.
+    let chunk = entries.len().div_ceil(4).max(1);
+    let groups = std::thread::scope(|scope| {
+        let workers:Vec<_>=entries.chunks(chunk).map(|entries|scope.spawn(move||->Result<Vec<Value>>{
+            entries.iter().map(|path|{
+                let m=fs::symlink_metadata(path)?;
+                ensure!(!m.is_dir(),"ACCOUNT_DATA_CHANGED");
+                Ok(json!({"path":path.strip_prefix(root)?,"bytes":m.len(),"inode":m.ino(),"modified":m.mtime(),"modified_ns":m.mtime_nsec()}))
+            }).collect()
+        })).collect();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("account metadata worker failed"))?
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+    output.extend(groups.into_iter().flatten());
     Ok(())
 }
 
@@ -179,6 +205,34 @@ pub fn restore(paths: &Paths, name: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parallel_metadata_preserves_order_hidden_files_and_symlinks_without_following() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("home");
+        fs::create_dir_all(root.join("a/sub")).unwrap();
+        fs::write(root.join("a/sub/history.jsonl"), b"history").unwrap();
+        fs::write(root.join("a.txt"), b"data").unwrap();
+        fs::write(root.join(".hidden"), b"private").unwrap();
+        let outside = d.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("must-not-scan"), b"secret").unwrap();
+        symlink(&outside, root.join("linked")).unwrap();
+        let mut first = vec![];
+        files(&root, &root, &mut first).unwrap();
+        let mut again = vec![];
+        files(&root, &root, &mut again).unwrap();
+        assert_eq!(first, again);
+        let paths: Vec<_> = first.iter().map(|v| v["path"].as_str().unwrap()).collect();
+        assert_eq!(
+            paths,
+            vec![".hidden", "a/sub/history.jsonl", "a.txt", "linked"]
+        );
+        fs::write(root.join("a.txt"), b"changed").unwrap();
+        let mut changed = vec![];
+        files(&root, &root, &mut changed).unwrap();
+        assert_ne!(first, changed);
+    }
     #[test]
     fn concurrent_launches_share_membership_but_exclude_removal() {
         let d = tempfile::tempdir().unwrap();

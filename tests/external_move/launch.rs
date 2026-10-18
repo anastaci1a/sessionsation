@@ -69,6 +69,9 @@ impl ActualHost {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
+        if out.stdout.is_empty() && args.starts_with(&["pane", "run"]) {
+            return json!({"admitted":true});
+        }
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert!(v.get("error").is_none(), "{v}");
         v.get("result").unwrap_or(&v).clone()
@@ -103,6 +106,7 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
         .args(["--session", "fixture", "server"])
         .env("XDG_CONFIG_HOME", &config)
         .env("HERDR_CONFIG_PATH", &file)
+        .env("SESSIONSATION_FIXTURE_EXIT", "1")
         .stdin(Stdio::null())
         .stdout(log.try_clone().unwrap())
         .stderr(log)
@@ -202,8 +206,15 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
         .expect("inert provider foreground")["pid"]
         .as_i64()
         .unwrap();
-    // Stop only the synthetic provider owned by this test, keeping the host shell.
-    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
+    // Normal /exit: no lifecycle Stop call and no signal. History must stay saved.
+    host.call(&["pane", "run", pane, "/exit"]);
+    for _ in 0..50 {
+        if unsafe { libc::kill(pid as i32, 0) } != 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_ne!(unsafe { libc::kill(pid as i32, 0) }, 0);
     tokio::time::sleep(Duration::from_millis(200)).await;
     let after = host.call(&["pane", "process-info", "--pane", pane]);
     assert_eq!(after["process_info"]["shell_pid"], shell_pid);
@@ -230,6 +241,9 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             .iter()
             .find(|s| s["id"] == id)
             .unwrap();
+        assert_eq!(saved["availability"], "saved");
+        assert!(saved["attachment"].is_null());
+        assert_eq!(saved["conversation_id"], receipt["conversation_id"]);
         let resume = json!({"version":1,"request_id":uuid::Uuid::new_v4().to_string(),"session_id":id,
             "expected_generation":saved["generation"],"account_id":format!("codex:{account}"),"name":name,
             "host":{"session":"fixture","socket":socket},"space":{"kind":"existing","id":workspace}});

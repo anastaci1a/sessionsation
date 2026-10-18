@@ -287,3 +287,14 @@ only detaches its observer. List/status reconcile records without resubmitting.
 Existing `api resume`, launcher plans and message receipts retain their semantics.
 Once a Resume receipt reaches `running`, it records the completed handoff. A later
 Stop does not regress that receipt; read the session catalog for current liveness.
+
+Session snapshots optionally expose `activity`, `last_accessed` and `active_since`
+(Unix seconds, null when unavailable). `active_since` measures the current verified
+attachment's process lifetime, not conversation age or cumulative model work. Saved
+conversations have no live attachment time. Normal provider exit (including Codex
+`/exit`) clears runtime attachment on discovery while retaining stable identity,
+conversation files, names and resume availability.
+
+Account removal previews scan metadata with four bounded readers and deterministic
+ordering. Their revision and fresh-confirmation checks still include the same
+stored-file metadata; no cached or partial inventory grants consent.

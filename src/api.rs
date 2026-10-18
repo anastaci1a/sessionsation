@@ -371,7 +371,7 @@ pub fn capabilities() -> Value {
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true},
-    "session_details":true,"detach_stops_agent":false})
+    "session_details":true,"session_timing":true,"detach_stops_agent":false})
 }
 
 fn public_session(s: catalog::Session) -> Value {
@@ -387,6 +387,24 @@ async fn inventory(paths: &Paths) -> Result<Vec<external::Instance>> {
     let items = external::discover(paths).await?;
     catalog::reconcile(paths, &items)?;
     Ok(items)
+}
+
+fn attachment_started_at(now: i64, uptime: f64, ticks: u64, hz: i64) -> Option<i64> {
+    if hz <= 0 || ticks == 0 || !uptime.is_finite() {
+        return None;
+    }
+    let age = uptime - ticks as f64 / hz as f64;
+    (age >= 0. && age <= now as f64).then(|| now - age.floor() as i64)
+}
+fn boot_clock() -> Option<(f64, i64)> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // Linux's process-start ticks and CLOCK_BOOTTIME share the boot origin.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut time) };
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    (result == 0 && hz > 0).then_some((time.tv_sec as f64 + time.tv_nsec as f64 / 1e9, hz))
 }
 
 pub async fn state(paths: &Paths) -> Result<Value> {
@@ -415,6 +433,8 @@ pub async fn state(paths: &Paths) -> Result<Value> {
         Err(_) => (vec![], "uninitialized"),
     };
     let accounts = project_accounts(paths, accounts)?;
+    let clock = boot_clock();
+    let now = daemon::now();
     let sessions=catalog::list(paths)?.into_iter().map(|s| {
         let source=items.iter().find(|i|i.thread_id==s.conversation_id && i.account==s.account);
         let known=!matches!(s.account.as_str(),"external"|"unknown");
@@ -422,6 +442,9 @@ pub async fn state(paths: &Paths) -> Result<Value> {
         let running=source.is_some_and(|i|!i.inactive);
         let saved=source.is_some_and(|i|i.inactive && i.block_reason.is_none() && i.move_id.is_none());
         value["availability"]=json!(if running {"running"}else if saved {"saved"}else{"unavailable"});
+        value["activity"]=source.map(|s|json!(s.activity)).unwrap_or(Value::Null);
+        value["last_accessed"]=source.and_then(|s|s.last_accessed).map_or(Value::Null,|n|json!(n));
+        value["active_since"]=json!(source.filter(|s|!s.inactive).and_then(|s|clock.and_then(|(uptime,hz)|attachment_started_at(now,uptime,s.start_time,hz))));
         let unambiguous=items.iter().filter(|i|!i.inactive && i.thread_id==value["conversation_id"]).count()<=1;
         value["capabilities"]=json!({"rename":true,"resume":known && saved,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous});
         value
@@ -764,6 +787,13 @@ pub fn account_prefill(a: &Value, now: i64, stale_seconds: u64) -> Value {
 #[cfg(test)]
 mod prefill_tests {
     use super::*;
+    #[test]
+    fn session_elapsed_uses_current_attachment_clock_and_rejects_unknown_ticks() {
+        assert_eq!(attachment_started_at(1000, 120., 6000, 100), Some(940));
+        assert_eq!(attachment_started_at(1000, 120., 0, 100), None);
+        assert_eq!(attachment_started_at(1000, 120., 13000, 100), None);
+        assert_eq!(attachment_started_at(1000, 120., 6000, 0), None);
+    }
     #[test]
     fn stale_thresholds_and_credits_do_not_auto_select() {
         let mut a = json!({"selectable":true,"usage_fresh":true,"switch_thresholds":{"needs_plan_review":false,"short_percent":90.,"weekly_percent":90.},"usage":{"observed_at":100,"short":{"used_percent":20.,"resets_at":500},"weekly":{"used_percent":20.,"resets_at":500}}});
