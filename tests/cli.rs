@@ -367,7 +367,7 @@ async fn account_delete_is_async_preserves_conversations_and_removes_only_dispos
         },
     )
     .unwrap();
-    let _owner = Process(
+    let mut owner = Process(
         Command::new(binary())
             .arg("--data-dir")
             .arg(&paths.root)
@@ -378,10 +378,19 @@ async fn account_delete_is_async_preserves_conversations_and_removes_only_dispos
             .spawn()
             .unwrap(),
     );
-    for _ in 0..100 {
+    let readiness_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
         if daemon::call(&paths, "status", json!({})).await.is_ok() {
             break;
         }
+        assert!(
+            owner.0.try_wait().unwrap().is_none(),
+            "disposable account owner exited before readiness"
+        );
+        assert!(
+            std::time::Instant::now() < readiness_deadline,
+            "disposable account owner did not become ready"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     daemon::call(&paths, "account/add", json!({"name":"disposable"}))
