@@ -73,10 +73,14 @@ above. No new credential owner or deployment of the original switcher is implied
 [Verification manifest](verification.json) records the exact source commit, build
 artifact path/hash, toolchain/image and passing test counts. The original e4d7833
 debug binary remains a development artifact; verify its hash
-before acceptance because rebuilding can replace it. The UI now selects a separate
-launcher-only repair build, documented in the
+before acceptance because rebuilding can replace it. The UI selects a separate
+immutable popup backend, documented with its source, path/hash, tests and rollback in the
 [UI deployment manifest](https://github.com/anastaci1a/sessionsation-ui/blob/main/docs/deployment.json). This does not
 promote or alter the staged Agent DM review candidate.
+The [popup evidence](https://github.com/anastaci1a/sessionsation-ui/blob/main/docs/popup-evidence.json)
+distinguishes UI/PTY/installed-HERDR fixtures, exact test sources and zero-model
+acceptance. Its additive account limits and saved-session Resume contract do not
+change Submit/Queue semantics or adopt legacy receipts.
 The original installed `codex-switcher` binary has not been replaced.
 
 Adapters must receive an explicit data root from the operator. For existing Ana
