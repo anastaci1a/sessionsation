@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     os::unix::{ffi::OsStrExt, fs::OpenOptionsExt, process::CommandExt},
     path::{Path, PathBuf},
@@ -134,8 +134,38 @@ fn rollout_activity(path: &Path) -> Activity {
     let Ok(file) = File::open(path) else {
         return Activity::Unknown;
     };
+    activity_from_tail(file)
+}
+const ACTIVITY_TAIL_BYTES: u64 = 64 * 1024;
+fn activity_from_tail(mut reader: impl Read + Seek) -> Activity {
+    let Ok(length) = reader.seek(SeekFrom::End(0)) else {
+        return Activity::Unknown;
+    };
+    let start = length.saturating_sub(ACTIVITY_TAIL_BYTES);
+    if reader.seek(SeekFrom::Start(start)).is_err() {
+        return Activity::Unknown;
+    }
+    let mut bytes = Vec::new();
+    if reader
+        .take(ACTIVITY_TAIL_BYTES)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return Activity::Unknown;
+    }
+    // The window may start inside JSON or a UTF-8 sequence. Discard that first
+    // partial record. If no activity event remains, stay unknown rather than
+    // trusting an old idle event outside the bounded window.
+    let tail = if start > 0 {
+        let Some(end) = bytes.iter().position(|b| *b == b'\n') else {
+            return Activity::Unknown;
+        };
+        &bytes[end + 1..]
+    } else {
+        &bytes[..]
+    };
     let mut activity = Activity::Unknown;
-    for line in BufReader::new(file).lines() {
+    for line in BufReader::new(tail).lines() {
         let Ok(value) = line
             .map_err(anyhow::Error::from)
             .and_then(|line| Ok(serde_json::from_str::<Value>(&line)?))
@@ -2324,6 +2354,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rollout_activity(&file), Activity::Idle);
+    }
+    #[test]
+    fn activity_reads_a_bounded_tail_and_never_infers_idle_from_an_old_prefix() {
+        use std::{cell::Cell, io::Cursor, rc::Rc};
+        struct Counted {
+            inner: Cursor<Vec<u8>>,
+            count: Rc<Cell<usize>>,
+        }
+        impl Read for Counted {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.inner.read(buf)?;
+                self.count.set(self.count.get() + n);
+                Ok(n)
+            }
+        }
+        impl Seek for Counted {
+            fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                self.inner.seek(pos)
+            }
+        }
+        let event = |kind| format!("{}\n", json!({"type":"event_msg","payload":{"type":kind}}));
+        let mut data = event("task_complete").into_bytes();
+        data.extend(vec![b'x'; ACTIVITY_TAIL_BYTES as usize * 8]);
+        data.extend_from_slice(b"\n");
+        let count = Rc::new(Cell::new(0));
+        assert_eq!(
+            activity_from_tail(Counted {
+                inner: Cursor::new(data.clone()),
+                count: count.clone()
+            }),
+            Activity::Unknown
+        );
+        assert!(count.get() <= ACTIVITY_TAIL_BYTES as usize);
+        data.extend_from_slice(event("task_started").as_bytes());
+        assert_eq!(
+            activity_from_tail(Cursor::new(data.clone())),
+            Activity::Busy
+        );
+        data.extend_from_slice(event("task_complete").as_bytes());
+        assert_eq!(
+            activity_from_tail(Cursor::new(data.clone())),
+            Activity::Idle
+        );
+        data.extend_from_slice(b"broken tail");
+        assert_eq!(activity_from_tail(Cursor::new(data)), Activity::Unknown);
     }
     use crate::model::{Account, State};
 

@@ -28,6 +28,13 @@ pub(super) fn bind(paths: &Paths, pane: &str, binding: Binding) -> Result<()> {
 }
 
 pub(super) fn instances(paths: &Paths) -> Result<Vec<Instance>> {
+    instances_with_state(paths, state)
+}
+
+fn instances_with_state(
+    paths: &Paths,
+    mut state: impl FnMut(&str) -> Result<(bool, u32)>,
+) -> Result<Vec<Instance>> {
     let dir = paths.root.join("herdr-panes");
     if !dir.exists() {
         return Ok(vec![]);
@@ -41,6 +48,16 @@ pub(super) fn instances(paths: &Paths) -> Result<Vec<Instance>> {
         ensure!(!entry.file_type()?.is_symlink(), "unsafe HERDR binding");
         let record: HerdrBinding = serde_json::from_slice(&fs::read(entry.path())?)?;
         let b = record.binding;
+        // A dead or replaced bound process cannot own this pane. Reject it before
+        // contacting HERDR: stopped servers otherwise add a connection timeout
+        // per historical binding on every menu/discovery request. Retain the
+        // binding/history, and keep the full host/ownership checks for live PIDs.
+        let Ok(bound) = process_info(b.pid) else {
+            continue;
+        };
+        if bound.start_time != b.start_time || matches!(bound.state, 'Z' | 'X') {
+            continue;
+        }
         // Read-only discovery never starts a server and never infers ownership
         // from the UI's selected pane or an account's display name.
         let Ok((false, pid)) = state(&record.target) else {
@@ -214,4 +231,78 @@ async fn launch_inner(
         "target":key,"account":account,"thread_id":thread,
         "viewer_attach":["herdr","session","attach",session]}),
     )
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    #[test]
+    fn stale_bindings_never_contact_a_host_and_remain_recoverable() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: dir.path().join("state"),
+            runtime: dir.path().join("runtime"),
+        };
+        let pid = std::process::id();
+        let start = process_info(pid).unwrap().start_time;
+        for (index, (pid, start_time)) in [(u32::MAX, 0), (pid, start + 1)].into_iter().enumerate()
+        {
+            bind(
+                &paths,
+                &format!("herdr/stopped/w1:p{}", index + 1),
+                Binding {
+                    pid,
+                    start_time,
+                    home: dir.path().join("home"),
+                    thread: "11111111-1111-4111-8111-111111111111".into(),
+                },
+            )
+            .unwrap();
+        }
+        let files: Vec<_> = fs::read_dir(paths.root.join("herdr-panes"))
+            .unwrap()
+            .map(|e| {
+                let p = e.unwrap().path();
+                let bytes = fs::read(&p).unwrap();
+                (p, bytes)
+            })
+            .collect();
+        let found = instances_with_state(&paths, |_| {
+            panic!("stale process must not trigger HERDR socket I/O")
+        })
+        .unwrap();
+        assert!(found.is_empty());
+        for (path, bytes) in files {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
+    #[test]
+    fn live_pid_still_requires_current_host_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: dir.path().join("state"),
+            runtime: dir.path().join("runtime"),
+        };
+        let pid = std::process::id();
+        bind(
+            &paths,
+            "herdr/named/w1:p1",
+            Binding {
+                pid,
+                start_time: process_info(pid).unwrap().start_time,
+                home: dir.path().join("home"),
+                thread: "11111111-1111-4111-8111-111111111111".into(),
+            },
+        )
+        .unwrap();
+        let mut calls = 0;
+        let found = instances_with_state(&paths, |target| {
+            assert_eq!(target, "herdr/named/w1:p1");
+            calls += 1;
+            Ok((true, pid))
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert!(found.is_empty());
+    }
 }

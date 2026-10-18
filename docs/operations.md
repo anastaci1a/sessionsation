@@ -61,9 +61,12 @@ above. No new credential owner or deployment of the original switcher is implied
 ## Artifact provenance and adapter handoff
 
 [Verification manifest](verification.json) records the exact source commit, build
-artifact path/hash, toolchain/image and passing test counts. There is **no installed
-standalone sessionsation artifact**. The listed debug binary is a development
-artifact; verify its hash before acceptance because rebuilding can replace it.
+artifact path/hash, toolchain/image and passing test counts. The original e4d7833
+debug binary remains a development artifact; verify its hash
+before acceptance because rebuilding can replace it. The UI now selects a separate
+launcher-only repair build, documented in the
+[UI deployment manifest](https://github.com/anastaci1a/sessionsation-ui/blob/main/docs/deployment.json). This does not
+promote or alter the staged Agent DM review candidate.
 The original installed `codex-switcher` binary has not been replaced.
 
 Adapters must receive an explicit data root from the operator. For existing Ana
@@ -109,3 +112,12 @@ observer fields require adapter review, not automatic production activation.
 An accepted immutable installed artifact, explicit semantic adoption, separately
 approved disposable adapter/runtime tests and a reviewed cutover remain distinct
 gates. No review build replaces the launcher-selected artifact or its supervisor.
+
+HERDR discovery rejects dead/replaced process bindings before socket queries;
+bindings/history remain recoverable and live candidates still require full current
+host/PID/start/home/UUID confirmation. Menu activity hints read a bounded 64 KiB
+rollout tail. A partial first record is skipped; damaged tails or no retained
+activity event remain unknown. Native idle checks, operation locks and full history
+verification at lifecycle boundaries are unchanged. No cached idle state authorizes
+a mutation. The separately pinned UI launcher build excludes the review candidate's
+observer additions; see the UI's deployed-artifact record for its source and hash.

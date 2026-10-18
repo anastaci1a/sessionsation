@@ -25,6 +25,10 @@
 - Rust changes: `cargo fmt --check`,
   `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`.
   Add safety-boundary regression tests and commit lockfile changes.
+- The check container runs two independent test cases at a time by default
+  (`SESSIONSATION_TEST_THREADS` overrides this); explicit concurrency tests still
+  exercise their own parallel workers. Process-heavy fixtures should not saturate
+  the host while checking operation timing.
 - `scripts/check.sh` uses `target-review/` by default. Do not overwrite an artifact
   currently selected by the UI/another consumer. Artifact promotion is separate
   from building/testing and requires the applicable deployment approval.
