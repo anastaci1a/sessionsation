@@ -283,6 +283,62 @@ mod evidence_tests {
             )
             .unwrap();
     }
+    #[tokio::test]
+    async fn legacy_lock_contention_refuses_public_send_before_admission() {
+        let (_dir, paths, input, now) = fixture();
+        let mut legacy = Ledger::open(&paths).unwrap();
+        initialize(&legacy).unwrap();
+        let existing = legacy.accept(&input, now).unwrap();
+        let events = legacy.events(None).unwrap();
+        let mut refused = Vec::new();
+        for mode in [PublicMode::Submit, PublicMode::Queue] {
+            let mut b = binding(input.clone());
+            b.request.message_id = uuid::Uuid::new_v4().to_string();
+            b.request.mode = mode;
+            let id = b.request.message_id.clone();
+            let error = send_public(&paths, b.request).await.unwrap_err();
+            assert_eq!(error.downcast_ref::<Fault>().unwrap().0, "adapter_busy");
+            assert!(get(&legacy, &id).unwrap().is_none());
+            assert!(legacy.get(&id).unwrap().is_none());
+            refused.push(id);
+        }
+        assert_eq!(legacy.get(&input.message_id).unwrap(), Some(existing));
+        assert_eq!(legacy.events(None).unwrap(), events);
+        // Lock refusal precedes catalog resolution, discovery and native I/O.
+        assert!(!paths.root.join("session-catalog").exists());
+        drop(legacy);
+        for id in refused {
+            let error = receipt_public(&paths, &id, false).await.unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<Fault>().unwrap().0,
+                "receipt_not_found"
+            );
+        }
+        assert_eq!(Ledger::open(&paths).unwrap().events(None).unwrap(), events);
+    }
+    #[tokio::test]
+    async fn busy_receipt_lookup_does_not_negate_existing_admission() {
+        let (_dir, paths, input, now) = fixture();
+        let mut r = Ledger::open(&paths).unwrap().accept(&input, now).unwrap();
+        r.state = "native_accepted".into();
+        r.native_queue_id = Some("queue-1".into());
+        let b = binding(input.clone());
+        save_binding(&paths, &b, &r);
+        let legacy = Ledger::open(&paths).unwrap();
+        let error = receipt_public(&paths, &input.message_id, false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.downcast_ref::<Fault>().unwrap().0, "adapter_busy");
+        assert_eq!(legacy.get(&input.message_id).unwrap(), Some(r));
+        assert!(get(&legacy, &input.message_id).unwrap().is_some());
+        drop(legacy);
+        let recovered = receipt_public(&paths, &input.message_id, false)
+            .await
+            .unwrap();
+        assert_eq!(recovered["facts"]["accepted_native"], true);
+        assert_eq!(recovered["native_queue_id"], "queue-1");
+        assert_eq!(recovered["observation"]["state"], "unavailable");
+    }
     #[test]
     fn projection_preserves_distinct_ids_and_filters_non_public_fields() {
         let (_dir, _paths, input, _) = fixture();

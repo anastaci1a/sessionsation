@@ -112,5 +112,36 @@
     "Initial send fault and exact lock contender unavailable",
     "No successful native Queue acceptance/reply proved by this run",
     "No new runtime run or production cutover authorized"
-  ]
+  ],
+  "validation": {
+    "full_suite": {
+      "command": "SESSIONSATION_CHECK_TARGET=target-reconciliation scripts/check.sh",
+      "passed": 221,
+      "failed": 0,
+      "ignored": 0,
+      "groups": {
+        "lib": 112,
+        "cli": 6,
+        "external_move": 57,
+        "messaging_cli": 8,
+        "persistence": 6,
+        "scheduling": 29,
+        "transport": 3
+      },
+      "test_threads": 2
+    },
+    "final_assertions": {
+      "command": "cargo test --offline --locked --lib messaging::public::evidence_tests::",
+      "passed": 5,
+      "failed": 0,
+      "scope": "Final assertion strengthening additionally checks post-contention RECEIPT_NOT_FOUND and no catalog access; full suite above includes both new regressions."
+    },
+    "checks": [
+      "cargo fmt --check",
+      "cargo clippy --offline --locked --all-targets -- -D warnings",
+      "documentation links",
+      "contract schema/fixtures and CLI envelopes"
+    ],
+    "deployment": "none; test and contract clarification only; installed artifacts and pins unchanged"
+  }
 }
