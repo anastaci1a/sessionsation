@@ -87,7 +87,7 @@
       ],
       "legacy_plan": "../operations.md#legacy-coexistence-and-review-gates",
       "gates": [
-        "A full live backend-ID/generation trace across account movement and unplanned replacement remains an adapter acceptance gate; do not present fixtures as that trace"
+        "A full live backend-ID/generation trace across account movement and runtime loss/replacement remains an adapter acceptance gate; do not present fixtures as that trace"
       ]
     },
     {
@@ -97,6 +97,7 @@
       "schema": "v1.json#/$defs/Readiness",
       "behavior": "Content-free read-only native snapshot, five-second native timeout/freshness, explicit stop token or unknown, conservative Submit/Queue hints and reasons; no probing sends or process launch",
       "gates": [
+        "Adapter schema/freshness review of the additive public observation fields",
         "Approved disposable runtime acceptance before activation"
       ]
     },
@@ -111,6 +112,7 @@
         "receipt_projection_recovered"
       ],
       "gates": [
+        "Adapter correlation/diagnostic validation against the published schema and fixtures",
         "Approved public-v1 native end-to-end observation acceptance"
       ]
     },
