@@ -130,6 +130,44 @@
     "command": "scripts/check.sh",
     "result": "passed",
     "checks": "formatting, Clippy all targets with warnings denied, locked offline tests, documentation links, schema/fixtures and real CLI envelopes",
-    "candidate_artifact": "../verification.json (launcher artifact remains unchanged; review artifact provenance published separately after source commit)"
+    "candidate_artifact": "../verification.json#/review_candidate"
+  },
+  "proposed_acceptance": {
+    "authorization": "pending Ana; this plan is not execution authority",
+    "candidate_commit": "8b77639c44e0bf026acf1f23c308461b0968d737",
+    "artifact_manifest": "../verification.json#/review_candidate",
+    "proposed_install_path": "/mnt/user/live/packages/sessionsation/review/8b77639c44e0bf026acf1f23c308461b0968d737/sessionsation",
+    "replace_original_switcher": false,
+    "change_launcher_selected_backend": false,
+    "data_root": "/mnt/user/appdata/codex-switcher",
+    "supervisor": "Existing sole original data-root owner; verify its existing lock/socket, never start another owner",
+    "backend_session_id": "15850224-2717-4602-8e6e-efb478a35604",
+    "provider_conversation_id": "01a14d05-b3b2-7132-8dc0-46b8277d669a",
+    "last_saved_generation": "424d295f6b2619d02fb314c913198aaec92119bca6132b9acf6805ff51c8c887",
+    "headless_host": "sessionsation-dm-acceptance-20261018",
+    "accounts": [
+      "codex:personal",
+      "codex:gate1"
+    ],
+    "fresh_generation_policy": "Re-read the same exact backend/provider/account target; reject changed identity. Every lifecycle/input uses its captured current generation.",
+    "requests": {
+      "submit_idle": "d0a2150a-7d38-4a3d-a9ee-208d460715d0",
+      "submit_busy_expected_rejected": "6fba7755-7890-4f4a-9363-1843e03584e3",
+      "queue": "2731a603-aa94-41b3-9a5e-da5744e94bd2"
+    },
+    "max_intentional_accepted_new_inputs": 2,
+    "steps": [
+      "Resume only this saved disposable conversation on personal in the owned headless server; verify native observation/account/socket, identity and permissions",
+      "Idle Submit asks for one bounded local wait and a short fixed public reply; observe working without probing input",
+      "Attempt busy Submit only after positive working evidence. If it unexpectedly admits due to an idle race, count it as the second admitted input, skip Queue and report the busy gate incomplete",
+      "If busy Submit is rejected, Queue the second short fixed-reply request; inspect public original-input/turn/completion/reply IDs and observer time/error fields",
+      "Withhold a local acknowledgement once, reopen/poll the original ID, retry identical content across deadline/restart; never introduce a replacement ID for uncertain delivery",
+      "After positive idle, move personal -> gate1 -> personal and record every stable backend ID/provider ID/generation/runtime attachment; compare retained history without publishing raw contents",
+      "Verify restart and explicit stop/resume generation changes on the same exact account; finish stopped with history retained, close only owned server"
+    ],
+    "polling": "At least five seconds between per-session/receipt polls; backoff on errors",
+    "production_cutover": false,
+    "legacy_receipt_or_job_import": false,
+    "credential_or_access_changes": false
   }
 }

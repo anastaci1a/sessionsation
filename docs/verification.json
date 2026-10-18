@@ -55,5 +55,50 @@
       "sha256": "399ff69c431c066e40de318fba45c2b07f45a76b19939d247ee4828fc70c4215",
       "provenance": "Existing supervisor-owned app-server executable verified through /proc/PID/exe; daemon pid-update-loop helper is separate from the managed --listen unix:// app-server. Neither was started/replaced by sessionsation acceptance."
     }
+  },
+  "review_candidate": {
+    "source": {
+      "repository": "https://github.com/anastaci1a/sessionsation",
+      "commit": "8b77639c44e0bf026acf1f23c308461b0968d737",
+      "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265",
+      "worktree": "clean at build/staging"
+    },
+    "artifact": {
+      "installed": false,
+      "kind": "staged review debug artifact; not selected by launcher or Agent DM",
+      "path": "/mnt/user/live/projects/sessionsation/target-review/artifacts/8b77639c44e0bf026acf1f23c308461b0968d737/sessionsation",
+      "sha256": "af744245d60b8e83687c4cea5d124c1db38ba2cbc9db77a0e91e9d0ae7f2bd55",
+      "profile": "debug",
+      "rust_version": "1.95.0",
+      "container_image": "sessionsation-build-tools:local",
+      "container_image_id": "sha256:4524fc318ec3fe78073bcf4573f940862031035901da2f46391c273a1a5bf320",
+      "build": "CARGO_TARGET_DIR=/work/target-review cargo build --offline --locked in network-disabled container; no credentials or live sockets mounted"
+    },
+    "verification": {
+      "command": "scripts/check.sh",
+      "passed": true,
+      "tests": {
+        "lib": 107,
+        "binary": 0,
+        "cli": 6,
+        "external_move": 57,
+        "messaging_cli": 8,
+        "persistence": 6,
+        "scheduling": 29,
+        "transport": 3,
+        "doctests": 0,
+        "total": 216,
+        "failed": 0,
+        "ignored": 0
+      },
+      "checks": [
+        "cargo fmt --check",
+        "cargo clippy --offline --locked --all-targets -- -D warnings",
+        "cargo test --offline --locked",
+        "python3 scripts/check_docs.py",
+        "python3 scripts/check_contract.py"
+      ],
+      "scope": "Offline isolated fixtures and CLI/schema checks only. No new native send, account mutation or lifecycle acceptance from this candidate."
+    }
   }
 }
