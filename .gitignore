@@ -1,0 +1,8 @@
+/target/
+*.db
+*.db-shm
+*.db-wal
+auth.json
+.env
+/test-results/
+__pycache__/
