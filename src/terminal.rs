@@ -6,11 +6,12 @@ use std::process::Command;
 
 pub fn herdr_target(session: &str, pane: &str) -> Result<String> {
     validate_name(session)?;
+    // HERDR emits handles such as wA:p1; do not assume decimal counters.
     ensure!(
         pane.split_once(':').is_some_and(|(w, p)| w.starts_with('w')
             && p.starts_with('p')
-            && w[1..].bytes().all(|c| c.is_ascii_digit())
-            && p[1..].bytes().all(|c| c.is_ascii_digit())
+            && w[1..].bytes().all(|c| c.is_ascii_alphanumeric())
+            && p[1..].bytes().all(|c| c.is_ascii_alphanumeric())
             && w.len() > 1
             && p.len() > 1),
         "invalid HERDR pane ID"
@@ -193,6 +194,10 @@ mod tests {
     #[test]
     fn herdr_targets_are_scoped_and_validate_each_component() {
         assert_eq!(herdr_target("test", "w12:p3").unwrap(), "herdr/test/w12:p3");
+        assert_eq!(
+            herdr_target("default", "wA:pB").unwrap(),
+            "herdr/default/wA:pB"
+        );
         for (s, p) in [
             ("../default", "w1:p1"),
             ("default", "w:p1"),
