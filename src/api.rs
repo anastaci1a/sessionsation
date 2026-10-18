@@ -33,6 +33,13 @@ pub enum Command {
         #[arg(long, default_value_t=2, value_parser=clap::value_parser!(u64).range(1..=3600))]
         interval: u64,
     },
+    /// Resolve public session details against its current catalog generation.
+    Session {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+    },
     /// Bounded read-only native readiness; never sends input or starts a process.
     Observe {
         #[arg(long)]
@@ -360,7 +367,7 @@ pub fn capabilities() -> Value {
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true},
-    "detach_stops_agent":false})
+    "session_details":true,"detach_stops_agent":false})
 }
 
 fn public_session(s: catalog::Session) -> Value {
@@ -420,7 +427,7 @@ pub async fn state(paths: &Paths) -> Result<Value> {
         "capabilities":capabilities()}))
 }
 
-async fn selected(
+pub(crate) async fn selected(
     paths: &Paths,
     id: &str,
     generation: &str,
@@ -452,6 +459,50 @@ async fn selected(
     Ok((session, i))
 }
 
+pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
+    let items = inventory(paths).await?;
+    let session = catalog::resolve(paths, id, generation)?;
+    let source = items
+        .iter()
+        .find(|i| i.thread_id == session.conversation_id && i.account == session.account);
+    let directory = source.map(|s| s.cwd.clone());
+    let mut value = public_session(session);
+    value["directory"] = json!(directory);
+    value["availability"] = json!(
+        source
+            .map(|s| if s.inactive { "saved" } else { "running" })
+            .unwrap_or("unavailable")
+    );
+    // Persisted launch receipts supply positive location provenance. Never guess
+    // the original Space from a display name, current focus or a missing pane.
+    let mut latest: Option<(i64, Value)> = None;
+    let root = paths.root.join("launches");
+    if root.is_dir() {
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|e| e != "json")
+            {
+                continue;
+            }
+            let Ok(record) = serde_json::from_slice::<Value>(&std::fs::read(entry.path())?) else {
+                continue;
+            };
+            if record["session_id"] != id || !record["workspace_id"].is_string() {
+                continue;
+            }
+            let at = record["updated_at"].as_i64().unwrap_or(0);
+            if latest.as_ref().is_none_or(|(old, _)| at > *old) {
+                latest = Some((
+                    at,
+                    json!({"session":record["request"]["host"]["session"],"socket":record["request"]["host"]["socket"],"workspace_id":record["workspace_id"],"tab_id":record["tab_id"],"pane_id":record["pane_id"]}),
+                ));
+            }
+        }
+    }
+    value["original_host"] = latest.map(|(_, v)| v).unwrap_or(Value::Null);
+    Ok(value)
+}
+
 pub fn print(result: Value) -> Result<()> {
     let mut out = std::io::stdout().lock();
     serde_json::to_writer(
@@ -465,6 +516,10 @@ pub fn print(result: Value) -> Result<()> {
 
 pub async fn run(paths: &Paths, command: Command) -> Result<()> {
     let result = match command {
+        Command::Session {
+            session,
+            expected_generation,
+        } => session_details(paths, &session, &expected_generation).await?,
         Command::Capabilities => capabilities(),
         Command::Launch { command } => crate::launch::api(paths, command).await?,
         Command::Account { command } => account(paths, command).await?,

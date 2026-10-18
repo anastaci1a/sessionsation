@@ -19,6 +19,8 @@ use std::{
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// List retained receipts without starting or retrying a launch.
+    List,
     /// Validate a JSON creation request from stdin without creating resources.
     Validate,
     /// Admit a JSON creation request exactly once; reconcile using status.
@@ -274,6 +276,33 @@ async fn validate(paths: &Paths, r: &Request) -> Result<()> {
     Ok(())
 }
 pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
+    if matches!(command, Command::List) {
+        let mut records = Vec::new();
+        let dir = paths.root.join("launches");
+        if dir.is_dir() {
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_file()
+                    || entry.path().extension().is_none_or(|e| e != "json")
+                {
+                    continue;
+                }
+                let Some(id) = entry
+                    .path()
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                if uuid::Uuid::parse_str(&id).is_ok() {
+                    records.push(reconcile_status(paths, &id)?);
+                }
+            }
+        }
+        records.sort_by_key(|r| std::cmp::Reverse(r.updated_at));
+        return Ok(json!(records));
+    }
     if let Command::Status { request_id } = command {
         return Ok(serde_json::to_value(reconcile_status(paths, &request_id)?)?);
     }

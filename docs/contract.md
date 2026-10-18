@@ -77,6 +77,13 @@ session no faster than every five seconds; use backoff after errors.
 
 ## Session and operation commands
 
+`api session --session ID --expected-generation GENERATION` returns the current
+public session with `directory`, `availability`, and `original_host`. Missing
+information is null/unavailable. Original host provenance comes only from a
+matching recorded launch; it includes the host session/socket and workspace/tab/pane
+IDs. Clients must verify those host resources still exist. Capability
+`session_details:true` advertises this read-only command.
+
 ```sh
 sessionsation api rename --session BACKEND-ID --expected-generation GENERATION --name work
 sessionsation api switch --session BACKEND-ID --expected-generation GENERATION --to codex:other
@@ -215,6 +222,7 @@ continue to work. Clients must gate new commands on published capabilities.
 ## New-session popup admission
 
 The additive `api launch validate|start` commands read one JSON request from stdin;
+`api launch list` lists retained receipts, newest first, without replaying requests.
 `api launch status --request-id UUID` reconciles its durable record. Request v1 has
 `version`, UUID `request_id`, provider-qualified `account_id`, unique `name`,
 `host: {session, socket}`, `space: {kind: "existing", id}` or

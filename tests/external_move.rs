@@ -2892,6 +2892,19 @@ async fn public_catalog_ids_names_and_stale_targets_survive_runtime_changes() {
     let id = session["id"].as_str().unwrap();
     assert_ne!(id, ID);
     let old = session["generation"].as_str().unwrap();
+    let details = f.invoke(&[
+        "api",
+        "session",
+        "--session",
+        id,
+        "--expected-generation",
+        old,
+    ]);
+    assert_eq!(details["result"]["id"], id);
+    assert_eq!(details["result"]["conversation_id"], ID);
+    assert!(details["result"]["directory"].as_str().is_some());
+    assert!(details["result"]["original_host"].is_null());
+    assert_eq!(f.invoke(&["api", "launch", "list"])["result"], json!([]));
     let renamed = f.invoke(&[
         "api",
         "rename",
