@@ -94,6 +94,42 @@ async fn explicit_exited_tmux_recovery_preserves_identity_context_and_sends_once
             "{}",
             String::from_utf8_lossy(&submitted.stderr)
         );
+        // A receipt reader may still own the ledger as the agent finishes
+        // launching. Contention must delay the one delivery, not reject it.
+        use fs2::FileExt;
+        let observer = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(f.paths.root.join("messaging/adapter.lock"))
+            .unwrap();
+        observer.lock_exclusive().unwrap();
+        let until = Instant::now() + Duration::from_secs(20);
+        loop {
+            let journal: Value = serde_json::from_slice(
+                &fs::read(
+                    f.paths
+                        .root
+                        .join("message-recoveries")
+                        .join(format!("{}.json", req["message_id"].as_str().unwrap())),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            if journal["phase"] == "launch_confirmed" {
+                break;
+            }
+            assert!(
+                !matches!(journal["phase"].as_str(), Some("failed" | "uncertain")),
+                "{journal}"
+            );
+            assert!(
+                Instant::now() < until,
+                "launch did not reach ledger contention: {journal}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        drop(observer);
         let done = receipt(&f, req["message_id"].as_str().unwrap()).await;
         assert_eq!(done["launch"]["phase"], "complete", "{done}");
         assert_eq!(done["facts"]["accepted_native"], true, "{done}");

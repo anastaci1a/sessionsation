@@ -165,6 +165,111 @@ mod tests {
     use super::*;
     use crate::messaging::tests::{attachment_fixture, bind, fixture, scripted_server};
     #[tokio::test]
+    async fn delayed_target_does_not_serialize_batch_or_renew_old_evidence() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let (_dir, paths, input, _) = fixture();
+        let mut a = attachment_fixture(&paths, &input);
+        bind(&paths, &mut a);
+        fs::remove_file(paths.root.join("managed-panes/1.json")).unwrap();
+        let slow = uuid::Uuid::new_v4().to_string();
+        let mut targets = Vec::new();
+        for index in 0..16 {
+            let id = if index == 0 {
+                slow.clone()
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            };
+            fs::write(
+                paths.root.join(format!("managed-panes/{index}.json")),
+                json!({"pid":a.pid,"start_time":a.start,"home":a.home,"thread":id}).to_string(),
+            )
+            .unwrap();
+            let s = crate::catalog::record_launch(
+                &paths,
+                "selected",
+                &id,
+                &format!("target-{index}"),
+                Some(crate::catalog::Attachment {
+                    host: "tmux".into(),
+                    target: format!("%{index}"),
+                    pid: a.pid,
+                    process_start: a.start,
+                }),
+            )
+            .unwrap();
+            targets.push(Target {
+                expected_generation: s.generation(),
+                session_id: s.id,
+            });
+        }
+        let listener = tokio::net::UnixListener::bind(a.endpoint()).unwrap();
+        let task = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let slow = slow.clone();
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    while let Some(Ok(Message::Text(text))) = ws.next().await {
+                        let r: Value = serde_json::from_str(&text).unwrap();
+                        let result = match r["method"].as_str().unwrap() {
+                            "initialized" => continue,
+                            "initialize" => json!({"userAgent":"codex_cli_rs/0.163.0 (Linux)"}),
+                            "thread/read" => {
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    if r["params"]["threadId"] == slow {
+                                        6000
+                                    } else {
+                                        150
+                                    },
+                                ))
+                                .await;
+                                json!({"thread":{"id":r["params"]["threadId"],"status":{"type":"idle"}}})
+                            }
+                            "thread/turns/list" => {
+                                json!({"data":[{"id":"previous","status":"completed"}]})
+                            }
+                            other => panic!("Observation mutated provider: {other}"),
+                        };
+                        if ws
+                            .send(Message::Text(
+                                json!({"id":r["id"],"result":result}).to_string().into(),
+                            ))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let out = observations(
+            &paths,
+            BatchRequest {
+                api_version: 1,
+                sessions: targets,
+                policy: Policy::Refresh,
+            },
+        )
+        .await
+        .unwrap();
+        task.abort();
+        let rows = out["results"].as_array().unwrap();
+        assert_eq!(rows.len(), 16);
+        assert!(out["elapsed_ms"].as_u64().unwrap() < 6500);
+        for row in &rows[1..] {
+            assert_eq!(row["ok"], true);
+            assert_eq!(row["data"]["state"], "idle");
+            assert_eq!(row["data"]["freshness"], "fresh");
+            assert!(row["data"]["observed_at"].is_number());
+        }
+        assert!(rows[0]["ok"] == false || rows[0]["data"]["observed_at"].is_null());
+        eprintln!(
+            "16-target passive batch with one delayed endpoint: {}ms; other 15 observed independently",
+            out["elapsed_ms"]
+        );
+    }
+    #[tokio::test]
     async fn cache_preserves_evidence_without_mutation_lock_and_reports_stale_unobserved_and_races()
     {
         let (_dir, paths, input, _) = fixture();

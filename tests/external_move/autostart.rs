@@ -212,8 +212,10 @@ async fn threshold_pause_restarts_only_the_work_that_received_a_stop() {
     f.live(ID, true);
     setup(&f).await;
     // Keep the stop evidence valid through the move worker's positive checks.
-    f.a.lock().unwrap().limits = Some(limits(95., daemon::now() + 8));
-    f.b.lock().unwrap().limits = Some(limits(95., daemon::now() + 8));
+    // An eight-second reset races setup/polling under concurrent suite load.
+    let reset_at = daemon::now() + 30;
+    f.a.lock().unwrap().limits = Some(limits(95., reset_at));
+    f.b.lock().unwrap().limits = Some(limits(95., reset_at));
     for a in ["personal", "work"] {
         f.invoke(&["thresholds", a, "--multiplier", "1"]);
     }
@@ -231,6 +233,11 @@ async fn threshold_pause_restarts_only_the_work_that_received_a_stop() {
     f.wait(job["id"].as_str().unwrap(), "complete").await;
     let waiting = policy_where(&f, |p| p["waiting"].is_object()).await;
     assert_eq!(waiting["waiting"]["threshold_pause"], true);
+    // A healthier report alone is insufficient: the recorded window must also
+    // have reset. Wait explicitly instead of relying on incidental worker time.
+    while daemon::now() < reset_at {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     reset(&f);
     policy_where(&f, |p| {
         p["detail"]

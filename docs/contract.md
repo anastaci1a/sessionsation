@@ -315,6 +315,10 @@ accepted. Always inspect the ordinary receipt `facts`, correlation and reply.
 A successful launch can still have expired, rejected or uncertain input. The stop
 token is cleared only after a positive enqueue acknowledgement; an uncertain send
 retains it for explicit review, even if later receipt observation finds acceptance.
+Before binding delivery, recovery waits up to ten seconds for the local receipt
+ledger lock, so a concurrent status reader need not fail the operation. This waits
+only for local admission; it never retries a native write. Exhausted lock waiting
+still reports a confirmed launch separately from input that was never accepted.
 
 ```sh
 sessionsation api receipt MESSAGE-ID

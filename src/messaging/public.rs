@@ -488,7 +488,19 @@ pub(super) async fn deliver_recovered(
             .is_some_and(|r| r.pid == a.pid && r.process_start == a.start),
         "STALE_TARGET"
     );
-    let mut ledger = Ledger::open(paths)?;
+    // Receipt readers share this lock. Wait before binding or dispatching instead
+    // of treating a concurrent observer as a failed recovery. This retries only
+    // local lock acquisition, never a native write or the launch itself.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut ledger = loop {
+        match Ledger::open(paths) {
+            Ok(ledger) => break ledger,
+            Err(Fault("adapter_busy")) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
     initialize(&ledger)?;
     let binding = if let Some(b) = get(&ledger, &request.message_id)? {
         anyhow::ensure!(b.request == request, "MESSAGE_ID_CONFLICT");

@@ -53,7 +53,7 @@ pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, 
         "queued_work_count":null,"evidence":"native_read_only_snapshot_not_reservation",
         "actions":{"submit":{"available":submit,"reason":if submit {None} else {blocked.or(Some("target_busy"))}},
             "queue":{"available":queue,"reason":if queue {None} else {blocked.or(Some("state_unverified"))}},
-            "resume":{"available":resume,"reason":if resume {Value::Null} else if state=="disconnected" {json!("validated_launch_plan_required")} else if state=="idle" && stop.is_none() && fresh && native["reason"].is_null() {json!("resume_not_required")} else if state=="working" {json!("session_already_working")} else {json!(blocked.unwrap_or("state_unverified"))},"starts_process":state=="disconnected","requires_final_validation":true,"requires_expected_previous_turn_id":true,"requires_expected_stop_id":true,"requires_expected_runtime_generation":true}},
+            "resume":{"available":resume,"reason":if resume {Value::Null} else if state=="disconnected" {json!("validated_launch_plan_required")} else if state=="idle" && stop.is_none() && fresh && native["reason"].is_null() {json!("resume_not_required")} else if state=="working" {json!("session_already_working")} else {json!(blocked.unwrap_or("state_unverified"))},"starts_process":state=="disconnected","requires_final_validation":true,"requires_expected_previous_turn_id":true,"requires_expected_stop_id":true,"requires_expected_runtime_generation":state!="disconnected","requires_launch_plan":state=="disconnected"}},
         "delivery_semantics":"non_steering_native_queue"})
 }
 
@@ -199,6 +199,14 @@ mod tests {
                 matches!(state, "idle" | "working")
             );
             assert_eq!(out["explicit_intent"]["state"], "unknown");
+            assert_eq!(
+                out["actions"]["resume"]["requires_launch_plan"],
+                state == "disconnected"
+            );
+            assert_eq!(
+                out["actions"]["resume"]["requires_expected_runtime_generation"],
+                state != "disconnected"
+            );
             assert!(!out.to_string().contains("SECRET"));
             assert!(!out.to_string().contains("steer\""));
         }

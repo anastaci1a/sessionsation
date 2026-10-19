@@ -17,19 +17,19 @@
       "JSON Schema and real CLI envelopes"
     ],
     "tests": {
-      "unit": 150,
+      "unit": 151,
       "cli": 8,
       "external_move": 69,
       "messaging_cli": 8,
       "persistence": 6,
       "scheduling": 29,
       "transport": 3,
-      "total": 273,
+      "total": 274,
       "ignored": 5,
       "failed": 0
     },
     "cargo_lock_sha256": "ac5dca041b22af0cf8c249533784f0bd2a16ba62002aefa6bc08e06c360e2b21",
-    "release_smoke": "Debug CLI version/capabilities/state/schema envelopes passed. Locked release build is separate from this default/isolated-host test record.",
+    "release_smoke": "Locked release build and actual release CLI version/capabilities/state schema envelopes passed in a network-isolated Linux check container.",
     "isolated_herdr": {
       "version": "0.9.5",
       "protocol": 22,
@@ -44,10 +44,10 @@
       ]
     },
     "artifact": {
-      "path_in_test_checkout": "target-review/debug/sessionsation",
-      "sha256": "ae7f7d983e66480e2df8086647a3243ec60fee22635fc397aea30ad59a772d45",
+      "path_in_test_checkout": "target-review/release/sessionsation",
+      "sha256": "8b4ceebbfc76f4d68336253b7086a82c05cb2b38c56e8bd049a86838e074ad14",
       "installed": false,
-      "provenance": "Rust 1.95.0 locked debug build from accompanying source; package 0.2.0, API v1, contract revision 3. Existing consumer executables remain unchanged."
+      "provenance": "Rust 1.95.0 locked release build from accompanying source; package 0.2.0, API v1, contract revision 3. Existing consumer executables remain unchanged."
     },
     "passive_observation": {
       "fixture": "Kernel-bound synthetic HERDR record, inert native WebSocket server, shared mutation lock held",
@@ -55,8 +55,61 @@
       "cached_ms": 0,
       "native_writes": 0,
       "evidence_timestamp_renewed_on_cache_hit": false,
-      "scope": "Synthetic timing; not a production benchmark or a diagnosis of downstream polling cadence"
-    }
+      "scope": "Synthetic timing; not a production benchmark or a diagnosis of downstream polling cadence",
+      "delayed_batch": {
+        "targets": 16,
+        "one_delayed_native_response_ms": 6000,
+        "other_targets_observed_independently": 15,
+        "elapsed_ms": 3025,
+        "scope": "Isolated synthetic regression; a delayed target has no fabricated evidence and does not serialize the other observations"
+      }
+    },
+    "native_provider": {
+      "status": "passed",
+      "source_commit": "ed9aa40dd00a16949fee0ef0704f8e7186295bd9",
+      "cli_sha256": "caa82ebe4b59873ae8e7907fc3e03c83d9caaa7eb4576bb543a913ba203ad43b",
+      "frontend_version": "0.162.1",
+      "frontend_sha256": "628e35487d888a28f0427fc37501da529dd3d81fcbad7a2c3421c1e8670d92e1",
+      "native_profile": "codex-tui/0.163.0 (Linux Unknown; x86_64) dumb (sessionsation_native_acceptance; 0.2.0)",
+      "hosts": [
+        {
+          "host": "tmux",
+          "slash_exit_preserved_history": true,
+          "stopped_exited_recovery": true,
+          "same_logical_id": true,
+          "same_conversation": true,
+          "same_account_policy": true,
+          "same_directory": true,
+          "context_token_recalled": true,
+          "launch_confirmed": true,
+          "message_accepted": true,
+          "correlated_reply": true,
+          "resume_queue_attempts": 1,
+          "identical_retries": 3
+        },
+        {
+          "host": "herdr",
+          "slash_exit_preserved_history": true,
+          "stopped_exited_recovery": true,
+          "same_logical_id": true,
+          "same_conversation": true,
+          "same_account_policy": true,
+          "same_directory": true,
+          "context_token_recalled": true,
+          "launch_confirmed": true,
+          "message_accepted": true,
+          "correlated_reply": true,
+          "resume_queue_attempts": 1,
+          "identical_retries": 3
+        }
+      ],
+      "scope": "Real Codex frontend/provider replies in disposable tmux and headless HERDR, through a conversation-scoped proxy to an already enrolled non-invoking credential owner and an isolated metadata-supervisor harness. Only harness-created conversations were sent, exited and archived. No credentials copied, additional credential owner, production owner handoff or consumer pin change.",
+      "limitations": [
+        "Interrupted/error and lost-ack recovery are synthetic coverage, not injected real-provider failures",
+        "This isolated metadata-owner harness does not validate upgrading a production supervisor or downstream adapter behavior"
+      ]
+    },
+    "recovery_contention": "Forced ledger lock held through launch confirmation, then released: stopped/interrupted/errored recovery completes with one native delivery and no replay. Full suite passed after this regression exposed and fixed immediate adapter_busy rejection."
   },
   "limitations": [
     "No provider login, credentials, model calls or existing live hosts in portable checks",

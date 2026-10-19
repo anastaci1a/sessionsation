@@ -59,6 +59,15 @@ it is not part of portable default checks. Never mount live homes or sockets int
 a fixture container. [Machine-readable scope](verification.json) records current
 portable verification; timing and host-specific operational receipts belong outside Git.
 
+The same record separately identifies opt-in real-provider acceptance: disposable
+tmux and headless HERDR conversations, `/exit`, explicit exited-process Resume,
+saved-context recall and repeated original message IDs. That run used an existing
+non-invoking account's credential owner through a conversation-scoped proxy and
+an isolated metadata-supervisor harness. It validates actual provider replies,
+not a production owner upgrade. Interrupted/error and lost-ack cases remain
+synthetic coverage. Never treat portable checks as authorization for model usage
+or mount an operator's credentials into their container.
+
 ## Safe service maintenance
 
 Back up the entire private data root consistently, including databases, catalogs,
