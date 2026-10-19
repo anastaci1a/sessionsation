@@ -5,11 +5,11 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Copy {
-    home: Option<PathBuf>,
-    id: String,
-    path: PathBuf,
-    digest: String,
+pub(super) struct Copy {
+    pub(super) home: Option<PathBuf>,
+    pub(super) id: String,
+    pub(super) path: PathBuf,
+    pub(super) digest: String,
     #[serde(default)]
     parents: BTreeSet<String>,
 }
@@ -20,7 +20,7 @@ pub struct Plan {
     pub confirmation: String,
     pub detail: String,
     pub thread_ids: BTreeSet<String>,
-    copies: Vec<Copy>,
+    pub(super) copies: Vec<Copy>,
 }
 impl Plan {
     pub fn history_copies(&self) -> usize {
@@ -115,6 +115,7 @@ fn homes(paths: &Paths, source: &Instance) -> Result<BTreeSet<PathBuf>> {
             }
         }
     }
+    homes.extend(super::preserved_homes(paths)?.into_iter().map(|(_, h)| h));
     Ok(homes)
 }
 fn references(value: &Value, ids: &BTreeSet<String>) -> bool {
@@ -181,7 +182,11 @@ fn scan(paths: &Paths, source: &Instance) -> Result<(BTreeSet<String>, Vec<Copy>
     copies.sort_by(|a, b| a.path.cmp(&b.path));
     Ok((ids, copies))
 }
-async fn inactive(paths: &Paths, source: &Instance, ids: &BTreeSet<String>) -> Result<()> {
+pub(super) async fn inactive(
+    paths: &Paths,
+    source: &Instance,
+    ids: &BTreeSet<String>,
+) -> Result<()> {
     ensure!(
         source.inactive,
         "end this live tmux session first; deletion is only for inactive conversations"
@@ -254,11 +259,14 @@ pub async fn delete(paths: &Paths, key: &str, confirm: &str, revision: &str) -> 
         "conversation history changed; review a fresh deletion preview before confirming"
     );
     let mut controls = std::collections::BTreeMap::new();
-    let pairs: BTreeSet<_> = plan
-        .copies
-        .iter()
-        .filter_map(|c| c.home.clone().map(|h| (h, c.id.clone())))
-        .collect();
+    let mut pairs = BTreeSet::new();
+    for copy in &plan.copies {
+        if let Some(home) = &copy.home
+            && !archiving::file_only_home(paths, home)?
+        {
+            pairs.insert((home.clone(), copy.id.clone()));
+        }
+    }
     let mut remaining = pairs.clone();
     let mut order = Vec::new();
     while !remaining.is_empty() {

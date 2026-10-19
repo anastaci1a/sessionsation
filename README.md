@@ -9,9 +9,9 @@ Account enrollment/monitoring, exact-conversation launch, tmux discovery and man
 history-preserving moves are inherited. HERDR now hosts the same account-specific
 Codex launcher, including discovery, restart and recovery. A versioned JSON API
 provides stable session IDs, unique names, usage, non-steering messaging and safe
-local account removal. The original installation remains independent.
+local account removal, conversation archives and explicit history deletion. The original installation remains independent.
 
-Use Linux (including Unraid), Codex CLI, Rust 1.95, and tmux or HERDR.
+Use Linux (including Unraid), Codex CLI, Rust 1.95, gzip, and tmux or HERDR.
 Claude runtime is not configured; its capabilities explicitly report setup required.
 The separate [sessionsation-ui](https://github.com/anastaci1a/sessionsation-ui)
 provides a thin HERDR management viewer and future-terminal launcher.

@@ -14,6 +14,19 @@ pub const VERSION: u32 = 1;
 #[derive(Subcommand)]
 pub enum Command {
     Capabilities,
+    Archives,
+    Archive {
+        #[command(flatten)]
+        target: external::archiving::Target,
+    },
+    RestoreSession {
+        #[command(flatten)]
+        target: external::archiving::Target,
+    },
+    DeleteSession {
+        #[command(flatten)]
+        target: external::archiving::Target,
+    },
     Launch {
         #[command(subcommand)]
         command: crate::launch::Command,
@@ -401,6 +414,7 @@ pub fn capabilities() -> Value {
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true},
+    "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
     "session_details":true,"session_timing":true,"detach_stops_agent":false})
 }
 
@@ -465,7 +479,8 @@ pub async fn state(paths: &Paths) -> Result<Value> {
     let accounts = project_accounts(paths, accounts)?;
     let clock = boot_clock();
     let now = daemon::now();
-    let sessions=catalog::list(paths)?.into_iter().map(|s| {
+    let hidden = external::archiving::hidden(paths)?;
+    let sessions=catalog::list(paths)?.into_iter().filter(|s|!hidden.contains(&s.id)).map(|s| {
         let source=items.iter().find(|i|i.thread_id==s.conversation_id && i.account==s.account);
         let known=!matches!(s.account.as_str(),"external"|"unknown");
         let mut value=public_session(s);
@@ -479,7 +494,7 @@ pub async fn state(paths: &Paths) -> Result<Value> {
         value["last_accessed"]=source.and_then(|s|s.last_accessed).map_or(Value::Null,|n|json!(n));
         value["active_since"]=json!(source.filter(|s|!s.inactive).and_then(|s|clock.and_then(|(uptime,hz)|attachment_started_at(now,uptime,s.start_time,hz))));
         let unambiguous=items.iter().filter(|i|!i.inactive && i.thread_id==value["conversation_id"]).count()<=1;
-        value["capabilities"]=json!({"rename":true,"resume":known && saved,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous});
+        value["capabilities"]=json!({"rename":true,"resume":known && saved,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":known&&source.is_some_and(|i|i.inactive),"delete":known&&source.is_some_and(|i|i.inactive)});
         value
     }).collect::<Vec<_>>();
     Ok(json!({"observed_at":daemon::now(),"account_source":source,
@@ -594,6 +609,16 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             expected_generation,
         } => session_details(paths, &session, &expected_generation).await?,
         Command::Capabilities => capabilities(),
+        Command::Archives => external::archiving::list(paths)?,
+        Command::Archive { target } => {
+            external::archiving::start(paths, external::archiving::Kind::Archive, target).await?
+        }
+        Command::RestoreSession { target } => {
+            external::archiving::start(paths, external::archiving::Kind::Restore, target).await?
+        }
+        Command::DeleteSession { target } => {
+            external::archiving::start(paths, external::archiving::Kind::Delete, target).await?
+        }
         Command::Launch { command } => crate::launch::api(paths, command).await?,
         Command::Account { command } => account(paths, command).await?,
         Command::Launcher { command } => launcher(paths, command).await?,
@@ -726,6 +751,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     .into_iter()
                     .map(|r| json!(r)),
             );
+            ops.extend(external::archiving::operations(paths)?);
             json!(ops)
         }
         Command::Respond {

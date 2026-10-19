@@ -1,4 +1,6 @@
 //! Synthetic servers and isolated tmux only: these tests never touch real accounts.
+#[path = "external_move/archives.rs"]
+mod archives;
 #[path = "external_move/autostart.rs"]
 mod autostart;
 #[path = "external_move/launch.rs"]

@@ -286,3 +286,11 @@ pub(super) fn stop_intent(paths: &Paths, id: &str) -> Result<Option<String>> {
 pub(super) fn set_stop_intent(paths: &Paths, id: &str, token: Option<String>) -> Result<()> {
     update(paths, id, |r| r.stop_intent = token)
 }
+
+pub(super) fn restore_archived(paths: &Paths, id: &str, home: &Path) -> Result<()> {
+    update(paths, id, |r| {
+        r.deleted = false;
+        r.deleting = false;
+        r.owner = Some(home.into());
+    })
+}

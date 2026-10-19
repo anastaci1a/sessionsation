@@ -834,7 +834,7 @@ fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Resu
             }
         }
     }
-    let preserved = crate::account_deletion::preserved_homes(paths)?;
+    let preserved = preserved_homes(paths)?;
     homes.extend(preserved.iter().map(|(_, h)| h.clone()));
     if archived {
         result.clear();
@@ -972,11 +972,16 @@ fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Resu
     }
     Ok(result)
 }
+fn preserved_homes(paths: &Paths) -> Result<Vec<(String, PathBuf)>> {
+    let mut homes = crate::account_deletion::preserved_homes(paths)?;
+    homes.extend(archiving::restored_homes(paths)?);
+    Ok(homes)
+}
 fn account_for_home(paths: &Paths, home: &Path) -> String {
     let Ok(home) = fs::canonicalize(home) else {
         return "unknown".into();
     };
-    if let Ok(homes) = crate::account_deletion::preserved_homes(paths)
+    if let Ok(homes) = preserved_homes(paths)
         && let Some((name, _)) = homes.into_iter().find(|(_, h)| *h == home)
     {
         return name;
@@ -2246,6 +2251,7 @@ pub mod deletion;
 mod history;
 pub(crate) use history::preserve_history_checks;
 pub(crate) use history::verify_preserved_history;
+pub mod archiving;
 pub mod hosting;
 mod movement;
 pub mod opening;

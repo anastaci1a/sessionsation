@@ -34,6 +34,8 @@ enum Commands {
     #[command(hide = true)]
     AccountDeleteWorker { request_id: String },
     #[command(hide = true)]
+    ConversationWorker { request_id: String },
+    #[command(hide = true)]
     LaunchWorker { request_id: String },
     #[command(hide = true)]
     LaunchRun { request_id: String },
@@ -424,6 +426,9 @@ async fn run(cli: Cli) -> Result<()> {
     }
     let paths = Paths::new(cli.data_dir)?;
     match cli.command {
+        Commands::ConversationWorker { request_id } => {
+            sessionsation::external::archiving::worker(&paths, &request_id).await?;
+        }
         Commands::AccountDeleteWorker { request_id } => {
             sessionsation::account_deletion::worker(&paths, &request_id).await?
         }

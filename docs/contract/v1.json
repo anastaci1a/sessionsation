@@ -1383,6 +1383,131 @@
         "file_scanning"
       ],
       "additionalProperties": true
+    },
+    "ArchivedSession": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "provider",
+        "conversation_id",
+        "account_id",
+        "generation",
+        "availability",
+        "state",
+        "archived_at",
+        "history_file_bytes",
+        "compressed_bytes",
+        "capabilities"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "const": "codex"
+        },
+        "conversation_id": {
+          "type": "string"
+        },
+        "account_id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "availability": {
+          "const": "archived"
+        },
+        "state": {
+          "enum": [
+            "prepared",
+            "archived"
+          ]
+        },
+        "archived_at": {
+          "type": "integer"
+        },
+        "conversation_created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "history_file_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compressed_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "restore": {
+              "type": "boolean"
+            },
+            "delete": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "ConversationOperation": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "session_id",
+        "phase",
+        "detail",
+        "created_at",
+        "updated_at",
+        "can_cancel"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "enum": [
+            "archive_session",
+            "restore_session",
+            "delete_session"
+          ]
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "integer"
+        },
+        "can_cancel": {
+          "const": false
+        }
+      },
+      "additionalProperties": true
     }
   }
 }

@@ -20,6 +20,12 @@ and page fingerprints outside the credential home. Later explicit-account resume
 uses the existing transfer worker and verifies preserved history, without creating
 a credential owner in that storage.
 
+Conversation archives use sessionsation-managed gzip bundles and verified native
+history proofs outside account homes. Durable workers retain operation locks and
+stale-generation checks; Restore installs a credential-free saved-history home.
+Native removal occurs only after the archive export verifies. Permanent session
+deletion uses the existing native deletion path and purges only conversation data.
+
 Provider adapters own enrollment, capabilities, usage, conversation history and
 delivery receipts. Terminal hosts own attachment and process placement. HERDR and
 tmux must launch the same account-specific Codex command. Viewer detachment must

@@ -2,7 +2,7 @@
 
 ## Build and state
 
-Use Linux/Unraid, Rust 1.95, a C compiler, Codex CLI and tmux or HERDR.
+Use Linux/Unraid, Rust 1.95, a C compiler, Codex CLI, gzip and tmux or HERDR.
 The tested build on this server is described in [operations](operations.md).
 
 ```sh
@@ -178,3 +178,33 @@ Use `api resume-launch list` or `api resume-launch status --request-id UUID` to
 inspect the original request after detaching. The backend fixes the directory to
 the saved conversation; account, name and destination Space are explicit choices.
 See [the request and failure contract](contract.md#saved-session-popup-resume).
+
+## Saved and archived conversations
+
+Inactive Codex conversations have separate Archive and Delete actions. Archive
+exports verified gzip history to `DATA_ROOT/archived-sessions/SESSION-ID`, outside
+all credential homes, before removing native copies. Restore retains backend and
+provider conversation IDs and exposes saved history without starting an agent.
+It rejects live/loaded conversations, stale generations and changed compressed
+files. Project files and account credentials are outside these operations.
+
+Read a fresh ID and generation from `api state`, or `api archives` for archived
+items. Each mutation needs a new request UUID and explicit confirmation of that
+exact stable backend ID:
+
+```sh
+sessionsation api archives
+sessionsation api archive --session ID --expected-generation GENERATION --request-id REQUEST-UUID --confirm ID
+sessionsation api restore-session --session ID --expected-generation GENERATION --request-id REQUEST-UUID --confirm ID
+sessionsation api delete-session --session ID --expected-generation GENERATION --request-id REQUEST-UUID --confirm ID
+sessionsation api operations
+```
+
+These commands admit durable background jobs; only phase `complete` confirms
+completion. Delete permanently removes the selected conversation, its subagents
+and known local history/archive copies. It does not remove projects, account
+credentials or upstream provider accounts; external backups are outside its scope.
+Archive and Delete both require inactive sessions. Failure retains recoverable
+archive data where available. Prepared archives are listed for explicit recovery;
+repeat request IDs observe the original job and never replay a failed mutation.
+Do not edit archive manifests or move managed history between accounts manually.

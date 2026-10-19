@@ -223,6 +223,15 @@ pub fn resolve(paths: &Paths, id: &str, generation: &str) -> Result<Session> {
     })
 }
 
+pub(crate) fn invalidate(paths: &Paths, id: &str, generation: &str) -> Result<Session> {
+    transaction(paths, |c| {
+        let s = c.sessions.get_mut(id).context("SESSION_NOT_FOUND")?;
+        ensure!(s.generation() == generation, "STALE_TARGET");
+        s.attachment = None;
+        s.revision += 1;
+        Ok(s.clone())
+    })
+}
 pub fn rename(paths: &Paths, id: &str, generation: &str, name: &str) -> Result<Session> {
     validate_name(name)?;
     transaction(paths, |c| {

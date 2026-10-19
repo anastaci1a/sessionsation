@@ -85,6 +85,13 @@ pub(crate) async fn preserve_history_checks(home: &Path, vault: &Path) -> Result
     let mut files = vec![];
     collect_rollouts(&home.join("sessions"), &mut files)?;
     collect_rollouts(&home.join("archived_sessions"), &mut files)?;
+    preserve_selected_history(home, vault, &files).await
+}
+pub(super) async fn preserve_selected_history(
+    home: &Path,
+    vault: &Path,
+    files: &[PathBuf],
+) -> Result<()> {
     let proof = proof_path(vault)?;
     if proof.exists() {
         let checks: Vec<PreservedCheck> = serde_json::from_slice(&fs::read(proof)?)?;
@@ -92,7 +99,7 @@ pub(crate) async fn preserve_history_checks(home: &Path, vault: &Path) -> Result
             let relative = file.strip_prefix(home)?;
             ensure!(
                 checks.iter().any(|c| c.relative == relative
-                    && rollout_digest(&file).ok().as_ref() == Some(&c.digest)),
+                    && rollout_digest(file).ok().as_ref() == Some(&c.digest)),
                 "PRESERVED_HISTORY_CHANGED"
             );
         }
@@ -105,16 +112,19 @@ pub(crate) async fn preserve_history_checks(home: &Path, vault: &Path) -> Result
     };
     let mut checks = vec![];
     for file in files {
-        let meta = session_meta(&file)?;
+        let meta = session_meta(file)?;
         let id = meta["id"].as_str().context("missing history identity")?;
-        let digest = rollout_digest(&file)?;
+        let digest = rollout_digest(file)?;
         let paginated = if let Some(c) = control.as_mut() {
             c.thread(id, false).await?["historyMode"] == "paginated"
                 || meta["history_mode"] == "paginated"
         } else {
             meta["history_mode"] == "paginated"
         };
-        let native = if paginated {
+        let native = if proof_path(home)?.exists() && !crate::control::available(home) {
+            let native = preserved_checks(home, std::slice::from_ref(file))?;
+            native.into_iter().find(|c| c.thread_id == id)
+        } else if paginated {
             Some(
                 fingerprint(
                     control
@@ -129,7 +139,7 @@ pub(crate) async fn preserve_history_checks(home: &Path, vault: &Path) -> Result
             None
         };
         ensure!(
-            digest == rollout_digest(&file)?,
+            digest == rollout_digest(file)?,
             "HISTORY_CHANGED_DURING_VERIFICATION"
         );
         checks.push(PreservedCheck {

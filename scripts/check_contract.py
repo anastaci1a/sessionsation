@@ -16,6 +16,8 @@ def validate(value, definition=None):
 
 fixtures = json.loads((root / "docs/contract/fixtures.json").read_text())
 validate(fixtures["request"], "MessageRequest")
+validate(fixtures["archived_session"], "ArchivedSession")
+validate(fixtures["conversation_operation"], "ConversationOperation")
 validate(fixtures["account_deletion"], "AccountDeletion")
 validate(fixtures["account_deletion_preview"], "AccountDeletionPreview")
 validate(fixtures["launch_request"], "LaunchRequest")
@@ -31,7 +33,7 @@ for name, value in fixtures.items():
         validate(value, "Receipt")
 with tempfile.TemporaryDirectory() as directory:
     command = [str(Path(os.environ.get("CARGO_TARGET_DIR", root / "target")) / "debug/sessionsation"), "--data-dir", directory, "api"]
-    for args in [["capabilities"], ["state"]]:
+    for args in [["capabilities"], ["state"], ["archives"]]:
         value = json.loads(subprocess.check_output(command + args, text=True))
         validate(value)
         if args == ["state"]:

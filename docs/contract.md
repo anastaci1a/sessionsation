@@ -321,3 +321,29 @@ stored-file metadata; no cached or partial inventory grants consent.
 Session snapshots/details optionally include `conversation_created_at` (the native
 recorded timestamp, otherwise null) and `history_file_bytes` (observed rollout
 bytes, excluding shared account databases). Creation is never inferred from mtime.
+
+## Conversation archives
+
+Capability `conversation_archive.version:1` advertises list/archive/restore/delete,
+`compression:"gzip"` and `storage:"sessionsation_data_root"`. `api archives`
+returns archived/prepared entries with stable `id`, fresh `generation`, provider
+conversation identity, original creation timestamp, original history bytes and
+`compressed_bytes` (null if stored files cannot be measured safely).
+
+`api archive`, `api restore-session` and `api delete-session` require `--session`,
+`--expected-generation`, `--request-id` (UUID) and `--confirm` equal to the stable
+session ID. A successful command returns a queued conversation operation, also
+reported by `api operations`. Its immutable `created_at` and `id` correlate polling;
+`kind` is `archive_session`, `restore_session` or `delete_session`. Intermediate
+phases describe history verification/compression/restoration/removal; terminal
+phases are `complete` and `failed`. These jobs are not cancellable. Admission is
+not completion. The same request/target/generation returns its original job;
+reusing an ID with different input is rejected. No automatic replay occurs.
+
+Archive/Restore/Delete invalidate the captured generation. Archive hides the
+session from normal state; Restore returns the same backend/provider identities
+as saved history, without starting a model. Loaded threads and live copies block
+unsafe changes. Delete is permanent, including known managed archives, and
+preserves project files and credentials. Storage and recovery rules belong to
+[the CLI reference](cli.md#saved-and-archived-conversations). Existing send receipts
+and New/Resume receipt phases are unchanged.
