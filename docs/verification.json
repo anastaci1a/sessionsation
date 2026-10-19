@@ -17,37 +17,37 @@
       "JSON Schema and real CLI envelopes"
     ],
     "tests": {
-      "unit": 149,
+      "unit": 150,
       "cli": 8,
-      "external_move": 65,
+      "external_move": 69,
       "messaging_cli": 8,
       "persistence": 6,
       "scheduling": 29,
       "transport": 3,
-      "total": 268,
-      "ignored": 4,
+      "total": 273,
+      "ignored": 5,
       "failed": 0
     },
     "cargo_lock_sha256": "ac5dca041b22af0cf8c249533784f0bd2a16ba62002aefa6bc08e06c360e2b21",
-    "release_smoke": "Locked release build and real API version/capabilities/state schema-envelope checks passed. No deployment or provider calls.",
+    "release_smoke": "Debug CLI version/capabilities/state/schema envelopes passed. Locked release build is separate from this default/isolated-host test record.",
     "isolated_herdr": {
       "version": "0.9.5",
       "protocol": 22,
       "binary_sha256": "14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d",
-      "passed": 3,
+      "passed": 4,
       "models": 0,
       "scope": [
         "new tab and retained shell",
         "paginated saved history after account deletion",
-        "busy Space move, unchanged native runtime generation, split siblings, lost reply and read-only recovery without replay, later account transfer"
-      ],
-      "source_commit": "de46724"
+        "busy Space move, unchanged native runtime generation, split siblings, lost reply and read-only recovery without replay, later account transfer",
+        "Explicit stopped/interrupted/errored exited-process recovery in a new normal tab; stable identity/context/history and one native queue attempt across retries"
+      ]
     },
     "artifact": {
-      "path_in_test_checkout": "target-observations-final/release/sessionsation",
-      "sha256": "d6d910067f990f20d3d4ad6f142aff93bb75279e99e4b68c1a6e638f61808554",
+      "path_in_test_checkout": "target-review/debug/sessionsation",
+      "sha256": "ae7f7d983e66480e2df8086647a3243ec60fee22635fc397aea30ad59a772d45",
       "installed": false,
-      "provenance": "Rust 1.95.0 locked release build from accompanying source; package 0.2.0, API v1, contract revision 2. Existing consumer executables remain unchanged."
+      "provenance": "Rust 1.95.0 locked debug build from accompanying source; package 0.2.0, API v1, contract revision 3. Existing consumer executables remain unchanged."
     },
     "passive_observation": {
       "fixture": "Kernel-bound synthetic HERDR record, inert native WebSocket server, shared mutation lock held",
@@ -61,6 +61,6 @@
   "limitations": [
     "No provider login, credentials, model calls or existing live hosts in portable checks",
     "Native acceptance and original-owner handoff require separately scoped evidence",
-    "All root consumers must understand Space-move reservations before live use; existing owner, clients and downstream pins were not changed"
+    "All root mutators must understand message-recovery and Space-move reservations before live use; existing owner, clients and downstream pins were not changed"
   ]
 }

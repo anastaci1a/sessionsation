@@ -35,6 +35,11 @@ pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, 
     };
     let submit = blocked.is_none() && state == "idle";
     let queue = blocked.is_none() && matches!(state, "idle" | "working");
+    let resume = fresh
+        && !removed
+        && native["native_sending_enabled"] == true
+        && native["reason"].is_null()
+        && (matches!(state, "interrupted" | "errored") || (state == "idle" && stop.is_some()));
     json!({"session_id":session.id,"generation":session.generation(),
         "provider":"codex","provider_conversation_id":session.conversation_id,
         "account_id":format!("codex:{}",session.account),"state":state,
@@ -42,12 +47,13 @@ pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, 
         "freshness":if fresh {"fresh"} else {"stale"},
         "observation":{"status":if at.is_none() {"unobserved"} else if fresh {"fresh"} else {"stale"},"checked_at":now},
         "runtime_state":if at.is_none() && state=="unknown" {"unobserved"} else if stop.is_some() && state!="working" {"stopped"} else {state},
-        "runtime_generation":native["generation"],"previous_turn_id":native["previous_turn_id"],
+        "runtime_generation":native["generation"],
+        "process_state":native["process_state"].as_str().unwrap_or("unknown"),"process_observed_at":native["process_observed_at"],"previous_turn_id":native["previous_turn_id"],
         "explicit_intent":{"state":if stop.is_some() {"stop_requested"} else {"unknown"},"id":stop},
         "queued_work_count":null,"evidence":"native_read_only_snapshot_not_reservation",
         "actions":{"submit":{"available":submit,"reason":if submit {None} else {blocked.or(Some("target_busy"))}},
             "queue":{"available":queue,"reason":if queue {None} else {blocked.or(Some("state_unverified"))}},
-            "resume":{"available":false,"reason":if state=="disconnected" {"validated_launch_plan_required"} else if stop.is_some() || matches!(state,"interrupted"|"errored") {"explicit_recovery_preconditions_required"} else {"resume_not_required"},"starts_process":false}},
+            "resume":{"available":resume,"reason":if resume {Value::Null} else if state=="disconnected" {json!("validated_launch_plan_required")} else if state=="idle" && stop.is_none() && fresh && native["reason"].is_null() {json!("resume_not_required")} else if state=="working" {json!("session_already_working")} else {json!(blocked.unwrap_or("state_unverified"))},"starts_process":state=="disconnected","requires_final_validation":true,"requires_expected_previous_turn_id":true,"requires_expected_stop_id":true,"requires_expected_runtime_generation":true}},
         "delivery_semantics":"non_steering_native_queue"})
 }
 
@@ -139,6 +145,16 @@ pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow
         native["stop_intent_id"] = json!(stop);
     }
     native["stop_intent_id"] = json!(stop);
+    // Runtime identity is independent of successful native state observation.
+    native["generation"] = json!(before.as_ref().map(Attachment::generation));
+    native["process_state"] = json!(if before.is_some() {
+        "running"
+    } else if session.attachment.is_some() {
+        "exited"
+    } else {
+        "unattached"
+    });
+    native["process_observed_at"] = json!(crate::daemon::now());
     if crate::lifecycle::pending(paths, &session.conversation_id, None)?.is_some() {
         native["reason"] = json!("session_operation_in_progress");
     }

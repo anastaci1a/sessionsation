@@ -43,6 +43,10 @@ enum Commands {
     ResumeWorker { request_id: String },
     #[command(hide = true)]
     ResumeRun { request_id: String },
+    #[command(hide = true)]
+    MessageRecoveryWorker { message_id: String },
+    #[command(hide = true)]
+    MessageRecoveryRun { message_id: String },
     /// Versioned machine-readable backend contract (JSON/NDJSON).
     Api {
         #[arg(long, default_value_t=1, value_parser=clap::value_parser!(u32).range(1..=1))]
@@ -414,7 +418,7 @@ async fn main() {
     if let Err(error) = run(cli).await {
         eprintln!(
             "{}",
-            json!({"api_version":1,"ok":false,"error":{"code":error_code(&error),"message":format!("{error:#}"),"retryable":false}})
+            json!({"api_version":1,"ok":false,"error":{"code":error_code(&error),"message":sessionsation::messaging::recovery::diagnostic(&error_code(&error)).map(|help|format!("{}: {}",error_code(&error),help)).unwrap_or_else(||format!("{error:#}")),"retryable":matches!(error_code(&error).as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS")}})
         );
         std::process::exit(1);
     }
@@ -431,6 +435,12 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::AccountDeleteWorker { request_id } => {
             sessionsation::account_deletion::worker(&paths, &request_id).await?
+        }
+        Commands::MessageRecoveryWorker { message_id } => {
+            sessionsation::messaging::recovery::worker(&paths, &message_id).await?
+        }
+        Commands::MessageRecoveryRun { message_id } => {
+            sessionsation::messaging::recovery::run(&paths, &message_id).await?
         }
         Commands::ResumeWorker { request_id } => {
             sessionsation::resume::worker(&paths, &request_id).await?

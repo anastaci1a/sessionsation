@@ -3,6 +3,7 @@ mod batch;
 mod modes;
 mod public;
 mod readiness;
+pub mod recovery;
 pub use batch::{BatchRequest, observations};
 pub use public::{PublicMode, PublicRequest, receipt_public, send_public};
 pub use readiness::observe_public;

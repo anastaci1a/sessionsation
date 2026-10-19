@@ -87,6 +87,9 @@ or probes with a message. Native observation is bounded to five seconds; known l
 terminal-host discovery and rollout scans. The result is typed by `Readiness` in
 the schema: idle/working/interrupted/errored/disconnected/unknown, diagnostic reason,
 `observed_at`, `valid_until`, freshness and a separate `runtime_generation`.
+`process_state` and `process_observed_at` separately report a kernel-validated
+running, exited or unattached process; an idle native thread is not a process-stop
+claim. `observation.status` distinguishes absent evidence from expired evidence.
 Freshness expires five seconds after the final verified native read completes;
 cache hits never extend it. It is not a reservation.
 A changed catalog or runtime rejects the result as `STALE_TARGET`.
@@ -98,7 +101,7 @@ Submit is available only for positively idle eligible observations; Queue may be
 available while working. Sending-disabled, removed-account, stale, explicit-stop
 and unknown observations withhold readiness with reasons. These are conservative
 hints, not a new dispatch policy: actual sending still rechecks its existing gates.
-No legacy busy-Steer capability or messaging Resume is adopted. Poll a selected
+No legacy busy-Steer capability is adopted. Explicit Resume is described below. Poll a selected
 session no faster than every five seconds; use backoff after errors.
 
 ### Batch readiness and client polling
@@ -221,6 +224,119 @@ An uncertain write is journaled before socket I/O and is never resent. Receipt a
 idempotency storage is bounded at 10,000 and never silently evicts replay protection.
 Expiry is an unsent submission deadline, not cancellation of accepted native work.
 
+### Explicit Resume-and-submit
+
+API v1 contract revision 3 adds `api send` with `mode:"resume"`. Negotiate
+`message_recovery` from `api capabilities`; the older provider `resume` flag
+refers to saved-session launching and does not imply this message mode. Codex's
+verified native protocol profile is **0.163.0**. Claude recovery is unsupported.
+This is caller-requested continuation of the same conversation, never conversion,
+new-conversation creation, steering, forced interruption or automatic restart.
+Ordinary Submit/Queue behavior and historical receipts are preserved. Submit,
+Queue, observation, discovery and receipt polling never launch an exited agent.
+
+The request retains the ordinary message fields and adds `recovery`:
+
+```json
+{
+  "expected_state": "interrupted",
+  "expected_previous_turn_id": "turn-from-observation",
+  "expected_stop_id": null,
+  "expected_runtime_generation": "64-character-runtime-generation"
+}
+```
+
+These are placeholders, not runnable identifiers. Copy current observation values;
+previous-turn and stop keys must be explicitly present, using null only when none
+was observed. Supported expected states are `interrupted`, `errored` and `stopped`.
+A retained live attachment requires its exact native runtime generation. A live
+idle session requires a recorded stop token to use `stopped`; idle alone is not a
+stop. Ordinary readiness and process existence are separate facts. Unknown,
+unobserved, stale or nonterminal history is not proof that recovery is supported.
+A live process with an unloaded conversation must reconnect or be explicitly
+stopped first; this mode does not silently load a retained, unverified attachment.
+
+For an **exited agent**, first generate an explicit launch plan:
+
+```sh
+sessionsation api recovery-plan < recovery-target.json > recovery-plan-envelope.json
+```
+
+`recovery-target.json` contains `session_id`, `expected_generation` and one host:
+
+```json
+{"kind":"herdr","session":"HOST-NAME","socket":"/absolute/owned/herdr.sock","workspace_id":"SPACE-ID"}
+```
+
+or:
+
+```json
+{"kind":"tmux","socket":"/absolute/owned/tmux.sock","session":"unused-session-name"}
+```
+
+Use an existing HERDR Space or a new, unused tmux session name on an existing
+owned server. A new normal tab/pane is created without moving any live agent.
+The returned `result` is an opaque `RecoveryPlan`: supply it unchanged as
+`recovery.launch`. Its `previous_turn_id`, `previous_turn_status` and
+`stop_intent_id` describe the saved target for the explicit preconditions. Null
+runtime generation is acceptable only for exited-process recovery with a plan.
+The saved account and directory cannot be overridden in this mode. Account transfer,
+working-directory changes and ordinary saved-session launching remain separate
+lifecycle actions. Missing recorded permissions require an explicitly configured
+launch; this mode never falls back to permissive/default-account settings.
+
+Planning and admission validate conversation identity/history, account eligibility,
+recorded approval/sandbox policy, existing native owner/profile, empty queued work,
+no active background work, directory identity, provider/backend executable hashes,
+configuration fingerprint, and destination socket/Space identity. The worker and
+account-aware launcher recheck these before their respective transitions. Changed
+material requires a new reviewed plan. No credential owner is started. All mutators
+sharing the root must understand `message-recoveries` reservations; an older
+supervisor is refused with `RECOVERY_SUPERVISOR_UPGRADE_REQUIRED_COORDINATE_ALL_ROOT_WRITERS`.
+Upgrade coordination is separate from installing a candidate CLI.
+
+The immutable message UUID is journaled **before launch**. One explicit invocation
+can start one worker; retries and status queries only inspect its original journal
+and delivery receipt. Changed payload/preconditions/plan under the same UUID are
+`MESSAGE_ID_CONFLICT`. Launch dispatch uncertainty is `launch_unknown`; it is
+separate from `delivery_unknown` for an uncertain native queue write. Once native
+write intent exists, the original queue request is never automatically replayed.
+Native queue addition uses the provider's atomic non-steering dispatch path; a
+concurrent turn may defer input, but cannot turn it into a steer. This was checked
+against the [inspected native queue implementation](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/ext/queue/src/service.rs).
+Client IDs are correlation values, not an assumed native uniqueness guarantee.
+
+Resume receipts add `launch: {required, phase, confirmed, detail, generation,
+target, created_at, updated_at, reconcile_command}`. `launch.generation` is the
+candidate post-launch **catalog** generation, usable as launch evidence only once confirmed; `accepted_runtime_generation` is the distinct
+native attachment generation and is null until delivery is bound. `confirmed`
+requires a positive process/attachment check. It does not mean the message was
+accepted. Always inspect the ordinary receipt `facts`, correlation and reply.
+A successful launch can still have expired, rejected or uncertain input. The stop
+token is cleared only after a positive enqueue acknowledgement; an uncertain send
+retains it for explicit review, even if later receipt observation finds acceptance.
+
+```sh
+sessionsation api receipt MESSAGE-ID
+sessionsation api recovery-reconcile MESSAGE-ID
+```
+
+Reconciliation acquires the original worker lease and never launches, resumes,
+sends, cancels or retries input. Before recorded dispatch it can mark a stopped
+worker failed (a created plain shell may remain). After dispatch it requires
+positive evidence of the original attachment; it can settle launch facts and
+release the local reservation, preserving the original delivery ledger. If launch
+remains ambiguous, it refuses and retains the reservation: inspect the destination
+and original IDs instead of starting a replacement. Routine receipt polling does
+not take over a worker. Pending recovery cancellation without verified worker
+quiescence is unsupported. The 10,000-entry bound never evicts replay protection.
+
+Actionable refusals distinguish missing plans, changed executable/configuration/
+history/runtime/stop/turn, missing permissions or directories, unavailable accounts,
+queued/background work, busy or unverified native state, and incompatible owners.
+`ADAPTER_BUSY` on send or receipt is transient contention, not failed delivery;
+retry receipt lookup or the **identical request ID**, never a replacement message.
+
 ### Admission and contention
 
 The messaging ledger has one exclusive `adapter.lock` across legacy and v1
@@ -231,13 +347,14 @@ Do not remove locks, stop legacy observers or introduce another owner to bypass 
 
 For **that invocation of `api send`**, `ADAPTER_BUSY` precedes request binding,
 admission and native dispatch. It does not negate an earlier admission of the same ID.
-The public binding and receipt are durable before any native write; submission
-uncertainty is saved before touching the socket. There is no automatic receipt or
+Ordinary messages bind in SQLite; explicit Resume first binds in its recovery
+journal before any launch. Submission uncertainty is saved before touching the
+queue socket. There is no automatic receipt or
 binding eviction. For `api receipt`, `ADAPTER_BUSY` means lookup could not run;
 it says nothing about whether the send succeeded. Preserve operation context and
 the original error instead of converting a receipt error into a send rejection.
 
-After contention clears, `RECEIPT_NOT_FOUND` means no v1 binding exists for that ID
+After contention clears, `RECEIPT_NOT_FOUND` means no v1 binding or recovery journal exists for that ID
 in the selected root. Verify the exact root/instance and original immutable request
 before drawing an admission conclusion. A wrong root, unbound legacy ID or lost
 original error must not trigger a replacement send. This is not a Queue retry or
@@ -248,7 +365,8 @@ its limits are linked from [operations](operations.md#legacy-coexistence-and-rev
 ### Receipt evidence
 
 `accepted_generation` is the original backend generation; the independent
-`accepted_runtime_generation` is the original native attachment generation.
+`accepted_runtime_generation` is the original native attachment generation
+(or null while Resume has not yet bound delivery).
 `correlation` is null until positively matched by request ID, or contains
 `native_turn_id`, `original_input_item_id`, optional `completion_input_item_id`,
 `observed_runtime_generation` and optional `reply_item_id`. Completion projection
@@ -496,7 +614,10 @@ scope, UI-visible effects and operational limitations.
 
 ## Client upgrade notes
 
-Source package 0.2.0 retains API v1 with additive capability negotiation. The
+Source package 0.2.0, contract revision 3, retains API v1 with additive capability
+negotiation. New clients may opt into batch observations and explicit message
+recovery; accept Resume-only null runtime generations and `launch_unknown` receipts.
+Existing Submit/Queue requests and receipt domains are unchanged. The
 reviewed migration executable may still report 0.1.0: inspect `api version` on new
 builds, or `--version` plus an external SHA-256 and `api capabilities` on older
 ones. An unknown `version` command means the discovery extension is absent.

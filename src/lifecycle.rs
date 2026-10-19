@@ -11,6 +11,7 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
         "conversation-operations",
         "handoff-jobs",
         "space-moves",
+        "message-recoveries",
     ] {
         let root = paths.root.join(directory);
         if !root.is_dir() {
@@ -24,7 +25,8 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
             let r: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
             let id = r["id"]
                 .as_str()
-                .or_else(|| r["request"]["request_id"].as_str());
+                .or_else(|| r["request"]["request_id"].as_str())
+                .or_else(|| r["request"]["message_id"].as_str());
             let source = r["conversation_id"]
                 .as_str()
                 .or_else(|| r["session"]["conversation_id"].as_str())

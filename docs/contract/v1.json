@@ -335,7 +335,8 @@
         "mode": {
           "enum": [
             "submit",
-            "queue"
+            "queue",
+            "resume"
           ]
         },
         "text": {
@@ -345,6 +346,16 @@
         },
         "expires_at": {
           "type": "integer"
+        },
+        "recovery": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RecoveryIntent"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -356,7 +367,35 @@
         "text",
         "expires_at"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "resume"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "recovery"
+            ],
+            "properties": {
+              "recovery": {
+                "$ref": "#/$defs/RecoveryIntent"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "recovery": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     },
     "Receipt": {
       "type": "object",
@@ -382,7 +421,8 @@
         "mode": {
           "enum": [
             "submit",
-            "queue"
+            "queue",
+            "resume"
           ]
         },
         "delivery_semantics": {
@@ -398,7 +438,8 @@
             "rejected",
             "failed",
             "cancelled",
-            "expired"
+            "expired",
+            "launch_unknown"
           ]
         },
         "reason": {
@@ -421,8 +462,15 @@
           ]
         },
         "accepted_runtime_generation": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "native_queue_id": {
           "oneOf": [
@@ -449,6 +497,9 @@
         },
         "observation": {
           "$ref": "#/$defs/ReceiptObservation"
+        },
+        "launch": {
+          "$ref": "#/$defs/RecoveryLaunchFacts"
         }
       },
       "required": [
@@ -468,7 +519,31 @@
         "correlation",
         "observation"
       ],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "resume"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "launch"
+            ]
+          },
+          "else": {
+            "properties": {
+              "accepted_runtime_generation": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      ]
     },
     "Operation": {
       "type": "object",
@@ -687,6 +762,9 @@
             },
             "queue": {
               "$ref": "#/$defs/ActionHint"
+            },
+            "resume": {
+              "$ref": "#/$defs/ActionHint"
             }
           },
           "required": [
@@ -716,6 +794,20 @@
         },
         "runtime_state": {
           "type": "string"
+        },
+        "process_state": {
+          "enum": [
+            "running",
+            "exited",
+            "unattached",
+            "unknown"
+          ]
+        },
+        "process_observed_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1783,7 +1875,8 @@
         },
         "contract_revision": {
           "type": "integer",
-          "minimum": 2
+          "minimum": 2,
+          "const": 3
         },
         "executable": {
           "type": "object",
@@ -1848,6 +1941,304 @@
         "sessions"
       ],
       "additionalProperties": false
+    },
+    "RecoveryHost": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "herdr"
+            },
+            "session": {
+              "type": "string",
+              "minLength": 1
+            },
+            "socket": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "workspace_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "session",
+            "socket",
+            "workspace_id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "tmux"
+            },
+            "socket": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "session": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "socket",
+            "session"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RecoveryPlan": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "provider_conversation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^codex:"
+        },
+        "directory": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "executable": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "launcher_executable": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "executable_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "launcher_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "configuration_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "history_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "directory_identity": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "host_identity": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "native_endpoint_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "host": {
+          "$ref": "#/$defs/RecoveryHost"
+        },
+        "previous_turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "previous_turn_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stop_intent_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "expected_generation",
+        "provider_conversation_id",
+        "account_id",
+        "directory",
+        "executable",
+        "launcher_executable",
+        "executable_sha256",
+        "launcher_sha256",
+        "configuration_sha256",
+        "history_sha256",
+        "directory_identity",
+        "host_identity",
+        "native_endpoint_generation",
+        "host",
+        "previous_turn_id",
+        "previous_turn_status",
+        "stop_intent_id"
+      ],
+      "additionalProperties": false
+    },
+    "RecoveryPlanRequest": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "host": {
+          "$ref": "#/$defs/RecoveryHost"
+        }
+      },
+      "required": [
+        "session_id",
+        "expected_generation",
+        "host"
+      ],
+      "additionalProperties": false
+    },
+    "RecoveryIntent": {
+      "type": "object",
+      "properties": {
+        "expected_state": {
+          "enum": [
+            "stopped",
+            "interrupted",
+            "errored"
+          ]
+        },
+        "expected_previous_turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected_stop_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected_runtime_generation": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "launch": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RecoveryPlan"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "expected_state",
+        "expected_previous_turn_id",
+        "expected_stop_id"
+      ],
+      "additionalProperties": false
+    },
+    "RecoveryLaunchFacts": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "confirmed": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phase": {
+          "enum": [
+            "admitted",
+            "preparing",
+            "creating_terminal",
+            "dispatching",
+            "launch_confirmed",
+            "complete",
+            "failed",
+            "uncertain"
+          ]
+        },
+        "generation": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "integer"
+        },
+        "reconcile_command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "required",
+        "confirmed",
+        "phase",
+        "generation",
+        "target",
+        "created_at",
+        "updated_at",
+        "reconcile_command"
+      ],
+      "additionalProperties": true
     }
   }
 }

@@ -1106,7 +1106,15 @@ pub async fn run_account_thread_guarded(
     options: &[String],
     expected: Option<(&str, &str)>,
 ) -> Result<()> {
-    run_account_thread_inner(paths, account, thread, options, expected, None, None).await
+    run_account_thread_inner(
+        paths,
+        account,
+        thread,
+        options,
+        expected,
+        LaunchIntent::Standard,
+    )
+    .await
 }
 pub async fn run_account_new_named(
     paths: &Paths,
@@ -1114,7 +1122,15 @@ pub async fn run_account_new_named(
     request: &str,
     name: &str,
 ) -> Result<()> {
-    run_account_thread_inner(paths, account, None, &[], None, Some((request, name)), None).await
+    run_account_thread_inner(
+        paths,
+        account,
+        None,
+        &[],
+        None,
+        LaunchIntent::Creation(request, name),
+    )
+    .await
 }
 pub(crate) async fn run_account_resume_requested(
     paths: &Paths,
@@ -1133,13 +1149,53 @@ pub(crate) async fn run_account_resume_requested(
         Some(thread),
         &options,
         Some(expected),
-        None,
-        Some(request),
+        LaunchIntent::Resume(request),
     )
     .await
 }
 pub(crate) fn save_resume_directory(paths: &Paths, thread: &str, directory: &Path) -> Result<()> {
     relocation::save_location(paths, thread, directory)
+}
+enum LaunchIntent<'a> {
+    Standard,
+    Creation(&'a str, &'a str),
+    Resume(&'a str),
+    Recovery(&'a str),
+}
+
+pub(crate) async fn run_account_message_recovery(
+    paths: &Paths,
+    account: &str,
+    thread: &str,
+    expected: (&str, &str),
+    request: &str,
+) -> Result<()> {
+    run_account_thread_inner(
+        paths,
+        account,
+        Some(thread),
+        &[],
+        Some(expected),
+        LaunchIntent::Recovery(request),
+    )
+    .await
+}
+pub(crate) fn recovery_permissions(path: &Path) -> Option<(String, String)> {
+    recorded_permissions(path)
+}
+pub(crate) fn recovery_rollout(home: &Path, id: &str) -> Result<Option<PathBuf>> {
+    rollout_by_thread(home, id)
+}
+pub(crate) fn clear_recovery_stop_intent(
+    paths: &Paths,
+    id: &str,
+    expected: Option<&str>,
+) -> Result<()> {
+    ensure!(
+        catalog::stop_intent(paths, id)?.as_deref() == expected,
+        "RECOVERY_STOP_INTENT_CHANGED_OBSERVE_AGAIN"
+    );
+    catalog::set_stop_intent(paths, id, None)
 }
 async fn run_account_thread_inner(
     paths: &Paths,
@@ -1147,13 +1203,30 @@ async fn run_account_thread_inner(
     thread: Option<&str>,
     options: &[String],
     expected: Option<(&str, &str)>,
-    creation: Option<(&str, &str)>,
-    resumption: Option<&str>,
+    intent: LaunchIntent<'_>,
 ) -> Result<()> {
+    let creation = match intent {
+        LaunchIntent::Creation(r, n) => Some((r, n)),
+        _ => None,
+    };
+    let resumption = match intent {
+        LaunchIntent::Resume(r) => Some(r),
+        _ => None,
+    };
+    let recovery = match intent {
+        LaunchIntent::Recovery(r) => Some(r),
+        _ => None,
+    };
+    let material = recovery
+        .map(|id| crate::messaging::recovery::launch_material(paths, id))
+        .transpose()?;
+    let options = material.as_ref().map_or(options, |(_, o)| o.as_slice());
     validate_name(account)?;
     let _account_operation = crate::accounts::launch_lock(paths, account)?;
     crate::accounts::ensure_available(paths, account)?;
-    daemon::ensure_started(paths).await?;
+    if recovery.is_none() {
+        daemon::ensure_started(paths).await?;
+    }
     let status = daemon::call(paths, "status", json!({})).await?;
     ensure!(
         status["accounts"].as_array().is_some_and(|a| a
@@ -1162,7 +1235,10 @@ async fn run_account_thread_inner(
         "account is not enrolled or is disabled"
     );
     let home = paths.account(account)?;
-    let config = crate::store::load_config(paths)?;
+    let mut config = crate::store::load_config(paths)?;
+    if let Some((exe, _)) = &material {
+        config.codex_binary = exe.to_string_lossy().into_owned();
+    }
     let mut cwd = std::env::current_dir()?;
     let mut args = vec![config.codex_binary.clone()];
     args.extend_from_slice(options);
@@ -1177,7 +1253,7 @@ async fn run_account_thread_inner(
     ensure!(cwd.is_dir(), "working directory is not a directory");
     let requested = thread.or(launch.thread.as_deref());
     let _admission = requested
-        .map(|id| crate::lifecycle::admit(paths, id, resumption))
+        .map(|id| crate::lifecycle::admit(paths, id, resumption.or(recovery)))
         .transpose()?;
     let _conversation_lock = if let Some(id) = requested {
         let lock = catalog::operation_lock(paths, id)?;
@@ -1202,7 +1278,11 @@ async fn run_account_thread_inner(
             "STALE_TARGET"
         );
     }
-    let mut control = account_control(paths, account).await?;
+    let mut control = if recovery.is_some() {
+        crate::control::Control::connect(&home).await?
+    } else {
+        account_control(paths, account).await?
+    };
     let mut params = json!({"cwd":cwd});
     if let Some(id) = requested {
         let saved = control.thread_for_state(id).await?;
@@ -1219,10 +1299,13 @@ async fn run_account_thread_inner(
             ensure!(cwd.is_dir(), "saved working directory is unavailable");
             params["cwd"] = json!(cwd);
         }
-        let permissions = rollout_by_thread(&home, id)?
+        let recorded = rollout_by_thread(&home, id)?
             .as_deref()
-            .and_then(recorded_permissions)
-            .unwrap_or_else(|| ("never".into(), "danger-full-access".into()));
+            .and_then(recorded_permissions);
+        if recovery.is_some() {
+            ensure!(recorded.is_some(), "RECOVERY_PERMISSIONS_MISSING");
+        }
+        let permissions = recorded.unwrap_or_else(|| ("never".into(), "danger-full-access".into()));
         params["approvalPolicy"] = json!(permissions.0);
         params["sandbox"] = json!(permissions.1);
     }
@@ -1287,6 +1370,9 @@ async fn run_account_thread_inner(
     let id = response["thread"]["id"]
         .as_str()
         .context("Codex returned no conversation identity")?;
+    if recovery.is_some() {
+        ensure!(Some(id) == requested, "RECOVERY_CONVERSATION_ID_CHANGED");
+    }
     if requested.is_none() {
         let name = if let Ok(pane) = std::env::var("TMUX_PANE") {
             let name = tmux(&["display-message", "-p", "-t", &pane, "#{session_name}"])?;
@@ -1346,7 +1432,7 @@ async fn run_account_thread_inner(
             process_start: process_info(std::process::id())?.start_time,
         });
     }
-    if requested.is_some() {
+    if requested.is_some() && recovery.is_none() {
         catalog::set_stop_intent(paths, id, None)?;
     }
     if let Some((request, _)) = creation {
@@ -1363,6 +1449,9 @@ async fn run_account_thread_inner(
         )?;
         if let Some(request) = resumption {
             crate::resume::attached(paths, request, &recorded)?;
+        }
+        if let Some(request) = recovery {
+            crate::messaging::recovery::attached(paths, request, &recorded)?;
         }
     }
     let socket = home.join("app-server-control/app-server-control.sock");

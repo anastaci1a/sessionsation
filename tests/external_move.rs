@@ -5,6 +5,8 @@ mod archives;
 mod autostart;
 #[path = "external_move/launch.rs"]
 mod launch;
+#[path = "external_move/recovery.rs"]
+mod recovery;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sessionsation::{
@@ -58,6 +60,9 @@ fn tmux(socket: &str, args: &[&str]) -> String {
 }
 #[derive(Default)]
 struct Server {
+    messaging_profile: bool,
+    lose_queue_reply: bool,
+    native_messages: Vec<Value>,
     limits: Option<Value>,
     threads: BTreeMap<String, Value>,
     started_profiles: BTreeMap<String, Value>,
@@ -145,7 +150,7 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                     let mut s = state.lock().unwrap();
                     s.calls.push((m.into(), p.clone()));
                     let result = match m {
-                        "initialize" => json!({"userAgent":"fixture"}),
+                        "initialize" => json!({"userAgent":if s.messaging_profile {"fixture/0.163.0"}else{"fixture"}}),
                         "account/read" => json!({"account":{"type":"chatgpt"}}),
                         "account/rateLimits/read" => {
                             s.limits.clone().unwrap_or_else(||json!({"rateLimits":{"limitId":"codex","primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":daemon::now()+18000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":daemon::now()+604800}}}))
@@ -245,6 +250,7 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                                 if p["cwd"].is_string() {
                                     t["cwd"] = p["cwd"].clone();
                                 }
+                                if s.messaging_profile {if let Some(old)=s.threads.get(id){t["turns"]=old["turns"].clone();}}
                                 s.threads.insert(id.into(), t.clone());
                                 let full = p["permissions"] == ":danger-full-access"
                                     && !s.ignore_full_access;
@@ -321,6 +327,11 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                             }
                             json!({})
                         }
+                        "thread/queue/add" => {
+                            let item=json!({"id":format!("queue-{}",s.native_messages.len()+1),"clientUserMessageId":p["clientUserMessageId"]});
+                            s.native_messages.push(item.clone());json!({"queuedSubmission":item})
+                        },
+                        "thread/queue/list" if s.messaging_profile => json!({"data":s.native_messages,"nextCursor":null}),
                         "thread/queue/list" => {
                             s.queue_reads += 1;
                             json!({"data":if s.queue_after_reads.is_some_and(|n| s.queue_reads >= n) {
@@ -337,7 +348,9 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                         json!({"id":v["id"],"result":result})
                     }
                 };
-                if m == "turn/start" && state.lock().unwrap().lose_continuation_reply {
+                if (m == "turn/start" && state.lock().unwrap().lose_continuation_reply)
+                    || (m == "thread/queue/add" && state.lock().unwrap().lose_queue_reply)
+                {
                     break;
                 }
                 if ws

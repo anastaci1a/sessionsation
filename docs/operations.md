@@ -47,13 +47,14 @@ HOME/configuration; the ignored fixtures create and stop their own named host:
 SESSIONSATION_ISOLATED_HOST_TEST=1 cargo test --locked --test external_move installed_herdr_ -- --ignored --nocapture
 ```
 
-The three fixtures verify account/home/UUID/socket/permissions, origin shell retention,
+The fixtures verify account/home/UUID/socket/permissions, origin shell retention,
 foreign observer environments, startup waiting and saved-history resume after local
 account deletion. The Space-move fixture also verifies a busy pane move, stable
 provider-runtime generation, unaffected split siblings, lost-reply reconciliation
 without replay, unchanged launch receipts, and subsequent account handoff in the
-moved terminal. They use fake providers, no credentials and no model calls. The
-fourth ignored fixture requires a separately supplied original Switcher executable;
+moved terminal. Explicit message recovery tests stopped, interrupted and errored
+agents in both hosts, preserving history and identity and preventing replay.
+These use fake providers, no credentials and no model calls. A separate ignored fixture requires a separately supplied original Switcher executable;
 it is not part of portable default checks. Never mount live homes or sockets into
 a fixture container. [Machine-readable scope](verification.json) records current
 portable verification; timing and host-specific operational receipts belong outside Git.
@@ -73,7 +74,7 @@ Do not rename a live root, overwrite a selected executable, remove locks, rewind
 generations, replay uncertain requests, or infer safety from a timeout.
 
 All readers sharing a root must understand its terminal namespaces and lifecycle
-reservations, including `space-moves/`, before enabling Space movement. Coordinate
+reservations, including `space-moves/` and `message-recoveries/`, before enabling their actions. Coordinate
 compatible owner/client pins first: older consumers do not understand this
 reservation. An older
 reader can invalidate a custom HERDR binding even when a newer client handles its

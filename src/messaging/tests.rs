@@ -785,6 +785,7 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
             .unwrap()
             .remove(0);
         let request = PublicRequest {
+            recovery: None,
             api_version: 1,
             message_id: input.message_id.clone(),
             session_id: session.id.clone(),

@@ -57,8 +57,7 @@ pub(in crate::messaging) async fn observe(
     let (state, previous) = match before.kind.as_str() {
         "active" => ("working", None),
         "notLoaded" => ("disconnected", None),
-        "systemError" => ("errored", None),
-        "idle" => {
+        "idle" | "systemError" => {
             // Only status and identifier are deserialized; public item bodies are ignored.
             let page: Page = control
                 .request(
@@ -79,14 +78,21 @@ pub(in crate::messaging) async fn observe(
                 }
                 Some(turn) => (
                     match turn.status.as_str() {
-                        "completed" => "idle",
+                        "completed" if before.kind == "idle" => "idle",
                         "interrupted" => "interrupted",
                         "failed" => "errored",
                         _ => "unknown",
                     },
                     Some(turn.id.clone()),
                 ),
-                None => ("idle", None),
+                None => (
+                    if before.kind == "idle" {
+                        "idle"
+                    } else {
+                        "unknown"
+                    },
+                    None,
+                ),
             }
         }
         _ => ("unknown", None),

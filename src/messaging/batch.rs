@@ -43,6 +43,8 @@ async fn one(paths: &Paths, t: Target, policy: &Policy) -> anyhow::Result<Value>
         && let Ok(c) = serde_json::from_slice::<Cached>(&bytes)
         && c.runtime_generation == runtime
         && c.value["generation"] == s.generation()
+        && c.value["explicit_intent"]["id"]
+            == json!(external::messaging_stop_intent(paths, &s.conversation_id)?)
     {
         let now = crate::daemon::now();
         let fresh = c.value["observed_at"]
@@ -52,6 +54,7 @@ async fn one(paths: &Paths, t: Target, policy: &Policy) -> anyhow::Result<Value>
         if fresh || *policy == Policy::CachedOnly {
             let mut v = c.value;
             v["cache_hit"] = json!(true);
+            v["process_observed_at"] = json!(now);
             v["freshness"] = json!(if fresh { "fresh" } else { "stale" });
             v["observation"]["checked_at"] = json!(now);
             v["observation"]["status"] = json!(if fresh { "fresh" } else { "stale" });
@@ -72,6 +75,14 @@ async fn one(paths: &Paths, t: Target, policy: &Policy) -> anyhow::Result<Value>
             } else {
                 None
             };
+            if pending || removed || !enabled || !fresh {
+                v["actions"]["resume"] =
+                    json!({"available":false,"reason":reason.unwrap_or("observation_required")});
+            }
+            if !fresh {
+                v["last_observed_state"] = v["state"].clone();
+                v["runtime_state"] = json!("unknown");
+            }
             if let Some(reason) = reason {
                 for action in ["submit", "queue"] {
                     v["actions"][action] = json!({"available":false,"reason":reason});
@@ -85,7 +96,7 @@ async fn one(paths: &Paths, t: Target, policy: &Policy) -> anyhow::Result<Value>
     if *policy == Policy::CachedOnly {
         let mut v = readiness::project(
             &s,
-            json!({"state":"unknown","reason":"observation_required"}),
+            json!({"state":"unknown","reason":"observation_required","stop_intent_id":external::messaging_stop_intent(paths,&s.conversation_id)?}),
             false,
             crate::daemon::now(),
         );

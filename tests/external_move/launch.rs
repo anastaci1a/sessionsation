@@ -15,7 +15,7 @@ impl Drop for OwnedGroup {
 fn request(f: &Fixture, host: &Path, name: &str) -> Value {
     json!({"version":1,"request_id":uuid::Uuid::new_v4().to_string(),"account_id":"codex:personal","name":name,"host":{"session":"fixture","socket":host},"space":{"kind":"existing","id":"w1"},"directory":{"path":f.tmp.path().join(name),"create":[f.tmp.path().join(name)],"confirmed_existing":false}})
 }
-fn api(f: &Fixture, args: &[&str], request: Option<&Value>) -> Output {
+pub(super) fn api(f: &Fixture, args: &[&str], request: Option<&Value>) -> Output {
     api_in(f, args, request, false)
 }
 fn api_in(f: &Fixture, args: &[&str], request: Option<&Value>, foreign: bool) -> Output {
@@ -1220,4 +1220,82 @@ esac
     let out = api(&f, &["launch", "start"], Some(&late));
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("DIRECTORY_ALREADY_EXISTS"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires isolated HERDR binary; see docs/operations.md"]
+async fn installed_herdr_explicit_message_recovery_keeps_context_and_never_replays() {
+    assert_eq!(
+        std::env::var("SESSIONSATION_ISOLATED_HOST_TEST").as_deref(),
+        Ok("1")
+    );
+    for mode in ["stopped", "interrupted", "errored"] {
+        let f = Fixture::new().await;
+        let host = ActualHost::start(&f).await;
+        let socket = host.config.join("herdr/sessions/fixture/herdr.sock");
+        let origin = host.call(&[
+            "workspace",
+            "create",
+            "--label",
+            "Unrelated shell",
+            "--cwd",
+            f.tmp.path().to_str().unwrap(),
+        ]);
+        let workspace = origin["workspace"]["workspace_id"].as_str().unwrap();
+        let pane = origin["root_pane"]["pane_id"].as_str().unwrap();
+        let before = host.call(&["pane", "process-info", "--pane", pane]);
+        let s = super::recovery::saved(
+            &f,
+            match mode {
+                "interrupted" => "interrupted",
+                "errored" => "failed",
+                _ => "completed",
+            },
+        );
+        let history = find_rollout(&f.paths.account("personal").unwrap(), ID).unwrap();
+        let original_history = fs::read(&history).unwrap();
+        let input = json!({"session_id":s["id"],"expected_generation":s["generation"],"host":{"kind":"herdr","session":"fixture","socket":socket,"workspace_id":workspace}});
+        let p = api(&f, &["recovery-plan"], Some(&input));
+        assert!(p.status.success(), "{}", String::from_utf8_lossy(&p.stderr));
+        let plan = serde_json::from_slice::<Value>(&p.stdout).unwrap()["result"].clone();
+        let req = super::recovery::request(&s, mode, None, Some(plan));
+        let send = api(&f, &["send"], Some(&req));
+        assert!(
+            send.status.success(),
+            "{}",
+            String::from_utf8_lossy(&send.stderr)
+        );
+        let done = super::recovery::receipt(&f, req["message_id"].as_str().unwrap()).await;
+        assert_eq!(done["launch"]["phase"], "complete", "{done}");
+        assert_eq!(done["launch"]["confirmed"], true, "{done}");
+        assert_eq!(done["facts"]["accepted_native"], true, "{done}");
+        assert_eq!(done["session_id"], s["id"]);
+        assert_eq!(done["provider_conversation_id"], ID);
+        assert_eq!(
+            host.call(&["pane", "process-info", "--pane", pane])["process_info"]["shell_pid"],
+            before["process_info"]["shell_pid"]
+        );
+        assert_eq!(fs::read(&history).unwrap(), original_history);
+        assert!(api(&f, &["send"], Some(&req)).status.success());
+        let calls = f.a.lock().unwrap().calls.clone();
+        assert_eq!(
+            calls.iter().filter(|(m, _)| m == "thread/resume").count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(m, _)| m == "thread/queue/add")
+                .count(),
+            1
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|(m, _)| matches!(m.as_str(), "thread/start" | "turn/start" | "turn/steer"))
+        );
+        eprintln!(
+            "owned HERDR explicit {mode} recovery: same backend/conversation/account/directory/history; queue attempts=1, unrelated shell unchanged, models=0"
+        );
+    }
 }

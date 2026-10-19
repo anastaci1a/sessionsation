@@ -23,7 +23,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":2,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":3,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -86,6 +86,12 @@ pub enum Command {
     },
     /// Bounded batch readiness from stdin; optional cached-only reads never contact a provider.
     Observations,
+    /// Read a target/host request from stdin and validate an exited-process recovery plan.
+    RecoveryPlan,
+    /// Reconcile an interrupted recovery without launching or delivering input.
+    RecoveryReconcile {
+        message: String,
+    },
     Rename {
         #[arg(long)]
         session: String,
@@ -442,7 +448,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
 }
 
 pub fn capabilities() -> Value {
-    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":2,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":3,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -455,6 +461,7 @@ pub fn capabilities() -> Value {
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "batch_observation":{"command":"observations","max_targets":64,"concurrency":8,"native_budget_seconds":5,"policies":["if_stale","refresh","cached_only"],"cache_hits_renew_evidence":false},
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
+    "message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"owner_reservation_required":"message-recoveries"},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
     "space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"session_details":true,"session_timing":true,"detach_stops_agent":false})
@@ -737,10 +744,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         Command::Observe {
             session,
             expected_generation,
-        } => {
-            selected(paths, &session, &expected_generation).await?;
-            crate::messaging::observe_public(paths, &session, &expected_generation).await?
-        }
+        } => crate::messaging::observe_public(paths, &session, &expected_generation).await?,
         Command::State {
             watch,
             interval,
@@ -752,6 +756,19 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             }
             tokio::time::sleep(Duration::from_secs(interval)).await;
         },
+        Command::RecoveryReconcile { message } => {
+            crate::messaging::recovery::reconcile_recovery(paths, &message).await?
+        }
+        Command::RecoveryPlan => {
+            let mut bytes = Vec::new();
+            std::io::stdin().take(32769).read_to_end(&mut bytes)?;
+            ensure!(bytes.len() <= 32768, "INPUT_TOO_LARGE");
+            crate::messaging::recovery::plan(
+                paths,
+                serde_json::from_slice(&bytes).context("INVALID_REQUEST")?,
+            )
+            .await?
+        }
         Command::Observations => {
             let mut bytes = Vec::new();
             std::io::stdin().take(32769).read_to_end(&mut bytes)?;
@@ -918,7 +935,6 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             ensure!(bytes.len() <= 32768, "INPUT_TOO_LARGE");
             let request: crate::messaging::PublicRequest =
                 serde_json::from_slice(&bytes).context("INVALID_REQUEST")?;
-            inventory(paths).await?;
             crate::messaging::send_public(paths, request).await?
         }
         Command::Receipt { message } => {

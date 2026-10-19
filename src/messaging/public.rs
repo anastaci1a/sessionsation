@@ -9,6 +9,7 @@ use rusqlite::OptionalExtension;
 pub enum PublicMode {
     Submit,
     Queue,
+    Resume,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -21,10 +22,12 @@ pub struct PublicRequest {
     pub mode: PublicMode,
     pub text: String,
     pub expires_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<super::recovery::Intent>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct Binding {
+pub(super) struct Binding {
     #[serde(default)]
     cancelled: bool,
     #[serde(default)]
@@ -33,14 +36,14 @@ struct Binding {
     native: Enqueue,
 }
 
-fn initialize(ledger: &Ledger) -> Result<()> {
+pub(super) fn initialize(ledger: &Ledger) -> Result<()> {
     ledger.db.execute_batch(
         "CREATE TABLE IF NOT EXISTS public_messages(id TEXT PRIMARY KEY, binding TEXT NOT NULL);",
     )?;
     Ok(())
 }
 
-fn get(ledger: &Ledger, id: &str) -> Result<Option<Binding>> {
+pub(super) fn get(ledger: &Ledger, id: &str) -> Result<Option<Binding>> {
     uuid(id)?;
     let value: Option<String> = ledger
         .db
@@ -95,7 +98,18 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         request.api_version == crate::api::VERSION,
         "UNSUPPORTED_API_VERSION"
     );
+    if request.mode == PublicMode::Resume {
+        return super::recovery::send(paths, request).await;
+    }
+    anyhow::ensure!(
+        request.recovery.is_none(),
+        "RECOVERY_ONLY_VALID_WITH_RESUME"
+    );
     uuid(&request.message_id)?;
+    anyhow::ensure!(
+        !super::recovery::exists(paths, &request.message_id),
+        "MESSAGE_ID_CONFLICT"
+    );
     uuid(&request.session_id)?;
     let mut ledger = Ledger::open(paths)?;
     initialize(&ledger)?;
@@ -179,9 +193,18 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
 pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow::Result<Value> {
     let mut ledger = Ledger::open(paths)?;
     initialize(&ledger)?;
-    let mut binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
+    let Some(mut binding) = get(&ledger, id)? else {
+        if super::recovery::exists(paths, id) {
+            anyhow::ensure!(
+                !cancelling,
+                "RECOVERY_CANCELLATION_REQUIRES_VERIFIED_WORKER_STOP"
+            );
+            return super::recovery::pending_receipt(paths, id);
+        }
+        return Err(Fault("receipt_not_found").into());
+    };
     if binding.cancelled {
-        return Ok(wrap(&binding, json!({"state":"cancelled"})));
+        return super::recovery::decorate(paths, id, wrap(&binding, json!({"state":"cancelled"})));
     }
     let Some(mut receipt) = ledger.get(id)? else {
         if cancelling {
@@ -190,12 +213,20 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
                 "UPDATE public_messages SET binding=? WHERE id=?",
                 params![serde_json::to_string(&binding)?, id],
             )?;
-            return Ok(wrap(&binding, json!({"state":"cancelled"})));
+            return super::recovery::decorate(
+                paths,
+                id,
+                wrap(&binding, json!({"state":"cancelled"})),
+            );
         }
-        return Ok(wrap(
-            &binding,
-            json!({"state":"pending_local","reason":"not_dispatched"}),
-        ));
+        return super::recovery::decorate(
+            paths,
+            id,
+            wrap(
+                &binding,
+                json!({"state":"pending_local","reason":"not_dispatched"}),
+            ),
+        );
     };
     if cancelling {
         cancel(paths, &mut ledger, &mut receipt).await?;
@@ -208,7 +239,7 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
             params![serde_json::to_string(&binding)?, id],
         )?;
     }
-    Ok(wrap(&binding, value))
+    super::recovery::decorate(paths, id, wrap(&binding, value))
 }
 
 #[cfg(test)]
@@ -224,6 +255,7 @@ mod tests {
                 message_id: uuid::Uuid::new_v4().to_string(),
                 session_id: uuid::Uuid::new_v4().to_string(),
                 expected_generation: "a".repeat(64),
+                recovery: None,
                 mode: PublicMode::Submit,
                 text: "private prompt".into(),
                 expires_at: 100,
@@ -264,6 +296,7 @@ mod evidence_tests {
                 message_id: input.message_id.clone(),
                 session_id: uuid::Uuid::new_v4().to_string(),
                 expected_generation: "a".repeat(64),
+                recovery: None,
                 mode: PublicMode::Queue,
                 text: input.text.clone(),
                 expires_at: input.expires_at,
@@ -438,4 +471,67 @@ mod evidence_tests {
         assert!(out["observation"]["error_code"].is_string());
         assert!(out["observation"]["evidence_observed_at"].is_null());
     }
+}
+
+/// Bind the original logical admission to the one positively verified new runtime.
+pub(super) async fn deliver_recovered(
+    paths: &Paths,
+    request: PublicRequest,
+    generation: &str,
+) -> anyhow::Result<Value> {
+    let session = crate::catalog::resolve(paths, &request.session_id, generation)?;
+    let a = attachment(paths, &session.conversation_id)?;
+    anyhow::ensure!(
+        session
+            .attachment
+            .as_ref()
+            .is_some_and(|r| r.pid == a.pid && r.process_start == a.start),
+        "STALE_TARGET"
+    );
+    let mut ledger = Ledger::open(paths)?;
+    initialize(&ledger)?;
+    let binding = if let Some(b) = get(&ledger, &request.message_id)? {
+        anyhow::ensure!(b.request == request, "MESSAGE_ID_CONFLICT");
+        b
+    } else {
+        anyhow::ensure!(
+            ledger.get(&request.message_id)?.is_none(),
+            "MESSAGE_ID_CONFLICT"
+        );
+        let b = Binding {
+            native: Enqueue {
+                message_id: request.message_id.clone(),
+                session_id: session.conversation_id,
+                text: request.text.clone(),
+                expires_at: request.expires_at,
+                expected_generation: a.generation(),
+            },
+            request,
+            cancelled: false,
+            evidence_observed_at: None,
+        };
+        ledger.db.execute(
+            "INSERT INTO public_messages VALUES(?,?)",
+            params![b.request.message_id, serde_json::to_string(&b)?],
+        )?;
+        b
+    };
+    let mut r = ledger.accept(&binding.native, crate::daemon::now())?;
+    ledger.expire(&mut r, crate::daemon::now())?;
+    if let Err(e) = super::recovery::deliver(
+        paths,
+        &mut ledger,
+        &mut r,
+        &binding.native,
+        &binding.request,
+    )
+    .await
+    {
+        if r.state == "pending_local" {
+            r.state = "rejected".into();
+        }
+        r.reason = Some(e.to_string());
+        ledger.save(&r)?;
+    }
+    super::recovery::decorate(paths, &binding.request.message_id, wrap(&binding, json!(r)))
 }

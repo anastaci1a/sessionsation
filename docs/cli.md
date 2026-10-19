@@ -287,3 +287,10 @@ Archive and Delete both require inactive sessions. Failure retains recoverable
 archive data where available. Prepared archives are listed for explicit recovery;
 repeat request IDs observe the original job and never replay a failed mutation.
 Do not edit archive manifests or move managed history between accounts manually.
+
+Explicit Resume-and-submit is separate from ordinary saved-session launching.
+Discover `message_recovery` with `api capabilities`; use `api recovery-plan` for an
+exited agent, then `api send` with explicit recovery preconditions. Receipt queries
+and `api recovery-reconcile` never send input or restart a process. See the
+[public recovery contract](contract.md#explicit-resume-and-submit) for payloads,
+owner compatibility, refusal reasons and launch-versus-delivery facts.
