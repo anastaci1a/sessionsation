@@ -418,7 +418,8 @@ async fn external_inactive_history_can_archive_and_delete_without_enrollment() {
     assert_eq!(saved["account_id"], "codex:external");
     assert_eq!(saved["capabilities"]["archive"], true);
     assert_eq!(saved["capabilities"]["delete"], true);
-    assert_eq!(saved["capabilities"]["resume"], false);
+    assert_eq!(saved["capabilities"]["resume"], true);
+    assert_eq!(saved["resume_block_reason"], Value::Null);
     let request = "99999999-9999-4999-8999-999999999999";
     external(&[
         "archive",

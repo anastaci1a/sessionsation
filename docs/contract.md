@@ -483,7 +483,11 @@ interface is unchanged.
 ### Saved-session popup Resume
 
 `capabilities.resume.version == 1` exposes `api resume-launch validate|start`
-with JSON stdin, plus `status --request-id UUID` and `list`. See `ResumeRequest`
+with JSON stdin, plus `status --request-id UUID` and `list`. A saved Codex
+conversation does not require its original account to remain registered. The
+caller selects an available target account; preserved history, stable identity
+and launch validation still apply. Original-account metadata is provenance, not
+a resume credential. See `ResumeRequest`
 and `ResumeReceipt` in the schema. The request has version, request UUID, stable
 `session_id`, `expected_generation`, account ID, editable name, host and Space.
 Optional `confirm_unfinished: true` acknowledges only the unfinished-history warning;
@@ -569,7 +573,7 @@ and New/Resume receipt phases are unchanged.
 ### Resume availability reasons
 
 Session state also publishes nullable `directory` from the observed source, so clients can warn about a shared project directory and show cached details without generation-bound reads.
-Session state and details include nullable `resume_block_reason`: `unknown_account`, `host_unavailable`,
+Session state and details include nullable `resume_block_reason`: `unsupported_provider`, `host_unavailable`,
 `history_unavailable`, `already_running`, `moving`, `missing_directory`,
 `history_busy`, `unfinished_history`, `conflicting_history`, or `unverified_history`.
 `unfinished_history` is a confirmation warning, not a disabled resume capability.

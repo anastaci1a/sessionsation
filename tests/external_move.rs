@@ -1321,6 +1321,19 @@ async fn open_and_archive_recovery_use_original_external_home_without_a_turn() {
     let saved = invoke(&["sessions", "--all"]);
     assert_eq!(saved["sessions"][0]["thread_id"], ID);
     assert_eq!(saved["sessions"][0]["account"], "external");
+    let public = invoke(&["api", "state"]);
+    let saved_public = &public["result"]["sessions"][0];
+    assert_eq!(saved_public["capabilities"]["resume"], true);
+    assert_eq!(saved_public["resume_block_reason"], Value::Null);
+    let details = invoke(&[
+        "api",
+        "session",
+        "--session",
+        saved_public["id"].as_str().unwrap(),
+        "--expected-generation",
+        saved_public["generation"].as_str().unwrap(),
+    ]);
+    assert_eq!(details["result"]["resume_block_reason"], Value::Null);
     let opened = invoke(&[
         "open",
         "--session",

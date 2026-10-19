@@ -559,13 +559,14 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
     let mut sessions=catalog::list(paths)?.into_iter().filter(|s|archives.get(&s.id).is_none_or(|a|a["state"]!="deleted")).map(|s| {
         let source=items.iter().find(|i|source_matches(&s,i));
         let known=!matches!(s.account.as_str(),"external"|"unknown");
+        let resume_supported=s.provider=="codex";
         let attached=s.attachment.is_some();
         let archive = archive_info(&s, source, &archives);
         let archived=archive["archived"]==true;
         let mut value=public_session(s);
         value["archive"]=archive;
         value["archived"]=value["archive"]["archived"].clone();
-        value["resume_block_reason"]=json!(if attached && source.is_none() {Some("host_unavailable")}else{resume_block_reason(known,source)});
+        value["resume_block_reason"]=json!(if attached && source.is_none() {Some("host_unavailable")}else{resume_block_reason(resume_supported,source)});
         let running=source.is_some_and(|i|!i.inactive);
         let saved=source.is_some_and(|i|i.inactive && matches!(i.block_reason.as_deref(), None | Some("unfinished" | "unknown")) && i.move_id.is_none());
         value["availability"]=json!(if archived {"archived"}else if running {"running"}else if saved {"saved"}else{"unavailable"});
@@ -577,7 +578,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["last_accessed"]=source.and_then(|s|s.last_accessed).map_or(Value::Null,|n|json!(n));
         value["active_since"]=json!(source.filter(|s|!s.inactive).and_then(|s|clock.and_then(|(uptime,hz)|attachment_started_at(now,uptime,s.start_time,hz))));
         let unambiguous=items.iter().filter(|i|!i.inactive && i.thread_id==value["conversation_id"]).count()<=1;
-        value["capabilities"]=json!({"rename":true,"move_space":running && unambiguous && source.is_some_and(|s|s.pane.starts_with("herdr/")),"resume":known && saved,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":source.is_some_and(|i|i.inactive),"delete":source.is_some_and(|i|i.inactive)});
+        value["capabilities"]=json!({"rename":true,"move_space":running && unambiguous && source.is_some_and(|s|s.pane.starts_with("herdr/")),"resume":resume_supported && saved,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":source.is_some_and(|i|i.inactive),"delete":source.is_some_and(|i|i.inactive)});
         if archived { value["capabilities"]=json!({"rename":false,"resume":false,"switch_account":false,"move_space":false,"restart":false,"stop":false,"archive":false,"delete":value["archive"]["kind"]=="managed","restore":value["archive"]["kind"]=="managed"}); }
         value
     }).filter(|s|match filter { ArchiveFilter::All=>true, ArchiveFilter::Archived=>s["archived"]==true, ArchiveFilter::Active=>s["archived"]!=true }).collect::<Vec<_>>();
@@ -643,9 +644,12 @@ pub(crate) async fn selected(
 }
 
 /// Public reason for an unavailable resume; observations are rechecked at launch.
-fn resume_block_reason(known: bool, source: Option<&external::Instance>) -> Option<&'static str> {
-    if !known {
-        return Some("unknown_account");
+fn resume_block_reason(
+    supported: bool,
+    source: Option<&external::Instance>,
+) -> Option<&'static str> {
+    if !supported {
+        return Some("unsupported_provider");
     }
     let Some(source) = source else {
         return Some("history_unavailable");
@@ -694,10 +698,7 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
     let reason = if session.attachment.is_some() && source.is_none() {
         Some("host_unavailable")
     } else {
-        resume_block_reason(
-            !matches!(session.account.as_str(), "external" | "unknown"),
-            source,
-        )
+        resume_block_reason(session.provider == "codex", source)
     };
     let archive = archive_info(&session, source, &external::archiving::metadata(paths)?);
     let archived = archive["archived"] == true;
@@ -1154,7 +1155,7 @@ mod prefill_tests {
         .unwrap();
         assert_eq!(
             resume_block_reason(false, Some(&source)),
-            Some("unknown_account")
+            Some("unsupported_provider")
         );
         assert_eq!(resume_block_reason(true, None), Some("history_unavailable"));
         assert_eq!(resume_block_reason(true, Some(&source)), None);
