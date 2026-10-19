@@ -20,6 +20,9 @@ pub struct Record {
     pub kind: String,
     pub phase: String,
     pub detail: String,
+    /// Immutable admission time; absent for legacy receipts whose creation is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
     pub updated_at: i64,
     pub history_home: PathBuf,
     pub source_inode: Option<u64>,
@@ -141,6 +144,7 @@ pub async fn start(paths: &Paths, name: &str, id: &str, confirm: &str) -> Result
         kind: "account_delete".into(),
         phase: "admitted".into(),
         detail: "Checking that the account has no active or loaded conversations.".into(),
+        created_at: Some(daemon::now()),
         updated_at: daemon::now(),
         history_home: paths
             .root
@@ -467,6 +471,7 @@ mod tests {
             kind: "account_delete".into(),
             phase: "admitted".into(),
             detail: String::new(),
+            created_at: None,
             updated_at: 0,
             history_home: paths
                 .root

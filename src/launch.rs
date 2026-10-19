@@ -73,6 +73,9 @@ pub struct Receipt {
     pub session_id: Option<String>,
     pub generation: Option<String>,
     pub created_directories: Vec<PathBuf>,
+    /// Immutable admission time; absent for legacy receipts whose creation is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
     pub updated_at: i64,
 }
 fn validate_id(id: &str) -> Result<()> {
@@ -342,6 +345,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         session_id: None,
         generation: None,
         created_directories: Vec::new(),
+        created_at: Some(daemon::now()),
         updated_at: daemon::now(),
     };
     save(paths, &mut receipt)?;
@@ -609,6 +613,37 @@ pub(crate) async fn create_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_creation_time_stays_unknown_and_admission_time_is_immutable() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/contract/fixtures.json")).unwrap();
+        let mut receipt: Receipt =
+            serde_json::from_value(fixtures["launch_receipt"].clone()).unwrap();
+        assert_eq!(receipt.created_at, None);
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        save(&paths, &mut receipt).unwrap();
+        assert_eq!(
+            status(&paths, &receipt.request.request_id)
+                .unwrap()
+                .created_at,
+            None
+        );
+        receipt.created_at = Some(123);
+        receipt.phase = "running".into();
+        save(&paths, &mut receipt).unwrap();
+        let loaded = status(&paths, &receipt.request.request_id).unwrap();
+        assert_eq!(loaded.created_at, Some(123));
+        assert!(loaded.updated_at > 123);
+        let mut resume_value = fixtures["resume_receipt"].clone();
+        resume_value["conversation_id"] = serde_json::json!("11111111-1111-4111-8111-111111111111");
+        resume_value["generation"] = serde_json::json!("legacy-generation");
+        let resume: crate::resume::Receipt = serde_json::from_value(resume_value).unwrap();
+        assert_eq!(resume.created_at, None);
+        let deletion: crate::account_deletion::Record =
+            serde_json::from_value(fixtures["account_deletion"].clone()).unwrap();
+        assert_eq!(deletion.created_at, None);
+    }
     #[test]
     fn directory_preview_does_not_create_and_rejects_late_collision() {
         let tmp = tempfile::tempdir().unwrap();

@@ -46,6 +46,9 @@ pub struct Receipt {
     pub tab_id: Option<String>,
     pub pane_id: Option<String>,
     pub operation_id: Option<String>,
+    /// Immutable admission time; absent for legacy receipts whose creation is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
     pub updated_at: i64,
 }
 fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
@@ -212,6 +215,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         tab_id: None,
         pane_id: None,
         operation_id: None,
+        created_at: Some(daemon::now()),
         updated_at: daemon::now(),
     };
     save(paths, &mut receipt)?;

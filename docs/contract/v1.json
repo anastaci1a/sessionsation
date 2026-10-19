@@ -1036,6 +1036,13 @@
         },
         "updated_at": {
           "type": "integer"
+        },
+        "created_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Immutable Unix admission time for new records; absent/null means legacy creation time is unknown. Do not substitute updated_at."
         }
       }
     },
@@ -1223,6 +1230,13 @@
             "string",
             "null"
           ]
+        },
+        "created_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Immutable Unix admission time for new records; absent/null means legacy creation time is unknown. Do not substitute updated_at."
         }
       }
     },
@@ -1272,6 +1286,13 @@
             "integer",
             "null"
           ]
+        },
+        "created_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Immutable Unix admission time for new records; absent/null means legacy creation time is unknown. Do not substitute updated_at."
         }
       },
       "required": [
