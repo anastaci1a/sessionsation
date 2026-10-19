@@ -2027,12 +2027,28 @@ fn open_rollouts() -> Result<std::collections::BTreeSet<PathBuf>> {
         for entry in entries.flatten() {
             if let Ok(link) = fs::read_link(entry.path()) {
                 if link.extension().is_some_and(|ext| ext == "jsonl") {
+                    // Discovery and previews read the same histories concurrently.
+                    // A reader is not evidence of an active conversation writer.
+                    // Unknown access flags remain conservative.
+                    let info = process.path().join("fdinfo").join(entry.file_name());
+                    if fs::read_to_string(info)
+                        .ok()
+                        .and_then(|s| descriptor_writable(&s))
+                        == Some(false)
+                    {
+                        continue;
+                    }
                     found.insert(link);
                 }
             }
         }
     }
     Ok(found)
+}
+fn descriptor_writable(info: &str) -> Option<bool> {
+    let flags = info.lines().find_map(|line| line.strip_prefix("flags:"))?;
+    let flags = u32::from_str_radix(flags.trim(), 8).ok()?;
+    Some(flags & 3 != 0)
 }
 fn descendants(home: &Path, root: &str) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
@@ -2507,6 +2523,25 @@ pub(crate) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn history_readers_do_not_block_resume_but_writers_do() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        std::fs::write(&path, b"fixture").unwrap();
+        let reader = std::fs::File::open(&path).unwrap();
+        assert!(!super::open_rollouts().unwrap().contains(&path));
+        let writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        assert!(super::open_rollouts().unwrap().contains(&path));
+        drop(writer);
+        assert!(!super::open_rollouts().unwrap().contains(&path));
+        drop(reader);
+        assert_eq!(super::descriptor_writable("flags:\t0100000\n"), Some(false));
+        assert_eq!(super::descriptor_writable("flags:\t0100002\n"), Some(true));
+        assert_eq!(super::descriptor_writable("flags: invalid"), None);
+    }
     use super::*;
     #[test]
     fn preserved_archive_is_a_resume_source_without_recreating_account_credentials() {

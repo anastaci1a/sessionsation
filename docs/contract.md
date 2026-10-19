@@ -360,3 +360,6 @@ Session state and details include nullable `resume_block_reason`: `unknown_accou
 `unfinished_history` is a confirmation warning, not a disabled resume capability.
 Other values explain observed resume gates; capability flags remain authoritative and
 launch rechecks current state. Consumers must tolerate future reason codes.
+Read-only history inspection does not constitute `history_busy`; an open writer
+does. If descriptor access flags cannot be inspected, discovery conservatively
+retains the busy gate. Live attachment and operation ownership checks still apply.
