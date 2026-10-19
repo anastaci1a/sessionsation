@@ -63,8 +63,7 @@ unique renames and launches, generation changes, complete watch snapshots,
 non-steering busy operations, durable Submit/Queue idempotency, removal previews,
 active-account refusal, reversible membership and original-service preservation.
 
-Account removal/restore and local deletion have isolated fixture evidence; no
-real account membership or credentials were changed to test them. The deletion
+Account removal/restore and local deletion have isolated fixture evidence. The deletion
 regression verifies asynchronous admission, refusal of an unhosted account-home
 process, explicit interrupted-worker recovery, request-ID deduplication, credential
 removal and stable saved/archived discovery. The additional installed-HERDR fixture
@@ -78,16 +77,16 @@ deletion, with all 70 turns/270 items matching and zero model turns. These are s
 A read-only preview against the existing personal account took 38.57/38.94/39.28 ms;
 `file_scanning:false` in every result. The old deregistration preview measured
 5639.23 ms for its file/revision inventory; deletion's intent preview deliberately
-does not perform that work. The existing production account owner lacks deletion
-support: previews report `owner_upgrade_required:true` and admission remains
-gated. A client artifact update does not replace the root's sole supervisor. Claude remains preparation-only by Ana's
+does not perform that work. The approved existing owner advertises deletion support;
+older owners still report `owner_upgrade_required:true` and reject admission.
+A client artifact update does not replace the root's sole supervisor. Claude remains preparation-only by Ana's
 direction. Live model evidence is limited to the disposable Codex conversation
 above. No new credential owner or deployment of the original switcher is implied.
 
 ## Existing-owner activation gate
 
 Updating the popup client does not replace the running root supervisor. Local
-account deletion remains gated until that sole owner advertises its capability.
+account deletion requires that sole owner to advertise its capability.
 Activation is a separate, explicitly approved live owner handoff: stop the old
 supervisor through its public daemon command, wait for its socket disappearance
 **and** registry lock release (`flock -w 15 /explicit/root/daemon.lock true`), then

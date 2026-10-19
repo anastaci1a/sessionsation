@@ -487,7 +487,7 @@ pub async fn state(paths: &Paths) -> Result<Value> {
     let clock = boot_clock();
     let now = daemon::now();
     let hidden = external::archiving::hidden(paths)?;
-    let sessions=catalog::list(paths)?.into_iter().filter(|s|!hidden.contains(&s.id)).map(|s| {
+    let mut sessions=catalog::list(paths)?.into_iter().filter(|s|!hidden.contains(&s.id)).map(|s| {
         let source=items.iter().find(|i|i.thread_id==s.conversation_id && i.account==s.account);
         let known=!matches!(s.account.as_str(),"external"|"unknown");
         let mut value=public_session(s);
@@ -505,6 +505,31 @@ pub async fn state(paths: &Paths) -> Result<Value> {
         value["capabilities"]=json!({"rename":true,"resume":known && saved,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":known&&source.is_some_and(|i|i.inactive),"delete":known&&source.is_some_and(|i|i.inactive)});
         value
     }).collect::<Vec<_>>();
+    for session in &mut sessions {
+        let thread = session["conversation_id"]
+            .as_str()
+            .context("INVALID_CONVERSATION_ID")?;
+        let pending = crate::lifecycle::pending(paths, thread, None)?.or_else(|| {
+            items
+                .iter()
+                .find(|i| i.thread_id == thread)
+                .and_then(|i| i.move_id.clone())
+        });
+        if let Some(operation) = pending {
+            session["pending_operation_id"] = json!(operation);
+            for capability in [
+                "resume",
+                "switch_account",
+                "restart",
+                "stop",
+                "archive",
+                "delete",
+            ] {
+                session["capabilities"][capability] = json!(false);
+            }
+            session["resume_block_reason"] = json!("moving");
+        }
+    }
     Ok(json!({"observed_at":daemon::now(),"account_source":source,
         "accounts":accounts,"sessions":sessions,
         "capabilities":capabilities()}))
@@ -845,7 +870,7 @@ fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
         "target_account_id":format!("codex:{}",j.target),"provider_conversation_id":j.source.thread_id,
         "created_at":j.created_at,
         "can_cancel":external::can_cancel_move(&j),
-        "can_recover": !external::handoff_worker_alive(&j.id) && (j.phase == "failed" || (!matches!(j.phase.as_str(), "complete" | "cancelled" | "recovered") && daemon::now() - j.created_at > 10)),
+        "can_recover": crate::background::worker_stopped(&paths.root.join("handoff-jobs").join(format!("{}.worker-lock", j.id)))? && (j.phase == "failed" || (!matches!(j.phase.as_str(), "complete" | "cancelled" | "recovered") && daemon::now() - j.created_at > 10)),
         "can_respond":j.phase.starts_with("awaiting_"),
         "non_steering":j.non_steering}),
     )

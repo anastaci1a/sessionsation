@@ -137,6 +137,7 @@ fn validate_saved_history(source: &external::Instance, confirmed: bool) -> Resul
 async fn validate(paths: &Paths, r: &Request) -> Result<(catalog::Session, external::Instance)> {
     shape(r)?;
     let (s, source) = api::selected(paths, &r.session_id, &r.expected_generation).await?;
+    crate::lifecycle::ensure_available(paths, &s.conversation_id, Some(&r.request_id))?;
     ensure!(
         source.inactive && s.attachment.is_none(),
         "SESSION_ALREADY_RUNNING"
@@ -213,6 +214,10 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
                 && !matches!(prior.phase.as_str(), "running" | "failed" | "recovered")),
         "RESUME_IN_PROGRESS"
     );
+    let selected = catalog::resolve(paths, &r.session_id, &r.expected_generation)?;
+    let _admission =
+        crate::lifecycle::admit(paths, &selected.conversation_id, Some(&r.request_id))?;
+    crate::lifecycle::ensure_no_handoff(paths, &selected.conversation_id, Some(&r.request_id))?;
     let (s, source) = validate(paths, &r).await?;
     let mut receipt = Receipt {
         version: 1,
@@ -422,6 +427,19 @@ pub(crate) fn attached(paths: &Paths, id: &str, session: &catalog::Session) -> R
 }
 pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
     let r = read(paths, id)?;
+    if r.operation_id.is_none()
+        && daemon::now() - r.updated_at > 10
+        && let Some((phase, detail)) = crate::background::interrupted_launch(&r.phase)
+        && crate::background::worker_stopped(&file(paths, id)?.with_extension("worker.lock"))?
+    {
+        return change(paths, id, |current| {
+            if current.phase == r.phase && current.updated_at == r.updated_at {
+                current.phase = phase.into();
+                current.detail = Some(detail.into());
+            }
+            Ok(())
+        });
+    }
     // A completed launch receipt is historical admission evidence. A later stop
     // or generation must not rewrite it as uncertainty or change Space ordering.
     if matches!(r.phase.as_str(), "running" | "failed" | "recovered") {

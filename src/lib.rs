@@ -11,6 +11,7 @@ pub mod control;
 pub mod daemon;
 pub mod external;
 pub mod identity;
+mod lifecycle;
 pub mod messaging;
 pub mod model;
 pub mod paths;

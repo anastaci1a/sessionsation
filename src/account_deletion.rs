@@ -58,20 +58,7 @@ pub fn status(paths: &Paths, id: &str) -> Result<Record> {
     Ok(r)
 }
 fn worker_stopped(paths: &Paths, id: &str) -> Result<bool> {
-    let file = match fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(record_file(paths, id)?.with_extension("worker.lock"))
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-        Err(e) => return Err(e.into()),
-    };
-    match file.try_lock_exclusive() {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
-        Err(e) => Err(e.into()),
-    }
+    crate::background::worker_stopped(&record_file(paths, id)?.with_extension("worker.lock"))
 }
 pub fn list(paths: &Paths) -> Result<Vec<Record>> {
     let dir = paths.root.join("account-deletions");

@@ -40,7 +40,11 @@ fn command(root: &Path, socket: &str, args: &[&str]) -> Output {
 }
 fn value(root: &Path, socket: &str, args: &[&str]) -> Value {
     let o = command(root, socket, args);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        o.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     serde_json::from_slice(&o.stdout).unwrap()
 }
 fn tmux(socket: &str, args: &[&str]) -> String {
@@ -499,7 +503,26 @@ int main(int argc,char**argv){char path[4096];if(argc>3 && strcmp(argv[1],"app-s
                 .find(|j| j["id"] == id)
                 .unwrap()
                 .clone();
-            if j["phase"] == phase
+            // Completion is journaled just before the worker releases its locks.
+            // A following mutation must wait for that worker to actually exit.
+            let worker_stopped = if phase == "complete" && j["phase"] == phase {
+                use fs2::FileExt;
+                let lock = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(
+                        self.paths
+                            .root
+                            .join("handoff-jobs")
+                            .join(format!("{id}.worker-lock")),
+                    )
+                    .unwrap();
+                lock.try_lock_exclusive().is_ok()
+            } else {
+                true
+            };
+            if worker_stopped
+                && j["phase"] == phase
                 && !(phase == "complete"
                     && j["resume_after_move"] == true
                     && matches!(j["continuation_delivery"].as_str(), Some("" | "sending")))

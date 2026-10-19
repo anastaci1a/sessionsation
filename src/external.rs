@@ -1133,6 +1133,9 @@ async fn run_account_thread_inner(
     }
     ensure!(cwd.is_dir(), "working directory is not a directory");
     let requested = thread.or(launch.thread.as_deref());
+    let _admission = requested
+        .map(|id| crate::lifecycle::admit(paths, id, resumption))
+        .transpose()?;
     let _conversation_lock = if let Some(id) = requested {
         let lock = catalog::operation_lock(paths, id)?;
         catalog::ensure_available(paths, id)?;
@@ -1671,16 +1674,18 @@ fn enqueue_with_id(
         .custom_flags(libc::O_NOFOLLOW)
         .open(jobs_dir(paths)?.join("queue.lock"))?;
     queue_lock.lock_exclusive()?;
+    let _admission = if source.thread_id.is_empty() {
+        None
+    } else {
+        Some(crate::lifecycle::admit(
+            paths,
+            &source.thread_id,
+            automatic_id,
+        )?)
+    };
     if !matches!(kind, "terminate" | "pause") {
         crate::accounts::ensure_available(paths, target)?;
     }
-    let _conversation_lock = if !source.thread_id.is_empty() {
-        let lock = catalog::operation_lock(paths, &source.thread_id)?;
-        catalog::ensure_available(paths, &source.thread_id)?;
-        Some(lock)
-    } else {
-        None
-    };
     if let Some((id, generation)) = policy.expected {
         let selected = crate::catalog::resolve(paths, id, generation)?;
         ensure!(
@@ -1719,6 +1724,13 @@ fn enqueue_with_id(
         );
         return Ok(existing);
     }
+    let _conversation_lock = if !source.thread_id.is_empty() {
+        let lock = catalog::operation_lock(paths, &source.thread_id)?;
+        catalog::ensure_available(paths, &source.thread_id)?;
+        Some(lock)
+    } else {
+        None
+    };
     if !source.inactive && !matches!(kind, "terminate" | "pause") {
         hosting::retain(&source.pane, true)?;
     }

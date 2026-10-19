@@ -105,6 +105,13 @@ an orphaned worker failed after a ten-second admission grace period, without
 rewriting its receipt. Recovery explicitly continues the same confirmed request.
 Accounts reserved for deletion expose `deletion` status and remain unselectable
 until cleanup finishes; a partial credential deletion must not be re-enabled.
+Resume, handoff and conversation-archive admissions share a per-conversation lock.
+An admitted or uncertain resume reserves its conversation until a settled receipt;
+only that same request may continue its transfer. Public session capabilities
+disable competing lifecycle actions and expose `pending_operation_id` while reserved.
+A terminal handoff remains reserved while its worker holds the worker lock;
+a completed/failed label alone does not establish that continuation or recovery
+has stopped.
 Durable launch, resume, deletion and archive workers use separate process groups
 so closing a requesting viewer does not stop their work. v1 operations
 wait for positive idle state, send no steer, and do not automatically continue work.
@@ -283,8 +290,10 @@ prefill. Explicit `selectable` remains separate; the popup can explain and permi
 manual selection without rewriting thresholds. The installed supervisor remains
 the sole account-data/credential owner.
 
-This contract is under isolated host acceptance; no production artifact is promoted
-by adding these commands. The existing `launcher` exec-plan interface is unchanged.
+Installed client provenance and isolated acceptance are recorded in
+[verification.json](verification.json). Adding commands does not itself change a
+consumer’s selected artifact or data-root owner. The existing `launcher` exec-plan
+interface is unchanged.
 
 ### Saved-session popup Resume
 

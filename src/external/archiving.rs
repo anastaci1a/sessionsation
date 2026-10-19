@@ -257,6 +257,8 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         (s, Some(i))
     };
     ensure!(session.provider == "codex", "PROVIDER_UNSUPPORTED");
+    let _admission = crate::lifecycle::admit(paths, &session.conversation_id, Some(&t.request_id))?;
+    crate::lifecycle::ensure_no_handoff(paths, &session.conversation_id, Some(&t.request_id))?;
     ensure!(
         !operations(paths)?
             .iter()

@@ -188,6 +188,21 @@ pub fn status(paths: &Paths, id: &str) -> Result<Receipt> {
 }
 fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
     let r = status(paths, id)?;
+    if daemon::now() - r.updated_at > 10
+        && let Some((phase, detail)) = crate::background::interrupted_launch(&r.phase)
+        && crate::background::worker_stopped(&location(paths, id)?.with_extension("worker.lock"))?
+    {
+        return change(paths, id, |current| {
+            if current.phase == r.phase && current.updated_at == r.updated_at {
+                if phase == "failed" {
+                    catalog::release_reservation(paths, id, &current.request.name)?;
+                }
+                current.phase = phase.into();
+                current.detail = Some(detail.into());
+            }
+            Ok(())
+        });
+    }
     if !matches!(r.phase.as_str(), "attached" | "uncertain") {
         return Ok(r);
     }
