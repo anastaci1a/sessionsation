@@ -1,3 +1,7 @@
-target
 .git
+target
+target-review
+.env
+*.log
+target-*
 test-results

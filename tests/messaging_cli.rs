@@ -227,8 +227,7 @@ async fn correlated_reply_survives_real_cli_process_retries_and_restarts() {
 #[test]
 fn modes_fixture_is_isolated_and_busy_submit_is_supported() {
     let tmp = tempfile::tempdir().unwrap();
-    let bundle: Value =
-        serde_json::from_str(include_str!("../docs/messaging/modes-v1/fixtures.json")).unwrap();
+    let bundle: Value = serde_json::from_str(include_str!("fixtures/legacy-modes.json")).unwrap();
     let (ok, cap) = call(tmp.path(), &["modes", "capabilities"], None);
     assert!(ok);
     assert_eq!(cap["contract_version"], "1.4.0");
@@ -319,8 +318,7 @@ async fn modes_discover_two_managed_targets_without_registration_and_fail_closed
     let (ok, listed) = call(&root, &["modes", "sessions"], None);
     assert!(ok);
     assert_eq!(listed["result"]["sessions"].as_array().unwrap().len(), 2);
-    let fixtures: Value =
-        serde_json::from_str(include_str!("../docs/messaging/modes-v1/fixtures.json")).unwrap();
+    let fixtures: Value = serde_json::from_str(include_str!("fixtures/legacy-modes.json")).unwrap();
     for (i, id) in ids.iter().enumerate() {
         let (ok, target) = call(&root, &["modes", "target", "--session", id], None);
         assert!(ok);

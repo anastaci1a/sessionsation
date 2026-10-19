@@ -525,7 +525,7 @@ mod tests {
     fn req() -> Request {
         serde_json::from_value(
             serde_json::from_str::<Value>(include_str!(
-                "../../../docs/messaging/modes-v1/fixtures.json"
+                "../../../tests/fixtures/legacy-modes.json"
             ))
             .unwrap()["request"]
                 .clone(),
@@ -535,7 +535,7 @@ mod tests {
     fn snap() -> Snapshot {
         serde_json::from_value(
             serde_json::from_str::<Value>(include_str!(
-                "../../../docs/messaging/modes-v1/fixtures.json"
+                "../../../tests/fixtures/legacy-modes.json"
             ))
             .unwrap()["snapshot"]
                 .clone(),

@@ -1,187 +1,39 @@
 {
   "schema_version": 1,
-  "source": {
-    "repository": "https://github.com/anastaci1a/sessionsation",
-    "commit": "37d9393b0847a5e919956c2fa453f071f7f192a7",
-    "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265"
-  },
-  "artifact": {
-    "installed": true,
-    "kind": "Popup-selected CLI client; sole existing-root supervisor and original installation unchanged",
-    "path": "/mnt/user/live/packages/sessionsation/popup/37d9393b0847a5e919956c2fa453f071f7f192a7/sessionsation",
-    "sha256": "8bc2b18622e6cff6fd7376d2e6d540e1a28040a90d67f2420b7a24ced68803e5",
-    "profile": "release",
-    "rust_version": "1.95.0",
-    "container_image": "sessionsation-build-tools:local",
-    "container_image_id": "sha256:4524fc318ec3fe78073bcf4573f940862031035901da2f46391c273a1a5bf320",
-    "build": "cargo build --release --offline --locked; source at /work, network disabled, cached dependencies read-only, no credentials or live sockets mounted",
-    "data_root": "/mnt/user/appdata/codex-switcher",
-    "supervisor_commit": "528d3696b43ba34b28a408d5e328841e5f52ccc4",
-    "ownership": "Existing sole owner retained; no new supervisor, credential writer, Agent DM pin/data/receipt changes or cutover.",
-    "rollback_receipt": "/mnt/user/appdata/sessionsation-ui/config-backups/client-752a71de-f143-4114-a3b3-1364a068e03b.json"
-  },
-  "verification": {
-    "command": "scripts/check.sh",
-    "passed": true,
+  "scope": "Portable source checks; no installed deployment inventory or private operational records",
+  "toolchain": "Rust 1.95.0",
+  "commands": [
+    "scripts/check.sh",
+    "SESSIONSATION_ISOLATED_HOST_TEST=1 cargo test --locked --test external_move installed_herdr_ -- --ignored --nocapture"
+  ],
+  "results": {
+    "status": "passed",
+    "environment": "Fresh Debian bookworm container from public rust:1.95.0-bookworm; declared apt dependencies, no host Cargo cache/provider CLI/accounts/sockets",
     "checks": [
-      "cargo fmt --check",
-      "cargo clippy --offline --locked --all-targets -- -D warnings",
-      "cargo test --offline --locked",
-      "python3 scripts/check_docs.py",
-      "python3 scripts/check_contract.py"
+      "format",
+      "Clippy all targets with warnings denied",
+      "locked Rust tests",
+      "documentation links",
+      "JSON Schema and real CLI envelopes"
     ],
     "tests": {
-      "lib": 140,
-      "binary": 0,
+      "unit": 140,
       "cli": 8,
       "external_move": 64,
       "messaging_cli": 8,
       "persistence": 6,
       "scheduling": 29,
       "transport": 3,
-      "doctests": 0,
       "total": 258,
-      "failed": 0,
-      "ignored": 3
+      "ignored": 3,
+      "failed": 0
     },
-    "scope": "258 offline tests plus two installed-HERDR isolated fixtures. Separately authorized native disposable acceptance is scoped and versioned below; no existing agent, supervisor or Agent DM pin/data change."
+    "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265",
+    "cold_run_note": "Initial concurrent cold run timed out in daemon readiness. The isolated test and complete rerun with bounded test/runtime workers passed; root cause is not conclusively established. No production runtime behavior was changed.",
+    "release_smoke": "Passed release build/install, help, v1 capabilities/empty state, metadata-only setup/status/stop in a separate network-disabled container; no Codex binary/accounts/provider calls"
   },
-  "native_runtime": {
-    "terminal_client": {
-      "path": "/mnt/user/appdata/codex/bin/codex",
-      "version": "0.162.1",
-      "sha256": "628e35487d888a28f0427fc37501da529dd3d81fcbad7a2c3421c1e8670d92e1"
-    },
-    "account_app_server": {
-      "account": "codex:personal",
-      "path": "/mnt/user/appdata/codex-switcher/accounts/personal/packages/app-server-daemon/releases/0.163.0-x86_64-unknown-linux-musl/bin/codex",
-      "version": "0.163.0",
-      "sha256": "399ff69c431c066e40de318fba45c2b07f45a76b19939d247ee4828fc70c4215",
-      "provenance": "Existing supervisor-owned app-server executable verified through /proc/PID/exe; daemon pid-update-loop helper is separate from the managed --listen unix:// app-server. Neither was started/replaced by sessionsation acceptance."
-    },
-    "observation_scope": "Earlier runtime inspection; not a new live-provider verification for this CLI release."
-  },
-  "review_candidate": {
-    "source": {
-      "repository": "https://github.com/anastaci1a/sessionsation",
-      "commit": "8b77639c44e0bf026acf1f23c308461b0968d737",
-      "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265",
-      "worktree": "clean at build/staging"
-    },
-    "artifact": {
-      "installed": false,
-      "kind": "staged review debug artifact; not selected by launcher or Agent DM",
-      "path": "/mnt/user/live/projects/sessionsation/target-review/artifacts/8b77639c44e0bf026acf1f23c308461b0968d737/sessionsation",
-      "sha256": "af744245d60b8e83687c4cea5d124c1db38ba2cbc9db77a0e91e9d0ae7f2bd55",
-      "profile": "debug",
-      "rust_version": "1.95.0",
-      "container_image": "sessionsation-build-tools:local",
-      "container_image_id": "sha256:4524fc318ec3fe78073bcf4573f940862031035901da2f46391c273a1a5bf320",
-      "build": "CARGO_TARGET_DIR=/work/target-review cargo build --offline --locked in network-disabled container; no credentials or live sockets mounted"
-    },
-    "verification": {
-      "command": "scripts/check.sh",
-      "passed": true,
-      "tests": {
-        "lib": 107,
-        "binary": 0,
-        "cli": 6,
-        "external_move": 57,
-        "messaging_cli": 8,
-        "persistence": 6,
-        "scheduling": 29,
-        "transport": 3,
-        "doctests": 0,
-        "total": 216,
-        "failed": 0,
-        "ignored": 0
-      },
-      "checks": [
-        "cargo fmt --check",
-        "cargo clippy --offline --locked --all-targets -- -D warnings",
-        "cargo test --offline --locked",
-        "python3 scripts/check_docs.py",
-        "python3 scripts/check_contract.py"
-      ],
-      "scope": "Offline isolated fixtures and CLI/schema checks only. No new native send, account mutation or lifecycle acceptance from this candidate."
-    }
-  },
-  "unfinished_resume_acceptance": {
-    "source": "37d9393b0847a5e919956c2fa453f071f7f192a7",
-    "passed": 2,
-    "failed": 0,
-    "command": "SESSIONSATION_ISOLATED_HOST_TEST=1 cargo test --offline --locked --test external_move installed_herdr_ -- --ignored --nocapture",
-    "models": 0,
-    "supervisor": "Existing production owner unchanged",
-    "checks": [
-      "same/transferred-account resume, explicit directory and permissions retained",
-      "startup waiting retains exact client before positive provider state",
-      "foreign observer socket/config cannot redirect lifecycle actions",
-      "post-account-deletion 70 turns/270 items match on explicit destination"
-    ]
-  },
-  "operation_audit": {
-    "account_deletion": {
-      "source": "2bb94cc2a8e9a5d0f724404d6722a799881522c8",
-      "fixture": "account_delete_is_async_preserves_conversations_and_removes_only_disposable_credentials",
-      "filesystem": "Real Unraid FUSE fixture passed; in-home lease dropped before final removal while external reservation remains held",
-      "approved_recovery": "Original confirmed unauthenticated-account deletion recovered to complete; saved conversations preserved outside the account home"
-    },
-    "admission": "Per-conversation reservation across resume, handoff, archive/delete; terminal workers keep reservation until lock release; original request may continue",
-    "orphan_workers": "Before handoff: failed; possible handoff: uncertain, no automatic replay",
-    "adapter_coordination": {
-      "source_session_id": "May be null for a historical operation whose catalog session no longer exists; schema updated",
-      "submit_queue": "No semantic or legacy receipt mapping changes in this slice",
-      "cutover": "None; independent Agent DM acceptance still required",
-      "legacy_reader": {
-        "pin": "8b77639c44e0bf026acf1f23c308461b0968d737",
-        "sha256": "af744245d60b8e83687c4cea5d124c1db38ba2cbc9db77a0e91e9d0ae7f2bd55",
-        "data_root": "/mnt/user/appdata/codex-switcher",
-        "existing_helper_enabled": true,
-        "supervisor": "Sole existing owner retained",
-        "gate": "Review and adopt compatible discovery before shared-root custom-namespace acceptance; no generation rewind or mutation retry"
-      }
-    },
-    "remaining_gates": [
-      "Provider login cancellation requires sole-owner contract support; popup close does not cancel login",
-      "Uncertain external handoffs and orphaned archive operations require explicit reconciliation; no blind recovery/replay",
-      "Important saved sessions and existing native agents were not resumed, switched or stopped for this audit",
-      "Shared-root legacy Agent DM reader needs reviewed compatible pin adoption for custom HERDR namespaces; no pin/data/receipt cutover performed"
-    ]
-  },
-  "native_acceptance": {
-    "passed": true,
-    "initial_source": "b0cadc1726f829155440e63a3c0dde0d511a40b4",
-    "final_source": "37d9393b0847a5e919956c2fa453f071f7f192a7",
-    "scope": "One separately authorized disposable native Codex conversation, two enrolled accounts, owned headless HERDR; no existing agent targeted",
-    "initial_checks": [
-      "native-new-running",
-      "stale-switch-rejected-before-admission",
-      "fresh-switch-completed-without-ending-session",
-      "inactive-history-retained",
-      "native-new-directory-new-space-account-resume"
-    ],
-    "final_checks": [
-      "four-reader-observations-retain-generation-and-original-binding",
-      "lifecycle-waits-for-native-startup-with-client-retained",
-      "foreign-environment-stop-preserves-history",
-      "native-archive-retains-stable-identity",
-      "own-disposable-history-cleaned",
-      "own-isolated-host-stopped"
-    ],
-    "history": {
-      "copies_checked": 2,
-      "task_started_events": 0,
-      "user_messages": 0
-    },
-    "model_prompts_submitted": 0,
-    "model_turns_started": 0,
-    "cleanup": {
-      "own_history_deleted": true,
-      "own_host_stopped": true,
-      "temporary_socket_alias_removed": true
-    },
-    "test_namespace": "A temporary alias exposed only this owned host to the older shared-root reader; it was removed after acceptance. Isolated host tests independently verify the new client without that alias.",
-    "original_outcomes": "Original stale/pre-startup failures remain recorded. No uncertain send or original failed mutation was replayed; cleanup used a fresh explicit selection after terminal failure."
-  }
+  "limitations": [
+    "No provider login, credentials, model calls or existing live hosts in portable checks",
+    "Native acceptance and original-owner handoff require separately scoped evidence"
+  ]
 }

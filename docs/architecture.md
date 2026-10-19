@@ -49,15 +49,14 @@ supervisor and credential writer per account home.
 ## Separate UI
 
 `sessionsation-ui` is a separate repository consuming the public versioned backend
-contract. It may offer a thin HERDR plugin for account/usage management,
-selected-session switching, and new/resume/plain-shell launchers. Account,
+contract. It provides a HERDR popup for account/usage management, selected-session actions
+and new/resume launchers; its older shell tools are separate compatibility entrypoints. Account,
 credential and lifecycle logic stays in sessionsation. Verify the backend first.
 Cross-provider conversation conversion is outside this version.
 
 ## Claude preparation
 
-Ana has requested preparation only because no Claude installation/account setup is
-present. The v1 capability list reserves `claude` and reports `SETUP_REQUIRED` for
+Claude runtime support is not implemented. The v1 capability list reserves `claude` and reports `SETUP_REQUIRED` for
 runtime behavior. Codex-only operations reject other provider IDs explicitly.
 
 Future implementation must verify the installed binary and isolated config homes

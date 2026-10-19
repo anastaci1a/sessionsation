@@ -1,36 +1,61 @@
 # sessionsation
 
-A CLI-first account and session manager for Codex and Claude, with provider behavior
-separate from terminal hosting. The backend reuses
-[Codex Switcher](https://github.com/anastaci1a/codex-switcher).
+A Linux CLI for managing coding-agent accounts and named sessions. It keeps account
+selection, conversation history and lifecycle operations in one backend; terminal
+hosting is handled separately by tmux or [HERDR](https://herdr.dev).
 
-**Status:** the Codex backend and its CLI have been imported without the UI.
-Account enrollment/monitoring, exact-conversation launch, tmux discovery and manual
-history-preserving moves are inherited. HERDR now hosts the same account-specific
-Codex launcher, including discovery, restart and recovery. A versioned JSON API
-provides stable session IDs, unique names, usage, non-steering messaging and safe
-local account removal, conversation archives and explicit history deletion. The original installation remains independent.
+**Early development.** Codex is implemented. Claude is a capability placeholder,
+not a working provider. There is no cross-provider conversation conversion.
 
-Use Linux (including Unraid), Codex CLI, Rust 1.95, gzip, and tmux or HERDR.
-Claude runtime is not configured; its capabilities explicitly report setup required.
-The separate [sessionsation-ui](https://github.com/anastaci1a/sessionsation-ui)
-provides a thin HERDR management viewer and future-terminal launcher.
+Today the CLI provides account enrollment, usage/reset reporting, enable/disable,
+local account deletion with preserved conversations, session discovery, new/resume,
+rename, idle-bound account switching, archives and explicit conversation deletion.
+Integrations use a versioned JSON API with stable session IDs, generation checks,
+non-steering Submit/Queue and durable receipts. Availability depends on the installed
+provider's verified native capabilities; building successfully is not provider acceptance.
 
-Build with `cargo build --locked`, then `export PATH="$PWD/target/debug:$PATH"`.
-Inspect `sessionsation --help`.
-Use `--data-dir /absolute/disposable/path` for experiments; the default on Unraid
-is `/mnt/user/appdata/sessionsation`. Do not point an experimental supervisor at
-live account data. Run the isolated checks with `scripts/check.sh` on this server.
+## Install
+
+Requires Linux, Git, a C toolchain and the Rust toolchain pinned by
+[rust-toolchain.toml](rust-toolchain.toml). Running agents also needs a compatible
+Codex installation, gzip, rsync, and tmux or HERDR. See
+[setup and compatibility](docs/cli.md) before enrolling accounts.
 
 ```sh
-sessionsation account list
-sessionsation run --account personal
-sessionsation run --account personal --host herdr --herdr-session coding
-sessionsation api state
+git clone https://github.com/anastaci1a/sessionsation.git
+cd sessionsation
+cargo build --release --locked
+mkdir -p "$HOME/.local/bin"
+install -m 755 target/release/sessionsation "$HOME/.local/bin/sessionsation"
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The HERDR command requires an existing named server. See [setup and CLI](docs/cli.md).
-Integrations use [CLI contract v1](docs/contract.md); see
-[verification evidence and limitations](docs/operations.md).
+No released binary package or universal provider-version compatibility is claimed.
+The repository must be accessible to your Git identity while it remains private.
 
-See [documentation](docs/README.md) and [contributor workflow](agents/README.md).
+## Quick start
+
+These commands inspect an empty, explicit local data root without enrolling an
+account, starting an agent or making provider calls:
+
+```sh
+export SESSIONSATION_HOME="$HOME/.local/share/sessionsation"
+sessionsation --help
+sessionsation api --api-version 1 capabilities
+sessionsation api --api-version 1 state
+```
+
+Then follow [account setup and terminal launch](docs/cli.md). Keep one supervisor
+per data root. Reusing an existing installation is an explicit choice, not an
+automatic import or migration; never rename its live account homes.
+
+The separate [sessionsation-ui](https://github.com/anastaci1a/sessionsation-ui)
+provides a HERDR popup. Closing a viewer leaves agents running; stopping an agent
+is a separate backend action.
+
+See [documentation](docs/README.md), [public API v1](docs/contract.md),
+[verification and limits](docs/operations.md), and
+[contributor/build checks](agents/README.md).
+
+MIT licensed; backend reuse and the retained upstream revision are recorded in
+[NOTICE](NOTICE) and [LICENSE](LICENSE).

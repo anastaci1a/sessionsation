@@ -1,9 +1,6 @@
 use super::*;
 fn fixtures() -> Value {
-    serde_json::from_str(include_str!(
-        "../../../docs/messaging/modes-v1/fixtures.json"
-    ))
-    .unwrap()
+    serde_json::from_str(include_str!("../../../tests/fixtures/legacy-modes.json")).unwrap()
 }
 fn run(v: Value) -> Result<Value> {
     engine::fixture(serde_json::from_value(v).unwrap())

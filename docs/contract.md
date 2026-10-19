@@ -40,7 +40,7 @@ offline metadata does not prove an account can presently launch.
   with `STALE_TARGET` rather than selecting a replacement.
 - Session names are unique across the catalog; rename is atomic and retains both
   identities. `SESSION_NAME_EXISTS` rejects a collision.
-- Account IDs are provider-qualified, such as `codex:personal`. A removed membership
+- Account IDs are provider-qualified, such as `codex:example`. A removed membership
   remains represented for recovery with `membership:"removed"` and `selectable:false`.
   Disabled memberships remain enrolled. Use `selectable`, not name or plan, for selection.
 
@@ -135,7 +135,7 @@ See [local deletion semantics](cli.md) for preservation and sole-owner gates.
 from the catalog; historical operations remain inspectable. `provider_conversation_id` remains
 explicitly separate. Public recovery rejects jobs outside this contract.
 
-`api launcher new --account codex:personal`, `api launcher resume --session ID
+`api launcher new --account codex:example`, `api launcher resume --session ID
 --expected-generation GENERATION`, and `api launcher shell` return an opaque
 `{action:"exec",argv:[...],cwd:...}` plan. A terminal client executes the exact argv
 without a shell, applying cwd only when non-null. The backend revalidates the
@@ -291,7 +291,7 @@ manual selection without rewriting thresholds. The installed supervisor remains
 the sole account-data/credential owner.
 
 Installed client provenance and isolated acceptance are recorded in
-[verification.json](verification.json). Adding commands does not itself change a
+[verification scope](operations.md). Adding commands does not itself change a
 consumer’s selected artifact or data-root owner. The existing `launcher` exec-plan
 interface is unchanged.
 

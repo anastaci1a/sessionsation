@@ -1,27 +1,62 @@
 # Setup and CLI
 
-## Build and state
+## Build and prerequisites
 
-Use Linux/Unraid, Rust 1.95, a C compiler, Codex CLI, gzip and tmux or HERDR.
-The tested build on this server is described in [operations](operations.md).
+The source build needs Linux, Git, a C compiler/linker, and rustup with the
+repository-pinned toolchain (currently Rust 1.95.0). On Debian/Ubuntu:
 
 ```sh
-cargo build --locked
-export PATH="$PWD/target/debug:$PATH"
-sessionsation --help
-sessionsation api capabilities
+sudo apt-get update
+sudo apt-get install -y build-essential git curl ca-certificates gzip rsync tmux
+# Install rustup using https://rustup.rs/ if it is not already installed.
+rustup show
+cargo build --release --locked
 ```
 
-State defaults to `SESSIONSATION_HOME`, then `/mnt/user/appdata/sessionsation` on
-Unraid or `~/.local/share/sessionsation` elsewhere. `--data-dir /absolute/path`
-takes precedence. Keep one data root for all clients. The stable session catalog
-lives under `session-catalog/`; retain it to retain backend IDs and names.
+SQLite is bundled by the Rust dependency; no system SQLite development package is
+required. [Contributor instructions](../agents/README.md) cover Python/schema
+checks and a container built entirely from public images, without a private cache.
 
-The original switcher installation is independent. To use its already-enrolled
-accounts, explicitly select its data root; sessionsation talks to the existing
-supervisor and account servers and retains their ownership locks. Do not stop or
-replace that owner or copy its credentials. New development/tests use disposable
-roots. Installing or migrating a live service is a separate owner decision.
+For real accounts, obtain Codex from [OpenAI's CLI installation guidance](https://learn.chatgpt.com/docs/codex/cli).
+For example, with Node.js/npm already installed, `npm install -g @openai/codex`
+installs the CLI; pin and record the version you actually verify. The
+[app-server documentation](https://learn.chatgpt.com/docs/app-server) describes the
+native interface. Neither installation nor a successful `--version` check proves
+this project's queue, background-terminal, permission or history-export support.
+The tested version matrix and remaining gates are in [operations](operations.md).
+No provider CLI, credentials or model access is needed for the offline fixtures.
+
+## Configuration and ownership
+
+State defaults to `SESSIONSATION_HOME`, then the platform default:
+`$HOME/.local/share/sessionsation` on Linux, or
+`/mnt/user/appdata/sessionsation` on Unraid (the array must be mounted).
+`--data-dir /absolute/path` overrides both. Use an explicit root consistently in
+services and clients; an empty default root is not an import of another root.
+
+For a new installation, select a private, user-owned directory before setup:
+
+```sh
+export SESSIONSATION_HOME="$HOME/.local/share/sessionsation"
+sessionsation setup
+sessionsation status --json
+```
+
+Setup starts a metadata supervisor. The config at `DATA_ROOT/config.json` selects
+`codex_binary` (default `codex` on PATH) and monitoring thresholds. Use
+`sessionsation config --help` for inspection/editing. Enrolling accounts starts
+account-specific provider workers and authentication; it is separate from setup.
+Stop your new supervisor with `sessionsation daemon stop`. Systemd user installation
+is optional through `setup --systemd`; review its service before enabling it.
+
+An existing Codex Switcher root may be selected explicitly with `--data-dir`.
+Keep its current sole supervisor and credential writer; do not run setup, copy
+credentials, move account homes, or start another owner against live data. Runtime
+socket names retain legacy terminology for compatibility. Renaming/migrating a
+live installation needs a separate, backed-up maintenance procedure; it is not
+part of installing this CLI. Stable IDs live under `session-catalog/`; retain the
+catalog and original receipts with the root. An unrelated default Codex home or
+unmanaged terminal is not automatically adopted.
 
 ## Accounts
 
@@ -29,11 +64,11 @@ For a fresh private data root, `sessionsation setup` initializes its metadata
 supervisor. Enrollment is interactive through a device/browser login:
 
 ```sh
-sessionsation api account add codex:personal
+sessionsation api account add codex:example
 sessionsation api account list
-sessionsation api account login codex:personal
-sessionsation api account disable codex:personal
-sessionsation api account enable codex:personal
+sessionsation api account login codex:example
+sessionsation api account disable codex:example
+sessionsation api account enable codex:example
 ```
 
 Add/login return the provider's verification URL and user code. Complete the login
@@ -48,14 +83,14 @@ scalar values, excluding controls and surrounding whitespace. Existing longer
 catalog names remain readable and keep their identity; new automatic discovery
 labels are shortened with collision-safe suffixes. Space labels and directory
 names retain their separate limits.
-Historical usage uses `api account usage codex:personal --start UNIX --end UNIX
+Historical usage uses `api account usage codex:example --start UNIX --end UNIX
 --step 1800`.
 
 Read or save account thresholds through the existing supervisor:
 
 ```sh
-sessionsation api account limits codex:personal
-sessionsation api account limits codex:personal --short-used 80 --weekly-used 90
+sessionsation api account limits codex:example
+sessionsation api account limits codex:example --short-used 80 --weekly-used 90
 ```
 
 Both values must be finite percentages from 0 through 100 and supplied together.
@@ -69,9 +104,9 @@ Deregistration (`account remove`) previews affected catalog sessions, active/loa
 operations and stored-data counts/paths. It requires exact ID and fresh revision:
 
 ```sh
-sessionsation api account remove codex:personal
-sessionsation api account remove codex:personal --confirm codex:personal --revision PREVIEW-REVISION
-sessionsation api account restore codex:personal
+sessionsation api account remove codex:example
+sessionsation api account remove codex:example --confirm codex:example --revision PREVIEW-REVISION
+sessionsation api account restore codex:example
 ```
 
 Removal refuses active/loaded conversations or pending lifecycle jobs. Stop or
@@ -83,8 +118,8 @@ the membership change. No upstream provider account is deleted.
 Actual local account deletion is separate and never deletes saved conversations:
 
 ```sh
-sessionsation api account delete codex:personal
-sessionsation api account delete codex:personal --confirm codex:personal --request-id NEW-UUID
+sessionsation api account delete codex:example
+sessionsation api account delete codex:example --confirm codex:example --request-id NEW-UUID
 sessionsation api account deletions --request-id ORIGINAL-UUID
 sessionsation api operations
 sessionsation api recover ORIGINAL-UUID
@@ -112,7 +147,7 @@ preserved histories and are never automatically retried.
 
 ## Terminal hosting
 
-Keep the current terminal with `sessionsation run --account personal`, including
+Keep the current terminal with `sessionsation run --account example`, including
 inside tmux or HERDR. HERDR's session/pane context is registered automatically.
 Outside a managed host, foreground launch still works, but v1 managed lifecycle
 requires a discovered tmux/HERDR attachment.
@@ -126,7 +161,7 @@ herdr --session coding server
 Then launch and optionally attach a viewer:
 
 ```sh
-sessionsation run --account personal --host herdr --herdr-session coding
+sessionsation run --account example --host herdr --herdr-session coding
 herdr session attach coding
 ```
 
@@ -151,7 +186,7 @@ supported contract versions. All API output is JSON; watch uses NDJSON.
 ```sh
 sessionsation api state
 sessionsation api state --watch --interval 2
-sessionsation api launcher new --account codex:personal
+sessionsation api launcher new --account codex:example
 sessionsation api operations
 ```
 
@@ -176,8 +211,8 @@ Popup clients resume a saved session into a new HERDR tab using `api resume-laun
 validate` and `api resume-launch start` with a versioned JSON request on stdin.
 An optional `directory` plan chooses a different working directory without moving project files; omitted plans retain the saved location.
 Use `api resume-launch list` or `api resume-launch status --request-id UUID` to
-inspect the original request after detaching. The backend fixes the directory to
-the saved conversation; account, name and destination Space are explicit choices.
+inspect the original request after detaching. The backend uses the saved directory when the request omits a directory plan;
+account, name and destination Space are explicit choices.
 See [the request and failure contract](contract.md#saved-session-popup-resume).
 
 ## Saved and archived conversations

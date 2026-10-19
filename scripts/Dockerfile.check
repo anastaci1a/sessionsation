@@ -1,2 +1,7 @@
-FROM codex-switcher-native-tools:local
-RUN apt-get update && apt-get install -y --no-install-recommends tmux rsync python3-jsonschema && rm -rf /var/lib/apt/lists/*
+# Public, reproducible toolchain. No provider CLI, account state or private cache.
+FROM rust:1.95.0-bookworm
+RUN rustup component add rustfmt clippy --toolchain 1.95.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tmux rsync python3 python3-jsonschema ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /work
