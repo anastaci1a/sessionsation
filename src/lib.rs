@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod api;
 pub mod automatic;
 pub mod autostart;
+mod background;
 pub mod catalog;
 pub mod cli_views;
 pub mod compatibility;

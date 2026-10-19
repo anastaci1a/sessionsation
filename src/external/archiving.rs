@@ -49,7 +49,7 @@ struct Operation {
 }
 impl Operation {
     fn public(&self) -> Value {
-        json!({"id":self.id,"kind":self.kind.label(),"session_id":self.session.id,"phase":self.phase,"detail":self.detail,"created_at":self.created_at,"updated_at":self.updated_at,"can_cancel":false})
+        json!({"id":self.id,"kind":self.kind.label(),"session_id":self.session.id,"phase":self.phase,"detail":self.detail,"created_at":self.created_at,"updated_at":self.updated_at,"can_cancel":false,"can_recover":false,"can_respond":false})
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -278,7 +278,7 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         worker_start: None,
     };
     op_save(paths, &o)?;
-    let spawned = Command::new(crate::self_executable::path()?)
+    let spawned = crate::background::detach(&mut Command::new(crate::self_executable::path()?))
         .arg("--data-dir")
         .arg(&paths.root)
         .args(["conversation-worker", &o.id])

@@ -231,15 +231,17 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         updated_at: daemon::now(),
     };
     save(paths, &mut receipt)?;
-    let child = std::process::Command::new(crate::self_executable::path()?)
-        .arg("--data-dir")
-        .arg(&paths.root)
-        .args(["resume-worker", &receipt.request.request_id])
-        .env("HERDR_SOCKET_PATH", &receipt.request.host.socket)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    let child = crate::background::detach(&mut std::process::Command::new(
+        crate::self_executable::path()?,
+    ))
+    .arg("--data-dir")
+    .arg(&paths.root)
+    .args(["resume-worker", &receipt.request.request_id])
+    .env("HERDR_SOCKET_PATH", &receipt.request.host.socket)
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn();
     if child.is_err() {
         receipt.phase = "failed".into();
         receipt.detail = Some("Worker could not start; no resources created".into());

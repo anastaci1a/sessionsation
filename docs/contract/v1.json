@@ -467,7 +467,10 @@
           "format": "uuid"
         },
         "source_session_id": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "uuid"
         },
         "kind": {

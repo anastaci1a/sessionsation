@@ -27,6 +27,8 @@ pub struct Record {
     pub history_home: PathBuf,
     pub source_inode: Option<u64>,
     pub can_cancel: bool,
+    #[serde(default)]
+    pub can_recover: bool,
     pub history_preserved: bool,
 }
 fn record_file(paths: &Paths, id: &str) -> Result<PathBuf> {
@@ -41,9 +43,35 @@ fn save(paths: &Paths, r: &mut Record) -> Result<()> {
     atomic_write(&record_file(paths, &r.id)?, &serde_json::to_vec_pretty(r)?)
 }
 pub fn status(paths: &Paths, id: &str) -> Result<Record> {
-    Ok(serde_json::from_slice(
+    let mut r: Record = serde_json::from_slice(
         &fs::read(record_file(paths, id)?).context("ACCOUNT_DELETION_NOT_FOUND")?,
-    )?)
+    )?;
+    let stopped = worker_stopped(paths, id)?;
+    if !matches!(r.phase.as_str(), "failed" | "complete")
+        && daemon::now() - r.updated_at > 10
+        && stopped
+    {
+        r.phase = "failed".into();
+        r.detail = "Deletion worker exited without a final receipt. History remains retained; Recover explicitly rechecks and continues this original request.".into();
+    }
+    r.can_recover = r.phase == "failed" && stopped;
+    Ok(r)
+}
+fn worker_stopped(paths: &Paths, id: &str) -> Result<bool> {
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(record_file(paths, id)?.with_extension("worker.lock"))
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(e) => return Err(e.into()),
+    };
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+        Err(e) => Err(e.into()),
+    }
 }
 pub fn list(paths: &Paths) -> Result<Vec<Record>> {
     let dir = paths.root.join("account-deletions");
@@ -52,7 +80,8 @@ pub fn list(paths: &Paths) -> Result<Vec<Record>> {
         for e in fs::read_dir(dir)? {
             let e = e?;
             if e.file_type()?.is_file() && e.path().extension().is_some_and(|x| x == "json") {
-                out.push(serde_json::from_slice::<Record>(&fs::read(e.path())?)?);
+                let r: Record = serde_json::from_slice(&fs::read(e.path())?)?;
+                out.push(status(paths, &r.id)?);
             }
         }
     }
@@ -79,18 +108,20 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
     )
 }
 fn spawn(paths: &Paths, r: &Record) -> Result<()> {
-    std::process::Command::new(crate::self_executable::path()?)
-        .arg("--data-dir")
-        .arg(&paths.root)
-        .args(["account-delete-worker", &r.id])
-        .env_remove("CODEX_HOME")
-        .env_remove("OPENAI_API_KEY")
-        .env_remove("CODEX_API_KEY")
-        .env_remove("CODEX_ACCESS_TOKEN")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+    crate::background::detach(&mut std::process::Command::new(
+        crate::self_executable::path()?,
+    ))
+    .arg("--data-dir")
+    .arg(&paths.root)
+    .args(["account-delete-worker", &r.id])
+    .env_remove("CODEX_HOME")
+    .env_remove("OPENAI_API_KEY")
+    .env_remove("CODEX_API_KEY")
+    .env_remove("CODEX_ACCESS_TOKEN")
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()?;
     Ok(())
 }
 fn account_home(paths: &Paths, name: &str) -> Result<PathBuf> {
@@ -153,6 +184,7 @@ pub async fn start(paths: &Paths, name: &str, id: &str, confirm: &str) -> Result
             .join("home"),
         source_inode: Some(home.ino()),
         can_cancel: false,
+        can_recover: false,
         history_preserved: false,
     };
     save(paths, &mut r)?;
@@ -465,6 +497,38 @@ pub fn preserved_homes(paths: &Paths) -> Result<Vec<(String, PathBuf)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn orphaned_deletion_is_recoverable_but_live_worker_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(dir.path().join("root"))).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        private_dir(&paths.root.join("account-deletions")).unwrap();
+        let r = json!({"id":id,"account_id":"codex:fixture","kind":"account_delete","phase":"checking_active","detail":"checking","updated_at":0,"history_home":"/fixture","source_inode":null,"can_cancel":false,"history_preserved":true});
+        atomic_write(
+            &record_file(&paths, &id).unwrap(),
+            &serde_json::to_vec(&r).unwrap(),
+        )
+        .unwrap();
+        let orphan = status(&paths, &id).unwrap();
+        assert_eq!(orphan.phase, "failed");
+        assert!(orphan.can_recover);
+        let lock = lock_file(
+            &record_file(&paths, &id)
+                .unwrap()
+                .with_extension("worker.lock"),
+        )
+        .unwrap();
+        lock.lock_exclusive().unwrap();
+        let live = status(&paths, &id).unwrap();
+        assert_eq!(live.phase, "checking_active");
+        assert!(!live.can_recover);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(record_file(&paths, &id).unwrap()).unwrap())
+                .unwrap(),
+            r,
+            "read projection never rewrites a receipt"
+        );
+    }
     #[tokio::test]
     async fn replaced_account_home_and_symlink_parent_are_rejected_before_data_changes() {
         let d = tempfile::tempdir().unwrap();
@@ -488,6 +552,7 @@ mod tests {
                 .join("home"),
             source_inode: Some(fs::metadata(&home).unwrap().ino().wrapping_add(1)),
             can_cancel: false,
+            can_recover: false,
             history_preserved: false,
         };
         assert!(

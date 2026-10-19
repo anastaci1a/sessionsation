@@ -276,8 +276,15 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             a["id"] = json!(format!("codex:{name}"));
             a["provider"] = json!("codex");
             a["membership"] = json!(if removed { "removed" } else { "enrolled" });
-            a["selectable"] =
-                json!(!removed && a["enabled"] == true && a["auth_required"] == false);
+            if let Some(id) = a["deletion_id"].as_str() {
+                a["deletion"] = json!(crate::account_deletion::status(paths, id)?);
+            }
+            a["selectable"] = json!(
+                !removed
+                    && a["deletion_id"].is_null()
+                    && a["enabled"] == true
+                    && a["auth_required"] == false
+            );
             a["prefill"] = account_prefill(
                 &a,
                 daemon::now(),
@@ -831,12 +838,15 @@ fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
     let id = catalog::list(paths)?
         .into_iter()
         .find(|s| s.provider == "codex" && s.conversation_id == j.source.thread_id)
-        .context("SESSION_NOT_FOUND")?
-        .id;
+        .map(|s| s.id);
     Ok(
         json!({"id":j.id,"source_session_id":id,"kind":j.kind,"phase":j.phase,"detail":j.detail,
         "confirmation_seq":j.confirmation_seq,"source_account_id":format!("codex:{}",j.source.account),
         "target_account_id":format!("codex:{}",j.target),"provider_conversation_id":j.source.thread_id,
+        "created_at":j.created_at,
+        "can_cancel":external::can_cancel_move(&j),
+        "can_recover": !external::handoff_worker_alive(&j.id) && (j.phase == "failed" || (!matches!(j.phase.as_str(), "complete" | "cancelled" | "recovered") && daemon::now() - j.created_at > 10)),
+        "can_respond":j.phase.starts_with("awaiting_"),
         "non_steering":j.non_steering}),
     )
 }

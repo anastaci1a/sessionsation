@@ -1950,19 +1950,25 @@ pub fn cancel_move(paths: &Paths, id: &str) -> Result<()> {
     lock.lock_exclusive()?;
     let job: Job = serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?;
     ensure!(
-        !matches!(
-            job.phase.as_str(),
-            "stopping_source"
-                | "verifying"
-                | "verified"
-                | "launching_target"
-                | "relocating_files"
-                | "running_on_target"
-                | "complete"
-        ),
+        can_cancel_move(&job),
         "the move has already crossed the restart boundary; wait for completion or use recover if it fails"
     );
     atomic_write(&jobs_dir(paths)?.join(format!("{id}.cancel")), b"cancel")
+}
+pub(crate) fn can_cancel_move(job: &Job) -> bool {
+    !matches!(
+        job.phase.as_str(),
+        "stopping_source"
+            | "verifying"
+            | "verified"
+            | "launching_target"
+            | "relocating_files"
+            | "running_on_target"
+            | "complete"
+            | "failed"
+            | "cancelled"
+            | "recovered"
+    )
 }
 pub fn respond_background(paths: &Paths, id: &str, approve: bool) -> Result<()> {
     let job: Job = serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?;

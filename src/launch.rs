@@ -349,14 +349,15 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         updated_at: daemon::now(),
     };
     save(paths, &mut receipt)?;
-    let spawned = std::process::Command::new(std::env::current_exe()?)
-        .arg("--data-dir")
-        .arg(&paths.root)
-        .args(["launch-worker", &receipt.request.request_id])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    let spawned =
+        crate::background::detach(&mut std::process::Command::new(std::env::current_exe()?))
+            .arg("--data-dir")
+            .arg(&paths.root)
+            .args(["launch-worker", &receipt.request.request_id])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
     if spawned.is_err() {
         catalog::release_reservation(paths, &receipt.request.request_id, &receipt.request.name)?;
         receipt.phase = "failed".into();

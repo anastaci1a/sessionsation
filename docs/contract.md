@@ -98,6 +98,15 @@ Lifecycle mutations return journaled operation objects, whose `id`, `source_sess
 `detail` and `confirmation_seq` identify progress. A returned job is not completed
 work. Terminal phases include `complete`, `cancelled`, `failed` and `recovered`.
 A failed or uncertain operation must be inspected before retrying. v1 operations
+expose `can_cancel`, `can_recover` and `can_respond` where applicable; consumers
+must not infer recovery support from a failed phase alone. Archive operations do
+not support replay/recovery through `api recover`. Account-deletion status marks
+an orphaned worker failed after a ten-second admission grace period, without
+rewriting its receipt. Recovery explicitly continues the same confirmed request.
+Accounts reserved for deletion expose `deletion` status and remain unselectable
+until cleanup finishes; a partial credential deletion must not be re-enabled.
+Durable launch, resume, deletion and archive workers use separate process groups
+so closing a requesting viewer does not stop their work. v1 operations
 wait for positive idle state, send no steer, and do not automatically continue work.
 Risk/background-stop consent is separate. `api respond OPERATION-ID yes|no
 --sequence CURRENT-SEQUENCE` rejects stale confirmations. `api cancel-operation
@@ -115,7 +124,8 @@ one account permanently; reuse for another account rejects `REQUEST_ID_CONFLICT`
 explicitly resumes a failed/interrupted worker after acquiring its operation lock.
 Do not call `cancel-operation` or `respond` on account deletion records.
 See [local deletion semantics](cli.md) for preservation and sole-owner gates.
-`source_session_id` is the stable backend ID; `provider_conversation_id` remains
+`source_session_id` is the stable backend ID, or null if the source was removed
+from the catalog; historical operations remain inspectable. `provider_conversation_id` remains
 explicitly separate. Public recovery rejects jobs outside this contract.
 
 `api launcher new --account codex:personal`, `api launcher resume --session ID
