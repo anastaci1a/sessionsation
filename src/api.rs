@@ -410,7 +410,7 @@ pub fn capabilities() -> Value {
          "enrollment":false,"usage":false,"new":false,"resume":false,
          "account_switch":false,"restart":false,"submit":false,"queue":false,
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false}
-    ],"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
+    ],"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"unfinished_confirmation":true,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true},
@@ -486,7 +486,7 @@ pub async fn state(paths: &Paths) -> Result<Value> {
         let mut value=public_session(s);
         value["resume_block_reason"]=json!(resume_block_reason(known,source));
         let running=source.is_some_and(|i|!i.inactive);
-        let saved=source.is_some_and(|i|i.inactive && i.block_reason.is_none() && i.move_id.is_none());
+        let saved=source.is_some_and(|i|i.inactive && matches!(i.block_reason.as_deref(), None | Some("unfinished")) && i.move_id.is_none());
         value["availability"]=json!(if running {"running"}else if saved {"saved"}else{"unavailable"});
         let facts=source.map(|s|external::history_file_details(&s.rollout)).unwrap_or(Value::Null);
         value["conversation_created_at"]=facts["conversation_created_at"].clone();

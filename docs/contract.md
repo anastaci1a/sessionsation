@@ -282,6 +282,10 @@ by adding these commands. The existing `launcher` exec-plan interface is unchang
 with JSON stdin, plus `status --request-id UUID` and `list`. See `ResumeRequest`
 and `ResumeReceipt` in the schema. The request has version, request UUID, stable
 `session_id`, `expected_generation`, account ID, editable name, host and Space.
+Optional `confirm_unfinished: true` acknowledges only the unfinished-history warning;
+it defaults to false and is advertised by `resume.unfinished_confirmation`.
+Unfinished histories remain resumable after this explicit confirmation; no user
+message is replayed and live-writer, directory, conflict and generation checks remain.
 It deliberately has no directory: the backend requires the saved conversation's
 existing directory. Session details report the last verified launch/resume Space;
 a client may prefer it only when the host and Space still match its inventory.
@@ -353,5 +357,6 @@ and New/Resume receipt phases are unchanged.
 Session state and details include nullable `resume_block_reason`: `unknown_account`,
 `history_unavailable`, `already_running`, `moving`, `missing_directory`,
 `history_busy`, `unfinished_history`, `conflicting_history`, or `unverified_history`.
-This explains observed resume gates; capability flags remain authoritative and
+`unfinished_history` is a confirmation warning, not a disabled resume capability.
+Other values explain observed resume gates; capability flags remain authoritative and
 launch rechecks current state. Consumers must tolerate future reason codes.

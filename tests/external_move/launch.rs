@@ -227,6 +227,18 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
         after["process_info"]["foreground_processes"][0]["pid"],
         shell_pid
     );
+    // Leave a recorded unfinished turn, with no live writer. Consent must be explicit.
+    let history = find_rollout(
+        &f.paths.account("personal").unwrap(),
+        receipt["conversation_id"].as_str().unwrap(),
+    )
+    .unwrap();
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&history).unwrap(),
+        "{}",
+        json!({"type":"event_msg","payload":{"type":"task_started"}})
+    )
+    .unwrap();
     // Resume this same synthetic conversation twice: original account, then
     // transferred account. Every terminal belongs to this isolated HERDR server.
     for (account, name) in [("personal", "Resumed orig"), ("work", "Transferred")] {
@@ -246,9 +258,18 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
         assert_eq!(saved["availability"], "saved");
         assert!(saved["attachment"].is_null());
         assert_eq!(saved["conversation_id"], receipt["conversation_id"]);
-        let resume = json!({"version":1,"request_id":uuid::Uuid::new_v4().to_string(),"session_id":id,
+        let mut resume = json!({"version":1,"request_id":uuid::Uuid::new_v4().to_string(),"session_id":id,
             "expected_generation":saved["generation"],"account_id":format!("codex:{account}"),"name":name,
             "host":{"session":"fixture","socket":socket},"space":{"kind":"existing","id":workspace}});
+        assert_eq!(saved["resume_block_reason"], "unfinished_history");
+        assert_eq!(saved["capabilities"]["resume"], true);
+        let rejected = api(&f, &["resume-launch", "validate"], Some(&resume));
+        assert!(!rejected.status.success());
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr)
+                .contains("UNFINISHED_HISTORY_CONFIRMATION_REQUIRED")
+        );
+        resume["confirm_unfinished"] = json!(true);
         let request_id = resume["request_id"].as_str().unwrap();
         let preview = api(&f, &["resume-launch", "validate"], Some(&resume));
         assert!(

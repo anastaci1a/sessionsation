@@ -31,6 +31,9 @@ pub struct Request {
     pub name: String,
     pub host: Host,
     pub space: Space,
+    /// Explicit consent for an interrupted saved turn, never other risks.
+    #[serde(default)]
+    pub confirm_unfinished: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Receipt {
@@ -119,6 +122,18 @@ fn shape(r: &Request) -> Result<()> {
     ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
     Ok(())
 }
+fn validate_saved_history(source: &external::Instance, confirmed: bool) -> Result<()> {
+    ensure!(
+        source.inactive && source.move_id.is_none(),
+        "SESSION_STATE_UNVERIFIED"
+    );
+    if source.block_reason.as_deref() == Some("unfinished") {
+        ensure!(confirmed, "UNFINISHED_HISTORY_CONFIRMATION_REQUIRED");
+    } else {
+        ensure!(source.block_reason.is_none(), "SESSION_STATE_UNVERIFIED");
+    }
+    Ok(())
+}
 async fn validate(paths: &Paths, r: &Request) -> Result<(catalog::Session, external::Instance)> {
     shape(r)?;
     let (s, source) = api::selected(paths, &r.session_id, &r.expected_generation).await?;
@@ -126,10 +141,7 @@ async fn validate(paths: &Paths, r: &Request) -> Result<(catalog::Session, exter
         source.inactive && s.attachment.is_none(),
         "SESSION_ALREADY_RUNNING"
     );
-    ensure!(
-        source.block_reason.is_none() && source.move_id.is_none(),
-        "SESSION_STATE_UNVERIFIED"
-    );
+    validate_saved_history(&source, r.confirm_unfinished)?;
     let cwd = PathBuf::from(&source.cwd);
     ensure!(
         cwd.is_absolute() && cwd.is_dir(),
@@ -332,6 +344,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
             &target,
             (&r.session_id, &renamed.generation()),
             id,
+            r.confirm_unfinished,
         )
         .await?;
     } else {
@@ -470,6 +483,32 @@ pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unfinished_consent_never_bypasses_other_history_gates() {
+        let mut source: external::Instance = serde_json::from_value(json!({
+            "inactive":true,"pane":"","tmux_session":"","pid":0,"cwd":"/tmp",
+            "thread_id":"fixture","rollout":"/tmp/history","home":"/tmp/home",
+            "binary":"codex","resume_options":[],"block_reason":"unfinished"
+        }))
+        .unwrap();
+        assert!(
+            validate_saved_history(&source, false)
+                .unwrap_err()
+                .to_string()
+                .contains("UNFINISHED_HISTORY_CONFIRMATION_REQUIRED")
+        );
+        assert!(validate_saved_history(&source, true).is_ok());
+        for reason in ["busy", "unknown", "diverged", "moving", "future"] {
+            source.block_reason = Some(reason.into());
+            assert!(validate_saved_history(&source, true).is_err());
+        }
+        source.block_reason = Some("unfinished".into());
+        source.move_id = Some("operation".into());
+        assert!(validate_saved_history(&source, true).is_err());
+        source.move_id = None;
+        source.inactive = false;
+        assert!(validate_saved_history(&source, true).is_err());
+    }
     #[test]
     fn request_cannot_override_directory_or_unknown_provider() {
         let mut value = json!({"version":1,"request_id":uuid::Uuid::new_v4(),"session_id":uuid::Uuid::new_v4(),"expected_generation":"g","account_id":"codex:fixture","name":"Name","host":{"session":"fixture","socket":"/tmp/socket"},"space":{"kind":"existing","id":"w1"}});

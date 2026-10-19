@@ -371,7 +371,9 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
                 } else {
                     "The last turn was interrupted or this conversation has no completed turn. Resume its saved history anyway? Review unfinished work before continuing."
                 };
-                risks(paths, job, detail).await?;
+                if !(job.source.inactive && job.unfinished_history_confirmed) {
+                    risks(paths, job, detail).await?;
+                }
                 busy = false;
             }
             working = busy;
@@ -386,7 +388,9 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
                 )?;
                 continue;
             }
-            risks(paths,job,"This saved conversation ended during a turn. Open the recorded history anyway? Unfinished operations may need review; the switcher will not replay the interrupted request.").await?;
+            if !job.unfinished_history_confirmed {
+                risks(paths,job,"This saved conversation ended during a turn. Open the recorded history anyway? Unfinished operations may need review; the switcher will not replay the interrupted request.").await?;
+            }
             busy = false;
         }
         if working

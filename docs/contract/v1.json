@@ -185,6 +185,13 @@
           ],
           "minimum": 0,
           "description": "Bytes in the observed saved rollout, excluding shared account databases."
+        },
+        "resume_block_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Observed resume gate; unfinished_history is an explicit-confirmation warning. Consumers tolerate future codes."
         }
       },
       "required": [

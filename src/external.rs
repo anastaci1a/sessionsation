@@ -366,6 +366,8 @@ pub struct Job {
     #[serde(default)]
     pub risks_approved: bool,
     #[serde(default)]
+    pub unfinished_history_confirmed: bool,
+    #[serde(default)]
     pub pause_delivery: String,
     #[serde(default)]
     pub resume_after_move: bool,
@@ -1647,6 +1649,7 @@ struct EnqueuePolicy<'a> {
     non_steering: bool,
     resume_destination: Option<&'a str>,
     expected: Option<(&'a str, &'a str)>,
+    unfinished_history_confirmed: bool,
 }
 
 fn enqueue_with_id(
@@ -1757,6 +1760,7 @@ fn enqueue_with_id(
         source_lease_released: false,
         pause_approved: options.pause,
         risks_approved: options.accept_risks,
+        unfinished_history_confirmed: policy.unfinished_history_confirmed,
         pause_delivery: String::new(),
         source_archived: false,
         created_at: daemon::now(),
@@ -2155,6 +2159,7 @@ pub(crate) async fn queue_saved_resume(
     pane: &str,
     expected: (&str, &str),
     request: &str,
+    unfinished_history_confirmed: bool,
 ) -> Result<Job> {
     ensure!(
         source.inactive && !source.thread_id.is_empty(),
@@ -2174,6 +2179,7 @@ pub(crate) async fn queue_saved_resume(
             non_steering: true,
             resume_destination: Some(pane),
             expected: Some(expected),
+            unfinished_history_confirmed,
         },
     )
 }
@@ -2785,6 +2791,7 @@ mod tests {
             source_lease_released: false,
             pause_approved: false,
             risks_approved: false,
+            unfinished_history_confirmed: false,
             pause_delivery: String::new(),
             resume_after_move: false,
             continuation_delivery: String::new(),
