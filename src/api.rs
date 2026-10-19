@@ -84,6 +84,8 @@ pub enum Command {
         #[arg(long)]
         expected_generation: String,
     },
+    /// Bounded batch readiness from stdin; optional cached-only reads never contact a provider.
+    Observations,
     Rename {
         #[arg(long)]
         session: String,
@@ -451,6 +453,7 @@ pub fn capabilities() -> Value {
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false}
     ],"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"unfinished_confirmation":true,"directory_selection":true,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
+    "batch_observation":{"command":"observations","max_targets":64,"concurrency":8,"native_budget_seconds":5,"policies":["if_stale","refresh","cached_only"],"cache_hits_renew_evidence":false},
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
@@ -749,6 +752,16 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             }
             tokio::time::sleep(Duration::from_secs(interval)).await;
         },
+        Command::Observations => {
+            let mut bytes = Vec::new();
+            std::io::stdin().take(32769).read_to_end(&mut bytes)?;
+            ensure!(bytes.len() <= 32768, "INPUT_TOO_LARGE");
+            crate::messaging::observations(
+                paths,
+                serde_json::from_slice(&bytes).context("INVALID_REQUEST")?,
+            )
+            .await?
+        }
         Command::Rename {
             session,
             expected_generation,

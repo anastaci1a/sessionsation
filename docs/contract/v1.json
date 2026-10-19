@@ -694,6 +694,28 @@
             "queue"
           ],
           "additionalProperties": true
+        },
+        "observation": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "fresh",
+                "stale",
+                "unobserved"
+              ]
+            },
+            "checked_at": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "status",
+            "checked_at"
+          ]
+        },
+        "runtime_state": {
+          "type": "string"
         }
       },
       "required": [
@@ -1781,6 +1803,51 @@
         }
       },
       "additionalProperties": true
+    },
+    "ObservationTarget": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "session_id",
+        "expected_generation"
+      ],
+      "additionalProperties": false
+    },
+    "ObservationBatchRequest": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": 1
+        },
+        "sessions": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/ObservationTarget"
+          }
+        },
+        "policy": {
+          "enum": [
+            "if_stale",
+            "refresh",
+            "cached_only"
+          ]
+        }
+      },
+      "required": [
+        "api_version",
+        "sessions"
+      ],
+      "additionalProperties": false
     }
   }
 }

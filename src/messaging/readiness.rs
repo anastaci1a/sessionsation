@@ -3,7 +3,7 @@ use super::*;
 use crate::catalog;
 use std::time::Duration;
 
-fn project(session: &catalog::Session, native: Value, removed: bool, now: i64) -> Value {
+pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, now: i64) -> Value {
     let at = native["observed_at"].as_i64();
     let until = native["valid_until"].as_i64();
     let fresh = at
@@ -13,6 +13,10 @@ fn project(session: &catalog::Session, native: Value, removed: bool, now: i64) -
     let stop = native["stop_intent_id"].as_str();
     let blocked = if removed {
         Some("account_removed")
+    } else if native["reason"] == "session_archived" {
+        Some("session_archived")
+    } else if at.is_none() {
+        native["reason"].as_str().or(Some("observation_required"))
     } else if !fresh {
         Some("observation_stale")
     } else if stop.is_some() {
@@ -36,12 +40,49 @@ fn project(session: &catalog::Session, native: Value, removed: bool, now: i64) -
         "account_id":format!("codex:{}",session.account),"state":state,
         "reason":native["reason"],"observed_at":at,"valid_until":until,
         "freshness":if fresh {"fresh"} else {"stale"},
+        "observation":{"status":if at.is_none() {"unobserved"} else if fresh {"fresh"} else {"stale"},"checked_at":now},
+        "runtime_state":if at.is_none() && state=="unknown" {"unobserved"} else if stop.is_some() && state!="working" {"stopped"} else {state},
         "runtime_generation":native["generation"],"previous_turn_id":native["previous_turn_id"],
         "explicit_intent":{"state":if stop.is_some() {"stop_requested"} else {"unknown"},"id":stop},
         "queued_work_count":null,"evidence":"native_read_only_snapshot_not_reservation",
         "actions":{"submit":{"available":submit,"reason":if submit {None} else {blocked.or(Some("target_busy"))}},
-            "queue":{"available":queue,"reason":if queue {None} else {blocked.or(Some("state_unverified"))}}},
+            "queue":{"available":queue,"reason":if queue {None} else {blocked.or(Some("state_unverified"))}},
+            "resume":{"available":false,"reason":if state=="disconnected" {"validated_launch_plan_required"} else if stop.is_some() || matches!(state,"interrupted"|"errored") {"explicit_recovery_preconditions_required"} else {"resume_not_required"},"starts_process":false}},
         "delivery_semantics":"non_steering_native_queue"})
+}
+
+pub(super) fn recorded(
+    paths: &Paths,
+    session: &catalog::Session,
+) -> anyhow::Result<Option<Attachment>> {
+    let list = external::messaging_recorded_bindings(paths)?;
+    let selected = list
+        .into_iter()
+        .filter(|(id, _, _, _)| id == &session.conversation_id)
+        .map(|(id, home, pid, start)| Attachment {
+            id,
+            home,
+            pid,
+            start,
+        })
+        .collect::<Vec<_>>();
+    anyhow::ensure!(selected.len() <= 1, "AMBIGUOUS_SESSION");
+    let a = selected.into_iter().next();
+    if let Some(a) = &a {
+        anyhow::ensure!(
+            session
+                .attachment
+                .as_ref()
+                .is_some_and(|r| r.pid == a.pid && r.process_start == a.start),
+            "STALE_TARGET"
+        );
+    } else if let Some(a) = &session.attachment {
+        anyhow::ensure!(
+            external::attachment_definitely_gone(a.pid, a.process_start),
+            "ATTACHMENT_UNOBSERVED"
+        );
+    }
+    Ok(a)
 }
 
 pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow::Result<Value> {
@@ -54,53 +95,52 @@ pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow
         !matches!(session.account.as_str(), "external" | "unknown"),
         "ACCOUNT_UNAVAILABLE"
     );
-    let before = attachment(paths, &session.conversation_id).ok();
-    if let Some(a) = &before {
-        anyhow::ensure!(
-            session
-                .attachment
-                .as_ref()
-                .is_some_and(|runtime| runtime.pid == a.pid && runtime.process_start == a.start),
-            "STALE_TARGET"
-        );
-    } else {
-        anyhow::ensure!(session.attachment.is_none(), "STALE_TARGET");
-    }
-    let started = crate::daemon::now();
-    let native = match tokio::time::timeout(
-        Duration::from_secs(5),
-        modes::session_status::target(paths, &session.conversation_id),
-    )
-    .await
+    if crate::external::archiving::metadata(paths)?
+        .get(id)
+        .is_some_and(|v| v["archived"] == true)
     {
-        Ok(Ok(value)) => value,
-        result => {
-            let reason = match result {
-                Ok(Err(e)) => e.0,
-                _ => "observation_timeout",
-            };
-            json!({"state":"unknown","reason":reason,"observed_at":started,"valid_until":started+5,
-                "native_sending_enabled":false,"stop_intent_id":external::messaging_stop_intent(paths,&session.conversation_id)?})
+        return Ok(project(
+            &session,
+            json!({"state":"disconnected","reason":"session_archived"}),
+            false,
+            crate::daemon::now(),
+        ));
+    }
+    let before = recorded(paths, &session)?;
+    let started = crate::daemon::now();
+    let result = async {
+        let a = before.as_ref().ok_or(Fault("no_live_attachment"))?;
+        let mut control = a.connect().await?;
+        modes::session_status::observe(&mut control, &session.conversation_id).await
+    };
+    let mut native = match tokio::time::timeout(Duration::from_secs(5), result).await {
+        Ok(Ok(o)) => {
+            let at = crate::daemon::now();
+            json!({"state":o.state,"reason":o.reason,"previous_turn_id":o.previous,
+                "observed_at":at,"valid_until":at+5,"observation_started_at":started,
+                "native_sending_enabled":modes::queue::sending_enabled(paths)?,
+                "stop_intent_id":external::messaging_stop_intent(paths,&session.conversation_id)?,
+                "generation":before.as_ref().map(Attachment::generation)})
         }
+        result => json!({"state":if before.is_none() {"disconnected"} else {"unknown"},
+            "reason":match result {Ok(Err(e))=>e.0,_=>"observation_timeout"},
+            "observed_at":null,"valid_until":null,"native_sending_enabled":false}),
     };
     catalog::resolve(paths, id, generation)?;
-    let after = attachment(paths, &session.conversation_id).ok();
+    let after = recorded(paths, &session)?;
     anyhow::ensure!(
         before.as_ref().map(Attachment::generation) == after.as_ref().map(Attachment::generation),
         "STALE_TARGET"
     );
-    if let Some(a) = after {
-        anyhow::ensure!(
-            native["generation"].is_null() || native["generation"] == a.generation(),
-            "STALE_TARGET"
-        );
-    }
-    let mut native = native;
     let stop = external::messaging_stop_intent(paths, &session.conversation_id)?;
-    if native["stop_intent_id"] != json!(stop) {
+    if native["observed_at"].is_number() && native["stop_intent_id"] != json!(stop) {
         native["state"] = json!("unknown");
         native["reason"] = json!("stop_intent_changed");
         native["stop_intent_id"] = json!(stop);
+    }
+    native["stop_intent_id"] = json!(stop);
+    if crate::lifecycle::pending(paths, &session.conversation_id, None)?.is_some() {
+        native["reason"] = json!("session_operation_in_progress");
     }
     Ok(project(
         &session,

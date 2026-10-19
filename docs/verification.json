@@ -17,14 +17,14 @@
       "JSON Schema and real CLI envelopes"
     ],
     "tests": {
-      "unit": 147,
+      "unit": 149,
       "cli": 8,
       "external_move": 65,
       "messaging_cli": 8,
       "persistence": 6,
       "scheduling": 29,
       "transport": 3,
-      "total": 266,
+      "total": 268,
       "ignored": 4,
       "failed": 0
     },
@@ -40,13 +40,22 @@
         "new tab and retained shell",
         "paginated saved history after account deletion",
         "busy Space move, unchanged native runtime generation, split siblings, lost reply and read-only recovery without replay, later account transfer"
-      ]
+      ],
+      "source_commit": "de46724"
     },
     "artifact": {
-      "path_in_test_checkout": "target-review/release/sessionsation",
-      "sha256": "1a2d8b46bafeba88d45088044d34c85dcca2906ac453700ca1e5e462ca2bca98",
+      "path_in_test_checkout": "target-observations-final/release/sessionsation",
+      "sha256": "d6d910067f990f20d3d4ad6f142aff93bb75279e99e4b68c1a6e638f61808554",
       "installed": false,
       "provenance": "Rust 1.95.0 locked release build from accompanying source; package 0.2.0, API v1, contract revision 2. Existing consumer executables remain unchanged."
+    },
+    "passive_observation": {
+      "fixture": "Kernel-bound synthetic HERDR record, inert native WebSocket server, shared mutation lock held",
+      "cold_ms": 10,
+      "cached_ms": 0,
+      "native_writes": 0,
+      "evidence_timestamp_renewed_on_cache_hit": false,
+      "scope": "Synthetic timing; not a production benchmark or a diagnosis of downstream polling cadence"
     }
   },
   "limitations": [

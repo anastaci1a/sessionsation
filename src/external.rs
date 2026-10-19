@@ -2484,39 +2484,57 @@ fn resume_shell(
 /// Minimal switcher-owned messaging inventory. No account credentials or rollout reads.
 /// Legacy unmanaged panes must be adopted by normal switcher workflows first.
 pub(crate) fn messaging_bindings(paths: &Paths) -> Result<Vec<(String, PathBuf, u32, u64)>> {
-    let dir = paths.root.join("managed-panes");
-    let mut result = Vec::new();
+    let mut result = messaging_recorded_bindings(paths)?;
     for i in hosting::instances(paths)? {
         if catalog::messaging_owner(paths, &i.thread_id, &i.home)? {
             result.push((i.thread_id, i.home, i.pid, i.start_time));
         }
     }
-    if !dir.exists() {
-        return Ok(result);
-    }
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|s| s != "json") {
+    result.sort();
+    result.dedup();
+    Ok(result)
+}
+
+/// Kernel-validated launcher records only; no terminal host RPC or history traversal.
+pub(crate) fn messaging_recorded_bindings(
+    paths: &Paths,
+) -> Result<Vec<(String, PathBuf, u32, u64)>> {
+    let mut result = Vec::new();
+    for name in ["managed-panes", "herdr-panes"] {
+        let dir = paths.root.join(name);
+        if !dir.exists() {
             continue;
         }
-        let binding: Binding = serde_json::from_slice(&fs::read(entry.path())?)?;
-        if uuid::Uuid::parse_str(&binding.thread).is_err() {
-            continue;
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|s| s != "json")
+            {
+                continue;
+            }
+            let value: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+            let binding: Binding = serde_json::from_value(if name == "herdr-panes" {
+                value["binding"].clone()
+            } else {
+                value
+            })?;
+            if uuid::Uuid::parse_str(&binding.thread).is_err() {
+                continue;
+            }
+            if !process_info(binding.pid)
+                .is_ok_and(|p| p.start_time == binding.start_time && !matches!(p.state, 'Z' | 'X'))
+            {
+                continue;
+            }
+            if !catalog::messaging_owner(paths, &binding.thread, &binding.home)? {
+                continue;
+            }
+            result.push((
+                binding.thread,
+                binding.home,
+                binding.pid,
+                binding.start_time,
+            ));
         }
-        if !process_info(binding.pid)
-            .is_ok_and(|p| p.start_time == binding.start_time && !matches!(p.state, 'Z' | 'X'))
-        {
-            continue;
-        }
-        if !catalog::messaging_owner(paths, &binding.thread, &binding.home)? {
-            continue;
-        }
-        result.push((
-            binding.thread,
-            binding.home,
-            binding.pid,
-            binding.start_time,
-        ));
     }
     result.sort();
     result.dedup();

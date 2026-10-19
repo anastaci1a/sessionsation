@@ -26,7 +26,7 @@ struct Turn {
     status: String,
 }
 
-pub(super) struct Observation {
+pub(in crate::messaging) struct Observation {
     pub state: String,
     pub reason: Option<&'static str>,
     pub previous: Option<String>,
@@ -41,7 +41,10 @@ async fn read(control: &mut Transport, id: &str) -> Result<Status> {
     }
     Ok(read.thread.status)
 }
-pub(super) async fn observe(control: &mut Transport, id: &str) -> Result<Observation> {
+pub(in crate::messaging) async fn observe(
+    control: &mut Transport,
+    id: &str,
+) -> Result<Observation> {
     let before = read(control, id).await?;
     if !before.flags.is_empty() {
         return Ok(Observation {

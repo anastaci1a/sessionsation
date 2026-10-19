@@ -83,11 +83,12 @@ sessionsation api observe --session BACKEND-ID --expected-generation GENERATION
 
 This performs read-only native status/public-summary requests on the existing
 owner-managed socket. It never sends input, resumes/loads a thread, starts a worker
-or probes with a message. Native observation is bounded to five seconds, in
-addition to normal host/catalog discovery. The result is typed by `Readiness` in
+or probes with a message. Native observation is bounded to five seconds; known launcher bindings avoid
+terminal-host discovery and rollout scans. The result is typed by `Readiness` in
 the schema: idle/working/interrupted/errored/disconnected/unknown, diagnostic reason,
 `observed_at`, `valid_until`, freshness and a separate `runtime_generation`.
-Freshness expires five seconds after observation starts; it is not a reservation.
+Freshness expires five seconds after the final verified native read completes;
+cache hits never extend it. It is not a reservation.
 A changed catalog or runtime rejects the result as `STALE_TARGET`.
 
 `explicit_intent` reports a positively recorded stop token or unknown; an idle
@@ -99,6 +100,34 @@ and unknown observations withhold readiness with reasons. These are conservative
 hints, not a new dispatch policy: actual sending still rechecks its existing gates.
 No legacy busy-Steer capability or messaging Resume is adopted. Poll a selected
 session no faster than every five seconds; use backoff after errors.
+
+### Batch readiness and client polling
+
+`api observations` reads `{api_version:1, sessions:[{session_id,
+expected_generation}], policy:"if_stale"}` from stdin. Policies are `refresh`,
+`if_stale` (default), and `cached_only`. At most 64 unique targets are accepted;
+eight observations run concurrently under a shared five-second native budget.
+Results preserve input order and carry individual `{session_id,ok,data}` or
+`{session_id,ok:false,error}` entries. One bad target does not discard other results.
+
+Launcher records are checked against kernel process identities and catalog
+ownership. Passive observation performs no terminal-host discovery and takes no
+mutation lock. Unrecorded live attachments return `ATTACHMENT_UNOBSERVED` rather
+than guessing. Dispatch still independently verifies terminal/runtime ownership.
+The private cache is disposable; it stores typed status, not conversation bodies.
+Cache hits never renew `observed_at` or `valid_until`. `observation.status`
+distinguishes fresh, stale and unobserved; null timestamps mean no native evidence.
+The compatibility `state` enum remains unchanged; additive `runtime_state`
+distinguishes a recorded deliberate stop. Stale evidence withholds sending hints.
+
+Clients should batch their visible targets, keep stable IDs as keys, preserve old
+receipts, and avoid independent per-target sequential discovery loops. Timeouts
+and unknown states are pending evidence, not proof of a stopped or unavailable
+agent. A late provider cannot extend this command's native budget. Host scheduling
+and local filesystem overhead remain outside that budget. This change removes
+backend discovery/lock overhead; it does not establish the cause of a downstream
+36–44-second refresh cycle, which can also include adapter concurrency/backoff.
+
 
 ## Session and operation commands
 

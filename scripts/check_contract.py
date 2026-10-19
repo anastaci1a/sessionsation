@@ -43,6 +43,9 @@ with tempfile.TemporaryDirectory() as directory:
             validate(value["result"], "Snapshot")
         if args == ["version"]:
             validate(value["result"], "ExecutableVersion")
+    batch=json.loads(subprocess.check_output(command + ["observations"], input=json.dumps({"api_version":1,"sessions":[],"policy":"cached_only"}), text=True))
+    validate(batch)
+    assert batch["result"]["results"] == []
     for args in [["--api-version", "99", "capabilities"], ["rename", "--session", "missing", "--expected-generation", "stale", "--name", "x"]]:
         result = subprocess.run(command + args, capture_output=True, text=True)
         assert result.returncode in (1, 2)
