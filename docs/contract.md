@@ -428,7 +428,7 @@ substitute `updated_at`, which changes with progress. Legacy records are not
 rewritten to invent dates. Adapters can sort known creation times descending and
 place unknown dates last with stable ID ties.
 
-`new_account_name_max:24` limits new enrollments in both the public API and sole account owner; longer existing IDs
+`new_account_name_max:30` limits new enrollments in both the public API and sole account owner; longer existing IDs
 continue to work. Clients must gate new commands on published capabilities.
 
 ## New-session popup admission

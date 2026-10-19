@@ -71,7 +71,7 @@ fn validate_name(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty()
             && name == name.trim()
-            && name.chars().count() <= 24
+            && name.chars().count() <= crate::model::SESSION_NAME_MAX
             && !name.chars().any(char::is_control),
         "INVALID_SESSION_NAME"
     );
@@ -105,7 +105,7 @@ pub fn record_launch(
         let base = label
             .chars()
             .filter(|c| !c.is_control())
-            .take(24)
+            .take(crate::model::SESSION_NAME_MAX)
             .collect::<String>();
         let base = base.trim();
         let base = if base.is_empty() { "session" } else { base };
@@ -115,7 +115,7 @@ pub fn record_launch(
             let tail = format!("-{suffix}");
             let prefix: String = base
                 .chars()
-                .take(24usize.saturating_sub(tail.len()))
+                .take(crate::model::SESSION_NAME_MAX.saturating_sub(tail.len()))
                 .collect();
             name = format!("{prefix}{tail}");
             suffix += 1;
@@ -320,7 +320,7 @@ mod tests {
         s
     }
     #[test]
-    fn names_are_twenty_four_characters_but_legacy_identity_is_readable() {
+    fn names_are_thirty_characters_but_legacy_identity_is_readable() {
         let tmp = tempfile::tempdir().unwrap();
         let p = Paths::new(Some(tmp.path().join("data"))).unwrap();
         let s = seed(&p);
@@ -337,19 +337,19 @@ mod tests {
                 .conversation_id,
             s.conversation_id
         );
-        assert!(rename(&p, &s.id, &legacy.generation(), "abcdefghijklmnopqrstuvwxy").is_err());
-        let renamed = rename(&p, &s.id, &legacy.generation(), "界".repeat(24).as_str()).unwrap();
+        assert!(rename(&p, &s.id, &legacy.generation(), &"x".repeat(31)).is_err());
+        let renamed = rename(&p, &s.id, &legacy.generation(), "界".repeat(30).as_str()).unwrap();
         assert_eq!(renamed.id, s.id);
         for conversation in ["a", "b"] {
             let assigned = record_launch(
                 &p,
                 "selected",
                 conversation,
-                "long-provider-session-label",
+                "long-provider-session-label-that-exceeds-thirty",
                 None,
             )
             .unwrap();
-            assert!(assigned.name.chars().count() <= 24);
+            assert_eq!(assigned.name.chars().count(), 30);
         }
         assert_eq!(list(&p).unwrap().len(), 3);
     }

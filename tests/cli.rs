@@ -93,14 +93,19 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
         daemon::call(
             &paths,
             "account/add",
-            json!({"name":"abcdefghijklmnopqrstuvwxy"})
+            json!({"name":"abcdefghijklmnopqrstuvwxyz12345"})
         )
         .await
         .unwrap_err()
         .to_string()
         .contains("ACCOUNT_NAME_TOO_LONG")
     );
-    assert!(!paths.account("abcdefghijklmnopqrstuvwxy").unwrap().exists());
+    assert!(
+        !paths
+            .account("abcdefghijklmnopqrstuvwxyz12345")
+            .unwrap()
+            .exists()
+    );
     let login = daemon::call(&paths, "account/add", json!({"name":"first"}))
         .await
         .unwrap();
@@ -184,6 +189,12 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
         rejected,
         "duplicate account identity must not create another capacity pool"
     );
+    let max_name = "abcdefghijklmnopqrstuvwxyz1234";
+    let login = daemon::call(&paths, "account/add", json!({"name":max_name}))
+        .await
+        .unwrap();
+    assert_eq!(login["login"]["userCode"], "TEST-ONLY");
+    assert!(paths.account(max_name).unwrap().is_dir());
     assert!(
         daemon::call(&paths, "session/run", json!({}))
             .await
@@ -197,7 +208,7 @@ fn public_account_creation_limit_and_invalid_limits_have_no_owner_side_effects()
     let tmp = tempfile::tempdir().unwrap();
     for (args, code) in [
         (
-            vec!["account", "add", "codex:abcdefghijklmnopqrstuvwxy"],
+            vec!["account", "add", "codex:abcdefghijklmnopqrstuvwxyz12345"],
             "ACCOUNT_NAME_TOO_LONG",
         ),
         (

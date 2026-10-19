@@ -104,7 +104,10 @@ pub fn validate_name(name: &str) -> Result<()> {
 /// User-assigned session names count Unicode scalar values, not UTF-8 bytes.
 pub fn validate_session_name(name: &str) -> Result<()> {
     validate_name(name)?;
-    ensure!(name.chars().count() <= 24, "INVALID_SESSION_NAME");
+    ensure!(
+        name.chars().count() <= crate::model::SESSION_NAME_MAX,
+        "INVALID_SESSION_NAME"
+    );
     Ok(())
 }
 fn shape(r: &Request) -> Result<()> {
@@ -703,10 +706,10 @@ mod tests {
     }
     #[test]
     fn session_limit_is_separate_from_directory_and_space_names() {
-        for name in ["a".repeat(24), "界".repeat(24)] {
+        for name in ["a".repeat(30), "界".repeat(30)] {
             validate_session_name(&name).unwrap();
         }
-        for name in ["a".repeat(25), "界".repeat(25)] {
+        for name in ["a".repeat(31), "界".repeat(31)] {
             assert!(validate_session_name(&name).is_err());
             validate_name(&name).unwrap();
         }

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const SESSION_NAME_MAX: usize = 30;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Window {
     pub used_percent: f64,

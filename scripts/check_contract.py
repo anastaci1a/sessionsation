@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import ValidationError
 
 root = Path(__file__).resolve().parents[1]
 schema = json.loads((root / "docs/contract/v1.json").read_text())
@@ -28,6 +29,16 @@ validate(fixtures["launch_request"], "LaunchRequest")
 validate(fixtures["launch_receipt"], "LaunchReceipt")
 validate(fixtures["resume_request"], "ResumeRequest")
 validate(fixtures["resume_directory_request"], "ResumeRequest")
+for fixture, definition in [("launch_request", "LaunchRequest"), ("resume_request", "ResumeRequest")]:
+    for name in ["a" * 30, "界" * 30]:
+        validate({**fixtures[fixture], "name": name}, definition)
+    for name in ["a" * 31, "界" * 31]:
+        try:
+            validate({**fixtures[fixture], "name": name}, definition)
+        except ValidationError:
+            pass
+        else:
+            raise AssertionError("Session names longer than 30 must be rejected")
 validate(fixtures["resume_receipt"], "ResumeReceipt")
 validate(fixtures["error"])
 validate(fixtures["capabilities"])

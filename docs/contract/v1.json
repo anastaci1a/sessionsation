@@ -1024,7 +1024,7 @@
         "name": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 24
+          "maxLength": 30
         },
         "host": {
           "type": "object",
@@ -1233,7 +1233,7 @@
         "name": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 24
+          "maxLength": 30
         },
         "host": {
           "type": "object",

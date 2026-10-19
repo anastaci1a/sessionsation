@@ -2,7 +2,7 @@ use crate::{
     compatibility,
     config::Config,
     model::{Account, Credits, State, Usage, Window},
-    paths::{Paths, private_dir, validate_name},
+    paths::{Paths, private_dir},
     rpc::{Rpc, read_frame},
     store::{Store, load_config, save_config},
 };
@@ -335,8 +335,8 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             Ok(json!({"deleted":true}))
                         }
                         "account/add" => {
-                            let name = params["name"].as_str().context("missing account name")?; validate_name(name)?;
-                            ensure!(name.len() <= 24, "ACCOUNT_NAME_TOO_LONG");
+                            let name = params["name"].as_str().context("missing account name")?;
+                            crate::paths::validate_new_account_name(name)?;
                             ensure!(!state.accounts.contains_key(name), "account name already exists; use account login to reauthenticate");
                             let home = paths.account(name)?; private_dir(&home)?;
                             let rpc = Rpc::spawn(&config.codex_binary,&home,&paths.root).await?;

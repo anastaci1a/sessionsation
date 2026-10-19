@@ -69,6 +69,12 @@ fn data_root(
         .join(".local/share/sessionsation"))
 }
 
+pub const NEW_ACCOUNT_NAME_MAX: usize = 30;
+pub fn validate_new_account_name(name: &str) -> Result<()> {
+    validate_name(name)?;
+    ensure!(name.len() <= NEW_ACCOUNT_NAME_MAX, "ACCOUNT_NAME_TOO_LONG");
+    Ok(())
+}
 pub fn validate_name(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty()
@@ -119,6 +125,14 @@ pub fn lock_file(path: &Path) -> Result<fs::File> {
 mod tests {
     use super::data_root;
     use std::path::PathBuf;
+
+    #[test]
+    fn new_account_limit_does_not_reject_readable_legacy_accounts() {
+        super::validate_new_account_name(&"x".repeat(30)).unwrap();
+        assert!(super::validate_new_account_name(&"x".repeat(31)).is_err());
+        assert!(super::validate_new_account_name("non ascii 界").is_err());
+        super::validate_name(&"x".repeat(64)).unwrap();
+    }
 
     #[test]
     fn unraid_defaults_to_persistent_appdata_without_home() {

@@ -75,10 +75,10 @@ Add/login return the provider's verification URL and user code. Complete the log
 as the user; never copy credentials between homes. Disabled accounts remain listed;
 disabling prevents future selection and does not stop existing agents. Usage and
 reported reset timestamps are in account snapshots; do not invent missing windows.
-New account names allow 1–24 ASCII letters, digits, hyphens or underscores
+New account names allow 1–30 ASCII letters, digits, hyphens or underscores
 (excluding `codex:`), enforced by public API admission and the account owner.
 Existing longer names remain valid for other operations.
-User-assigned public session names (new, resume and rename) allow at most 24 Unicode
+User-assigned public session names (new, resume and rename) allow at most 30 Unicode
 scalar values, excluding controls and surrounding whitespace. Existing longer
 catalog names remain readable and keep their identity; new automatic discovery
 labels are shortened with collision-safe suffixes. Space labels and directory

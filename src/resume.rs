@@ -115,7 +115,7 @@ fn shape(r: &Request) -> Result<()> {
     uuid::Uuid::parse_str(&r.session_id).context("INVALID_SESSION_ID")?;
     ensure!(
         !r.name.is_empty()
-            && r.name.chars().count() <= 24
+            && r.name.chars().count() <= crate::model::SESSION_NAME_MAX
             && r.name.trim() == r.name
             && !r.name.chars().any(char::is_control),
         "INVALID_SESSION_NAME"
@@ -651,6 +651,15 @@ mod tests {
     fn request_directory_is_explicit_and_unknown_provider_is_rejected() {
         let mut value = json!({"version":1,"request_id":uuid::Uuid::new_v4(),"session_id":uuid::Uuid::new_v4(),"expected_generation":"g","account_id":"codex:fixture","name":"Name","host":{"session":"fixture","socket":"/tmp/socket"},"space":{"kind":"existing","id":"w1"}});
         assert!(shape(&serde_json::from_value(value.clone()).unwrap()).is_ok());
+        for name in ["x".repeat(30), "界".repeat(30)] {
+            value["name"] = json!(name);
+            assert!(shape(&serde_json::from_value(value.clone()).unwrap()).is_ok());
+        }
+        for name in ["x".repeat(31), "界".repeat(31)] {
+            value["name"] = json!(name);
+            assert!(shape(&serde_json::from_value(value.clone()).unwrap()).is_err());
+        }
+        value["name"] = json!("Name");
         value["directory"] = json!("/different");
         assert!(serde_json::from_value::<Request>(value.clone()).is_err());
         value["directory"] = json!({"path":"/different","create":[],"confirmed_existing":true});
