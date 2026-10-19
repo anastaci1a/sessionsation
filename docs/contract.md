@@ -317,3 +317,7 @@ conversation files, names and resume availability.
 Account removal previews scan metadata with four bounded readers and deterministic
 ordering. Their revision and fresh-confirmation checks still include the same
 stored-file metadata; no cached or partial inventory grants consent.
+
+Session snapshots/details optionally include `conversation_created_at` (the native
+recorded timestamp, otherwise null) and `history_file_bytes` (observed rollout
+bytes, excluding shared account databases). Creation is never inferred from mtime.

@@ -472,6 +472,9 @@ pub async fn state(paths: &Paths) -> Result<Value> {
         let running=source.is_some_and(|i|!i.inactive);
         let saved=source.is_some_and(|i|i.inactive && i.block_reason.is_none() && i.move_id.is_none());
         value["availability"]=json!(if running {"running"}else if saved {"saved"}else{"unavailable"});
+        let facts=source.map(|s|external::history_file_details(&s.rollout)).unwrap_or(Value::Null);
+        value["conversation_created_at"]=facts["conversation_created_at"].clone();
+        value["history_file_bytes"]=facts["history_file_bytes"].clone();
         value["activity"]=source.map(|s|json!(s.activity)).unwrap_or(Value::Null);
         value["last_accessed"]=source.and_then(|s|s.last_accessed).map_or(Value::Null,|n|json!(n));
         value["active_since"]=json!(source.filter(|s|!s.inactive).and_then(|s|clock.and_then(|(uptime,hz)|attachment_started_at(now,uptime,s.start_time,hz))));
@@ -525,6 +528,11 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
     let directory = source.map(|s| s.cwd.clone());
     let mut value = public_session(session);
     value["directory"] = json!(directory);
+    let facts = source
+        .map(|s| external::history_file_details(&s.rollout))
+        .unwrap_or(Value::Null);
+    value["conversation_created_at"] = facts["conversation_created_at"].clone();
+    value["history_file_bytes"] = facts["history_file_bytes"].clone();
     value["availability"] = json!(
         source
             .map(|s| if s.inactive { "saved" } else { "running" })

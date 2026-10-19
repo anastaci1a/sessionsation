@@ -170,6 +170,21 @@
             "stop"
           ],
           "additionalProperties": true
+        },
+        "conversation_created_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Native conversation timestamp when recorded; never filesystem mtime."
+        },
+        "history_file_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Bytes in the observed saved rollout, excluding shared account databases."
         }
       },
       "required": [

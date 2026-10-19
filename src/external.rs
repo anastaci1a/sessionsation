@@ -624,6 +624,12 @@ fn parse_launch(args: &[String]) -> Launch {
     launch.options = options;
     launch
 }
+/// Read-only native file facts; never substitute mtime for conversation creation.
+pub(crate) fn history_file_details(path: &Path) -> Value {
+    let meta = session_meta(path).ok();
+    json!({"conversation_created_at":meta.as_ref().and_then(|m|m["timestamp"].as_str()),
+        "history_file_bytes":fs::metadata(path).ok().filter(|m|m.is_file()).map(|m|m.len())})
+}
 fn session_meta(path: &Path) -> Result<Value> {
     let file = File::open(path)?;
     let mut line = String::new();
