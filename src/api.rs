@@ -439,6 +439,13 @@ async fn inventory(paths: &Paths) -> Result<Vec<external::Instance>> {
     catalog::reconcile(paths, &items)?;
     Ok(items)
 }
+fn source_matches(s: &catalog::Session, i: &external::Instance) -> bool {
+    i.thread_id == s.conversation_id
+        && i.account == s.account
+        && s.attachment.as_ref().is_none_or(|a| {
+            !i.inactive && a.target == i.pane && a.pid == i.pid && a.process_start == i.start_time
+        })
+}
 
 fn attachment_started_at(now: i64, uptime: f64, ticks: u64, hz: i64) -> Option<i64> {
     if hz <= 0 || ticks == 0 || !uptime.is_finite() {
@@ -488,14 +495,16 @@ pub async fn state(paths: &Paths) -> Result<Value> {
     let now = daemon::now();
     let hidden = external::archiving::hidden(paths)?;
     let mut sessions=catalog::list(paths)?.into_iter().filter(|s|!hidden.contains(&s.id)).map(|s| {
-        let source=items.iter().find(|i|i.thread_id==s.conversation_id && i.account==s.account);
+        let source=items.iter().find(|i|source_matches(&s,i));
         let known=!matches!(s.account.as_str(),"external"|"unknown");
+        let attached=s.attachment.is_some();
         let mut value=public_session(s);
-        value["resume_block_reason"]=json!(resume_block_reason(known,source));
+        value["resume_block_reason"]=json!(if attached && source.is_none() {Some("host_unavailable")}else{resume_block_reason(known,source)});
         let running=source.is_some_and(|i|!i.inactive);
         let saved=source.is_some_and(|i|i.inactive && matches!(i.block_reason.as_deref(), None | Some("unfinished" | "unknown")) && i.move_id.is_none());
         value["availability"]=json!(if running {"running"}else if saved {"saved"}else{"unavailable"});
         let facts=source.map(|s|external::history_file_details(&s.rollout)).unwrap_or(Value::Null);
+        value["directory"]=source.map(|s|json!(s.cwd)).unwrap_or(Value::Null);
         value["conversation_created_at"]=facts["conversation_created_at"].clone();
         value["history_file_bytes"]=facts["history_file_bytes"].clone();
         value["activity"]=source.map(|s|json!(s.activity)).unwrap_or(Value::Null);
@@ -556,13 +565,7 @@ pub(crate) async fn selected(
     );
     let i = items
         .into_iter()
-        .find(|i| {
-            i.thread_id == session.conversation_id
-                && i.account == session.account
-                && session.attachment.as_ref().is_none_or(|a| {
-                    a.target == i.pane && a.pid == i.pid && a.process_start == i.start_time
-                })
-        })
+        .find(|i| source_matches(&session, i))
         .context("SESSION_UNAVAILABLE")?;
     Ok((session, i))
 }
@@ -595,14 +598,16 @@ fn resume_block_reason(known: bool, source: Option<&external::Instance>) -> Opti
 pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
     let items = inventory(paths).await?;
     let session = catalog::resolve(paths, id, generation)?;
-    let source = items
-        .iter()
-        .find(|i| i.thread_id == session.conversation_id && i.account == session.account);
+    let source = items.iter().find(|i| source_matches(&session, i));
     let directory = source.map(|s| s.cwd.clone());
-    let reason = resume_block_reason(
-        !matches!(session.account.as_str(), "external" | "unknown"),
-        source,
-    );
+    let reason = if session.attachment.is_some() && source.is_none() {
+        Some("host_unavailable")
+    } else {
+        resume_block_reason(
+            !matches!(session.account.as_str(), "external" | "unknown"),
+            source,
+        )
+    };
     let mut value = public_session(session);
     value["directory"] = json!(directory);
     value["resume_block_reason"] = json!(reason);
@@ -928,6 +933,32 @@ pub fn account_prefill(a: &Value, now: i64, stale_seconds: u64) -> Value {
 #[cfg(test)]
 mod prefill_tests {
     use super::*;
+    #[test]
+    fn an_unobserved_attachment_is_not_an_inactive_history_source() {
+        let s = catalog::Session {
+            id: "stable".into(),
+            name: "Name".into(),
+            provider: "codex".into(),
+            account: "selected".into(),
+            conversation_id: "thread".into(),
+            revision: 1,
+            attachment: Some(catalog::Attachment {
+                host: "herdr".into(),
+                target: "herdr/named/w1:p1".into(),
+                pid: 10,
+                process_start: 20,
+            }),
+        };
+        let mut source: external::Instance = serde_json::from_value(json!({"inactive":true,"account":"selected","pane":"","tmux_session":"","pid":0,"cwd":"/tmp","thread_id":"thread","rollout":"/tmp/fixture","home":"/tmp/home","binary":"codex","resume_options":[]})).unwrap();
+        assert!(!source_matches(&s, &source));
+        source.inactive = false;
+        source.pane = "herdr/named/w1:p1".into();
+        source.pid = 10;
+        source.start_time = 20;
+        assert!(source_matches(&s, &source));
+        source.start_time += 1;
+        assert!(!source_matches(&s, &source));
+    }
     #[test]
     fn resume_reasons_explain_observed_safety_gates() {
         let mut source: external::Instance = serde_json::from_value(json!({

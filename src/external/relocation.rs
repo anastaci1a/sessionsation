@@ -607,7 +607,7 @@ pub(super) async fn recover(paths: &Paths, mut job: Job) -> Result<Job> {
     );
     if !job.source.pane.is_empty() {
         ensure!(
-            pane_state(&job.source.pane).map_or(true, |(dead, _)| dead),
+            pane_state(paths, &job.source.pane).map_or(true, |(dead, _)| dead),
             "the conversation is still running; close it before rolling back the folder"
         );
     }

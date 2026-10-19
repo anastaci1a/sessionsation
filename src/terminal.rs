@@ -2,6 +2,7 @@
 use crate::paths::validate_name;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
+use std::path::Path;
 use std::process::Command;
 
 pub fn herdr_target(session: &str, pane: &str) -> Result<String> {
@@ -28,12 +29,23 @@ pub(crate) fn target(key: &str) -> Result<(&str, &str)> {
 }
 
 pub(crate) fn call(session: &str, args: &[&str]) -> Result<Value> {
+    call_at(session, args, None)
+}
+pub(crate) fn call_at(session: &str, args: &[&str], socket: Option<&Path>) -> Result<Value> {
     validate_name(session)?;
-    let output = Command::new("herdr")
-        .args(["--session", session])
-        .args(args)
-        .output()
-        .context("HERDR is unavailable")?;
+    let mut command = Command::new("herdr");
+    if let Some(socket) = socket {
+        ensure!(socket.is_absolute(), "INVALID_HOST_SOCKET");
+        // HERDR 0.9.5's --session recomputes a socket under the reader's XDG
+        // directory, overriding HERDR_SOCKET_PATH. Keep explicit locators exact.
+        command
+            .env("HERDR_SOCKET_PATH", socket)
+            .env("HERDR_SESSION", session);
+    } else {
+        command.args(["--session", session]);
+    }
+    command.args(args);
+    let output = command.output().context("HERDR is unavailable")?;
     ensure!(
         output.status.success(),
         "HERDR request failed: {}",
@@ -53,8 +65,11 @@ fn decode_reply(args: &[&str], stdout: &[u8]) -> Result<Value> {
 }
 
 pub(crate) fn state(key: &str) -> Result<(bool, u32)> {
+    state_at(key, None)
+}
+pub(crate) fn state_at(key: &str, socket: Option<&Path>) -> Result<(bool, u32)> {
     let (session, pane) = target(key)?;
-    let result = call(session, &["pane", "process-info", "--pane", pane])?;
+    let result = call_at(session, &["pane", "process-info", "--pane", pane], socket)?;
     process_state(&result["process_info"])
 }
 
@@ -102,10 +117,18 @@ pub(crate) fn retain(pane: &str, on: bool) -> Result<()> {
 }
 
 pub(crate) fn relaunch(pane: &str, cwd: &str, command: &str) -> Result<()> {
+    relaunch_at(pane, cwd, command, None)
+}
+pub(crate) fn relaunch_at(
+    pane: &str,
+    cwd: &str,
+    command: &str,
+    socket: Option<&Path>,
+) -> Result<()> {
     if pane.starts_with("herdr/") {
         let (session, id) = target(pane)?;
         ensure!(
-            state(pane)?.0,
+            state_at(pane, socket)?.0,
             "HERDR pane is not an available shell; refresh the target"
         );
         // Keep the host shell for restart and recovery. cwd is enforced here:
@@ -115,7 +138,7 @@ pub(crate) fn relaunch(pane: &str, cwd: &str, command: &str) -> Result<()> {
             shell_quote(cwd),
             command.strip_prefix("exec ").unwrap_or(command)
         );
-        call(session, &["pane", "run", id, &command])?;
+        call_at(session, &["pane", "run", id, &command], socket)?;
     } else {
         tmux(&["respawn-pane", "-k", "-t", pane, "-c", cwd, command])?;
     }

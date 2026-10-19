@@ -1390,7 +1390,7 @@ pub fn destination_tui_may_be_active(paths: &Paths, account: &str) -> bool {
         jobs.iter().any(|job| {
             job.target == account
                 && matches!(job.phase.as_str(), "launching_target" | "running_on_target")
-                && pane_state(&job.source.pane).map_or(true, |(dead, _)| !dead)
+                && pane_state(paths, &job.source.pane).map_or(true, |(dead, _)| !dead)
         })
     })
 }
@@ -1825,9 +1825,9 @@ fn enqueue_with_id(
     }
     Ok(job)
 }
-fn pane_state(pane: &str) -> Result<(bool, u32)> {
+fn pane_state(paths: &Paths, pane: &str) -> Result<(bool, u32)> {
     if pane.starts_with("herdr/") {
-        return hosting::state(pane);
+        return hosting::state(paths, pane);
     }
     let output = tmux(&[
         "display-message",
@@ -1862,6 +1862,14 @@ fn process_info(pid: u32) -> Result<ProcessInfo> {
         parent: fields[1].parse()?,
         start_time: fields[19].parse()?,
     })
+}
+pub(crate) fn attachment_definitely_gone(pid: u32, start: u64) -> bool {
+    match process_info(pid) {
+        Ok(info) => info.start_time != start || matches!(info.state, 'Z' | 'X'),
+        Err(error) => error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound),
+    }
 }
 fn child_processes(pid: u32) -> Result<Vec<ProcessInfo>> {
     let mut processes = Vec::new();
@@ -2218,7 +2226,7 @@ pub(crate) async fn queue_saved_resume(
         "SESSION_ALREADY_RUNNING"
     );
     crate::terminal::target(pane)?;
-    ensure!(hosting::state(pane)?.0, "NEW_TERMINAL_NOT_READY");
+    ensure!(hosting::state(paths, pane)?.0, "NEW_TERMINAL_NOT_READY");
     enqueue_with_id(
         paths,
         source,

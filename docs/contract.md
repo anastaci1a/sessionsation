@@ -383,7 +383,8 @@ and New/Resume receipt phases are unchanged.
 
 ### Resume availability reasons
 
-Session state and details include nullable `resume_block_reason`: `unknown_account`,
+Session state also publishes nullable `directory` from the observed source, so clients can warn about a shared project directory and show cached details without generation-bound reads.
+Session state and details include nullable `resume_block_reason`: `unknown_account`, `host_unavailable`,
 `history_unavailable`, `already_running`, `moving`, `missing_directory`,
 `history_busy`, `unfinished_history`, `conflicting_history`, or `unverified_history`.
 `unfinished_history` is a confirmation warning, not a disabled resume capability.

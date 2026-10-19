@@ -29,7 +29,15 @@ deletion uses the existing native deletion path and purges only conversation dat
 Provider adapters own enrollment, capabilities, usage, conversation history and
 delivery receipts. Terminal hosts own attachment and process placement. HERDR and
 tmux must launch the same account-specific Codex command. Viewer detachment must
-never imply stopping an agent.
+never imply stopping an agent. HERDR bindings retain the agent’s own socket locator;
+legacy live bindings read that locator from the bound PID after checking its start
+identity. Discovery and relaunch therefore do not borrow the observer’s HERDR
+environment. Explicit sockets are sent without HERDR’s `--session` flag, which
+otherwise overrides them using the caller’s XDG directory in version 0.9.5.
+A pending launch/resume receipt supplies the locator before its pane has a process
+binding. A partial host observation retains a still-live attachment and its
+generation. Only positive exit/PID-reuse evidence clears it; no runtime mutation
+is enabled until its host and process are positively observed again.
 
 ## Reuse
 

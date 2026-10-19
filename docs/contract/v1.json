@@ -192,6 +192,13 @@
             "null"
           ],
           "description": "Observed resume gate; unfinished_history is an explicit-confirmation warning. Consumers tolerate future codes."
+        },
+        "directory": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Positively observed working directory; null when the source cannot currently be observed."
         }
       },
       "required": [

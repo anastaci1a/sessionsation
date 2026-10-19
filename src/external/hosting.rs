@@ -7,11 +7,107 @@ use sha2::{Digest, Sha256};
 struct HerdrBinding {
     target: String,
     binding: Binding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    socket: Option<PathBuf>,
 }
 
 pub use crate::terminal::herdr_target;
+pub(super) use crate::terminal::retain;
 use crate::terminal::{call, target};
-pub(super) use crate::terminal::{relaunch, retain, state};
+
+fn process_socket(pid: u32) -> Option<PathBuf> {
+    let bytes = fs::read(format!("/proc/{pid}/environ")).ok()?;
+    bytes
+        .split(|b| *b == 0)
+        .find_map(|v| v.strip_prefix(b"HERDR_SOCKET_PATH="))
+        .and_then(|v| std::str::from_utf8(v).ok())
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
+fn binding_file(paths: &Paths, pane: &str) -> PathBuf {
+    let key = format!("{:x}", Sha256::digest(pane.as_bytes()));
+    paths.root.join("herdr-panes").join(format!("{key}.json"))
+}
+fn receipt_socket(paths: &Paths, pane: &str, thread: Option<&str>) -> Result<Option<PathBuf>> {
+    let (session, pane_id) = target(pane)?;
+    let mut latest: Option<(i64, PathBuf)> = None;
+    for directory in ["launches", "resumptions"] {
+        let dir = paths.root.join(directory);
+        if !dir.exists() {
+            continue;
+        }
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|e| e != "json")
+            {
+                continue;
+            }
+            let value: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+            if value["request"]["host"]["session"] != session
+                || value["pane_id"] != pane_id
+                || thread.is_some_and(|id| value["conversation_id"] != id)
+            {
+                continue;
+            }
+            let Some(socket) = value["request"]["host"]["socket"]
+                .as_str()
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+            else {
+                continue;
+            };
+            let time = value["created_at"]
+                .as_i64()
+                .or_else(|| value["updated_at"].as_i64())
+                .unwrap_or(0);
+            if latest.as_ref().is_none_or(|(t, _)| time > *t) {
+                latest = Some((time, socket));
+            }
+        }
+    }
+    Ok(latest.map(|(_, socket)| socket))
+}
+fn socket_for(paths: &Paths, pane: &str) -> Result<Option<PathBuf>> {
+    let file = binding_file(paths, pane);
+    if !file.exists() {
+        return if pane.starts_with("herdr/") {
+            receipt_socket(paths, pane, None)
+        } else {
+            Ok(None)
+        };
+    }
+    ensure!(
+        !fs::symlink_metadata(&file)?.file_type().is_symlink(),
+        "unsafe HERDR binding"
+    );
+    let record: HerdrBinding = serde_json::from_slice(&fs::read(file)?)?;
+    ensure!(record.target == pane, "HERDR_BINDING_MISMATCH");
+    let socket = record.socket.or_else(|| {
+        process_info(record.binding.pid)
+            .ok()
+            .filter(|p| p.start_time == record.binding.start_time && !matches!(p.state, 'Z' | 'X'))
+            .and_then(|p| process_socket(p.pid))
+    });
+    if socket.is_some() {
+        Ok(socket)
+    } else {
+        receipt_socket(paths, pane, Some(&record.binding.thread))
+    }
+}
+pub(super) fn state(paths: &Paths, pane: &str) -> Result<(bool, u32)> {
+    if let Some(socket) = socket_for(paths, pane)? {
+        crate::terminal::state_at(pane, Some(&socket))
+    } else {
+        crate::terminal::state(pane)
+    }
+}
+pub(super) fn relaunch(paths: &Paths, pane: &str, cwd: &str, command: &str) -> Result<()> {
+    if let Some(socket) = socket_for(paths, pane)? {
+        crate::terminal::relaunch_at(pane, cwd, command, Some(&socket))
+    } else {
+        crate::terminal::relaunch(pane, cwd, command)
+    }
+}
 
 pub(super) fn bind(paths: &Paths, pane: &str, binding: Binding) -> Result<()> {
     target(pane)?;
@@ -22,18 +118,19 @@ pub(super) fn bind(paths: &Paths, pane: &str, binding: Binding) -> Result<()> {
         &dir.join(format!("{key}.json")),
         &serde_json::to_vec(&HerdrBinding {
             target: pane.into(),
+            socket: process_socket(binding.pid),
             binding,
         })?,
     )
 }
 
 pub(super) fn instances(paths: &Paths) -> Result<Vec<Instance>> {
-    instances_with_state(paths, state)
+    instances_with_state(paths, crate::terminal::state_at)
 }
 
 fn instances_with_state(
     paths: &Paths,
-    mut state: impl FnMut(&str) -> Result<(bool, u32)>,
+    mut state: impl FnMut(&str, Option<&Path>) -> Result<(bool, u32)>,
 ) -> Result<Vec<Instance>> {
     let dir = paths.root.join("herdr-panes");
     if !dir.exists() {
@@ -60,7 +157,13 @@ fn instances_with_state(
         }
         // Read-only discovery never starts a server and never infers ownership
         // from the UI's selected pane or an account's display name.
-        let Ok((false, pid)) = state(&record.target) else {
+        let socket = record.socket.or_else(|| process_socket(b.pid));
+        let socket = if socket.is_some() {
+            socket
+        } else {
+            receipt_socket(paths, &record.target, Some(&b.thread))?
+        };
+        let Ok((false, pid)) = state(&record.target, socket.as_deref()) else {
             continue;
         };
         let Ok(info) = process_info(pid) else {
@@ -177,7 +280,7 @@ async fn launch_inner(
     let key = herdr_target(session, pane)?;
     let mut ready = false;
     for _ in 0..50 {
-        if state(&key).is_ok_and(|(idle, _)| idle) {
+        if state(paths, &key).is_ok_and(|(idle, _)| idle) {
             ready = true;
             break;
         }
@@ -267,7 +370,7 @@ mod discovery_tests {
                 (p, bytes)
             })
             .collect();
-        let found = instances_with_state(&paths, |_| {
+        let found = instances_with_state(&paths, |_, _| {
             panic!("stale process must not trigger HERDR socket I/O")
         })
         .unwrap();
@@ -275,6 +378,73 @@ mod discovery_tests {
         for (path, bytes) in files {
             assert_eq!(fs::read(path).unwrap(), bytes);
         }
+    }
+    #[test]
+    fn bindings_retain_socket_across_reader_environments_and_process_exit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        let socket = PathBuf::from("/isolated/herdr.sock");
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .env("HERDR_SOCKET_PATH", &socket)
+            .spawn()
+            .unwrap();
+        let pane = "herdr/named/w1:p1";
+        bind(
+            &paths,
+            pane,
+            Binding {
+                pid: child.id(),
+                start_time: process_info(child.id()).unwrap().start_time,
+                home: tmp.path().join("home"),
+                thread: "11111111-1111-4111-8111-111111111111".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(socket_for(&paths, pane).unwrap(), Some(socket.clone()));
+        let mut calls = 0;
+        instances_with_state(&paths, |key, locator| {
+            assert_eq!(key, pane);
+            assert_eq!(locator, Some(socket.as_path()));
+            calls += 1;
+            Ok((true, child.id()))
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        let bytes = fs::read(binding_file(&paths, pane)).unwrap();
+        let mut legacy: Value = serde_json::from_slice(&bytes).unwrap();
+        legacy.as_object_mut().unwrap().remove("socket");
+        fs::write(
+            binding_file(&paths, pane),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            socket_for(&paths, pane).unwrap(),
+            Some(socket.clone()),
+            "legacy live bindings derive their own process socket, not the reader's"
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(binding_file(&paths, pane)).unwrap())
+                .unwrap(),
+            legacy,
+            "observation does not migrate legacy binding files"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+        private_dir(&paths.root.join("resumptions")).unwrap();
+        fs::write(paths.root.join("resumptions/fixture.json"), serde_json::to_vec(&json!({"request":{"host":{"session":"named","socket":socket}},"pane_id":"w1:p1","conversation_id":"11111111-1111-4111-8111-111111111111","created_at":1})).unwrap()).unwrap();
+        assert_eq!(
+            socket_for(&paths, pane).unwrap(),
+            Some(socket.clone()),
+            "legacy stopped bindings use their own durable launch locator"
+        );
+        fs::write(binding_file(&paths, pane), bytes).unwrap();
+        assert_eq!(
+            socket_for(&paths, pane).unwrap(),
+            Some(socket),
+            "retained socket is available for safe relaunch after process exit"
+        );
     }
     #[test]
     fn live_pid_still_requires_current_host_confirmation() {
@@ -296,7 +466,7 @@ mod discovery_tests {
         )
         .unwrap();
         let mut calls = 0;
-        let found = instances_with_state(&paths, |target| {
+        let found = instances_with_state(&paths, |target, _| {
             assert_eq!(target, "herdr/named/w1:p1");
             calls += 1;
             Ok((true, pid))

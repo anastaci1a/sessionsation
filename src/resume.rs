@@ -373,7 +373,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     let target = crate::terminal::herdr_target(&r.host.session, pane)?;
     let mut ready = false;
     for _ in 0..50 {
-        if crate::terminal::state(&target).is_ok_and(|s| s.0) {
+        if crate::terminal::state_at(&target, Some(&r.host.socket)).is_ok_and(|s| s.0) {
             ready = true;
             break;
         }

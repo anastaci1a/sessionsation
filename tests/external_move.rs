@@ -3042,6 +3042,10 @@ async fn public_catalog_ids_names_and_stale_targets_survive_runtime_changes() {
         .unwrap()
         .clone();
     let id = session["id"].as_str().unwrap();
+    assert!(
+        session["directory"].as_str().is_some(),
+        "public state must supply the observed working directory for shared-directory warnings and cached details"
+    );
     assert_ne!(id, ID);
     let old = session["generation"].as_str().unwrap();
     let details = f.invoke(&[

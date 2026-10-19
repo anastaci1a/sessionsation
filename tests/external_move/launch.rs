@@ -16,7 +16,11 @@ fn request(f: &Fixture, host: &Path, name: &str) -> Value {
     json!({"version":1,"request_id":uuid::Uuid::new_v4().to_string(),"account_id":"codex:personal","name":name,"host":{"session":"fixture","socket":host},"space":{"kind":"existing","id":"w1"},"directory":{"path":f.tmp.path().join(name),"create":[f.tmp.path().join(name)],"confirmed_existing":false}})
 }
 fn api(f: &Fixture, args: &[&str], request: Option<&Value>) -> Output {
-    let mut child = Command::new(binary())
+    api_in(f, args, request, false)
+}
+fn api_in(f: &Fixture, args: &[&str], request: Option<&Value>, foreign: bool) -> Output {
+    let mut command = Command::new(binary());
+    command
         .arg("--data-dir")
         .arg(&f.paths.root)
         .arg("api")
@@ -36,9 +40,13 @@ fn api(f: &Fixture, args: &[&str], request: Option<&Value>) -> Output {
         .env_remove("TMUX_PANE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::piped());
+    if foreign {
+        command
+            .env("XDG_CONFIG_HOME", f.tmp.path().join("unrelated-host"))
+            .env("HERDR_SOCKET_PATH", f.tmp.path().join("not-the-host.sock"));
+    }
+    let mut child = command.spawn().unwrap();
     if let Some(r) = request {
         child
             .stdin
@@ -50,6 +58,10 @@ fn api(f: &Fixture, args: &[&str], request: Option<&Value>) -> Output {
         drop(child.stdin.take());
     }
     child.wait_with_output().unwrap()
+}
+
+fn foreign_api(f: &Fixture, args: &[&str]) -> Output {
+    api_in(f, args, None, true)
 }
 
 struct ActualHost {
@@ -144,14 +156,14 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
     let mut r = request(&f, &socket, "Owned popup");
     r["space"]["id"] = json!(workspace);
     let id = r["request_id"].as_str().unwrap();
-    let preview = api(&f, &["launch", "validate"], Some(&r));
+    let preview = api_in(&f, &["launch", "validate"], Some(&r), true);
     assert!(
         preview.status.success(),
         "{}",
         String::from_utf8_lossy(&preview.stderr)
     );
     assert!(!f.tmp.path().join("Owned popup").exists());
-    let start = api(&f, &["launch", "start"], Some(&r));
+    let start = api_in(&f, &["launch", "start"], Some(&r), true);
     assert!(
         start.status.success(),
         "{}",
@@ -383,6 +395,25 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             .unwrap();
         assert_eq!(running["name"], name);
         assert_eq!(running["account"], account);
+        let foreign = foreign_api(&f, &["state"]);
+        assert!(
+            foreign.status.success(),
+            "{}",
+            String::from_utf8_lossy(&foreign.stderr)
+        );
+        let foreign: Value = serde_json::from_slice(&foreign.stdout).unwrap();
+        let observed = foreign["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap();
+        assert_eq!(observed["availability"], "running");
+        assert_eq!(
+            observed["generation"], running["generation"],
+            "an observer with another HERDR socket must not invalidate the live attachment"
+        );
+
         let calls = if account == "personal" { &f.a } else { &f.b };
         assert!(
             calls
@@ -424,7 +455,41 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             .unwrap()["pid"]
             .as_i64()
             .unwrap();
-        assert_eq!(unsafe { libc::kill(agent as i32, libc::SIGTERM) }, 0);
+        let stopped = foreign_api(
+            &f,
+            &[
+                "stop",
+                "--session",
+                id,
+                "--expected-generation",
+                running["generation"].as_str().unwrap(),
+            ],
+        );
+        assert!(
+            stopped.status.success(),
+            "{}",
+            String::from_utf8_lossy(&stopped.stderr)
+        );
+        let stopped: Value = serde_json::from_slice(&stopped.stdout).unwrap();
+        let operation = stopped["result"]["id"].as_str().unwrap();
+        let until = Instant::now() + Duration::from_secs(30);
+        loop {
+            let all = foreign_api(&f, &["operations"]);
+            assert!(all.status.success());
+            let all: Value = serde_json::from_slice(&all.stdout).unwrap();
+            let job = all["result"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|j| j["id"] == operation)
+                .unwrap();
+            if job["phase"] == "complete" {
+                break;
+            }
+            assert!(job["phase"] != "failed" && Instant::now() < until, "{job}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_ne!(unsafe { libc::kill(agent as i32, 0) }, 0);
         tokio::time::sleep(Duration::from_millis(200)).await;
         let stopped_receipt: Value = serde_json::from_slice(
             &api(
@@ -697,7 +762,9 @@ async fn new_popup_request_is_staged_named_and_never_replayed() {
     let _owned = OwnedGroup(f.tmp.path().join("group.pid"));
     let script = f.tmp.path().join("herdr");
     fs::write(&script,r#"#!/bin/sh
-shift 2
+[ "$HERDR_SOCKET_PATH" = "$FIXTURE_DIR/host.sock" ] || exit 41
+[ "$HERDR_SESSION" = fixture ] || exit 41
+[ "$1" != --session ] || exit 41
 printf '%s\n' "$*" >> "$FIXTURE_DIR/host-calls"
 case "$1 $2" in
  'workspace list') printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"fixture"}]}}';;

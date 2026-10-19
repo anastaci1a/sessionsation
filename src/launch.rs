@@ -263,9 +263,9 @@ pub async fn host_call(host: &Host, args: &[&str]) -> Result<Value> {
     );
     let mut command = tokio::process::Command::new("herdr");
     command
-        .args(["--session", &host.session])
         .args(args)
         .env("HERDR_SOCKET_PATH", &host.socket)
+        .env("HERDR_SESSION", &host.session)
         .stdin(Stdio::null())
         .kill_on_drop(true);
     let output = tokio::time::timeout(Duration::from_secs(15), command.output())

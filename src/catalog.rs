@@ -159,6 +159,15 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
                 process_start: i.start_time,
             });
             if let Some(s) = c.sessions.get_mut(&id) {
+                // An unreadable host is an incomplete observation, not a stopped
+                // agent. Saved copies cannot replace a still-live attachment.
+                if i.inactive
+                    && s.attachment.as_ref().is_some_and(|a| {
+                        !crate::external::attachment_definitely_gone(a.pid, a.process_start)
+                    })
+                {
+                    continue;
+                }
                 if s.account != i.account || s.attachment != attachment {
                     s.account = i.account.clone();
                     s.attachment = attachment;
@@ -203,6 +212,9 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
         // to restart it on another account. Preserve conversation and owner.
         for s in c.sessions.values_mut() {
             if s.attachment.is_some()
+                && s.attachment.as_ref().is_some_and(|a| {
+                    crate::external::attachment_definitely_gone(a.pid, a.process_start)
+                })
                 && !instances
                     .iter()
                     .any(|i| !i.inactive && i.thread_id == s.conversation_id)
@@ -372,6 +384,56 @@ mod tests {
             .map(|s| s.name)
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(names.len(), 2);
+    }
+    #[test]
+    fn partial_discovery_never_replaces_a_still_live_attachment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let stat = fs::read_to_string(format!("/proc/{}/stat", std::process::id())).unwrap();
+        let start: u64 = stat
+            .rsplit_once(") ")
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let s = record_launch(
+            &p,
+            "selected",
+            "11111111-1111-4111-8111-111111111111",
+            "Live",
+            Some(Attachment {
+                host: "herdr".into(),
+                target: "herdr/other/w1:p1".into(),
+                pid: std::process::id(),
+                process_start: start,
+            }),
+        )
+        .unwrap();
+        let saved: crate::external::Instance = serde_json::from_value(serde_json::json!({"inactive":true,"account":"other","pane":"","tmux_session":"","pid":0,"cwd":"/tmp","thread_id":s.conversation_id,"rollout":"/tmp/fixture","home":"/tmp/home","binary":"codex","resume_options":[]})).unwrap();
+        for items in [vec![], vec![saved]] {
+            let after = reconcile(&p, &items).unwrap().remove(0);
+            assert_eq!(after.generation(), s.generation());
+            assert_eq!(after.account, "selected");
+            assert_eq!(after.attachment, s.attachment);
+        }
+        transaction(&p, |c| {
+            c.sessions
+                .get_mut(&s.id)
+                .unwrap()
+                .attachment
+                .as_mut()
+                .unwrap()
+                .process_start += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            reconcile(&p, &[]).unwrap()[0].attachment.is_none(),
+            "PID reuse remains a positive detachment"
+        );
     }
     #[test]
     fn disappeared_attachment_retains_owner_and_conversation() {

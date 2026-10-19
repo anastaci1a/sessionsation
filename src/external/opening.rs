@@ -216,7 +216,7 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
     ])?;
     source.tmux_session = chosen_name;
     for _ in 0..50 {
-        let (dead, pid) = pane_state(&source.pane)?;
+        let (dead, pid) = pane_state(paths, &source.pane)?;
         ensure!(
             !dead,
             "Codex exited during startup; its error is retained in tmux and its history is unchanged"
@@ -227,7 +227,7 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
             bind_pane(paths, &source.pane, pid, &source.home, &source.thread_id)?;
             tokio::time::sleep(Duration::from_millis(500)).await;
             ensure!(
-                !pane_state(&source.pane)?.0,
+                !pane_state(paths, &source.pane)?.0,
                 "Codex exited during startup; inspect the retained tmux pane"
             );
             return opened(paths, &source);

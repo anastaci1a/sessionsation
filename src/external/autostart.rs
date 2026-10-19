@@ -42,7 +42,7 @@ pub async fn continue_after_reset(
         "another session operation is running"
     );
     let info = process_info(source.pid)?;
-    let (dead, pid) = pane_state(&source.pane)?;
+    let (dead, pid) = pane_state(paths, &source.pane)?;
     ensure!(
         !dead
             && info.start_time == waiting.start_time

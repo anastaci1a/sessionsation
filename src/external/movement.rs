@@ -300,8 +300,8 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
                 "source process was replaced"
             );
             ensure!(
-                pane_state(&job.source.pane)?.1 == job.source.pid
-                    || child_processes(pane_state(&job.source.pane)?.1)?
+                pane_state(paths, &job.source.pane)?.1 == job.source.pid
+                    || child_processes(pane_state(paths, &job.source.pane)?.1)?
                         .iter()
                         .any(|p| p.pid == job.source.pid && p.start_time == job.source.start_time),
                 "pane process changed"
@@ -794,7 +794,7 @@ pub(super) async fn launch_target(
         if let Some(pane) = job.resume_destination.clone() {
             // The caller created this destination without focus. A retained shell
             // must still occupy it; relaunch refuses an agent/editor replacement.
-            hosting::relaunch(&pane, &cwd, &command)?;
+            hosting::relaunch(paths, &pane, &cwd, &command)?;
             job.source.tmux_session = crate::terminal::target(&pane)?.0.into();
             job.source.pane = pane;
         } else {
@@ -815,7 +815,7 @@ pub(super) async fn launch_target(
             job.source.tmux_session = name;
         }
     } else {
-        hosting::relaunch(&job.source.pane, &cwd, &command)?;
+        hosting::relaunch(paths, &job.source.pane, &cwd, &command)?;
     }
     save_job(paths, job)?;
     hosting::retain(&job.source.pane, true)?;
@@ -958,23 +958,23 @@ pub(super) async fn stop_source(
         stop_exact_process(info)?;
         wait_stopped(info).await?;
         for _ in 0..30 {
-            if job.kind == "terminate" && pane_state(&job.source.pane).is_err() {
+            if job.kind == "terminate" && pane_state(paths, &job.source.pane).is_err() {
                 break;
             }
-            if pane_state(&job.source.pane)?.0 {
+            if pane_state(paths, &job.source.pane)?.0 {
                 break;
             }
-            let wrapper = pane_state(&job.source.pane)?.1;
+            let wrapper = pane_state(paths, &job.source.pane)?.1;
             if wrapper != job.source.pid && child_processes(wrapper)?.is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         ensure!(
-            (job.kind == "terminate" && pane_state(&job.source.pane).is_err())
-                || pane_state(&job.source.pane)?.0
-                || (pane_state(&job.source.pane)?.1 != job.source.pid
-                    && child_processes(pane_state(&job.source.pane)?.1)?.is_empty()),
+            (job.kind == "terminate" && pane_state(paths, &job.source.pane).is_err())
+                || pane_state(paths, &job.source.pane)?.0
+                || (pane_state(paths, &job.source.pane)?.1 != job.source.pid
+                    && child_processes(pane_state(paths, &job.source.pane)?.1)?.is_empty()),
             "tmux has not observed the stopped source yet"
         );
     }
@@ -1025,7 +1025,8 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
                 .relocation
                 .as_ref()
                 .is_some_and(|r| r.state != "prepared")
-            || (!job.source.inactive && pane_state(&job.source.pane).is_ok_and(|(dead, _)| dead))
+            || (!job.source.inactive
+                && pane_state(paths, &job.source.pane).is_ok_and(|(dead, _)| dead))
         {
             if let Err(recovery_error) = recover_inner(paths, id).await {
                 // Recovery can persist partial progress before failing. Keep
@@ -1065,7 +1066,7 @@ async fn continue_work(paths: &Paths, job: &mut Job) -> Result<()> {
         !jobs(paths)?.iter().any(|other| other.id != job.id && job_conflicts_with_source(paths, other, &job.source)),
         "another session operation is already queued"
     );
-    let (dead, pid) = pane_state(&job.source.pane)?;
+    let (dead, pid) = pane_state(paths, &job.source.pane)?;
     ensure!(
         !dead
             && process_home(pid)? == paths.account(&job.target)?
@@ -1199,7 +1200,7 @@ async fn recover_inner(paths: &Paths, id: &str) -> Result<Job> {
             if thread["status"]["type"] != "notLoaded" {
                 target.verify_unloadable(&id, false).await?;
                 ensure!(
-                    pane_state(&job.source.pane).map_or(true, |(dead, _)| dead),
+                    pane_state(paths, &job.source.pane).map_or(true, |(dead, _)| dead),
                     "a destination terminal may still be attached; close it before recovery"
                 );
                 target
@@ -1242,7 +1243,7 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
         job.source_archived = false;
         save_job(paths, &job)?;
     }
-    if job.source.inactive || !pane_state(&job.source.pane)?.0 {
+    if job.source.inactive || !pane_state(paths, &job.source.pane)?.0 {
         phase(
             paths,
             &mut job,
@@ -1273,7 +1274,7 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
             &job.source.rollout,
         )
     };
-    hosting::relaunch(&job.source.pane, &job.source.cwd, &command)?;
+    hosting::relaunch(paths, &job.source.pane, &job.source.cwd, &command)?;
     confirm_runtime(
         paths,
         &job.source.pane,
@@ -1322,7 +1323,7 @@ pub(super) fn remote_resume_shell(
 async fn confirm_runtime(paths: &Paths, pane: &str, home: &Path, thread: &str) -> Result<u32> {
     let mut verified_pid = None;
     for _ in 0..50 {
-        let (dead, pid) = pane_state(pane)?;
+        let (dead, pid) = pane_state(paths, pane)?;
         if dead && pane.starts_with("herdr/") {
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
@@ -1345,7 +1346,7 @@ async fn confirm_runtime(paths: &Paths, pane: &str, home: &Path, thread: &str) -
     let identity = process_info(pid)?;
     tokio::time::sleep(Duration::from_millis(500)).await;
     ensure!(
-        !pane_state(pane)?.0
+        !pane_state(paths, pane)?.0
             && process_info(pid)
                 .is_ok_and(|p| p.start_time == identity.start_time && p.state != 'Z'),
         "destination exited during startup; source history is available for recovery"
