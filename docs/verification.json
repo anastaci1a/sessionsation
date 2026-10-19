@@ -2,14 +2,14 @@
   "schema_version": 1,
   "source": {
     "repository": "https://github.com/anastaci1a/sessionsation",
-    "commit": "aea768160343b21e575e12394c5662f049d50433",
+    "commit": "043b3f3081b4dc83f50e70232a341761de8922e7",
     "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265"
   },
   "artifact": {
     "installed": true,
     "kind": "Popup-selected CLI client; sole existing-root supervisor and original installation unchanged",
-    "path": "/mnt/user/live/packages/sessionsation/popup/aea768160343b21e575e12394c5662f049d50433/sessionsation",
-    "sha256": "bc66f2b6c353e6f8cdd69294c025d1e19e6e3842769f99f0c8bccb7e7958f200",
+    "path": "/mnt/user/live/packages/sessionsation/popup/043b3f3081b4dc83f50e70232a341761de8922e7/sessionsation",
+    "sha256": "3fddad00cf7bfa3109f95c563e719c38e4480169c60d5a1d96a558c088d9a3c7",
     "profile": "release",
     "rust_version": "1.95.0",
     "container_image": "sessionsation-build-tools:local",
@@ -30,7 +30,7 @@
       "python3 scripts/check_contract.py"
     ],
     "tests": {
-      "lib": 127,
+      "lib": 129,
       "binary": 0,
       "cli": 8,
       "external_move": 62,
@@ -39,11 +39,11 @@
       "scheduling": 29,
       "transport": 3,
       "doctests": 0,
-      "total": 243,
+      "total": 245,
       "failed": 0,
       "ignored": 3
     },
-    "scope": "Offline suite including archive/restore/rearchive/restore/delete identity and byte preservation, paginated proofs, live/stale/unconfirmed rejection and changed archive/loaded-thread rejection. Three installed-HERDR fixtures excluded from this standard run; prior live/host evidence is separately scoped."
+    "scope": "Full offline suite. Separate installed-HERDR fixture verifies explicit unfinished-history consent for original-account and cross-account resume; no model turns or live roots."
   },
   "native_runtime": {
     "terminal_client": {
@@ -104,5 +104,13 @@
       ],
       "scope": "Offline isolated fixtures and CLI/schema checks only. No new native send, account mutation or lifecycle acceptance from this candidate."
     }
+  },
+  "unfinished_resume_acceptance": {
+    "source": "043b3f3081b4dc83f50e70232a341761de8922e7",
+    "passed": 1,
+    "failed": 0,
+    "command": "SESSIONSATION_ISOLATED_HOST_TEST=1 cargo test --offline --locked --test external_move launch::installed_herdr_new_tab_handoff_retains_exact_account_and_shell -- --ignored --exact",
+    "models": 0,
+    "supervisor": "Existing production owner unchanged"
   }
 }
