@@ -36,11 +36,13 @@ for name, value in fixtures.items():
         validate(value, "Receipt")
 with tempfile.TemporaryDirectory() as directory:
     command = [str(Path(os.environ.get("CARGO_TARGET_DIR", root / "target")) / "debug/sessionsation"), "--data-dir", directory, "api"]
-    for args in [["capabilities"], ["state"], ["archives"]]:
+    for args in [["version"], ["capabilities"], ["state"], ["state", "--archive-filter", "all"], ["archives"]]:
         value = json.loads(subprocess.check_output(command + args, text=True))
         validate(value)
-        if args == ["state"]:
+        if args[0] == "state":
             validate(value["result"], "Snapshot")
+        if args == ["version"]:
+            validate(value["result"], "ExecutableVersion")
     for args in [["--api-version", "99", "capabilities"], ["rename", "--session", "missing", "--expected-generation", "stale", "--name", "x"]]:
         result = subprocess.run(command + args, capture_output=True, text=True)
         assert result.returncode in (1, 2)

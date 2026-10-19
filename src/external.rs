@@ -186,13 +186,28 @@ fn activity_from_tail(mut reader: impl Read + Seek) -> Activity {
 
 /// Add live server state without starting another app-server or loading threads.
 pub async fn discover(paths: &Paths) -> Result<Vec<Instance>> {
-    discover_filtered(paths, true).await
+    discover_mode(paths, true, false).await
 }
 pub async fn live_sessions(paths: &Paths) -> Result<Vec<Instance>> {
-    discover_filtered(paths, false).await
+    discover_mode(paths, false, false).await
+}
+pub(crate) async fn discover_catalog(paths: &Paths) -> Result<Vec<Instance>> {
+    discover_mode(paths, true, true).await
 }
 async fn discover_filtered(paths: &Paths, include_inactive: bool) -> Result<Vec<Instance>> {
-    let mut result = match inventory(paths, include_inactive) {
+    discover_mode(paths, include_inactive, false).await
+}
+async fn discover_mode(
+    paths: &Paths,
+    include_inactive: bool,
+    include_archived: bool,
+) -> Result<Vec<Instance>> {
+    let discovered = if include_archived {
+        inventory_complete(paths, include_inactive, false, true)
+    } else {
+        inventory(paths, include_inactive)
+    };
+    let mut result = match discovered {
         Ok(items) => items,
         Err(error) => {
             let mut live = instances()?;
@@ -779,6 +794,14 @@ fn inventory(paths: &Paths, include_inactive: bool) -> Result<Vec<Instance>> {
     inventory_kind(paths, include_inactive, false)
 }
 fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Result<Vec<Instance>> {
+    inventory_complete(paths, include_inactive, archived, false)
+}
+fn inventory_complete(
+    paths: &Paths,
+    include_inactive: bool,
+    archived: bool,
+    include_archived: bool,
+) -> Result<Vec<Instance>> {
     let mut result = host_instances(paths)?;
     let state = crate::store::load_state_snapshot(paths).ok();
     for instance in &mut result {
@@ -858,7 +881,7 @@ fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Resu
             }),
             &mut files,
         )?;
-        if !archived && preserved.iter().any(|(_, h)| *h == home) {
+        if !archived && (include_archived || preserved.iter().any(|(_, h)| *h == home)) {
             collect_rollouts(&home.join("archived_sessions"), &mut files)?;
         }
         for rollout in files {
@@ -892,7 +915,10 @@ fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Resu
                 tmux_dead: false,
                 display_name: String::new(),
                 last_accessed: None,
-                archived,
+                archived: archived
+                    || (include_archived
+                        && !preserved.iter().any(|(_, h)| *h == home)
+                        && rollout.starts_with(home.join("archived_sessions"))),
                 inactive: true,
                 account: account.clone(),
                 display_account: display_account.clone(),
@@ -933,6 +959,12 @@ fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Resu
             }
             std::collections::btree_map::Entry::Occupied(mut entry) => {
                 let previous = entry.get();
+                if include_archived && previous.archived != candidate.archived {
+                    if !candidate.archived {
+                        entry.insert(candidate);
+                    }
+                    continue;
+                }
                 let old = fs::read(&previous.rollout)?;
                 let new = fs::read(&candidate.rollout)?;
                 let newer_copy = new == old

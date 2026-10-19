@@ -184,6 +184,10 @@ fn all(paths: &Paths) -> Result<Vec<Archive>> {
     }
     Ok(out)
 }
+/// Content-free authoritative archive facts, including restored/deleted manifests.
+pub fn metadata(paths: &Paths) -> Result<std::collections::BTreeMap<String, Value>> {
+    Ok(all(paths)?.into_iter().map(|a| (a.session.id, json!({"kind":"managed","state":a.state,"archived":!matches!(a.state.as_str(),"restored"|"deleted"),"archived_at":a.archived_at,"source":"managed_manifest"}))).collect())
+}
 pub fn hidden(paths: &Paths) -> Result<std::collections::BTreeSet<String>> {
     Ok(all(paths)?
         .into_iter()

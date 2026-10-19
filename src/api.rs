@@ -11,9 +11,27 @@ use std::{
 
 pub const VERSION: u32 = 1;
 
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum ArchiveFilter {
+    #[default]
+    Active,
+    Archived,
+    All,
+}
+
+pub fn version() -> Result<Value> {
+    use sha2::{Digest, Sha256};
+    let executable = std::env::current_exe()?;
+    Ok(
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":2,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+    )
+}
+
 #[derive(Subcommand)]
 pub enum Command {
     Capabilities,
+    /// Discover the exact executable and contract without contacting a provider.
+    Version,
     Archives,
     Archive {
         #[command(flatten)]
@@ -47,6 +65,8 @@ pub enum Command {
     State {
         #[arg(long)]
         watch: bool,
+        #[arg(long, value_enum, default_value_t=ArchiveFilter::Active)]
+        archive_filter: ArchiveFilter,
         #[arg(long, default_value_t=2, value_parser=clap::value_parser!(u64).range(1..=3600))]
         interval: u64,
     },
@@ -420,7 +440,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
 }
 
 pub fn capabilities() -> Value {
-    json!({"api_version":VERSION,"providers":[
+    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":2,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -447,7 +467,7 @@ fn public_session(s: catalog::Session) -> Value {
 }
 
 async fn inventory(paths: &Paths) -> Result<Vec<external::Instance>> {
-    let items = external::discover(paths).await?;
+    let items = external::discover_catalog(paths).await?;
     catalog::reconcile(paths, &items)?;
     Ok(items)
 }
@@ -477,7 +497,20 @@ fn boot_clock() -> Option<(f64, i64)> {
     (result == 0 && hz > 0).then_some((time.tv_sec as f64 + time.tv_nsec as f64 / 1e9, hz))
 }
 
+fn archive_info(
+    s: &catalog::Session,
+    source: Option<&external::Instance>,
+    archives: &std::collections::BTreeMap<String, Value>,
+) -> Value {
+    archives.get(&s.id).cloned().unwrap_or_else(|| match source {
+        Some(i) => { let archived=i.archived; json!({"kind":if archived {"provider"} else {"none"},"archived":archived,"state":if archived {"archived"} else {"active"},"archived_at":null,"source":"verified_history_location","provider_storage_archived":i.rollout.starts_with(i.home.join("archived_sessions"))}) },
+        None => json!({"kind":"unknown","archived":null,"state":"unobserved","archived_at":null,"source":"catalog_only"}),
+    })
+}
 pub async fn state(paths: &Paths) -> Result<Value> {
+    state_filtered(paths, ArchiveFilter::Active).await
+}
+pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Value> {
     let items = inventory(paths).await?;
     let status = daemon::call(paths, "status", json!({})).await;
     let (accounts, source) = match status {
@@ -505,16 +538,20 @@ pub async fn state(paths: &Paths) -> Result<Value> {
     let accounts = project_accounts(paths, accounts)?;
     let clock = boot_clock();
     let now = daemon::now();
-    let hidden = external::archiving::hidden(paths)?;
-    let mut sessions=catalog::list(paths)?.into_iter().filter(|s|!hidden.contains(&s.id)).map(|s| {
+    let archives = external::archiving::metadata(paths)?;
+    let mut sessions=catalog::list(paths)?.into_iter().filter(|s|archives.get(&s.id).is_none_or(|a|a["state"]!="deleted")).map(|s| {
         let source=items.iter().find(|i|source_matches(&s,i));
         let known=!matches!(s.account.as_str(),"external"|"unknown");
         let attached=s.attachment.is_some();
+        let archive = archive_info(&s, source, &archives);
+        let archived=archive["archived"]==true;
         let mut value=public_session(s);
+        value["archive"]=archive;
+        value["archived"]=value["archive"]["archived"].clone();
         value["resume_block_reason"]=json!(if attached && source.is_none() {Some("host_unavailable")}else{resume_block_reason(known,source)});
         let running=source.is_some_and(|i|!i.inactive);
         let saved=source.is_some_and(|i|i.inactive && matches!(i.block_reason.as_deref(), None | Some("unfinished" | "unknown")) && i.move_id.is_none());
-        value["availability"]=json!(if running {"running"}else if saved {"saved"}else{"unavailable"});
+        value["availability"]=json!(if archived {"archived"}else if running {"running"}else if saved {"saved"}else{"unavailable"});
         let facts=source.map(|s|external::history_file_details(&s.rollout)).unwrap_or(Value::Null);
         value["directory"]=source.map(|s|json!(s.cwd)).unwrap_or(Value::Null);
         value["conversation_created_at"]=facts["conversation_created_at"].clone();
@@ -524,8 +561,9 @@ pub async fn state(paths: &Paths) -> Result<Value> {
         value["active_since"]=json!(source.filter(|s|!s.inactive).and_then(|s|clock.and_then(|(uptime,hz)|attachment_started_at(now,uptime,s.start_time,hz))));
         let unambiguous=items.iter().filter(|i|!i.inactive && i.thread_id==value["conversation_id"]).count()<=1;
         value["capabilities"]=json!({"rename":true,"move_space":running && unambiguous && source.is_some_and(|s|s.pane.starts_with("herdr/")),"resume":known && saved,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":source.is_some_and(|i|i.inactive),"delete":source.is_some_and(|i|i.inactive)});
+        if archived { value["capabilities"]=json!({"rename":false,"resume":false,"switch_account":false,"move_space":false,"restart":false,"stop":false,"archive":false,"delete":value["archive"]["kind"]=="managed","restore":value["archive"]["kind"]=="managed"}); }
         value
-    }).collect::<Vec<_>>();
+    }).filter(|s|match filter { ArchiveFilter::All=>true, ArchiveFilter::Archived=>s["archived"]==true, ArchiveFilter::Active=>s["archived"]!=true }).collect::<Vec<_>>();
     for session in &mut sessions {
         let thread = session["conversation_id"]
             .as_str()
@@ -580,6 +618,10 @@ pub(crate) async fn selected(
         .into_iter()
         .find(|i| source_matches(&session, i))
         .context("SESSION_UNAVAILABLE")?;
+    ensure!(
+        !i.archived && !external::archiving::hidden(paths)?.contains(id),
+        "SESSION_ARCHIVED"
+    );
     Ok((session, i))
 }
 
@@ -591,6 +633,9 @@ fn resume_block_reason(known: bool, source: Option<&external::Instance>) -> Opti
     let Some(source) = source else {
         return Some("history_unavailable");
     };
+    if source.archived {
+        return Some("archived");
+    }
     if !source.inactive {
         return Some("already_running");
     }
@@ -621,19 +666,27 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
             source,
         )
     };
+    let archive = archive_info(&session, source, &external::archiving::metadata(paths)?);
+    let archived = archive["archived"] == true;
     let mut value = public_session(session);
+    value["archived"] = archive["archived"].clone();
+    value["archive"] = archive;
     value["directory"] = json!(directory);
-    value["resume_block_reason"] = json!(reason);
+    value["resume_block_reason"] = json!(if archived { Some("archived") } else { reason });
     let facts = source
         .map(|s| external::history_file_details(&s.rollout))
         .unwrap_or(Value::Null);
     value["conversation_created_at"] = facts["conversation_created_at"].clone();
     value["history_file_bytes"] = facts["history_file_bytes"].clone();
-    value["availability"] = json!(
-        source
-            .map(|s| if s.inactive { "saved" } else { "running" })
-            .unwrap_or("unavailable")
-    );
+    value["availability"] = if archived {
+        json!("archived")
+    } else {
+        json!(
+            source
+                .map(|s| if s.inactive { "saved" } else { "running" })
+                .unwrap_or("unavailable")
+        )
+    };
     // Persisted launch receipts supply positive location provenance. Never guess
     // the original Space from a display name, current focus or a missing pane.
     let latest = external::spaces::receipt_location(paths, id)?;
@@ -664,6 +717,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             expected_generation,
         } => session_details(paths, &session, &expected_generation).await?,
         Command::Capabilities => capabilities(),
+        Command::Version => version()?,
         Command::Archives => external::archiving::list(paths)?,
         Command::Archive { target } => {
             external::archiving::start(paths, external::archiving::Kind::Archive, target).await?
@@ -684,8 +738,12 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             selected(paths, &session, &expected_generation).await?;
             crate::messaging::observe_public(paths, &session, &expected_generation).await?
         }
-        Command::State { watch, interval } => loop {
-            print(state(paths).await?)?;
+        Command::State {
+            watch,
+            interval,
+            archive_filter,
+        } => loop {
+            print(state_filtered(paths, archive_filter).await?)?;
             if !watch {
                 return Ok(());
             }

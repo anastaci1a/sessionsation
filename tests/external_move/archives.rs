@@ -87,6 +87,28 @@ async fn public_archive_restore_and_delete_preserve_identity_and_other_data() {
     );
     let list = api(&f, &["archives"]);
     let archived = list[0].clone();
+    let archived_view = api(&f, &["state", "--archive-filter", "archived"]);
+    let found = archived_view["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == s["id"])
+        .unwrap();
+    assert_eq!(found["archive"]["kind"], "managed");
+    assert_eq!(found["archived"], true);
+    assert_eq!(found["availability"], "archived");
+    let details = api(
+        &f,
+        &[
+            "session",
+            "--session",
+            found["id"].as_str().unwrap(),
+            "--expected-generation",
+            found["generation"].as_str().unwrap(),
+        ],
+    );
+    assert_eq!(details["archive"]["kind"], "managed");
+    assert_eq!(details["resume_block_reason"], "archived");
     assert_eq!(archived["id"], s["id"]);
     assert!(archived["compressed_bytes"].as_u64().unwrap() > 0);
     assert_ne!(archived["generation"], s["generation"]);
@@ -151,6 +173,63 @@ async fn public_archive_restore_and_delete_preserve_identity_and_other_data() {
                 "turn/start" | "thread/start" | "thread/resume"
             ))
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_archive_and_catalog_only_roots_have_distinct_stable_identity_and_filtering() {
+    let f = Fixture::new().await;
+    let home = f.paths.account("personal").unwrap();
+    let original = history(&home, f.tmp.path(), ID);
+    let archived = home.join("archived_sessions/root.jsonl");
+    fs::create_dir_all(archived.parent().unwrap()).unwrap();
+    fs::rename(&original, &archived).unwrap();
+    let stored =
+        sessionsation::catalog::record_launch(&f.paths, "personal", ID, "root", None).unwrap();
+    let unknown = sessionsation::catalog::record_launch(
+        &f.paths,
+        "work",
+        "44444444-4444-4444-8444-444444444444",
+        "codex-root",
+        None,
+    )
+    .unwrap();
+    let bytes = fs::read(&archived).unwrap();
+    for _ in 0..3 {
+        let active = api(&f, &["state"]);
+        assert!(
+            active["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["id"] != stored.id)
+        );
+        let pending = active["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == unknown.id)
+            .unwrap();
+        assert!(pending["archived"].is_null());
+        assert_eq!(pending["archive"]["state"], "unobserved");
+        let all = api(&f, &["state", "--archive-filter", "all"]);
+        let item = all["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == stored.id)
+            .unwrap();
+        assert_eq!(item["conversation_id"], ID);
+        assert_eq!(item["archive"]["kind"], "provider");
+        assert_eq!(item["generation"], stored.generation());
+        assert_eq!(item["capabilities"]["resume"], false);
+    }
+    assert_eq!(fs::read(&archived).unwrap(), bytes);
+    for server in [&f.a, &f.b] {
+        assert!(!server.lock().unwrap().calls.iter().any(|(m, _)| matches!(
+            m.as_str(),
+            "thread/unarchive" | "thread/resume" | "turn/start" | "thread/queue/add"
+        )));
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

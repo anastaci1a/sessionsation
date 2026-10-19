@@ -243,6 +243,21 @@ requested destination, the reservation blocks competing lifecycle actions;
 manual host inspection may be needed. Repeating the original request observes its
 record, including failure, rather than replaying it. See the
 [placement contract](contract.md#herdr-space-placement).
+## Executable and archive discovery
+
+```sh
+sessionsation --version
+sessionsation api version
+sessionsation api capabilities
+sessionsation api state --archive-filter all
+sessionsation api state --archive-filter archived
+```
+
+Read the exact binary hash/capabilities before selecting a reviewed client. The
+[identity and archive contract](contract.md#archive-metadata-and-filtering) defines
+positive archive evidence versus unobserved catalog records. These queries never
+resume, unarchive or delete conversations.
+
 ## Saved and archived conversations
 
 Inactive Codex conversations have separate Archive and Delete actions. Archive

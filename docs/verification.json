@@ -8,7 +8,7 @@
   ],
   "results": {
     "status": "passed",
-    "environment": "Debian bookworm public-image Linux environment from rust:1.95.0-bookworm; declared dependencies and locked public downloads; no host Cargo cache, provider CLI, account homes or live sockets. Corrective runs reuse only this public-built target tree.",
+    "environment": "Debian bookworm Linux check container with declared tooling, cached locked public Cargo dependencies, and only an owned isolated HERDR binary mounted; no account homes or live sockets.",
     "checks": [
       "format",
       "Clippy all targets with warnings denied",
@@ -19,18 +19,17 @@
     "tests": {
       "unit": 147,
       "cli": 8,
-      "external_move": 64,
+      "external_move": 65,
       "messaging_cli": 8,
       "persistence": 6,
       "scheduling": 29,
       "transport": 3,
-      "total": 265,
+      "total": 266,
       "ignored": 4,
       "failed": 0
     },
-    "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265",
-    "cold_run_note": "Initial concurrent cold run timed out in daemon readiness. The isolated test and complete reruns with bounded test/runtime workers passed; root cause is not conclusively established. No daemon-readiness workaround was introduced.",
-    "release_smoke": "Passed release build/install, help, v1 capabilities/empty state and metadata-only setup/status/stop as unprivileged UID 1000 in a separate network-disabled container; no Codex binary/accounts/provider calls",
+    "cargo_lock_sha256": "ac5dca041b22af0cf8c249533784f0bd2a16ba62002aefa6bc08e06c360e2b21",
+    "release_smoke": "Locked release build and real API version/capabilities/state schema-envelope checks passed. No deployment or provider calls.",
     "isolated_herdr": {
       "version": "0.9.5",
       "protocol": 22,
@@ -45,9 +44,9 @@
     },
     "artifact": {
       "path_in_test_checkout": "target-review/release/sessionsation",
-      "sha256": "209a46a54eaca0ea9ad7641cca554d08cacc1ad5516e8cf9f107d3f5eeac2f49",
+      "sha256": "1a2d8b46bafeba88d45088044d34c85dcca2906ac453700ca1e5e462ca2bca98",
       "installed": false,
-      "provenance": "Pinned-toolchain locked release build from the Rust sources accompanying this record, in the public-image source-only test checkout"
+      "provenance": "Rust 1.95.0 locked release build from accompanying source; package 0.2.0, API v1, contract revision 2. Existing consumer executables remain unchanged."
     }
   },
   "limitations": [

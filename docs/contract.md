@@ -25,6 +25,9 @@ checked alongside the CLI regression tests. See [CLI setup](cli.md) and
 
 ## Identity and snapshots
 
+`api version` identifies the actual executable path, SHA-256, package/API versions
+and contract revision, without contacting a provider or a supervisor. Version text
+alone is insufficient for a reviewed pin; compare artifact hash and capabilities.
 `api capabilities` publishes provider-specific operations and unsupported reasons.
 `api state` publishes accounts, sessions, capabilities and `observed_at` (Unix
 seconds). `account_source` is `supervisor`, `offline_snapshot` or `uninitialized`;
@@ -46,6 +49,28 @@ offline metadata does not prove an account can presently launch.
 
 Session capabilities are fresh snapshot hints; the backend revalidates them at the
 mutation boundary. Unmanaged external sessions are not lifecycle targets through v1.
+
+### Archive metadata and filtering
+
+`api state --archive-filter active|archived|all` defaults to `active`.
+Every session carries nullable `archived` and an `archive` object with
+`kind/state/archived/archived_at/source`. Managed manifests are authoritative;
+provider archive status comes from positively discovered history placement.
+`kind:unknown, archived:null` means a catalog-only/unobserved conversation, not
+proof that it is active or stopped. Unknown entries remain in the default list.
+`--archive-filter archived` selects only positive archive evidence; `all` retains
+both, excluding permanently deleted managed records. Archived entries use
+`availability:archived`; this is independent of runtime liveness. Managed archives
+remain accessible through `api archives` and explicit Restore/Delete commands.
+Provider archives do not acquire automatic restore or messaging capability.
+
+Recovered histories from deleted-account vaults remain saved resume sources, even
+if their retained provider file is under `archived_sessions`; the optional
+`provider_storage_archived` describes storage rather than a current managed archive.
+Labels (including prefix variants) are not identity. Two similar labels may belong
+to different backend/provider UUIDs; never merge them by display name or infer an
+archive from a missing attachment. Discovery/filtering sends no message, deletes no
+history and never unarchives or resumes a thread.
 
 ## Passive readiness
 
@@ -439,3 +464,15 @@ are required after completion. Existing Submit/Queue semantics are unchanged.
 
 The [CLI reference](cli.md#move-a-running-session-between-herdr-spaces) owns host
 scope, UI-visible effects and operational limitations.
+
+## Client upgrade notes
+
+Source package 0.2.0 retains API v1 with additive capability negotiation. The
+reviewed migration executable may still report 0.1.0: inspect `api version` on new
+builds, or `--version` plus an external SHA-256 and `api capabilities` on older
+ones. An unknown `version` command means the discovery extension is absent.
+Do not substitute PATH, another data root or an older receipt domain when pinning.
+Keep the sole supervisor and existing receipt databases; a client upgrade is not
+an owner handoff. Current installation selection and consumer pins stay unchanged
+until their separate compatibility review. New archive views require accepting
+`availability:archived`; keep default filtering for existing active-session clients.

@@ -140,7 +140,8 @@
           "enum": [
             "running",
             "saved",
-            "unavailable"
+            "unavailable",
+            "archived"
           ]
         },
         "capabilities": {
@@ -202,6 +203,15 @@
             "null"
           ],
           "description": "Positively observed working directory; null when the source cannot currently be observed."
+        },
+        "archive": {
+          "$ref": "#/$defs/ArchiveMetadata"
+        },
+        "archived": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1684,6 +1694,90 @@
             "object",
             "null"
           ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "ArchiveMetadata": {
+      "type": "object",
+      "required": [
+        "kind",
+        "state",
+        "archived",
+        "archived_at",
+        "source"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "managed",
+            "provider",
+            "none",
+            "unknown"
+          ]
+        },
+        "state": {
+          "type": "string"
+        },
+        "archived": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "archived_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "provider_storage_archived": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ExecutableVersion": {
+      "type": "object",
+      "required": [
+        "package",
+        "package_version",
+        "api_version",
+        "contract_revision",
+        "executable"
+      ],
+      "properties": {
+        "package": {
+          "const": "sessionsation"
+        },
+        "package_version": {
+          "type": "string"
+        },
+        "api_version": {
+          "const": 1
+        },
+        "contract_revision": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "executable": {
+          "type": "object",
+          "required": [
+            "path",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
         }
       },
       "additionalProperties": true
