@@ -1992,6 +1992,10 @@ pub(crate) fn attachment_definitely_gone(pid: u32, start: u64) -> bool {
             .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound),
     }
 }
+pub(crate) fn attachment_is_live(pid: u32, start: u64) -> Result<bool> {
+    let info = process_info(pid)?;
+    Ok(info.start_time == start && !matches!(info.state, 'Z' | 'X'))
+}
 fn child_processes(pid: u32) -> Result<Vec<ProcessInfo>> {
     let mut processes = Vec::new();
     for entry in fs::read_dir("/proc")? {

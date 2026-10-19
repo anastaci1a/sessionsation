@@ -208,6 +208,16 @@ fn public_account_creation_limit_and_invalid_limits_have_no_owner_side_effects()
     let tmp = tempfile::tempdir().unwrap();
     for (args, code) in [
         (
+            vec![
+                "attachment",
+                "--session",
+                "missing",
+                "--expected-generation",
+                "old",
+            ],
+            "SESSION_NOT_FOUND",
+        ),
+        (
             vec!["account", "add", "codex:abcdefghijklmnopqrstuvwxyz12345"],
             "ACCOUNT_NAME_TOO_LONG",
         ),

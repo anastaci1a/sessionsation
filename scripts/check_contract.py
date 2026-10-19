@@ -16,6 +16,7 @@ def validate(value, definition=None):
     Draft202012Validator(spec, format_checker=checker).validate(value)
 
 fixtures = json.loads((root / "docs/contract/fixtures.json").read_text())
+validate(fixtures["runtime_attachment"], "RuntimeAttachment")
 validate(fixtures["request"], "MessageRequest")
 validate(fixtures["recovery_message"], "MessageRequest")
 validate(fixtures["recovery_plan"], "RecoveryPlan")

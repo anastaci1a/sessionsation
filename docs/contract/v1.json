@@ -2239,6 +2239,46 @@
         "reconcile_command"
       ],
       "additionalProperties": true
+    },
+    "RuntimeAttachment": {
+      "type": "object",
+      "required": [
+        "id",
+        "generation",
+        "availability",
+        "attachment",
+        "observed_at",
+        "scope",
+        "starts_process",
+        "sends_input"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "availability": {
+          "const": "running"
+        },
+        "attachment": {
+          "$ref": "#/$defs/Attachment"
+        },
+        "observed_at": {
+          "type": "integer"
+        },
+        "scope": {
+          "const": "catalog_generation_and_process_identity"
+        },
+        "starts_process": {
+          "const": false
+        },
+        "sends_input": {
+          "const": false
+        }
+      },
+      "additionalProperties": true
     }
   }
 }

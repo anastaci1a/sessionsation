@@ -77,6 +77,13 @@ pub enum Command {
         #[arg(long)]
         expected_generation: String,
     },
+    /// Resolve a current runtime attachment without provider or session discovery.
+    Attachment {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+    },
     /// Bounded read-only native readiness; never sends input or starts a process.
     Observe {
         #[arg(long)]
@@ -457,7 +464,7 @@ pub fn capabilities() -> Value {
          "enrollment":false,"usage":false,"new":false,"resume":false,
          "account_switch":false,"restart":false,"submit":false,"queue":false,
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false}
-    ],"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"unfinished_confirmation":true,"directory_selection":true,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
+    ],"attachment_lookup":{"version":1,"command":"attachment","discovery":false,"checks":["catalog_generation","pid_start_time"]},"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"unfinished_confirmation":true,"directory_selection":true,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "batch_observation":{"command":"observations","max_targets":64,"concurrency":8,"native_budget_seconds":5,"policies":["if_stale","refresh","cached_only"],"cache_hits_renew_evidence":false},
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
@@ -663,6 +670,22 @@ fn resume_block_reason(known: bool, source: Option<&external::Instance>) -> Opti
     }
 }
 
+pub fn attachment(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
+    let session = catalog::resolve(paths, id, generation)?;
+    let runtime = session.attachment.as_ref().context("SESSION_NOT_ATTACHED: This session has no live terminal. Refresh the session list; Focus never starts an agent.")?;
+    ensure!(
+        external::attachment_is_live(runtime.pid, runtime.process_start).unwrap_or(false),
+        "SESSION_ATTACHMENT_UNAVAILABLE: The original process is no longer verified. Refresh the session list; Focus never starts an agent."
+    );
+    let mut value = public_session(session);
+    value["observed_at"] = json!(daemon::now());
+    value["availability"] = json!("running");
+    value["scope"] = json!("catalog_generation_and_process_identity");
+    value["starts_process"] = json!(false);
+    value["sends_input"] = json!(false);
+    Ok(value)
+}
+
 pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
     let items = inventory(paths).await?;
     let session = catalog::resolve(paths, id, generation)?;
@@ -726,6 +749,10 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             session,
             expected_generation,
         } => session_details(paths, &session, &expected_generation).await?,
+        Command::Attachment {
+            session,
+            expected_generation,
+        } => attachment(paths, &session, &expected_generation)?,
         Command::Capabilities => capabilities(),
         Command::Version => version()?,
         Command::Archives => external::archiving::list(paths)?,
@@ -1016,6 +1043,81 @@ pub fn account_prefill(a: &Value, now: i64, stale_seconds: u64) -> Value {
 #[cfg(test)]
 mod prefill_tests {
     use super::*;
+    #[test]
+    fn attachment_lookup_is_read_only_and_checks_catalog_and_process_epochs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        let pid = std::process::id();
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let epoch: u64 = stat
+            .rsplit_once(") ")
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .parse()
+            .unwrap();
+        for host in ["herdr", "tmux"] {
+            let s = catalog::record_launch(
+                &p,
+                "fixture",
+                &uuid::Uuid::new_v4().to_string(),
+                host,
+                Some(catalog::Attachment {
+                    host: host.into(),
+                    target: format!("{host}/fixture/target"),
+                    pid,
+                    process_start: epoch,
+                }),
+            )
+            .unwrap();
+            let before = std::fs::read(p.root.join("session-catalog/catalog.json")).unwrap();
+            let result = attachment(&p, &s.id, &s.generation()).unwrap();
+            assert_eq!(result["id"], s.id);
+            assert_eq!(result["attachment"]["host"], host);
+            assert_eq!(result["starts_process"], false);
+            assert_eq!(result["sends_input"], false);
+            assert_eq!(
+                std::fs::read(p.root.join("session-catalog/catalog.json")).unwrap(),
+                before
+            );
+            catalog::rename(&p, &s.id, &s.generation(), &format!("{host}-renamed")).unwrap();
+            assert!(
+                attachment(&p, &s.id, &s.generation())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("STALE_TARGET")
+            );
+        }
+        let s = catalog::record_launch(
+            &p,
+            "fixture",
+            "wrong-epoch",
+            "Wrong",
+            Some(catalog::Attachment {
+                host: "herdr".into(),
+                target: "herdr/fixture/target".into(),
+                pid,
+                process_start: epoch + 1,
+            }),
+        )
+        .unwrap();
+        assert!(
+            attachment(&p, &s.id, &s.generation())
+                .unwrap_err()
+                .to_string()
+                .contains("SESSION_ATTACHMENT_UNAVAILABLE")
+        );
+        let s = catalog::record_launch(&p, "fixture", "saved", "Saved", None).unwrap();
+        assert!(
+            attachment(&p, &s.id, &s.generation())
+                .unwrap_err()
+                .to_string()
+                .contains("SESSION_NOT_ATTACHED")
+        );
+        assert!(!p.root.join("launches").exists());
+    }
     #[test]
     fn an_unobserved_attachment_is_not_an_inactive_history_source() {
         let s = catalog::Session {

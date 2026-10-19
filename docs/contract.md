@@ -29,6 +29,15 @@ checked alongside the CLI regression tests. See [CLI setup](cli.md) and
 and contract revision, without contacting a provider or a supervisor. Version text
 alone is insufficient for a reviewed pin; compare artifact hash and capabilities.
 `api capabilities` publishes provider-specific operations and unsupported reasons.
+`attachment_lookup.version:1` advertises
+`api attachment --session ID --expected-generation GENERATION`: a read-only,
+constant-target catalog/process-epoch lookup for terminal viewers. It returns
+the catalog session and attachment with `observed_at`,
+`scope:catalog_generation_and_process_identity`, `starts_process:false` and
+`sends_input:false`. It does no provider/history discovery and is not message
+readiness evidence. A stale generation, missing attachment or unverifiable PID
+is refused. Clients still verify the intended host/socket and pane membership
+before focusing, then repeat this cheap lookup to reject replacements.
 `api state` publishes accounts, sessions, capabilities and `observed_at` (Unix
 seconds). `account_source` is `supervisor`, `offline_snapshot` or `uninitialized`;
 offline metadata does not prove an account can presently launch.
