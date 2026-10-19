@@ -2,14 +2,14 @@
   "schema_version": 1,
   "source": {
     "repository": "https://github.com/anastaci1a/sessionsation",
-    "commit": "51764d216830bb9623c877abb2ef325d1c2231fd",
+    "commit": "37d9393b0847a5e919956c2fa453f071f7f192a7",
     "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265"
   },
   "artifact": {
     "installed": true,
     "kind": "Popup-selected CLI client; sole existing-root supervisor and original installation unchanged",
-    "path": "/mnt/user/live/packages/sessionsation/popup/51764d216830bb9623c877abb2ef325d1c2231fd/sessionsation",
-    "sha256": "6ecf8f197efe2076e76fea5f21698a35699e5a4867a7f364fed6b4ba1e3a9b78",
+    "path": "/mnt/user/live/packages/sessionsation/popup/37d9393b0847a5e919956c2fa453f071f7f192a7/sessionsation",
+    "sha256": "8bc2b18622e6cff6fd7376d2e6d540e1a28040a90d67f2420b7a24ced68803e5",
     "profile": "release",
     "rust_version": "1.95.0",
     "container_image": "sessionsation-build-tools:local",
@@ -17,7 +17,8 @@
     "build": "cargo build --release --offline --locked; source at /work, network disabled, cached dependencies read-only, no credentials or live sockets mounted",
     "data_root": "/mnt/user/appdata/codex-switcher",
     "supervisor_commit": "528d3696b43ba34b28a408d5e328841e5f52ccc4",
-    "ownership": "Existing sole owner retained; no new supervisor, credential writer, Agent DM pin/data/receipt changes or cutover."
+    "ownership": "Existing sole owner retained; no new supervisor, credential writer, Agent DM pin/data/receipt changes or cutover.",
+    "rollback_receipt": "/mnt/user/appdata/sessionsation-ui/config-backups/client-752a71de-f143-4114-a3b3-1364a068e03b.json"
   },
   "verification": {
     "command": "scripts/check.sh",
@@ -30,20 +31,20 @@
       "python3 scripts/check_contract.py"
     ],
     "tests": {
-      "lib": 135,
+      "lib": 140,
       "binary": 0,
       "cli": 8,
-      "external_move": 62,
+      "external_move": 64,
       "messaging_cli": 8,
       "persistence": 6,
       "scheduling": 29,
       "transport": 3,
       "doctests": 0,
-      "total": 251,
+      "total": 258,
       "failed": 0,
       "ignored": 3
     },
-    "scope": "Full offline suite plus installed-HERDR isolated handoff and preserved-history resume fixtures. No new models or live-session mutations; sole existing owner and Agent DM pin/data unchanged."
+    "scope": "258 offline tests plus two installed-HERDR isolated fixtures. Separately authorized native disposable acceptance is scoped and versioned below; no existing agent, supervisor or Agent DM pin/data change."
   },
   "native_runtime": {
     "terminal_client": {
@@ -106,12 +107,18 @@
     }
   },
   "unfinished_resume_acceptance": {
-    "source": "51764d216830bb9623c877abb2ef325d1c2231fd",
+    "source": "37d9393b0847a5e919956c2fa453f071f7f192a7",
     "passed": 2,
     "failed": 0,
     "command": "SESSIONSATION_ISOLATED_HOST_TEST=1 cargo test --offline --locked --test external_move installed_herdr_ -- --ignored --nocapture",
     "models": 0,
-    "supervisor": "Existing production owner unchanged"
+    "supervisor": "Existing production owner unchanged",
+    "checks": [
+      "same/transferred-account resume, explicit directory and permissions retained",
+      "startup waiting retains exact client before positive provider state",
+      "foreign observer socket/config cannot redirect lifecycle actions",
+      "post-account-deletion 70 turns/270 items match on explicit destination"
+    ]
   },
   "operation_audit": {
     "account_deletion": {
@@ -125,12 +132,56 @@
     "adapter_coordination": {
       "source_session_id": "May be null for a historical operation whose catalog session no longer exists; schema updated",
       "submit_queue": "No semantic or legacy receipt mapping changes in this slice",
-      "cutover": "None; independent Agent DM acceptance still required"
+      "cutover": "None; independent Agent DM acceptance still required",
+      "legacy_reader": {
+        "pin": "8b77639c44e0bf026acf1f23c308461b0968d737",
+        "sha256": "af744245d60b8e83687c4cea5d124c1db38ba2cbc9db77a0e91e9d0ae7f2bd55",
+        "data_root": "/mnt/user/appdata/codex-switcher",
+        "existing_helper_enabled": true,
+        "supervisor": "Sole existing owner retained",
+        "gate": "Review and adopt compatible discovery before shared-root custom-namespace acceptance; no generation rewind or mutation retry"
+      }
     },
     "remaining_gates": [
       "Provider login cancellation requires sole-owner contract support; popup close does not cancel login",
       "Uncertain external handoffs and orphaned archive operations require explicit reconciliation; no blind recovery/replay",
-      "Important saved session was not resumed or otherwise mutated for this audit"
+      "Important saved sessions and existing native agents were not resumed, switched or stopped for this audit",
+      "Shared-root legacy Agent DM reader needs reviewed compatible pin adoption for custom HERDR namespaces; no pin/data/receipt cutover performed"
     ]
+  },
+  "native_acceptance": {
+    "passed": true,
+    "initial_source": "b0cadc1726f829155440e63a3c0dde0d511a40b4",
+    "final_source": "37d9393b0847a5e919956c2fa453f071f7f192a7",
+    "scope": "One separately authorized disposable native Codex conversation, two enrolled accounts, owned headless HERDR; no existing agent targeted",
+    "initial_checks": [
+      "native-new-running",
+      "stale-switch-rejected-before-admission",
+      "fresh-switch-completed-without-ending-session",
+      "inactive-history-retained",
+      "native-new-directory-new-space-account-resume"
+    ],
+    "final_checks": [
+      "four-reader-observations-retain-generation-and-original-binding",
+      "lifecycle-waits-for-native-startup-with-client-retained",
+      "foreign-environment-stop-preserves-history",
+      "native-archive-retains-stable-identity",
+      "own-disposable-history-cleaned",
+      "own-isolated-host-stopped"
+    ],
+    "history": {
+      "copies_checked": 2,
+      "task_started_events": 0,
+      "user_messages": 0
+    },
+    "model_prompts_submitted": 0,
+    "model_turns_started": 0,
+    "cleanup": {
+      "own_history_deleted": true,
+      "own_host_stopped": true,
+      "temporary_socket_alias_removed": true
+    },
+    "test_namespace": "A temporary alias exposed only this owned host to the older shared-root reader; it was removed after acceptance. Isolated host tests independently verify the new client without that alias.",
+    "original_outcomes": "Original stale/pre-startup failures remain recorded. No uncertain send or original failed mutation was replayed; cleanup used a fresh explicit selection after terminal failure."
   }
 }
