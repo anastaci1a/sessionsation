@@ -41,13 +41,15 @@
         "paginated saved history after account deletion",
         "busy Space move, unchanged native runtime generation, split siblings, lost reply and read-only recovery without replay, later account transfer",
         "Explicit stopped/interrupted/errored exited-process recovery in a new normal tab; stable identity/context/history and one native queue attempt across retries"
-      ]
+      ],
+      "source_commit": "e27ef562768c609ca3a211c4a088183a8031adbc"
     },
     "artifact": {
       "path_in_test_checkout": "target-review/release/sessionsation",
       "sha256": "8b4ceebbfc76f4d68336253b7086a82c05cb2b38c56e8bd049a86838e074ad14",
       "installed": false,
-      "provenance": "Rust 1.95.0 locked release build from accompanying source; package 0.2.0, API v1, contract revision 3. Existing consumer executables remain unchanged."
+      "provenance": "Rust 1.95.0 locked release build from accompanying source; package 0.2.0, API v1, contract revision 3. Existing consumer executables remain unchanged.",
+      "source_commit": "e27ef562768c609ca3a211c4a088183a8031adbc"
     },
     "passive_observation": {
       "fixture": "Kernel-bound synthetic HERDR record, inert native WebSocket server, shared mutation lock held",
@@ -66,8 +68,8 @@
     },
     "native_provider": {
       "status": "passed",
-      "source_commit": "ed9aa40dd00a16949fee0ef0704f8e7186295bd9",
-      "cli_sha256": "caa82ebe4b59873ae8e7907fc3e03c83d9caaa7eb4576bb543a913ba203ad43b",
+      "source_commit": "e27ef562768c609ca3a211c4a088183a8031adbc",
+      "cli_sha256": "8b4ceebbfc76f4d68336253b7086a82c05cb2b38c56e8bd049a86838e074ad14",
       "frontend_version": "0.162.1",
       "frontend_sha256": "628e35487d888a28f0427fc37501da529dd3d81fcbad7a2c3421c1e8670d92e1",
       "native_profile": "codex-tui/0.163.0 (Linux Unknown; x86_64) dumb (sessionsation_native_acceptance; 0.2.0)",
@@ -107,9 +109,12 @@
       "limitations": [
         "Interrupted/error and lost-ack recovery are synthetic coverage, not injected real-provider failures",
         "This isolated metadata-owner harness does not validate upgrading a production supervisor or downstream adapter behavior"
-      ]
+      ],
+      "private_evidence_sha256": "14be511fc7ec8f8f45e66a85ca71b6d46a0ca3ad67da19553800cfab14667341",
+      "harness_sha256": "8a9836fa3f761c4b6c760b0692193796324c6d8f1d4bb53b3737dd4050195f8d"
     },
-    "recovery_contention": "Forced ledger lock held through launch confirmation, then released: stopped/interrupted/errored recovery completes with one native delivery and no replay. Full suite passed after this regression exposed and fixed immediate adapter_busy rejection."
+    "recovery_contention": "Forced ledger lock held through launch confirmation, then released: stopped/interrupted/errored recovery completes with one native delivery and no replay. Full suite passed after this regression exposed and fixed immediate adapter_busy rejection.",
+    "tested_source_commit": "e27ef562768c609ca3a211c4a088183a8031adbc"
   },
   "limitations": [
     "No provider login, credentials, model calls or existing live hosts in portable checks",
