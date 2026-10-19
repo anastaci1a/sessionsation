@@ -176,7 +176,11 @@ pub fn recover(paths: &Paths, id: &str) -> Result<Value> {
     r.detail = "Explicit recovery requested; rechecking ownership before continuing.".into();
     save(paths, &mut r)?;
     drop(worker);
-    spawn(paths, &r)?;
+    if let Err(e) = spawn(paths, &r) {
+        r.phase = "failed".into();
+        r.detail = format!("Recovery worker did not start: {e}");
+        save(paths, &mut r)?;
+    }
     Ok(json!(r))
 }
 fn phase(paths: &Paths, r: &mut Record, p: &str, detail: &str) -> Result<()> {
@@ -426,7 +430,11 @@ async fn perform(paths: &Paths, r: &mut Record) -> Result<()> {
         "deleting_local_data",
         "Deleting this account's remaining local files and credentials; preserved conversations are outside this directory.",
     )?;
-    fs::remove_dir_all(&home)?;
+    // The account operation lock and owner reservation remain held. Close the
+    // in-home lease before unlinking it: FUSE retains open unlinked files as
+    // .fuse_hidden entries, making the final rmdir fail with ENOTEMPTY.
+    drop(lease);
+    fs::remove_dir_all(&home).context("ACCOUNT_LOCAL_DATA_CLEANUP_FAILED")?;
     fs::File::open(paths.root.join("accounts"))?.sync_all()?;
     daemon::call(
         paths,

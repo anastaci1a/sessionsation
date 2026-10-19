@@ -382,7 +382,13 @@ async fn account_delete_is_async_preserves_conversations_and_removes_only_dispos
         fs,
         os::unix::fs::{PermissionsExt, symlink},
     };
-    let tmp = tempfile::tempdir().unwrap();
+    // Set only to an owned fixture directory to exercise Unraid/FUSE semantics.
+    let tmp = if let Some(root) = std::env::var_os("SESSIONSATION_DELETION_TEST_ROOT") {
+        fs::create_dir_all(&root).unwrap();
+        tempfile::tempdir_in(root).unwrap()
+    } else {
+        tempfile::tempdir().unwrap()
+    };
     let fake = tmp.path().join("fake-codex");
     fs::write(&fake, include_str!("support/fake-codex.sh")).unwrap();
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
