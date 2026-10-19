@@ -1161,6 +1161,32 @@
         },
         "expected_generation": {
           "type": "string"
+        },
+        "directory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "create",
+            "confirmed_existing"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "create": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "pattern": "^/"
+              }
+            },
+            "confirmed_existing": {
+              "type": "boolean"
+            }
+          }
         }
       }
     },
@@ -1262,6 +1288,15 @@
             "null"
           ],
           "description": "Immutable Unix admission time for new records; absent/null means legacy creation time is unknown. Do not substitute updated_at."
+        },
+        "saved_directory": {
+          "type": "string"
+        },
+        "created_directories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },

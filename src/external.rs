@@ -350,6 +350,9 @@ pub struct Job {
     /// Explicit new HERDR terminal for a saved-session transfer. Older jobs have none.
     #[serde(default)]
     pub resume_destination: Option<String>,
+    /// Explicit saved-session destination; source.cwd remains the rollback location.
+    #[serde(default)]
+    pub resume_directory: Option<PathBuf>,
     #[serde(default)]
     pub non_steering: bool,
     pub id: String,
@@ -828,6 +831,7 @@ fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Resu
     for job in jobs(paths)? {
         homes.insert(job.source.home);
     }
+    homes.extend(archiving::source_homes(paths)?);
     if accounts.exists() {
         for entry in fs::read_dir(accounts)? {
             let entry = entry?;
@@ -874,10 +878,10 @@ fn inventory_kind(paths: &Paths, include_inactive: bool, archived: bool) -> Resu
             let cwd = relocated
                 .as_deref()
                 .unwrap_or_else(|| meta["cwd"].as_str().unwrap_or_default());
-            let block_reason = if !Path::new(cwd).is_dir() {
-                Some("unknown".into())
-            } else if open_histories.contains(&rollout) {
+            let block_reason = if open_histories.contains(&rollout) {
                 Some("busy".into())
+            } else if !Path::new(cwd).is_dir() {
+                Some("unknown".into())
             } else if !complete_rollout(&rollout).unwrap_or(false) {
                 Some("unfinished".into())
             } else {
@@ -1086,17 +1090,24 @@ pub(crate) async fn run_account_resume_requested(
     thread: &str,
     expected: (&str, &str),
     request: &str,
+    directory: Option<&Path>,
 ) -> Result<()> {
+    let options = directory
+        .map(|d| vec!["-C".into(), d.to_string_lossy().into_owned()])
+        .unwrap_or_default();
     run_account_thread_inner(
         paths,
         account,
         Some(thread),
-        &[],
+        &options,
         Some(expected),
         None,
         Some(request),
     )
     .await
+}
+pub(crate) fn save_resume_directory(paths: &Paths, thread: &str, directory: &Path) -> Result<()> {
+    relocation::save_location(paths, thread, directory)
 }
 async fn run_account_thread_inner(
     paths: &Paths,
@@ -1651,6 +1662,7 @@ struct EnqueuePolicy<'a> {
     automatic_id: Option<&'a str>,
     non_steering: bool,
     resume_destination: Option<&'a str>,
+    resume_directory: Option<&'a Path>,
     expected: Option<(&'a str, &'a str)>,
     unfinished_history_confirmed: bool,
 }
@@ -1753,6 +1765,7 @@ fn enqueue_with_id(
     let phase = "queued";
     let job = Job {
         resume_destination: policy.resume_destination.map(str::to_owned),
+        resume_directory: policy.resume_directory.map(Path::to_path_buf),
         non_steering: policy.non_steering,
         id: automatic_id
             .map(str::to_owned)
@@ -1990,7 +2003,7 @@ pub fn respond_background(paths: &Paths, id: &str, approve: bool) -> Result<()> 
     );
     respond_move(paths, id, approve)
 }
-fn complete_rollout(path: &Path) -> Result<bool> {
+pub(crate) fn complete_rollout(path: &Path) -> Result<bool> {
     let file = File::open(path)?;
     let mut terminal = false;
     let mut seen = false;
@@ -2024,7 +2037,7 @@ fn complete_rollout(path: &Path) -> Result<bool> {
     }
     Ok(seen && terminal)
 }
-fn rollout_still_open(path: &Path) -> Result<bool> {
+pub(crate) fn rollout_still_open(path: &Path) -> Result<bool> {
     Ok(open_rollouts()?.contains(path))
 }
 fn open_rollouts() -> Result<std::collections::BTreeSet<PathBuf>> {
@@ -2186,15 +2199,20 @@ pub async fn queue_snapshot(
 
 /// Transfer saved history using the existing non-steering worker into a newly
 /// created, explicitly owned HERDR pane. The journal precedes all provider writes.
+pub(crate) struct ResumeDestination<'a> {
+    pub pane: &'a str,
+    pub directory: Option<&'a Path>,
+}
 pub(crate) async fn queue_saved_resume(
     paths: &Paths,
     source: Instance,
     target: &str,
-    pane: &str,
+    destination: ResumeDestination<'_>,
     expected: (&str, &str),
     request: &str,
     unfinished_history_confirmed: bool,
 ) -> Result<Job> {
+    let ResumeDestination { pane, directory } = destination;
     ensure!(
         source.inactive && !source.thread_id.is_empty(),
         "SESSION_ALREADY_RUNNING"
@@ -2212,6 +2230,7 @@ pub(crate) async fn queue_saved_resume(
             automatic_id: Some(request),
             non_steering: true,
             resume_destination: Some(pane),
+            resume_directory: directory,
             expected: Some(expected),
             unfinished_history_confirmed,
         },
@@ -2834,6 +2853,7 @@ mod tests {
         );
         let mut prior = Job {
             resume_destination: None,
+            resume_directory: None,
             non_steering: false,
             id: "prior".into(),
             kind: "account".into(),

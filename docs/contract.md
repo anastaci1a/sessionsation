@@ -305,9 +305,18 @@ Optional `confirm_unfinished: true` acknowledges only the unfinished-history war
 it defaults to false and is advertised by `resume.unfinished_confirmation`.
 Unfinished histories remain resumable after this explicit confirmation; no user
 message is replayed and live-writer, directory, conflict and generation checks remain.
-It deliberately has no directory: the backend requires the saved conversation's
-existing directory. Session details report the last verified launch/resume Space;
-a client may prefer it only when the host and Space still match its inventory.
+Optional `directory` uses New Session's canonical path, deferred creation plan
+and existing-directory confirmation; `resume.directory_selection` advertises it.
+Omission preserves the saved location, including for old receipts. Validation
+creates nothing. Start rechecks and journals created directories, retaining the
+original `saved_directory` for source verification and rollback. Same-account and
+account-transfer resume both use the chosen directory; no project files move.
+
+A missing old directory can be replaced. Writable history, unfinished-history
+consent, conflicts and lifecycle locks remain enforced. The chosen location is
+retained after a verified running handoff; partial failure retains created
+directories for review. Session details report the last verified launch/resume
+Space; clients may prefer it only when the host and Space match their inventory.
 
 Start journals the intent before creating a new normal tab. A repeated UUID with
 identical input returns its original receipt; different input is a conflict. A
@@ -352,6 +361,7 @@ Capability `conversation_archive.version:1` advertises list/archive/restore/dele
 returns archived/prepared entries with stable `id`, fresh `generation`, provider
 conversation identity, original creation timestamp, original history bytes and
 `compressed_bytes` (null if stored files cannot be measured safely).
+Archive/Delete availability depends on verified inactive history and operation ownership, not enrollment. External homes remain eligible with final native-server, live-writer and generation checks. Confirmed conversation jobs retain their source-home provenance for background discovery without borrowing the viewer’s account environment.
 
 `api archive`, `api restore-session` and `api delete-session` require `--session`,
 `--expected-generation`, `--request-id` (UUID) and `--confirm` equal to the stable

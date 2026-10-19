@@ -603,7 +603,10 @@ async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
         risks(paths, job, reason_detail(Some("diverged"))).await?;
     }
     ensure!(
-        Path::new(&job.source.cwd).is_dir(),
+        job.resume_directory
+            .as_deref()
+            .unwrap_or(Path::new(&job.source.cwd))
+            .is_dir(),
         "the working directory no longer exists; restore it and requeue the move"
     );
     let mut target = prepare_destination(paths, job).await?;
@@ -725,6 +728,11 @@ pub(super) async fn launch_target(
         .relocation
         .as_ref()
         .map(|r| r.to.to_string_lossy().into_owned())
+        .or_else(|| {
+            job.resume_directory
+                .as_ref()
+                .map(|d| d.to_string_lossy().into_owned())
+        })
         .unwrap_or_else(|| job.source.cwd.clone());
     if let Some(target) = target.as_mut() {
         job.target_loaded = true;

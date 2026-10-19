@@ -241,6 +241,7 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
     .unwrap();
     // Resume this same synthetic conversation twice: original account, then
     // transferred account. Every terminal belongs to this isolated HERDR server.
+    let mut previous_directory = r["directory"]["path"].clone();
     for (account, name) in [("personal", "Resumed orig"), ("work", "Transferred")] {
         let output = api(&f, &["state"], None);
         assert!(
@@ -270,12 +271,34 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
                 .contains("UNFINISHED_HISTORY_CONFIRMATION_REQUIRED")
         );
         resume["confirm_unfinished"] = json!(true);
+        let destination = f.tmp.path().join(format!("resume-{account}"));
+        resume["directory"] =
+            json!({"path":destination,"create":[destination],"confirmed_existing":false});
+        if account == "personal" {
+            fs::remove_dir(previous_directory.as_str().unwrap()).unwrap();
+            let state: Value = serde_json::from_slice(&api(&f, &["state"], None).stdout).unwrap();
+            assert_eq!(
+                state["result"]["sessions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|s| s["id"] == id)
+                    .unwrap()["capabilities"]["resume"],
+                true
+            );
+        } else {
+            resume["space"] = json!({"kind":"new","label":"Other Space"});
+        }
         let request_id = resume["request_id"].as_str().unwrap();
         let preview = api(&f, &["resume-launch", "validate"], Some(&resume));
         assert!(
             preview.status.success(),
             "{}",
             String::from_utf8_lossy(&preview.stderr)
+        );
+        assert!(
+            !destination.exists(),
+            "resume validation must not create directories"
         );
         let mut stale = resume.clone();
         stale["expected_generation"] = json!("stale");
@@ -287,6 +310,10 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
                 .join("resumptions")
                 .join(format!("{request_id}.json"))
                 .exists()
+        );
+        assert!(
+            !destination.exists(),
+            "stale admission must not create directories"
         );
         let started = api(&f, &["resume-launch", "start"], Some(&resume));
         assert!(
@@ -329,8 +356,24 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         assert_eq!(resumed["conversation_id"], receipt["conversation_id"]);
-        assert_eq!(resumed["directory"], r["directory"]["path"]);
-        assert_eq!(resumed["workspace_id"], workspace);
+        assert_eq!(resumed["directory"], json!(destination));
+        assert_eq!(resumed["saved_directory"], previous_directory);
+        previous_directory = json!(destination);
+        assert_eq!(resumed["created_directories"], json!([destination]));
+        if account == "personal" {
+            assert_eq!(resumed["workspace_id"], workspace);
+        } else {
+            assert_ne!(resumed["workspace_id"], workspace);
+            let spaces = host.call(&["workspace", "list"]);
+            assert!(
+                spaces["workspaces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s["workspace_id"] == resumed["workspace_id"]
+                        && s["label"] == "Other Space")
+            );
+        }
         let state: Value = serde_json::from_slice(&api(&f, &["state"], None).stdout).unwrap();
         let running = state["result"]["sessions"]
             .as_array()
@@ -340,6 +383,17 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             .unwrap();
         assert_eq!(running["name"], name);
         assert_eq!(running["account"], account);
+        let calls = if account == "personal" { &f.a } else { &f.b };
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|(method, params)| method == "thread/resume"
+                    && params["cwd"] == json!(destination)),
+            "provider must receive the chosen directory"
+        );
         let detail: Value = serde_json::from_slice(
             &api(
                 &f,
@@ -381,6 +435,33 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             .stdout,
         )
         .unwrap();
+        let state: Value = serde_json::from_slice(&api(&f, &["state"], None).stdout).unwrap();
+        let saved = state["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap();
+        let details: Value = serde_json::from_slice(
+            &api(
+                &f,
+                &[
+                    "session",
+                    "--session",
+                    id,
+                    "--expected-generation",
+                    saved["generation"].as_str().unwrap(),
+                ],
+                None,
+            )
+            .stdout,
+        )
+        .unwrap();
+        assert_eq!(
+            details["result"]["directory"],
+            json!(destination),
+            "chosen directory survives exit and rediscovery"
+        );
         assert_eq!(
             stopped_receipt["result"]["phase"], "running",
             "completed handoff is historical evidence, not current liveness"

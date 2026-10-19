@@ -290,3 +290,88 @@ async fn public_restore_rejects_loaded_threads_and_never_replays_failed_requests
     assert_eq!(api(&f, &["archives"])[0]["id"], source["id"]);
     assert!(!storage.join("home").exists());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn external_inactive_history_can_archive_and_delete_without_enrollment() {
+    let f = Fixture::new().await;
+    let home = f.tmp.path().join("unenrolled-history");
+    let original = history(&home, f.tmp.path(), ID);
+    let state = Arc::new(Mutex::new(Server::default()));
+    state
+        .lock()
+        .unwrap()
+        .threads
+        .insert(ID.into(), thread_value(&original, ID, "notLoaded"));
+    let server = tokio::spawn(server(home.clone(), state.clone()));
+    for _ in 0..100 {
+        if home
+            .join("app-server-control/app-server-control.sock")
+            .exists()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let external = |args: &[&str]| {
+        let out = Command::new(binary())
+            .arg("--data-dir")
+            .arg(&f.paths.root)
+            .arg("api")
+            .args(args)
+            .env("CODEX_HOME", &home)
+            .env("TMUX", format!("{},1,0", f.socket))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
+    };
+    let snapshot = external(&["state"]);
+    let saved = snapshot["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap();
+    assert_eq!(saved["account_id"], "codex:external");
+    assert_eq!(saved["capabilities"]["archive"], true);
+    assert_eq!(saved["capabilities"]["delete"], true);
+    assert_eq!(saved["capabilities"]["resume"], false);
+    let request = "99999999-9999-4999-8999-999999999999";
+    external(&[
+        "archive",
+        "--session",
+        saved["id"].as_str().unwrap(),
+        "--expected-generation",
+        saved["generation"].as_str().unwrap(),
+        "--request-id",
+        request,
+        "--confirm",
+        saved["id"].as_str().unwrap(),
+    ]);
+    let result = wait(&f, request).await;
+    assert_eq!(result["phase"], "complete", "{result}");
+    assert!(!original.exists());
+    let archived = api(&f, &["archives"])[0].clone();
+    let request = "88888888-8888-4888-8888-888888888888";
+    start(&f, "delete-session", &archived, request);
+    let result = wait(&f, request).await;
+    assert_eq!(result["phase"], "complete", "{result}");
+    assert!(api(&f, &["archives"]).as_array().unwrap().is_empty());
+    assert!(
+        !home.join("auth.json").exists(),
+        "no account enrollment or credential creation"
+    );
+    assert!(
+        !state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(m, _)| matches!(m.as_str(), "turn/start" | "turn/steer" | "thread/resume"))
+    );
+    server.abort();
+}

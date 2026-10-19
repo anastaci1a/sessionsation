@@ -572,14 +572,17 @@ pub(super) fn record_location(paths: &Paths, job: &mut Job) -> Result<()> {
     let Some(r) = job.relocation.as_ref() else {
         return Ok(());
     };
+    save_location(paths, &job.source.thread_id, &r.to)?;
+    transition(paths, job, "complete")
+}
+pub(crate) fn save_location(paths: &Paths, thread: &str, directory: &Path) -> Result<()> {
     let dir = paths.root.join("thread-locations");
     private_dir(&dir)?;
-    uuid::Uuid::parse_str(&job.source.thread_id)?;
+    uuid::Uuid::parse_str(thread)?;
     atomic_write(
-        &dir.join(format!("{}.json", job.source.thread_id)),
-        &serde_json::to_vec(&json!({"cwd":r.to}))?,
-    )?;
-    transition(paths, job, "complete")
+        &dir.join(format!("{thread}.json")),
+        &serde_json::to_vec(&json!({"cwd":directory}))?,
+    )
 }
 pub(super) fn saved_location(paths: &Paths, thread: &str) -> Option<String> {
     uuid::Uuid::parse_str(thread).ok()?;

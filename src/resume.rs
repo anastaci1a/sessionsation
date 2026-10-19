@@ -31,6 +31,9 @@ pub struct Request {
     pub name: String,
     pub host: Host,
     pub space: Space,
+    /// Omitted preserves the saved location. Planned directories are created only after Start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<launch::Directory>,
     /// Explicit consent for an interrupted saved turn, never other risks.
     #[serde(default)]
     pub confirm_unfinished: bool,
@@ -40,6 +43,10 @@ pub struct Receipt {
     pub version: u32,
     pub request: Request,
     pub directory: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_directory: Option<PathBuf>,
+    #[serde(default)]
+    pub created_directories: Vec<PathBuf>,
     pub previous_name: String,
     pub conversation_id: String,
     pub generation: String,
@@ -120,6 +127,9 @@ fn shape(r: &Request) -> Result<()> {
     )?;
     crate::paths::validate_name(&r.host.session)?;
     ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
+    if let Some(d) = &r.directory {
+        launch::directory_shape(d)?;
+    }
     Ok(())
 }
 fn validate_saved_history(source: &external::Instance, confirmed: bool) -> Result<()> {
@@ -142,12 +152,19 @@ async fn validate(paths: &Paths, r: &Request) -> Result<(catalog::Session, exter
         source.inactive && s.attachment.is_none(),
         "SESSION_ALREADY_RUNNING"
     );
-    validate_saved_history(&source, r.confirm_unfinished)?;
-    let cwd = PathBuf::from(&source.cwd);
-    ensure!(
-        cwd.is_absolute() && cwd.is_dir(),
-        "SAVED_DIRECTORY_UNAVAILABLE"
-    );
+    if r.directory.is_none() && !std::path::Path::new(&source.cwd).is_dir() {
+        anyhow::bail!("SAVED_DIRECTORY_UNAVAILABLE");
+    }
+    validate_resume_history(&source, r)?;
+    if let Some(d) = &r.directory {
+        launch::directory_check(d)?;
+    } else {
+        let cwd = PathBuf::from(&source.cwd);
+        ensure!(
+            cwd.is_absolute() && cwd.is_dir(),
+            "SAVED_DIRECTORY_UNAVAILABLE"
+        );
+    }
     ensure!(
         !catalog::list(paths)?
             .iter()
@@ -199,7 +216,9 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     shape(&r)?;
     if matches!(command, Command::Validate) {
         let (_, source) = validate(paths, &r).await?;
-        return Ok(json!({"valid":true,"directory":source.cwd,"request_id":r.request_id}));
+        return Ok(
+            json!({"valid":true,"directory":r.directory.as_ref().map(|d|d.path.clone()).unwrap_or_else(||source.cwd.into()),"request_id":r.request_id}),
+        );
     }
     let _lock = lock(paths)?;
     if file(paths, &r.request_id)?.exists() {
@@ -221,8 +240,14 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     let (s, source) = validate(paths, &r).await?;
     let mut receipt = Receipt {
         version: 1,
+        directory: r
+            .directory
+            .as_ref()
+            .map(|d| d.path.clone())
+            .unwrap_or_else(|| source.cwd.clone().into()),
+        saved_directory: Some(source.cwd.into()),
+        created_directories: vec![],
         request: r,
-        directory: source.cwd.into(),
         previous_name: s.name.clone(),
         conversation_id: s.conversation_id.clone(),
         generation: s.generation(),
@@ -276,11 +301,48 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     }
     Ok(())
 }
+fn saved_directory(receipt: &Receipt) -> &std::path::Path {
+    receipt
+        .saved_directory
+        .as_deref()
+        .unwrap_or(&receipt.directory)
+}
+fn validate_resume_history(source: &external::Instance, r: &Request) -> Result<()> {
+    let mut history = source.clone();
+    if r.directory.is_some()
+        && history.block_reason.as_deref() == Some("unknown")
+        && !PathBuf::from(&source.cwd).is_dir()
+    {
+        ensure!(
+            !external::rollout_still_open(&source.rollout)?,
+            "SESSION_STATE_UNVERIFIED"
+        );
+        // Supersede only a missing old directory, never a history/ownership gate.
+        history.block_reason = if external::complete_rollout(&source.rollout)? {
+            None
+        } else {
+            Some("unfinished".into())
+        };
+    }
+    validate_saved_history(&history, r.confirm_unfinished)
+}
 async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     let r = &receipt.request;
     let id = &r.request_id;
     let (_, source) = validate(paths, r).await?;
-    ensure!(source.cwd == receipt.directory, "SAVED_DIRECTORY_CHANGED");
+    ensure!(
+        std::path::Path::new(&source.cwd) == saved_directory(receipt),
+        "SAVED_DIRECTORY_CHANGED"
+    );
+    if let Some(d) = &r.directory {
+        launch::create_directories(d, |p| {
+            change(paths, id, |r| {
+                r.created_directories.push(p.to_path_buf());
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+    }
     change(paths, id, |r| {
         r.phase = "creating_terminal".into();
         Ok(())
@@ -322,7 +384,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     ensure!(
         source.inactive
             && current.attachment.is_none()
-            && source.cwd == receipt.directory.to_string_lossy(),
+            && std::path::Path::new(&source.cwd) == saved_directory(receipt),
         "STALE_TARGET"
     );
     change(paths, id, |r| {
@@ -348,7 +410,10 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
             paths,
             source,
             account,
-            &target,
+            external::ResumeDestination {
+                pane: &target,
+                directory: r.directory.as_ref().map(|d| d.path.as_path()),
+            },
             (&r.session_id, &renamed.generation()),
             id,
             r.confirm_unfinished,
@@ -400,6 +465,7 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
         &r.conversation_id,
         (&r.request.session_id, &r.generation),
         id,
+        r.request.directory.as_ref().map(|d| d.path.as_path()),
     )
     .await;
     if let Err(e) = result {
@@ -466,6 +532,13 @@ pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
                                 && format!("codex:{}", s.account) == r.request.account_id
                                 && external::new_launch_observed(paths, s).unwrap_or(false)
                         }) {
+                            if r.request.directory.is_some() {
+                                external::save_resume_directory(
+                                    paths,
+                                    &r.conversation_id,
+                                    &r.directory,
+                                )?;
+                            }
                             "running"
                         } else {
                             "uncertain"
@@ -492,6 +565,9 @@ pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
         }) {
             if external::new_launch_observed(paths, &s).unwrap_or(false) {
                 return change(paths, id, |r| {
+                    if r.request.directory.is_some() {
+                        external::save_resume_directory(paths, &r.conversation_id, &r.directory)?;
+                    }
                     r.phase = "running".into();
                     Ok(())
                 });
@@ -530,11 +606,55 @@ mod tests {
         assert!(validate_saved_history(&source, true).is_err());
     }
     #[test]
-    fn request_cannot_override_directory_or_unknown_provider() {
+    fn directory_override_preserves_writer_and_unfinished_history_guards() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rollout = tmp.path().join("history.jsonl");
+        fs::write(
+            &rollout,
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n",
+        )
+        .unwrap();
+        let source: external::Instance = serde_json::from_value(json!({"inactive":true,"pane":"","tmux_session":"","pid":0,"cwd":tmp.path().join("missing"),"thread_id":"fixture","rollout":rollout,"home":tmp.path(),"binary":"codex","resume_options":[],"block_reason":"unknown"})).unwrap();
+        let mut r: Request = serde_json::from_value(json!({"version":1,"request_id":uuid::Uuid::new_v4(),"session_id":uuid::Uuid::new_v4(),"expected_generation":"g","account_id":"codex:fixture","name":"Name","host":{"session":"fixture","socket":"/tmp/socket"},"space":{"kind":"existing","id":"w1"},"directory":{"path":tmp.path(),"create":[],"confirmed_existing":true}})).unwrap();
+        assert!(validate_resume_history(&source, &r).is_ok());
+        let writer = fs::OpenOptions::new().append(true).open(&rollout).unwrap();
+        assert!(validate_resume_history(&source, &r).is_err());
+        drop(writer);
+        fs::write(
+            &rollout,
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
+        )
+        .unwrap();
+        assert!(
+            validate_resume_history(&source, &r)
+                .unwrap_err()
+                .to_string()
+                .contains("UNFINISHED_HISTORY_CONFIRMATION_REQUIRED")
+        );
+        r.confirm_unfinished = true;
+        assert!(validate_resume_history(&source, &r).is_ok());
+        r.directory = None;
+        assert!(validate_resume_history(&source, &r).is_err());
+    }
+    #[test]
+    fn legacy_resume_receipt_preserves_saved_directory_and_request_identity() {
+        let request = json!({"version":1,"request_id":uuid::Uuid::new_v4(),"session_id":uuid::Uuid::new_v4(),"expected_generation":"g","account_id":"codex:fixture","name":"Name","host":{"session":"fixture","socket":"/tmp/socket"},"space":{"kind":"existing","id":"w1"}});
+        let receipt: Receipt = serde_json::from_value(json!({"version":1,"request":request,"directory":"/original","previous_name":"Old","conversation_id":"thread","generation":"g","phase":"running","updated_at":1})).unwrap();
+        assert_eq!(saved_directory(&receipt), std::path::Path::new("/original"));
+        assert!(receipt.created_directories.is_empty());
+        assert_eq!(
+            serde_json::to_value(&receipt.request).unwrap()["directory"],
+            Value::Null
+        );
+    }
+    #[test]
+    fn request_directory_is_explicit_and_unknown_provider_is_rejected() {
         let mut value = json!({"version":1,"request_id":uuid::Uuid::new_v4(),"session_id":uuid::Uuid::new_v4(),"expected_generation":"g","account_id":"codex:fixture","name":"Name","host":{"session":"fixture","socket":"/tmp/socket"},"space":{"kind":"existing","id":"w1"}});
         assert!(shape(&serde_json::from_value(value.clone()).unwrap()).is_ok());
         value["directory"] = json!("/different");
         assert!(serde_json::from_value::<Request>(value.clone()).is_err());
+        value["directory"] = json!({"path":"/different","create":[],"confirmed_existing":true});
+        assert!(shape(&serde_json::from_value(value.clone()).unwrap()).is_ok());
         value.as_object_mut().unwrap().remove("directory");
         value["account_id"] = json!("claude:fixture");
         assert!(shape(&serde_json::from_value(value).unwrap()).is_err());

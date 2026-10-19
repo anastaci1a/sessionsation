@@ -121,14 +121,17 @@ fn shape(r: &Request) -> Result<()> {
     if let Space::New { label } = &r.space {
         validate_name(label)?;
     }
+    directory_shape(&r.directory)
+}
+pub(crate) fn directory_shape(directory: &Directory) -> Result<()> {
     ensure!(
-        folder(&r.directory.path) && r.directory.create.len() <= 32,
+        folder(&directory.path) && directory.create.len() <= 32,
         "INVALID_DIRECTORY"
     );
     let mut previous: Option<&Path> = None;
-    for p in &r.directory.create {
+    for p in &directory.create {
         ensure!(
-            folder(p) && r.directory.path.starts_with(p),
+            folder(p) && directory.path.starts_with(p),
             "INVALID_DIRECTORY_PLAN"
         );
         if let Some(parent) = previous {
@@ -137,11 +140,11 @@ fn shape(r: &Request) -> Result<()> {
         previous = Some(p);
     }
     if let Some(last) = previous {
-        ensure!(last == r.directory.path, "INVALID_DIRECTORY_PLAN");
+        ensure!(last == directory.path, "INVALID_DIRECTORY_PLAN");
     }
     Ok(())
 }
-fn directory_check(d: &Directory) -> Result<()> {
+pub(crate) fn directory_check(d: &Directory) -> Result<()> {
     if d.create.is_empty() {
         ensure!(
             d.confirmed_existing && d.path.is_dir(),
@@ -161,6 +164,21 @@ fn directory_check(d: &Directory) -> Result<()> {
                 "DIRECTORY_ALREADY_EXISTS"
             );
         }
+    }
+    Ok(())
+}
+pub(crate) fn create_directories(
+    d: &Directory,
+    mut record: impl FnMut(&Path) -> Result<()>,
+) -> Result<()> {
+    for p in &d.create {
+        let parent = p.parent().context("INVALID_DIRECTORY_PLAN")?;
+        ensure!(
+            fs::canonicalize(parent)? == parent,
+            "DIRECTORY_PARENT_CHANGED"
+        );
+        fs::create_dir(p).context("DIRECTORY_CREATE_FAILED")?;
+        record(p)?;
     }
     Ok(())
 }
@@ -418,18 +436,13 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     let r = &receipt.request;
     let id = &r.request_id;
     validate(paths, r).await?;
-    for p in &r.directory.create {
-        let parent = p.parent().context("INVALID_DIRECTORY_PLAN")?;
-        ensure!(
-            fs::canonicalize(parent)? == parent,
-            "DIRECTORY_PARENT_CHANGED"
-        );
-        fs::create_dir(p).context("DIRECTORY_CREATE_FAILED")?;
+    create_directories(&r.directory, |p| {
         change(paths, id, |r| {
-            r.created_directories.push(p.clone());
+            r.created_directories.push(p.to_path_buf());
             Ok(())
         })?;
-    }
+        Ok(())
+    })?;
     // Record uncertainty before the first external mutation: a lost reply is not rejection.
     change(paths, id, |r| {
         r.phase = "creating_terminal".into();

@@ -174,6 +174,7 @@ remains attachment discovery, not proof of idle activity.
 
 Popup clients resume a saved session into a new HERDR tab using `api resume-launch
 validate` and `api resume-launch start` with a versioned JSON request on stdin.
+An optional `directory` plan chooses a different working directory without moving project files; omitted plans retain the saved location.
 Use `api resume-launch list` or `api resume-launch status --request-id UUID` to
 inspect the original request after detaching. The backend fixes the directory to
 the saved conversation; account, name and destination Space are explicit choices.

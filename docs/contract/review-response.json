@@ -13,12 +13,12 @@
       "status": "partially_resolved",
       "evidence": "../verification.json",
       "resolved": [
-        "Exact development artifact/source/toolchain/container provenance published; launcher-selected artifact unchanged",
+        "Current popup-selected CLI artifact/source/toolchain/container provenance is published in ../verification.json; Agent DM’s pinned artifact remains unchanged",
         "Explicit original data-root ownership and existing sole credential supervisor documented in ../operations.md",
         "Terminal client and account app-server independently verified; native version discrepancy is distinct binaries, not an inferred compatibility change"
       ],
       "gates": [
-        "No accepted immutable production installation exists",
+        "Agent DM has not accepted/promoted this popup client as its production adapter; its pins and isolated data remain unchanged",
         "Owner approval is required to promote a reviewed candidate; Agent DM remains on original Switcher"
       ]
     },
@@ -150,5 +150,6 @@
     "backend_reconciliation": "queue-reconciliation.json",
     "production_cutover": false,
     "repeat_authorized": false
-  }
+  },
+  "semantic_scope": "Submit/Queue semantics and legacy receipt mapping remain unchanged. Resume directory selection is an additive, capability-gated public contract extension; see ../contract.md#saved-session-popup-resume and ../verification.json."
 }
