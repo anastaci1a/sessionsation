@@ -104,6 +104,8 @@ to non-steering v1 Submit/Queue.
   cancel the provider login.
 - Uncertain handoffs and interrupted archives need explicit reconciliation; no
   blind retry/recovery. Cross-provider conversation conversion is outside this version.
-- Review the contributor release gates before public distribution. Repository
-  history and inherited deployment-specific compatibility fields need review;
-  documentation cleanup does not sanitize Git history.
+- The repository is public, but inherited messaging compatibility still encodes an
+  installation-specific endpoint. It is not a portable default for new integrations;
+  use public API v1. Repository history also retains deployment metadata. Current
+  documentation cleanup does not sanitize those Git objects; follow the
+  [contributor review rules](../agents/README.md) for any separate remediation.

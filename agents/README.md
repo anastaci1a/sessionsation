@@ -67,7 +67,8 @@ and split files only for distinct reader needs. No session logs or deployment
 inventories in public documentation. Keep machine paths, receipt databases and
 rollback copies outside Git.
 
-Before public release, review tracked files AND reachable Git history. A bounded
+This repository is public. Before each release, review tracked files AND reachable
+Git history. A bounded
 credential-pattern scan in this pass found no credential-like matches, but that
 is not a security certification. History still contains private deployment paths,
 endpoint/account/session metadata and old operational records. Removing current
@@ -76,7 +77,7 @@ is authorized by routine cleanup; the owner must decide separately.
 
 The inherited `src/messaging/modes.rs` origin constant and matching legacy fixtures
 still encode an operator deployment endpoint. Changing that compatibility contract
-would affect existing consumers, so it remains an explicit public-readiness blocker,
+would affect existing consumers, so it remains a known public exposure and portability limitation,
 not a documentation substitution. New consumers use public API v1. Retain the
 MIT [upstream attribution](../NOTICE); review all new dependencies/assets and do not
 infer permission for unlicensed source.

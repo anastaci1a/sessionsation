@@ -31,7 +31,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 No released binary package or universal provider-version compatibility is claimed.
-The repository must be accessible to your Git identity while it remains private.
+The repository is public; cloning and building do not require GitHub authentication.
 
 ## Quick start
 

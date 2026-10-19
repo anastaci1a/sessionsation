@@ -14,17 +14,18 @@
       "Clippy all targets with warnings denied",
       "locked Rust tests",
       "documentation links",
-      "JSON Schema and real CLI envelopes"
+      "JSON Schema and real CLI envelopes",
+      "30-character account and Unicode session boundaries; schema/admission/rename/resume consistency"
     ],
     "tests": {
-      "unit": 151,
+      "unit": 152,
       "cli": 8,
       "external_move": 69,
       "messaging_cli": 8,
       "persistence": 6,
       "scheduling": 29,
       "transport": 3,
-      "total": 274,
+      "total": 275,
       "ignored": 5,
       "failed": 0
     },
@@ -46,10 +47,9 @@
     },
     "artifact": {
       "path_in_test_checkout": "target-review/release/sessionsation",
-      "sha256": "8b4ceebbfc76f4d68336253b7086a82c05cb2b38c56e8bd049a86838e074ad14",
-      "installed": false,
-      "provenance": "Rust 1.95.0 locked release build from accompanying source; package 0.2.0, API v1, contract revision 3. Existing consumer executables remain unchanged.",
-      "source_commit": "e27ef562768c609ca3a211c4a088183a8031adbc"
+      "sha256": "5b1e35ca8d0faa255b757f1f6f15df734c6ba72937261f1e408c9c79e13910bd",
+      "provenance": "Rust 1.95.0 locked release build from the named source commit; package 0.2.0, API v1, contract revision 3. Installation records are maintained outside Git.",
+      "source_commit": "041b541a83ddf99671ca2fff105fe6aa2ea69757"
     },
     "passive_observation": {
       "fixture": "Kernel-bound synthetic HERDR record, inert native WebSocket server, shared mutation lock held",
@@ -114,7 +114,7 @@
       "harness_sha256": "8a9836fa3f761c4b6c760b0692193796324c6d8f1d4bb53b3737dd4050195f8d"
     },
     "recovery_contention": "Forced ledger lock held through launch confirmation, then released: stopped/interrupted/errored recovery completes with one native delivery and no replay. Full suite passed after this regression exposed and fixed immediate adapter_busy rejection.",
-    "tested_source_commit": "e27ef562768c609ca3a211c4a088183a8031adbc"
+    "tested_source_commit": "041b541a83ddf99671ca2fff105fe6aa2ea69757"
   },
   "limitations": [
     "No provider login, credentials, model calls or existing live hosts in portable checks",
