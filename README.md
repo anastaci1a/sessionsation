@@ -9,7 +9,7 @@ not a working provider. There is no cross-provider conversation conversion.
 
 Today the CLI provides account enrollment, usage/reset reporting, enable/disable,
 local account deletion with preserved conversations, session discovery, new/resume,
-rename, idle-bound account switching, archives and explicit conversation deletion.
+rename, idle-bound account switching, running HERDR Space moves, archives and explicit conversation deletion.
 Integrations use a versioned JSON API with stable session IDs, generation checks,
 non-steering Submit/Queue and durable receipts. Availability depends on the installed
 provider's verified native capabilities; building successfully is not provider acceptance.

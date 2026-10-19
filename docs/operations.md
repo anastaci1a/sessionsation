@@ -14,10 +14,9 @@ to inherited compatibility commands; new integrations use `api --api-version 1`.
 The inherited UI is excluded. Account enrollment, credential ownership and lifecycle
 remain in this backend, not a terminal plugin or consumer adapter.
 
-The public-image setup passed all 258 default tests after a bounded-worker rerun.
-An initial concurrent cold run timed out at supervisor readiness; the isolated
-case passed, and no production runtime change was made. Treat that timing
-sensitivity as a remaining test-environment limitation, not a provider failure.
+The [portable verification record](verification.json) owns exact passing counts,
+commands, artifact hashes and the initial cold-run timing limitation. A successful
+source/fixture check is distinct from provider compatibility acceptance.
 
 ## Version scope
 
@@ -48,10 +47,13 @@ HOME/configuration; the ignored fixtures create and stop their own named host:
 SESSIONSATION_ISOLATED_HOST_TEST=1 cargo test --locked --test external_move installed_herdr_ -- --ignored --nocapture
 ```
 
-The two fixtures verify account/home/UUID/socket/permissions, origin shell retention,
+The three fixtures verify account/home/UUID/socket/permissions, origin shell retention,
 foreign observer environments, startup waiting and saved-history resume after local
-account deletion. They use fake providers, no credentials and no model calls. The
-third ignored fixture requires a separately supplied original Switcher executable;
+account deletion. The Space-move fixture also verifies a busy pane move, stable
+provider-runtime generation, unaffected split siblings, lost-reply reconciliation
+without replay, unchanged launch receipts, and subsequent account handoff in the
+moved terminal. They use fake providers, no credentials and no model calls. The
+fourth ignored fixture requires a separately supplied original Switcher executable;
 it is not part of portable default checks. Never mount live homes or sockets into
 a fixture container. [Machine-readable scope](verification.json) records current
 portable verification; timing and host-specific operational receipts belong outside Git.
@@ -70,7 +72,10 @@ handoffs and provider upgrades require their own reviewed maintenance procedure.
 Do not rename a live root, overwrite a selected executable, remove locks, rewind
 generations, replay uncertain requests, or infer safety from a timeout.
 
-All readers sharing a root must understand its terminal namespaces. An older
+All readers sharing a root must understand its terminal namespaces and lifecycle
+reservations, including `space-moves/`, before enabling Space movement. Coordinate
+compatible owner/client pins first: older consumers do not understand this
+reservation. An older
 reader can invalidate a custom HERDR binding even when a newer client handles its
 socket correctly. Review and update consumer pins together; a new client cannot
 repair another process's old discovery behavior. Preserve old receipt domains and

@@ -6,7 +6,12 @@ use serde_json::Value;
 use std::fs;
 
 pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<Option<String>> {
-    for directory in ["resumptions", "conversation-operations", "handoff-jobs"] {
+    for directory in [
+        "resumptions",
+        "conversation-operations",
+        "handoff-jobs",
+        "space-moves",
+    ] {
         let root = paths.root.join(directory);
         if !root.is_dir() {
             continue;

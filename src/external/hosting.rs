@@ -67,7 +67,7 @@ fn receipt_socket(paths: &Paths, pane: &str, thread: Option<&str>) -> Result<Opt
     }
     Ok(latest.map(|(_, socket)| socket))
 }
-fn socket_for(paths: &Paths, pane: &str) -> Result<Option<PathBuf>> {
+pub(super) fn socket_for(paths: &Paths, pane: &str) -> Result<Option<PathBuf>> {
     let file = binding_file(paths, pane);
     if !file.exists() {
         return if pane.starts_with("herdr/") {
@@ -336,6 +336,50 @@ async fn launch_inner(
     )
 }
 
+/// Publish one verified binding even if a previous caller died between write/rename.
+pub(super) fn rebind(
+    paths: &Paths,
+    old: &str,
+    new: &str,
+    socket: &Path,
+    expected: &Binding,
+) -> Result<()> {
+    target(old)?;
+    target(new)?;
+    let from = binding_file(paths, old);
+    let to = binding_file(paths, new);
+    if !from.exists() {
+        let r: HerdrBinding = serde_json::from_slice(&fs::read(&to)?)?;
+        ensure!(
+            r.target == new && r.binding == *expected && r.socket.as_deref() == Some(socket),
+            "HERDR_BINDING_MISMATCH"
+        );
+        return Ok(());
+    }
+    let mut r: HerdrBinding = serde_json::from_slice(&fs::read(&from)?)?;
+    ensure!(
+        (r.target == old || r.target == new) && r.binding == *expected,
+        "HERDR_BINDING_MISMATCH"
+    );
+    if to.exists() && from != to {
+        let other: HerdrBinding = serde_json::from_slice(&fs::read(&to)?)?;
+        ensure!(
+            other.target == new
+                && other.binding == *expected
+                && other.socket.as_deref() == Some(socket),
+            "HERDR_BINDING_MISMATCH"
+        );
+    }
+    r.target = new.into();
+    r.socket = Some(socket.into());
+    atomic_write(&from, &serde_json::to_vec(&r)?)?;
+    if from != to {
+        fs::rename(&from, &to)?;
+        fs::File::open(to.parent().unwrap())?.sync_all()?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod discovery_tests {
     use super::*;
@@ -474,5 +518,85 @@ mod discovery_tests {
         .unwrap();
         assert_eq!(calls, 1);
         assert!(found.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod space_binding_tests {
+    use super::*;
+    #[test]
+    fn messaging_inventory_includes_new_herdr_bindings_without_adopting_deleted_history() {
+        let d = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(d.path().join("state"))).unwrap();
+        let thread = uuid::Uuid::new_v4().to_string();
+        let home = p.root.join("synthetic-home");
+        private_dir(&p.root.join("herdr-panes")).unwrap();
+        atomic_write(
+            &binding_file(&p, "herdr/fixture/w1:p1"),
+            &serde_json::to_vec(&HerdrBinding {
+                target: "herdr/fixture/w1:p1".into(),
+                socket: None,
+                binding: Binding {
+                    pid: 123,
+                    start_time: 42,
+                    home: home.clone(),
+                    thread: thread.clone(),
+                },
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            super::super::messaging_inventory(&p).unwrap(),
+            vec![thread.clone()]
+        );
+        private_dir(&p.root.join("conversations")).unwrap();
+        let record = p.root.join(format!("conversations/{thread}.json"));
+        atomic_write(
+            &record,
+            &serde_json::to_vec(&json!({"owner":home,"deleted":true})).unwrap(),
+        )
+        .unwrap();
+        assert!(super::super::messaging_inventory(&p).unwrap().is_empty());
+        atomic_write(
+            &record,
+            &serde_json::to_vec(&json!({"owner":p.root.join("other-home")})).unwrap(),
+        )
+        .unwrap();
+        // The authoritative saved owner remains a known conversation, but the
+        // stale HERDR home cannot supply its live messaging attachment.
+        assert!(!catalog::messaging_owner(&p, &thread, &home).unwrap());
+        assert_eq!(super::super::messaging_inventory(&p).unwrap(), vec![thread]);
+    }
+    #[test]
+    fn binding_write_rename_gap_recovers_and_cannot_replace_another_process() {
+        let d = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(d.path().join("state"))).unwrap();
+        private_dir(&p.root.join("herdr-panes")).unwrap();
+        let old = "herdr/fixture/w1:p1";
+        let new = "herdr/fixture/w2:p2";
+        let socket = p.root.join("owned.sock");
+        let binding = Binding {
+            pid: 11,
+            start_time: 22,
+            home: p.root.join("home"),
+            thread: uuid::Uuid::new_v4().to_string(),
+        };
+        // Simulate interruption after publishing the new target in the old file.
+        atomic_write(
+            &binding_file(&p, old),
+            &serde_json::to_vec(&HerdrBinding {
+                target: new.into(),
+                binding: binding.clone(),
+                socket: Some(socket.clone()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        rebind(&p, old, new, &socket, &binding).unwrap();
+        assert!(!binding_file(&p, old).exists());
+        rebind(&p, old, new, &socket, &binding).unwrap();
+        let changed = Binding { pid: 99, ..binding };
+        assert!(rebind(&p, old, new, &socket, &changed).is_err());
     }
 }

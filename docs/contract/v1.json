@@ -160,6 +160,9 @@
             },
             "stop": {
               "type": "boolean"
+            },
+            "move_space": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -1557,6 +1560,130 @@
         },
         "can_cancel": {
           "const": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "SpaceChoices": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "generation",
+        "current_space_id",
+        "spaces",
+        "pane"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "current_space_id": {
+          "type": "string"
+        },
+        "spaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "current"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "current": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "pane": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "SpaceMoveOperation": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "session_id",
+        "phase",
+        "detail",
+        "created_at",
+        "updated_at",
+        "can_cancel",
+        "can_respond",
+        "can_recover",
+        "previous_space_id",
+        "space_id",
+        "pane"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "const": "move_space"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "phase": {
+          "enum": [
+            "admitted",
+            "dispatching",
+            "reconciling",
+            "uncertain",
+            "failed",
+            "complete"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "integer"
+        },
+        "can_cancel": {
+          "const": false
+        },
+        "can_respond": {
+          "const": false
+        },
+        "can_recover": {
+          "type": "boolean"
+        },
+        "previous_space_id": {
+          "type": "string"
+        },
+        "space_id": {
+          "type": "string"
+        },
+        "pane": {
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "additionalProperties": true

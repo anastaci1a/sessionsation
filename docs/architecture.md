@@ -39,6 +39,16 @@ binding. A partial host observation retains a still-live attachment and its
 generation. Only positive exit/PID-reuse evidence clears it; no runtime mutation
 is enabled until its host and process are positively observed again.
 
+HERDR Space placement is a presentation operation under the existing lifecycle
+and messaging locks. Durable `space-moves/` intent records retain original process,
+terminal and socket identity. Completed provenance updates canonical pane bindings
+and catalog attachment revisions without changing provider-runtime generation or
+historical receipts. New launch/resume requests delimit placement provenance, so
+reused pane IDs cannot apply an earlier terminal’s moves. Read-only messaging
+inventory includes both managed tmux and HERDR bindings, retaining deletion/owner
+gates; a newly created HERDR conversation needs no prior transfer to be observed. Lost replies require read-only host reconciliation; no
+competing supervisor, credential writer or automatic host replay is introduced.
+
 ## Reuse
 
 The MIT-licensed backend and regression fixtures are imported from

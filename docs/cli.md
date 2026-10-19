@@ -215,6 +215,34 @@ inspect the original request after detaching. The backend uses the saved directo
 account, name and destination Space are explicit choices.
 See [the request and failure contract](contract.md#saved-session-popup-resume).
 
+## Move a running session between HERDR Spaces
+
+Read a fresh session ID/generation from `api state`, then list destinations on
+that session's own HERDR instance (not the invoking terminal's current instance):
+
+```sh
+sessionsation api spaces --session SESSION-ID --expected-generation GENERATION
+sessionsation api move-space --session SESSION-ID --expected-generation GENERATION --space SPACE-ID --request-id REQUEST-UUID
+sessionsation api operations
+sessionsation api recover REQUEST-UUID
+```
+
+Choose an existing Space ID from that response and a fresh request UUID. The
+selected pane moves into a new normal tab without focus stealing; the existing
+agent process, account, conversation, working directory and permissions survive.
+Busy agents can move without interruption or a provider command. Split siblings
+stay in the source tab; HERDR may close an empty source tab/Space. A zoomed tab may
+need to be unzoomed first. tmux sessions, inactive conversations, cross-instance
+moves and creating a destination Space are outside this action. Use New/Resume
+for a saved session's launch destination.
+
+Only phase `complete` confirms the move and ownership update. For `uncertain`,
+never issue a replacement request: Recover inspects the original stable terminal
+and reconciles metadata without sending another move. Until it can prove the
+requested destination, the reservation blocks competing lifecycle actions;
+manual host inspection may be needed. Repeating the original request observes its
+record, including failure, rather than replaying it. See the
+[placement contract](contract.md#herdr-space-placement).
 ## Saved and archived conversations
 
 Inactive Codex conversations have separate Archive and Delete actions. Archive

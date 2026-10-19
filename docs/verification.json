@@ -8,7 +8,7 @@
   ],
   "results": {
     "status": "passed",
-    "environment": "Fresh Debian bookworm container from public rust:1.95.0-bookworm; declared apt dependencies, no host Cargo cache/provider CLI/accounts/sockets",
+    "environment": "Debian bookworm public-image Linux environment from rust:1.95.0-bookworm; declared dependencies and locked public downloads; no host Cargo cache, provider CLI, account homes or live sockets. Corrective runs reuse only this public-built target tree.",
     "checks": [
       "format",
       "Clippy all targets with warnings denied",
@@ -17,23 +17,42 @@
       "JSON Schema and real CLI envelopes"
     ],
     "tests": {
-      "unit": 140,
+      "unit": 147,
       "cli": 8,
       "external_move": 64,
       "messaging_cli": 8,
       "persistence": 6,
       "scheduling": 29,
       "transport": 3,
-      "total": 258,
-      "ignored": 3,
+      "total": 265,
+      "ignored": 4,
       "failed": 0
     },
     "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265",
-    "cold_run_note": "Initial concurrent cold run timed out in daemon readiness. The isolated test and complete rerun with bounded test/runtime workers passed; root cause is not conclusively established. No production runtime behavior was changed.",
-    "release_smoke": "Passed release build/install, help, v1 capabilities/empty state, metadata-only setup/status/stop in a separate network-disabled container; no Codex binary/accounts/provider calls"
+    "cold_run_note": "Initial concurrent cold run timed out in daemon readiness. The isolated test and complete reruns with bounded test/runtime workers passed; root cause is not conclusively established. No daemon-readiness workaround was introduced.",
+    "release_smoke": "Passed release build/install, help, v1 capabilities/empty state and metadata-only setup/status/stop as unprivileged UID 1000 in a separate network-disabled container; no Codex binary/accounts/provider calls",
+    "isolated_herdr": {
+      "version": "0.9.5",
+      "protocol": 22,
+      "binary_sha256": "14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d",
+      "passed": 3,
+      "models": 0,
+      "scope": [
+        "new tab and retained shell",
+        "paginated saved history after account deletion",
+        "busy Space move, unchanged native runtime generation, split siblings, lost reply and read-only recovery without replay, later account transfer"
+      ]
+    },
+    "artifact": {
+      "path_in_test_checkout": "target-review/release/sessionsation",
+      "sha256": "209a46a54eaca0ea9ad7641cca554d08cacc1ad5516e8cf9f107d3f5eeac2f49",
+      "installed": false,
+      "provenance": "Pinned-toolchain locked release build from the Rust sources accompanying this record, in the public-image source-only test checkout"
+    }
   },
   "limitations": [
     "No provider login, credentials, model calls or existing live hosts in portable checks",
-    "Native acceptance and original-owner handoff require separately scoped evidence"
+    "Native acceptance and original-owner handoff require separately scoped evidence",
+    "All root consumers must understand Space-move reservations before live use; existing owner, clients and downstream pins were not changed"
   ]
 }

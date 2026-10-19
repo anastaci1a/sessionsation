@@ -130,6 +130,325 @@ impl Drop for ActualHost {
     }
 }
 
+/// Presentation-only moves use an owned HERDR and an inert provider, including
+/// a lost acknowledgement. No real host, account or model is accessed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires isolated HERDR binary; see docs/operations.md"]
+async fn installed_herdr_space_move_preserves_process_and_recovers_without_replay() {
+    assert_eq!(
+        std::env::var("SESSIONSATION_ISOLATED_HOST_TEST").as_deref(),
+        Ok("1")
+    );
+    let f = Fixture::new().await;
+    let host = ActualHost::start(&f).await;
+    let socket = host.config.join("herdr/sessions/fixture/herdr.sock");
+    let origin = host.call(&[
+        "workspace",
+        "create",
+        "--label",
+        "Origin",
+        "--cwd",
+        f.tmp.path().to_str().unwrap(),
+    ]);
+    let w1 = origin["workspace"]["workspace_id"].as_str().unwrap();
+    let shell = origin["root_pane"]["pane_id"].as_str().unwrap();
+    let shell_before = host.call(&["pane", "process-info", "--pane", shell]);
+    let destination = host.call(&[
+        "workspace",
+        "create",
+        "--label",
+        "Destination",
+        "--cwd",
+        f.tmp.path().to_str().unwrap(),
+    ]);
+    let w2 = destination["workspace"]["workspace_id"].as_str().unwrap();
+    let mut r = request(&f, &socket, "Space fixture");
+    r["space"]["id"] = json!(w1);
+    let id = r["request_id"].as_str().unwrap();
+    let start = api(&f, &["launch", "start"], Some(&r));
+    assert!(
+        start.status.success(),
+        "{}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let until = Instant::now() + Duration::from_secs(40);
+    let receipt = loop {
+        let out = api(&f, &["launch", "status", "--request-id", id], None);
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        if v["result"]["phase"] == "running" {
+            break v["result"].clone();
+        }
+        assert!(Instant::now() < until, "{v}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let receipt_path = f.paths.root.join(format!("launches/{id}.json"));
+    let receipt_bytes = fs::read(&receipt_path).unwrap();
+    let pane = receipt["pane_id"].as_str().unwrap();
+    let terminal = host.call(&["pane", "get", pane])["pane"]["terminal_id"].clone();
+    let sibling = host.call(&["pane", "split", pane, "--direction", "right", "--no-focus"]);
+    let sibling_id = sibling["pane"]["pane_id"].as_str().unwrap();
+    let sibling_before = host.call(&["pane", "process-info", "--pane", sibling_id]);
+    let thread = receipt["conversation_id"].as_str().unwrap();
+    let state = |f: &Fixture| -> Value {
+        let out = foreign_api(f, &["state"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        v["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let before = state(&f);
+    assert_eq!(before["capabilities"]["move_space"], true);
+    f.a.lock().unwrap().threads.get_mut(thread).unwrap()["status"]["type"] = json!("active");
+    let calls = f.a.lock().unwrap().calls.len();
+    let generation = before["generation"].as_str().unwrap();
+    let observed = foreign_api(
+        &f,
+        &[
+            "observe",
+            "--session",
+            id,
+            "--expected-generation",
+            generation,
+        ],
+    );
+    let observed: Value = serde_json::from_slice(&observed.stdout).unwrap();
+    assert!(
+        observed["result"]["runtime_generation"].is_string(),
+        "{observed}"
+    );
+    let spaces = foreign_api(
+        &f,
+        &[
+            "spaces",
+            "--session",
+            id,
+            "--expected-generation",
+            generation,
+        ],
+    );
+    assert!(
+        spaces.status.success(),
+        "{}",
+        String::from_utf8_lossy(&spaces.stderr)
+    );
+    let available: Value = serde_json::from_slice(&spaces.stdout).unwrap();
+    assert_eq!(available["result"]["current_space_id"], w1);
+    let move_id = uuid::Uuid::new_v4().to_string();
+    let args = [
+        "move-space",
+        "--session",
+        id,
+        "--expected-generation",
+        generation,
+        "--space",
+        w2,
+        "--request-id",
+        &move_id,
+    ];
+    let mut stale = args;
+    stale[4] = "stale";
+    assert!(!foreign_api(&f, &stale).status.success());
+    assert!(
+        !f.paths
+            .root
+            .join(format!("space-moves/{move_id}.json"))
+            .exists()
+    );
+    let moved = foreign_api(&f, &args);
+    assert!(
+        moved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&moved.stderr)
+    );
+    let v: Value = serde_json::from_slice(&moved.stdout).unwrap();
+    assert_eq!(v["result"]["phase"], "complete", "{v}");
+    assert_eq!(v["result"]["pane"]["terminal_id"], terminal);
+    let moved_pane = v["result"]["pane"]["pane_id"].as_str().unwrap();
+    let after = state(&f);
+    let observed_after = foreign_api(
+        &f,
+        &[
+            "observe",
+            "--session",
+            id,
+            "--expected-generation",
+            after["generation"].as_str().unwrap(),
+        ],
+    );
+    let observed_after: Value = serde_json::from_slice(&observed_after.stdout).unwrap();
+    assert_eq!(
+        observed_after["result"]["runtime_generation"],
+        observed["result"]["runtime_generation"]
+    );
+    assert_eq!(
+        host.call(&["pane", "process-info", "--pane", sibling_id])["process_info"]["shell_pid"],
+        sibling_before["process_info"]["shell_pid"]
+    );
+    for key in ["id", "account_id", "conversation_id"] {
+        assert_eq!(after[key], before[key]);
+    }
+    for key in ["pid", "process_start"] {
+        assert_eq!(after["attachment"][key], before["attachment"][key]);
+    }
+    assert_ne!(after["generation"], before["generation"]);
+    assert!(
+        after["attachment"]["target"]
+            .as_str()
+            .unwrap()
+            .ends_with(moved_pane)
+    );
+    assert_eq!(fs::read(&receipt_path).unwrap(), receipt_bytes);
+    let repeat: Value = serde_json::from_slice(&foreign_api(&f, &args).stdout).unwrap();
+    assert_eq!(repeat["result"]["pane"], v["result"]["pane"]);
+    assert_eq!(
+        host.call(&["pane", "process-info", "--pane", shell])["process_info"]["shell_pid"],
+        shell_before["process_info"]["shell_pid"]
+    );
+
+    // Lose the reply after the actual second move. Recovery may read the host,
+    // repair ownership and release the reservation, but must never replay it.
+    let real = Command::new("sh")
+        .args(["-c", "command -v herdr"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap();
+    let count = f.tmp.path().join("move-count");
+    let flag = f.tmp.path().join("lose-ack");
+    fs::write(&flag, "1").unwrap();
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let wrapper = f.tmp.path().join("herdr");
+    fs::write(&wrapper, format!("#!/bin/sh\nif [ \"$1\" = pane ] && [ \"$2\" = move ]; then\n echo move >> {}\n if [ -f {} ]; then\n {} \"$@\" > {}\n rm -- {}\n exit 1\n fi\nfi\nexec {} \"$@\"\n", quote(&count.to_string_lossy()), quote(&flag.to_string_lossy()), quote(real.trim()), quote(&f.tmp.path().join("lost-result").to_string_lossy()), quote(&flag.to_string_lossy()), quote(real.trim()))).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let second = uuid::Uuid::new_v4().to_string();
+    let moved_gen = after["generation"].as_str().unwrap();
+    let uncertain = foreign_api(
+        &f,
+        &[
+            "move-space",
+            "--session",
+            id,
+            "--expected-generation",
+            moved_gen,
+            "--space",
+            w1,
+            "--request-id",
+            &second,
+        ],
+    );
+    let uncertain: Value = serde_json::from_slice(&uncertain.stdout).unwrap();
+    assert_eq!(uncertain["result"]["phase"], "uncertain", "{uncertain}");
+    assert!(
+        !foreign_api(
+            &f,
+            &[
+                "switch",
+                "--session",
+                id,
+                "--expected-generation",
+                moved_gen,
+                "--to",
+                "codex:work"
+            ]
+        )
+        .status
+        .success()
+    );
+    let recovered = foreign_api(&f, &["recover", &second]);
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    let recovered: Value = serde_json::from_slice(&recovered.stdout).unwrap();
+    assert_eq!(recovered["result"]["phase"], "complete", "{recovered}");
+    assert_eq!(fs::read_to_string(&count).unwrap().lines().count(), 1);
+    let current = state(&f);
+    assert_eq!(current["attachment"]["pid"], before["attachment"]["pid"]);
+    let details = foreign_api(
+        &f,
+        &[
+            "session",
+            "--session",
+            id,
+            "--expected-generation",
+            current["generation"].as_str().unwrap(),
+        ],
+    );
+    let details: Value = serde_json::from_slice(&details.stdout).unwrap();
+    assert_eq!(
+        details["result"]["original_host"]["workspace_id"], w1,
+        "{details}"
+    );
+    assert_eq!(fs::read(&receipt_path).unwrap(), receipt_bytes);
+    assert!(
+        !f.a.lock().unwrap().calls[calls..]
+            .iter()
+            .any(|(m, _)| matches!(
+                m.as_str(),
+                "turn/start" | "turn/steer" | "thread/unload" | "thread/resume"
+            ))
+    );
+
+    // A subsequent account handoff must reuse the moved pane, including its
+    // retained shell environment, rather than reverting to a default account.
+    f.a.lock().unwrap().threads.get_mut(thread).unwrap()["status"]["type"] = json!("idle");
+    let switch = foreign_api(
+        &f,
+        &[
+            "switch",
+            "--session",
+            id,
+            "--expected-generation",
+            current["generation"].as_str().unwrap(),
+            "--to",
+            "codex:work",
+        ],
+    );
+    assert!(
+        switch.status.success(),
+        "{}",
+        String::from_utf8_lossy(&switch.stderr)
+    );
+    let switch: Value = serde_json::from_slice(&switch.stdout).unwrap();
+    f.wait(switch["result"]["id"].as_str().unwrap(), "complete")
+        .await;
+    let transferred = state(&f);
+    assert_eq!(transferred["account_id"], "codex:work");
+    assert_eq!(transferred["conversation_id"], thread);
+    assert_eq!(
+        transferred["attachment"]["target"],
+        current["attachment"]["target"]
+    );
+    assert!(find_rollout(&f.paths.account("work").unwrap(), thread).is_some());
+    let stop = foreign_api(
+        &f,
+        &[
+            "stop",
+            "--session",
+            id,
+            "--expected-generation",
+            transferred["generation"].as_str().unwrap(),
+        ],
+    );
+    assert!(
+        stop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let stop: Value = serde_json::from_slice(&stop.stdout).unwrap();
+    f.wait(stop["result"]["id"].as_str().unwrap(), "complete")
+        .await;
+}
+
 /// Run only in the documented network-disabled container with an explicit HERDR
 /// binary mount; the provider and every account remain synthetic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

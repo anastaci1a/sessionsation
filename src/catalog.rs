@@ -262,6 +262,38 @@ pub fn rename(paths: &Paths, id: &str, generation: &str, name: &str) -> Result<S
     })
 }
 
+/// A verified presentation move changes only attachment metadata, preserving a
+/// concurrent rename. Another account/process can never be overwritten here.
+pub(crate) fn move_attachment(
+    paths: &Paths,
+    before: &Session,
+    attachment: Option<Attachment>,
+) -> Result<Session> {
+    transaction(paths, |c| {
+        let current = c
+            .sessions
+            .get_mut(&before.id)
+            .context("SESSION_NOT_FOUND")?;
+        ensure!(
+            current.provider == before.provider
+                && current.account == before.account
+                && current.conversation_id == before.conversation_id,
+            "STALE_TARGET"
+        );
+        ensure!(
+            current.attachment.is_none()
+                || current.attachment == before.attachment
+                || current.attachment == attachment,
+            "STALE_TARGET"
+        );
+        if current.attachment != attachment {
+            current.attachment = attachment;
+            current.revision += 1;
+        }
+        Ok(current.clone())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,5 +572,57 @@ mod reservation_tests {
         assert_eq!(s.name, "chosen");
         assert_eq!(s.account, "account");
         assert!(check_name(&paths, "chosen", "request-a").is_err());
+    }
+}
+
+#[cfg(test)]
+mod space_move_tests {
+    use super::*;
+    #[test]
+    fn verified_move_preserves_rename_is_idempotent_and_rejects_account_replacement() {
+        let d = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(d.path().join("state"))).unwrap();
+        let old = Attachment {
+            host: "herdr".into(),
+            target: "herdr/fixture/w1:p1".into(),
+            pid: 11,
+            process_start: 22,
+        };
+        let before = record_launch(
+            &p,
+            "example",
+            &uuid::Uuid::new_v4().to_string(),
+            "original",
+            Some(old.clone()),
+        )
+        .unwrap();
+        rename(&p, &before.id, &before.generation(), "renamed").unwrap();
+        let new = Attachment {
+            target: "herdr/fixture/w2:p2".into(),
+            ..old
+        };
+        let moved = move_attachment(&p, &before, Some(new.clone())).unwrap();
+        assert_eq!(moved.name, "renamed");
+        assert_eq!(moved.conversation_id, before.conversation_id);
+        assert_eq!(
+            move_attachment(&p, &before, Some(new.clone()))
+                .unwrap()
+                .generation(),
+            moved.generation()
+        );
+        record_launch(
+            &p,
+            "other",
+            &before.conversation_id,
+            "other",
+            Some(new.clone()),
+        )
+        .unwrap();
+        assert!(
+            move_attachment(&p, &before, Some(new))
+                .unwrap_err()
+                .to_string()
+                .contains("STALE_TARGET")
+        );
     }
 }

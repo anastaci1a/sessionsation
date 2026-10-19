@@ -46,6 +46,13 @@ pub(crate) fn call_at(session: &str, args: &[&str], socket: Option<&Path>) -> Re
     }
     command.args(args);
     let output = command.output().context("HERDR is unavailable")?;
+    for bytes in [&output.stdout, &output.stderr] {
+        if let Ok(v) = serde_json::from_slice::<Value>(bytes)
+            && let Some(code) = v["error"]["code"].as_str()
+        {
+            return Err(HostRejection(code.into()).into());
+        }
+    }
     ensure!(
         output.status.success(),
         "HERDR request failed: {}",
@@ -177,6 +184,25 @@ pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+#[derive(Debug)]
+struct HostRejection(String);
+impl std::fmt::Display for HostRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HERDR rejected request: {}", self.0)
+    }
+}
+impl std::error::Error for HostRejection {}
+pub(crate) fn move_rejected_before_effect(error: &anyhow::Error) -> bool {
+    // Verified before take_pane_for_move in HERDR v0.9.5's handle_pane_move.
+    // pane_layout_unavailable/pane_move_failed can occur AFTER an effect.
+    error.downcast_ref::<HostRejection>().is_some_and(|r| {
+        matches!(
+            r.0.as_str(),
+            "pane_not_found" | "tab_not_found" | "workspace_not_found"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +254,31 @@ mod tests {
         ] {
             assert!(herdr_target(s, p).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod move_rejection_tests {
+    use super::*;
+    #[test]
+    fn only_verified_pre_effect_codes_release_uncertain_move_intent() {
+        for code in ["pane_not_found", "tab_not_found", "workspace_not_found"] {
+            assert!(move_rejected_before_effect(
+                &HostRejection(code.into()).into()
+            ));
+        }
+        for code in [
+            "pane_move_failed",
+            "pane_layout_unavailable",
+            "timeout",
+            "unknown",
+        ] {
+            assert!(!move_rejected_before_effect(
+                &HostRejection(code.into()).into()
+            ));
+        }
+        assert!(!move_rejected_before_effect(&anyhow::anyhow!(
+            "workspace_not_found"
+        )));
     }
 }

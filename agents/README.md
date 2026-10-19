@@ -45,10 +45,13 @@ It needs network access for image/packages/crates on the first run, not a host
 Cargo cache or a custom image from another project. No account homes, provider
 binary, live sockets, SSH agent or credentials are mounted. Docker creates build
 files as its container user; use a dedicated checkout or adjust ownership afterward.
-The default suite skips three opt-in installed-binary fixtures; optional HERDR
+The default suite skips four opt-in installed-binary fixtures; optional HERDR
 checks and their limits are in [operations](../docs/operations.md).
 
 Rust changes need meaningful safety-boundary regressions and the full script.
+A fixture starting another lifecycle action must wait for the previous worker’s
+lock release after a terminal phase, including cancellation; a journaled phase
+alone does not prove that the worker has exited.
 For docs-only edits, run `python3 scripts/check_docs.py`; contract/schema edits
 also need `CARGO_TARGET_DIR="$PWD/target-review" python3 scripts/check_contract.py`
 after building the debug CLI in that target directory.

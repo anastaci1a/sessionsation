@@ -505,24 +505,27 @@ int main(int argc,char**argv){char path[4096];if(argc>3 && strcmp(argv[1],"app-s
                 .find(|j| j["id"] == id)
                 .unwrap()
                 .clone();
-            // Completion is journaled just before the worker releases its locks.
+            // Terminal phases are journaled just before the worker releases its locks.
             // A following mutation must wait for that worker to actually exit.
-            let worker_stopped = if phase == "complete" && j["phase"] == phase {
-                use fs2::FileExt;
-                let lock = fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(
-                        self.paths
-                            .root
-                            .join("handoff-jobs")
-                            .join(format!("{id}.worker-lock")),
-                    )
-                    .unwrap();
-                lock.try_lock_exclusive().is_ok()
-            } else {
-                true
-            };
+            let worker_stopped =
+                if matches!(phase, "complete" | "failed" | "cancelled" | "recovered")
+                    && j["phase"] == phase
+                {
+                    use fs2::FileExt;
+                    let lock = fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(
+                            self.paths
+                                .root
+                                .join("handoff-jobs")
+                                .join(format!("{id}.worker-lock")),
+                        )
+                        .unwrap();
+                    lock.try_lock_exclusive().is_ok()
+                } else {
+                    true
+                };
             if worker_stopped
                 && j["phase"] == phase
                 && !(phase == "complete"

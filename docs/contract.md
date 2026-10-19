@@ -400,3 +400,42 @@ retain it until native state is confirmed; they never approve that prompt or tre
 the unloaded root as a ready agent. Background-terminal checks for unloaded
 saved/child histories require consistent native read/list/read evidence rather
 than treating a rejected RPC as empty.
+
+## HERDR Space placement
+
+`capabilities.space_move.version == 1` advertises the additive placement API;
+`session.capabilities.move_space` gates the selected current attachment.
+`api spaces --session ID --expected-generation GENERATION` returns
+`SpaceChoices`: stable session ID, captured generation, current Space ID,
+existing Spaces with `id/name/current`, and positive pane/terminal identity.
+The bound host socket is authoritative even in an unrelated caller environment.
+
+`api move-space --session ID --expected-generation GENERATION --space SPACE-ID
+--request-id UUID` returns `SpaceMoveOperation`, also listed by `api operations`.
+Phases: `admitted → dispatching → reconciling → complete`, or `failed/uncertain`.
+It is synchronous host placement with a durable intent, not another supervisor.
+No cancel/respond action is offered. Reuse of the same UUID and exact target
+observes the saved result before generation resolution; changed input is
+`REQUEST_ID_CONFLICT`. Stale generation or missing destination is rejected before
+dispatch. Selecting the current Space completes without mutation.
+
+HERDR can change the pane ID during a move. The stable terminal ID and verified
+kernel process identity tie the returned pane to the original runtime. Only
+attachment placement/revision changes; the backend ID, provider conversation ID,
+PID/start identity, native runtime generation and old message receipts remain
+intact. Discovery, account-switch/restart and `original_host` follow verified
+placement provenance within the launch/resume request’s epoch; historical
+launch/resume receipts are never rewritten. Reused host pane IDs in a subsequent
+launch do not import earlier placement history.
+
+Admission shares lifecycle and messaging locks. In-flight or uncertain placement
+blocks competing lifecycle mutations. A lost reply or incomplete ownership update
+is `uncertain`, never permission to retry. `api recover UUID` is read-only toward
+HERDR: it finds the original terminal in the requested destination and repairs
+binding/catalog metadata. A crash before dispatch can release its unissued intent.
+An unconfirmed destination remains reserved; disappearance, timeout or observing
+only the source does not prove that a move is safe to replay. Fresh snapshots
+are required after completion. Existing Submit/Queue semantics are unchanged.
+
+The [CLI reference](cli.md#move-a-running-session-between-herdr-spaces) owns host
+scope, UI-visible effects and operational limitations.

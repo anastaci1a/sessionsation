@@ -415,7 +415,7 @@ pub struct MoveOptions {
     pub accept_risks: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct Binding {
     pid: u32,
     start_time: u64,
@@ -1305,7 +1305,7 @@ async fn run_account_thread_inner(
         let session = std::env::var("SESSIONSATION_HERDR_SESSION")
             .or_else(|_| std::env::var("HERDR_SESSION"))?;
         let pane = std::env::var("HERDR_PANE_ID")?;
-        let key = hosting::herdr_target(&session, &pane)?;
+        let key = spaces::caller_target(paths, &session, &pane, std::process::id())?;
         bind_pane(paths, &key, std::process::id(), &home, id)?;
         attachment = Some(crate::catalog::Attachment {
             host: "herdr".into(),
@@ -2324,6 +2324,7 @@ mod movement;
 pub mod opening;
 pub mod relocation;
 pub mod session_control;
+pub mod spaces;
 pub mod tmux_inventory;
 pub use movement::{recover, worker};
 
@@ -2541,8 +2542,11 @@ pub(crate) fn messaging_clear_stop_intent(paths: &Paths, id: &str) -> Result<()>
 }
 pub(crate) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
     let mut ids = catalog::messaging_inventory(paths)?;
-    let dir = paths.root.join("managed-panes");
-    if dir.exists() {
+    for directory in ["managed-panes", "herdr-panes"] {
+        let dir = paths.root.join(directory);
+        if !dir.exists() {
+            continue;
+        }
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|s| s != "json")
@@ -2550,7 +2554,9 @@ pub(crate) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
                 continue;
             }
             ensure!(entry.metadata()?.len() <= 65536, "invalid binding");
-            let binding: Binding = serde_json::from_slice(&fs::read(entry.path())?)?;
+            let record: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+            let binding: Binding =
+                serde_json::from_value(record.get("binding").unwrap_or(&record).clone())?;
             if uuid::Uuid::parse_str(&binding.thread).is_ok()
                 && catalog::messaging_owner(paths, &binding.thread, &binding.home)?
             {

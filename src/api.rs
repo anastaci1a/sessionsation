@@ -104,6 +104,18 @@ pub enum Command {
         #[arg(long)]
         herdr_session: String,
     },
+    /// Read existing Spaces from this session's own HERDR host.
+    Spaces {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+    },
+    /// Move only the selected terminal into a new tab in an existing Space.
+    MoveSpace {
+        #[command(flatten)]
+        target: external::spaces::Target,
+    },
     Operations,
     Respond {
         operation: String,
@@ -422,7 +434,7 @@ pub fn capabilities() -> Value {
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
-    "session_details":true,"session_timing":true,"detach_stops_agent":false})
+    "space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"session_details":true,"session_timing":true,"detach_stops_agent":false})
 }
 
 fn public_session(s: catalog::Session) -> Value {
@@ -511,7 +523,7 @@ pub async fn state(paths: &Paths) -> Result<Value> {
         value["last_accessed"]=source.and_then(|s|s.last_accessed).map_or(Value::Null,|n|json!(n));
         value["active_since"]=json!(source.filter(|s|!s.inactive).and_then(|s|clock.and_then(|(uptime,hz)|attachment_started_at(now,uptime,s.start_time,hz))));
         let unambiguous=items.iter().filter(|i|!i.inactive && i.thread_id==value["conversation_id"]).count()<=1;
-        value["capabilities"]=json!({"rename":true,"resume":known && saved,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":source.is_some_and(|i|i.inactive),"delete":source.is_some_and(|i|i.inactive)});
+        value["capabilities"]=json!({"rename":true,"move_space":running && unambiguous && source.is_some_and(|s|s.pane.starts_with("herdr/")),"resume":known && saved,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":source.is_some_and(|i|i.inactive),"delete":source.is_some_and(|i|i.inactive)});
         value
     }).collect::<Vec<_>>();
     for session in &mut sessions {
@@ -529,6 +541,7 @@ pub async fn state(paths: &Paths) -> Result<Value> {
             for capability in [
                 "resume",
                 "switch_account",
+                "move_space",
                 "restart",
                 "stop",
                 "archive",
@@ -623,38 +636,12 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
     );
     // Persisted launch receipts supply positive location provenance. Never guess
     // the original Space from a display name, current focus or a missing pane.
-    let mut latest: Option<(i64, Value)> = None;
-    for directory in ["launches", "resumptions"] {
-        let root = paths.root.join(directory);
-        if root.is_dir() {
-            for entry in std::fs::read_dir(root)? {
-                let entry = entry?;
-                if !entry.file_type()?.is_file()
-                    || entry.path().extension().is_none_or(|e| e != "json")
-                {
-                    continue;
-                }
-                let Ok(record) = serde_json::from_slice::<Value>(&std::fs::read(entry.path())?)
-                else {
-                    continue;
-                };
-                if (record["session_id"] != id && record["request"]["session_id"] != id)
-                    || !record["workspace_id"].is_string()
-                    || !matches!(record["phase"].as_str(), Some("running" | "attached"))
-                {
-                    continue;
-                }
-                let at = record["updated_at"].as_i64().unwrap_or(0);
-                if latest.as_ref().is_none_or(|(old, _)| at > *old) {
-                    latest = Some((
-                        at,
-                        json!({"session":record["request"]["host"]["session"],"socket":record["request"]["host"]["socket"],"workspace_id":record["workspace_id"],"tab_id":record["tab_id"],"pane_id":record["pane_id"]}),
-                    ));
-                }
-            }
-        }
-    }
-    value["original_host"] = latest.map(|(_, v)| v).unwrap_or(Value::Null);
+    let latest = external::spaces::receipt_location(paths, id)?;
+    value["original_host"] = if let Some((epoch, location)) = latest {
+        external::spaces::follow_location(paths, id, location, Some(&epoch))?
+    } else {
+        external::spaces::last_location(paths, id)?
+    };
     Ok(value)
 }
 
@@ -808,6 +795,11 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             )
             .await?
         }
+        Command::Spaces {
+            session,
+            expected_generation,
+        } => external::spaces::list(paths, &session, &expected_generation).await?,
+        Command::MoveSpace { target } => external::spaces::start(paths, target).await?,
         Command::Operations => {
             let mut ops = external::jobs(paths)?
                 .into_iter()
@@ -820,6 +812,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     .map(|r| json!(r)),
             );
             ops.extend(external::archiving::operations(paths)?);
+            ops.extend(external::spaces::operations(paths)?);
             json!(ops)
         }
         Command::Respond {
@@ -835,6 +828,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             managed_operation(paths, &id)?;
             external::cancel_move(paths, &id)?;
             json!({"id":id,"cancellation_requested":true})
+        }
+        Command::Recover { operation: id } if external::spaces::exists(paths, &id) => {
+            external::spaces::recover(paths, &id)?
         }
         Command::Recover { operation: id }
             if crate::account_deletion::status(paths, &id).is_ok() =>
