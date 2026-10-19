@@ -347,3 +347,11 @@ unsafe changes. Delete is permanent, including known managed archives, and
 preserves project files and credentials. Storage and recovery rules belong to
 [the CLI reference](cli.md#saved-and-archived-conversations). Existing send receipts
 and New/Resume receipt phases are unchanged.
+
+### Resume availability reasons
+
+Session state and details include nullable `resume_block_reason`: `unknown_account`,
+`history_unavailable`, `already_running`, `moving`, `missing_directory`,
+`history_busy`, `unfinished_history`, `conflicting_history`, or `unverified_history`.
+This explains observed resume gates; capability flags remain authoritative and
+launch rechecks current state. Consumers must tolerate future reason codes.

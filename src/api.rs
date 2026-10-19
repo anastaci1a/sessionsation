@@ -484,6 +484,7 @@ pub async fn state(paths: &Paths) -> Result<Value> {
         let source=items.iter().find(|i|i.thread_id==s.conversation_id && i.account==s.account);
         let known=!matches!(s.account.as_str(),"external"|"unknown");
         let mut value=public_session(s);
+        value["resume_block_reason"]=json!(resume_block_reason(known,source));
         let running=source.is_some_and(|i|!i.inactive);
         let saved=source.is_some_and(|i|i.inactive && i.block_reason.is_none() && i.move_id.is_none());
         value["availability"]=json!(if running {"running"}else if saved {"saved"}else{"unavailable"});
@@ -534,6 +535,31 @@ pub(crate) async fn selected(
     Ok((session, i))
 }
 
+/// Public reason for an unavailable resume; observations are rechecked at launch.
+fn resume_block_reason(known: bool, source: Option<&external::Instance>) -> Option<&'static str> {
+    if !known {
+        return Some("unknown_account");
+    }
+    let Some(source) = source else {
+        return Some("history_unavailable");
+    };
+    if !source.inactive {
+        return Some("already_running");
+    }
+    if source.move_id.is_some() {
+        return Some("moving");
+    }
+    match source.block_reason.as_deref() {
+        None => None,
+        Some("unknown") => Some("missing_directory"),
+        Some("busy") => Some("history_busy"),
+        Some("unfinished") => Some("unfinished_history"),
+        Some("diverged") => Some("conflicting_history"),
+        Some("moving") => Some("moving"),
+        Some(_) => Some("unverified_history"),
+    }
+}
+
 pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
     let items = inventory(paths).await?;
     let session = catalog::resolve(paths, id, generation)?;
@@ -541,8 +567,13 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
         .iter()
         .find(|i| i.thread_id == session.conversation_id && i.account == session.account);
     let directory = source.map(|s| s.cwd.clone());
+    let reason = resume_block_reason(
+        !matches!(session.account.as_str(), "external" | "unknown"),
+        source,
+    );
     let mut value = public_session(session);
     value["directory"] = json!(directory);
+    value["resume_block_reason"] = json!(reason);
     let facts = source
         .map(|s| external::history_file_details(&s.rollout))
         .unwrap_or(Value::Null);
@@ -862,6 +893,40 @@ pub fn account_prefill(a: &Value, now: i64, stale_seconds: u64) -> Value {
 #[cfg(test)]
 mod prefill_tests {
     use super::*;
+    #[test]
+    fn resume_reasons_explain_observed_safety_gates() {
+        let mut source: external::Instance = serde_json::from_value(json!({
+            "inactive":true,"pane":"","tmux_session":"","pid":0,"cwd":"/tmp",
+            "thread_id":"fixture","rollout":"/tmp/history","home":"/tmp/home",
+            "binary":"codex","resume_options":[]
+        }))
+        .unwrap();
+        assert_eq!(
+            resume_block_reason(false, Some(&source)),
+            Some("unknown_account")
+        );
+        assert_eq!(resume_block_reason(true, None), Some("history_unavailable"));
+        assert_eq!(resume_block_reason(true, Some(&source)), None);
+        for (block, expected) in [
+            ("unknown", "missing_directory"),
+            ("busy", "history_busy"),
+            ("unfinished", "unfinished_history"),
+            ("diverged", "conflicting_history"),
+            ("moving", "moving"),
+            ("future", "unverified_history"),
+        ] {
+            source.block_reason = Some(block.into());
+            assert_eq!(resume_block_reason(true, Some(&source)), Some(expected));
+        }
+        source.block_reason = None;
+        source.move_id = Some("operation".into());
+        assert_eq!(resume_block_reason(true, Some(&source)), Some("moving"));
+        source.inactive = false;
+        assert_eq!(
+            resume_block_reason(true, Some(&source)),
+            Some("already_running")
+        );
+    }
     #[test]
     fn session_elapsed_uses_current_attachment_clock_and_rejects_unknown_ticks() {
         assert_eq!(attachment_started_at(1000, 120., 6000, 100), Some(940));
