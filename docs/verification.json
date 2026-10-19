@@ -2,14 +2,14 @@
   "schema_version": 1,
   "source": {
     "repository": "https://github.com/anastaci1a/sessionsation",
-    "commit": "043b3f3081b4dc83f50e70232a341761de8922e7",
+    "commit": "51764d216830bb9623c877abb2ef325d1c2231fd",
     "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265"
   },
   "artifact": {
     "installed": true,
     "kind": "Popup-selected CLI client; sole existing-root supervisor and original installation unchanged",
-    "path": "/mnt/user/live/packages/sessionsation/popup/043b3f3081b4dc83f50e70232a341761de8922e7/sessionsation",
-    "sha256": "3fddad00cf7bfa3109f95c563e719c38e4480169c60d5a1d96a558c088d9a3c7",
+    "path": "/mnt/user/live/packages/sessionsation/popup/51764d216830bb9623c877abb2ef325d1c2231fd/sessionsation",
+    "sha256": "6ecf8f197efe2076e76fea5f21698a35699e5a4867a7f364fed6b4ba1e3a9b78",
     "profile": "release",
     "rust_version": "1.95.0",
     "container_image": "sessionsation-build-tools:local",
@@ -30,7 +30,7 @@
       "python3 scripts/check_contract.py"
     ],
     "tests": {
-      "lib": 129,
+      "lib": 135,
       "binary": 0,
       "cli": 8,
       "external_move": 62,
@@ -39,11 +39,11 @@
       "scheduling": 29,
       "transport": 3,
       "doctests": 0,
-      "total": 245,
+      "total": 251,
       "failed": 0,
       "ignored": 3
     },
-    "scope": "Full offline suite. Separate installed-HERDR fixture verifies explicit unfinished-history consent for original-account and cross-account resume; no model turns or live roots."
+    "scope": "Full offline suite plus installed-HERDR isolated handoff and preserved-history resume fixtures. No new models or live-session mutations; sole existing owner and Agent DM pin/data unchanged."
   },
   "native_runtime": {
     "terminal_client": {
@@ -106,11 +106,31 @@
     }
   },
   "unfinished_resume_acceptance": {
-    "source": "043b3f3081b4dc83f50e70232a341761de8922e7",
-    "passed": 1,
+    "source": "51764d216830bb9623c877abb2ef325d1c2231fd",
+    "passed": 2,
     "failed": 0,
-    "command": "SESSIONSATION_ISOLATED_HOST_TEST=1 cargo test --offline --locked --test external_move launch::installed_herdr_new_tab_handoff_retains_exact_account_and_shell -- --ignored --exact",
+    "command": "SESSIONSATION_ISOLATED_HOST_TEST=1 cargo test --offline --locked --test external_move installed_herdr_ -- --ignored --nocapture",
     "models": 0,
     "supervisor": "Existing production owner unchanged"
+  },
+  "operation_audit": {
+    "account_deletion": {
+      "source": "2bb94cc2a8e9a5d0f724404d6722a799881522c8",
+      "fixture": "account_delete_is_async_preserves_conversations_and_removes_only_disposable_credentials",
+      "filesystem": "Real Unraid FUSE fixture passed; in-home lease dropped before final removal while external reservation remains held",
+      "approved_recovery": "Original confirmed unauthenticated-account deletion recovered to complete; saved conversations preserved outside the account home"
+    },
+    "admission": "Per-conversation reservation across resume, handoff, archive/delete; terminal workers keep reservation until lock release; original request may continue",
+    "orphan_workers": "Before handoff: failed; possible handoff: uncertain, no automatic replay",
+    "adapter_coordination": {
+      "source_session_id": "May be null for a historical operation whose catalog session no longer exists; schema updated",
+      "submit_queue": "No semantic or legacy receipt mapping changes in this slice",
+      "cutover": "None; independent Agent DM acceptance still required"
+    },
+    "remaining_gates": [
+      "Provider login cancellation requires sole-owner contract support; popup close does not cancel login",
+      "Uncertain external handoffs and orphaned archive operations require explicit reconciliation; no blind recovery/replay",
+      "Important saved session was not resumed or otherwise mutated for this audit"
+    ]
   }
 }
