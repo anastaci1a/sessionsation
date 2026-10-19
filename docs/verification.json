@@ -2,19 +2,22 @@
   "schema_version": 1,
   "source": {
     "repository": "https://github.com/anastaci1a/sessionsation",
-    "commit": "e4d7833e83e652dd87c02568e03fa6f9f786412f",
+    "commit": "aea768160343b21e575e12394c5662f049d50433",
     "cargo_lock_sha256": "13959dc2de624ff7f6bc4a7fed537b01b6d89572b61e8bb9238cb748afc17265"
   },
   "artifact": {
-    "installed": false,
-    "kind": "development build; original installation unchanged",
-    "path": "/mnt/user/live/projects/sessionsation/target/debug/sessionsation",
-    "sha256": "e2ded46544041635266dc2217fd02e03ef4a8b75078df6f6ecc932986b809483",
-    "profile": "debug",
+    "installed": true,
+    "kind": "Popup-selected CLI client; sole existing-root supervisor and original installation unchanged",
+    "path": "/mnt/user/live/packages/sessionsation/popup/aea768160343b21e575e12394c5662f049d50433/sessionsation",
+    "sha256": "bc66f2b6c353e6f8cdd69294c025d1e19e6e3842769f99f0c8bccb7e7958f200",
+    "profile": "release",
     "rust_version": "1.95.0",
     "container_image": "sessionsation-build-tools:local",
     "container_image_id": "sha256:4524fc318ec3fe78073bcf4573f940862031035901da2f46391c273a1a5bf320",
-    "build": "cargo test --offline --locked; source mounted at /work, network disabled, cached dependencies mounted read-only, no credentials or live sockets mounted"
+    "build": "cargo build --release --offline --locked; source at /work, network disabled, cached dependencies read-only, no credentials or live sockets mounted",
+    "data_root": "/mnt/user/appdata/codex-switcher",
+    "supervisor_commit": "528d3696b43ba34b28a408d5e328841e5f52ccc4",
+    "ownership": "Existing sole owner retained; no new supervisor, credential writer, Agent DM pin/data/receipt changes or cutover."
   },
   "verification": {
     "command": "scripts/check.sh",
@@ -27,20 +30,20 @@
       "python3 scripts/check_contract.py"
     ],
     "tests": {
-      "lib": 101,
+      "lib": 127,
       "binary": 0,
-      "cli": 6,
-      "external_move": 57,
+      "cli": 8,
+      "external_move": 62,
       "messaging_cli": 8,
       "persistence": 6,
       "scheduling": 29,
       "transport": 3,
       "doctests": 0,
-      "total": 210,
+      "total": 243,
       "failed": 0,
-      "ignored": 0
+      "ignored": 3
     },
-    "scope": "offline suite; live evidence and limits are separately maintained in operations.md"
+    "scope": "Offline suite including archive/restore/rearchive/restore/delete identity and byte preservation, paginated proofs, live/stale/unconfirmed rejection and changed archive/loaded-thread rejection. Three installed-HERDR fixtures excluded from this standard run; prior live/host evidence is separately scoped."
   },
   "native_runtime": {
     "terminal_client": {
@@ -54,7 +57,8 @@
       "version": "0.163.0",
       "sha256": "399ff69c431c066e40de318fba45c2b07f45a76b19939d247ee4828fc70c4215",
       "provenance": "Existing supervisor-owned app-server executable verified through /proc/PID/exe; daemon pid-update-loop helper is separate from the managed --listen unix:// app-server. Neither was started/replaced by sessionsation acceptance."
-    }
+    },
+    "observation_scope": "Earlier runtime inspection; not a new live-provider verification for this CLI release."
   },
   "review_candidate": {
     "source": {
