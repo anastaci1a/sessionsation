@@ -229,7 +229,7 @@ saves through the existing supervisor and returns its limits with `saved:true`.
 The `limits` object is the existing account snapshot's `switch_thresholds` object;
 clients display remaining-position markers as `100 - *_percent` and only mark
 custom limits when `customized:true`. Saving does not acknowledge plan changes.
-`new_account_name_max:12` limits new enrollments in both the public API and sole account owner; longer existing IDs
+`new_account_name_max:24` limits new enrollments in both the public API and sole account owner; longer existing IDs
 continue to work. Clients must gate new commands on published capabilities.
 
 ## New-session popup admission

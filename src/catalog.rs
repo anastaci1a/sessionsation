@@ -71,7 +71,7 @@ fn validate_name(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty()
             && name == name.trim()
-            && name.chars().count() <= 12
+            && name.chars().count() <= 24
             && !name.chars().any(char::is_control),
         "INVALID_SESSION_NAME"
     );
@@ -105,7 +105,7 @@ pub fn record_launch(
         let base = label
             .chars()
             .filter(|c| !c.is_control())
-            .take(12)
+            .take(24)
             .collect::<String>();
         let base = base.trim();
         let base = if base.is_empty() { "session" } else { base };
@@ -115,7 +115,7 @@ pub fn record_launch(
             let tail = format!("-{suffix}");
             let prefix: String = base
                 .chars()
-                .take(12usize.saturating_sub(tail.len()))
+                .take(24usize.saturating_sub(tail.len()))
                 .collect();
             name = format!("{prefix}{tail}");
             suffix += 1;
@@ -267,25 +267,25 @@ mod tests {
         s
     }
     #[test]
-    fn names_are_twelve_characters_but_legacy_identity_is_readable() {
+    fn names_are_twenty_four_characters_but_legacy_identity_is_readable() {
         let tmp = tempfile::tempdir().unwrap();
         let p = Paths::new(Some(tmp.path().join("data"))).unwrap();
         let s = seed(&p);
         transaction(&p, |c| {
-            c.sessions.get_mut(&s.id).unwrap().name = "legacy-long-session".into();
+            c.sessions.get_mut(&s.id).unwrap().name = "legacy-long-session-name-over-limit".into();
             Ok(())
         })
         .unwrap();
         let legacy = list(&p).unwrap().remove(0);
-        assert_eq!(legacy.name, "legacy-long-session");
+        assert_eq!(legacy.name, "legacy-long-session-name-over-limit");
         assert_eq!(
             resolve(&p, &legacy.id, &legacy.generation())
                 .unwrap()
                 .conversation_id,
             s.conversation_id
         );
-        assert!(rename(&p, &s.id, &legacy.generation(), "thirteenchars").is_err());
-        let renamed = rename(&p, &s.id, &legacy.generation(), "界".repeat(12).as_str()).unwrap();
+        assert!(rename(&p, &s.id, &legacy.generation(), "abcdefghijklmnopqrstuvwxy").is_err());
+        let renamed = rename(&p, &s.id, &legacy.generation(), "界".repeat(24).as_str()).unwrap();
         assert_eq!(renamed.id, s.id);
         for conversation in ["a", "b"] {
             let assigned = record_launch(
@@ -296,7 +296,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            assert!(assigned.name.chars().count() <= 12);
+            assert!(assigned.name.chars().count() <= 24);
         }
         assert_eq!(list(&p).unwrap().len(), 3);
     }

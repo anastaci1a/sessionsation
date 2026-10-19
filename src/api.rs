@@ -371,7 +371,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
         command => {
             let (method, id) = match command {
                 AccountCommand::Add { id } => {
-                    ensure!(codex_account(&id)?.len() <= 12, "ACCOUNT_NAME_TOO_LONG");
+                    ensure!(codex_account(&id)?.len() <= 24, "ACCOUNT_NAME_TOO_LONG");
                     ("account/add", id)
                 }
                 AccountCommand::Login { id } => ("account/login", id),
@@ -392,7 +392,7 @@ pub fn capabilities() -> Value {
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
-         "account_deletion":true,"account_removal":true,"account_limits":true,"new_account_name_max":12,"purge":false,"force_interrupt":false,"steer":false,"cross_provider_conversion":false},
+         "account_deletion":true,"account_removal":true,"account_limits":true,"new_account_name_max":24,"purge":false,"force_interrupt":false,"steer":false,"cross_provider_conversion":false},
         {"id":"claude","implemented":false,"reason":"SETUP_REQUIRED",
          "enrollment":false,"usage":false,"new":false,"resume":false,
          "account_switch":false,"restart":false,"submit":false,"queue":false,

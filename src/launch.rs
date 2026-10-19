@@ -101,7 +101,7 @@ pub fn validate_name(name: &str) -> Result<()> {
 /// User-assigned session names count Unicode scalar values, not UTF-8 bytes.
 pub fn validate_session_name(name: &str) -> Result<()> {
     validate_name(name)?;
-    ensure!(name.chars().count() <= 12, "INVALID_SESSION_NAME");
+    ensure!(name.chars().count() <= 24, "INVALID_SESSION_NAME");
     Ok(())
 }
 fn shape(r: &Request) -> Result<()> {
@@ -639,10 +639,10 @@ mod tests {
     }
     #[test]
     fn session_limit_is_separate_from_directory_and_space_names() {
-        for name in ["a".repeat(12), "界".repeat(12)] {
+        for name in ["a".repeat(24), "界".repeat(24)] {
             validate_session_name(&name).unwrap();
         }
-        for name in ["a".repeat(13), "界".repeat(13)] {
+        for name in ["a".repeat(25), "界".repeat(25)] {
             assert!(validate_session_name(&name).is_err());
             validate_name(&name).unwrap();
         }

@@ -90,13 +90,17 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
-        daemon::call(&paths, "account/add", json!({"name":"thirteenchars"}))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("ACCOUNT_NAME_TOO_LONG")
+        daemon::call(
+            &paths,
+            "account/add",
+            json!({"name":"abcdefghijklmnopqrstuvwxy"})
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("ACCOUNT_NAME_TOO_LONG")
     );
-    assert!(!paths.account("thirteenchars").unwrap().exists());
+    assert!(!paths.account("abcdefghijklmnopqrstuvwxy").unwrap().exists());
     let login = daemon::call(&paths, "account/add", json!({"name":"first"}))
         .await
         .unwrap();
@@ -155,13 +159,22 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
         daemon::call(&paths, "status", json!({})).await.unwrap()["automatic_switch_preferences"],
         json!({})
     );
-    daemon::call(&paths, "account/add", json!({"name":"second"}))
-        .await
-        .unwrap();
+    daemon::call(
+        &paths,
+        "account/add",
+        json!({"name":"abcdefghijklmnopqrstuvwx"}),
+    )
+    .await
+    .unwrap();
     let mut rejected = false;
     for _ in 0..100 {
         let v = daemon::call(&paths, "status", json!({})).await.unwrap();
-        if v["accounts"][1]["enabled"] == false {
+        if v["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["name"] == "abcdefghijklmnopqrstuvwx" && a["enabled"] == false)
+        {
             rejected = true;
             break;
         }
@@ -184,7 +197,7 @@ fn public_account_creation_limit_and_invalid_limits_have_no_owner_side_effects()
     let tmp = tempfile::tempdir().unwrap();
     for (args, code) in [
         (
-            vec!["account", "add", "codex:thirteenchars"],
+            vec!["account", "add", "codex:abcdefghijklmnopqrstuvwxy"],
             "ACCOUNT_NAME_TOO_LONG",
         ),
         (
