@@ -16,7 +16,8 @@
       "documentation links",
       "JSON Schema and real CLI envelopes",
       "30-character account and Unicode session boundaries; schema/admission/rename/resume consistency",
-      "Direct attachment lookup is read-only and rejects stale generations, replaced process epochs and unattached sessions for HERDR/tmux"
+      "Direct attachment lookup is read-only and rejects stale generations, replaced process epochs and unattached sessions for HERDR/tmux",
+      "Unregistered original-account saved history remains resumable; state/details agree, target account availability remains checked at explicit admission"
     ],
     "tests": {
       "unit": 153,
@@ -48,9 +49,9 @@
     },
     "artifact": {
       "path_in_test_checkout": "target-review/release/sessionsation",
-      "sha256": "f759e1bdf000a4de3ca59708d82de78fb713f89d757dfb1f8885be73efa6058a",
+      "sha256": "4cb5b5c6cbb6d180e5b64ec88d232a1a0acafc76a66578558e64fe98b343cae1",
       "provenance": "Rust 1.95.0 locked release build from the named source commit; package 0.2.0, API v1, contract revision 3. Installation records are maintained outside Git.",
-      "source_commit": "bf3208fb15af5706050d07d57d9b43ddb53cf400"
+      "source_commit": "b6c1c88403fdcbbd8214aee3a4e8a74017cf7215"
     },
     "passive_observation": {
       "fixture": "Kernel-bound synthetic HERDR record, inert native WebSocket server, shared mutation lock held",
@@ -115,7 +116,17 @@
       "harness_sha256": "8a9836fa3f761c4b6c760b0692193796324c6d8f1d4bb53b3737dd4050195f8d"
     },
     "recovery_contention": "Forced ledger lock held through launch confirmation, then released: stopped/interrupted/errored recovery completes with one native delivery and no replay. Full suite passed after this regression exposed and fixed immediate adapter_busy rejection.",
-    "tested_source_commit": "bf3208fb15af5706050d07d57d9b43ddb53cf400"
+    "tested_source_commit": "b6c1c88403fdcbbd8214aee3a4e8a74017cf7215",
+    "orphan_history_resume": {
+      "source_commit": "b6c1c88403fdcbbd8214aee3a4e8a74017cf7215",
+      "herdr_version": "0.9.5",
+      "passed": 1,
+      "provider": "synthetic native server",
+      "preserved_turns": 70,
+      "preserved_items": 270,
+      "model_calls": 0,
+      "scope": "Owned isolated HERDR; delete fixture account credentials, preserve paginated archived conversation and resume on an explicit destination account. No live accounts, agents or sockets mounted."
+    }
   },
   "limitations": [
     "No provider login, credentials, model calls or existing live hosts in portable checks",
