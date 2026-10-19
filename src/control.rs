@@ -238,6 +238,38 @@ impl Control {
     }
 
     pub async fn terminals(&mut self, id: &str) -> Result<Vec<Value>> {
+        // Codex 0.163 rejects backgroundTerminals/list for an unloaded thread.
+        // Confirm both views, then recheck the thread; an RPC failure or a
+        // partially loaded view is never interpreted as an empty terminal list.
+        if self.thread_for_state(id).await?["status"]["type"] == "notLoaded" {
+            let mut cursor = Value::Null;
+            let mut seen = std::collections::BTreeSet::new();
+            loop {
+                let page = self
+                    .request("thread/loaded/list", json!({"cursor":cursor,"limit":100}))
+                    .await?;
+                let loaded = page["data"]
+                    .as_array()
+                    .context("Codex returned no loaded-thread list")?;
+                ensure!(
+                    !loaded.iter().any(|v| v.as_str() == Some(id)),
+                    "NATIVE_THREAD_STATE_CHANGED"
+                );
+                cursor = page["nextCursor"].clone();
+                if cursor.is_null() {
+                    break;
+                }
+                ensure!(
+                    seen.insert(cursor.to_string()),
+                    "NATIVE_THREAD_LIST_INCOMPLETE"
+                );
+            }
+            ensure!(
+                self.thread_for_state(id).await?["status"]["type"] == "notLoaded",
+                "NATIVE_THREAD_STATE_CHANGED"
+            );
+            return Ok(vec![]);
+        }
         let mut result = Vec::new();
         let mut cursor = Value::Null;
         loop {

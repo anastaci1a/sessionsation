@@ -455,6 +455,15 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             .unwrap()["pid"]
             .as_i64()
             .unwrap();
+        {
+            let state = if account == "personal" { &f.a } else { &f.b };
+            state
+                .lock()
+                .unwrap()
+                .threads
+                .get_mut(receipt["conversation_id"].as_str().unwrap())
+                .unwrap()["status"]["type"] = json!("notLoaded");
+        }
         let stopped = foreign_api(
             &f,
             &[
@@ -473,6 +482,7 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
         let stopped: Value = serde_json::from_slice(&stopped.stdout).unwrap();
         let operation = stopped["result"]["id"].as_str().unwrap();
         let until = Instant::now() + Duration::from_secs(30);
+        let mut startup_wait_observed = false;
         loop {
             let all = foreign_api(&f, &["operations"]);
             assert!(all.status.success());
@@ -483,12 +493,31 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
                 .iter()
                 .find(|j| j["id"] == operation)
                 .unwrap();
+            if job["phase"] == "waiting_for_provider_ready" {
+                startup_wait_observed = true;
+                assert_eq!(
+                    unsafe { libc::kill(agent as i32, 0) },
+                    0,
+                    "startup waiting must retain the exact client"
+                );
+                let state = if account == "personal" { &f.a } else { &f.b };
+                state
+                    .lock()
+                    .unwrap()
+                    .threads
+                    .get_mut(receipt["conversation_id"].as_str().unwrap())
+                    .unwrap()["status"]["type"] = json!("idle");
+            }
             if job["phase"] == "complete" {
                 break;
             }
             assert!(job["phase"] != "failed" && Instant::now() < until, "{job}");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        assert!(
+            startup_wait_observed,
+            "provider startup must be visibly pending"
+        );
         assert_ne!(unsafe { libc::kill(agent as i32, 0) }, 0);
         tokio::time::sleep(Duration::from_millis(200)).await;
         let stopped_receipt: Value = serde_json::from_slice(

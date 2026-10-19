@@ -317,12 +317,20 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
             None
         };
         let mut busy = false;
+        let mut provider_startup = false;
         let mut working = false;
         if let Some(control) = control.as_mut() {
             for file in &files {
                 let meta = session_meta(file)?;
                 let id = meta["id"].as_str().context("missing thread ID")?;
                 let thread = control.thread_for_state(id).await?;
+                if id == job.source.thread_id
+                    && !job.source.inactive
+                    && thread["status"]["type"] == "notLoaded"
+                {
+                    provider_startup = true;
+                    continue;
+                }
                 if id == job.source.thread_id
                     && job.kind == "account"
                     && !job.source.inactive
@@ -377,6 +385,16 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
                 busy = false;
             }
             working = busy;
+        }
+        if provider_startup {
+            phase(
+                paths,
+                job,
+                "waiting_for_provider_ready",
+                "Codex has not loaded this conversation yet. Complete any startup prompt in its terminal, or cancel this operation. Nothing has been stopped or switched.",
+            )?;
+            stable = None;
+            continue;
         }
         if job.source.inactive && busy {
             if files.iter().any(|p| rollout_still_open(p).unwrap_or(true)) {

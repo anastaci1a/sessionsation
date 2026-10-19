@@ -63,6 +63,7 @@ struct Server {
     started_profiles: BTreeMap<String, Value>,
     calls: Vec<(String, Value)>,
     background: bool,
+    inconsistent_loaded: bool,
     fail_resume: bool,
     resume_system_error: bool,
     ignore_full_access: bool,
@@ -150,7 +151,7 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                             s.limits.clone().unwrap_or_else(||json!({"rateLimits":{"limitId":"codex","primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":daemon::now()+18000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":daemon::now()+604800}}}))
                         }
                         "thread/loaded/list" => {
-                            json!({"data":s.threads.iter().filter(|(_,t)|t["status"]["type"]!="notLoaded").map(|(id,_)|id.clone()).collect::<Vec<_>>(),"nextCursor":null})
+                            json!({"data":s.threads.iter().filter(|(_,t)|s.inconsistent_loaded || t["status"]["type"]!="notLoaded").map(|(id,_)|id.clone()).collect::<Vec<_>>(),"nextCursor":null})
                         }
                         "thread/read" => {
                             if !s.threads.contains_key(id) {
@@ -304,6 +305,7 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                             t["status"]["type"] = json!("notLoaded");
                             json!({})
                         }
+                        "thread/backgroundTerminals/list" if s.threads.get(id).is_some_and(|t|t["status"]["type"]=="notLoaded") => json!({"fixture_error":true}),
                         "thread/backgroundTerminals/list" => {
                             json!({"data":if s.background{vec![json!({"processId":"background"})]}else{vec![]},"nextCursor":null})
                         }
@@ -3285,5 +3287,47 @@ async fn public_stop_preserves_manual_intent_even_when_account_is_disabled() {
             .calls
             .iter()
             .any(|(m, _)| m == "turn/start" || m == "turn/steer")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unloaded_background_checks_require_consistent_positive_native_state() {
+    let f = Fixture::new().await;
+    let home = f.paths.account("personal").unwrap();
+    let rollout = history(&home, f.tmp.path(), ID);
+    f.a.lock()
+        .unwrap()
+        .threads
+        .insert(ID.into(), thread_value(&rollout, ID, "notLoaded"));
+    let mut control = sessionsation::control::Control::connect(&home)
+        .await
+        .unwrap();
+    assert!(control.terminals(ID).await.unwrap().is_empty());
+    assert!(
+        !f.a.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(m, _)| m == "thread/backgroundTerminals/list")
+    );
+    f.a.lock().unwrap().inconsistent_loaded = true;
+    assert!(
+        control
+            .terminals(ID)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("NATIVE_THREAD_STATE_CHANGED")
+    );
+    {
+        let mut state = f.a.lock().unwrap();
+        state.inconsistent_loaded = false;
+        state.threads.get_mut(ID).unwrap()["status"]["type"] = json!("idle");
+        state.background = true;
+    }
+    assert_eq!(
+        control.terminals(ID).await.unwrap().len(),
+        1,
+        "loaded background work must never be skipped"
     );
 }

@@ -393,3 +393,10 @@ launch rechecks current state. Consumers must tolerate future reason codes.
 Read-only history inspection does not constitute `history_busy`; an open writer
 does. If descriptor access flags cannot be inspected, discovery conservatively
 retains the busy gate. Live attachment and operation ownership checks still apply.
+
+A live terminal can be waiting at Codex’s workspace-trust/startup prompt before its
+conversation is loaded. Lifecycle workers report `waiting_for_provider_ready` and
+retain it until native state is confirmed; they never approve that prompt or treat
+the unloaded root as a ready agent. Background-terminal checks for unloaded
+saved/child histories require consistent native read/list/read evidence rather
+than treating a rejected RPC as empty.

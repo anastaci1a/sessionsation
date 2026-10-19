@@ -188,5 +188,16 @@ host/PID/start/home/UUID confirmation. Menu activity hints read a bounded 64 KiB
 rollout tail. A partial first record is skipped; damaged tails or no retained
 activity event remain unknown. Native idle checks, operation locks and full history
 verification at lifecycle boundaries are unchanged. No cached idle state authorizes
-a mutation. The separately pinned UI launcher build excludes the review candidate's
-observer additions; see the UI's deployed-artifact record for its source and hash.
+a mutation. Current bindings retain their original socket namespace; a partial host
+response preserves a still-live attachment without claiming verified readiness.
+See the UI deployment record and [verification manifest](verification.json) for
+exact selected artifacts.
+
+Mixed-version readers are a separate rollout gate. The existing Agent DM helper
+still selects its older immutable CLI against this same root. That reader can
+misinterpret a custom HERDR config/socket namespace and invalidate an otherwise
+live binding. The current client fixes its own observer environment and explicit
+socket routing; it cannot change another process's old discovery behavior. Agent DM
+must review and adopt a compatible pin before custom-namespace acceptance on the
+shared root is complete. Do not rewind catalog generations, replay mutations, or
+change its pin/data/receipts to conceal this incompatibility.
