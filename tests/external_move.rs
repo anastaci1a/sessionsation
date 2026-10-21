@@ -61,6 +61,8 @@ fn tmux(socket: &str, args: &[&str]) -> String {
 #[derive(Default)]
 struct Server {
     messaging_profile: bool,
+    reject_error_full_read: bool,
+    retained_writer: Option<fs::File>,
     lose_queue_reply: bool,
     native_messages: Vec<Value>,
     limits: Option<Value>,
@@ -158,6 +160,7 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                         "thread/loaded/list" => {
                             json!({"data":s.threads.iter().filter(|(_,t)|s.inconsistent_loaded || t["status"]["type"]!="notLoaded").map(|(id,_)|id.clone()).collect::<Vec<_>>(),"nextCursor":null})
                         }
+                        "thread/read" if s.reject_error_full_read && p["includeTurns"] == true && s.threads.get(id).is_some_and(|t| t["status"]["type"] == "systemError") => json!({"fixture_error":true}),
                         "thread/read" => {
                             if !s.threads.contains_key(id) {
                                 if let Some(path) = find_rollout(&home, id) {
@@ -296,6 +299,7 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                         "thread/unarchive" if s.fail_unarchive => json!({"fixture_error":true}),
                         "thread/archive" if s.fail_archive => json!({"fixture_error":true}),
                         "thread/archive" | "thread/unarchive" => {
+                            if m == "thread/archive" { s.retained_writer.take(); }
                             let t = s.threads.get_mut(id).unwrap();
                             let old = PathBuf::from(t["path"].as_str().unwrap());
                             let path = home
@@ -3359,4 +3363,124 @@ async fn unloaded_background_checks_require_consistent_positive_native_state() {
         1,
         "loaded background work must never be skipped"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_error_lifecycle_uses_bounded_summary_and_keeps_identity() {
+    for (action, native_state, turn) in [
+        ("switch", "systemError", "failed"),
+        ("stop", "systemError", "interrupted"),
+        ("restart", "systemError", "failed"),
+        ("switch", "idle", "failed"),
+        ("switch", "systemError", "interrupted"),
+    ] {
+        let f = Fixture::new().await;
+        f.live(ID, false);
+        {
+            let mut server = f.a.lock().unwrap();
+            server.reject_error_full_read = true;
+            let thread = server.threads.get_mut(ID).unwrap();
+            thread["status"]["type"] = json!(native_state);
+            thread["turns"] = json!([{"id":"failed-turn","status":turn,"error":{"message":"Capacity unavailable","codexErrorInfo":"usageLimitExceeded"}}]);
+        }
+        let state = f.invoke(&["api", "state"]);
+        let session = state["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["conversation_id"] == ID)
+            .unwrap();
+        for capability in ["switch_account", "stop", "restart"] {
+            assert_eq!(session["capabilities"][capability], true);
+        }
+        let stable = session["id"].as_str().unwrap();
+        let mut args = vec![
+            "api",
+            action,
+            "--session",
+            stable,
+            "--expected-generation",
+            session["generation"].as_str().unwrap(),
+        ];
+        if action == "switch" {
+            args.extend(["--to", "codex:work"]);
+        }
+        let job = f.invoke(&args);
+        f.wait(job["result"]["id"].as_str().unwrap(), "complete")
+            .await;
+        let after = f.invoke(&["api", "state"]);
+        let current = after["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == stable)
+            .unwrap();
+        assert_eq!(current["conversation_id"], ID);
+        assert_eq!(
+            current["availability"],
+            if action == "stop" { "saved" } else { "running" }
+        );
+        assert_eq!(
+            current["account"],
+            if action == "switch" {
+                "work"
+            } else {
+                "personal"
+            }
+        );
+        if turn == "interrupted" {
+            assert!(
+                !f.b.lock()
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .any(|(method, _)| method == "turn/start"),
+                "interrupted work must not gain an automatic continuation"
+            );
+        }
+        assert!(
+            !f.a.lock().unwrap().calls.iter().any(
+                |(m, p)| m == "turn/steer" || (m == "thread/read" && p["includeTurns"] == true)
+            )
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_retained_writer_is_recoverable_but_active_or_unknown_history_stays_busy() {
+    let f = Fixture::new().await;
+    let home = f.paths.account("personal").unwrap();
+    let path = history(&home, f.tmp.path(), ID);
+    let writer = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    for (state, turn, expected) in [
+        ("active", "inProgress", "history_busy"),
+        ("systemError", "failed", "unfinished_history"),
+        ("idle", "completed", "unfinished_history"),
+        ("unknown", "failed", "history_busy"),
+    ] {
+        let mut t = thread_value(&path, ID, state);
+        t["turns"] = json!([{"id":"turn","status":turn}]);
+        f.a.lock().unwrap().threads.insert(ID.into(), t);
+        let snapshot = f.invoke(&["api", "state"]);
+        let s = snapshot["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["conversation_id"] == ID)
+            .unwrap();
+        assert_eq!(s["resume_block_reason"], expected);
+        assert_eq!(
+            s["capabilities"]["resume"],
+            expected == "unfinished_history"
+        );
+    }
+    drop(writer);
+    let snapshot = f.invoke(&["api", "state"]);
+    let s = snapshot["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap();
+    assert!(s["resume_block_reason"].is_null());
 }

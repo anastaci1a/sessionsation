@@ -5,7 +5,11 @@
 The offline suite uses disposable homes, fake provider servers and owned tmux
 sockets. It covers stable IDs, stale targets, locks, concurrent operations, partial
 failure/recovery, uncertain delivery, account deletion preserving saved history,
-and archive/restore/delete. These tests do not establish support for an arbitrary
+and archive/restore/delete. Error-state regressions also exercise public switch/restart/stop with bounded
+turn summaries, preserving identity even when full-history reads are rejected.
+The optional HERDR retained-writer fixture verifies explicit recovery onto the
+same or another account using synthetic provider servers and inert terminals.
+These tests do not establish support for an arbitrary
 installed provider binary. Run the commands in [contributor guidance](../agents/README.md).
 
 The public contract is [v1](contract.md), with its [schema](contract/v1.json) and

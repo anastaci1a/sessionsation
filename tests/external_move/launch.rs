@@ -1299,3 +1299,102 @@ async fn installed_herdr_explicit_message_recovery_keeps_context_and_never_repla
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires isolated HERDR binary; see docs/operations.md"]
+async fn installed_herdr_recovers_idle_error_history_writer_without_external_help() {
+    assert_eq!(
+        std::env::var("SESSIONSATION_ISOLATED_HOST_TEST").as_deref(),
+        Ok("1")
+    );
+    for account in ["personal", "work"] {
+        let f = Fixture::new().await;
+        let host = ActualHost::start(&f).await;
+        let socket = host.config.join("herdr/sessions/fixture/herdr.sock");
+        let space = host.call(&[
+            "workspace",
+            "create",
+            "--label",
+            "Recovery",
+            "--cwd",
+            f.tmp.path().to_str().unwrap(),
+        ]);
+        let path = history(&f.paths.account("personal").unwrap(), f.tmp.path(), ID);
+        {
+            let mut server = f.a.lock().unwrap();
+            server.retained_writer = Some(fs::OpenOptions::new().append(true).open(&path).unwrap());
+            server.reject_error_full_read = true;
+            let mut t = thread_value(&path, ID, "systemError");
+            t["turns"] = json!([{"id":"failure","status":"failed"}]);
+            server.threads.insert(ID.into(), t);
+        }
+        let out = api(&f, &["state"], None);
+        assert!(out.status.success());
+        let state: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let saved = state["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["conversation_id"] == ID)
+            .unwrap();
+        assert_eq!(saved["resume_block_reason"], "unfinished_history");
+        assert_eq!(saved["capabilities"]["resume"], true);
+        let request = uuid::Uuid::new_v4().to_string();
+        let resume = json!({"version":1,"request_id":request,"session_id":saved["id"],"expected_generation":saved["generation"],"account_id":format!("codex:{account}"),"name":"Recovered","host":{"session":"fixture","socket":socket},"space":{"kind":"existing","id":space["workspace"]["workspace_id"]},"confirm_unfinished":true});
+        let out = api(&f, &["resume-launch", "start"], Some(&resume));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let until = Instant::now() + Duration::from_secs(25);
+        let receipt = loop {
+            let out = api(
+                &f,
+                &["resume-launch", "status", "--request-id", &request],
+                None,
+            );
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+            let r = &result["result"];
+            if r["phase"] == "running" {
+                break r.clone();
+            }
+            assert!(
+                !matches!(r["phase"].as_str(), Some("failed" | "uncertain"))
+                    && Instant::now() < until,
+                "{r}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert_eq!(receipt["conversation_id"], ID);
+        assert_eq!(receipt["request"]["session_id"], saved["id"]);
+        let pane = receipt["pane_id"].as_str().unwrap();
+        let runtime = host.call(&["pane", "process-info", "--pane", pane]);
+        assert!(
+            runtime["process_info"]["foreground_processes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["name"] == "codex")
+        );
+        assert!(
+            !f.a.lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|(m, _)| m == "turn/start" || m == "turn/steer")
+        );
+        assert!(
+            !f.b.lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|(m, _)| m == "turn/start" || m == "turn/steer")
+        );
+    }
+}

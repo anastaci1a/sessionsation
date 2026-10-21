@@ -290,7 +290,7 @@ async fn discover_mode(
             }
             let state = if thread["status"]["type"] == "systemError" {
                 control
-                    .thread(id, true)
+                    .thread_for_state(id)
                     .await
                     .unwrap_or_else(|_| thread.clone())
             } else {
@@ -314,6 +314,26 @@ async fn discover_mode(
                 }
                 .into();
             }
+        }
+    }
+    // An app-server may retain an idle history writer after its terminal exits.
+    // The normal saved-resume worker can unload it safely; a writable descriptor
+    // alone must not make that recovery permanently inaccessible in the UI.
+    for source in result
+        .iter_mut()
+        .filter(|s| s.inactive && s.block_reason.as_deref() == Some("busy"))
+    {
+        if let Ok(mut control) = crate::control::Control::connect(&source.home).await
+            && let Ok(thread) = control.thread_for_state(&source.thread_id).await
+            && thread["id"] == source.thread_id
+            && thread["path"]
+                .as_str()
+                .is_some_and(|p| Path::new(p) == source.rollout)
+            && crate::control::confirmed_quiescent(&thread, false)
+        {
+            source.shared_server = true;
+            source.block_reason = Some("unfinished".into());
+            source.detail = "The terminal exited but its idle provider still holds the saved history. Explicit resume can reattach it or safely transfer it to another account; unfinished work needs review.".into();
         }
     }
     let live: std::collections::BTreeSet<_> = result

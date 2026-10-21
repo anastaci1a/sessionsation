@@ -59,6 +59,29 @@ offline metadata does not prove an account can presently launch.
 Session capabilities are fresh snapshot hints; the backend revalidates them at the
 mutation boundary. Unmanaged external sessions are not lifecycle targets through v1.
 
+### Lifecycle actions after a provider error
+
+A provider failure (quota, capacity, or an interrupted turn) does not revoke
+Switch, Restart, Stop, Rename or Move-to-Space capabilities. These actions remain
+subject to account/host support, unique ownership, operation locks and generation
+checks. Clients should observe the selected session before opening a mutation
+flow and warn on `errored`/`interrupted`/`stopped`. An unavailable observation is
+uncertainty, not proof of active work or permanent unavailability. A warning
+confirmation never substitutes for the worker's final safety checks.
+
+For native `systemError`, lifecycle checks read only the latest turn summary
+and recheck the thread identity/status. Completed, failed and interrupted terminal
+turns with no active flags are quiescent; missing evidence and active work still
+block destructive steps. Queued input, active goals and background terminals keep
+their existing checks and confirmations. Submit/Queue semantics do not change.
+
+An inactive conversation can retain a writable history descriptor in its native
+app-server. If that server positively verifies the same history and idle state,
+discovery exposes `unfinished_history` with explicit-confirmation resume rather
+than trapping it behind `history_busy`. Same-account resume reattaches the saved
+thread; transfer safely unloads it through the existing worker. Unknown or active
+writers remain busy; polling never unloads or resumes them.
+
 ### Archive metadata and filtering
 
 `api state --archive-filter active|archived|all` defaults to `active`.

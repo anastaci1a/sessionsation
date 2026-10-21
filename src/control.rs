@@ -19,6 +19,12 @@ pub fn available(home: &Path) -> bool {
 /// turn is running (for example after an account reaches its usage limit).
 /// The error state alone is never sufficient evidence to stop its terminal.
 pub fn confirmed_quiescent(thread: &Value, allow_unloaded: bool) -> bool {
+    if thread["status"]["activeFlags"]
+        .as_array()
+        .is_some_and(|flags| !flags.is_empty())
+    {
+        return false;
+    }
     match thread["status"]["type"].as_str() {
         Some("idle") => true,
         Some("notLoaded") => allow_unloaded,
@@ -26,13 +32,17 @@ pub fn confirmed_quiescent(thread: &Value, allow_unloaded: bool) -> bool {
             let Some(turns) = thread["turns"].as_array() else {
                 return false;
             };
-            turns.last().is_some_and(|turn| turn["status"] == "failed")
-                && turns.iter().all(|turn| {
-                    matches!(
-                        turn["status"].as_str(),
-                        Some("completed" | "failed" | "interrupted")
-                    )
-                })
+            turns.last().is_some_and(|turn| {
+                matches!(
+                    turn["status"].as_str(),
+                    Some("completed" | "failed" | "interrupted")
+                )
+            }) && turns.iter().all(|turn| {
+                matches!(
+                    turn["status"].as_str(),
+                    Some("completed" | "failed" | "interrupted")
+                )
+            })
         }
         _ => false,
     }
@@ -158,12 +168,28 @@ impl Control {
     }
 
     pub async fn thread_for_state(&mut self, id: &str) -> Result<Value> {
-        let thread = self.thread(id, false).await?;
+        let mut thread = self.thread(id, false).await?;
         if thread["status"]["type"] == "systemError" {
-            self.thread(id, true).await
-        } else {
-            Ok(thread)
+            // Large histories may time out or exceed the control-frame budget.
+            // A bounded latest-turn summary proves termination without fetching items.
+            let page = self
+                .request(
+                    "thread/turns/list",
+                    json!({"threadId":id,"itemsView":"summary","sortDirection":"desc","limit":1}),
+                )
+                .await?;
+            let turns = page["data"]
+                .as_array()
+                .context("Codex returned no turn summary")?;
+            ensure!(turns.len() <= 1, "NATIVE_TURN_SUMMARY_INVALID");
+            let after = self.thread(id, false).await?;
+            ensure!(
+                after["id"] == id && thread["id"] == id && after["status"] == thread["status"],
+                "NATIVE_THREAD_STATE_CHANGED"
+            );
+            thread["turns"] = json!(turns);
         }
+        Ok(thread)
     }
 
     /// Recheck accepted input and background work at every unload boundary,
@@ -314,6 +340,12 @@ mod tests {
         assert!(!confirmed_quiescent(&thread, false));
         thread["status"]["type"] = json!("active");
         assert!(!confirmed_quiescent(&thread, false));
+        for status in ["completed", "interrupted", "failed"] {
+            thread = json!({"status":{"type":"systemError"},"turns":[{"status":status}]});
+            assert!(confirmed_quiescent(&thread, false));
+            thread["status"]["activeFlags"] = json!(["waitingOnApproval"]);
+            assert!(!confirmed_quiescent(&thread, false));
+        }
     }
 
     #[test]

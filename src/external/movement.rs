@@ -341,6 +341,10 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
                     // (including quota failure) can safely move but needs continuation.
                     let failed = if thread["status"]["type"] == "systemError" {
                         confirmed_quiescent(&thread, false)
+                            && thread["turns"]
+                                .as_array()
+                                .and_then(|turns| turns.last())
+                                .is_some_and(|turn| turn["status"] == "failed")
                     } else if thread["status"]["type"] == "idle" {
                         control.request("thread/turns/list", json!({"threadId":id,"itemsView":"summary","sortDirection":"desc","limit":1})).await
                             .ok().is_some_and(|page| page["data"].as_array().is_some_and(|turns| turns.len()==1 && turns[0]["status"]=="failed"))
