@@ -201,6 +201,12 @@ disable competing lifecycle actions and expose `pending_operation_id` while rese
 A terminal handoff remains reserved while its worker holds the worker lock;
 a completed/failed label alone does not establish that continuation or recovery
 has stopped.
+Submit/Queue admission also retains this reservation until the handoff worker
+exits, including its continuation and rollback tail. This blocks new native
+writes; it does not suspend messages already accepted into Codex's own queue or
+its terminal composer's local queue. The inspected native queue API has no pause
+primitive. Such pending input is not deleted or replayed to simulate a hold;
+the handoff retains its source if queued work prevents a safe unload.
 Durable launch, resume, deletion and archive workers use separate process groups
 so closing a requesting viewer does not stop their work. v1 operations
 wait for positive idle state, send no steer, and do not automatically continue work.

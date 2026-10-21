@@ -188,6 +188,51 @@ fn movement_and_message_share_locks() {
     assert!(mutation_lock(&paths, &input.session_id).is_err());
 }
 
+#[test]
+fn handoff_reserves_delivery_until_worker_releases_even_after_terminal_phase() {
+    let (_dir, paths, input, _) = fixture();
+    let root = paths.root.join("handoff-jobs");
+    crate::paths::private_dir(&root).unwrap();
+    let worker = lock_file(&root.join("switch.worker-lock")).unwrap();
+    let source = json!({"pane":"%1","tmux_session":"fixture","pid":1,
+        "cwd":"/fixture","thread_id":input.session_id,"rollout":"/fixture/history",
+        "home":"/fixture/home","binary":"/fixture/codex","resume_options":[]});
+    for phase in [
+        "queued",
+        "waiting_for_idle",
+        "complete",
+        "failed",
+        "cancelled",
+        "recovered",
+    ] {
+        fs::write(
+            root.join("switch.json"),
+            serde_json::to_vec(&json!({
+                "id":"switch", "source":source,"target":"other","phase":phase,"detail":""
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        worker.lock_exclusive().unwrap();
+        assert_eq!(
+            mutation_lock(&paths, &input.session_id).unwrap_err().0,
+            "migrating",
+            "{phase}"
+        );
+        // Another conversation is independent of this reservation.
+        assert!(mutation_lock(&paths, "33333333-3333-4333-8333-333333333333").is_ok());
+        FileExt::unlock(&worker).unwrap();
+        if matches!(phase, "queued" | "waiting_for_idle") {
+            assert_eq!(
+                mutation_lock(&paths, &input.session_id).unwrap_err().0,
+                "migrating"
+            );
+        } else {
+            assert!(mutation_lock(&paths, &input.session_id).is_ok(), "{phase}");
+        }
+    }
+}
+
 struct Server {
     task: tokio::task::JoinHandle<()>,
     methods: Arc<Mutex<Vec<String>>>,

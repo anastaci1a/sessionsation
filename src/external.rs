@@ -2671,10 +2671,13 @@ pub(crate) fn messaging_lock(
             let bytes = fs::read(entry.path()).map_err(|_| "local_io_error")?;
             let job: Job = serde_json::from_slice(&bytes).map_err(|_| "migration_state_unknown")?;
             if job.source.thread_id == id
-                && !matches!(
+                && (!matches!(
                     job.phase.as_str(),
                     "complete" | "failed" | "cancelled" | "recovered"
+                ) || !crate::background::worker_stopped(
+                    &entry.path().with_extension("worker-lock"),
                 )
+                .map_err(|_| "migration_state_unknown")?)
             {
                 return Err("migrating");
             }
