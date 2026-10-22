@@ -35,7 +35,14 @@ pub(in crate::messaging) struct Observation {
 async fn read(control: &mut Transport, id: &str) -> Result<Status> {
     let read: Read = control
         .request("thread/read", json!({"threadId":id,"includeTurns":false}))
-        .await?;
+        .await
+        .map_err(|e| {
+            if e.0 == "timeout" {
+                Fault("native_thread_read_timeout")
+            } else {
+                e
+            }
+        })?;
     if read.thread.id != id {
         return Err(Fault("correlation_changed"));
     }
@@ -64,7 +71,14 @@ pub(in crate::messaging) async fn observe(
                     "thread/turns/list",
                     json!({"threadId":id,"itemsView":"summary","sortDirection":"desc","limit":1}),
                 )
-                .await?;
+                .await
+                .map_err(|e| {
+                    if e.0 == "timeout" {
+                        Fault("native_turn_summary_timeout")
+                    } else {
+                        e
+                    }
+                })?;
             if page.data.len() > 1 {
                 return Err(Fault("malformed_summary"));
             }

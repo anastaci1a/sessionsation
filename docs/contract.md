@@ -106,7 +106,22 @@ history and never unarchives or resumes a thread.
 
 ## Passive readiness
 
-Aggregate state/watch reports attachment availability, not native activity. For a
+Aggregate state/watch reports attachment availability, not native activity. Its
+optional native enrichment has a shared five-second budget and reads only matching
+loaded identities when all discovered terminals have conversation IDs. A slow
+account supervisor falls back to the stored snapshot after one second;
+`account_source` identifies that fallback. `timing` reports inventory, account
+status and total milliseconds. These bounds exclude filesystem/host discovery;
+they are not an end-to-end latency guarantee. `discovery_warnings` marks incomplete
+native enrichment without discarding positively discovered identities.
+
+`directory` is the discovered working directory (process/launch or native thread
+metadata), not a directory inferred from a display name or HERDR Space. Renaming
+or moving a tab does not change the agent working directory. A desired root can
+differ from both process and provider metadata; reporting the desired root would
+be false until an explicit supported directory/lifecycle operation applies it.
+
+For a
 selected session use:
 
 ```sh
@@ -124,6 +139,14 @@ running, exited or unattached process; an idle native thread is not a process-st
 claim. `observation.status` distinguishes absent evidence from expired evidence.
 Freshness expires five seconds after the final verified native read completes;
 cache hits never extend it. It is not a reservation.
+RPC timeouts identify `native_initialize_timeout`, `native_thread_read_timeout`,
+or `native_turn_summary_timeout`; the overall bound is `observation_timeout`.
+`observation.failure` supplies the RPC method (null for the overall budget),
+budget in milliseconds, a readable explanation and retryability. Missing evidence
+keeps both timestamps null and every action unavailable. Slow provider reads are
+not proof of idle readiness; back off instead of repeatedly forcing refresh.
+Cached-only failed observations remain `observation.status: unobserved`, not stale
+evidence. The compatibility `freshness` field remains fresh/stale.
 A changed catalog or runtime rejects the result as `STALE_TARGET`.
 
 `explicit_intent` reports a positively recorded stop token or unknown; an idle
@@ -667,10 +690,13 @@ scope, UI-visible effects and operational limitations.
 Source package 0.2.0, contract revision 3, retains API v1 with additive capability
 negotiation. New clients may opt into batch observations and explicit message
 recovery; accept Resume-only null runtime generations and `launch_unknown` receipts.
-Existing Submit/Queue requests and receipt domains are unchanged. The
-reviewed migration executable may still report 0.1.0: inspect `api version` on new
-builds, or `--version` plus an external SHA-256 and `api capabilities` on older
-ones. An unknown `version` command means the discovery extension is absent.
+Existing Submit/Queue requests and receipt domains are unchanged. Package/API
+numbers alone do not identify a build: inspect the executable path and SHA-256
+from `api version` alongside `api capabilities`. Older builds without `api version`
+need `--version` and an external SHA-256. Readiness reason codes are extensible;
+prefer optional `observation.failure.message` for timeout explanations and inspect
+`observation.status` to distinguish unobserved from stale. A timeout never grants
+permission to resend, resume or infer readiness.
 Do not substitute PATH, another data root or an older receipt domain when pinning.
 Keep the sole supervisor and existing receipt databases; a client upgrade is not
 an owner handoff. Current installation selection and consumer pins stay unchanged

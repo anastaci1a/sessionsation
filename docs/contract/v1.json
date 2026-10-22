@@ -212,6 +212,13 @@
             "boolean",
             "null"
           ]
+        },
+        "discovery_warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Discovery limitations, including incomplete optional native enrichment. Does not establish runtime readiness."
         }
       },
       "required": [
@@ -303,6 +310,28 @@
         },
         "capabilities": {
           "type": "object"
+        },
+        "timing": {
+          "type": "object",
+          "properties": {
+            "inventory_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "account_status_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "total_ms": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "inventory_ms",
+            "account_status_ms",
+            "total_ms"
+          ]
         }
       },
       "required": [
@@ -785,6 +814,44 @@
             },
             "checked_at": {
               "type": "integer"
+            },
+            "failure": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "method": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "budget_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "method",
+                    "budget_ms",
+                    "message",
+                    "retryable"
+                  ]
+                }
+              ]
             }
           },
           "required": [

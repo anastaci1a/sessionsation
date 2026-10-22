@@ -57,7 +57,13 @@ async fn one(paths: &Paths, t: Target, policy: &Policy) -> anyhow::Result<Value>
             v["process_observed_at"] = json!(now);
             v["freshness"] = json!(if fresh { "fresh" } else { "stale" });
             v["observation"]["checked_at"] = json!(now);
-            v["observation"]["status"] = json!(if fresh { "fresh" } else { "stale" });
+            v["observation"]["status"] = json!(if v["observed_at"].is_null() {
+                "unobserved"
+            } else if fresh {
+                "fresh"
+            } else {
+                "stale"
+            });
             let stop = external::messaging_stop_intent(paths, &s.conversation_id)?;
             let removed = crate::accounts::removed(paths, &s.account)?;
             let enabled = modes::queue::sending_enabled(paths)?;
@@ -71,17 +77,27 @@ async fn one(paths: &Paths, t: Target, policy: &Policy) -> anyhow::Result<Value>
             } else if !enabled {
                 Some("native_sending_disabled")
             } else if !fresh {
-                Some("observation_stale")
+                Some(if v["observed_at"].is_null() {
+                    v["reason"].as_str().unwrap_or("observation_required")
+                } else {
+                    "observation_stale"
+                })
             } else {
                 None
-            };
+            }
+            .map(str::to_owned);
+            let reason = reason.as_deref();
             if pending || removed || !enabled || !fresh {
                 v["actions"]["resume"] =
                     json!({"available":false,"reason":reason.unwrap_or("observation_required")});
             }
             if !fresh {
                 v["last_observed_state"] = v["state"].clone();
-                v["runtime_state"] = json!("unknown");
+                v["runtime_state"] = json!(if v["observed_at"].is_null() {
+                    "unobserved"
+                } else {
+                    "unknown"
+                });
             }
             if let Some(reason) = reason {
                 for action in ["submit", "queue"] {
@@ -342,6 +358,27 @@ mod tests {
         assert_eq!(stale["observed_at"], 1);
         assert_eq!(stale["observation"]["status"], "stale");
         assert_eq!(stale["actions"]["submit"]["available"], false);
+        c.value["observed_at"] = Value::Null;
+        c.value["valid_until"] = Value::Null;
+        c.value["reason"] = json!("native_thread_read_timeout");
+        c.value["observation"]["failure"] = json!({"method":"thread/read","budget_ms":3000});
+        fs::write(&file, serde_json::to_vec(&c).unwrap()).unwrap();
+        let unobserved = one(&paths, target(), &Policy::CachedOnly).await.unwrap();
+        assert_eq!(unobserved["observation"]["status"], "unobserved");
+        assert_eq!(unobserved["runtime_state"], "unobserved");
+        assert_eq!(
+            unobserved["actions"]["submit"]["reason"],
+            "native_thread_read_timeout"
+        );
+        assert_eq!(
+            unobserved["actions"]["queue"]["reason"],
+            "native_thread_read_timeout"
+        );
+        assert_eq!(
+            unobserved["observation"]["failure"]["method"],
+            "thread/read"
+        );
+        assert!(unobserved["observed_at"].is_null() && unobserved["valid_until"].is_null());
         fs::remove_file(&file).unwrap();
         let missing = one(&paths, target(), &Policy::CachedOnly).await.unwrap();
         assert!(missing["observed_at"].is_null());

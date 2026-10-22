@@ -241,6 +241,15 @@ impl Control {
     }
 
     pub async fn loaded(&mut self) -> Result<Vec<Value>> {
+        self.loaded_matching(None).await
+    }
+
+    /// Read metadata only for requested loaded identities. Inventory must not
+    /// scan every unrelated loaded conversation in a shared account server.
+    pub async fn loaded_matching(
+        &mut self,
+        selected: Option<&std::collections::BTreeSet<String>>,
+    ) -> Result<Vec<Value>> {
         let mut result = Vec::new();
         let mut cursor = Value::Null;
         loop {
@@ -251,7 +260,9 @@ impl Control {
                 .as_array()
                 .context("Codex returned no loaded-thread list")?
             {
-                if let Some(id) = id.as_str() {
+                if let Some(id) = id.as_str()
+                    && selected.is_none_or(|ids| ids.contains(id))
+                {
                     result.push(self.thread(id, false).await?);
                 }
             }

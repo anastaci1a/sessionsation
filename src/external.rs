@@ -222,17 +222,76 @@ async fn discover_mode(
             live
         }
     };
+    if include_archived {
+        // Public inventory is not a readiness check. Bound optional native
+        // enrichment across every account and saved writer, retaining the
+        // positively discovered process/history facts if a provider is slow.
+        if tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            enrich_native(&mut result),
+        )
+        .await
+        .is_err()
+        {
+            for source in &mut result {
+                source.warnings.push("Native inventory enrichment exceeded its 5-second budget; process/history discovery is retained. Use observe for evidenced readiness.".into());
+            }
+        }
+    } else {
+        enrich_native(&mut result).await;
+    }
+    let live: std::collections::BTreeSet<_> = result
+        .iter()
+        .filter(|i| !i.inactive)
+        .map(|i| i.thread_id.clone())
+        .collect();
+    result.retain(|i| !i.inactive || !live.contains(&i.thread_id));
+    catalog::decorate(paths, &mut result)?;
+    if include_inactive {
+        for pending in deletion::pending(paths)? {
+            if !result.iter().any(|s| s.thread_id == pending.thread_id) {
+                result.push(pending);
+            }
+        }
+    }
+    access::sort(paths, &mut result)?;
+    Ok(result)
+}
+
+fn warn_native(result: &mut [Instance], home: &Path, error: &anyhow::Error) {
+    for source in result.iter_mut().filter(|s| !s.inactive && s.home == home) {
+        source.warnings.push(format!("Native inventory metadata was not observed: {error:#}. Process/history discovery is retained; this read sent no input."));
+    }
+}
+
+async fn enrich_native(result: &mut [Instance]) {
     let homes: std::collections::BTreeSet<_> = result
         .iter()
         .filter(|i| !i.inactive)
         .map(|i| i.home.clone())
         .collect();
     for home in homes {
-        let Ok(mut control) = crate::control::Control::connect(&home).await else {
-            continue;
+        let mut control = match crate::control::Control::connect(&home).await {
+            Ok(control) => control,
+            Err(error) => {
+                warn_native(result, &home, &error);
+                continue;
+            }
         };
-        let Ok(threads) = control.loaded().await else {
-            continue;
+        let candidates: Vec<_> = result
+            .iter()
+            .filter(|i| !i.inactive && i.home == home)
+            .collect();
+        let selected = candidates
+            .iter()
+            .all(|i| !i.thread_id.is_empty())
+            .then(|| candidates.iter().map(|i| i.thread_id.clone()).collect());
+        let threads = match control.loaded_matching(selected.as_ref()).await {
+            Ok(threads) => threads,
+            Err(error) => {
+                warn_native(result, &home, &error);
+                continue;
+            }
         };
         for index in 0..result.len() {
             if result[index].inactive || result[index].home != home {
@@ -336,22 +395,6 @@ async fn discover_mode(
             source.detail = "The terminal exited but its idle provider still holds the saved history. Explicit resume can reattach it or safely transfer it to another account; unfinished work needs review.".into();
         }
     }
-    let live: std::collections::BTreeSet<_> = result
-        .iter()
-        .filter(|i| !i.inactive)
-        .map(|i| i.thread_id.clone())
-        .collect();
-    result.retain(|i| !i.inactive || !live.contains(&i.thread_id));
-    catalog::decorate(paths, &mut result)?;
-    if include_inactive {
-        for pending in deletion::pending(paths)? {
-            if !result.iter().any(|s| s.thread_id == pending.thread_id) {
-                result.push(pending);
-            }
-        }
-    }
-    access::sort(paths, &mut result)?;
-    Ok(result)
 }
 
 /// Versioned menu-facing snapshot. Discovery never starts a Codex turn.

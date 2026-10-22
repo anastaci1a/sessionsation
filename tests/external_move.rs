@@ -91,6 +91,7 @@ struct Server {
     repeat_history_cursor: bool,
     delay_loaded: bool,
     delayed_loaded: usize,
+    paginate_loaded: bool,
 }
 fn find_rollout(home: &Path, id: &str) -> Option<PathBuf> {
     fn walk(p: &Path, id: &str) -> Option<PathBuf> {
@@ -158,7 +159,7 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                             s.limits.clone().unwrap_or_else(||json!({"rateLimits":{"limitId":"codex","primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":daemon::now()+18000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":daemon::now()+604800}}}))
                         }
                         "thread/loaded/list" => {
-                            json!({"data":s.threads.iter().filter(|(_,t)|s.inconsistent_loaded || t["status"]["type"]!="notLoaded").map(|(id,_)|id.clone()).collect::<Vec<_>>(),"nextCursor":null})
+                            json!({"data":s.threads.iter().filter(|(_,t)|s.inconsistent_loaded || t["status"]["type"]!="notLoaded").map(|(id,_)|id.clone()).collect::<Vec<_>>(),"nextCursor":if s.paginate_loaded {match p["cursor"].as_str() {None=>json!("second"),Some("second")=>json!("third"),_=>Value::Null}} else {Value::Null}})
                         }
                         "thread/read" if s.reject_error_full_read && p["includeTurns"] == true && s.threads.get(id).is_some_and(|t| t["status"]["type"] == "systemError") => json!({"fixture_error":true}),
                         "thread/read" => {
@@ -3108,6 +3109,17 @@ async fn public_catalog_ids_names_and_stale_targets_survive_runtime_changes() {
     ]);
     assert_eq!(renamed["result"]["id"], id);
     assert_eq!(renamed["result"]["conversation_id"], ID);
+    let after_rename = f.invoke(&["api", "state"]);
+    let renamed_snapshot = after_rename["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap();
+    assert_eq!(
+        renamed_snapshot["directory"], session["directory"],
+        "Renaming a session must never invent a new working root"
+    );
     let rejected = command(
         &f.paths.root,
         &f.socket,
@@ -3483,4 +3495,100 @@ async fn idle_retained_writer_is_recoverable_but_active_or_unknown_history_stays
         .find(|s| s["conversation_id"] == ID)
         .unwrap();
     assert!(s["resume_block_reason"].is_null());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inventory_skips_unrelated_loaded_metadata_and_bounds_supervisor_status() {
+    let f = Fixture::new().await;
+    f.live(ID, false);
+    let unrelated = "00000000-0000-4000-8000-000000000000";
+    f.a.lock().unwrap().threads.insert(
+        unrelated.into(),
+        json!({"id":unrelated,"status":{"type":"idle"},"cwd":"/unrelated"}),
+    );
+    f.invoke(&["daemon", "stop"]);
+    let socket = f.paths.control();
+    let _ = fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).unwrap();
+    let blackhole = tokio::spawn(async move {
+        let (_stream, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let start = Instant::now();
+    let state = f.invoke(&["api", "state"]);
+    assert!(
+        start.elapsed() < Duration::from_secs(8),
+        "Inventory waited on an unresponsive supervisor"
+    );
+    assert_eq!(state["result"]["account_source"], "offline_snapshot");
+    assert!(
+        state["result"]["timing"]["account_status_ms"]
+            .as_u64()
+            .unwrap()
+            >= 900
+    );
+    assert!(
+        state["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["conversation_id"] == ID)
+    );
+    assert!(
+        !f.a.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(m, p)| m == "thread/read" && p["threadId"] == unrelated)
+    );
+    blackhole.abort();
+    fs::remove_file(socket).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inventory_native_budget_retains_identity_and_reports_partial_enrichment() {
+    let f = Fixture::new().await;
+    f.live(ID, false);
+    let before = f.invoke(&["api", "state"]);
+    let before = before["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap()
+        .clone();
+    {
+        let mut a = f.a.lock().unwrap();
+        a.delay_loaded = true;
+        a.paginate_loaded = true;
+    }
+    let start = Instant::now();
+    let state = f.invoke(&["api", "state"]);
+    assert!(
+        start.elapsed() < Duration::from_secs(9),
+        "Native enrichment exceeded its shared budget"
+    );
+    let after = state["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap();
+    for field in ["id", "generation", "attachment", "directory"] {
+        assert_eq!(after[field], before[field]);
+    }
+    assert!(
+        after["discovery_warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s.as_str().unwrap().contains("5-second budget"))
+    );
+    assert!(
+        !f.a.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(m, _)| matches!(m.as_str(), "turn/start" | "thread/resume"))
+    );
 }

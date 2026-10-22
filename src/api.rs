@@ -528,8 +528,19 @@ pub async fn state(paths: &Paths) -> Result<Value> {
     state_filtered(paths, ArchiveFilter::Active).await
 }
 pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Value> {
+    let started = std::time::Instant::now();
     let items = inventory(paths).await?;
-    let status = daemon::call(paths, "status", json!({})).await;
+    let inventory_ms = started.elapsed().as_millis();
+    let status_started = std::time::Instant::now();
+    let status = match tokio::time::timeout(
+        Duration::from_secs(1),
+        daemon::call(paths, "status", json!({})),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("Account status snapshot timed out")),
+    };
     let (accounts, source) = match status {
         Ok(v) => (
             v["accounts"]
@@ -552,6 +563,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         }
         Err(_) => (vec![], "uninitialized"),
     };
+    let account_status_ms = status_started.elapsed().as_millis();
     let accounts = project_accounts(paths, accounts)?;
     let clock = boot_clock();
     let now = daemon::now();
@@ -572,6 +584,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["availability"]=json!(if archived {"archived"}else if running {"running"}else if saved {"saved"}else{"unavailable"});
         let facts=source.map(|s|external::history_file_details(&s.rollout)).unwrap_or(Value::Null);
         value["directory"]=source.map(|s|json!(s.cwd)).unwrap_or(Value::Null);
+        value["discovery_warnings"]=source.map(|s|json!(s.warnings)).unwrap_or(json!([]));
         value["conversation_created_at"]=facts["conversation_created_at"].clone();
         value["history_file_bytes"]=facts["history_file_bytes"].clone();
         value["activity"]=source.map(|s|json!(s.activity)).unwrap_or(Value::Null);
@@ -610,6 +623,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
     }
     Ok(json!({"observed_at":daemon::now(),"account_source":source,
         "accounts":accounts,"sessions":sessions,
+        "timing":{"inventory_ms":inventory_ms,"account_status_ms":account_status_ms,"total_ms":started.elapsed().as_millis()},
         "capabilities":capabilities()}))
 }
 

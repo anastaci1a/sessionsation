@@ -3,6 +3,33 @@ use super::*;
 use crate::catalog;
 use std::time::Duration;
 
+fn observation_failure(reason: Option<&str>) -> Value {
+    let (method, budget, message) = match reason {
+        Some("native_thread_read_timeout") => (
+            Some("thread/read"),
+            3000,
+            "The provider did not return thread metadata within 3 seconds. Runtime readiness remains unobserved; no input was sent.",
+        ),
+        Some("native_turn_summary_timeout") => (
+            Some("thread/turns/list"),
+            3000,
+            "The provider did not return the latest turn summary within 3 seconds. Runtime readiness remains unobserved; no input was sent.",
+        ),
+        Some("native_initialize_timeout") => (
+            Some("initialize"),
+            3000,
+            "The provider did not finish protocol initialization within 3 seconds. No input was sent.",
+        ),
+        Some("observation_timeout") => (
+            None,
+            5000,
+            "The combined native observation exceeded its 5-second budget. No readiness or new evidence timestamp is claimed.",
+        ),
+        _ => return Value::Null,
+    };
+    json!({"code":reason,"method":method,"budget_ms":budget,"message":message,"retryable":true})
+}
+
 pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, now: i64) -> Value {
     let at = native["observed_at"].as_i64();
     let until = native["valid_until"].as_i64();
@@ -45,7 +72,7 @@ pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, 
         "account_id":format!("codex:{}",session.account),"state":state,
         "reason":native["reason"],"observed_at":at,"valid_until":until,
         "freshness":if fresh {"fresh"} else {"stale"},
-        "observation":{"status":if at.is_none() {"unobserved"} else if fresh {"fresh"} else {"stale"},"checked_at":now},
+        "observation":{"status":if at.is_none() {"unobserved"} else if fresh {"fresh"} else {"stale"},"checked_at":now,"failure":observation_failure(native["reason"].as_str())},
         "runtime_state":if at.is_none() && state=="unknown" {"unobserved"} else if stop.is_some() && state!="working" {"stopped"} else {state},
         "runtime_generation":native["generation"],
         "process_state":native["process_state"].as_str().unwrap_or("unknown"),"process_observed_at":native["process_observed_at"],"previous_turn_id":native["previous_turn_id"],
@@ -116,7 +143,13 @@ pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow
     let started = crate::daemon::now();
     let result = async {
         let a = before.as_ref().ok_or(Fault("no_live_attachment"))?;
-        let mut control = a.connect().await?;
+        let mut control = a.connect().await.map_err(|e| {
+            if e.0 == "timeout" {
+                Fault("native_initialize_timeout")
+            } else {
+                e
+            }
+        })?;
         modes::session_status::observe(&mut control, &session.conversation_id).await
     };
     let mut native = match tokio::time::timeout(Duration::from_secs(5), result).await {
@@ -241,6 +274,61 @@ mod native_tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slow_native_reads_report_the_exact_rpc_without_claiming_evidence() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        for method in ["thread/read", "thread/turns/list"] {
+            let (_dir, paths, input, _) = fixture();
+            let mut a = attachment_fixture(&paths, &input);
+            bind(&paths, &mut a);
+            let i: external::Instance = serde_json::from_value(json!({"pane":"%1","tmux_session":"test","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
+            let s = catalog::reconcile(&paths, &[i]).unwrap().remove(0);
+            let listener = tokio::net::UnixListener::bind(a.endpoint()).unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(Message::Text(raw))) = ws.next().await {
+                    let req: Value = serde_json::from_str(&raw).unwrap();
+                    let name = req["method"].as_str().unwrap();
+                    let result = match name {
+                        "initialized" => continue,
+                        "initialize" => json!({"userAgent":"fixture/0.163.0 (Linux)"}),
+                        "thread/read" => {
+                            json!({"thread":{"id":req["params"]["threadId"],"status":{"type":"idle"}}})
+                        }
+                        "thread/turns/list" => json!({"data":[{"id":"last","status":"completed"}]}),
+                        _ => panic!("Unexpected mutating request {name}"),
+                    };
+                    if name == method {
+                        tokio::time::sleep(Duration::from_secs(4)).await;
+                    }
+                    if ws
+                        .send(Message::Text(
+                            json!({"id":req["id"],"result":result}).to_string().into(),
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            let out = observe_public(&paths, &s.id, &s.generation())
+                .await
+                .unwrap();
+            server.abort();
+            assert_eq!(out["observation"]["failure"]["method"], method);
+            assert_eq!(out["observation"]["failure"]["budget_ms"], 3000);
+            assert_eq!(out["runtime_state"], "unobserved");
+            assert_eq!(out["observation"]["status"], "unobserved");
+            assert!(out["observed_at"].is_null() && out["valid_until"].is_null());
+            for action in ["submit", "queue", "resume"] {
+                assert_eq!(out["actions"][action]["available"], false);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn passive_observation_uses_only_read_only_rpc_and_rejects_catalog_races() {
         for (busy, rename) in [(false, false), (true, false), (false, true)] {
