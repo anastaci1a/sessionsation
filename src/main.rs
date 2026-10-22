@@ -42,6 +42,8 @@ enum Commands {
     #[command(hide = true)]
     ResumeWorker { request_id: String },
     #[command(hide = true)]
+    SpaceMoveWorker { request_id: String },
+    #[command(hide = true)]
     ResumeRun { request_id: String },
     #[command(hide = true)]
     MessageRecoveryWorker { message_id: String },
@@ -441,6 +443,9 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::MessageRecoveryRun { message_id } => {
             sessionsation::messaging::recovery::run(&paths, &message_id).await?
+        }
+        Commands::SpaceMoveWorker { request_id } => {
+            sessionsation::external::spaces::worker(&paths, &request_id)?
         }
         Commands::ResumeWorker { request_id } => {
             sessionsation::resume::worker(&paths, &request_id).await?

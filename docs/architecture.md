@@ -40,7 +40,10 @@ generation. Only positive exit/PID-reuse evidence clears it; no runtime mutation
 is enabled until its host and process are positively observed again.
 
 HERDR Space placement is a presentation operation under the existing lifecycle
-and messaging locks. Durable `space-moves/` intent records retain original process,
+and messaging locks. After validation and durable admission, a detached worker owns
+the move through receipt finalization; UI/CLI requester exit does not terminate it.
+The worker revalidates the saved target before dispatch and never replays a
+previous dispatch intent. Durable `space-moves/` intent records retain original process,
 terminal and socket identity. Completed provenance updates canonical pane bindings
 and catalog attachment revisions without changing provider-runtime generation or
 historical receipts. New launch/resume requests delimit placement provenance, so

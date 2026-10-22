@@ -263,15 +263,80 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         )?;
         return public(paths, &op);
     }
+    let child = crate::background::detach(&mut std::process::Command::new(
+        crate::self_executable::path()?,
+    ))
+    .arg("--data-dir")
+    .arg(&paths.root)
+    .args(["space-move-worker", &op.request.request_id])
+    .spawn();
+    if child.is_err() {
+        save(
+            paths,
+            &mut op,
+            "failed",
+            "The move worker could not start. No terminal was moved; try again.",
+        )?;
+    }
+    public(paths, &op)
+}
+
+/// The requester may exit immediately after admission. Only this locked worker
+/// dispatches a host mutation; duplicate workers never replay a recorded intent.
+pub fn worker(paths: &Paths, id: &str) -> Result<()> {
+    let lock = crate::paths::lock_file(&file(paths, id)?.with_extension("lock"))?;
+    lock.lock_exclusive()?;
+    let mut op = read(paths, id)?;
+    if op.phase != "admitted" {
+        return Ok(());
+    }
+    if let Err(error) = execute(paths, &mut op) {
+        let dispatched = op.phase != "admitted";
+        let detail = if dispatched {
+            "The move may have happened but could not be recorded. Use Recover to inspect the original terminal; do not submit another move.".into()
+        } else {
+            format!(
+                "The move could not start: {error}. Refresh the session and destination before trying again."
+            )
+        };
+        save(
+            paths,
+            &mut op,
+            if dispatched { "uncertain" } else { "failed" },
+            &detail,
+        )?;
+    }
+    Ok(())
+}
+
+fn execute(paths: &Paths, op: &mut Operation) -> Result<()> {
+    let _admission =
+        crate::lifecycle::admit(paths, &op.source.thread_id, Some(&op.request.request_id))?;
+    crate::lifecycle::ensure_no_handoff(paths, &op.source.thread_id, None)?;
+    let _runtime = messaging_lock(paths, &op.source.thread_id)
+        .map_err(|_| anyhow::anyhow!("SESSION_OPERATION_IN_PROGRESS"))?;
+    crate::catalog::resolve(paths, &op.request.session, &op.request.expected_generation)?;
+    let available = choices(&op.session, &op.source, &op.socket)?;
+    ensure!(
+        available["pane"]["terminal_id"] == op.terminal_id
+            && available["current_space_id"] == op.previous_space,
+        "STALE_TARGET"
+    );
+    ensure!(
+        available["spaces"]
+            .as_array()
+            .is_some_and(|ss| ss.iter().any(|s| s["id"] == op.request.space)),
+        "SPACE_NOT_FOUND"
+    );
     save(
         paths,
-        &mut op,
+        op,
         "dispatching",
         "Moving the existing terminal into a new tab in the selected Space. No provider command is sent.",
     )?;
     let (_, id) = crate::terminal::target(&op.source.pane)?;
     let moved = host(
-        &op,
+        op,
         &[
             "pane",
             "move",
@@ -286,7 +351,7 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         Ok(result) if result["move_result"]["changed"] == false => {
             save(
                 paths,
-                &mut op,
+                op,
                 "failed",
                 "HERDR left the pane unchanged. Unzoom its tab if needed, refresh and choose the move again.",
             )?;
@@ -294,14 +359,14 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         Ok(result) => {
             let result = &result["move_result"];
             let verified = if result["previous_pane_id"] == id {
-                finish(paths, &mut op, result["pane"].clone())
+                finish(paths, op, result["pane"].clone())
             } else {
                 Err(anyhow::anyhow!("SPACE_MOVE_IDENTITY_MISMATCH"))
             };
             if verified.is_err() {
                 save(
                     paths,
-                    &mut op,
+                    op,
                     "uncertain",
                     "The terminal move is not fully confirmed. It will not be resent. Use Recover to reconcile the original terminal and ownership.",
                 )?;
@@ -310,7 +375,7 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         Err(error) if crate::terminal::move_rejected_before_effect(&error) => {
             save(
                 paths,
-                &mut op,
+                op,
                 "failed",
                 "HERDR rejected the move before changing the terminal. Its source or destination no longer exists; refresh the choices.",
             )?;
@@ -318,13 +383,13 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         Err(_) => {
             save(
                 paths,
-                &mut op,
+                op,
                 "uncertain",
                 "HERDR did not confirm the move. It may already have happened; it will not be resent. Use Recover to inspect the original terminal.",
             )?;
         }
     }
-    public(paths, &op)
+    Ok(())
 }
 pub fn recover(paths: &Paths, id: &str) -> Result<Value> {
     let lock = crate::paths::lock_file(&file(paths, id)?.with_extension("lock"))?;
@@ -591,6 +656,43 @@ mod tests {
             op.session.generation()
         );
     }
+    #[test]
+    fn worker_refuses_changed_target_before_host_dispatch_and_releases_reservation() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(d.path().join("state"))).unwrap();
+        let mut op = fixture(&paths);
+        save(&paths, &mut op, "admitted", "prepared").unwrap();
+        crate::catalog::rename(&paths, &op.session.id, &op.session.generation(), "Changed")
+            .unwrap();
+        worker(&paths, &op.request.request_id).unwrap();
+        let failed = read(&paths, &op.request.request_id).unwrap();
+        assert_eq!(failed.phase, "failed");
+        assert!(failed.detail.contains("STALE_TARGET"), "{}", failed.detail);
+        assert!(crate::lifecycle::admit(&paths, &op.source.thread_id, None).is_ok());
+    }
+
+    #[test]
+    fn duplicate_workers_never_replay_dispatch_or_terminal_records() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(d.path().join("state"))).unwrap();
+        let mut op = fixture(&paths);
+        for phase in [
+            "dispatching",
+            "reconciling",
+            "uncertain",
+            "complete",
+            "failed",
+        ] {
+            save(&paths, &mut op, phase, "must remain unchanged").unwrap();
+            let original = fs::read(file(&paths, &op.request.request_id).unwrap()).unwrap();
+            worker(&paths, &op.request.request_id).unwrap();
+            assert_eq!(
+                fs::read(file(&paths, &op.request.request_id).unwrap()).unwrap(),
+                original
+            );
+        }
+    }
+
     #[tokio::test]
     async fn original_request_is_observation_only_and_changed_payload_never_replays() {
         let d = tempfile::tempdir().unwrap();

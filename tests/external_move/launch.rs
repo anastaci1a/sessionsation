@@ -263,6 +263,20 @@ async fn installed_herdr_space_move_preserves_process_and_recovers_without_repla
             .join(format!("space-moves/{move_id}.json"))
             .exists()
     );
+    // Keep the host reply pending after its effect. The API caller must exit
+    // with admission while its detached worker still owns the operation.
+    let real = Command::new("sh")
+        .args(["-c", "command -v herdr"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap();
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let wrapper = f.tmp.path().join("herdr");
+    let hold = f.tmp.path().join("hold-move-reply");
+    let applied = f.tmp.path().join("applied-move");
+    fs::write(&hold, "1").unwrap();
+    fs::write(&wrapper, format!("#!/bin/sh\nif [ \"$1\" = pane ] && [ \"$2\" = move ]; then\n {} \"$@\" > {} || exit 1\n n=0; while [ -f {} ]; do n=$((n+1)); [ \"$n\" -lt 200 ] || exit 1; sleep 0.05; done\n cat {}\n exit 0\nfi\nexec {} \"$@\"\n", quote(real.trim()), quote(&applied.to_string_lossy()), quote(&hold.to_string_lossy()), quote(&applied.to_string_lossy()), quote(real.trim()))).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
     let moved = foreign_api(&f, &args);
     assert!(
         moved.status.success(),
@@ -270,7 +284,18 @@ async fn installed_herdr_space_move_preserves_process_and_recovers_without_repla
         String::from_utf8_lossy(&moved.stderr)
     );
     let v: Value = serde_json::from_slice(&moved.stdout).unwrap();
-    assert_eq!(v["result"]["phase"], "complete", "{v}");
+    assert_eq!(v["result"]["phase"], "admitted", "{v}");
+    let until = Instant::now() + Duration::from_secs(15);
+    while !fs::read(&applied).is_ok_and(|b| !b.is_empty()) {
+        assert!(Instant::now() < until, "Host move never applied");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let pending: Value = serde_json::from_slice(&foreign_api(&f, &args).stdout).unwrap();
+    assert_eq!(pending["result"]["phase"], "dispatching");
+    assert_eq!(pending["result"]["can_recover"], false);
+    fs::remove_file(&hold).unwrap();
+    let completed = wait_space_move(&f, &move_id, "complete").await;
+    let v = json!({"result": completed});
     assert_eq!(v["result"]["pane"]["terminal_id"], terminal);
     let moved_pane = v["result"]["pane"]["pane_id"].as_str().unwrap();
     let after = state(&f);
@@ -345,7 +370,8 @@ async fn installed_herdr_space_move_preserves_process_and_recovers_without_repla
         ],
     );
     let uncertain: Value = serde_json::from_slice(&uncertain.stdout).unwrap();
-    assert_eq!(uncertain["result"]["phase"], "uncertain", "{uncertain}");
+    assert_eq!(uncertain["result"]["phase"], "admitted", "{uncertain}");
+    wait_space_move(&f, &second, "uncertain").await;
     assert!(
         !foreign_api(
             &f,
@@ -1396,5 +1422,23 @@ async fn installed_herdr_recovers_idle_error_history_writer_without_external_hel
                 .iter()
                 .any(|(m, _)| m == "turn/start" || m == "turn/steer")
         );
+    }
+}
+
+async fn wait_space_move(f: &Fixture, id: &str, phase: &str) -> Value {
+    let until = Instant::now() + Duration::from_secs(20);
+    let path = f.paths.root.join(format!("space-moves/{id}.json"));
+    loop {
+        let op: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("lock"))
+            .unwrap();
+        if op["phase"] == phase && fs2::FileExt::try_lock_exclusive(&lock).is_ok() {
+            return op;
+        }
+        assert!(Instant::now() < until, "Expected {phase}: {op}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }

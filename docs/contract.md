@@ -631,7 +631,11 @@ The bound host socket is authoritative even in an unrelated caller environment.
 `api move-space --session ID --expected-generation GENERATION --space SPACE-ID
 --request-id UUID` returns `SpaceMoveOperation`, also listed by `api operations`.
 Phases: `admitted → dispatching → reconciling → complete`, or `failed/uncertain`.
-It is synchronous host placement with a durable intent, not another supervisor.
+Admission returns before host dispatch. A detached, per-request locked worker
+revalidates the saved target and completes placement independently of the caller.
+Clients must observe the returned operation ID until a terminal phase; an
+`admitted` response does not confirm that the terminal moved. This adds no
+supervisor and does not restart the agent.
 No cancel/respond action is offered. Reuse of the same UUID and exact target
 observes the saved result before generation resolution; changed input is
 `REQUEST_ID_CONFLICT`. Stale generation or missing destination is rejected before

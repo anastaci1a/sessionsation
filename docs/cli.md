@@ -236,6 +236,9 @@ need to be unzoomed first. tmux sessions, inactive conversations, cross-instance
 moves and creating a destination Space are outside this action. Use New/Resume
 for a saved session's launch destination.
 
+The request returns an `admitted` receipt; a detached worker completes the move
+even if the requesting CLI or UI closes. Observe its operation ID with
+`api operations` (or repeat the identical request).
 Only phase `complete` confirms the move and ownership update. For `uncertain`,
 never issue a replacement request: Recover inspects the original stable terminal
 and reconciles metadata without sending another move. Until it can prove the
