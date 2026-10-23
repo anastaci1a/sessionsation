@@ -123,6 +123,7 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
     );
     let _lock = catalog::operation_lock(paths, &source.thread_id)?;
     catalog::ensure_available(paths, &source.thread_id)?;
+    let previous_stop = catalog::stop_intent(paths, &source.thread_id)?;
     if let Some(live) = live_sessions(paths)
         .await?
         .into_iter()
@@ -230,6 +231,7 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
                 !pane_state(paths, &source.pane)?.0,
                 "Codex exited during startup; inspect the retained tmux pane"
             );
+            catalog::clear_stop_intent(paths, &source.thread_id, previous_stop.as_deref())?;
             return opened(paths, &source);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

@@ -1932,16 +1932,9 @@ fn enqueue_with_id(
             "automatic job already journaled; do not replay"
         );
     }
-    if matches!(kind, "pause" | "terminate")
+    let records_stop = matches!(kind, "pause" | "terminate")
         && automatic_id.is_none()
-        && !source.thread_id.is_empty()
-    {
-        catalog::set_stop_intent(
-            paths,
-            &source.thread_id,
-            Some(uuid::Uuid::new_v4().to_string()),
-        )?;
-    }
+        && !source.thread_id.is_empty();
     let phase = "queued";
     let job = Job {
         resume_destination: policy.resume_destination.map(str::to_owned),
@@ -1979,6 +1972,20 @@ fn enqueue_with_id(
         prepared_threads: Vec::new(),
     };
     save_job(paths, &job)?;
+    if records_stop {
+        // Persist provenance before publishing its permission gate. Admission
+        // locks plus the queued journal block delivery across this boundary.
+        if let Err(error) =
+            catalog::set_stop_intent(paths, &job.source.thread_id, Some(job.id.clone()))
+        {
+            let mut failed = job.clone();
+            failed.phase = "failed".into();
+            failed.detail =
+                "Stop intent could not be recorded; no provider action was attempted.".into();
+            save_job(paths, &failed)?;
+            return Err(error);
+        }
+    }
     let log = OpenOptions::new()
         .append(true)
         .create(true)

@@ -1,5 +1,6 @@
 //! Timestamped, content-free observations. No launcher and no input probes.
 use super::*;
+mod summary_cache;
 #[derive(Deserialize)]
 struct Read {
     thread: Thread,
@@ -8,6 +9,7 @@ struct Read {
 struct Thread {
     id: String,
     status: Status,
+    path: Option<PathBuf>,
 }
 #[derive(Deserialize, PartialEq)]
 struct Status {
@@ -15,12 +17,14 @@ struct Status {
     kind: String,
     #[serde(default, rename = "activeFlags")]
     flags: Vec<String>,
+    #[serde(skip)]
+    history: Option<PathBuf>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Page {
     data: Vec<Turn>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Turn {
     id: String,
     status: String,
@@ -31,6 +35,7 @@ pub(in crate::messaging) struct Observation {
     pub reason: Option<&'static str>,
     pub previous: Option<String>,
     pub submit_supported: bool,
+    pub summary_evidence: Option<Value>,
 }
 async fn read(control: &mut Transport, id: &str) -> Result<Status> {
     let read: Read = control
@@ -46,11 +51,27 @@ async fn read(control: &mut Transport, id: &str) -> Result<Status> {
     if read.thread.id != id {
         return Err(Fault("correlation_changed"));
     }
-    Ok(read.thread.status)
+    let mut status = read.thread.status;
+    status.history = read.thread.path;
+    Ok(status)
 }
 pub(in crate::messaging) async fn observe(
     control: &mut Transport,
     id: &str,
+) -> Result<Observation> {
+    observe_inner(control, id, None).await
+}
+pub(in crate::messaging) async fn observe_cached(
+    control: &mut Transport,
+    paths: &Paths,
+    attachment: &Attachment,
+) -> Result<Observation> {
+    observe_inner(control, &attachment.id, Some((paths, attachment))).await
+}
+async fn observe_inner(
+    control: &mut Transport,
+    id: &str,
+    context: Option<(&Paths, &Attachment)>,
 ) -> Result<Observation> {
     let before = read(control, id).await?;
     if !before.flags.is_empty() {
@@ -59,14 +80,24 @@ pub(in crate::messaging) async fn observe(
             reason: Some("approval_or_user_input_required"),
             previous: None,
             submit_supported: false,
+            summary_evidence: None,
         });
     }
+    let cache = context.and_then(|(paths, attachment)| {
+        summary_cache::Cache::new(paths, attachment, before.history.as_deref())
+    });
+    let mut summary_evidence = None;
     let (state, previous) = match before.kind.as_str() {
         "active" => ("working", None),
         "notLoaded" => ("disconnected", None),
         "idle" | "systemError" => {
             // Only status and identifier are deserialized; public item bodies are ignored.
-            let page: Page = control
+            let page: Page = if let Some(cache) = &cache {
+                let (page, evidence) = cache.get(control, id).await?;
+                summary_evidence = Some(evidence);
+                page
+            } else {
+                control
                 .request(
                     "thread/turns/list",
                     json!({"threadId":id,"itemsView":"summary","sortDirection":"desc","limit":1}),
@@ -78,7 +109,8 @@ pub(in crate::messaging) async fn observe(
                     } else {
                         e
                     }
-                })?;
+                })?
+            };
             if page.data.len() > 1 {
                 return Err(Fault("malformed_summary"));
             }
@@ -114,11 +146,15 @@ pub(in crate::messaging) async fn observe(
     if read(control, id).await? != before {
         return Err(Fault("state_changed"));
     }
+    if cache.as_ref().is_some_and(|c| !c.unchanged()) {
+        return Err(Fault("history_changed_during_observation"));
+    }
     Ok(Observation {
         state: state.into(),
         reason: None,
         previous,
         submit_supported: true,
+        summary_evidence,
     })
 }
 fn actions(state: &str, reason: Option<&str>, submit_supported: bool, enabled: bool) -> Value {
@@ -192,6 +228,7 @@ pub(in crate::messaging) async fn target(paths: &Paths, id: &str) -> Result<Valu
             reason: Some(e.0),
             previous: None,
             submit_supported: false,
+            summary_evidence: None,
         },
     };
     let mut action_caps = actions(&o.state, o.reason, o.submit_supported, enabled);

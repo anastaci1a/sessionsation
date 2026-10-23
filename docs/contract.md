@@ -137,8 +137,22 @@ the schema: idle/working/interrupted/errored/disconnected/unknown, diagnostic re
 `process_state` and `process_observed_at` separately report a kernel-validated
 running, exited or unattached process; an idle native thread is not a process-stop
 claim. `observation.status` distinguishes absent evidence from expired evidence.
-Freshness expires five seconds after the final verified native read completes;
-cache hits never extend it. It is not a reservation.
+Freshness expires five seconds after the native evidence was obtained; neither
+batch-cache nor summary-cache hits extend it. It is not a reservation.
+For local legacy histories, last-turn summaries are indexed by runtime generation,
+canonical history path, device/inode, size and nanosecond modification/change
+times. Every reuse still makes fresh native status reads before and after it and
+rechecks the file identity. Changed files, processes or endpoints invalidate the
+index; concurrent readers share one reconstruction. No history text is stored in
+this index. `observation.turn_summary` identifies `native_summary` versus
+`unchanged_history_cache` and retains the original summary's `observed_at`.
+The public observation keeps that original timestamp and expiry too: unchanged
+disk contents cannot exclude a newly started in-memory turn. Summary entries
+expire after five seconds even when the file is unchanged. Cold reconstruction
+shares the existing five-second overall observation budget; it no longer has an
+earlier three-second cutoff when this indexed path is available. A cold provider
+read can still exceed that budget and must fail closed. Nonlocal/unverifiable
+history paths retain uncached native observation.
 RPC timeouts identify `native_initialize_timeout`, `native_thread_read_timeout`,
 or `native_turn_summary_timeout`; the overall bound is `observation_timeout`.
 `observation.failure` supplies the RPC method (null for the overall budget),
@@ -152,6 +166,13 @@ A changed catalog or runtime rejects the result as `STALE_TARGET`.
 `explicit_intent` reports a positively recorded stop token or unknown; an idle
 process never proves absence of deliberate stop/pause intent. Interrupted/error
 turns require review in these conservative hints. Unknown queue depth remains null.
+Stop intent is a permission gate, separate from observed execution: it may coexist
+with working state while a stop drains or after continuation outside Sessionsation.
+Polling never clears it merely because the agent is working. Newly recorded stop
+tokens identify their durable stop-operation journal; older tokens have no proven
+operation attribution. Explicit saved-session Open clears its prior token only
+after confirming the reopened process, using a compare-and-clear that preserves
+any newer stop request. Focusing an already-live terminal does not clear it.
 Submit is available only for positively idle eligible observations; Queue may be
 available while working. Sending-disabled, removed-account, stale, explicit-stop
 and unknown observations withhold readiness with reasons. These are conservative

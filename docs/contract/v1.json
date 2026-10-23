@@ -882,6 +882,32 @@
                   ]
                 }
               ]
+            },
+            "turn_summary": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "source",
+                    "observed_at"
+                  ],
+                  "properties": {
+                    "source": {
+                      "enum": [
+                        "native_summary",
+                        "unchanged_history_cache"
+                      ]
+                    },
+                    "observed_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
             }
           },
           "required": [

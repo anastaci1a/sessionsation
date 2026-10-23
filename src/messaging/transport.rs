@@ -246,6 +246,29 @@ impl Transport {
         method: &str,
         params: Value,
     ) -> Result<T> {
+        self.rpc_budget(method, params, Duration::from_secs(3))
+            .await
+    }
+    /// Passive summary reconstruction shares the caller's existing five-second
+    /// observation deadline instead of imposing an earlier per-RPC cutoff.
+    pub(super) async fn passive_summary<T: serde::de::DeserializeOwned>(
+        &mut self,
+        id: &str,
+    ) -> Result<T> {
+        super::uuid(id)?;
+        self.rpc_budget(
+            "thread/turns/list",
+            json!({"threadId":id,"itemsView":"summary","sortDirection":"desc","limit":1}),
+            Duration::from_secs(5),
+        )
+        .await
+    }
+    async fn rpc_budget<T: serde::de::DeserializeOwned>(
+        &mut self,
+        method: &str,
+        params: Value,
+        budget: Duration,
+    ) -> Result<T> {
         self.sequence += 1;
         let id = self.sequence;
         let (tx, rx) = oneshot::channel();
@@ -262,7 +285,7 @@ impl Transport {
             let raw = rx.await.map_err(|_| Fault("disconnected"))??;
             serde_json::from_str(raw.get()).map_err(|_| Fault("malformed_response"))
         };
-        let result = tokio::time::timeout(Duration::from_secs(3), request)
+        let result = tokio::time::timeout(budget, request)
             .await
             .unwrap_or(Err(Fault("timeout")));
         self.pending.lock().await.remove(&id);

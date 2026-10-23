@@ -1346,6 +1346,17 @@ async fn open_and_archive_recovery_use_original_external_home_without_a_turn() {
         saved_public["generation"].as_str().unwrap(),
     ]);
     assert_eq!(details["result"]["resume_block_reason"], Value::Null);
+    fs::create_dir_all(f.paths.root.join("conversations")).unwrap();
+    let stop_record = f
+        .paths
+        .root
+        .join("conversations")
+        .join(format!("{ID}.json"));
+    fs::write(
+        &stop_record,
+        json!({"stop_intent":"old-explicit-stop","owner":home}).to_string(),
+    )
+    .unwrap();
     let opened = invoke(&[
         "open",
         "--session",
@@ -1354,6 +1365,10 @@ async fn open_and_archive_recovery_use_original_external_home_without_a_turn() {
         "restored",
     ]);
     let pane = opened["session"]["pane"].as_str().unwrap();
+    assert!(
+        serde_json::from_slice::<Value>(&fs::read(&stop_record).unwrap()).unwrap()["stop_intent"]
+            .is_null()
+    );
     let again = invoke(&["open", "--session", &format!("pane:{pane}")]);
     assert_eq!(again, opened);
     assert_eq!(
@@ -3332,6 +3347,17 @@ async fn public_stop_preserves_manual_intent_even_when_account_is_disabled() {
     ]);
     f.wait(job["result"]["id"].as_str().unwrap(), "complete")
         .await;
+    let stop: Value = serde_json::from_slice(
+        &fs::read(
+            f.paths
+                .root
+                .join("conversations")
+                .join(format!("{ID}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stop["stop_intent"], job["result"]["id"]);
     assert!(!store::load_state_snapshot(&f.paths).unwrap().accounts["personal"].enabled);
     assert!(
         !f.a.lock()

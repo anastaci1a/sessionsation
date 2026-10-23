@@ -72,7 +72,7 @@ pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, 
         "account_id":format!("codex:{}",session.account),"state":state,
         "reason":native["reason"],"observed_at":at,"valid_until":until,
         "freshness":if fresh {"fresh"} else {"stale"},
-        "observation":{"status":if at.is_none() {"unobserved"} else if fresh {"fresh"} else {"stale"},"checked_at":now,"failure":observation_failure(native["reason"].as_str())},
+        "observation":{"status":if at.is_none() {"unobserved"} else if fresh {"fresh"} else {"stale"},"checked_at":now,"failure":observation_failure(native["reason"].as_str()),"turn_summary":native["summary_evidence"]},
         "runtime_state":if at.is_none() && state=="unknown" {"unobserved"} else if stop.is_some() && state!="working" {"stopped"} else {state},
         "runtime_generation":native["generation"],
         "process_state":native["process_state"].as_str().unwrap_or("unknown"),"process_observed_at":native["process_observed_at"],"previous_turn_id":native["previous_turn_id"],
@@ -150,12 +150,20 @@ pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow
                 e
             }
         })?;
-        modes::session_status::observe(&mut control, &session.conversation_id).await
+        modes::session_status::observe_cached(&mut control, paths, a).await
     };
     let mut native = match tokio::time::timeout(Duration::from_secs(5), result).await {
         Ok(Ok(o)) => {
-            let at = crate::daemon::now();
+            // An unchanged rollout cannot prove that an in-memory turn has not
+            // started. Preserve the age of the native summary; status reads
+            // and filesystem checks must never renew that evidence.
+            let at = o
+                .summary_evidence
+                .as_ref()
+                .and_then(|v| v["observed_at"].as_i64())
+                .unwrap_or_else(crate::daemon::now);
             json!({"state":o.state,"reason":o.reason,"previous_turn_id":o.previous,
+                "summary_evidence":o.summary_evidence,
                 "observed_at":at,"valid_until":at+5,"observation_started_at":started,
                 "native_sending_enabled":modes::queue::sending_enabled(paths)?,
                 "stop_intent_id":external::messaging_stop_intent(paths,&session.conversation_id)?,
