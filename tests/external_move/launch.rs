@@ -558,6 +558,17 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             .iter()
             .any(|(m, _)| m == "turn/start" || m == "turn/steer")
     );
+    {
+        let server = f.a.lock().unwrap();
+        let start = server
+            .calls
+            .iter()
+            .find(|(method, _)| method == "thread/start")
+            .unwrap();
+        assert_eq!(start.1["approvalPolicy"], "never");
+        assert_eq!(start.1["permissions"], ":danger-full-access");
+        assert!(start.1.get("sandbox").is_none());
+    }
     // HERDR owns the live label in both directions; provider/process identity stays put.
     let tab_id = receipt["tab_id"].as_str().unwrap();
     let before_name = host.call(&["pane", "process-info", "--pane", pane]);

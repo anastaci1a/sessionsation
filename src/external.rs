@@ -651,6 +651,7 @@ fn parse_launch(args: &[String]) -> Launch {
         }
         if [
             "--dangerously-bypass-approvals-and-sandbox",
+            "--yolo",
             "--dangerously-bypass-hook-trust",
             "--oss",
             "--full-auto",
@@ -661,7 +662,14 @@ fn parse_launch(args: &[String]) -> Launch {
         ]
         .contains(&flag)
         {
-            options.push(flag.to_owned());
+            options.push(
+                if flag == "--yolo" {
+                    "--dangerously-bypass-approvals-and-sandbox"
+                } else {
+                    flag
+                }
+                .to_owned(),
+            );
             i += 1;
         } else if [
             "-m",
@@ -1342,7 +1350,9 @@ async fn run_account_thread_inner(
     } else {
         account_control(paths, account).await?
     };
-    let mut params = json!({"cwd":cwd});
+    // Choose permissions before allocating the native thread: a loaded thread
+    // can retain its creation profile despite later remote TUI/resume options.
+    let mut params = json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"danger-full-access"});
     if let Some(id) = requested {
         let saved = control.thread_for_state(id).await?;
         ensure!(
@@ -1415,16 +1425,7 @@ async fn run_account_thread_inner(
     let response = if requested.is_some() {
         control.resume_with_permissions(params.clone()).await?
     } else {
-        // A loaded thread keeps its original permission profile on resume.
-        // Select the native profile at creation, before name/set persists it.
-        let mut start_params = params.clone();
-        if start_params["sandbox"] == "danger-full-access" {
-            start_params.as_object_mut().unwrap().remove("sandbox");
-            start_params["permissions"] = json!(":danger-full-access");
-        }
-        control
-            .request_timeout("thread/start", start_params, Duration::from_secs(120))
-            .await?
+        control.start_with_permissions(params.clone()).await?
     };
     let id = response["thread"]["id"]
         .as_str()

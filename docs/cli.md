@@ -170,6 +170,16 @@ conversation and process. `launch_unconfirmed` means inspect before retrying; th
 command may already have started. Admission alone is not successful startup.
 No existing live session is migrated.
 
+New Codex sessions default to YOLO: approval policy `never` and the native
+`:danger-full-access` permission profile. The backend selects and verifies these
+permissions at conversation creation, before saving history or attaching a terminal.
+Explicit `--sandbox`/`--ask-for-approval` or `--full-auto` options still take precedence.
+`run -- --yolo` is accepted as the short alias for
+`--dangerously-bypass-approvals-and-sandbox`. Remote Codex terminals inherit the
+verified server-side permissions; those flags are deliberately not passed to the
+remote terminal command. Resume and account transfer retain recorded permissions
+unless an explicit launch override is supplied.
+
 Detach a HERDR viewer with default **Ctrl+B, Q**. This leaves agents running.
 Backend `api stop` ends the selected agent and preserves resumable history.
 `herdr server stop` stops the named host and panes; it is not viewer detachment.

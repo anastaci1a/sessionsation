@@ -180,7 +180,9 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                             s.started_profiles
                                 .insert(id.clone(), p["permissions"].clone());
                             s.threads.insert(id, t.clone());
-                            json!({"thread":t})
+                            let full = p["permissions"] == ":danger-full-access" && !s.ignore_full_access;
+                            let mode = if full { "dangerFullAccess" } else if p["sandbox"] == "read-only" { "readOnly" } else { "workspaceWrite" };
+                            json!({"thread":t,"approvalPolicy":p["approvalPolicy"],"sandbox":{"type":mode},"activePermissionProfile":if full {json!({"id":":danger-full-access"})}else{Value::Null}})
                         }
                         "thread/name/set" if s.fail_name_set => json!({"fixture_error":true}),
                         "thread/name/set" => {
@@ -1507,6 +1509,8 @@ async fn multiple_launches_share_account_server_and_register_exact_threads() {
     for (index, options) in [
         "--sandbox read-only --ask-for-approval on-request",
         "--dangerously-bypass-approvals-and-sandbox",
+        "",
+        "--yolo",
     ]
     .iter()
     .enumerate()
@@ -1531,7 +1535,7 @@ async fn multiple_launches_share_account_server_and_register_exact_threads() {
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         let list = f.invoke(&["sessions"]);
-        if list["sessions"].as_array().unwrap().len() == 2 {
+        if list["sessions"].as_array().unwrap().len() == 4 {
             assert_ne!(
                 list["sessions"][0]["thread_id"],
                 list["sessions"][1]["thread_id"]
@@ -1548,10 +1552,10 @@ async fn multiple_launches_share_account_server_and_register_exact_threads() {
             .iter()
             .filter(|(m, _)| m == "thread/start")
             .count(),
-        2
+        4
     );
     let server = f.a.lock().unwrap();
-    for (index, name) in ["new-0", "new-1"].iter().enumerate() {
+    for (index, name) in ["new-0", "new-1", "new-2", "new-3"].iter().enumerate() {
         let (_, named) = server
             .calls
             .iter()
@@ -1603,12 +1607,14 @@ async fn multiple_launches_share_account_server_and_register_exact_threads() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn new_launch_does_not_attach_when_saving_or_resume_verification_fails() {
-    for fail_name in [true, false] {
+    for failure in ["name", "resume", "permissions"] {
+        let fail_name = failure == "name";
         let f = Fixture::new().await;
         {
             let mut server = f.a.lock().unwrap();
             server.fail_name_set = fail_name;
-            server.fail_resume = !fail_name;
+            server.fail_resume = failure == "resume";
+            server.ignore_full_access = failure == "permissions";
         }
         let error_log = f.tmp.path().join("launch-error.log");
         let pane = tmux(
@@ -1644,8 +1650,19 @@ async fn new_launch_does_not_attach_when_saving_or_resume_verification_fails() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let error = fs::read_to_string(&error_log).unwrap();
+        if failure == "permissions" {
+            assert!(
+                !f.a.lock()
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .any(|(m, _)| m == "thread/name/set" || m == "thread/resume")
+            );
+        }
         assert!(
-            error.contains(if fail_name {
+            error.contains(if failure == "permissions" {
+                "Codex did not restore the requested permissions"
+            } else if fail_name {
                 "could not save the new conversation"
             } else {
                 "new conversation was saved but Codex could not reopen it"

@@ -223,7 +223,15 @@ impl Control {
     }
 
     /// Restore the native full-access profile, not just its legacy sandbox view.
-    pub async fn resume_with_permissions(&mut self, mut params: Value) -> Result<Value> {
+    pub async fn start_with_permissions(&mut self, params: Value) -> Result<Value> {
+        self.with_permissions("thread/start", params).await
+    }
+
+    pub async fn resume_with_permissions(&mut self, params: Value) -> Result<Value> {
+        self.with_permissions("thread/resume", params).await
+    }
+
+    async fn with_permissions(&mut self, method: &str, mut params: Value) -> Result<Value> {
         let approval = params["approvalPolicy"].as_str().map(str::to_owned);
         let sandbox = params["sandbox"].as_str().map(str::to_owned);
         if sandbox.as_deref() == Some("danger-full-access") {
@@ -234,7 +242,7 @@ impl Control {
             params["permissions"] = json!(":danger-full-access");
         }
         let result = self
-            .request_timeout("thread/resume", params, Duration::from_secs(120))
+            .request_timeout(method, params, Duration::from_secs(120))
             .await?;
         verify_permissions(&result, approval.as_deref(), sandbox.as_deref())?;
         Ok(result)
