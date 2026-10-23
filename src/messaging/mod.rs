@@ -26,6 +26,8 @@ use std::{
 };
 use transport::Transport;
 
+/// Exact upstream profiles inspected for queue, cancellation and summary semantics.
+pub const NATIVE_PROFILES: &[&str] = &["0.163.0", "0.164.0"];
 pub const VERSION: &str = "1.2.1";
 type Result<T> = std::result::Result<T, Fault>;
 #[derive(Debug, Clone, Copy)]
@@ -147,6 +149,9 @@ impl Attachment {
         format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
     }
     async fn connect(&self) -> Result<Transport> {
+        self.connect_with_profile(&mut None).await
+    }
+    async fn connect_with_profile(&self, version: &mut Option<String>) -> Result<Transport> {
         let path = self.endpoint();
         let meta = fs::symlink_metadata(&path).map_err(|_| Fault("endpoint_unavailable"))?;
         let parent = fs::metadata(path.parent().ok_or(Fault("unsafe_endpoint"))?)?;
@@ -170,7 +175,9 @@ impl Attachment {
             return Err(Fault("unsafe_endpoint"));
         }
         let mut transport = Transport::connect(&resolved).await?;
-        transport.initialize().await?;
+        let initialized = transport.initialize().await;
+        *version = transport.provider_version.clone();
+        initialized?;
         Ok(transport)
     }
 }
@@ -276,7 +283,7 @@ async fn resolve(paths: &Paths, id: &str) -> Result<Value> {
         Err(error) => return Err(error),
         Ok(_guard) => match selected.connect().await {
             Ok(mut control) => activity(&mut control, id).await.unwrap_or("unavailable"),
-            Err(Fault("unsupported")) => "unsupported",
+            Err(Fault("unsupported" | "unsupported_native_version")) => "unsupported",
             Err(_) => "unavailable",
         },
     };
@@ -286,7 +293,7 @@ async fn resolve(paths: &Paths, id: &str) -> Result<Value> {
     )
 }
 fn capabilities() -> Value {
-    json!({"protocol_version":VERSION,"schema":"urn:codex-switcher:messaging:1.2.1","experimental":true,"live_validated":false,"native_profiles":["0.163.0"],"operations":{"sessions":true,"resolve":true,"enqueue":true,"status":true,"observe":true,"events":true,"cancel":true},"native_queue":{"method":"thread/queue/add","delivery":"non_steering_idle_dispatch","deduplication":"adapter_only","expiry":"submission_deadline_only","cancel":"delete_true_under_native_dispatch_lock"},"events":{"scope":"adapter_lifecycle_and_terminal_replies","retained":1000,"page_size":100,"public_replies":"correlated_terminal_summary","execution_correlation":"public_client_id","native_replay":"unsupported"},"receipts":{"capacity":10000,"automatic_eviction":false,"uncertain_submission":"never_replayed"},"reply_observation":{"mode":"poll_status_or_observe","native_method":"thread/turns/list","items_view":"summary","max_pages":20,"max_text_bytes":65536},"unsupported_reason":"native_push_subscription_and_token_streaming_not_supported"})
+    json!({"protocol_version":VERSION,"schema":"urn:codex-switcher:messaging:1.2.1","experimental":true,"live_validated":false,"native_profiles":NATIVE_PROFILES,"operations":{"sessions":true,"resolve":true,"enqueue":true,"status":true,"observe":true,"events":true,"cancel":true},"native_queue":{"method":"thread/queue/add","delivery":"non_steering_idle_dispatch","deduplication":"adapter_only","expiry":"submission_deadline_only","cancel":"delete_true_under_native_dispatch_lock"},"events":{"scope":"adapter_lifecycle_and_terminal_replies","retained":1000,"page_size":100,"public_replies":"correlated_terminal_summary","execution_correlation":"public_client_id","native_replay":"unsupported"},"receipts":{"capacity":10000,"automatic_eviction":false,"uncertain_submission":"never_replayed"},"reply_observation":{"mode":"poll_status_or_observe","native_method":"thread/turns/list","items_view":"summary","max_pages":20,"max_text_bytes":65536},"unsupported_reason":"native_push_subscription_and_token_streaming_not_supported"})
 }
 
 struct Ledger {

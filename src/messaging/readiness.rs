@@ -4,6 +4,9 @@ use crate::catalog;
 use std::time::Duration;
 
 fn observation_failure(reason: Option<&str>) -> Value {
+    if reason == Some("unsupported_native_version") {
+        return json!({"code":reason,"method":"initialize","message":"The account app-server version has not been verified for messaging by this Sessionsation build. Review observation.native_protocol and update Sessionsation to a compatible build; no input was sent.","retryable":false});
+    }
     let (method, budget, message) = match reason {
         Some("native_thread_read_timeout") => (
             Some("thread/read"),
@@ -72,7 +75,7 @@ pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, 
         "account_id":format!("codex:{}",session.account),"state":state,
         "reason":native["reason"],"observed_at":at,"valid_until":until,
         "freshness":if fresh {"fresh"} else {"stale"},
-        "observation":{"status":if at.is_none() {"unobserved"} else if fresh {"fresh"} else {"stale"},"checked_at":now,"failure":observation_failure(native["reason"].as_str()),"turn_summary":native["summary_evidence"]},
+        "observation":{"status":if at.is_none() {"unobserved"} else if fresh {"fresh"} else {"stale"},"checked_at":now,"failure":observation_failure(native["reason"].as_str()),"turn_summary":native["summary_evidence"],"native_protocol":native["native_protocol"]},
         "runtime_state":if at.is_none() && state=="unknown" {"unobserved"} else if stop.is_some() && state!="working" {"stopped"} else {state},
         "runtime_generation":native["generation"],
         "process_state":native["process_state"].as_str().unwrap_or("unknown"),"process_observed_at":native["process_observed_at"],"previous_turn_id":native["previous_turn_id"],
@@ -141,15 +144,19 @@ pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow
     }
     let before = recorded(paths, &session)?;
     let started = crate::daemon::now();
+    let mut provider_version = None;
     let result = async {
         let a = before.as_ref().ok_or(Fault("no_live_attachment"))?;
-        let mut control = a.connect().await.map_err(|e| {
-            if e.0 == "timeout" {
-                Fault("native_initialize_timeout")
-            } else {
-                e
-            }
-        })?;
+        let mut control = a
+            .connect_with_profile(&mut provider_version)
+            .await
+            .map_err(|e| {
+                if e.0 == "timeout" {
+                    Fault("native_initialize_timeout")
+                } else {
+                    e
+                }
+            })?;
         modes::session_status::observe_cached(&mut control, paths, a).await
     };
     let mut native = match tokio::time::timeout(Duration::from_secs(5), result).await {
@@ -173,6 +180,7 @@ pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow
             "reason":match result {Ok(Err(e))=>e.0,_=>"observation_timeout"},
             "observed_at":null,"valid_until":null,"native_sending_enabled":false}),
     };
+    native["native_protocol"] = json!({"version":provider_version,"supported_versions":NATIVE_PROFILES,"supported":provider_version.as_deref().map(|v|NATIVE_PROFILES.contains(&v))});
     catalog::resolve(paths, id, generation)?;
     let after = recorded(paths, &session)?;
     anyhow::ensure!(

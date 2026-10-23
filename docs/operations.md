@@ -113,3 +113,13 @@ to non-steering v1 Submit/Queue.
   use public API v1. Repository history also retains deployment metadata. Current
   documentation cleanup does not sanitize those Git objects; follow the
   [contributor review rules](../agents/README.md) for any separate remediation.
+
+## Native messaging compatibility
+
+The 0.164.0 queue service and the thread-read/turn-summary handler bodies were
+compared with upstream 0.163.0 and are unchanged. Queue request/response types
+remain compatible; unrelated new image item fields are not delivery evidence.
+Both exact profiles run through the isolated busy/idle queue regression.
+Unknown versions remain blocked. The public contract owns version discovery
+and mismatch diagnostics; compare the app-server handshake, not just the terminal
+CLI version. Source compatibility and synthetic tests do not prove a model send.

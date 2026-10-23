@@ -78,7 +78,7 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         "provider_conversation_id":binding.native.session_id,"mode":binding.request.mode,
         "delivery_semantics":"non_steering_native_queue",
         "state":if value["state"]=="unknown" {json!("delivery_unknown")} else {value["state"].clone()},
-        "reason":value["reason"],"facts":{"accepted_local":true,"accepted_native":accepted,
+        "reason":value["reason"],"reason_detail":if value["reason"]=="unsupported_native_version" {Some("The account app-server version is not supported by this Sessionsation build. Use api observe to inspect its native_protocol version and supported_versions; no native input was attempted.")} else {None},"facts":{"accepted_local":true,"accepted_native":accepted,
             "input_recorded":!value["correlation"].is_null(),"input_consumed":"unknown",
             "reply_observed":!reply.is_null()},
         "native_queue_id":value["native_queue_id"],"recovery_start":value["recovery_start"],

@@ -234,6 +234,7 @@ fn handoff_reserves_delivery_until_worker_releases_even_after_terminal_phase() {
 }
 
 struct Server {
+    version: Arc<Mutex<String>>,
     task: tokio::task::JoinHandle<()>,
     methods: Arc<Mutex<Vec<String>>>,
 }
@@ -252,7 +253,8 @@ async fn server(
     let listener = UnixListener::bind(path).unwrap();
     let methods = Arc::new(Mutex::new(Vec::new()));
     let seen = methods.clone();
-    let version = version.to_string();
+    let version = Arc::new(Mutex::new(version.to_string()));
+    let profile = version.clone();
     let task = tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
             let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
@@ -280,7 +282,7 @@ async fn server(
                 }
                 let result = match method {
                     "initialize" => {
-                        json!({"userAgent":format!("codex_cli_rs/{version} (Linux)"),"codexHome":"SECRET_HOME"})
+                        json!({"userAgent":format!("codex_cli_rs/{} (Linux)", profile.lock().unwrap()),"codexHome":"SECRET_HOME"})
                     }
                     "thread/read" => {
                         json!({"thread":{"id":req["params"]["threadId"],"status":{"type":if busy{"active"}else{"idle"}},"turns":[{"reasoning":"SECRET_REASONING"}]}})
@@ -312,14 +314,18 @@ async fn server(
             }
         }
     });
-    Server { task, methods }
+    Server {
+        task,
+        methods,
+        version,
+    }
 }
 #[tokio::test]
 async fn supported_queue_busy_idle_interleaving_and_no_private_leakage() {
-    for busy in [false, true] {
+    for (version, busy) in NATIVE_PROFILES.iter().flat_map(|v| [(v, false), (v, true)]) {
         let (_dir, paths, input, now) = fixture();
         let a = attachment_fixture(&paths, &input);
-        let fake = server(&a.endpoint(), "0.163.0", busy, false, true).await;
+        let fake = server(&a.endpoint(), version, busy, false, true).await;
         let mut control = a.connect().await.unwrap();
         assert_eq!(
             activity(&mut control, &input.session_id).await.unwrap(),
@@ -363,11 +369,16 @@ async fn supported_queue_busy_idle_interleaving_and_no_private_leakage() {
 }
 #[tokio::test]
 async fn unsupported_versions_and_missing_endpoint_do_not_launch() {
-    for version in ["0.162.1", "0.164.0", "0.163.01"] {
+    for version in ["0.162.1", "0.165.0", "0.163.01", "0.164.0-preview"] {
         let (_dir, paths, input, _) = fixture();
         let a = attachment_fixture(&paths, &input);
         let fake = server(&a.endpoint(), version, false, false, true).await;
-        assert!(matches!(a.connect().await, Err(Fault("unsupported"))));
+        let mut profile = None;
+        assert!(matches!(
+            a.connect_with_profile(&mut profile).await,
+            Err(Fault("unsupported_native_version"))
+        ));
+        assert_eq!(profile.as_deref(), Some(version));
         assert_eq!(fake.methods.lock().unwrap().as_slice(), ["initialize"]);
     }
     let (_dir, paths, input, _) = fixture();
@@ -827,7 +838,18 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
             json!({"pid":a.pid,"start_time":a.start,"home":a.home,"thread":a.id}).to_string(),
         )
         .unwrap();
-        let fake = server(&a.endpoint(), "0.163.0", busy, lost, true).await;
+        let fake = server(
+            &a.endpoint(),
+            if mode == PublicMode::Queue {
+                "0.165.0"
+            } else {
+                "0.163.0"
+            },
+            busy,
+            lost,
+            true,
+        )
+        .await;
         let instance:external::Instance=serde_json::from_value(json!({"pane":"%1","tmux_session":"test","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
         let session = crate::catalog::reconcile(&paths, &[instance])
             .unwrap()
@@ -842,6 +864,42 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
             text: "hello".into(),
             expires_at: input.expires_at,
         };
+        if mode == PublicMode::Queue {
+            let blocked = send_public(&paths, request.clone()).await.unwrap();
+            assert_eq!(blocked["state"], "pending_local");
+            assert_eq!(blocked["reason"], "unsupported_native_version");
+            assert_eq!(blocked["facts"]["accepted_native"], false);
+            assert!(
+                blocked["reason_detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("app-server")
+            );
+            let status = observe_public(&paths, &session.id, &session.generation())
+                .await
+                .unwrap();
+            assert_eq!(
+                status["observation"]["native_protocol"]["version"],
+                "0.165.0"
+            );
+            assert_eq!(status["observation"]["native_protocol"]["supported"], false);
+            assert_eq!(
+                status["observation"]["failure"]["code"],
+                "unsupported_native_version"
+            );
+            assert_eq!(
+                fake.methods
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|m| *m == "thread/queue/add")
+                    .count(),
+                0
+            );
+            // Same endpoint and request after a compatible backend becomes available.
+            // No duplicate ID, payload change, or implicit replay on observation.
+            *fake.version.lock().unwrap() = "0.164.0".into();
+        }
         let first = send_public(&paths, request.clone()).await.unwrap();
         assert_eq!(first["session_id"], session.id);
         if mode == PublicMode::Submit && busy {

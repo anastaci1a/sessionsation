@@ -29,6 +29,7 @@ pub(super) struct Transport {
     reader: tokio::task::JoinHandle<()>,
     sequence: u64,
     verified_profile: bool,
+    pub(super) provider_version: Option<String>,
 }
 impl Drop for Transport {
     fn drop(&mut self) {
@@ -91,6 +92,7 @@ impl Transport {
             reader: task,
             sequence: 0,
             verified_profile: false,
+            provider_version: None,
         })
     }
     pub(super) async fn initialize(&mut self) -> Result<()> {
@@ -101,14 +103,26 @@ impl Transport {
         }
         let response: Initialization = self.request("initialize",json!({"clientInfo":{"name":"codex_switcher_messaging","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
         // A specific inspected protocol profile, never a substring version match.
-        if !response
+        self.provider_version = response
             .user_agent
             .split_whitespace()
             .next()
             .and_then(|s| s.rsplit_once('/'))
-            .is_some_and(|(name, version)| !name.is_empty() && version == "0.163.0")
+            .filter(|(name, version)| {
+                !name.is_empty()
+                    && !version.is_empty()
+                    && version.len() <= 64
+                    && version
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+            })
+            .map(|(_, version)| version.to_owned());
+        if !self
+            .provider_version
+            .as_deref()
+            .is_some_and(|v| super::NATIVE_PROFILES.contains(&v))
         {
-            return Err(Fault("unsupported"));
+            return Err(Fault("unsupported_native_version"));
         }
         self.writer
             .send(Message::Text(

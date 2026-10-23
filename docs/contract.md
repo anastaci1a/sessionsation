@@ -311,7 +311,7 @@ Expiry is an unsent submission deadline, not cancellation of accepted native wor
 API v1 contract revision 3 adds `api send` with `mode:"resume"`. Negotiate
 `message_recovery` from `api capabilities`; the older provider `resume` flag
 refers to saved-session launching and does not imply this message mode. Codex's
-verified native protocol profile is **0.163.0**. Claude recovery is unsupported.
+verified native protocol profiles are **0.163.0 and 0.164.0**. Claude recovery is unsupported.
 This is caller-requested continuation of the same conversation, never conversion,
 new-conversation creation, steering, forced interruption or automatic restart.
 Revision 4 adds `message_recovery.exact_item_idle_start` and separate native start
@@ -389,7 +389,15 @@ separate from `delivery_unknown` for an uncertain native queue write. Once nativ
 write intent exists, the original queue request is never automatically replayed.
 Native queue addition uses the provider's atomic non-steering dispatch path; a
 concurrent turn may defer input, but cannot turn it into a steer. This was checked
-against the [inspected native queue implementation](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/ext/queue/src/service.rs).
+against the [inspected native queue implementation](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/ext/queue/src/service.rs).
+
+`api capabilities.native_protocol.supported_versions` lists exact verified
+app-server versions. `api observe` reports the actual handshake version under
+`observation.native_protocol`, including on a rejected version. Unknown versions
+fail closed with `unsupported_native_version`; running processes alone never
+prove messaging support. Check the account app-server version, which can differ
+from the terminal executable. No automatic downgrade, restart or message replay
+occurs after a provider upgrade.
 Client IDs are correlation values, not an assumed native uniqueness guarantee.
 
 Resume receipts add `launch: {required, phase, confirmed, detail, generation,
