@@ -23,7 +23,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":4,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":5,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -93,6 +93,13 @@ pub enum Command {
     },
     /// Bounded batch readiness from stdin; optional cached-only reads never contact a provider.
     Observations,
+    /// Resolve the active turn for explicit in-turn steering; never sends input.
+    SteerTarget {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+    },
     /// Read a target/host request from stdin and validate an exited-process recovery plan.
     RecoveryPlan,
     /// Reconcile an interrupted recovery without launching or delivering input.
@@ -178,7 +185,7 @@ pub enum Command {
     Recover {
         operation: String,
     },
-    /// Read a versioned Submit/Queue request from stdin; never steers a turn.
+    /// Read a versioned Submit/Queue/Resume/explicit Steer request from stdin.
     Send,
     Receipt {
         message: String,
@@ -468,11 +475,11 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
 }
 
 pub fn capabilities() -> Value {
-    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":4,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":5,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
-         "account_deletion":true,"account_removal":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"purge":false,"force_interrupt":false,"steer":false,"cross_provider_conversion":false},
+         "account_deletion":true,"account_removal":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"purge":false,"force_interrupt":false,"steer":true,"cross_provider_conversion":false},
         {"id":"claude","implemented":false,"reason":"SETUP_REQUIRED",
          "enrollment":false,"usage":false,"new":false,"resume":false,
          "account_switch":false,"restart":false,"submit":false,"queue":false,
@@ -481,7 +488,7 @@ pub fn capabilities() -> Value {
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "batch_observation":{"command":"observations","max_targets":64,"concurrency":8,"native_budget_seconds":5,"policies":["if_stale","refresh","cached_only"],"cache_hits_renew_evidence":false},
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
-    "native_protocol":{"supported_versions":crate::messaging::NATIVE_PROFILES,"version_source":"initialize.userAgent","unknown_versions":"fail_closed"},"message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"exact_item_idle_start":true,"ordinary_send_rejects_terminal_state":true,"start_ack_is_not_input_recorded":true,"owner_reservation_required":"message-recoveries"},
+    "steering":{"version":1,"command":"send","mode":"steer","target_command":"steer-target","providers":["codex"],"requires_expected_turn_id":true,"requires_expected_runtime_generation":true,"requires_expected_generation":true,"acceptance_only":true,"reply_correlation":"unsupported","automatic_replay":false,"queue_fallback":false,"starts_process":false,"interrupts":false},"native_protocol":{"supported_versions":crate::messaging::NATIVE_PROFILES,"version_source":"initialize.userAgent","unknown_versions":"fail_closed"},"message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"exact_item_idle_start":true,"ordinary_send_rejects_terminal_state":true,"start_ack_is_not_input_recorded":true,"owner_reservation_required":"message-recoveries"},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true,"resumable_local_summary_scan":true,"native_budget_seconds":5,"max_turns":1000,"partial_match_is_not_delivery":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
     "space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"session_details":true,"session_timing":true,"detach_stops_agent":false})
@@ -826,6 +833,10 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             )
             .await?
         }
+        Command::SteerTarget {
+            session,
+            expected_generation,
+        } => crate::messaging::steering_target(paths, &session, &expected_generation).await?,
         Command::Observations => {
             let mut bytes = Vec::new();
             std::io::stdin().take(32769).read_to_end(&mut bytes)?;

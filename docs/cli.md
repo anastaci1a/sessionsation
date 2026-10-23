@@ -316,3 +316,10 @@ symlinks and protected roots and wait for other sessions using the source.
 Cross-filesystem moves retain the original backup. Poll the returned operation
 through `api operations`; never automatically retry an uncertain mutation.
 For inactive sessions, choose the directory in the Resume launch plan instead.
+
+## Explicit in-turn steering
+
+For a deliberate message to a busy turn, use `api steer-target --session ID --expected-generation GENERATION`, then `api send` with `mode:"steer"` and the
+returned turn/runtime preconditions. This is acceptance-only and never creates,
+restarts or interrupts a session. See the [steering contract](contract.md#deliberate-in-turn-steering-revision-5)
+for the request, receipt, retry and capability-negotiation rules.

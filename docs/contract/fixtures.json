@@ -592,5 +592,147 @@
     "scope": "catalog_generation_and_process_identity",
     "starts_process": false,
     "sends_input": false
+  },
+  "steering_message": {
+    "api_version": 1,
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "expected_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "mode": "steer",
+    "text": "fixture only",
+    "expires_at": 2000000120,
+    "steering": {
+      "version": 1,
+      "expected_turn_id": "turn-active",
+      "expected_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "steering_target": {
+    "version": 1,
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "active_turn_id": "turn-active",
+    "available": true,
+    "reason": null,
+    "checked_at": 100,
+    "observed_at": 100,
+    "valid_until": 105,
+    "sends_input": false,
+    "starts_process": false,
+    "acceptance_only": true,
+    "reply_correlation": "unsupported"
+  },
+  "receipt_steer_accepted": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "accepted_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "accepted_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "provider": "codex",
+    "provider_conversation_id": "11111111-1111-4111-8111-111111111111",
+    "mode": "steer",
+    "delivery_semantics": "deliberate_in_turn_steer",
+    "state": "native_accepted",
+    "reason": null,
+    "native_queue_id": null,
+    "correlation": null,
+    "reply": null,
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": true,
+      "native_acceptance": "accepted",
+      "input_recorded": false,
+      "input_consumed": "unknown",
+      "turn_completed": "unknown",
+      "reply_observed": false
+    },
+    "observation": {
+      "state": "acceptance_only",
+      "checked_at": 100,
+      "native_attempted_at": null,
+      "evidence_observed_at": null,
+      "freshness": "unknown",
+      "error_code": null
+    },
+    "expected_turn_id": "turn-active",
+    "acknowledged_turn_id": "turn-active",
+    "acceptance_only": true,
+    "reply_correlation": "unsupported"
+  },
+  "receipt_steer_unknown": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "accepted_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "accepted_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "provider": "codex",
+    "provider_conversation_id": "11111111-1111-4111-8111-111111111111",
+    "mode": "steer",
+    "delivery_semantics": "deliberate_in_turn_steer",
+    "state": "delivery_unknown",
+    "reason": "disconnected",
+    "native_queue_id": null,
+    "correlation": null,
+    "reply": null,
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": false,
+      "native_acceptance": "unknown",
+      "input_recorded": false,
+      "input_consumed": "unknown",
+      "turn_completed": "unknown",
+      "reply_observed": false
+    },
+    "observation": {
+      "state": "acceptance_only",
+      "checked_at": 100,
+      "native_attempted_at": null,
+      "evidence_observed_at": null,
+      "freshness": "unknown",
+      "error_code": null
+    },
+    "expected_turn_id": "turn-active",
+    "acknowledged_turn_id": null,
+    "acceptance_only": true,
+    "reply_correlation": "unsupported"
+  },
+  "readiness_steer": {
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "provider": "codex",
+    "provider_conversation_id": "provider-conversation",
+    "account_id": "codex:fixture",
+    "state": "working",
+    "reason": null,
+    "observed_at": 100,
+    "valid_until": 105,
+    "freshness": "fresh",
+    "runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "previous_turn_id": "turn-0",
+    "explicit_intent": {
+      "state": "unknown",
+      "id": null
+    },
+    "queued_work_count": null,
+    "evidence": "native_read_only_snapshot_not_reservation",
+    "delivery_semantics": "non_steering_native_queue",
+    "actions": {
+      "submit": {
+        "available": false,
+        "reason": "target_busy"
+      },
+      "queue": {
+        "available": true,
+        "reason": null
+      },
+      "steer": {
+        "available": true,
+        "reason": null,
+        "target_command": "steer-target",
+        "requires_expected_turn_id": true,
+        "requires_expected_runtime_generation": true,
+        "acceptance_only": true,
+        "reply_correlation": "unsupported"
+      }
+    }
   }
 }

@@ -5,7 +5,9 @@ mod public;
 mod readiness;
 pub mod recovery;
 pub use batch::{BatchRequest, observations};
-pub use public::{PublicMode, PublicRequest, receipt_public, send_public};
+pub use public::{
+    PublicMode, PublicRequest, SteeringIntent, receipt_public, send_public, steering_target,
+};
 pub use readiness::observe_public;
 mod observe;
 mod transport;
@@ -364,6 +366,24 @@ impl Ledger {
         now: i64,
         binding: Option<(&str, &str, Option<SubmitEvidence>)>,
     ) -> Result<Receipt> {
+        // A public steering intent reserves its UUID even before receipt creation.
+        let has_public: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_messages')", [], |r|r.get(0))?;
+        if has_public {
+            let public_mode: Option<String> = self
+                .db
+                .query_row(
+                    "SELECT json_extract(binding,'$.request.mode') FROM public_messages WHERE id=?",
+                    [&input.message_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if public_mode.as_deref() == Some("steer")
+                && binding.as_ref().is_none_or(|b| b.1 != "public_steer")
+            {
+                return Err(Fault("message_id_conflict"));
+            }
+        }
+        let steer = binding.as_ref().is_some_and(|b| b.1 == "public_steer");
         let mode_hash = binding.as_ref().map(|b| b.0);
         uuid(&input.message_id)?;
         uuid(&input.session_id)?;
@@ -408,14 +428,16 @@ impl Ledger {
             message_id: input.message_id.clone(),
             session_id: input.session_id.clone(),
             generation: input.expected_generation.clone(),
-            state: if mode_hash.is_some() {
+            state: if mode_hash.is_some() && !steer {
                 "unknown"
             } else {
                 "pending_local"
             }
             .into(),
             native_queue_id: None,
-            reason: mode_hash.map(|_| "dispatch_intent".into()),
+            reason: mode_hash
+                .filter(|_| !steer)
+                .map(|_| "dispatch_intent".into()),
             correlation: None,
             reply: None,
             submit: binding.as_ref().and_then(|b| b.2.clone()),

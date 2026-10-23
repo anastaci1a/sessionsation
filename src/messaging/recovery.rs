@@ -864,6 +864,7 @@ mod tests {
             attachment: None,
         };
         let request = PublicRequest {
+            steering: None,
             api_version: 1,
             message_id: input.message_id,
             session_id: session.id.clone(),

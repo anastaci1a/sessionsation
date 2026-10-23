@@ -1,8 +1,11 @@
-//! Stable backend-facing Submit/Queue requests using the existing delivery ledger.
-//! Both modes use the native non-steering queue. Submit additionally requires an
-//! idle preflight; a concurrent turn can defer delivery but can never be steered.
+//! Stable public messaging using the shared durable ledger. Submit/Queue remain
+//! non-steering; Resume requires explicit recovery intent. Only the separately
+//! requested Steer mode may address an exact active turn, with acceptance-only evidence.
 use super::*;
+use anyhow::Context;
 use rusqlite::OptionalExtension;
+mod steering;
+pub use steering::{Intent as SteeringIntent, target as steering_target};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -10,6 +13,7 @@ pub enum PublicMode {
     Submit,
     Queue,
     Resume,
+    Steer,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -24,6 +28,8 @@ pub struct PublicRequest {
     pub expires_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<super::recovery::Intent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steering: Option<SteeringIntent>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -59,6 +65,9 @@ pub(super) fn get(ledger: &Ledger, id: &str) -> Result<Option<Binding>> {
 }
 
 fn wrap(binding: &Binding, value: Value) -> Value {
+    if binding.request.mode == PublicMode::Steer {
+        return steering::unsubmitted(binding, value["state"].as_str().unwrap_or("pending_local"));
+    }
     let accepted = !value["native_queue_id"].is_null() || !value["correlation"].is_null();
     let correlation = &value["correlation"];
     let reply = &value["reply"];
@@ -98,6 +107,15 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         request.api_version == crate::api::VERSION,
         "UNSUPPORTED_API_VERSION"
     );
+    if request.mode == PublicMode::Steer {
+        request
+            .steering
+            .as_ref()
+            .context("STEERING_INTENT_REQUIRED")?
+            .validate()?;
+    } else {
+        anyhow::ensure!(request.steering.is_none(), "STEERING_ONLY_VALID_WITH_STEER");
+    }
     if request.mode == PublicMode::Resume {
         return super::recovery::send(paths, request).await;
     }
@@ -166,8 +184,22 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
     if binding.cancelled {
         return Ok(wrap(&binding, json!({"state":"cancelled"})));
     }
-    let mut receipt = ledger.accept(&binding.native, crate::daemon::now())?;
+    let mut receipt = if binding.request.mode == PublicMode::Steer {
+        steering::accept(&mut ledger, &binding)?
+    } else {
+        ledger.accept(&binding.native, crate::daemon::now())?
+    };
     ledger.expire(&mut receipt, crate::daemon::now())?;
+    if binding.request.mode == PublicMode::Steer {
+        if let Err(error) = steering::deliver(paths, &binding, &mut ledger, &mut receipt).await {
+            if receipt.state == "pending_local" {
+                receipt.state = "rejected".into();
+            }
+            receipt.reason = Some(error.to_string());
+            ledger.save(&receipt)?;
+        }
+        return Ok(steering::receipt(&binding, &receipt));
+    }
     if matches!(receipt.state.as_str(), "pending_local" | "unknown") {
         if let Err(error) = deliver_with_policy(
             paths,
@@ -257,6 +289,24 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
             ),
         );
     };
+    if binding.request.mode == PublicMode::Steer {
+        ledger.expire(&mut receipt, crate::daemon::now())?;
+        if cancelling {
+            anyhow::ensure!(
+                matches!(
+                    receipt.state.as_str(),
+                    "pending_local" | "rejected" | "expired" | "cancelled"
+                ),
+                "STEERING_CANCELLATION_UNSUPPORTED"
+            );
+            if receipt.state == "pending_local" {
+                receipt.state = "cancelled".into();
+                receipt.reason = None;
+                ledger.save(&receipt)?;
+            }
+        }
+        return Ok(steering::receipt(&binding, &receipt));
+    }
     if cancelling {
         cancel(paths, &mut ledger, &mut receipt).await?;
     }
@@ -308,6 +358,7 @@ mod tests {
             cancelled: false,
             evidence_observed_at: None,
             request: PublicRequest {
+                steering: None,
                 api_version: 1,
                 message_id: uuid::Uuid::new_v4().to_string(),
                 session_id: uuid::Uuid::new_v4().to_string(),
@@ -349,6 +400,7 @@ mod evidence_tests {
             cancelled: false,
             evidence_observed_at: None,
             request: PublicRequest {
+                steering: None,
                 api_version: 1,
                 message_id: input.message_id.clone(),
                 session_id: uuid::Uuid::new_v4().to_string(),

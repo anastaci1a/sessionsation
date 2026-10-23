@@ -18,6 +18,26 @@ def validate(value, definition=None):
 fixtures = json.loads((root / "docs/contract/fixtures.json").read_text())
 validate(fixtures["runtime_attachment"], "RuntimeAttachment")
 validate(fixtures["request"], "MessageRequest")
+validate(fixtures["steering_message"], "MessageRequest")
+validate(fixtures["steering_target"], "SteeringTarget")
+for invalid in [{**fixtures["steering_message"], "steering": None}, {**fixtures["steering_message"], "mode": "queue"}, {**fixtures["steering_message"], "steering": {"version": 1, "expected_turn_id": "active"}}]:
+    try:
+        validate(invalid, "MessageRequest")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Incomplete or implicit steering must be rejected")
+for invalid in [
+    {**fixtures["receipt_steer_accepted"], "facts": {**fixtures["receipt_steer_accepted"]["facts"], "input_recorded": True}},
+    {**fixtures["receipt_steer_accepted"], "facts": {**fixtures["receipt_steer_accepted"]["facts"], "turn_completed": True}},
+    {**fixtures["receipt_steer_accepted"], "reply": {"item_id": "unrelated", "text": "unrelated turn reply", "phase": "final_answer"}},
+]:
+    try:
+        validate(invalid, "Receipt")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Steering acceptance must not imply consumption or reply correlation")
 validate(fixtures["recovery_message"], "MessageRequest")
 validate(fixtures["recovery_plan"], "RecoveryPlan")
 validate(fixtures["space_choices"], "SpaceChoices")
@@ -43,7 +63,7 @@ for fixture, definition in [("launch_request", "LaunchRequest"), ("resume_reques
 validate(fixtures["resume_receipt"], "ResumeReceipt")
 validate(fixtures["error"])
 validate(fixtures["capabilities"])
-for name, definition in [("session", "Session"), ("snapshot", "Snapshot"), ("readiness", "Readiness"), ("readiness_stopped", "Readiness")]:
+for name, definition in [("session", "Session"), ("snapshot", "Snapshot"), ("readiness", "Readiness"), ("readiness_stopped", "Readiness"), ("readiness_steer", "Readiness")]:
     validate(fixtures[name], definition)
 for name, value in fixtures.items():
     if name.startswith("receipt_"):
@@ -55,6 +75,11 @@ with tempfile.TemporaryDirectory() as directory:
         validate(value)
         if args[0] == "state":
             validate(value["result"], "Snapshot")
+        if args == ["capabilities"]:
+            assert value["result"]["contract_revision"] >= 5
+            assert value["result"]["steering"]["version"] == 1
+            assert value["result"]["steering"]["acceptance_only"] is True
+            assert value["result"]["providers"][0]["steer"] is True
         if args == ["version"]:
             validate(value["result"], "ExecutableVersion")
     batch=json.loads(subprocess.check_output(command + ["observations"], input=json.dumps({"api_version":1,"sessions":[],"policy":"cached_only"}), text=True))

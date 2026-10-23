@@ -365,7 +365,8 @@
           "enum": [
             "submit",
             "queue",
-            "resume"
+            "resume",
+            "steer"
           ]
         },
         "text": {
@@ -380,6 +381,16 @@
           "oneOf": [
             {
               "$ref": "#/$defs/RecoveryIntent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "steering": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SteeringIntent"
             },
             {
               "type": "null"
@@ -423,6 +434,32 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "steer"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "steering"
+            ],
+            "properties": {
+              "steering": {
+                "$ref": "#/$defs/SteeringIntent"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "steering": {
+                "type": "null"
+              }
+            }
+          }
         }
       ]
     },
@@ -451,11 +488,15 @@
           "enum": [
             "submit",
             "queue",
-            "resume"
+            "resume",
+            "steer"
           ]
         },
         "delivery_semantics": {
-          "const": "non_steering_native_queue"
+          "enum": [
+            "non_steering_native_queue",
+            "deliberate_in_turn_steer"
+          ]
         },
         "state": {
           "enum": [
@@ -559,6 +600,31 @@
               "additionalProperties": false
             }
           ]
+        },
+        "expected_turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "acknowledged_turn_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "acceptance_only": {
+          "type": "boolean"
+        },
+        "reply_correlation": {
+          "type": "string"
         }
       },
       "required": [
@@ -598,6 +664,87 @@
               "accepted_runtime_generation": {
                 "type": "string",
                 "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "steer"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "acceptance_only",
+              "reply_correlation",
+              "expected_turn_id",
+              "acknowledged_turn_id"
+            ],
+            "properties": {
+              "delivery_semantics": {
+                "const": "deliberate_in_turn_steer"
+              },
+              "acceptance_only": {
+                "const": true
+              },
+              "reply_correlation": {
+                "const": "unsupported"
+              },
+              "state": {
+                "enum": [
+                  "pending_local",
+                  "native_accepted",
+                  "delivery_unknown",
+                  "rejected",
+                  "cancelled",
+                  "expired"
+                ]
+              },
+              "native_queue_id": {
+                "type": "null"
+              },
+              "correlation": {
+                "type": "null"
+              },
+              "reply": {
+                "type": "null"
+              },
+              "facts": {
+                "properties": {
+                  "input_recorded": {
+                    "const": false
+                  },
+                  "input_consumed": {
+                    "const": "unknown"
+                  },
+                  "reply_observed": {
+                    "const": false
+                  },
+                  "native_acceptance": {
+                    "enum": [
+                      "accepted",
+                      "unknown",
+                      "not_attempted"
+                    ]
+                  },
+                  "turn_completed": {
+                    "const": "unknown"
+                  }
+                },
+                "required": [
+                  "native_acceptance",
+                  "turn_completed"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "delivery_semantics": {
+                "const": "non_steering_native_queue"
               }
             }
           }
@@ -824,6 +971,40 @@
             },
             "resume": {
               "$ref": "#/$defs/ActionHint"
+            },
+            "steer": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/ActionHint"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "target_command",
+                    "requires_expected_turn_id",
+                    "requires_expected_runtime_generation",
+                    "acceptance_only",
+                    "reply_correlation"
+                  ],
+                  "properties": {
+                    "target_command": {
+                      "const": "steer-target"
+                    },
+                    "requires_expected_turn_id": {
+                      "const": true
+                    },
+                    "requires_expected_runtime_generation": {
+                      "const": true
+                    },
+                    "acceptance_only": {
+                      "const": true
+                    },
+                    "reply_correlation": {
+                      "const": "unsupported"
+                    }
+                  }
+                }
+              ]
             }
           },
           "required": [
@@ -1047,7 +1228,8 @@
             "uncorrelated",
             "unavailable",
             "cached",
-            "not_applicable"
+            "not_applicable",
+            "acceptance_only"
           ]
         },
         "checked_at": {
@@ -1999,7 +2181,7 @@
         "contract_revision": {
           "type": "integer",
           "minimum": 2,
-          "const": 4
+          "const": 5
         },
         "executable": {
           "type": "object",
@@ -2399,6 +2581,116 @@
         },
         "sends_input": {
           "const": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "SteeringIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "expected_turn_id",
+        "expected_runtime_generation"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "expected_turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "expected_runtime_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "SteeringTarget": {
+      "type": "object",
+      "required": [
+        "version",
+        "session_id",
+        "generation",
+        "runtime_generation",
+        "active_turn_id",
+        "available",
+        "reason",
+        "checked_at",
+        "observed_at",
+        "valid_until",
+        "sends_input",
+        "starts_process",
+        "acceptance_only",
+        "reply_correlation"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "runtime_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "active_turn_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checked_at": {
+          "type": "integer"
+        },
+        "observed_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "valid_until": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sends_input": {
+          "const": false
+        },
+        "starts_process": {
+          "const": false
+        },
+        "acceptance_only": {
+          "const": true
+        },
+        "reply_correlation": {
+          "const": "unsupported"
         }
       },
       "additionalProperties": true

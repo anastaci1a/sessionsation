@@ -306,6 +306,62 @@ An uncertain write is journaled before socket I/O and is never resent. Receipt a
 idempotency storage is bounded at 10,000 and never silently evicts replay protection.
 Expiry is an unsent submission deadline, not cancellation of accepted native work.
 
+### Deliberate in-turn steering (revision 5)
+
+Negotiate `contract_revision >= 5` and `steering.version == 1` from `api capabilities`.
+This is a separate explicit `mode:"steer"` on `api send`, never a fallback for Submit,
+Queue or Resume. It sends `turn/steer` to an existing busy Codex turn without
+interrupting, cancelling, restarting, launching, or queuing a later turn. Native
+acceptance does **not** promise immediate consumption or a response.
+
+First call `api steer-target --session ID --expected-generation GENERATION`.
+This bounded read-only check returns `active_turn_id`, `runtime_generation`, catalog
+`generation`, availability/reason and five-second evidence timestamps. Normal
+observations advertise `actions.steer`; callers still need the explicit target
+lookup because ordinary busy polling avoids reconstructing turn history.
+
+The ordinary request fields remain required. Set `mode:"steer"`, omit `recovery`,
+and add:
+
+```json
+{
+  "steering": {
+    "version": 1,
+    "expected_turn_id": "active-turn-from-steer-target",
+    "expected_runtime_generation": "64-character-runtime-generation-from-steer-target"
+  }
+}
+```
+
+Admission rechecks catalog/runtime identity, active turn, explicit-stop and sending
+gates under the existing lifecycle locks. Idle, approval-blocked, stale, moved or
+changed-turn targets are rejected without substitution. The native operation
+also enforces the expected active turn, covering a turn transition after preflight.
+The immutable request reserves its UUID across public and legacy transports.
+The journal enters uncertainty **before** native I/O. Retries after an attempted
+steer, process restart or lost acknowledgement return the original receipt and
+never resend; changed payload, mode or preconditions conflict. Before dispatch,
+a failed preflight produces a terminal rejected receipt. Cancellation can cancel
+only provably unsent local intent; accepted/uncertain steering cannot be cancelled
+through this API (`STEERING_CANCELLATION_UNSUPPORTED`).
+
+Steering receipts use `delivery_semantics:"deliberate_in_turn_steer"` and are
+**acceptance-only**. `acknowledged_turn_id` is present only after a matching native
+acknowledgement. `facts.native_acceptance` distinguishes `accepted`, `unknown`
+(possible dispatch), and `not_attempted`. A lost/malformed acknowledgement or
+unclassified native error remains `delivery_unknown`; it is not safe to resend.
+The inspected summary protocol cannot reliably correlate a steer with a distinct
+reply. Therefore `reply_correlation:"unsupported"`, `input_recorded:false`,
+`input_consumed:"unknown"`, `turn_completed:"unknown"`, `reply_observed:false`,
+and null `reply`/`correlation` remain explicit. Receipt polling never borrows the
+active turn's eventual reply or attempts delivery. The native queue ID is null.
+
+Schema definitions `SteeringIntent`, `SteeringTarget`, and the conditional
+`MessageRequest`/`Receipt` rules are in [v1.json](contract/v1.json); request
+examples and accepted/uncertain receipts are in [fixtures.json](contract/fixtures.json).
+Older requests/receipts remain valid. Clients must negotiate this capability,
+retain their original UUID/request, and handle acceptance separately from delivery.
+
 ### Explicit Resume-and-submit
 
 API v1 contract revision 3 adds `api send` with `mode:"resume"`. Negotiate

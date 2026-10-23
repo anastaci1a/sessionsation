@@ -201,7 +201,7 @@ impl Transport {
         }
         Ok(ack.turn.id)
     }
-    /// Typed busy Submit only; the generic operation allowlist remains non-steering.
+    /// Typed explicit in-turn steering; the generic operation allowlist remains non-steering.
     pub(super) async fn steer(
         &mut self,
         session: &str,
