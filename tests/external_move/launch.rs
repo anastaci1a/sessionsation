@@ -558,6 +558,79 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             .iter()
             .any(|(m, _)| m == "turn/start" || m == "turn/steer")
     );
+    // HERDR owns the live label in both directions; provider/process identity stays put.
+    let tab_id = receipt["tab_id"].as_str().unwrap();
+    let before_name = host.call(&["pane", "process-info", "--pane", pane]);
+    host.call(&["tab", "rename", tab_id, "Host renamed"]);
+    let inventory: Value = serde_json::from_slice(&api(&f, &["state"], None).stdout).unwrap();
+    let session = inventory["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap();
+    assert_eq!(session["name"], "Host renamed");
+    assert_eq!(session["name_source"], "herdr_last_observed");
+    assert_eq!(session["conversation_id"], receipt["conversation_id"]);
+    let renamed = api(
+        &f,
+        &[
+            "rename",
+            "--session",
+            id,
+            "--expected-generation",
+            session["generation"].as_str().unwrap(),
+            "--name",
+            "Owned popup",
+        ],
+        None,
+    );
+    assert!(
+        renamed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&renamed.stderr)
+    );
+    let renamed: Value = serde_json::from_slice(&renamed.stdout).unwrap();
+    assert_eq!(renamed["result"]["name"], "Owned popup");
+    assert_eq!(
+        host.call(&["tab", "get", tab_id])["tab"]["label"],
+        "Owned popup"
+    );
+    let same = api(
+        &f,
+        &[
+            "rename",
+            "--session",
+            id,
+            "--expected-generation",
+            renamed["result"]["generation"].as_str().unwrap(),
+            "--name",
+            "Owned popup",
+        ],
+        None,
+    );
+    assert!(
+        same.status.success(),
+        "{}",
+        String::from_utf8_lossy(&same.stderr)
+    );
+    assert_eq!(
+        host.call(&["pane", "process-info", "--pane", pane])["process_info"]["foreground_processes"],
+        before_name["process_info"]["foreground_processes"]
+    );
+    let legacy = f.invoke(&[
+        "rename",
+        "--session",
+        &format!("thread:{}", receipt["conversation_id"].as_str().unwrap()),
+        "--name",
+        "Legacy renamed",
+    ]);
+    assert_eq!(legacy["name"], "Legacy renamed");
+    assert_eq!(
+        host.call(&["tab", "get", tab_id])["tab"]["label"],
+        "Legacy renamed"
+    );
+    host.call(&["tab", "rename", tab_id, "Owned popup"]);
     // Public relocation must restart only this owned pane and preserve identity.
     let changed = f.tmp.path().join("changed-root");
     fs::create_dir(&changed).unwrap();
@@ -648,6 +721,16 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
     assert_eq!(
         after["process_info"]["foreground_processes"][0]["pid"],
         shell_pid
+    );
+    let stopped: Value = serde_json::from_slice(&api(&f, &["state"], None).stdout).unwrap();
+    assert_eq!(
+        stopped["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap()["name"],
+        "Owned popup"
     );
     // Leave a recorded unfinished turn, with no live writer. Consent must be explicit.
     let history = find_rollout(

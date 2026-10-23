@@ -63,7 +63,7 @@ for fixture, definition in [("launch_request", "LaunchRequest"), ("resume_reques
 validate(fixtures["resume_receipt"], "ResumeReceipt")
 validate(fixtures["error"])
 validate(fixtures["capabilities"])
-for name, definition in [("session", "Session"), ("snapshot", "Snapshot"), ("readiness", "Readiness"), ("readiness_stopped", "Readiness"), ("readiness_steer", "Readiness")]:
+for name, definition in [("session", "Session"), ("session_host_label", "Session"), ("snapshot", "Snapshot"), ("readiness", "Readiness"), ("readiness_stopped", "Readiness"), ("readiness_steer", "Readiness")]:
     validate(fixtures[name], definition)
 for name, value in fixtures.items():
     if name.startswith("receipt_"):
@@ -76,7 +76,8 @@ with tempfile.TemporaryDirectory() as directory:
         if args[0] == "state":
             validate(value["result"], "Snapshot")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 5
+            assert value["result"]["contract_revision"] >= 6
+            assert value["result"]["session_names"]["version"] == 1
             assert value["result"]["steering"]["version"] == 1
             assert value["result"]["steering"]["acceptance_only"] is True
             assert value["result"]["providers"][0]["steer"] is True

@@ -50,8 +50,10 @@ offline metadata does not prove an account can presently launch.
 - `session.generation` changes on rename, account transfer, replacement or loss of
   an attachment. Mutations require the current `--expected-generation` and fail
   with `STALE_TARGET` rather than selecting a replacement.
-- Session names are unique across the catalog; rename is atomic and retains both
-  identities. `SESSION_NAME_EXISTS` rejects a collision.
+- Names are display labels, never identities. Revision 6 uses HERDR’s tab label
+  for every verified live HERDR session (working or idle). Sessions sharing a tab
+  share its label, and HERDR can contain duplicate labels. Use UUIDs for targets.
+  New launches and catalog-only renames still reject name collisions.
 - Account IDs are provider-qualified, such as `codex:example`. A removed membership
   remains represented for recovery with `membership:"removed"` and `selectable:false`.
   Disabled memberships remain enrolled. Use `selectable`, not name or plan, for selection.
@@ -305,6 +307,33 @@ remain bound to the original conversation/runtime even after rename or transfer.
 An uncertain write is journaled before socket I/O and is never resent. Receipt and
 idempotency storage is bounded at 10,000 and never silently evicts replay protection.
 Expiry is an unsent submission deadline, not cancellation of accepted native work.
+
+### HERDR-owned session names (revision 6)
+
+Negotiate `session_names.version:1`. Inventory/state/watch reads one bounded host
+snapshot per server/socket and maps the verified attachment's pane ID to its tab
+ID and label. It never matches by display name. The catalog caches the last
+observed label for host outages and retains it after the process exits; it is not
+an independent naming authority for live HERDR sessions. `name_source` is
+`herdr_last_observed` for HERDR attachments and `catalog` otherwise. This field
+is provenance, not a freshness guarantee. Unavailable/ambiguous host observations
+leave the cached name unchanged. No second background service is needed; existing
+UI/client state polling performs reconciliation in the backend.
+
+`api rename` validates generation, lifecycle locks and exact host process, renames
+the containing HERDR tab, then reads it back before reporting success. A lost
+acknowledgement is reconciled by that read, never automatically replayed. Failed
+verification returns `HOST_RENAME_UNCONFIRMED` or `HOST_RENAME_NOT_APPLIED`;
+refresh state before retrying. Concurrent host edits win on subsequent observation.
+The UI contains no naming/synchronization operations of its own. Inactive and
+non-HERDR sessions retain catalog naming behavior. Host labels are neither
+truncated nor given synthetic suffixes; explicit CLI input keeps the 30-character
+limit. Renames do not restart agents, alter conversations or change accounts.
+
+Logical session/conversation IDs and runtime generations survive label changes;
+catalog generations change when a new label is observed. Clients must refresh
+catalog generations before mutations and must not assume names are unique.
+Submit/Queue/Resume/Steer semantics and existing receipts are unchanged.
 
 ### Deliberate in-turn steering (revision 5)
 

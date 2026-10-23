@@ -67,7 +67,7 @@ fn receipt_socket(paths: &Paths, pane: &str, thread: Option<&str>) -> Result<Opt
     }
     Ok(latest.map(|(_, socket)| socket))
 }
-pub(super) fn socket_for(paths: &Paths, pane: &str) -> Result<Option<PathBuf>> {
+pub(crate) fn socket_for(paths: &Paths, pane: &str) -> Result<Option<PathBuf>> {
     let file = binding_file(paths, pane);
     if !file.exists() {
         return if pane.starts_with("herdr/") {

@@ -2,10 +2,11 @@
 
 ## Backend contract
 
-One uniquely named session catalog and one provider-qualified account list.
+One stable session catalog and one provider-qualified account list.
 Backend session IDs are independent of provider conversation IDs and runtime
-attachments. Runtime generations reject stale mutations. Atomic rename preserves
-backend identity.
+attachments. Runtime generations reject stale mutations. Renames preserve backend
+identity; live HERDR labels come from the host, with a retained catalog cache for
+unavailable/stopped sessions.
 
 [The versioned CLI contract](contract.md) owns client-facing behavior. The durable
 session catalog is a separate atomic JSON store; it does not repurpose provider

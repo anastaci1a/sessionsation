@@ -179,7 +179,7 @@ operations. Switching waits for positive idle and never forces interruption.
 
 ## Public machine interface
 
-Use [contract v1](contract.md) for state/watch, unique names, generation-checked
+Use [contract v1](contract.md) for state/watch, host-owned display names, generation-checked
 session operations, receipts and launcher plans. `api --api-version 1` accepts only
 supported contract versions. All API output is JSON; watch uses NDJSON.
 

@@ -1,4 +1,5 @@
 //! Stable backend identity, distinct from native conversations and attachments.
+pub mod names;
 use crate::paths::{Paths, atomic_write, lock_file, private_dir};
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -247,6 +248,11 @@ pub(crate) fn invalidate(paths: &Paths, id: &str, generation: &str) -> Result<Se
 pub fn rename(paths: &Paths, id: &str, generation: &str, name: &str) -> Result<Session> {
     validate_name(name)?;
     transaction(paths, |c| {
+        let current = c.sessions.get(id).context("SESSION_NOT_FOUND")?;
+        ensure!(current.generation() == generation, "STALE_TARGET");
+        if current.name == name {
+            return Ok(current.clone());
+        }
         ensure!(
             !c.sessions.values().any(|s| s.id != id && s.name == name)
                 && !c.reservations.contains_key(name),

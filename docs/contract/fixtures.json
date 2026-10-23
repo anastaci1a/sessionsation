@@ -734,5 +734,31 @@
         "reply_correlation": "unsupported"
       }
     }
+  },
+  "session_host_label": {
+    "id": "22222222-2222-4222-8222-222222222222",
+    "name": "Host label Host label Host label Host label Host label Host label Host label Host label Host label Host label Host label Host label Host label Host label Host label",
+    "provider": "codex",
+    "account": "fixture",
+    "account_id": "codex:fixture",
+    "conversation_id": "provider-conversation",
+    "revision": 1,
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "attachment": {
+      "host": "herdr",
+      "target": "herdr/fixture/w1:p1",
+      "pid": 123,
+      "process_start": 42
+    },
+    "availability": "running",
+    "capabilities": {
+      "rename": true,
+      "resume": false,
+      "switch_account": true,
+      "restart": true,
+      "stop": true,
+      "move_space": true
+    },
+    "name_source": "herdr_last_observed"
   }
 }

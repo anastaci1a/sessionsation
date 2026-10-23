@@ -189,8 +189,21 @@ pub(super) fn validate_label(name: &str) -> Result<()> {
 pub async fn rename(paths: &Paths, key: &str, name: &str) -> Result<Value> {
     let name = name.trim();
     validate_label(name)?;
-    let name = opening::tmux_label(name);
     let source = selected(paths, key).await?;
+    if !source.inactive && source.pane.starts_with("herdr/") {
+        crate::catalog::reconcile(paths, std::slice::from_ref(&source))?;
+        crate::catalog::names::refresh(paths, std::slice::from_ref(&source)).await?;
+        let session = crate::catalog::list(paths)?
+            .into_iter()
+            .find(|s| s.conversation_id == source.thread_id)
+            .context("SESSION_NOT_FOUND")?;
+        let renamed =
+            crate::catalog::names::rename(paths, &session.id, &session.generation(), name).await?;
+        return Ok(
+            json!({"schema_version":1,"thread_id":renamed.conversation_id,"name":renamed.name,"tmux_session":source.tmux_session}),
+        );
+    }
+    let name = opening::tmux_label(name);
     let _lock = if source.thread_id.is_empty() {
         None
     } else {

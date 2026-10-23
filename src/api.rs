@@ -23,7 +23,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":5,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":6,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -475,7 +475,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
 }
 
 pub fn capabilities() -> Value {
-    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":5,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":6,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -491,7 +491,7 @@ pub fn capabilities() -> Value {
     "steering":{"version":1,"command":"send","mode":"steer","target_command":"steer-target","providers":["codex"],"requires_expected_turn_id":true,"requires_expected_runtime_generation":true,"requires_expected_generation":true,"acceptance_only":true,"reply_correlation":"unsupported","automatic_replay":false,"queue_fallback":false,"starts_process":false,"interrupts":false},"native_protocol":{"supported_versions":crate::messaging::NATIVE_PROFILES,"version_source":"initialize.userAgent","unknown_versions":"fail_closed"},"message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"exact_item_idle_start":true,"ordinary_send_rejects_terminal_state":true,"start_ack_is_not_input_recorded":true,"owner_reservation_required":"message-recoveries"},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true,"resumable_local_summary_scan":true,"native_budget_seconds":5,"max_turns":1000,"partial_match_is_not_delivery":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
-    "space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"session_details":true,"session_timing":true,"detach_stops_agent":false})
+    "space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false})
 }
 
 fn public_session(s: catalog::Session) -> Value {
@@ -500,12 +500,18 @@ fn public_session(s: catalog::Session) -> Value {
     let mut value = json!(s);
     value["account_id"] = json!(account_id);
     value["generation"] = json!(generation);
+    value["name_source"] = json!(if value["attachment"]["host"] == "herdr" {
+        "herdr_last_observed"
+    } else {
+        "catalog"
+    });
     value
 }
 
 async fn inventory(paths: &Paths) -> Result<Vec<external::Instance>> {
     let items = external::discover_catalog(paths).await?;
     catalog::reconcile(paths, &items)?;
+    catalog::names::refresh(paths, &items).await?;
     Ok(items)
 }
 pub(crate) fn source_matches(s: &catalog::Session, i: &external::Instance) -> bool {
@@ -853,12 +859,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             name,
         } => {
             inventory(paths).await?;
-            public_session(catalog::rename(
-                paths,
-                &session,
-                &expected_generation,
-                &name,
-            )?)
+            public_session(
+                catalog::names::rename(paths, &session, &expected_generation, &name).await?,
+            )
         }
         Command::Switch {
             session,

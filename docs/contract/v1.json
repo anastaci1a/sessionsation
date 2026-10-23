@@ -103,8 +103,7 @@
         },
         "name": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 128
+          "minLength": 1
         },
         "provider": {
           "type": "string"
@@ -219,6 +218,12 @@
             "type": "string"
           },
           "description": "Discovery limitations, including incomplete optional native enrichment. Does not establish runtime readiness."
+        },
+        "name_source": {
+          "enum": [
+            "herdr_last_observed",
+            "catalog"
+          ]
         }
       },
       "required": [
@@ -2181,7 +2186,7 @@
         "contract_revision": {
           "type": "integer",
           "minimum": 2,
-          "const": 5
+          "const": 6
         },
         "executable": {
           "type": "object",
