@@ -336,6 +336,13 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                             let item=json!({"id":format!("queue-{}",s.native_messages.len()+1),"clientUserMessageId":p["clientUserMessageId"]});
                             s.native_messages.push(item.clone());json!({"queuedSubmission":item})
                         },
+                        "thread/queue/start" => {
+                            let queued = p["queuedSubmissionId"].as_str().unwrap();
+                            if let Some(index) = s.native_messages.iter().position(|item|item["id"] == queued) {
+                                s.native_messages.remove(index);
+                                json!({"turn":{"id":"recovery-turn","status":"inProgress"}})
+                            } else { json!({"fixture_error":true}) }
+                        },
                         "thread/queue/list" if s.messaging_profile => json!({"data":s.native_messages,"nextCursor":null}),
                         "thread/queue/list" => {
                             s.queue_reads += 1;

@@ -91,6 +91,8 @@ pub struct Enqueue {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Receipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_start: Option<RecoveryStart>,
     pub message_id: String,
     pub session_id: String,
     pub generation: String,
@@ -103,6 +105,11 @@ pub struct Receipt {
     pub reply: Option<observe::Reply>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submit: Option<SubmitEvidence>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RecoveryStart {
+    pub state: String,
+    pub turn_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SubmitEvidence {
@@ -390,6 +397,7 @@ impl Ledger {
             return Err(Fault("receipt_capacity"));
         }
         let receipt = Receipt {
+            recovery_start: None,
             message_id: input.message_id.clone(),
             session_id: input.session_id.clone(),
             generation: input.expected_generation.clone(),

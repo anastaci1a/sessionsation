@@ -529,6 +529,36 @@
         },
         "launch": {
           "$ref": "#/$defs/RecoveryLaunchFacts"
+        },
+        "recovery_start": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "state",
+                "turn_id"
+              ],
+              "properties": {
+                "state": {
+                  "enum": [
+                    "confirmed",
+                    "unknown",
+                    "rejected"
+                  ]
+                },
+                "turn_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
         }
       },
       "required": [
@@ -1943,7 +1973,7 @@
         "contract_revision": {
           "type": "integer",
           "minimum": 2,
-          "const": 3
+          "const": 4
         },
         "executable": {
           "type": "object",

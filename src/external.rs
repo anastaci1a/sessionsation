@@ -1254,11 +1254,7 @@ pub(crate) fn clear_recovery_stop_intent(
     id: &str,
     expected: Option<&str>,
 ) -> Result<()> {
-    ensure!(
-        catalog::stop_intent(paths, id)?.as_deref() == expected,
-        "RECOVERY_STOP_INTENT_CHANGED_OBSERVE_AGAIN"
-    );
-    catalog::set_stop_intent(paths, id, None)
+    catalog::clear_stop_intent(paths, id, expected)
 }
 async fn run_account_thread_inner(
     paths: &Paths,

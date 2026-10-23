@@ -133,6 +133,11 @@ async fn explicit_exited_tmux_recovery_preserves_identity_context_and_sends_once
         let done = receipt(&f, req["message_id"].as_str().unwrap()).await;
         assert_eq!(done["launch"]["phase"], "complete", "{done}");
         assert_eq!(done["facts"]["accepted_native"], true, "{done}");
+        assert_eq!(done["recovery_start"]["state"], "confirmed", "{done}");
+        assert_eq!(
+            done["facts"]["input_recorded"], false,
+            "a start acknowledgement is not recorded input"
+        );
         assert_eq!(done["provider_conversation_id"], ID);
         assert_eq!(done["session_id"], s["id"]);
         let retry = launch::api(&f, &["send"], Some(&req));
@@ -152,6 +157,14 @@ async fn explicit_exited_tmux_recovery_preserves_identity_context_and_sends_once
         assert_eq!(now["account_id"], "codex:personal");
         assert_eq!(now["directory"], f.tmp.path().to_str().unwrap());
         let calls = f.a.lock().unwrap().calls.clone();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(m, _)| m == "thread/queue/start")
+                .count(),
+            1
+        );
+        assert!(f.a.lock().unwrap().native_messages.is_empty());
         assert_eq!(
             calls
                 .iter()

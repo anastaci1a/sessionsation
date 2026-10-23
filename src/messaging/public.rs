@@ -81,7 +81,7 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         "reason":value["reason"],"facts":{"accepted_local":true,"accepted_native":accepted,
             "input_recorded":!value["correlation"].is_null(),"input_consumed":"unknown",
             "reply_observed":!reply.is_null()},
-        "native_queue_id":value["native_queue_id"],
+        "native_queue_id":value["native_queue_id"],"recovery_start":value["recovery_start"],
         "correlation":if correlation.is_null() {Value::Null} else {json!({
             "native_turn_id":correlation["turn_id"],"original_input_item_id":correlation["user_item_id"],
             "completion_input_item_id":correlation["completed_user_item_id"],
@@ -231,7 +231,34 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
     if cancelling {
         cancel(paths, &mut ledger, &mut receipt).await?;
     }
-    let value = observe::result(paths, &mut ledger, &mut receipt).await?;
+    let value = if matches!(
+        receipt.state.as_str(),
+        "unknown" | "native_accepted" | "execution_started"
+    ) {
+        let original = receipt.clone();
+        drop(ledger);
+        let observation = observe::snapshot(paths, &original).await;
+        ledger = Ledger::open(paths)?;
+        binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
+        receipt = ledger.get(id)?.ok_or(Fault("receipt_not_found"))?;
+        let status = if receipt != original || binding.cancelled {
+            json!({"state":"unavailable","code":"receipt_changed_during_observation"})
+        } else {
+            match observation {
+                Ok(Some(observed)) => {
+                    observe::commit(&mut ledger, &mut receipt, observed)?;
+                    json!({"state":"observed"})
+                }
+                Ok(None) => json!({"state":"uncorrelated"}),
+                Err(e) => json!({"state":"unavailable","code":e.0}),
+            }
+        };
+        let mut value = json!(receipt);
+        value["observation"] = status;
+        value
+    } else {
+        observe::result(paths, &mut ledger, &mut receipt).await?
+    };
     if value["observation"]["state"] == "observed" {
         binding.evidence_observed_at = Some(crate::daemon::now());
         ledger.db.execute(
@@ -315,6 +342,61 @@ mod evidence_tests {
                 params![b.request.message_id, serde_json::to_string(b).unwrap()],
             )
             .unwrap();
+    }
+    #[tokio::test]
+    async fn passive_receipt_releases_writer_lease_and_cancellation_wins() {
+        use crate::messaging::tests::{attachment_fixture, bind, scripted_server};
+        let (_dir, paths, mut input, now) = fixture();
+        let mut a = attachment_fixture(&paths, &input);
+        bind(&paths, &mut a);
+        input.expected_generation = a.generation();
+        let mut r = Ledger::open(&paths).unwrap().accept(&input, now).unwrap();
+        r.state = "native_accepted".into();
+        r.native_queue_id = Some("queue-1".into());
+        save_binding(&paths, &binding(input.clone()), &r);
+        let root = paths.root.clone();
+        let runtime = paths.runtime.clone();
+        let message = input.message_id.clone();
+        let server = scripted_server(&a.endpoint(), move |request| {
+            assert_eq!(request["method"], "thread/turns/list");
+            // Models another caller committing cancellation while the native
+            // observation is outstanding. The root-wide lease must be free.
+            let p = Paths {
+                root: root.clone(),
+                runtime: runtime.clone(),
+            };
+            let mut ledger = Ledger::open(&p).unwrap();
+            let mut receipt = ledger.get(&message).unwrap().unwrap();
+            receipt.state = "cancelled".into();
+            ledger.save(&receipt).unwrap();
+            Some(
+                serde_json::from_str::<Value>(include_str!(
+                    "../../docs/messaging/v1.2.1/fixtures.json"
+                ))
+                .unwrap()["native_summary"]
+                    .clone(),
+            )
+        })
+        .await;
+        let out = receipt_public(&paths, &input.message_id, false)
+            .await
+            .unwrap();
+        assert_eq!(out["state"], "cancelled");
+        assert_eq!(out["facts"]["input_recorded"], false);
+        assert_eq!(
+            out["observation"]["error_code"],
+            "receipt_changed_during_observation"
+        );
+        assert_eq!(
+            Ledger::open(&paths)
+                .unwrap()
+                .get(&input.message_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            "cancelled"
+        );
+        server.abort();
     }
     #[tokio::test]
     async fn legacy_lock_contention_refuses_public_send_before_admission() {

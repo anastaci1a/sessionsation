@@ -102,6 +102,14 @@ async fn scan(
             };
             valid_id(&turn.id)?;
             valid_id(&user.id)?;
+            if receipt
+                .recovery_start
+                .as_ref()
+                .and_then(|s| s.turn_id.as_deref())
+                .is_some_and(|id| id != turn.id)
+            {
+                return Err(Fault("correlation_changed"));
+            }
             if candidate.is_some() {
                 return Err(Fault("ambiguous_native_correlation"));
             }
@@ -218,6 +226,20 @@ async fn refresh(
     } else {
         Ok("uncorrelated")
     }
+}
+
+/// Public receipt observation must not hold the root-wide writer lease during
+/// provider I/O. The caller reacquires it and commits only if the snapshot still
+/// matches; cancellation and concurrent delivery always win that comparison.
+pub(super) async fn snapshot(paths: &Paths, receipt: &Receipt) -> Result<Option<Receipt>> {
+    let selected = attachment(paths, &receipt.session_id)?;
+    let generation = selected.generation();
+    let mut control = selected.connect().await?;
+    let observed = read(&mut control, receipt, &generation).await?;
+    if attachment(paths, &receipt.session_id)?.generation() != generation {
+        return Err(Fault("generation_mismatch"));
+    }
+    Ok(observed)
 }
 pub(super) async fn result(
     paths: &Paths,

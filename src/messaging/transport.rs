@@ -156,6 +156,37 @@ impl Transport {
         }
         Ok(ack.turn.id)
     }
+    /// Explicit recovery only. Stock queue/start atomically requires idle and
+    /// consumes this exact queued item; it never steers or selects the queue head.
+    pub(super) async fn start_queued(&mut self, session: &str, queued: &str) -> Result<String> {
+        super::uuid(session)?;
+        if !self.verified_profile || queued.is_empty() || queued.len() > 256 {
+            return Err(Fault("unsupported"));
+        }
+        #[derive(Deserialize)]
+        struct Ack {
+            turn: Turn,
+        }
+        #[derive(Deserialize)]
+        struct Turn {
+            id: String,
+            status: String,
+        }
+        let ack: Ack = self
+            .rpc(
+                "thread/queue/start",
+                json!({"threadId":session,"queuedSubmissionId":queued}),
+            )
+            .await?;
+        if ack.turn.id.is_empty()
+            || ack.turn.id.len() > 256
+            || ack.turn.id.chars().any(char::is_control)
+            || ack.turn.status != "inProgress"
+        {
+            return Err(Fault("malformed_response"));
+        }
+        Ok(ack.turn.id)
+    }
     /// Typed busy Submit only; the generic operation allowlist remains non-steering.
     pub(super) async fn steer(
         &mut self,

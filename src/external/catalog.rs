@@ -287,6 +287,19 @@ pub(super) fn set_stop_intent(paths: &Paths, id: &str, token: Option<String>) ->
     update(paths, id, |r| r.stop_intent = token)
 }
 
+pub(super) fn clear_stop_intent(paths: &Paths, id: &str, expected: Option<&str>) -> Result<()> {
+    let p = record_path(paths, id)?;
+    let lock = crate::paths::lock_file(&p.with_extension("lock"))?;
+    lock.lock_exclusive()?;
+    let mut record = read(paths, id)?;
+    ensure!(
+        record.stop_intent.as_deref() == expected,
+        "RECOVERY_STOP_INTENT_CHANGED_OBSERVE_AGAIN"
+    );
+    record.stop_intent = None;
+    atomic_write(&p, &serde_json::to_vec(&record)?)
+}
+
 pub(super) fn restore_archived(paths: &Paths, id: &str, home: &Path) -> Result<()> {
     update(paths, id, |r| {
         r.deleted = false;

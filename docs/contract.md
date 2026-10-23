@@ -293,6 +293,10 @@ refers to saved-session launching and does not imply this message mode. Codex's
 verified native protocol profile is **0.163.0**. Claude recovery is unsupported.
 This is caller-requested continuation of the same conversation, never conversion,
 new-conversation creation, steering, forced interruption or automatic restart.
+Revision 4 adds `message_recovery.exact_item_idle_start` and separate native start
+evidence. Clients requiring interrupted-thread recovery should require that
+capability, rather than relying on the package version alone. Existing requests
+and receipts keep their identity; upgrading never replays an older request.
 Ordinary Submit/Queue behavior and historical receipts are preserved. Submit,
 Queue, observation, discovery and receipt polling never launch an exited agent.
 
@@ -374,12 +378,24 @@ native attachment generation and is null until delivery is bound. `confirmed`
 requires a positive process/attachment check. It does not mean the message was
 accepted. Always inspect the ordinary receipt `facts`, correlation and reply.
 A successful launch can still have expired, rejected or uncertain input. The stop
-token is cleared only after a positive enqueue acknowledgement; an uncertain send
-retains it for explicit review, even if later receipt observation finds acceptance.
+token is cleared only after a positive, idle-checked `thread/queue/start`
+acknowledgement for the exact newly accepted queue item. Queue insertion alone
+does not wake an interrupted native thread. Resume receipts additionally expose
+`recovery_start: {state, turn_id}` (null for older receipts and other modes).
+`confirmed` means the native start was acknowledged, not that input was recorded
+or a reply exists. `unknown` means the start may have executed; `rejected` means
+it was refused, possibly because automatic dispatch already consumed the item.
+Neither state permits replay. The stop token remains for review unless start is
+confirmed; clearing compares the expected token under the conversation lock.
+Only the original explicit Resume dispatch invokes this operation. Ordinary
+Submit/Queue, retries, reconciliation and polling never invoke it.
 Before binding delivery, recovery waits up to ten seconds for the local receipt
 ledger lock, so a concurrent status reader need not fail the operation. This waits
 only for local admission; it never retries a native write. Exhausted lock waiting
 still reports a confirmed launch separately from input that was never accepted.
+Public receipt polling releases the root-wide receipt writer lock during native
+observation, then commits only if the durable receipt still matches its starting
+snapshot. A concurrent cancellation or delivery change takes precedence.
 
 ```sh
 sessionsation api receipt MESSAGE-ID
