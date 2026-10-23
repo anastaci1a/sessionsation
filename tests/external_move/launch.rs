@@ -558,6 +558,71 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
             .iter()
             .any(|(m, _)| m == "turn/start" || m == "turn/steer")
     );
+    // Public relocation must restart only this owned pane and preserve identity.
+    let changed = f.tmp.path().join("changed-root");
+    fs::create_dir(&changed).unwrap();
+    fs::write(changed.join("notes"), "retained project contents").unwrap();
+    let moved = f.tmp.path().join("moved-root");
+    for (destination, files) in [(&changed, false), (&moved, true)] {
+        let out = api(&f, &["state"], None);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let state: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let selected = state["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap();
+        let mut args = vec![
+            "relocate",
+            "--session",
+            id,
+            "--expected-generation",
+            selected["generation"].as_str().unwrap(),
+            "--to",
+            destination.to_str().unwrap(),
+        ];
+        if files {
+            args.push("--move-files");
+        }
+        let out = api(&f, &args, None);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let job: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let done = f
+            .wait(job["result"]["id"].as_str().unwrap(), "complete")
+            .await;
+        assert_eq!(done["non_steering"], true);
+        let out = api(&f, &["state"], None);
+        let state: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let selected = state["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap();
+        assert_eq!(selected["directory"], destination.to_str().unwrap());
+        assert_eq!(selected["conversation_id"], receipt["conversation_id"]);
+        assert_eq!(selected["account_id"], "codex:personal");
+        assert_eq!(
+            host.call(&["pane", "process-info", "--pane", origin_pane])["process_info"]["shell_pid"],
+            origin_before["process_info"]["shell_pid"]
+        );
+    }
+    assert!(!changed.exists());
+    assert_eq!(
+        fs::read_to_string(moved.join("notes")).unwrap(),
+        "retained project contents"
+    );
+    // The subsequent missing-directory resume fixture deliberately removes it.
+    fs::remove_file(moved.join("notes")).unwrap();
     let info = host.call(&["pane", "process-info", "--pane", pane]);
     let shell_pid = info["process_info"]["shell_pid"].as_i64().unwrap();
     let pid = info["process_info"]["foreground_processes"]
@@ -598,7 +663,7 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
     .unwrap();
     // Resume this same synthetic conversation twice: original account, then
     // transferred account. Every terminal belongs to this isolated HERDR server.
-    let mut previous_directory = r["directory"]["path"].clone();
+    let mut previous_directory = json!(moved);
     for (account, name) in [("personal", "Resumed orig"), ("work", "Transferred")] {
         let output = api(&f, &["state"], None);
         assert!(

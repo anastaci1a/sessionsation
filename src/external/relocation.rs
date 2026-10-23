@@ -189,6 +189,53 @@ pub async fn preview(
         json!({"schema_version":1,"source":source,"relocation":plan,"other_sessions":affected,"detail":if move_files {"The folder moves after this conversation is idle. Other live sessions using it must close first. Cross-filesystem moves retain an original backup."} else {"Only this conversation's working directory changes. No project files are moved."}}),
     )
 }
+/// Public admission keeps the exact catalog generation through the queue lock.
+pub async fn queue_public(
+    paths: &Paths,
+    source: Instance,
+    to: &Path,
+    move_files: bool,
+    expected: (&str, &str),
+) -> Result<Job> {
+    ensure!(!source.inactive, "SESSION_NOT_RUNNING");
+    let plan = plan_for(paths, &source, to, move_files, false)?;
+    let account = source.account.clone();
+    let status = daemon::call(paths, "status", json!({})).await?;
+    ensure!(
+        status["accounts"]
+            .as_array()
+            .is_some_and(|accounts| accounts.iter().any(|a| a["name"] == account
+                && a["enabled"] == true
+                && a["auth_required"] == false)),
+        "ACCOUNT_UNAVAILABLE"
+    );
+    enqueue_with_id(
+        paths,
+        source,
+        &account,
+        MoveOptions::default(),
+        Some(plan),
+        "directory",
+        EnqueuePolicy {
+            non_steering: true,
+            expected: Some(expected),
+            ..Default::default()
+        },
+    )
+}
+pub async fn preview_snapshot(
+    paths: &Paths,
+    source: &Instance,
+    to: &Path,
+    move_files: bool,
+) -> Result<Value> {
+    ensure!(!source.inactive, "SESSION_NOT_RUNNING");
+    let plan = plan_for(paths, source, to, move_files, false)?;
+    let affected = other_sessions(paths, source, &plan).await?;
+    Ok(
+        json!({"from":plan.from,"to":plan.to,"move_files":move_files,"cross_filesystem":plan.cross_filesystem,"other_sessions":affected,"detail":if move_files {"Move this project folder and restart this session in the destination. Other sessions using the folder must close first. Existing destinations are never overwritten; cross-filesystem moves retain an original backup."} else {"Restart this session in the selected existing directory. No project files are moved. Conversation identity, history and account are retained."}}),
+    )
+}
 pub async fn queue(
     paths: &Paths,
     pane: Option<&str>,
@@ -314,7 +361,18 @@ fn cwd_only_service(args: &[String]) -> Option<Service> {
     }
     None
 }
-async fn project_users(root: &Path) -> Result<Vec<u32>> {
+async fn project_users(paths: &Paths, job: &Job, root: &Path) -> Result<Vec<u32>> {
+    // HERDR retains the selected pane's idle shell after stopping Codex. Its
+    // cwd alone is not an unrelated project user. Never exempt open files,
+    // another pane, an active foreground command, or a reused PID.
+    let retained_shell = if job.source.pane.starts_with("herdr/") {
+        hosting::state(paths, &job.source.pane)
+            .ok()
+            .filter(|(idle, _)| *idle)
+            .and_then(|(_, pid)| process_info(pid).ok().map(|p| (pid, p.start_time)))
+    } else {
+        None
+    };
     let mut users = Vec::new();
     let mut checked_homes = std::collections::HashMap::new();
     for entry in fs::read_dir("/proc")?.flatten() {
@@ -342,6 +400,11 @@ async fn project_users(root: &Path) -> Result<Vec<u32>> {
         // A service can inherit a project's cwd without using the project. Never
         // exempt open file handles, unknown commands, or unverified Codex threads.
         if !open {
+            if retained_shell.is_some_and(|(shell, start)| {
+                shell == pid && process_info(pid).is_ok_and(|p| p.start_time == start)
+            }) {
+                continue;
+            }
             match process_args(pid).ok().as_deref().and_then(cwd_only_service) {
                 Some(Service::PidUpdater | Service::Adb) => continue,
                 Some(Service::Codex) => {
@@ -410,7 +473,7 @@ async fn move_files(paths: &Paths, job: &mut Job) -> Result<()> {
         !r.to.try_exists()?,
         "destination appeared while waiting; no files overwritten"
     );
-    let users = project_users(&r.from).await?;
+    let users = project_users(paths, job, &r.from).await?;
     ensure!(
         users.is_empty(),
         "other processes still use this project (PIDs {users:?}); stop them and retry. No project files moved"
@@ -454,7 +517,7 @@ async fn move_files(paths: &Paths, job: &mut Job) -> Result<()> {
     rsync(&r.from, &stage, false).await?;
     rsync(&r.from, &stage, true).await?;
     ensure!(
-        same_source(&r, &r.from) && project_users(&r.from).await?.is_empty(),
+        same_source(&r, &r.from) && project_users(paths, job, &r.from).await?.is_empty(),
         "source changed or became active during copying; original retained"
     );
     transition(paths, job, "publishing")?;
@@ -630,7 +693,7 @@ pub(super) async fn recover(paths: &Paths, mut job: Job) -> Result<Job> {
     if r.move_files {
         if !r.cross_filesystem && same_source(&r, &r.to) {
             ensure!(
-                project_users(&r.to).await?.is_empty(),
+                project_users(paths, &job, &r.to).await?.is_empty(),
                 "processes use the destination; close them before rollback"
             );
             rename_new(&r.to, &r.from)?;
@@ -648,7 +711,7 @@ pub(super) async fn recover(paths: &Paths, mut job: Job) -> Result<Job> {
                         .context("destination parent missing")?
                         .join(format!(".codex-switcher-recovery-{}", job.id));
                 ensure!(
-                    project_users(&r.to).await?.is_empty(),
+                    project_users(paths, &job, &r.to).await?.is_empty(),
                     "processes use the destination; close them before rollback"
                 );
                 job.relocation.as_mut().unwrap().retained_destination =

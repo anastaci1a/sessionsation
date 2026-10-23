@@ -2071,16 +2071,30 @@ async fn relocation_moves_folder_preserves_history_and_rejects_collisions() {
     let pane = f.live_in(ID, false, &project);
     f.a.lock().unwrap().threads.get_mut(ID).unwrap()["historyMode"] = json!("paginated");
     tokio::time::sleep(Duration::from_millis(100)).await;
+    let state = f.invoke(&["api", "state"]);
+    let selected = state["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap();
+    let session = selected["id"].as_str().unwrap();
+    let generation = selected["generation"].as_str().unwrap();
+    assert_eq!(selected["capabilities"]["move_project"], true);
+    assert_eq!(selected["capabilities"]["change_directory"], true);
     let plan = f.invoke(&[
+        "api",
         "relocate",
-        "--pane",
-        &pane,
+        "--session",
+        session,
+        "--expected-generation",
+        generation,
         "--to",
         target.to_str().unwrap(),
         "--move-files",
         "--dry-run",
     ]);
-    assert_eq!(plan["relocation"]["from"], project.to_str().unwrap());
+    assert_eq!(plan["result"]["from"], project.to_str().unwrap());
     assert!(project.exists() && !target.exists());
     fs::create_dir(&target).unwrap();
     assert!(
@@ -2101,14 +2115,20 @@ async fn relocation_moves_folder_preserves_history_and_rejects_collisions() {
     );
     fs::remove_dir(&target).unwrap();
     let j = f.invoke(&[
+        "api",
         "relocate",
-        "--pane",
-        &pane,
+        "--session",
+        session,
+        "--expected-generation",
+        generation,
         "--to",
         target.to_str().unwrap(),
         "--move-files",
     ]);
-    let done = f.wait(j["id"].as_str().unwrap(), "complete").await;
+    let done = f
+        .wait(j["result"]["id"].as_str().unwrap(), "complete")
+        .await;
+    assert_eq!(done["non_steering"], true);
     assert_eq!(done["relocation"]["state"], "complete");
     assert!(!project.exists());
     assert_eq!(
@@ -2129,14 +2149,41 @@ async fn relocation_moves_folder_preserves_history_and_rejects_collisions() {
     );
     // Redefining the root changes only the session, not the project files.
     fs::create_dir(&project).unwrap();
+    let stale = command(
+        &f.paths.root,
+        &f.socket,
+        &[
+            "api",
+            "relocate",
+            "--session",
+            session,
+            "--expected-generation",
+            generation,
+            "--to",
+            project.to_str().unwrap(),
+        ],
+    );
+    assert!(!stale.status.success());
+    let state = f.invoke(&["api", "state"]);
+    let selected = state["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == session)
+        .unwrap();
+    let generation = selected["generation"].as_str().unwrap();
     let j = f.invoke(&[
+        "api",
         "relocate",
-        "--pane",
-        &pane,
+        "--session",
+        session,
+        "--expected-generation",
+        generation,
         "--to",
         project.to_str().unwrap(),
     ]);
-    f.wait(j["id"].as_str().unwrap(), "complete").await;
+    f.wait(j["result"]["id"].as_str().unwrap(), "complete")
+        .await;
     assert!(target.join("notes").exists());
     assert_eq!(
         f.invoke(&["sessions"])["sessions"][0]["cwd"],

@@ -1880,9 +1880,8 @@ fn enqueue_with_id(
     if let Some((id, generation)) = policy.expected {
         let selected = crate::catalog::resolve(paths, id, generation)?;
         ensure!(
-            selected.conversation_id == source.thread_id
-                && selected.account == source.account
-                && selected.attachment.is_none(),
+            crate::api::source_matches(&selected, &source)
+                && (source.inactive == selected.attachment.is_none()),
             "STALE_TARGET"
         );
     }

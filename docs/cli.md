@@ -297,3 +297,22 @@ exited agent, then `api send` with explicit recovery preconditions. Receipt quer
 and `api recovery-reconcile` never send input or restart a process. See the
 [public recovery contract](contract.md#explicit-resume-and-submit) for payloads,
 owner compatibility, refusal reasons and launch-versus-delivery facts.
+
+## Directory changes and project moves
+
+Active managed Codex sessions advertise `change_directory` and `move_project`
+capabilities. `api relocate --session ID --expected-generation GENERATION --to
+/absolute/destination --dry-run` validates a destination and returns the source,
+destination, affected sessions and confirmation detail without changing files.
+Add `--move-files` to move the project folder; otherwise the destination must
+already exist and files remain in place. After reviewing the plan, invoke the
+same command without `--dry-run` to explicitly authorize the operation.
+
+The generation is checked again at admission. Existing lifecycle reservations,
+non-steering idle checks, background-work consent and recovery apply. Both
+actions retain account, conversation and logical session identity; a live agent
+is restarted in the new directory. Folder moves reject existing destinations,
+symlinks and protected roots and wait for other sessions using the source.
+Cross-filesystem moves retain the original backup. Poll the returned operation
+through `api operations`; never automatically retry an uncertain mutation.
+For inactive sessions, choose the directory in the Resume launch plan instead.

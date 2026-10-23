@@ -117,6 +117,19 @@ pub enum Command {
         #[arg(long)]
         accept_risks: bool,
     },
+    /// Preview or request a generation-checked directory change or project-folder move.
+    Relocate {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        #[arg(long)]
+        to: std::path::PathBuf,
+        #[arg(long)]
+        move_files: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
     Restart {
         #[arg(long)]
         session: String,
@@ -464,7 +477,7 @@ pub fn capabilities() -> Value {
          "enrollment":false,"usage":false,"new":false,"resume":false,
          "account_switch":false,"restart":false,"submit":false,"queue":false,
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false}
-    ],"attachment_lookup":{"version":1,"command":"attachment","discovery":false,"checks":["catalog_generation","pid_start_time"]},"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"unfinished_confirmation":true,"directory_selection":true,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
+    ],"attachment_lookup":{"version":1,"command":"attachment","discovery":false,"checks":["catalog_generation","pid_start_time"]},"relocation":{"version":1,"preview":true,"move_files":true,"non_steering":true},"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"unfinished_confirmation":true,"directory_selection":true,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "batch_observation":{"command":"observations","max_targets":64,"concurrency":8,"native_budget_seconds":5,"policies":["if_stale","refresh","cached_only"],"cache_hits_renew_evidence":false},
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
@@ -488,7 +501,7 @@ async fn inventory(paths: &Paths) -> Result<Vec<external::Instance>> {
     catalog::reconcile(paths, &items)?;
     Ok(items)
 }
-fn source_matches(s: &catalog::Session, i: &external::Instance) -> bool {
+pub(crate) fn source_matches(s: &catalog::Session, i: &external::Instance) -> bool {
     i.thread_id == s.conversation_id
         && i.account == s.account
         && s.attachment.as_ref().is_none_or(|a| {
@@ -591,8 +604,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["last_accessed"]=source.and_then(|s|s.last_accessed).map_or(Value::Null,|n|json!(n));
         value["active_since"]=json!(source.filter(|s|!s.inactive).and_then(|s|clock.and_then(|(uptime,hz)|attachment_started_at(now,uptime,s.start_time,hz))));
         let unambiguous=items.iter().filter(|i|!i.inactive && i.thread_id==value["conversation_id"]).count()<=1;
-        value["capabilities"]=json!({"rename":true,"move_space":running && unambiguous && source.is_some_and(|s|s.pane.starts_with("herdr/")),"resume":resume_supported && saved,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":source.is_some_and(|i|i.inactive),"delete":source.is_some_and(|i|i.inactive)});
-        if archived { value["capabilities"]=json!({"rename":false,"resume":false,"switch_account":false,"move_space":false,"restart":false,"stop":false,"archive":false,"delete":value["archive"]["kind"]=="managed","restore":value["archive"]["kind"]=="managed"}); }
+        value["capabilities"]=json!({"rename":true,"move_space":running && unambiguous && source.is_some_and(|s|s.pane.starts_with("herdr/")),"resume":resume_supported && saved,"change_directory":known && running && unambiguous,"move_project":known && running && unambiguous,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":source.is_some_and(|i|i.inactive),"delete":source.is_some_and(|i|i.inactive)});
+        if archived { value["capabilities"]=json!({"rename":false,"change_directory":false,"move_project":false,"resume":false,"switch_account":false,"move_space":false,"restart":false,"stop":false,"archive":false,"delete":value["archive"]["kind"]=="managed","restore":value["archive"]["kind"]=="managed"}); }
         value
     }).filter(|s|match filter { ArchiveFilter::All=>true, ArchiveFilter::Archived=>s["archived"]==true, ArchiveFilter::Active=>s["archived"]!=true }).collect::<Vec<_>>();
     for session in &mut sessions {
@@ -611,6 +624,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                 "resume",
                 "switch_account",
                 "move_space",
+                "change_directory",
+                "move_project",
                 "restart",
                 "stop",
                 "archive",
@@ -859,6 +874,30 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 )
                 .await?,
             )?
+        }
+        Command::Relocate {
+            session,
+            expected_generation,
+            to,
+            move_files,
+            dry_run,
+        } => {
+            let (_, source) = selected(paths, &session, &expected_generation).await?;
+            if dry_run {
+                external::relocation::preview_snapshot(paths, &source, &to, move_files).await?
+            } else {
+                operation(
+                    paths,
+                    external::relocation::queue_public(
+                        paths,
+                        source,
+                        &to,
+                        move_files,
+                        (&session, &expected_generation),
+                    )
+                    .await?,
+                )?
+            }
         }
         Command::Restart {
             session,
