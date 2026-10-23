@@ -594,14 +594,14 @@ async fn deliver(
     receipt: &mut Receipt,
     input: Option<&Enqueue>,
 ) -> Result<()> {
-    deliver_with_policy(paths, ledger, receipt, input, false).await
+    deliver_with_policy(paths, ledger, receipt, input, None).await
 }
 async fn deliver_with_policy(
     paths: &Paths,
     ledger: &mut Ledger,
     receipt: &mut Receipt,
     input: Option<&Enqueue>,
-    require_idle: bool,
+    public_mode: Option<PublicMode>,
 ) -> Result<()> {
     let _guard = mutation_lock(paths, &receipt.session_id)?;
     let selected = attachment(paths, &receipt.session_id)?;
@@ -609,8 +609,26 @@ async fn deliver_with_policy(
         return Err(Fault("generation_mismatch"));
     }
     let mut control = selected.connect().await?;
-    let current = activity(&mut control, &receipt.session_id).await?;
-    if require_idle && current != "idle" && receipt.state == "pending_local" {
+    let current = if public_mode.is_some() && receipt.state == "pending_local" {
+        let o =
+            modes::session_status::observe_fresh_public(&mut control, &receipt.session_id).await?;
+        if let Some(reason) = o.reason {
+            return Err(Fault(reason));
+        }
+        match o.state.as_str() {
+            "idle" => "idle",
+            "working" => "busy",
+            "interrupted" | "errored" => return Err(Fault("explicit_resume_required")),
+            "disconnected" => return Err(Fault("unavailable")),
+            _ => return Err(Fault("state_unverified")),
+        }
+    } else {
+        activity(&mut control, &receipt.session_id).await?
+    };
+    if public_mode == Some(PublicMode::Submit)
+        && current != "idle"
+        && receipt.state == "pending_local"
+    {
         return Err(Fault("target_busy"));
     }
     // Re-resolve at the mutation boundary while holding switcher's ownership locks.

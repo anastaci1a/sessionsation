@@ -389,7 +389,7 @@ separate from `delivery_unknown` for an uncertain native queue write. Once nativ
 write intent exists, the original queue request is never automatically replayed.
 Native queue addition uses the provider's atomic non-steering dispatch path; a
 concurrent turn may defer input, but cannot turn it into a steer. This was checked
-against the [inspected native queue implementation](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/ext/queue/src/service.rs).
+against the [inspected native queue implementation](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/ext/queue/src/service.rs).
 Client IDs are correlation values, not an assumed native uniqueness guarantee.
 
 Resume receipts add `launch: {required, phase, confirmed, detail, generation,
@@ -399,16 +399,25 @@ native attachment generation and is null until delivery is bound. `confirmed`
 requires a positive process/attachment check. It does not mean the message was
 accepted. Always inspect the ordinary receipt `facts`, correlation and reply.
 A successful launch can still have expired, rejected or uncertain input. The stop
-token is cleared only after a positive, idle-checked `thread/queue/start`
-acknowledgement for the exact newly accepted queue item. Queue insertion alone
+token is cleared after a positive, idle-checked `thread/queue/start`
+acknowledgement for the exact newly accepted queue item, or later durable
+correlation proving that the original explicit Resume input executed. Queue insertion alone
 does not wake an interrupted native thread. Resume receipts additionally expose
 `recovery_start: {state, turn_id}` (null for older receipts and other modes).
 `confirmed` means the native start was acknowledged, not that input was recorded
 or a reply exists. `unknown` means the start may have executed; `rejected` means
 it was refused, possibly because automatic dispatch already consumed the item.
-Neither state permits replay. The stop token remains for review unless start is
-confirmed; clearing compares the expected token under the conversation lock.
-Only the original explicit Resume dispatch invokes this operation. Ordinary
+Neither state permits replay. Until start or input execution is proven, the stop
+token remains for review. Clearing compares the original expected token under
+the conversation lock; a newer stop request always survives. Receipt observation
+may reconcile this metadata but never invokes a native start.
+Ordinary public Submit/Queue recheck terminal-turn state before native insertion.
+An interrupted/failed turn requires explicit Resume even when native thread
+metadata says idle; queue insertion is not a substitute for recovery. The legacy
+compatibility send interface is unchanged.
+Recovery preflight freshly reads the native summary within one five-second
+observation budget; it does not authorize a start from cached readiness.
+Only the original explicit Resume dispatch invokes the native start. Ordinary
 Submit/Queue, retries, reconciliation and polling never invoke it.
 Before binding delivery, recovery waits up to ten seconds for the local receipt
 ledger lock, so a concurrent status reader need not fail the operation. This waits
@@ -486,6 +495,24 @@ otherwise stale; missing evidence time is unknown. `error_code` is a bounded
 observer diagnostic, not proof that delivery failed. Correlation, acceptance and
 completed replies survive observation errors and restarts. Poll receipts no faster
 than every five seconds, backing off after errors; there is no public event cursor.
+
+For verified local legacy histories, public receipt reads preserve bounded scan
+progress between polls instead of restarting pagination after every timeout.
+Each poll reads at most one 50-turn summary page (or rechecks the newest page),
+within a five-second native-read budget. Progress is private and keyed to the
+immutable receipt, runtime generation and file identity/revision. It expires
+after five minutes; changed history or runtime discards it. All pages must be
+checked for duplicate client IDs and the newest page must agree before any
+candidate is published. No partial match grants input/reply evidence.
+
+`reply_scan_pending` means continue polling the same receipt; it is not a send
+failure and never warrants another send. `reply_scan_changed` and
+`history_changed_during_observation` mean the snapshot changed; existing durable
+facts remain intact. `reply_scan_limit_exceeded` identifies the existing
+1,000-turn bound, and `reply_observation_busy` means another observer owns that
+receipt's scan. Missing/unverifiable local history retains the bounded uncached
+scan. Stock legacy storage still reconstructs history for each native page;
+persisting progress avoids lost work, not that upstream reconstruction cost.
 
 | State | Evidence |
 | --- | --- |

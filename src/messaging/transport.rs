@@ -263,6 +263,20 @@ impl Transport {
         )
         .await
     }
+    /// One summary page under the public receipt observation budget. Never
+    /// permits full-item reads, writes, launch or steering.
+    pub(super) async fn passive_summary_page<T: serde::de::DeserializeOwned>(
+        &mut self,
+        id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<T> {
+        super::uuid(id)?;
+        if !(1..=50).contains(&limit) || cursor.is_some_and(|s| s.len() > 4096) {
+            return Err(Fault("unsupported"));
+        }
+        self.rpc_budget("thread/turns/list",json!({"threadId":id,"itemsView":"summary","sortDirection":"desc","limit":limit,"cursor":cursor}),Duration::from_secs(5)).await
+    }
     async fn rpc_budget<T: serde::de::DeserializeOwned>(
         &mut self,
         method: &str,

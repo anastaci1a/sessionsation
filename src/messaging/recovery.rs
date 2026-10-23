@@ -259,6 +259,19 @@ async fn native_preflight(
     intent: Option<&Intent>,
     exited: bool,
 ) -> anyhow::Result<Value> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        native_preflight_inner(control, id, intent, exited),
+    )
+    .await
+    .context("RECOVERY_OBSERVATION_TIMEOUT_NO_INPUT_SENT")?
+}
+async fn native_preflight_inner(
+    control: &mut Transport,
+    id: &str,
+    intent: Option<&Intent>,
+    exited: bool,
+) -> anyhow::Result<Value> {
     let value: Value = control
         .request("thread/read", json!({"threadId":id,"includeTurns":false}))
         .await?;
@@ -286,12 +299,7 @@ async fn native_preflight(
             .is_none_or(|a| a.is_empty()),
         "RECOVERY_APPROVAL_OR_INPUT_REQUIRED"
     );
-    let turns: Value = control
-        .request(
-            "thread/turns/list",
-            json!({"threadId":id,"itemsView":"summary","sortDirection":"desc","limit":1}),
-        )
-        .await?;
+    let turns: Value = control.passive_summary(id).await?;
     let turns = turns["data"]
         .as_array()
         .context("RECOVERY_TURN_SUMMARY_UNAVAILABLE")?;
@@ -666,11 +674,9 @@ pub(super) async fn deliver(
         .as_ref()
         .is_some_and(|s| s.state == "confirmed")
     {
-        external::clear_recovery_stop_intent(
-            paths,
-            &receipt.session_id,
-            i.expected_stop_id.as_deref(),
-        )?;
+        if let Some(stop) = i.expected_stop_id.as_deref() {
+            external::reconcile_recovery_stop_intent(paths, &receipt.session_id, stop)?;
+        }
     }
     Ok(())
 }
@@ -819,6 +825,31 @@ pub fn diagnostic(code: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slow_legacy_summary_shares_the_bounded_recovery_preflight_budget() {
+        use crate::messaging::tests::{attachment_fixture, fixture, scripted_server};
+        let (_dir, paths, input, _) = fixture();
+        let a = attachment_fixture(&paths, &input);
+        let id = a.id.clone();
+        let server = scripted_server(&a.endpoint(), move |r| {
+            match r["method"].as_str().unwrap() {
+                "thread/read" => Some(json!({"thread":{"id":id,"status":{"type":"idle"}}})),
+                "thread/turns/list" => {
+                    std::thread::sleep(std::time::Duration::from_millis(3250));
+                    Some(json!({"data":[{"id":"previous","status":"interrupted"}]}))
+                }
+                "thread/queue/list" => Some(json!({"data":[],"nextCursor":null})),
+                _ => panic!("Preflight must not write"),
+            }
+        })
+        .await;
+        let mut control = a.connect().await.unwrap();
+        let result = native_preflight(&mut control, &a.id, None, false)
+            .await
+            .unwrap();
+        assert_eq!(result["previous_turn_id"], "previous");
+        server.abort();
+    }
     use super::*;
     #[tokio::test]
     async fn interrupted_worker_reconciliation_never_reclaims_a_launch_or_expired_message() {

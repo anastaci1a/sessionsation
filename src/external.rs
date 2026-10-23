@@ -1249,12 +1249,12 @@ pub(crate) fn recovery_permissions(path: &Path) -> Option<(String, String)> {
 pub(crate) fn recovery_rollout(home: &Path, id: &str) -> Result<Option<PathBuf>> {
     rollout_by_thread(home, id)
 }
-pub(crate) fn clear_recovery_stop_intent(
+pub(crate) fn reconcile_recovery_stop_intent(
     paths: &Paths,
     id: &str,
-    expected: Option<&str>,
-) -> Result<()> {
-    catalog::clear_stop_intent(paths, id, expected)
+    expected: &str,
+) -> Result<bool> {
+    catalog::clear_stop_intent_if_matches(paths, id, Some(expected))
 }
 async fn run_account_thread_inner(
     paths: &Paths,

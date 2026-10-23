@@ -59,19 +59,31 @@ pub(in crate::messaging) async fn observe(
     control: &mut Transport,
     id: &str,
 ) -> Result<Observation> {
-    observe_inner(control, id, None).await
+    observe_inner(control, id, None, false).await
 }
 pub(in crate::messaging) async fn observe_cached(
     control: &mut Transport,
     paths: &Paths,
     attachment: &Attachment,
 ) -> Result<Observation> {
-    observe_inner(control, &attachment.id, Some((paths, attachment))).await
+    observe_inner(control, &attachment.id, Some((paths, attachment)), false).await
+}
+pub(in crate::messaging) async fn observe_fresh_public(
+    control: &mut Transport,
+    id: &str,
+) -> Result<Observation> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        observe_inner(control, id, None, true),
+    )
+    .await
+    .map_err(|_| Fault("observation_timeout"))?
 }
 async fn observe_inner(
     control: &mut Transport,
     id: &str,
     context: Option<(&Paths, &Attachment)>,
+    share_observation_budget: bool,
 ) -> Result<Observation> {
     let before = read(control, id).await?;
     if !before.flags.is_empty() {
@@ -96,6 +108,8 @@ async fn observe_inner(
                 let (page, evidence) = cache.get(control, id).await?;
                 summary_evidence = Some(evidence);
                 page
+            } else if share_observation_budget {
+                control.passive_summary(id).await?
             } else {
                 control
                 .request(

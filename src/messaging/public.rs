@@ -174,12 +174,15 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
             &mut ledger,
             &mut receipt,
             Some(&binding.native),
-            binding.request.mode == PublicMode::Submit,
+            Some(binding.request.mode.clone()),
         )
         .await
         {
             if receipt.state == "pending_local"
-                && matches!(error.0, "target_busy" | "generation_mismatch")
+                && matches!(
+                    error.0,
+                    "target_busy" | "generation_mismatch" | "explicit_resume_required"
+                )
             {
                 receipt.state = "rejected".into();
             }
@@ -188,6 +191,32 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         }
     }
     Ok(wrap(&binding, json!(receipt)))
+}
+
+fn reconcile_recovered_stop(
+    paths: &Paths,
+    binding: &Binding,
+    receipt: &Receipt,
+) -> anyhow::Result<()> {
+    // Native auto-dispatch may win the exact-item start race, or its ack may
+    // be lost. Only durable correlation of the originally authorized input
+    // can substitute for that acknowledgement; never merely queue acceptance.
+    if !binding.cancelled
+        && binding.request.mode == PublicMode::Resume
+        && receipt.correlation.is_some()
+        && matches!(
+            receipt.state.as_str(),
+            "execution_started" | "completed_with_reply" | "failed"
+        )
+        && let Some(stop) = binding
+            .request
+            .recovery
+            .as_ref()
+            .and_then(|i| i.expected_stop_id.as_deref())
+    {
+        external::reconcile_recovery_stop_intent(paths, &receipt.session_id, stop)?;
+    }
+    Ok(())
 }
 
 pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow::Result<Value> {
@@ -266,6 +295,7 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
             params![serde_json::to_string(&binding)?, id],
         )?;
     }
+    reconcile_recovered_stop(paths, &binding, &receipt)?;
     super::recovery::decorate(paths, id, wrap(&binding, value))
 }
 
@@ -331,6 +361,78 @@ mod evidence_tests {
             native: input,
         }
     }
+    #[test]
+    fn only_correlated_explicit_recovery_releases_its_original_stop() {
+        let (_dir, paths, input, now) = fixture();
+        let mut b = binding(input.clone());
+        b.request.mode = PublicMode::Resume;
+        b.request.recovery = Some(super::super::recovery::Intent {
+            expected_state: "stopped".into(),
+            expected_previous_turn_id: None,
+            expected_stop_id: Some("original-stop".into()),
+            expected_runtime_generation: None,
+            launch: None,
+        });
+        let mut r = Ledger::open(&paths).unwrap().accept(&input, now).unwrap();
+        r.state = "native_accepted".into();
+        let dir = paths.root.join("conversations");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(format!("{}.json", r.session_id));
+        let set = |stop: &str| {
+            fs::write(
+                &file,
+                json!({"name":null,"owner":null,"stop_intent":stop}).to_string(),
+            )
+            .unwrap()
+        };
+        set("original-stop");
+        reconcile_recovered_stop(&paths, &b, &r).unwrap();
+        assert_eq!(
+            external::messaging_stop_intent(&paths, &r.session_id)
+                .unwrap()
+                .as_deref(),
+            Some("original-stop")
+        );
+        r.state = "execution_started".into();
+        r.correlation = Some(observe::Correlation {
+            turn_id: "turn-1".into(),
+            user_item_id: "item-1".into(),
+            completed_user_item_id: None,
+            observed_generation: r.generation.clone(),
+        });
+        reconcile_recovered_stop(&paths, &b, &r).unwrap();
+        assert!(
+            external::messaging_stop_intent(&paths, &r.session_id)
+                .unwrap()
+                .is_none()
+        );
+        set("newer-stop");
+        reconcile_recovered_stop(&paths, &b, &r).unwrap();
+        assert_eq!(
+            external::messaging_stop_intent(&paths, &r.session_id)
+                .unwrap()
+                .as_deref(),
+            Some("newer-stop")
+        );
+        set("original-stop");
+        b.cancelled = true;
+        reconcile_recovered_stop(&paths, &b, &r).unwrap();
+        assert_eq!(
+            external::messaging_stop_intent(&paths, &r.session_id)
+                .unwrap()
+                .as_deref(),
+            Some("original-stop")
+        );
+        b.cancelled = false;
+        b.request.mode = PublicMode::Queue;
+        reconcile_recovered_stop(&paths, &b, &r).unwrap();
+        assert_eq!(
+            external::messaging_stop_intent(&paths, &r.session_id)
+                .unwrap()
+                .as_deref(),
+            Some("original-stop")
+        );
+    }
     fn save_binding(paths: &Paths, b: &Binding, r: &Receipt) {
         let mut ledger = Ledger::open(paths).unwrap();
         initialize(&ledger).unwrap();
@@ -358,6 +460,9 @@ mod evidence_tests {
         let runtime = paths.runtime.clone();
         let message = input.message_id.clone();
         let server = scripted_server(&a.endpoint(), move |request| {
+            if request["method"] == "thread/read" {
+                return Some(json!({"thread":{"id":request["params"]["threadId"],"path":null}}));
+            }
             assert_eq!(request["method"], "thread/turns/list");
             // Models another caller committing cancellation while the native
             // observation is outstanding. The root-wide lease must be free.
@@ -485,6 +590,7 @@ mod evidence_tests {
         let mid = input.message_id.clone();
         let tid = input.session_id.clone();
         let server=scripted_server(&a.endpoint(),move |req|{
+            if req["method"]=="thread/read" {return Some(json!({"thread":{"id":tid,"path":null}}));}
             assert_eq!(req["method"],"thread/turns/list");assert_eq!(req["params"]["itemsView"],"summary");assert_eq!(req["params"]["threadId"],tid);
             Some(json!({"data":[{"id":"turn-1","status":"completed","itemsView":"summary","items":[{"type":"userMessage","id":"item-1","clientId":mid,"content":"SECRET"},{"type":"agentMessage","id":"reply-1","text":"Public answer","phase":"final_answer"}]}],"nextCursor":null}))
         }).await;
