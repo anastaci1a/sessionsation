@@ -1,0 +1,169 @@
+{
+  "handoff_version": 1,
+  "feature": "deliberate_in_turn_steering",
+  "status": "implemented_tested_installed",
+  "source": {
+    "repository": "https://github.com/anastaci1a/sessionsation",
+    "commit": "cb2484858817320b042a3e341c9c1c21eae10aa9",
+    "note": "The later documentation-only handoff commit does not change this executable."
+  },
+  "executable": {
+    "path": "/mnt/user/live/packages/sessionsation/releases/cb2484858817320b042a3e341c9c1c21eae10aa9/sessionsation",
+    "sha256": "3285b8e7af400070694262c7fec65aa7c885fa9a72cb4621266736b2b8792983",
+    "package_version": "0.2.0",
+    "api_version": 1,
+    "contract_revision": 5
+  },
+  "negotiation": {
+    "command": "api capabilities",
+    "required": {
+      "contract_revision_min": 5,
+      "steering.version": 1,
+      "steering.mode": "steer",
+      "providers[codex].steer": true
+    },
+    "native_profiles": [
+      "0.163.0",
+      "0.164.0"
+    ],
+    "unknown_native_versions": "fail_closed",
+    "claude_supported": false
+  },
+  "commands": {
+    "target": "api steer-target --session UUID --expected-generation CATALOG_GENERATION",
+    "send": "api send < request.json",
+    "receipt": "api receipt MESSAGE_UUID",
+    "request": {
+      "api_version": 1,
+      "message_id": "caller-created UUID retained across retries",
+      "session_id": "stable logical UUID",
+      "expected_generation": "current catalog generation",
+      "mode": "steer",
+      "text": "deliberately requested steering message",
+      "expires_at": "Unix seconds, future and at most 24 hours",
+      "steering": {
+        "version": 1,
+        "expected_turn_id": "active_turn_id from steer-target",
+        "expected_runtime_generation": "runtime_generation from steer-target"
+      }
+    },
+    "forbidden": "Do not include recovery, silently fall back to Queue, or launch/restart a session."
+  },
+  "schema": {
+    "path": "docs/contract/v1.json",
+    "definitions": [
+      "SteeringIntent",
+      "SteeringTarget",
+      "MessageRequest",
+      "Receipt"
+    ],
+    "fixtures": "docs/contract/fixtures.json",
+    "examples": [
+      "steering_message",
+      "steering_target",
+      "receipt_steer_accepted",
+      "receipt_steer_unknown"
+    ],
+    "documentation": "docs/contract.md#deliberate-in-turn-steering-revision-5"
+  },
+  "semantics": {
+    "native_method": "turn/steer",
+    "preconditions": [
+      "catalog generation",
+      "runtime generation",
+      "expected active turn",
+      "live Codex attachment",
+      "sending enabled",
+      "no explicit stop intent",
+      "lifecycle operation locks",
+      "known nonremoved account"
+    ],
+    "native_expected_turn_guard": true,
+    "acceptance_only": true,
+    "reply_correlation": "unsupported",
+    "acknowledged_turn_id": "Only a matching native acknowledgement proves acceptance.",
+    "facts": {
+      "native_acceptance": [
+        "accepted",
+        "unknown",
+        "not_attempted"
+      ],
+      "input_recorded": false,
+      "input_consumed": "unknown",
+      "turn_completed": "unknown",
+      "reply_observed": false
+    },
+    "reply": null,
+    "correlation": null,
+    "native_queue_id": null,
+    "duplicate_policy": "Same UUID and immutable request returns the original receipt. Changed payload, mode or preconditions conflict. Dispatch intent is durable before native write. Unknown/accepted/rejected requests are never automatically redispatched.",
+    "restart_policy": "A bound intent without dispatch can proceed once. A durable uncertain dispatch survives reopening and never replays.",
+    "cancellation": "Only provably unsent pending local intents can be cancelled; accepted/uncertain steering returns STEERING_CANCELLATION_UNSUPPORTED.",
+    "observation": "Target lookup is read-only, bounded to five seconds. Normal observations advertise actions.steer but do not reconstruct active turn IDs. Receipt polling is local and never borrows the active turn reply.",
+    "limitations": [
+      "Acceptance does not imply immediate consumption or response.",
+      "No steer-specific reply/consumption evidence is exposed by the verified summary path.",
+      "Lost, malformed, mismatched acknowledgements and unclassified native errors remain delivery_unknown.",
+      "Existing shared writer/lifecycle locks may return contention; do not create a replacement UUID after uncertain admission."
+    ],
+    "unchanged": [
+      "Submit remains idle-only and non-steering.",
+      "Queue remains non-steering.",
+      "Resume remains explicit recovery.",
+      "Existing receipts/history retain their original domains.",
+      "No session creation, interruption, cancellation, force, credential or security expansion."
+    ]
+  },
+  "tests": {
+    "command": "scripts/check.sh; after correcting the version-schema constant, rerun cargo fmt --check, cargo clippy --locked --all-targets -- -D warnings, check_docs.py, check_contract.py, cargo build --locked --release",
+    "environment": "Isolated Linux check container; Rust 1.95.0, cached locked public Cargo dependencies, no live account homes/provider sockets mounted.",
+    "passed": 296,
+    "ignored": 6,
+    "fmt": true,
+    "clippy_warnings_denied": true,
+    "docs_links": true,
+    "schema_fixtures_and_cli_envelopes": true,
+    "focused_test": "messaging::public::steering::tests::explicit_steering_is_exact_turn_acceptance_only_and_never_replayed",
+    "synthetic_cases": 24,
+    "hosts": [
+      "synthetic tmux binding",
+      "synthetic HERDR binding"
+    ],
+    "cases": [
+      "busy success",
+      "idle rejection",
+      "active turn changed",
+      "runtime changed",
+      "catalog changed",
+      "lost acknowledgement",
+      "wrong acknowledgement",
+      "explicit stop",
+      "migration lock",
+      "restart after durable dispatch intent",
+      "restart before dispatch with legacy UUID conflict",
+      "runtime change during native preflight"
+    ],
+    "restart_coverage": "Durable ledger/binding reopen and persisted crash-boundary fixtures, not killing a production or actual provider process.",
+    "existing_coverage": "Full suite retains normal message modes, history, recovery, receipt correlation, generations and lock regressions.",
+    "live_steering_test": false,
+    "actual_provider_end_to_end_steer": false
+  },
+  "deployment": {
+    "method": "Immutable release directory, verified artifact provenance, atomic current link and local popup backend selection.",
+    "one_existing_supervisor_preserved": true,
+    "live_sessions_unchanged": true,
+    "authentication_unchanged": true,
+    "agent_dm_source_config_pin_changed": false
+  },
+  "agent_dm_next_steps": [
+    "Review schema, fixtures, source and executable hash.",
+    "Add an explicitly requested steering mode and exact target/turn/runtime preconditions.",
+    "Represent native acceptance separately from execution/reply; do not wait for a steer-correlated reply that this contract cannot provide.",
+    "Retain UUID and uncertainty across retries/restarts; never substitute Queue or repeat unknown steering.",
+    "Integrate, pin and deploy independently after review."
+  ],
+  "notification": {
+    "authorized": "One ordinary Queue completion notification to Agent DM; no steering notification or autonomous follow-up loop.",
+    "evidence": "Receipt and request are retained outside this public repository."
+  }
+}
