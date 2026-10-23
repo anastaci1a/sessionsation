@@ -528,7 +528,11 @@ int main(int argc,char**argv){char path[4096];if(argc>3 && strcmp(argv[1],"app-s
                 .unwrap()
                 .iter()
                 .find(|j| j["id"] == id)
-                .unwrap()
+                .unwrap_or_else(|| {
+                    let direct = fs::read(self.paths.root.join("handoff-jobs").join(format!("{id}.json")))
+                        .map(|bytes| serde_json::from_slice::<sessionsation::external::Job>(&bytes).map(|j|j.id).map_err(|e|e.to_string()));
+                    panic!("Journal missing from listing: expected={id}, listed={jobs}, direct={direct:?}")
+                })
                 .clone();
             // Terminal phases are journaled just before the worker releases its locks.
             // A following mutation must wait for that worker to actually exit.

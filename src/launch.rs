@@ -325,15 +325,11 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         let mut records = Vec::new();
         let dir = paths.root.join("launches");
         if dir.is_dir() {
-            for entry in fs::read_dir(dir)? {
-                let entry = entry?;
-                if !entry.file_type()?.is_file()
-                    || entry.path().extension().is_none_or(|e| e != "json")
-                {
+            for entry in crate::paths::journal_paths(&dir)? {
+                if !entry.is_file() {
                     continue;
                 }
                 let Some(id) = entry
-                    .path()
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .map(str::to_owned)

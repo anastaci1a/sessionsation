@@ -1541,10 +1541,9 @@ fn save_job(paths: &Paths, job: &Job) -> Result<()> {
 }
 pub fn jobs(paths: &Paths) -> Result<Vec<Job>> {
     let mut result = Vec::new();
-    for entry in fs::read_dir(jobs_dir(paths)?)? {
-        let entry = entry?;
-        if entry.path().extension().is_some_and(|x| x == "json") {
-            if let Ok(mut job) = serde_json::from_slice::<Job>(&fs::read(entry.path())?) {
+    for entry in crate::paths::journal_paths(&jobs_dir(paths)?)? {
+        if entry.extension().is_some_and(|x| x == "json") {
+            if let Ok(mut job) = serde_json::from_slice::<Job>(&fs::read(&entry)?) {
                 if !matches!(
                     job.phase.as_str(),
                     "complete" | "failed" | "cancelled" | "recovered"

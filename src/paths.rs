@@ -121,8 +121,65 @@ pub fn lock_file(path: &Path) -> Result<fs::File> {
         .open(path)?)
 }
 
+/// Atomic replacement can hide a changing JSON directory entry from a concurrent
+/// readdir (notably on overlayfs). Worker locks/logs have stable entries: resolve
+/// their corresponding journal directly instead of interpreting omission as absence.
+pub(crate) fn journal_paths(directory: &Path) -> Result<Vec<PathBuf>> {
+    let entries = fs::read_dir(directory)?
+        .map(|e| e.map(|e| e.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    Ok(journal_paths_from_entries(directory, entries))
+}
+fn journal_paths_from_entries(directory: &Path, entries: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut paths = std::collections::BTreeSet::new();
+    for path in entries {
+        if path.extension().is_some_and(|s| s == "json") {
+            paths.insert(path.clone());
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        for suffix in [".worker-lock", ".worker.lock", ".log", ".lock"] {
+            if let Some(stem) = name.strip_suffix(suffix) {
+                let journal = directory.join(format!("{stem}.json"));
+                if !stem.is_empty() && journal.is_file() {
+                    paths.insert(journal);
+                }
+                break;
+            }
+        }
+    }
+    paths.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn stable_worker_entries_recover_journals_omitted_by_readdir() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let mut entries = vec![];
+        for (id, suffix) in [
+            ("move", ".worker-lock"),
+            ("resume", ".worker.lock"),
+            ("legacy", ".log"),
+            ("space", ".lock"),
+        ] {
+            let journal = dir.join(format!("{id}.json"));
+            std::fs::write(&journal, "{}").unwrap();
+            let anchor = dir.join(format!("{id}{suffix}"));
+            std::fs::write(&anchor, "").unwrap();
+            entries.push(anchor);
+        }
+        entries.push(dir.join("queue.lock"));
+        entries.push(dir.join("orphan.worker.lock"));
+        entries.push(dir.join(".tmp-unpublished"));
+        entries.push(dir.join("move.json"));
+        let found = super::journal_paths_from_entries(dir, entries);
+        assert_eq!(found.len(), 4);
+        assert!(found.iter().all(|p| p.extension().unwrap() == "json"));
+    }
     use super::data_root;
     use std::path::PathBuf;
 

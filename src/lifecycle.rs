@@ -17,12 +17,11 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
         if !root.is_dir() {
             continue;
         }
-        for entry in fs::read_dir(root)? {
-            let entry = entry?;
-            if entry.path().extension().is_none_or(|e| e != "json") {
+        for entry in crate::paths::journal_paths(&root)? {
+            if entry.extension().is_none_or(|e| e != "json") {
                 continue;
             }
-            let r: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+            let r: Value = serde_json::from_slice(&fs::read(&entry)?)?;
             let id = r["id"]
                 .as_str()
                 .or_else(|| r["request"]["request_id"].as_str())
@@ -38,9 +37,7 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
                         r["phase"].as_str(),
                         Some("complete" | "failed" | "cancelled" | "recovered")
                     )
-                    && !crate::background::worker_stopped(
-                        &entry.path().with_extension("worker-lock"),
-                    )?
+                    && !crate::background::worker_stopped(&entry.with_extension("worker-lock"))?
                 {
                     return Ok(Some(id.context("INVALID_OPERATION_ID")?.into()));
                 }
@@ -73,12 +70,11 @@ pub(crate) fn ensure_no_handoff(paths: &Paths, thread: &str, own: Option<&str>) 
     if !root.is_dir() {
         return Ok(());
     }
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        if entry.path().extension().is_none_or(|e| e != "json") {
+    for entry in crate::paths::journal_paths(&root)? {
+        if entry.extension().is_none_or(|e| e != "json") {
             continue;
         }
-        let r: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+        let r: Value = serde_json::from_slice(&fs::read(&entry)?)?;
         if r["source"]["thread_id"] == thread && r["id"].as_str() != own {
             ensure!(
                 matches!(

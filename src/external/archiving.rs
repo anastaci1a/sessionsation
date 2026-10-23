@@ -145,10 +145,9 @@ fn effective(o: &Operation) -> Value {
 }
 pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
     let mut out = vec![];
-    for e in fs::read_dir(ops_root(paths)?)? {
-        let e = e?;
-        if e.file_type()?.is_file() && e.path().extension().is_some_and(|x| x == "json") {
-            let o: Operation = serde_json::from_slice(&fs::read(e.path())?)?;
+    for e in crate::paths::journal_paths(&ops_root(paths)?)? {
+        if e.is_file() {
+            let o: Operation = serde_json::from_slice(&fs::read(e)?)?;
             out.push(effective(&o));
         }
     }
@@ -158,10 +157,9 @@ pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
 /// or the initiating viewer's CODEX_HOME in the background worker environment.
 pub(super) fn source_homes(paths: &Paths) -> Result<Vec<PathBuf>> {
     let mut homes = Vec::new();
-    for e in fs::read_dir(ops_root(paths)?)? {
-        let e = e?;
-        if e.file_type()?.is_file() && e.path().extension().is_some_and(|x| x == "json") {
-            let o: Operation = serde_json::from_slice(&fs::read(e.path())?)?;
+    for e in crate::paths::journal_paths(&ops_root(paths)?)? {
+        if e.is_file() {
+            let o: Operation = serde_json::from_slice(&fs::read(e)?)?;
             if let Some(source) = o.source {
                 homes.push(source.home);
             }

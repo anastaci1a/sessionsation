@@ -26,6 +26,13 @@ stale-generation checks; Restore installs a credential-free saved-history home.
 Native removal occurs only after the archive export verifies. Permanent session
 deletion uses the existing native deletion path and purges only conversation data.
 
+Operation discovery reads journals through both their JSON entries and existing,
+stable worker-lock/log entries. Some filesystems can omit a JSON directory entry
+while its contents are atomically replaced; the stable entry supplies the path
+for a direct read. Lifecycle reservations and operation lists share this discovery
+helper, so a transient directory omission does not erase an admitted operation.
+No journal migration or replacement supervisor is required.
+
 Provider adapters own enrollment, capabilities, usage, conversation history and
 delivery receipts. Terminal hosts own attachment and process placement. HERDR and
 tmux must launch the same account-specific Codex command. Viewer detachment must

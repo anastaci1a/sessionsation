@@ -61,10 +61,9 @@ fn save(paths: &Paths, op: &mut Operation, phase: &str, detail: &str) -> Result<
 }
 fn records(paths: &Paths) -> Result<Vec<Operation>> {
     let mut result = vec![];
-    for entry in fs::read_dir(dir(paths)?)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() && entry.path().extension().is_some_and(|s| s == "json") {
-            result.push(serde_json::from_slice(&fs::read(entry.path())?)?);
+    for entry in crate::paths::journal_paths(&dir(paths)?)? {
+        if entry.is_file() {
+            result.push(serde_json::from_slice(&fs::read(entry)?)?);
         }
     }
     Ok(result)

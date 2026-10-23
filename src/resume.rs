@@ -99,10 +99,9 @@ fn records(paths: &Paths) -> Result<Vec<Receipt>> {
     let dir = paths.root.join("resumptions");
     let mut records = vec![];
     if dir.is_dir() {
-        for e in fs::read_dir(dir)? {
-            let e = e?;
-            if e.file_type()?.is_file() && e.path().extension().is_some_and(|x| x == "json") {
-                records.push(serde_json::from_slice::<Receipt>(&fs::read(e.path())?)?);
+        for e in crate::paths::journal_paths(&dir)? {
+            if e.is_file() {
+                records.push(serde_json::from_slice::<Receipt>(&fs::read(e)?)?);
             }
         }
     }
