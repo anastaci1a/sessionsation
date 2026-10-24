@@ -1,0 +1,124 @@
+{
+  "handoff_version": 1,
+  "feature": "public_turn_checkpoints",
+  "status": "implemented_tested_installed",
+  "source": {
+    "repository": "https://github.com/anastaci1a/sessionsation",
+    "commit": "51d612f13bec8c0c6b9ea78a8f3434766edff7fd",
+    "note": "The later documentation-only handoff commit does not change this executable."
+  },
+  "artifact": {
+    "filename": "sessionsation",
+    "sha256": "b27aa40515d1dc7d8565e3fa6fbe42f1131660335b789ea8b99c383871f92528",
+    "package_version": "0.2.0",
+    "api_version": 1,
+    "contract_revision": 7,
+    "installed_location": "Exact operator-local executable path supplied in the authorized completion Queue message; query api version to verify."
+  },
+  "negotiation": {
+    "command": "api capabilities",
+    "required": {
+      "checkpoints.version": 1,
+      "api_version": 1,
+      "contract_revision_min": 7
+    },
+    "native_profiles": [
+      "0.163.0",
+      "0.164.0"
+    ],
+    "claude_supported": false,
+    "unknown_native_versions": "fail_closed"
+  },
+  "contract": {
+    "command": "api checkpoints < request.json",
+    "documentation": "docs/contract.md#public-turn-checkpoints-revision-7",
+    "schema": "docs/contract/v1.json",
+    "definitions": [
+      "CheckpointRequest",
+      "Checkpoints",
+      "CheckpointEvent"
+    ],
+    "fixtures": "docs/contract/fixtures.json",
+    "examples": [
+      "checkpoint_request",
+      "checkpoints"
+    ],
+    "required_target": [
+      "session_id",
+      "expected_generation",
+      "expected_runtime_generation",
+      "expected_turn_id"
+    ],
+    "association": "turn_only",
+    "steering_receipts": "unchanged_acceptance_only",
+    "delivery_evidence": false,
+    "starts_process": false,
+    "sends_input": false,
+    "private_reasoning": false,
+    "tool_output": false,
+    "raw_transcripts": false
+  },
+  "client_steps": [
+    "Resolve the exact tracked turn and current catalog/runtime generations; never target by display name.",
+    "Call api checkpoints with cursor null initially.",
+    "Consume full text snapshots, deduplicate by event_id and persist the returned cursor after consumption. Sequence is first-observation order.",
+    "Continue reads while tracking the same turn. has_more concerns journal events; scan_pending concerns native pages.",
+    "On stale turn/runtime or failure preserve previous evidence; never borrow a newer turn or replay input. On cursor gap explicitly reset with null and surface history_gap.",
+    "Keep receipt polling separate. A checkpoint is not proof of Steer consumption, causation, delivery, completion or correlated reply.",
+    "Negotiate capabilities and compatible additive API revisions; update the explicit executable pin using the verified artifact hash."
+  ],
+  "limits": {
+    "native_items_per_read": 50,
+    "returned_events_per_read": 50,
+    "retained_events_per_stream": 256,
+    "dedup_revisions_per_stream": 4096,
+    "overall_native_budget_seconds": 8,
+    "freshness_seconds": 5,
+    "lossless_token_stream": false,
+    "requires_live_attachment": true,
+    "requires_latest_turn_match": true,
+    "observation": "Native public snapshot polling; transient revisions between polls may be missed. Failed/interrupted/completed latest turns are distinguishable. Unknown phases are omitted.",
+    "restart": "Journal reload retains IDs/order; a changed provider runtime needs fresh explicit target resolution, not cursor carryover."
+  },
+  "verification": {
+    "command": "scripts/check.sh (303 Rust tests pass); corrected version discovery schema; check_docs.py + check_contract.py + cargo build --locked --release",
+    "tests_passed": 303,
+    "opt_in_tests_skipped": 6,
+    "checkpoint_regressions": 4,
+    "cases": [
+      "Synthetic HERDR/tmux exact tracked active turn exposes checkpoint then continues",
+      "Repeated reads/journal reopen deduplicate and preserve stable IDs/order",
+      "Public projection excludes reasoning, tool output, user input and unknown phases",
+      "Stale turn, wrong item turn, disconnected provider and runtime mismatch refuse",
+      "Failed native turn is reported separately from assistant text",
+      "Bounded pagination, cursor gaps, revision ceiling and invalid-page refusal"
+    ],
+    "synthetic": true,
+    "real_provider_end_to_end": false,
+    "live_localica_contacted": false,
+    "model_calls": 0
+  },
+  "deployment": {
+    "compatible_existing_supervisor_preserved": true,
+    "agent_dm_source_or_pin_modified": false,
+    "local_artifact_hash_verified": true
+  },
+  "native_source_evidence": [
+    {
+      "tag": "rust-v0.164.0",
+      "paths": [
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/thread-store/src/local/thread_history.rs"
+      ],
+      "finding": "Summary projection excludes commentary/partial_answer; turn-filtered thread/items/list exposes public assistant items independently."
+    },
+    {
+      "tag": "rust-v0.163.0",
+      "paths": [
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs"
+      ],
+      "finding": "Inspected matching turn-filtered item-list protocol."
+    }
+  ]
+}
