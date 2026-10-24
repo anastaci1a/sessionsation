@@ -760,5 +760,45 @@
       "move_space": true
     },
     "name_source": "herdr_last_observed"
+  },
+  "checkpoint_request": {
+    "version": 1,
+    "session_id": "11111111-1111-4111-8111-111111111111",
+    "expected_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expected_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "expected_turn_id": "tracked-turn",
+    "cursor": null
+  },
+  "checkpoints": {
+    "version": 1,
+    "session_id": "11111111-1111-4111-8111-111111111111",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "turn_id": "tracked-turn",
+    "turn_status": "inProgress",
+    "events": [
+      {
+        "event_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "sequence": 1,
+        "item_id": "public-1",
+        "text": "The first check passed; work is continuing.",
+        "phase": "commentary",
+        "observed_at": 100,
+        "association": "turn_only",
+        "delivery_evidence": false
+      }
+    ],
+    "cursor": "22222222-2222-4222-8222-222222222222:1",
+    "has_more": false,
+    "scan_pending": false,
+    "observed_at": 100,
+    "valid_until": 105,
+    "checked_at": 100,
+    "freshness": "fresh",
+    "history_gap": false,
+    "association": "turn_only",
+    "sends_input": false,
+    "starts_process": false,
+    "delivery_evidence": false
   }
 }

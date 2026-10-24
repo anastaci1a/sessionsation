@@ -333,3 +333,7 @@ For a deliberate message to a busy turn, use `api steer-target --session ID --ex
 returned turn/runtime preconditions. This is acceptance-only and never creates,
 restarts or interrupts a session. See the [steering contract](contract.md#deliberate-in-turn-steering-revision-5)
 for the request, receipt, retry and capability-negotiation rules.
+
+For read-only intermediate assistant updates from an exact tracked turn, use
+`api checkpoints < request.json`; see [public turn checkpoints](contract.md#public-turn-checkpoints-revision-7)
+for identity preconditions, cursors and the distinction from delivery receipts.

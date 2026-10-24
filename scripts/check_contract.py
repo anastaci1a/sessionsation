@@ -16,6 +16,15 @@ def validate(value, definition=None):
     Draft202012Validator(spec, format_checker=checker).validate(value)
 
 fixtures = json.loads((root / "docs/contract/fixtures.json").read_text())
+validate(fixtures["checkpoint_request"], "CheckpointRequest")
+validate(fixtures["checkpoints"], "Checkpoints")
+for field in ["delivery_evidence", "sends_input", "starts_process"]:
+    try:
+        validate({**fixtures["checkpoints"], field: True}, "Checkpoints")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Checkpoints must remain read-only and not delivery evidence")
 validate(fixtures["runtime_attachment"], "RuntimeAttachment")
 validate(fixtures["request"], "MessageRequest")
 validate(fixtures["steering_message"], "MessageRequest")
@@ -76,13 +85,19 @@ with tempfile.TemporaryDirectory() as directory:
         if args[0] == "state":
             validate(value["result"], "Snapshot")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 6
+            assert value["result"]["contract_revision"] >= 7
+            assert value["result"]["checkpoints"]["version"] == 1
+            assert value["result"]["checkpoints"]["delivery_evidence"] is False
             assert value["result"]["session_names"]["version"] == 1
             assert value["result"]["steering"]["version"] == 1
             assert value["result"]["steering"]["acceptance_only"] is True
             assert value["result"]["providers"][0]["steer"] is True
         if args == ["version"]:
             validate(value["result"], "ExecutableVersion")
+            validate({**value["result"], "contract_revision":99}, "ExecutableVersion")
+    invalid = subprocess.run(command + ["checkpoints"], input=json.dumps({**fixtures["checkpoint_request"], "version":99}), capture_output=True, text=True)
+    assert invalid.returncode == 1
+    assert json.loads(invalid.stderr)["error"]["code"] == "INVALID_REQUEST"
     batch=json.loads(subprocess.check_output(command + ["observations"], input=json.dumps({"api_version":1,"sessions":[],"policy":"cached_only"}), text=True))
     validate(batch)
     assert batch["result"]["results"] == []

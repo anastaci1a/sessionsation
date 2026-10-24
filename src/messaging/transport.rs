@@ -291,6 +291,28 @@ impl Transport {
         }
         self.rpc_budget("thread/turns/list",json!({"threadId":id,"itemsView":"summary","sortDirection":"desc","limit":limit,"cursor":cursor}),Duration::from_secs(5)).await
     }
+    /// Bounded exact-turn item read, projected to public assistant text by checkpoints.
+    pub(super) async fn checkpoint_items<T: serde::de::DeserializeOwned>(
+        &mut self,
+        id: &str,
+        turn: &str,
+        cursor: Option<&str>,
+    ) -> Result<T> {
+        super::uuid(id)?;
+        if !self.verified_profile
+            || turn.is_empty()
+            || turn.len() > 256
+            || cursor.is_some_and(|s| s.len() > 4096)
+        {
+            return Err(Fault("unsupported"));
+        }
+        self.rpc_budget(
+            "thread/items/list",
+            json!({"threadId":id,"turnId":turn,"cursor":cursor,"limit":50,"sortDirection":"asc"}),
+            Duration::from_secs(3),
+        )
+        .await
+    }
     async fn rpc_budget<T: serde::de::DeserializeOwned>(
         &mut self,
         method: &str,

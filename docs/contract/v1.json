@@ -2185,8 +2185,7 @@
         },
         "contract_revision": {
           "type": "integer",
-          "minimum": 2,
-          "const": 6
+          "minimum": 2
         },
         "executable": {
           "type": "object",
@@ -2698,6 +2697,202 @@
           "const": "unsupported"
         }
       },
+      "additionalProperties": true
+    },
+    "CheckpointRequest": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "expected_runtime_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "expected_turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "version",
+        "session_id",
+        "expected_generation",
+        "expected_runtime_generation",
+        "expected_turn_id"
+      ],
+      "additionalProperties": false
+    },
+    "CheckpointEvent": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "phase": {
+          "enum": [
+            "commentary",
+            "partial_answer",
+            "final_answer"
+          ]
+        },
+        "observed_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "association": {
+          "const": "turn_only"
+        },
+        "delivery_evidence": {
+          "const": false
+        }
+      },
+      "required": [
+        "event_id",
+        "sequence",
+        "item_id",
+        "text",
+        "phase",
+        "observed_at",
+        "association",
+        "delivery_evidence"
+      ],
+      "additionalProperties": true
+    },
+    "Checkpoints": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "runtime_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "turn_status": {
+          "enum": [
+            "inProgress",
+            "completed",
+            "failed",
+            "interrupted"
+          ]
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/CheckpointEvent"
+          }
+        },
+        "cursor": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "scan_pending": {
+          "type": "boolean"
+        },
+        "observed_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "valid_until": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "checked_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale"
+          ]
+        },
+        "history_gap": {
+          "type": "boolean"
+        },
+        "association": {
+          "const": "turn_only"
+        },
+        "sends_input": {
+          "const": false
+        },
+        "starts_process": {
+          "const": false
+        },
+        "delivery_evidence": {
+          "const": false
+        }
+      },
+      "required": [
+        "version",
+        "session_id",
+        "generation",
+        "runtime_generation",
+        "turn_id",
+        "turn_status",
+        "events",
+        "cursor",
+        "has_more",
+        "scan_pending",
+        "observed_at",
+        "valid_until",
+        "checked_at",
+        "freshness",
+        "history_gap",
+        "association",
+        "sends_input",
+        "starts_process",
+        "delivery_evidence"
+      ],
       "additionalProperties": true
     }
   }

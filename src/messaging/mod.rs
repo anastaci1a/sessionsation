@@ -1,5 +1,6 @@
 //! Switcher-owned, transport-independent messaging boundary. Never launches Codex.
 mod batch;
+pub mod checkpoints;
 mod modes;
 mod public;
 mod readiness;

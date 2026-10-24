@@ -859,3 +859,65 @@ Keep the sole supervisor and existing receipt databases; a client upgrade is not
 an owner handoff. Current installation selection and consumer pins stay unchanged
 until their separate compatibility review. New archive views require accepting
 `availability:archived`; keep default filtering for existing active-session clients.
+
+## Public turn checkpoints (revision 7)
+
+Negotiate `capabilities.checkpoints.version == 1`; package 0.2.0 remains API v1.
+`api checkpoints < request.json` is an explicit read-only observation, independent
+of sending and receipt polling. The request includes `version:1`, stable
+`session_id`, `expected_generation`, `expected_runtime_generation`,
+`expected_turn_id`, and optional `cursor` (initially null). Obtain exact turn/runtime
+identity from a tracked receipt or `api steer-target`; never select a turn by name.
+See `CheckpointRequest`, `Checkpoints`, and `CheckpointEvent` in the schema and
+`checkpoint_request`/`checkpoints` in the fixtures.
+
+The response exposes only native `agentMessage` text explicitly marked
+`commentary`, `partial_answer`, or `final_answer`. Other payloads are structurally
+skipped: no reasoning, user input, tool output, terminal capture or raw transcript
+is returned or journaled. Native profiles 0.163.0 and 0.164.0 support the bounded
+`thread/items/list` read used here. Unknown profiles fail closed; Claude is unsupported.
+No observer, terminal supervisor, credential writer or subscription is started.
+
+- Every event has a stable content revision `event_id`, native `item_id`, monotonic
+  journal `sequence`, and `observed_at`. Text is a full snapshot, not an append delta;
+  a changed item emits another revision. Order is first observation in native page
+  order, not proof of causal ordering between messages. Deduplicate by `event_id`.
+- Association is **turn-only**. Text does not prove Steer consumption, causation,
+  a correlated reply, message delivery or completion. Steering receipts stay
+  acceptance-only. Even `phase:final_answer` is not completion evidence by itself;
+  `turn_status` is separately observed native state.
+- The exact requested turn must still be the latest visible native turn, before and
+  after the item read. Its status may be in progress, completed, failed or interrupted.
+  A different turn returns `CHECKPOINT_STALE_TURN`; a transition during the read
+  returns `CHECKPOINT_TURN_CHANGED`. Retain previous evidence and retry only the read,
+  or resolve a newly tracked target explicitly. Never silently attribute another turn.
+- Catalog/runtime changes return `STALE_TARGET`. Resolve fresh identity, but do not
+  carry a cursor into another runtime/turn. Endpoint failure, unsupported native
+  profile or timeout yields an error, no fresh events, and no advanced cursor.
+  Reads have an eight-second overall budget and never send/replay input or launch.
+- Each read scans at most 50 native items and returns at most 50 retained events.
+  `scan_pending` means native pages remain; `has_more` means journal events remain.
+  Save the returned opaque cursor only after processing the response. Poll again
+  while the exact turn is tracked; reaching the native page tail starts another
+  scan from the beginning next time, so edits to an existing item are observed.
+  This is polling, not lossless token streaming; short-lived intermediate revisions
+  between polls may be missed. Empty events do not mean the agent is idle.
+- Up to 256 events and 4096 deduplication revisions are retained per exact
+  session/runtime/turn in the Sessionsation root. `CHECKPOINT_CURSOR_GAP` means
+  the cursor is expired, from a different journal, or beyond its tail. Start a new
+  read with null cursor to consume the retained window; `history_gap:true` explicitly
+  marks truncated older events. Reaching the revision ceiling returns
+  `CHECKPOINT_RETENTION_LIMIT`; do not pretend the stream is complete.
+- Journal writes are atomic and serialized by an observer-only lock. Retries and
+  CLI restarts replay stable IDs/order without touching message ledgers. A provider
+  restart changing runtime identity requires a new explicitly resolved stream.
+  `CHECKPOINT_OBSERVER_BUSY` means another read is updating that same journal;
+  retry the read. Native pagination errors leave the prior journal intact.
+- `observed_at` timestamps the item-page read; `checked_at` is response preparation,
+  and `valid_until` is five seconds after observation. `freshness` can already be
+  stale if verification was slow. Replayed events retain their original timestamps.
+
+Clients should use checkpoint events for an intermediate activity feed, while
+continuing to use the original receipt for delivery/correlation. Do not promote a
+checkpoint to a completed mailbox reply. Compatible additive API revisions should
+be negotiated by capability rather than exact build equality.
