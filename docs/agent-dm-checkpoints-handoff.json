@@ -4,12 +4,12 @@
   "status": "implemented_tested_installed",
   "source": {
     "repository": "https://github.com/anastaci1a/sessionsation",
-    "commit": "8a0bb35c8d8a0b1828eeb4b1c229198203911c1a",
+    "commit": "89366b8d77c532b5d90b034a18a3151970c95abf",
     "note": "The later documentation-only handoff commit does not change this executable."
   },
   "artifact": {
     "filename": "sessionsation",
-    "sha256": "0b7df06c74b12b15f05d0fd3917c36e71ed745a80c2c7a2130e41e20bc04c998",
+    "sha256": "12e6961a887c1d7fa9b05e92393bcdbf099f8f88e75716bd3f6e3cd24a698bd0",
     "package_version": "0.2.0",
     "api_version": 1,
     "contract_revision": 7,
@@ -32,6 +32,13 @@
       "advertised_property": "checkpoints.max_response_bytes",
       "must_be_present": true,
       "maximum": 1048576
+    },
+    "checkpoint_history_modes": {
+      "advertised_property": "checkpoints.history_modes",
+      "required": [
+        "legacy",
+        "paginated"
+      ]
     }
   },
   "contract": {
@@ -41,12 +48,14 @@
     "definitions": [
       "CheckpointRequest",
       "Checkpoints",
-      "CheckpointEvent"
+      "CheckpointEvent",
+      "NativeReadFailure"
     ],
     "fixtures": "docs/contract/fixtures.json",
     "examples": [
       "checkpoint_request",
-      "checkpoints"
+      "checkpoints",
+      "checkpoint_native_error"
     ],
     "required_target": [
       "session_id",
@@ -67,7 +76,8 @@
       "has_more",
       "scan_pending",
       "byte_limited",
-      "native_page_read"
+      "native_page_read",
+      "history_mode"
     ]
   },
   "client_steps": [
@@ -94,13 +104,16 @@
     "max_response_bytes": 786432,
     "response_bytes_include": "Entire compact UTF-8 JSON success envelope and trailing newline, after JSON escaping",
     "max_public_text_bytes": 65536,
-    "byte_pagination": "Whole events only; cursor advances to last returned event. Drain unread journal events before scanning more native items; exact turn/runtime checks remain active. Replay never renews event/page observation age."
+    "byte_pagination": "Whole events only; cursor advances to last returned event. Drain unread journal events before scanning more native items; exact turn/runtime checks remain active. Replay never renews event/page observation age.",
+    "native_read_max_bytes": 8388608,
+    "legacy_turn_item_limit": 8192,
+    "native_routing": "Read thread.historyMode from the attached control server. Paginated -> thread/items/list, 50 items. Legacy -> thread/turns/list itemsView full, limit 1 descending; validate exact latest turn, project only public assistant snapshots, return at most 50 unseen snapshots per scan. Ordinary messaging frame limit stays 1 MiB; public output stays 768 KiB."
   },
   "verification": {
     "command": "scripts/check.sh && cargo build --locked --release",
-    "tests_passed": 304,
-    "opt_in_tests_skipped": 6,
-    "checkpoint_regressions": 5,
+    "tests_passed": 306,
+    "opt_in_tests_skipped": 7,
+    "checkpoint_regressions": 7,
     "cases": [
       "Synthetic HERDR/tmux exact tracked active turn exposes checkpoint then continues",
       "Repeated reads/journal reopen deduplicate and preserve stable IDs/order",
@@ -109,12 +122,55 @@
       "Failed native turn is reported separately from assistant text",
       "Bounded pagination, cursor gaps, revision ceiling and invalid-page refusal",
       "Fifty near-64-KiB public items, multibyte UTF-8 and maximum JSON control-character escaping: every full envelope plus newline <=768 KiB, no lost/duplicate events, deterministic replay and cursor progress",
-      "Oversized public text rejected; replay does not advance native scan or evict unread backlog"
+      "Oversized public text rejected; replay does not advance native scan or evict unread backlog",
+      "Exact native 0.164.0 executable, isolated synthetic legacy history, real Unix control server, no credentials and network disabled: reproduces -32601 then reads checkpoint and continuation",
+      "Both history modes under synthetic HERDR/tmux active-turn fixtures; >1 MiB legacy input, exact turn/status checks, pagination across 101 public snapshots, method/code-only native rejection",
+      "Authorized production exact-turn candidate reads: 50 then 48 then 0 new updates, all inProgress, no duplicates, 823/801/871 ms; counts only, no public text or raw frames logged"
     ],
-    "synthetic": true,
-    "real_provider_end_to_end": false,
-    "live_localica_contacted": false,
-    "model_calls": 0
+    "model_calls": 0,
+    "native_control_tests": 1,
+    "synthetic_only": false,
+    "real_provider_read_only": true,
+    "real_provider_send_test": false,
+    "authorized_working_session_read_only": true,
+    "installed_passive_reads": [
+      {
+        "ok": true,
+        "history_mode": "legacy",
+        "turn_status": "inProgress",
+        "event_count": 50,
+        "duplicates": 0,
+        "has_more": true,
+        "scan_pending": false,
+        "native_page_read": false,
+        "wire_bytes": 31049,
+        "elapsed_ms": 410
+      },
+      {
+        "ok": true,
+        "history_mode": "legacy",
+        "turn_status": "inProgress",
+        "event_count": 48,
+        "duplicates": 0,
+        "has_more": false,
+        "scan_pending": false,
+        "native_page_read": false,
+        "wire_bytes": 28335,
+        "elapsed_ms": 435
+      },
+      {
+        "ok": true,
+        "history_mode": "legacy",
+        "turn_status": "inProgress",
+        "event_count": 2,
+        "duplicates": 0,
+        "has_more": false,
+        "scan_pending": false,
+        "native_page_read": true,
+        "wire_bytes": 1898,
+        "elapsed_ms": 619
+      }
+    ]
   },
   "deployment": {
     "compatible_existing_supervisor_preserved": true,
@@ -137,6 +193,27 @@
         "codex-rs/app-server-protocol/src/protocol/v2/thread.rs"
       ],
       "finding": "Inspected matching turn-filtered item-list protocol."
+    },
+    {
+      "tag": "rust-v0.164.0",
+      "paths": [
+        "codex-rs/thread-store/src/local/thread_history/read.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs"
+      ],
+      "finding": "validate_thread_for_paginated_reads rejects legacy; the processor maps Unsupported to -32601 and serves legacy full latest-turn projection through thread/turns/list."
     }
-  ]
+  ],
+  "native_boundary_correction": {
+    "root_cause": "Native thread/items/list is only implemented for paginated histories. A legacy history request reaches the valid method but the native store returns Unsupported, mapped to JSON-RPC -32601. Previous mocks missed the history-mode gate.",
+    "secondary_cause": "The supplied legacy turn exceeds the ordinary 1 MiB input-frame limit; a dedicated 8 MiB bounded checkpoint connection is required before projecting the small public response.",
+    "request_parameters_validated_against_attached_schema": true,
+    "attached_server_version": "0.164.0",
+    "terminal_version": "0.162.1",
+    "attached_server_sha256": "b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306",
+    "schema_sha256": {
+      "ThreadItemsListParams": "d5cf9784413f1d1abba756e04e48b273a9d12ab2c5675442e91b6a4ee55e19f0",
+      "ThreadTurnsListParams": "2a8b93d7d4437cc25e16a1dde16d8db3c338d39e16c5eece2a56e943a21577d7"
+    },
+    "diagnostics": "Only error.native.method and error.native.code; native message/data and raw frames are excluded."
+  }
 }
