@@ -896,10 +896,20 @@ No observer, terminal supervisor, credential writer or subscription is started.
   profile or timeout yields an error, no fresh events, and no advanced cursor.
   Reads have an eight-second overall budget and never send/replay input or launch.
 - Each read scans at most 50 native items and returns at most 50 retained events.
+  The complete compact success JSON envelope plus trailing newline is capped at
+  **786432 bytes (768 KiB)**, below a 1 MiB client transport ceiling. JSON escaping
+  and UTF-8 bytes count toward this limit. `byte_limited:true` marks a page shortened
+  by bytes; whole events are preserved and the cursor advances only past returned
+  events. A single public text item up to 65536 UTF-8 bytes remains supported.
+  Capability `checkpoints.max_response_bytes` advertises the envelope limit.
   `scan_pending` means native pages remain; `has_more` means journal events remain.
   Save the returned opaque cursor only after processing the response. Poll again
   while the exact turn is tracked; reaching the native page tail starts another
   scan from the beginning next time, so edits to an existing item are observed.
+  While unread journal events remain, reads drain that backlog before scanning more
+  native items; byte pagination therefore cannot evict its own unread events.
+  `native_page_read:false` identifies this replay: exact-turn/runtime checks still
+  run, but observation/event timestamps retain their original age.
   This is polling, not lossless token streaming; short-lived intermediate revisions
   between polls may be missed. Empty events do not mean the agent is idle.
 - Up to 256 events and 4096 deduplication revisions are retained per exact

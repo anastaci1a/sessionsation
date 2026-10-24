@@ -128,10 +128,19 @@ async fn exact_active_turn_checkpoints_continue_and_survive_restart_for_both_hos
         assert_eq!(first["delivery_evidence"], false);
         let cursor = first["cursor"].as_str().unwrap().to_string();
         // A new invocation reloads durable journal, not in-memory observer state.
-        assert_eq!(
-            read(&paths, request(None)).await.unwrap()["events"],
-            first["events"]
-        );
+        let item_reads = || {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|m| m.as_str() == "thread/items/list")
+                .count()
+        };
+        let before_replay = item_reads();
+        let replay = read(&paths, request(None)).await.unwrap();
+        assert_eq!(replay["events"], first["events"]);
+        assert_eq!(replay["native_page_read"], false);
+        assert_eq!(item_reads(), before_replay);
         assert_eq!(
             read(&paths, request(Some(cursor.clone()))).await.unwrap()["events"],
             json!([])
@@ -139,6 +148,7 @@ async fn exact_active_turn_checkpoints_continue_and_survive_restart_for_both_hos
         *mode.lock().unwrap() = "continued";
         let continued = read(&paths, request(Some(cursor.clone()))).await.unwrap();
         assert_eq!(continued["events"][0]["sequence"], 2);
+        let cursor = continued["cursor"].as_str().unwrap().to_string();
         for (m, expected) in [
             ("stale", "checkpoint_stale_turn"),
             ("wrong", "checkpoint_turn_mismatch"),
@@ -202,4 +212,57 @@ fn paginated_scan_retains_order_and_restarts_without_duplicates() {
     .unwrap();
     j.ingest("s", "t", unknown, 4).unwrap();
     assert_eq!(j.events.len(), 2);
+}
+
+#[test]
+fn wire_byte_pages_preserve_whole_large_events_and_cursor_progress() {
+    for text in ["x".repeat(65536), "\0".repeat(65536), "界".repeat(21845)] {
+        let mut j = Journal {
+            epoch: "epoch".into(),
+            ..Default::default()
+        };
+        for n in 0..50 {
+            let p: Page = serde_json::from_value(json!({"data":[{"turnId":"turn","item":{"type":"agentMessage","id":format!("public-{n}"),"phase":"commentary","text":text}}],"nextCursor":null})).unwrap();
+            j.ingest("scope", "turn", p, 1).unwrap();
+        }
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../docs/contract/fixtures.json")).unwrap();
+        let mut position = 0;
+        let mut sequences = Vec::new();
+        loop {
+            let result = j
+                .response(position, fixture["checkpoints"].clone())
+                .unwrap();
+            let mut wire =
+                serde_json::to_vec(&json!({"api_version":1,"ok":true,"result":result})).unwrap();
+            wire.push(b'\n');
+            assert!(wire.len() <= MAX_RESPONSE_BYTES);
+            let events = result["events"].as_array().unwrap();
+            assert!(!events.is_empty());
+            for event in events {
+                assert_eq!(event["text"], text);
+                sequences.push(event["sequence"].as_u64().unwrap());
+            }
+            let next = j.position(result["cursor"].as_str()).unwrap();
+            assert!(next > position);
+            assert_eq!(
+                j.response(position, fixture["checkpoints"].clone())
+                    .unwrap(),
+                result
+            );
+            position = next;
+            if result["has_more"] == false {
+                break;
+            }
+            assert_eq!(result["byte_limited"], true);
+        }
+        assert_eq!(sequences, (1..=50).collect::<Vec<_>>());
+    }
+    let mut j = Journal::default();
+    assert_eq!(
+        j.ingest("scope", "turn", page("turn", &"x".repeat(65537)), 1)
+            .unwrap_err()
+            .0,
+        "checkpoint_item_limit"
+    );
 }

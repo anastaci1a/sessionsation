@@ -799,6 +799,8 @@
     "association": "turn_only",
     "sends_input": false,
     "starts_process": false,
-    "delivery_evidence": false
+    "delivery_evidence": false,
+    "byte_limited": false,
+    "native_page_read": true
   }
 }

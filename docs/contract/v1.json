@@ -2870,6 +2870,12 @@
         },
         "delivery_evidence": {
           "const": false
+        },
+        "byte_limited": {
+          "type": "boolean"
+        },
+        "native_page_read": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -2891,7 +2897,9 @@
         "association",
         "sends_input",
         "starts_process",
-        "delivery_evidence"
+        "delivery_evidence",
+        "byte_limited",
+        "native_page_read"
       ],
       "additionalProperties": true
     }

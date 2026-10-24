@@ -87,6 +87,7 @@ with tempfile.TemporaryDirectory() as directory:
         if args == ["capabilities"]:
             assert value["result"]["contract_revision"] >= 7
             assert value["result"]["checkpoints"]["version"] == 1
+            assert value["result"]["checkpoints"]["max_response_bytes"] == 786432
             assert value["result"]["checkpoints"]["delivery_evidence"] is False
             assert value["result"]["session_names"]["version"] == 1
             assert value["result"]["steering"]["version"] == 1
