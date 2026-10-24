@@ -420,7 +420,7 @@ async fn main() {
     if let Err(error) = run(cli).await {
         eprintln!(
             "{}",
-            json!({"api_version":1,"ok":false,"error":{"code":error_code(&error),"message":sessionsation::messaging::recovery::diagnostic(&error_code(&error)).map(|help|format!("{}: {}",error_code(&error),help)).unwrap_or_else(||format!("{error:#}")),"retryable":matches!(error_code(&error).as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS")}})
+            json!({"api_version":1,"ok":false,"error":{"code":error_code(&error),"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":sessionsation::messaging::recovery::diagnostic(&error_code(&error)).map(|help|format!("{}: {}",error_code(&error),help)).unwrap_or_else(||format!("{error:#}")),"retryable":matches!(error_code(&error).as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS")}})
         );
         std::process::exit(1);
     }
@@ -1046,6 +1046,12 @@ fn install_systemd(paths: &Paths) -> Result<()> {
 }
 
 fn error_code(error: &anyhow::Error) -> String {
+    if error
+        .downcast_ref::<sessionsation::messaging::NativeReadFailure>()
+        .is_some()
+    {
+        return "NATIVE_REJECTED".into();
+    }
     if let Some(fault) = error.downcast_ref::<sessionsation::messaging::Fault>() {
         return fault.0.to_ascii_uppercase();
     }

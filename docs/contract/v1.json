@@ -32,6 +32,16 @@
             },
             "retryable": {
               "type": "boolean"
+            },
+            "native": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NativeReadFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -2876,6 +2886,12 @@
         },
         "native_page_read": {
           "type": "boolean"
+        },
+        "history_mode": {
+          "enum": [
+            "legacy",
+            "paginated"
+          ]
         }
       },
       "required": [
@@ -2899,9 +2915,30 @@
         "starts_process",
         "delivery_evidence",
         "byte_limited",
-        "native_page_read"
+        "native_page_read",
+        "history_mode"
       ],
       "additionalProperties": true
+    },
+    "NativeReadFailure": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/read",
+            "thread/turns/list",
+            "thread/items/list"
+          ]
+        },
+        "code": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "method",
+        "code"
+      ],
+      "additionalProperties": false
     }
   }
 }

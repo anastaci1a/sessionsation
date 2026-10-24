@@ -46,6 +46,10 @@ struct Journal {
     next: Option<String>,
     seen: BTreeSet<String>,
     events: Vec<Value>,
+    #[serde(default)]
+    history_mode: Option<String>,
+    #[serde(default)]
+    legacy_pending: bool,
 }
 fn digest(value: &impl Serialize) -> Result<String> {
     Ok(format!(
@@ -202,6 +206,96 @@ async fn turn(c: &mut Transport, thread: &str, expected: &str) -> Result<String>
     }
     Ok(t.status.clone())
 }
+async fn history_mode(c: &mut Transport, id: &str) -> Result<String> {
+    #[derive(Deserialize)]
+    struct Read {
+        thread: Metadata,
+    }
+    #[derive(Deserialize)]
+    struct Metadata {
+        id: String,
+        #[serde(rename = "historyMode")]
+        mode: Option<String>,
+    }
+    let r: Read = c
+        .request("thread/read", json!({"threadId":id,"includeTurns":false}))
+        .await?;
+    if r.thread.id != id {
+        return Err(Fault("checkpoint_turn_mismatch"));
+    }
+    r.thread
+        .mode
+        .filter(|m| matches!(m.as_str(), "legacy" | "paginated"))
+        .ok_or(Fault("checkpoint_history_mode_unavailable"))
+}
+#[derive(Deserialize)]
+struct LegacyPage {
+    data: Vec<LegacyTurn>,
+}
+#[derive(Deserialize)]
+struct LegacyTurn {
+    id: String,
+    status: String,
+    #[serde(rename = "itemsView")]
+    view: String,
+    items: Vec<Box<RawValue>>,
+}
+fn legacy_public(
+    page: LegacyPage,
+    expected: &str,
+    status: &str,
+    scope: &str,
+    j: &Journal,
+) -> Result<(Page, bool)> {
+    let mut turns = page.data;
+    if turns.len() != 1 {
+        return Err(Fault("checkpoint_stale_turn"));
+    }
+    let t = turns.remove(0);
+    if t.id != expected {
+        return Err(Fault("checkpoint_stale_turn"));
+    }
+    if t.status != status {
+        return Err(Fault("checkpoint_turn_changed"));
+    }
+    if t.view != "full" || t.items.len() > 8192 {
+        return Err(Fault("checkpoint_legacy_limit"));
+    }
+    let mut data = Vec::new();
+    let mut more = false;
+    for item in t.items {
+        let k: Kind = serde_json::from_str(item.get()).map_err(|_| Fault("malformed_response"))?;
+        if k.kind != "agentMessage" {
+            continue;
+        }
+        let a: Assistant =
+            serde_json::from_str(item.get()).map_err(|_| Fault("malformed_response"))?;
+        if !matches!(
+            a.phase.as_deref(),
+            Some("commentary" | "partial_answer" | "final_answer")
+        ) || a.text.is_empty()
+        {
+            continue;
+        }
+        if !valid(&a.id) || a.text.len() > 65536 {
+            return Err(Fault("checkpoint_item_limit"));
+        }
+        if j.seen
+            .contains(&digest(&(scope, &a.id, &a.phase, &a.text))?)
+        {
+            continue;
+        }
+        if data.len() == 50 {
+            more = true;
+            continue;
+        }
+        data.push(Entry {
+            turn: t.id.clone(),
+            item,
+        });
+    }
+    Ok((Page { data, next: None }, more))
+}
 pub async fn read(paths: &Paths, r: Request) -> anyhow::Result<Value> {
     anyhow::ensure!(
         r.version == 1
@@ -238,35 +332,56 @@ pub async fn read(paths: &Paths, r: Request) -> anyhow::Result<Value> {
     let position = j.position(r.cursor.as_deref())?;
     let replay = position < j.sequence;
     let observed = tokio::time::timeout(Duration::from_secs(8), async {
-        let mut c = a.connect().await?;
-        let before = turn(&mut c, &a.id, &r.expected_turn_id).await?;
-        // Drain retained events before advancing the native scan: byte-limited
-        // consumers must not lose unread events to retention while catching up.
-        let page = if replay {
-            None
-        } else {
-            Some(
-                c.checkpoint_items::<Page>(&a.id, &r.expected_turn_id, j.next.as_deref())
-                    .await?,
-            )
-        };
-        let page_observed_at = if replay {
-            j.events
-                .last()
-                .and_then(|v| v["observed_at"].as_i64())
-                .unwrap_or(0)
-        } else {
-            crate::daemon::now()
-        };
-        let after = turn(&mut c, &a.id, &r.expected_turn_id).await?;
-        if before != after {
-            return Err(Fault("checkpoint_turn_changed"));
+        let mut c = a.connect_checkpoints().await?;
+        let result = async {
+            let before = turn(&mut c, &a.id, &r.expected_turn_id).await?;
+            // Drain retained events before advancing the native scan: byte-limited
+            // consumers must not lose unread events to retention while catching up.
+            let mode = history_mode(&mut c, &a.id).await?;
+            if j.history_mode.as_ref().is_some_and(|m| m != &mode) {
+                return Err(Fault("checkpoint_history_mode_changed"));
+            }
+            let (page, legacy_pending) = if replay {
+                (None, j.legacy_pending)
+            } else if mode == "legacy" {
+                if j.next.is_some() {
+                    return Err(Fault("checkpoint_history_mode_changed"));
+                }
+                let raw = c.checkpoint_legacy_turn::<LegacyPage>(&a.id).await?;
+                let (page, pending) = legacy_public(raw, &r.expected_turn_id, &before, &scope, &j)?;
+                (Some(page), pending)
+            } else {
+                (
+                    Some(
+                        c.checkpoint_items::<Page>(&a.id, &r.expected_turn_id, j.next.as_deref())
+                            .await?,
+                    ),
+                    false,
+                )
+            };
+            let page_observed_at = if replay {
+                j.events
+                    .last()
+                    .and_then(|v| v["observed_at"].as_i64())
+                    .unwrap_or(0)
+            } else {
+                crate::daemon::now()
+            };
+            let after = turn(&mut c, &a.id, &r.expected_turn_id).await?;
+            if before != after {
+                return Err(Fault("checkpoint_turn_changed"));
+            }
+            Ok::<_, Fault>((page, after, page_observed_at, mode, legacy_pending))
         }
-        Ok::<_, Fault>((page, after, page_observed_at))
+        .await;
+        result.map_err(|e| match c.last_rejection.clone() {
+            Some(native) if e.0 == "native_rejected" => anyhow::Error::new(native),
+            _ => anyhow::Error::new(e),
+        })
     })
     .await
     .map_err(|_| Fault("observation_timeout"))?;
-    let (page, status, observed_at) = observed?;
+    let (page, status, observed_at, mode, legacy_pending) = observed?;
     crate::catalog::resolve(paths, &r.session_id, &r.expected_generation)?;
     anyhow::ensure!(
         readiness::recorded(paths, &s)?
@@ -279,11 +394,13 @@ pub async fn read(paths: &Paths, r: Request) -> anyhow::Result<Value> {
     if let Some(page) = page {
         j.ingest(&scope, &r.expected_turn_id, page, observed_at)?;
     }
+    j.history_mode = Some(mode.clone());
+    j.legacy_pending = legacy_pending;
     // Persist before returning: crash/retry replays identical event IDs and order.
     crate::paths::atomic_write(&file, &serde_json::to_vec(&j)?)?;
     let position = j.position(r.cursor.as_deref())?;
     Ok(j.response(position,
-        json!({"version":1,"session_id":r.session_id,"generation":r.expected_generation,"runtime_generation":r.expected_runtime_generation,"turn_id":r.expected_turn_id,"turn_status":status,"scan_pending":j.next.is_some(),"native_page_read":!replay,"observed_at":observed_at,"valid_until":observed_at+5,"checked_at":now,"freshness":if now<observed_at+5{"fresh"}else{"stale"},"history_gap":r.cursor.is_none() && position>0,"association":"turn_only","sends_input":false,"starts_process":false,"delivery_evidence":false})
+        json!({"version":1,"session_id":r.session_id,"generation":r.expected_generation,"runtime_generation":r.expected_runtime_generation,"turn_id":r.expected_turn_id,"turn_status":status,"history_mode":mode,"scan_pending":j.next.is_some()||j.legacy_pending,"native_page_read":!replay,"observed_at":observed_at,"valid_until":observed_at+5,"checked_at":now,"freshness":if now<observed_at+5{"fresh"}else{"stale"},"history_gap":r.cursor.is_none() && position>0,"association":"turn_only","sends_input":false,"starts_process":false,"delivery_evidence":false})
     )?)
 }
 

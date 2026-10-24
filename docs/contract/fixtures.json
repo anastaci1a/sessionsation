@@ -801,6 +801,20 @@
     "starts_process": false,
     "delivery_evidence": false,
     "byte_limited": false,
-    "native_page_read": true
+    "native_page_read": true,
+    "history_mode": "paginated"
+  },
+  "checkpoint_native_error": {
+    "api_version": 1,
+    "ok": false,
+    "error": {
+      "code": "NATIVE_REJECTED",
+      "message": "Native read rejected (method=thread/items/list, code=-32601)",
+      "native": {
+        "method": "thread/items/list",
+        "code": -32601
+      },
+      "retryable": false
+    }
   }
 }

@@ -874,8 +874,14 @@ See `CheckpointRequest`, `Checkpoints`, and `CheckpointEvent` in the schema and
 The response exposes only native `agentMessage` text explicitly marked
 `commentary`, `partial_answer`, or `final_answer`. Other payloads are structurally
 skipped: no reasoning, user input, tool output, terminal capture or raw transcript
-is returned or journaled. Native profiles 0.163.0 and 0.164.0 support the bounded
-`thread/items/list` read used here. Unknown profiles fail closed; Claude is unsupported.
+is returned or journaled. History mode is read from the attached server using metadata-only `thread/read`,
+not inferred from the terminal/PATH executable. On native profiles 0.163.0 and
+0.164.0, `thread/items/list` is supported only for **paginated** histories. Legacy
+histories deliberately reject it with -32601. For **legacy** histories the observer
+uses `thread/turns/list` with `itemsView:full`, `limit:1`, descending, verifies the
+exact latest turn, and discards every non-public item before journaling. It never
+uses whole-thread `thread/read(includeTurns:true)` or reads transcript files.
+Both routes retain native-version and attachment security checks. Unknown profiles fail closed; Claude is unsupported.
 No observer, terminal supervisor, credential writer or subscription is started.
 
 - Every event has a stable content revision `event_id`, native `item_id`, monotonic
@@ -895,14 +901,23 @@ No observer, terminal supervisor, credential writer or subscription is started.
   carry a cursor into another runtime/turn. Endpoint failure, unsupported native
   profile or timeout yields an error, no fresh events, and no advanced cursor.
   Reads have an eight-second overall budget and never send/replay input or launch.
-- Each read scans at most 50 native items and returns at most 50 retained events.
+- Paginated reads scan at most 50 native items. Legacy reads inspect one exact
+  latest turn, bounded to **8 MiB native wire input and 8192 items**, and project
+  at most 50 unseen public snapshots per scan. `scan_pending` remains true while
+  additional unseen legacy snapshots remain; subsequent scans deduplicate by the
+  existing event IDs. Both routes return at most 50 retained events.
+  `history_mode` reports the selected native route; capability
+  `checkpoints.history_modes` advertises this compatibility correction. The 8 MiB
+  input allowance is exclusive to checkpoint connections; ordinary messaging
+  connections retain their 1 MiB frame limit. `NATIVE_FRAME_LIMIT` or
+  `CHECKPOINT_LEGACY_LIMIT` refuses oversized input without returning partial text.
   The complete compact success JSON envelope plus trailing newline is capped at
   **786432 bytes (768 KiB)**, below a 1 MiB client transport ceiling. JSON escaping
   and UTF-8 bytes count toward this limit. `byte_limited:true` marks a page shortened
   by bytes; whole events are preserved and the cursor advances only past returned
   events. A single public text item up to 65536 UTF-8 bytes remains supported.
   Capability `checkpoints.max_response_bytes` advertises the envelope limit.
-  `scan_pending` means native pages remain; `has_more` means journal events remain.
+  `scan_pending` means native pages or unseen legacy snapshots remain; `has_more` means journal events remain.
   Save the returned opaque cursor only after processing the response. Poll again
   while the exact turn is tracked; reaching the native page tail starts another
   scan from the beginning next time, so edits to an existing item are observed.
@@ -923,6 +938,9 @@ No observer, terminal supervisor, credential writer or subscription is started.
   restart changing runtime identity requires a new explicitly resolved stream.
   `CHECKPOINT_OBSERVER_BUSY` means another read is updating that same journal;
   retry the read. Native pagination errors leave the prior journal intact.
+  Native rejections expose only `error.native:{method,code}`; provider error text,
+  error data, raw frames and non-public payloads are never diagnostic output.
+  Missing or changed history mode fails closed instead of guessing another route.
 - `observed_at` timestamps the item-page read; `checked_at` is response preparation,
   and `valid_until` is five seconds after observation. `freshness` can already be
   stale if verification was slow. Replayed events retain their original timestamps.

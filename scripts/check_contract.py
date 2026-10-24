@@ -18,6 +18,7 @@ def validate(value, definition=None):
 fixtures = json.loads((root / "docs/contract/fixtures.json").read_text())
 validate(fixtures["checkpoint_request"], "CheckpointRequest")
 validate(fixtures["checkpoints"], "Checkpoints")
+validate(fixtures["checkpoint_native_error"])
 for field in ["delivery_evidence", "sends_input", "starts_process"]:
     try:
         validate({**fixtures["checkpoints"], field: True}, "Checkpoints")
@@ -88,6 +89,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert value["result"]["contract_revision"] >= 7
             assert value["result"]["checkpoints"]["version"] == 1
             assert value["result"]["checkpoints"]["max_response_bytes"] == 786432
+            assert value["result"]["checkpoints"]["history_modes"] == ["legacy", "paginated"]
             assert value["result"]["checkpoints"]["delivery_evidence"] is False
             assert value["result"]["session_names"]["version"] == 1
             assert value["result"]["steering"]["version"] == 1

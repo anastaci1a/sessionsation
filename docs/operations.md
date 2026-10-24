@@ -123,3 +123,17 @@ Both exact profiles run through the isolated busy/idle queue regression.
 Unknown versions remain blocked. The public contract owns version discovery
 and mismatch diagnostics; compare the app-server handshake, not just the terminal
 CLI version. Source compatibility and synthetic tests do not prove a model send.
+
+The checkpoint native-boundary fixture uses the exact supported native executable
+against synthetic legacy history in a disposable home, with no credentials or
+model calls. It proves the real -32601 item-list gate, then checkpoint/continuation
+projection through the actual Unix control server. Run in a network-disabled check
+container with only the binary mounted read-only, or supply an absolute local path:
+
+```sh
+SESSIONSATION_NATIVE_CHECKPOINT_BINARY=/path/to/verified/codex \
+  cargo test --locked installed_native_control_legacy_checkpoint_projection -- --ignored
+```
+
+This fixture is distinct from the synthetic active-turn HERDR/tmux cases. It does
+not send input to, resume, or interrupt an installed working session.

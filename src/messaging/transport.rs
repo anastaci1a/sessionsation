@@ -19,15 +19,37 @@ struct Frame {
     method: Option<serde::de::IgnoredAny>,
     id: Option<Value>,
     result: Option<Box<RawValue>>,
-    error: Option<serde::de::IgnoredAny>,
+    error: Option<NativeError>,
     // Payloads of unsolicited events (including reasoning) are never deserialized.
 }
+
+#[derive(Deserialize)]
+struct NativeError {
+    code: i64,
+}
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct NativeReadFailure {
+    pub method: String,
+    pub code: i64,
+}
+impl std::fmt::Display for NativeReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Native read rejected (method={}, code={})",
+            self.method, self.code
+        )
+    }
+}
+impl std::error::Error for NativeReadFailure {}
 
 pub(super) struct Transport {
     writer: futures_util::stream::SplitSink<WebSocketStream<UnixStream>, Message>,
     pending: Pending,
     reader: tokio::task::JoinHandle<()>,
     sequence: u64,
+    rejections: Arc<Mutex<HashMap<u64, i64>>>,
+    pub(super) last_rejection: Option<NativeReadFailure>,
     verified_profile: bool,
     pub(super) provider_version: Option<String>,
 }
@@ -38,17 +60,22 @@ impl Drop for Transport {
 }
 impl Transport {
     pub(super) async fn connect(path: &Path) -> Result<Self> {
-        tokio::time::timeout(Duration::from_secs(3), Self::open(path))
+        tokio::time::timeout(Duration::from_secs(3), Self::open(path, 1024 * 1024))
             .await
             .map_err(|_| Fault("endpoint_unavailable"))?
     }
-    async fn open(path: &Path) -> Result<Self> {
+    pub(super) async fn connect_checkpoints(path: &Path) -> Result<Self> {
+        tokio::time::timeout(Duration::from_secs(3), Self::open(path, 8 * 1024 * 1024))
+            .await
+            .map_err(|_| Fault("endpoint_unavailable"))?
+    }
+    async fn open(path: &Path, max_bytes: usize) -> Result<Self> {
         let stream = UnixStream::connect(path)
             .await
             .map_err(|_| Fault("endpoint_unavailable"))?;
         let config = WebSocketConfig::default()
-            .max_message_size(Some(1024 * 1024))
-            .max_frame_size(Some(1024 * 1024));
+            .max_message_size(Some(max_bytes))
+            .max_frame_size(Some(max_bytes));
         let (socket, _) =
             tokio_tungstenite::client_async_with_config("ws://localhost/", stream, Some(config))
                 .await
@@ -56,8 +83,19 @@ impl Transport {
         let (writer, mut reader) = socket.split();
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let waiting = pending.clone();
+        let rejections = Arc::new(Mutex::new(HashMap::new()));
+        let rejected = rejections.clone();
         let task = tokio::spawn(async move {
-            while let Some(Ok(message)) = reader.next().await {
+            let mut failure = Fault("disconnected");
+            while let Some(incoming) = reader.next().await {
+                let message = match incoming {
+                    Ok(message) => message,
+                    Err(tokio_tungstenite::tungstenite::Error::Capacity(_)) => {
+                        failure = Fault("native_frame_limit");
+                        break;
+                    }
+                    Err(_) => break,
+                };
                 match message {
                     Message::Text(text) => {
                         let Ok(frame) = serde_json::from_str::<Frame>(&text) else {
@@ -69,7 +107,8 @@ impl Transport {
                         }
                         if let Some(id) = frame.id.and_then(|id| id.as_u64()) {
                             if let Some(tx) = waiting.lock().await.remove(&id) {
-                                let result = if frame.error.is_some() {
+                                let result = if let Some(error) = frame.error {
+                                    rejected.lock().await.insert(id, error.code);
                                     Err(Fault("native_rejected"))
                                 } else {
                                     frame.result.ok_or(Fault("malformed_response"))
@@ -83,7 +122,7 @@ impl Transport {
                 }
             }
             for (_, tx) in waiting.lock().await.drain() {
-                let _ = tx.send(Err(Fault("disconnected")));
+                let _ = tx.send(Err(failure));
             }
         });
         Ok(Self {
@@ -91,6 +130,8 @@ impl Transport {
             pending,
             reader: task,
             sequence: 0,
+            rejections,
+            last_rejection: None,
             verified_profile: false,
             provider_version: None,
         })
@@ -313,12 +354,30 @@ impl Transport {
         )
         .await
     }
+    /// Only the checkpoint projection may request one full latest legacy turn.
+    /// The caller verifies its exact turn ID and discards non-public items.
+    pub(super) async fn checkpoint_legacy_turn<T: serde::de::DeserializeOwned>(
+        &mut self,
+        id: &str,
+    ) -> Result<T> {
+        super::uuid(id)?;
+        if !self.verified_profile {
+            return Err(Fault("unsupported"));
+        }
+        self.rpc_budget(
+            "thread/turns/list",
+            json!({"threadId":id,"itemsView":"full","sortDirection":"desc","limit":1}),
+            Duration::from_secs(3),
+        )
+        .await
+    }
     async fn rpc_budget<T: serde::de::DeserializeOwned>(
         &mut self,
         method: &str,
         params: Value,
         budget: Duration,
     ) -> Result<T> {
+        self.last_rejection = None;
         self.sequence += 1;
         let id = self.sequence;
         let (tx, rx) = oneshot::channel();
@@ -339,6 +398,12 @@ impl Transport {
             .await
             .unwrap_or(Err(Fault("timeout")));
         self.pending.lock().await.remove(&id);
+        if let Some(code) = self.rejections.lock().await.remove(&id) {
+            self.last_rejection = Some(NativeReadFailure {
+                method: method.to_owned(),
+                code,
+            });
+        }
         result
     }
 }
