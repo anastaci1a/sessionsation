@@ -825,6 +825,115 @@ pub fn diagnostic(code: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn terminal_readiness_leads_to_exact_item_recovery_without_replay() {
+        use crate::messaging::tests::{attachment_fixture, bind, fixture, scripted_connections};
+        for (state, last, expected) in [
+            ("idle", "interrupted", "interrupted"),
+            ("idle", "failed", "errored"),
+            ("systemError", "failed", "errored"),
+        ] {
+            let (_dir, paths, mut input, _) = fixture();
+            let mut a = attachment_fixture(&paths, &input);
+            bind(&paths, &mut a);
+            input.expires_at = crate::daemon::now() + 120;
+            let id = a.id.clone();
+            let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = calls.clone();
+            let server = scripted_connections(&a.endpoint(), move |r| {
+                let method = r["method"].as_str().unwrap();
+                seen.lock().unwrap().push(method.to_owned());
+                match method {
+                    "thread/read" => Some(json!({"thread":{"id":id,"status":{"type":state}}})),
+                    "thread/turns/list" => Some(json!({"data":[{"id":"previous","status":last}]})),
+                    "thread/queue/list" => Some(json!({"data":[],"nextCursor":null})),
+                    "thread/queue/add" => Some(json!({"queuedSubmission":{"id":"exact-item","clientUserMessageId":r["params"]["clientUserMessageId"]}})),
+                    "thread/queue/start" => {
+                        assert_eq!(r["params"]["queuedSubmissionId"], "exact-item");
+                        Some(json!({"turn":{"id":"continued","status":"inProgress"}}))
+                    }
+                    other => panic!("Unexpected RPC: {other}"),
+                }
+            }, 3).await;
+            let instance: external::Instance = serde_json::from_value(json!({"pane":"%1","tmux_session":"fixture","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
+            let session = crate::catalog::reconcile(&paths, &[instance])
+                .unwrap()
+                .remove(0);
+            let observation = readiness::observe_public(&paths, &session.id, &session.generation())
+                .await
+                .unwrap();
+            assert_eq!(observation["state"], expected);
+            for mode in ["submit", "queue"] {
+                assert_eq!(
+                    observation["actions"][mode]["reason"],
+                    "explicit_resume_required"
+                );
+                assert_eq!(observation["actions"][mode]["available"], false);
+            }
+            assert_eq!(observation["actions"]["resume"]["available"], true);
+            assert!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|m| m == "thread/read" || m == "thread/turns/list")
+            );
+            let request = PublicRequest {
+                api_version: 1,
+                message_id: input.message_id.clone(),
+                session_id: session.id,
+                expected_generation: observation["generation"].as_str().unwrap().into(),
+                mode: PublicMode::Resume,
+                text: input.text.clone(),
+                expires_at: input.expires_at,
+                steering: None,
+                recovery: Some(Intent {
+                    expected_state: observation["runtime_state"].as_str().unwrap().into(),
+                    expected_previous_turn_id: serde_json::from_value(
+                        observation["previous_turn_id"].clone(),
+                    )
+                    .unwrap(),
+                    expected_stop_id: serde_json::from_value(
+                        observation["explicit_intent"]["id"].clone(),
+                    )
+                    .unwrap(),
+                    expected_runtime_generation: serde_json::from_value(
+                        observation["runtime_generation"].clone(),
+                    )
+                    .unwrap(),
+                    launch: None,
+                }),
+            };
+            input.expected_generation = a.generation();
+            let mut ledger = Ledger::open(&paths).unwrap();
+            let mut receipt = ledger.accept(&input, crate::daemon::now()).unwrap();
+            deliver(&paths, &mut ledger, &mut receipt, &input, &request)
+                .await
+                .unwrap();
+            assert_eq!(receipt.state, "native_accepted");
+            assert_eq!(receipt.recovery_start.as_ref().unwrap().state, "confirmed");
+            assert!(receipt.correlation.is_none()); // Start acknowledgement is not consumption.
+            drop(ledger);
+            let mut ledger = Ledger::open(&paths).unwrap();
+            let mut receipt = ledger.get(&input.message_id).unwrap().unwrap();
+            deliver(&paths, &mut ledger, &mut receipt, &input, &request)
+                .await
+                .unwrap();
+            for method in ["thread/queue/add", "thread/queue/start"] {
+                assert_eq!(
+                    calls
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|m| m.as_str() == method)
+                        .count(),
+                    1
+                );
+            }
+            server.abort();
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn slow_legacy_summary_shares_the_bounded_recovery_preflight_budget() {
         use crate::messaging::tests::{attachment_fixture, fixture, scripted_server};

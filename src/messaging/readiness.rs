@@ -58,7 +58,10 @@ pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, 
     } else {
         match state {
             "idle" | "working" => None,
-            "interrupted" | "errored" => Some("terminal_turn_requires_review"),
+            // A terminal turn is recoverable, not an unspecified review dead end.
+            // Use the same actionable gate as dispatch: explicitly request Resume
+            // with the observed turn/runtime/stop preconditions below.
+            "interrupted" | "errored" => Some("explicit_resume_required"),
             "disconnected" => Some("existing_attachment_required"),
             _ => Some("state_unverified"),
         }

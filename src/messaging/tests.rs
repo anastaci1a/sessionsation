@@ -510,31 +510,41 @@ pub(super) async fn scripted_server(
     path: &std::path::Path,
     handler: impl Fn(&Value) -> Option<Value> + Send + 'static,
 ) -> tokio::task::JoinHandle<()> {
+    scripted_connections(path, handler, 1).await
+}
+
+pub(super) async fn scripted_connections(
+    path: &std::path::Path,
+    handler: impl Fn(&Value) -> Option<Value> + Send + 'static,
+    connections: usize,
+) -> tokio::task::JoinHandle<()> {
     let listener = UnixListener::bind(path).unwrap();
     tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-        while let Some(Ok(Message::Text(text))) = socket.next().await {
-            let req: Value = serde_json::from_str(&text).unwrap();
-            if req["method"] == "initialized" {
-                continue;
-            }
-            let result = if req["method"] == "initialize" {
-                Some(json!({"userAgent":"test-originator/0.163.0 (Linux)"}))
-            } else {
-                handler(&req)
-            };
-            let Some(result) = result else {
-                break;
-            };
-            if socket
-                .send(Message::Text(
-                    json!({"id":req["id"],"result":result}).to_string().into(),
-                ))
-                .await
-                .is_err()
-            {
-                break;
+        for _ in 0..connections {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let req: Value = serde_json::from_str(&text).unwrap();
+                if req["method"] == "initialized" {
+                    continue;
+                }
+                let result = if req["method"] == "initialize" {
+                    Some(json!({"userAgent":"test-originator/0.163.0 (Linux)"}))
+                } else {
+                    handler(&req)
+                };
+                let Some(result) = result else {
+                    break;
+                };
+                if socket
+                    .send(Message::Text(
+                        json!({"id":req["id"],"result":result}).to_string().into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
             }
         }
     })

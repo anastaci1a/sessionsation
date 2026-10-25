@@ -166,8 +166,14 @@ evidence. The compatibility `freshness` field remains fresh/stale.
 A changed catalog or runtime rejects the result as `STALE_TARGET`.
 
 `explicit_intent` reports a positively recorded stop token or unknown; an idle
-process never proves absence of deliberate stop/pause intent. Interrupted/error
-turns require review in these conservative hints. Unknown queue depth remains null.
+process never proves absence of deliberate stop/pause intent. Fresh interrupted/error
+turns expose `actions.resume.available:true` when otherwise eligible; Submit and
+Queue report `explicit_resume_required`, matching dispatch. They are recoverable
+targets, not permanently unavailable sessions. Clients should offer explicit
+Resume-and-submit using the observed runtime, previous turn and stop token; do not
+turn this reason into an unsupported-delivery result or silently substitute Resume
+for an ordinary send. The obsolete `terminal_turn_requires_review` reason is no
+longer emitted. Unknown queue depth remains null.
 Stop intent is a permission gate, separate from observed execution: it may coexist
 with working state while a stop drains or after continuation outside Sessionsation.
 Polling never clears it merely because the agent is working. Newly recorded stop
