@@ -1,0 +1,133 @@
+{
+  "handoff_version": 1,
+  "status": "tested_pushed_installed",
+  "backend": {
+    "repository": "https://github.com/anastaci1a/sessionsation",
+    "source_commit": "96d48608b5e3ebb54cb913d5c7cb76b79e873801",
+    "release_file": "releases/96d48608b5e3ebb54cb913d5c7cb76b79e873801/sessionsation",
+    "sha256": "4a8d11c25dbf90920d1b1e18431229d94f5e9573fed906307ca08a0c4c1cfc92",
+    "operator_absolute_path_supplied_in_completion_message": true
+  },
+  "ui": {
+    "repository": "https://github.com/anastaci1a/sessionsation-ui",
+    "source_commit": "6ae81badada6597efcbc0d709d0bec449fb1e0f9",
+    "release_file": "releases/6ae81badada6597efcbc0d709d0bec449fb1e0f9/sessionsation-ui",
+    "sha256": "0ca358088062ceae9e2d5d65d95294141ac29bbd814a9e39b3d5363264dd6ceb",
+    "operator_absolute_path_supplied_in_completion_message": true
+  },
+  "contract": {
+    "api_version": 1,
+    "revision": 8,
+    "package_version": "0.2.0",
+    "negotiation": "api capabilities; additive revision compatibility, not exact package-version matching",
+    "documentation": "docs/contract.md",
+    "schema": "docs/contract/v1.json",
+    "fixtures": "docs/contract/fixtures.json",
+    "turn_observation": {
+      "capability": "turn_observation.version=1",
+      "command": "api turn-target --session SESSION --expected-generation GENERATION",
+      "schema": "TurnTarget",
+      "fixture": "turn_target",
+      "binding": [
+        "session_id",
+        "generation",
+        "runtime_generation",
+        "turn_id"
+      ],
+      "states": [
+        "inProgress",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "empty_reason": "no_observed_turn",
+      "sends_input": false,
+      "starts_process": false,
+      "requires_sending_permission": false,
+      "association": "turn_only",
+      "delivery_evidence": false
+    },
+    "steering": {
+      "automatic_compaction": "native_pending_until_continuation",
+      "dedicated_compact_turn": "native_rejects_without_injection",
+      "verified_native_profiles": [
+        "0.164.0"
+      ],
+      "pre_admission_rejection_reasons": [
+        "compact_turn_not_steerable",
+        "review_turn_not_steerable"
+      ],
+      "receipt_fixture": "receipt_steer_compact_rejected",
+      "native_acceptance_on_specific_rejection": "not_attempted",
+      "generic_error_or_lost_ack": "delivery_unknown",
+      "acceptance_only": true,
+      "automatic_retry": false,
+      "queue_fallback": false,
+      "local_compaction_queue_added": false
+    }
+  },
+  "ui_submission": {
+    "root_cause": "Start had only in-memory UI evidence before admission, kill-on-drop CLI lifetime, and failures hidden behind the Management renderer. Backend-only operation lists could not expose pre-admission outcomes.",
+    "storage": "Private launch-intents beside UI preferences, scoped to backend root",
+    "process": "Detached one-shot public-CLI submitter, immutable attempt marker, original request ID retained",
+    "operations": "Local pending/failed/uncertain entries merged with authoritative backend receipts by original request ID",
+    "reconciliation": "One read-only status reconciliation for missing local entries; no automatic resend",
+    "historical_attempt": "Outcome remains unknown without its original admission evidence; no cancellation claim or retry"
+  },
+  "verification": {
+    "backend_tests": 308,
+    "backend_opt_in_skipped": 7,
+    "ui_rust_tests": 196,
+    "ui_node_tests": 22,
+    "format_clippy_docs_contract_passed": true,
+    "native_compaction_runs": 2,
+    "native_fixture": "scripts/check_native_compaction.py",
+    "native_executable_sha256": "b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306",
+    "native_executable_version": "0.164.0",
+    "native_instant_interrupt_values": [
+      true,
+      false
+    ],
+    "real_native_server": true,
+    "provider": "isolated_loopback_fake_responses",
+    "real_provider_calls": 0,
+    "fixture_assertions": [
+      "same-turn native steering acknowledgement during automatic compaction",
+      "compaction connection remains open until fixture releases it",
+      "input absent from compaction request and present in later continuation",
+      "no interrupted turn event",
+      "dedicated compaction rejection -32600 with compact discriminator; compaction continues",
+      "passive turn lookup covers both host fixtures, active/terminal/empty/racing turns and preserved stop tokens",
+      "UI submission viewer process exits before/during/after admission; original attempt survives and is not replayed",
+      "local absent/failed/lost-ack records survive reopen and backend merge"
+    ],
+    "installed_passive_lookup": {
+      "ok": true,
+      "turn_status": "inProgress",
+      "native_protocol": "0.164.0",
+      "sends_input": false,
+      "starts_process": false
+    },
+    "live_localica_actions": false
+  },
+  "client_steps": [
+    "Adopt the exact verified backend artifact without restarting the compatible shared owner.",
+    "Negotiate turn_observation.version=1. For explicitly requested current-turn following use turn-target, then bind checkpoints to its exact returned turn/runtime/catalog identities.",
+    "Never retarget an old receipt checkpoint stream after checkpoint_stale_turn or attribute new-turn text to a prior send/Steer.",
+    "Treat dedicated compact/review rejection as no native acceptance; require a fresh explicit action and fresh target after it. Do not replay the rejected ID against another turn.",
+    "Automatic compaction uses native pending input; no downstream speculative queue, force/cancel fallback or immediate-response promise.",
+    "Preserve every existing uncertain/cancelled/blocked receipt; upgrading does not replay it."
+  ],
+  "deployment": {
+    "existing_compatible_owner_preserved": true,
+    "agent_dm_source_or_configuration_modified": false,
+    "live_agents_restarted": false
+  },
+  "limitations": [
+    "Native preflight metadata does not expose compact-task kind; final native pre-admission rejection remains possible.",
+    "Current-turn lookup still requires a verified retained live attachment and fresh bounded native evidence.",
+    "Checkpoint updates are turn-associated public snapshots, not causal Steer replies or consumption/completion evidence.",
+    "Synthetic process-lifetime tests are not a real provider launch acceptance run.",
+    "The earlier unrecorded UI Start outcome cannot be reconstructed solely by this repair."
+  ]
+}
