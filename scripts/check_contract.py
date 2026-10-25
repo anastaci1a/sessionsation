@@ -30,6 +30,7 @@ validate(fixtures["runtime_attachment"], "RuntimeAttachment")
 validate(fixtures["request"], "MessageRequest")
 validate(fixtures["steering_message"], "MessageRequest")
 validate(fixtures["steering_target"], "SteeringTarget")
+validate(fixtures["turn_target"], "TurnTarget")
 for invalid in [{**fixtures["steering_message"], "steering": None}, {**fixtures["steering_message"], "mode": "queue"}, {**fixtures["steering_message"], "steering": {"version": 1, "expected_turn_id": "active"}}]:
     try:
         validate(invalid, "MessageRequest")

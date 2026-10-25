@@ -2939,6 +2939,92 @@
         "code"
       ],
       "additionalProperties": false
+    },
+    "TurnTarget": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "runtime_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn_status": {
+          "enum": [
+            "inProgress",
+            "completed",
+            "failed",
+            "interrupted",
+            null
+          ]
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "integer"
+        },
+        "valid_until": {
+          "type": "integer"
+        },
+        "native_protocol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sends_input": {
+          "const": false
+        },
+        "starts_process": {
+          "const": false
+        },
+        "association": {
+          "const": "turn_only"
+        },
+        "delivery_evidence": {
+          "const": false
+        }
+      },
+      "required": [
+        "version",
+        "session_id",
+        "generation",
+        "runtime_generation",
+        "turn_id",
+        "turn_status",
+        "available",
+        "reason",
+        "observed_at",
+        "valid_until",
+        "native_protocol",
+        "sends_input",
+        "starts_process",
+        "association",
+        "delivery_evidence"
+      ],
+      "additionalProperties": false
     }
   }
 }

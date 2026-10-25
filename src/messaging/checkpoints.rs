@@ -296,6 +296,69 @@ fn legacy_public(
     }
     Ok((Page { data, next: None }, more))
 }
+/// Passive latest-turn binding, independent of sending permissions and old receipts.
+/// Never retargets an existing cursor: callers explicitly open a new stream.
+pub async fn target(paths: &Paths, id: &str, generation: &str) -> anyhow::Result<Value> {
+    let s = crate::catalog::resolve(paths, id, generation)?;
+    anyhow::ensure!(s.provider == "codex", "UNSUPPORTED_PROVIDER_OPERATION");
+    let a = readiness::recorded(paths, &s)?.ok_or(Fault("no_live_attachment"))?;
+    let runtime = a.generation();
+    let (latest, profile) = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut c = a.connect().await?;
+        #[derive(Deserialize, PartialEq)]
+        struct Turn {
+            id: String,
+            status: String,
+        }
+        #[derive(Deserialize)]
+        struct Page {
+            data: Vec<Turn>,
+        }
+        // Validate thread identity without hydrating any transcript items.
+        history_mode(&mut c, &a.id).await?;
+        let first: Page = c.passive_summary(&a.id).await?;
+        let second: Page = c.passive_summary(&a.id).await?;
+        if first.data != second.data {
+            return Err(Fault("checkpoint_stale_turn"));
+        }
+        if first.data.len() > 1 {
+            return Err(Fault("checkpoint_turn_unobserved"));
+        }
+        let latest = first.data.first();
+        if latest.is_some_and(|t| {
+            !valid(&t.id)
+                || !matches!(
+                    t.status.as_str(),
+                    "inProgress" | "completed" | "failed" | "interrupted"
+                )
+        }) {
+            return Err(Fault("checkpoint_turn_unobserved"));
+        }
+        Ok::<_, Fault>((
+            latest.map(|t| (t.id.clone(), t.status.clone())),
+            c.provider_version.clone(),
+        ))
+    })
+    .await
+    .map_err(|_| Fault("observation_timeout"))??;
+    crate::catalog::resolve(paths, id, generation)?;
+    anyhow::ensure!(
+        readiness::recorded(paths, &s)?
+            .as_ref()
+            .map(Attachment::generation)
+            == Some(runtime.clone()),
+        "STALE_TARGET"
+    );
+    let now = crate::daemon::now();
+    Ok(
+        json!({"version":1,"session_id":id,"generation":generation,"runtime_generation":runtime,
+        "turn_id":latest.as_ref().map(|t|&t.0),"turn_status":latest.as_ref().map(|t|&t.1),
+        "available":latest.is_some(),"reason":if latest.is_none(){Some("no_observed_turn")}else{None},
+        "observed_at":now,"valid_until":now+5,"native_protocol":profile,
+        "sends_input":false,"starts_process":false,"association":"turn_only","delivery_evidence":false}),
+    )
+}
+
 pub async fn read(paths: &Paths, r: Request) -> anyhow::Result<Value> {
     anyhow::ensure!(
         r.version == 1

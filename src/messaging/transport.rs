@@ -13,6 +13,7 @@ use tokio_tungstenite::{
     tungstenite::{Message, protocol::WebSocketConfig},
 };
 
+type Rejections = Arc<Mutex<HashMap<u64, (i64, Option<&'static str>)>>>;
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Box<RawValue>>>>>>;
 #[derive(Deserialize)]
 struct Frame {
@@ -26,6 +27,47 @@ struct Frame {
 #[derive(Deserialize)]
 struct NativeError {
     code: i64,
+    data: Option<ErrorData>,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ErrorData {
+    Typed {
+        #[serde(rename = "codexErrorInfo")]
+        info: ErrorInfo,
+    },
+    Other(serde::de::IgnoredAny),
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ErrorInfo {
+    NotSteerable {
+        #[serde(rename = "activeTurnNotSteerable")]
+        kind: NotSteerable,
+    },
+    Other(serde::de::IgnoredAny),
+}
+#[derive(Deserialize)]
+struct NotSteerable {
+    #[serde(rename = "turnKind")]
+    kind: String,
+}
+impl NativeError {
+    fn non_steerable(&self) -> Option<&'static str> {
+        if self.code != -32600 {
+            return None;
+        }
+        match &self.data {
+            Some(ErrorData::Typed {
+                info: ErrorInfo::NotSteerable { kind },
+            }) => match kind.kind.as_str() {
+                "compact" => Some("compact_turn_not_steerable"),
+                "review" => Some("review_turn_not_steerable"),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct NativeReadFailure {
@@ -48,8 +90,9 @@ pub(super) struct Transport {
     pending: Pending,
     reader: tokio::task::JoinHandle<()>,
     sequence: u64,
-    rejections: Arc<Mutex<HashMap<u64, i64>>>,
+    rejections: Rejections,
     pub(super) last_rejection: Option<NativeReadFailure>,
+    last_non_steerable: Option<&'static str>,
     verified_profile: bool,
     pub(super) provider_version: Option<String>,
 }
@@ -108,7 +151,10 @@ impl Transport {
                         if let Some(id) = frame.id.and_then(|id| id.as_u64()) {
                             if let Some(tx) = waiting.lock().await.remove(&id) {
                                 let result = if let Some(error) = frame.error {
-                                    rejected.lock().await.insert(id, error.code);
+                                    rejected
+                                        .lock()
+                                        .await
+                                        .insert(id, (error.code, error.non_steerable()));
                                     Err(Fault("native_rejected"))
                                 } else {
                                     frame.result.ok_or(Fault("malformed_response"))
@@ -132,6 +178,7 @@ impl Transport {
             sequence: 0,
             rejections,
             last_rejection: None,
+            last_non_steerable: None,
             verified_profile: false,
             provider_version: None,
         })
@@ -268,7 +315,7 @@ impl Transport {
         struct Ack {
             turn_id: String,
         }
-        let ack: Ack = self.rpc("turn/steer", json!({"threadId":session,"clientUserMessageId":client,"expectedTurnId":turn,"input":[{"type":"text","text":text,"text_elements":[]}]})).await?;
+        let ack: Ack = self.rpc("turn/steer", json!({"threadId":session,"clientUserMessageId":client,"expectedTurnId":turn,"input":[{"type":"text","text":text,"text_elements":[]}]})).await.map_err(|e| if e.0 == "native_rejected" { self.last_non_steerable.map(Fault).unwrap_or(e) } else { e })?;
         if ack.turn_id != turn {
             return Err(Fault("correlation_changed"));
         }
@@ -378,6 +425,7 @@ impl Transport {
         budget: Duration,
     ) -> Result<T> {
         self.last_rejection = None;
+        self.last_non_steerable = None;
         self.sequence += 1;
         let id = self.sequence;
         let (tx, rx) = oneshot::channel();
@@ -398,7 +446,8 @@ impl Transport {
             .await
             .unwrap_or(Err(Fault("timeout")));
         self.pending.lock().await.remove(&id);
-        if let Some(code) = self.rejections.lock().await.remove(&id) {
+        if let Some((code, kind)) = self.rejections.lock().await.remove(&id) {
+            self.last_non_steerable = kind;
             self.last_rejection = Some(NativeReadFailure {
                 method: method.to_owned(),
                 code,

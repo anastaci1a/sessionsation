@@ -227,6 +227,13 @@ pub(super) async fn deliver(
             r.submit.as_mut().unwrap().acknowledged_turn_id = Some(ack);
         }
         Err(e) => {
+            if matches!(
+                e.0,
+                "compact_turn_not_steerable" | "review_turn_not_steerable"
+            ) {
+                // Verified native pre-admission rejection, not an uncertain injection.
+                r.state = "rejected".into();
+            }
             r.reason = Some(e.0.into());
         } // A generic rejection cannot prove non-consumption.
     }
@@ -281,9 +288,13 @@ mod tests {
                         break;
                     };
                     if socket
-                        .send(Message::Text(
-                            json!({"id":req["id"],"result":result}).to_string().into(),
-                        ))
+                        .send(Message::Text(if result["fixture_error"].is_object() {
+                            json!({"id":req["id"],"error":result["fixture_error"]})
+                                .to_string()
+                                .into()
+                        } else {
+                            json!({"id":req["id"],"result":result}).to_string().into()
+                        }))
                         .await
                         .is_err()
                     {
@@ -298,6 +309,8 @@ mod tests {
         for host in ["%1", "herdr/fixture/w1:p1"] {
             for scenario in [
                 "success",
+                "compact",
+                "review",
                 "idle",
                 "turn_changed",
                 "runtime_changed",
@@ -329,7 +342,7 @@ mod tests {
                             assert_eq!(req["params"]["expectedTurnId"],"turn-active");
                             assert_eq!(req["params"]["clientUserMessageId"],client);
                             assert_eq!(req["params"]["threadId"],native);
-                            if scenario=="lost_ack"{None}else{Some(json!({"turnId":if scenario=="wrong_ack"{"turn-other"}else{"turn-active"}}))}
+                            if matches!(scenario,"compact"|"review"){Some(json!({"fixture_error":{"code":-32600,"message":"PRIVATE native diagnostic","data":{"codexErrorInfo":{"activeTurnNotSteerable":{"turnKind":scenario}}}}}))}else if scenario=="lost_ack"{None}else{Some(json!({"turnId":if scenario=="wrong_ack"{"turn-other"}else{"turn-active"}}))}
                         },
                         _=>panic!("Forbidden RPC {method}"),
                     }
@@ -447,6 +460,11 @@ mod tests {
                         _ => "rejected",
                     }
                 );
+                if matches!(scenario, "compact" | "review") {
+                    assert_eq!(first["reason"], format!("{scenario}_turn_not_steerable"));
+                    assert_eq!(first["facts"]["native_acceptance"], "not_attempted");
+                    assert!(!first.to_string().contains("PRIVATE"));
+                }
                 let count = calls.lock().unwrap().len();
                 let read = receipt_public(&paths, &request.message_id, false)
                     .await
@@ -476,7 +494,12 @@ mod tests {
                         .count(),
                     usize::from(matches!(
                         scenario,
-                        "success" | "restart_before_intent" | "lost_ack" | "wrong_ack"
+                        "success"
+                            | "restart_before_intent"
+                            | "lost_ack"
+                            | "wrong_ack"
+                            | "compact"
+                            | "review"
                     ))
                 );
                 if matches!(

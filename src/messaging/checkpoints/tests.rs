@@ -477,3 +477,67 @@ fn legacy_public_pagination_skips_private_items_and_preserves_exact_turn() {
     let (empty, pending) = legacy_public(make(), "tracked", "inProgress", "scope", &j).unwrap();
     assert!(empty.data.is_empty() && !pending);
 }
+
+#[tokio::test]
+async fn passive_turn_target_ignores_send_gates_but_rejects_turn_races() {
+    use crate::messaging::tests::scripted_server;
+    for host in ["%1", "herdr/fixture/w1:p1"] {
+        for state in [
+            "inProgress",
+            "completed",
+            "failed",
+            "interrupted",
+            "race",
+            "empty",
+        ] {
+            let (_tmp, paths, input, _) = fixture();
+            let mut a = attachment_fixture(&paths, &input);
+            bind(&paths, &mut a);
+            fs::create_dir_all(paths.root.join("conversations")).unwrap();
+            fs::write(
+                paths
+                    .root
+                    .join("conversations")
+                    .join(format!("{}.json", a.id)),
+                json!({"stop_intent":"keep-stop"}).to_string(),
+            )
+            .unwrap();
+            let seen = Arc::new(Mutex::new(0));
+            let calls = seen.clone();
+            let id = a.id.clone();
+            let server=scripted_server(&a.endpoint(),move |r|match r["method"].as_str().unwrap(){
+                "thread/read"=>Some(json!({"thread":{"id":id,"historyMode":"legacy"}})),
+                "thread/turns/list"=>{ let mut n=calls.lock().unwrap();*n+=1; let data=if state=="empty"{json!([])}else{json!([{"id":if state=="race"&&*n==2{"changed"}else{"tracked"},"status":if state=="race"{"inProgress"}else{state}}])};Some(json!({"data":data})) },
+                method=>panic!("No mutating RPC: {method}"),
+            }).await;
+            let source:external::Instance=serde_json::from_value(json!({"pane":host,"tmux_session":"fixture","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
+            let s = crate::catalog::reconcile(&paths, &[source])
+                .unwrap()
+                .remove(0);
+            let result = target(&paths, &s.id, &s.generation()).await;
+            if state == "race" {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("checkpoint_stale_turn")
+                );
+            } else {
+                let v = result.unwrap();
+                assert_eq!(v["available"], state != "empty");
+                assert_eq!(v["sends_input"], false);
+                if state != "empty" {
+                    assert_eq!(v["turn_status"], state);
+                    assert_eq!(v["turn_id"], "tracked");
+                }
+            }
+            assert_eq!(
+                external::messaging_stop_intent(&paths, &a.id)
+                    .unwrap()
+                    .as_deref(),
+                Some("keep-stop")
+            );
+            server.abort();
+        }
+    }
+}

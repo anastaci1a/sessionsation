@@ -23,7 +23,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":7,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":8,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -95,6 +95,13 @@ pub enum Command {
     Observations,
     /// Read public assistant snapshots for an exact turn from a versioned stdin request.
     Checkpoints,
+    /// Read the latest native turn identity/status; no sending permission required.
+    TurnTarget {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+    },
     /// Resolve the active turn for explicit in-turn steering; never sends input.
     SteerTarget {
         #[arg(long)]
@@ -477,7 +484,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
 }
 
 pub fn capabilities() -> Value {
-    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":7,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":8,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -490,7 +497,8 @@ pub fn capabilities() -> Value {
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "batch_observation":{"command":"observations","max_targets":64,"concurrency":8,"native_budget_seconds":5,"policies":["if_stale","refresh","cached_only"],"cache_hits_renew_evidence":false},
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
-    "steering":{"version":1,"command":"send","mode":"steer","target_command":"steer-target","providers":["codex"],"requires_expected_turn_id":true,"requires_expected_runtime_generation":true,"requires_expected_generation":true,"acceptance_only":true,"reply_correlation":"unsupported","automatic_replay":false,"queue_fallback":false,"starts_process":false,"interrupts":false},"native_protocol":{"supported_versions":crate::messaging::NATIVE_PROFILES,"version_source":"initialize.userAgent","unknown_versions":"fail_closed"},"message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"exact_item_idle_start":true,"ordinary_send_rejects_terminal_state":true,"start_ack_is_not_input_recorded":true,"owner_reservation_required":"message-recoveries"},
+    "turn_observation":{"version":1,"command":"turn-target","includes_terminal_turns":true,"requires_sending_enabled":false,"sends_input":false,"starts_process":false,"association":"turn_only"},
+    "steering":{"version":1,"automatic_compaction":"native_pending_until_continuation","dedicated_compact_turn":"native_rejects_without_injection","compaction_verified_profiles":["0.164.0"],"command":"send","mode":"steer","target_command":"steer-target","providers":["codex"],"requires_expected_turn_id":true,"requires_expected_runtime_generation":true,"requires_expected_generation":true,"acceptance_only":true,"reply_correlation":"unsupported","automatic_replay":false,"queue_fallback":false,"starts_process":false,"interrupts":false},"native_protocol":{"supported_versions":crate::messaging::NATIVE_PROFILES,"version_source":"initialize.userAgent","unknown_versions":"fail_closed"},"message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"exact_item_idle_start":true,"ordinary_send_rejects_terminal_state":true,"start_ack_is_not_input_recorded":true,"owner_reservation_required":"message-recoveries"},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true,"resumable_local_summary_scan":true,"native_budget_seconds":5,"max_turns":1000,"partial_match_is_not_delivery":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
     "space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false})
@@ -841,6 +849,10 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             )
             .await?
         }
+        Command::TurnTarget {
+            session,
+            expected_generation,
+        } => crate::messaging::checkpoints::target(paths, &session, &expected_generation).await?,
         Command::SteerTarget {
             session,
             expected_generation,

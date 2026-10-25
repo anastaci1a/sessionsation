@@ -137,3 +137,21 @@ SESSIONSATION_NATIVE_CHECKPOINT_BINARY=/path/to/verified/codex \
 
 This fixture is distinct from the synthetic active-turn HERDR/tmux cases. It does
 not send input to, resume, or interrupt an installed working session.
+
+Compaction/Steer can be verified without provider access using Python 3 and an
+explicit Codex 0.164.0 executable:
+
+```sh
+python3 scripts/check_native_compaction.py /absolute/path/to/codex
+python3 scripts/check_native_compaction.py /absolute/path/to/codex --no-instant-interrupt
+```
+
+Run in a network-disabled container with only that executable and script mounted.
+The fixture uses an empty temporary home, environment without credentials, and a
+loopback fake Responses provider. It gates automatic compaction, sends an exact-turn
+Steer, verifies the connection remains open and input appears only afterward, then
+checks dedicated compact rejection without interruption. It does not contact an
+installed socket, use account homes or call a real model. The tested native server
+is independent of whichever terminal frontend is on PATH. Source references are
+`core/src/session/turn_input.rs` and `core/tests/suite/pending_input.rs` in
+[Codex rust-v0.164.0](https://github.com/openai/codex/tree/rust-v0.164.0/codex-rs).

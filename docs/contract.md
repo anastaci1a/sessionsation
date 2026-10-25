@@ -380,6 +380,19 @@ a failed preflight produces a terminal rejected receipt. Cancellation can cancel
 only provably unsent local intent; accepted/uncertain steering cannot be cancelled
 through this API (`STEERING_CANCELLATION_UNSUPPORTED`).
 
+Native 0.164.0 distinguishes automatic compaction within a regular turn from a
+dedicated compact turn. Automatic compaction retains accepted Steer input until
+model continuation; it does not interrupt the compaction request. No extra local
+queue or automatic retry is added. Dedicated compact/review turns reject injection
+before acceptance; the exact structured native rejection becomes a terminal
+`rejected` receipt with `compact_turn_not_steerable` or
+`review_turn_not_steerable`. Generic rejections and lost acknowledgements remain
+uncertain. Native metadata has no compact-task flag, so a preflight can still
+advertise eligibility before this final native rejection. After rejection, observe
+again and explicitly choose a new action; never reuse the ID with a different turn
+or payload. Capabilities publish this behavior and the verified profile. The
+[native fixture](operations.md#native-messaging-compatibility) describes verification.
+
 Steering receipts use `delivery_semantics:"deliberate_in_turn_steer"` and are
 **acceptance-only**. `acknowledged_turn_id` is present only after a matching native
 acknowledgement. `facts.native_acceptance` distinguishes `accepted`, `unknown`
@@ -396,6 +409,24 @@ Schema definitions `SteeringIntent`, `SteeringTarget`, and the conditional
 examples and accepted/uncertain receipts are in [fixtures.json](contract/fixtures.json).
 Older requests/receipts remain valid. Clients must negotiate this capability,
 retain their original UUID/request, and handle acceptance separately from delivery.
+
+### Passive current-turn binding (revision 8)
+
+`api turn-target --session ID --expected-generation GENERATION` reads the latest
+native turn identity/status without an old receipt or sending permission.
+Negotiate `turn_observation.version:1`. It uses the same owned endpoint and verified
+native profiles as checkpoints, validates catalog/runtime before and after, and
+compares two bounded summaries. Active, completed, failed and interrupted turns are
+supported; empty history returns `available:false` with `no_observed_turn`. It never
+launches, steers, clears stop tokens or reads private items. Failures/races return
+errors, never guessed targets or renewed stale timestamps.
+
+Use its `turn_id` and `runtime_generation` to explicitly bind a new checkpoint
+stream. Existing receipt streams still reject `checkpoint_stale_turn`: do not
+retarget them or attribute the latest turn's text to an old send/Steer. This is
+turn-associated observation, not delivery or causal reply evidence. Schema:
+`TurnTarget`; fixture: `turn_target`. Steering eligibility is separate; this lookup
+does not authorize sending.
 
 ### Explicit Resume-and-submit
 
