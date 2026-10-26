@@ -337,3 +337,11 @@ for the request, receipt, retry and capability-negotiation rules.
 For read-only intermediate assistant updates from an exact tracked turn, use
 `api checkpoints < request.json`; see [public turn checkpoints](contract.md#public-turn-checkpoints-revision-7)
 for identity preconditions, cursors and the distinction from delivery receipts.
+
+### Batch HERDR Space membership
+
+`sessionsation api placements` reads all known session placements in one batch.
+For a graph already reading `api state`, use `sessions[].placement` and `hosts`
+in that response instead. Match opaque IDs, not Space labels or `original_host`.
+See [placement freshness and identity](contract.md#batch-placement-observations-revision-9)
+for last-known/stopped behavior and capability negotiation.

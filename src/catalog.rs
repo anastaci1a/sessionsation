@@ -1,5 +1,6 @@
 //! Stable backend identity, distinct from native conversations and attachments.
 pub mod names;
+pub mod placement;
 use crate::paths::{Paths, atomic_write, lock_file, private_dir};
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;

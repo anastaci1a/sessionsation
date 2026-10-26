@@ -986,3 +986,45 @@ Clients should use checkpoint events for an intermediate activity feed, while
 continuing to use the original receipt for delivery/correlation. Do not promote a
 checkpoint to a completed mailbox reply. Compatible additive API revisions should
 be negotiated by capability rather than exact build equality.
+
+### Batch placement observations (revision 9)
+
+Negotiate `capabilities.placement.version == 1`. `api state` includes each
+session's `placement` and a top-level `hosts` catalog. `api placements` returns
+all catalog memberships keyed by stable session ID plus the host/Space catalog;
+`api session` includes the same placement. No per-session `api spaces` or
+`original_host` join is needed. Those older fields/commands remain compatible
+launch provenance and move-admission helpers, not exhaustive membership discovery.
+
+One bounded HERDR snapshot per bound host is shared with name discovery. Verified
+live catalog attachments, including legacy owner-managed sessions without launch
+receipts, supply membership. Pane → tab → Space must agree. Host and Space IDs
+are opaque UUIDs persisted under the Sessionsation data root; labels are not keys.
+Multiple hosts can have identical labels/native Space IDs without colliding.
+Each membership includes `catalog_generation` for joining against the captured
+catalog. Placement polling does not itself change lifecycle generations.
+Public placement projections contain no socket, filesystem locator or raw pane.
+
+`state` is `observed`, `last_known`, or `unobserved`. `observed_at` and `valid_until`
+(30 seconds later) describe the actual evidence, not response time; `checked_at`
+records the last attempt. Failed snapshots, changed attachments, expired evidence
+and stopped sessions retain the prior placement with a reason, never freshened
+by a failed read. Concurrent readers may reuse the last bounded observation
+while name synchronization is locked. Placement is not message readiness or move
+authorization. Revalidate lifecycle generations through existing APIs.
+
+Host identity is scoped to the persisted explicit HERDR endpoint and server name;
+Space identity to that host's native Space ID. Endpoint relocation or replacing a
+host while reusing native IDs cannot be inferred as continuity. No network host
+probing or caller-focused-Space inference occurs. Previously stopped sessions
+never observed by this contract remain `unobserved`; no historical label is guessed.
+The host catalog retains last-observed Spaces (including now absent ones), with
+per-Space observation times; absence does not prove deletion. Archive filtering in
+`api state` is unchanged; `api placements` includes catalog history, so consumers
+should join it to their desired state/archive filter by session ID.
+
+Schemas: `Placement`, `PlacementHost`, `Placements` in
+[API v1](contract/v1.json); synthetic observed/stopped/outage/unknown examples in
+[fixtures](contract/fixtures.json). Clients should accept additive revision changes
+within API 1 and negotiate the placement capability rather than pin a package
+version equality. Existing observation, delivery and owner protocols are unchanged.

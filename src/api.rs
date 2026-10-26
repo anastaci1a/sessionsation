@@ -23,13 +23,15 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":8,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":9,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
 #[derive(Subcommand)]
 pub enum Command {
     Capabilities,
+    /// Batch host-scoped placement; no per-session host lookup required.
+    Placements,
     /// Discover the exact executable and contract without contacting a provider.
     Version,
     Archives,
@@ -484,7 +486,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
 }
 
 pub fn capabilities() -> Value {
-    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":8,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":9,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -501,7 +503,7 @@ pub fn capabilities() -> Value {
     "steering":{"version":1,"automatic_compaction":"native_pending_until_continuation","dedicated_compact_turn":"native_rejects_without_injection","compaction_verified_profiles":["0.164.0"],"command":"send","mode":"steer","target_command":"steer-target","providers":["codex"],"requires_expected_turn_id":true,"requires_expected_runtime_generation":true,"requires_expected_generation":true,"acceptance_only":true,"reply_correlation":"unsupported","automatic_replay":false,"queue_fallback":false,"starts_process":false,"interrupts":false},"native_protocol":{"supported_versions":crate::messaging::NATIVE_PROFILES,"version_source":"initialize.userAgent","unknown_versions":"fail_closed"},"message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"exact_item_idle_start":true,"ordinary_send_rejects_terminal_state":true,"start_ack_is_not_input_recorded":true,"owner_reservation_required":"message-recoveries"},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true,"resumable_local_summary_scan":true,"native_budget_seconds":5,"max_turns":1000,"partial_match_is_not_delivery":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
-    "space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false})
+    "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false})
 }
 
 fn public_session(s: catalog::Session) -> Value {
@@ -603,8 +605,10 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
     let accounts = project_accounts(paths, accounts)?;
     let clock = boot_clock();
     let now = daemon::now();
+    let catalog_sessions = catalog::list(paths)?;
+    let placements = catalog::placement::project(paths, &catalog_sessions)?;
     let archives = external::archiving::metadata(paths)?;
-    let mut sessions=catalog::list(paths)?.into_iter().filter(|s|archives.get(&s.id).is_none_or(|a|a["state"]!="deleted")).map(|s| {
+    let mut sessions=catalog_sessions.into_iter().filter(|s|archives.get(&s.id).is_none_or(|a|a["state"]!="deleted")).map(|s| {
         let source=items.iter().find(|i|source_matches(&s,i));
         let known=!matches!(s.account.as_str(),"external"|"unknown");
         let resume_supported=s.provider=="codex";
@@ -612,6 +616,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         let archive = archive_info(&s, source, &archives);
         let archived=archive["archived"]==true;
         let mut value=public_session(s);
+        value["placement"]=placements["memberships"][value["id"].as_str().unwrap_or("")].clone();
         value["archive"]=archive;
         value["archived"]=value["archive"]["archived"].clone();
         value["resume_block_reason"]=json!(if attached && source.is_none() {Some("host_unavailable")}else{resume_block_reason(resume_supported,source)});
@@ -660,7 +665,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         }
     }
     Ok(json!({"observed_at":daemon::now(),"account_source":source,
-        "accounts":accounts,"sessions":sessions,
+        "accounts":accounts,"sessions":sessions,"hosts":placements["hosts"],
         "timing":{"inventory_ms":inventory_ms,"account_status_ms":account_status_ms,"total_ms":started.elapsed().as_millis()},
         "capabilities":capabilities()}))
 }
@@ -754,7 +759,12 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
     };
     let archive = archive_info(&session, source, &external::archiving::metadata(paths)?);
     let archived = archive["archived"] == true;
+    let placement =
+        catalog::placement::project(paths, std::slice::from_ref(&session))?["memberships"]
+            [&session.id]
+            .clone();
     let mut value = public_session(session);
+    value["placement"] = placement;
     value["archived"] = archive["archived"].clone();
     value["archive"] = archive;
     value["directory"] = json!(directory);
@@ -807,6 +817,10 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             expected_generation,
         } => attachment(paths, &session, &expected_generation)?,
         Command::Capabilities => capabilities(),
+        Command::Placements => {
+            inventory(paths).await?;
+            catalog::placement::project(paths, &catalog::list(paths)?)?
+        }
         Command::Version => version()?,
         Command::Archives => external::archiving::list(paths)?,
         Command::Archive { target } => {

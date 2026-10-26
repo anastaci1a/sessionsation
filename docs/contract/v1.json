@@ -234,6 +234,9 @@
             "herdr_last_observed",
             "catalog"
           ]
+        },
+        "placement": {
+          "$ref": "#/$defs/Placement"
         }
       },
       "required": [
@@ -347,6 +350,12 @@
             "account_status_ms",
             "total_ms"
           ]
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlacementHost"
+          }
         }
       },
       "required": [
@@ -3025,6 +3034,183 @@
         "delivery_evidence"
       ],
       "additionalProperties": false
+    },
+    "Placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "state",
+        "host_id",
+        "space",
+        "observed_at",
+        "valid_until",
+        "checked_at",
+        "reason",
+        "provenance",
+        "catalog_generation"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "state": {
+          "enum": [
+            "observed",
+            "last_known",
+            "unobserved"
+          ]
+        },
+        "host_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "space": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "label"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "label": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "observed_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "valid_until": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "checked_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "herdr_snapshot_verified_catalog_attachment",
+            null
+          ]
+        },
+        "catalog_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "PlacementHost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "spaces"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "const": "herdr"
+        },
+        "label": {
+          "type": "string"
+        },
+        "spaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "label",
+              "observed_at"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "label": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      }
+    },
+    "Placements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "observed_at",
+        "hosts",
+        "memberships",
+        "starts_process",
+        "sends_input"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "observed_at": {
+          "type": "integer"
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlacementHost"
+          }
+        },
+        "memberships": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Placement"
+          }
+        },
+        "starts_process": {
+          "const": false
+        },
+        "sends_input": {
+          "const": false
+        }
+      }
     }
   }
 }

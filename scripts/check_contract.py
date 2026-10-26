@@ -16,6 +16,9 @@ def validate(value, definition=None):
     Draft202012Validator(spec, format_checker=checker).validate(value)
 
 fixtures = json.loads((root / "docs/contract/fixtures.json").read_text())
+for name in ["placement", "placement_stopped", "placement_outage", "placement_unknown"]:
+    validate(fixtures[name], "Placement")
+validate(fixtures["placements"], "Placements")
 validate(fixtures["checkpoint_request"], "CheckpointRequest")
 validate(fixtures["checkpoints"], "Checkpoints")
 validate(fixtures["checkpoint_native_error"])
@@ -81,11 +84,13 @@ for name, value in fixtures.items():
         validate(value, "Receipt")
 with tempfile.TemporaryDirectory() as directory:
     command = [str(Path(os.environ.get("CARGO_TARGET_DIR", root / "target")) / "debug/sessionsation"), "--data-dir", directory, "api"]
-    for args in [["version"], ["capabilities"], ["state"], ["state", "--archive-filter", "all"], ["archives"]]:
+    for args in [["version"], ["capabilities"], ["placements"], ["state"], ["state", "--archive-filter", "all"], ["archives"]]:
         value = json.loads(subprocess.check_output(command + args, text=True))
         validate(value)
         if args[0] == "state":
             validate(value["result"], "Snapshot")
+        if args == ["placements"]:
+            validate(value["result"], "Placements")
         if args == ["capabilities"]:
             assert value["result"]["contract_revision"] >= 7
             assert value["result"]["checkpoints"]["version"] == 1

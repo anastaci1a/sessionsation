@@ -82,27 +82,40 @@ pub async fn refresh(paths: &Paths, instances: &[external::Instance]) -> Result<
     };
     let mut snapshots = BTreeMap::new();
     let mut observations = vec![];
+    let mut placements = vec![];
     for s in list(paths)? {
         let Some(a) = &s.attachment else {
             continue;
         };
-        if a.host != "herdr" || !instances.iter().any(|i| crate::api::source_matches(&s, i)) {
+        if a.host != "herdr" {
             continue;
         }
         let Ok(host) = host(paths, &s) else {
             continue;
         };
+        if !instances.iter().any(|i| crate::api::source_matches(&s, i)) {
+            placements.push((s.clone(), host, None));
+            continue;
+        }
         let key = (host.session.clone(), host.socket.clone());
         if !snapshots.contains_key(&key) {
-            snapshots.insert(key.clone(), snapshot(&host).await.ok());
+            snapshots.insert(
+                key.clone(),
+                snapshot(&host)
+                    .await
+                    .ok()
+                    .map(|value| (crate::daemon::now(), value)),
+            );
         }
-        if let Some(Some(value)) = snapshots.get(&key)
+        placements.push((s.clone(), host, snapshots.get(&key).cloned().flatten()));
+        if let Some(Some((_, value))) = snapshots.get(&key)
             && let Ok((_, label)) = tab(value, &a.target)
         {
             observations.push((s.clone(), label.into()));
         }
     }
-    apply(paths, observations)
+    apply(paths, observations)?;
+    super::placement::record(paths, placements)
 }
 pub async fn rename(paths: &Paths, id: &str, generation: &str, name: &str) -> Result<Session> {
     validate_name(name)?;

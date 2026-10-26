@@ -28,6 +28,14 @@
         "existing_spaces": true,
         "preserves_process": true,
         "recovery": "read_only_reconciliation"
+      },
+      "placement": {
+        "version": 1,
+        "command": "api placements",
+        "catalog_field": "placement",
+        "host_scoped": true,
+        "last_known": true,
+        "freshness_seconds": 30
       }
     },
     "attachment_lookup": {
@@ -869,5 +877,126 @@
     "acknowledged_turn_id": null,
     "acceptance_only": true,
     "reply_correlation": "unsupported"
+  },
+  "placement": {
+    "version": 1,
+    "state": "observed",
+    "host_id": "33333333-3333-4333-8333-333333333333",
+    "space": {
+      "id": "44444444-4444-4444-8444-444444444444",
+      "label": "Work"
+    },
+    "observed_at": 2000000000,
+    "valid_until": 2000000030,
+    "checked_at": 2000000000,
+    "reason": null,
+    "provenance": "herdr_snapshot_verified_catalog_attachment",
+    "catalog_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "placement_stopped": {
+    "version": 1,
+    "state": "last_known",
+    "host_id": "33333333-3333-4333-8333-333333333333",
+    "space": {
+      "id": "44444444-4444-4444-8444-444444444444",
+      "label": "Work"
+    },
+    "observed_at": 2000000000,
+    "valid_until": 2000000030,
+    "checked_at": 2000000000,
+    "reason": "session_unattached",
+    "provenance": "herdr_snapshot_verified_catalog_attachment",
+    "catalog_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "placement_outage": {
+    "version": 1,
+    "state": "last_known",
+    "host_id": "33333333-3333-4333-8333-333333333333",
+    "space": {
+      "id": "44444444-4444-4444-8444-444444444444",
+      "label": "Work"
+    },
+    "observed_at": 2000000000,
+    "valid_until": 2000000030,
+    "checked_at": 2000000005,
+    "reason": "host_unobserved",
+    "provenance": "herdr_snapshot_verified_catalog_attachment",
+    "catalog_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "placement_unknown": {
+    "version": 1,
+    "state": "unobserved",
+    "host_id": null,
+    "space": null,
+    "observed_at": null,
+    "valid_until": null,
+    "checked_at": null,
+    "reason": "no_verified_placement",
+    "provenance": null,
+    "catalog_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "placements": {
+    "version": 1,
+    "observed_at": 2000000000,
+    "hosts": [
+      {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "kind": "herdr",
+        "label": "default",
+        "spaces": [
+          {
+            "id": "44444444-4444-4444-8444-444444444444",
+            "label": "Work",
+            "observed_at": 2000000000
+          }
+        ]
+      },
+      {
+        "id": "55555555-5555-4555-8555-555555555555",
+        "kind": "herdr",
+        "label": "default",
+        "spaces": [
+          {
+            "id": "66666666-6666-4666-8666-666666666666",
+            "label": "Work",
+            "observed_at": 2000000000
+          }
+        ]
+      }
+    ],
+    "memberships": {
+      "22222222-2222-4222-8222-222222222222": {
+        "version": 1,
+        "state": "observed",
+        "host_id": "33333333-3333-4333-8333-333333333333",
+        "space": {
+          "id": "44444444-4444-4444-8444-444444444444",
+          "label": "Work"
+        },
+        "observed_at": 2000000000,
+        "valid_until": 2000000030,
+        "checked_at": 2000000000,
+        "reason": null,
+        "provenance": "herdr_snapshot_verified_catalog_attachment",
+        "catalog_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "77777777-7777-4777-8777-777777777777": {
+        "version": 1,
+        "state": "observed",
+        "host_id": "55555555-5555-4555-8555-555555555555",
+        "space": {
+          "id": "66666666-6666-4666-8666-666666666666",
+          "label": "Work"
+        },
+        "observed_at": 2000000000,
+        "valid_until": 2000000030,
+        "checked_at": 2000000000,
+        "reason": null,
+        "provenance": "herdr_snapshot_verified_catalog_attachment",
+        "catalog_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "starts_process": false,
+    "sends_input": false
   }
 }

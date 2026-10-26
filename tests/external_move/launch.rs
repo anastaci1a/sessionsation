@@ -207,6 +207,14 @@ async fn installed_herdr_space_move_preserves_process_and_recovers_without_repla
     };
     let before = state(&f);
     assert_eq!(before["capabilities"]["move_space"], true);
+    assert_eq!(before["placement"]["state"], "observed");
+    assert_eq!(before["placement"]["space"]["label"], "Origin");
+    let batch: Value = serde_json::from_slice(&foreign_api(&f, &["placements"]).stdout).unwrap();
+    assert_eq!(
+        batch["result"]["memberships"][id]["space"],
+        before["placement"]["space"]
+    );
+    assert!(!batch.to_string().contains(socket.to_str().unwrap()));
     f.a.lock().unwrap().threads.get_mut(thread).unwrap()["status"]["type"] = json!("active");
     let calls = f.a.lock().unwrap().calls.len();
     let generation = before["generation"].as_str().unwrap();
@@ -354,6 +362,15 @@ async fn installed_herdr_space_move_preserves_process_and_recovers_without_repla
     fs::write(&wrapper, format!("#!/bin/sh\nif [ \"$1\" = pane ] && [ \"$2\" = move ]; then\n echo move >> {}\n if [ -f {} ]; then\n {} \"$@\" > {}\n rm -- {}\n exit 1\n fi\nfi\nexec {} \"$@\"\n", quote(&count.to_string_lossy()), quote(&flag.to_string_lossy()), quote(real.trim()), quote(&f.tmp.path().join("lost-result").to_string_lossy()), quote(&flag.to_string_lossy()), quote(real.trim()))).unwrap();
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
     let second = uuid::Uuid::new_v4().to_string();
+    assert_eq!(after["placement"]["space"]["label"], "Destination");
+    assert_eq!(
+        after["placement"]["host_id"],
+        before["placement"]["host_id"]
+    );
+    assert_ne!(
+        after["placement"]["space"]["id"],
+        before["placement"]["space"]["id"]
+    );
     let moved_gen = after["generation"].as_str().unwrap();
     let uncertain = foreign_api(
         &f,
