@@ -36,7 +36,8 @@
         "host_scoped": true,
         "last_known": true,
         "freshness_seconds": 30
-      }
+      },
+      "contract_revision": 9
     },
     "attachment_lookup": {
       "version": 1,

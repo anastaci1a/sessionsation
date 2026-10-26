@@ -1,0 +1,135 @@
+{
+  "handoff_version": 1,
+  "status": "tested_pushed_installed",
+  "backend": {
+    "repository": "https://github.com/anastaci1a/sessionsation",
+    "source_commit": "08e892d3ef42ae67fb40f57e3699e54b7b5d5daa",
+    "release_file": "releases/08e892d3ef42ae67fb40f57e3699e54b7b5d5daa/sessionsation",
+    "sha256": "7d8c5fb7bb1839ec9988791982ddf94706d0c822489517afc513af9000d11b7b",
+    "operator_absolute_path_supplied_in_completion_message": true
+  },
+  "contract": {
+    "api_version": 1,
+    "revision": 9,
+    "package_version": "0.2.0",
+    "capability": "placement.version == 1",
+    "recommended_read": "api state --archive-filter active",
+    "session_field": "sessions[].placement",
+    "hosts_field": "hosts",
+    "batch_read": "api placements",
+    "details_read": "api session --session ID --expected-generation GENERATION",
+    "schema": "docs/contract/v1.json",
+    "definitions": [
+      "Placement",
+      "PlacementHost",
+      "Placements"
+    ],
+    "fixtures": "docs/contract/fixtures.json",
+    "fixture_keys": [
+      "placement",
+      "placement_stopped",
+      "placement_outage",
+      "placement_unknown",
+      "placements"
+    ],
+    "compatibility": "Additive API 1 capability. Existing messages, native gates, owner protocol, space-move API and legacy original_host remain unchanged. Negotiate capabilities, not exact package equality."
+  },
+  "lookup_findings": [
+    "original_host is receipt-derived launch/move provenance, not complete live membership; legacy owner-managed sessions can lack it.",
+    "api spaces is a generation-bound per-session move-choice helper; Agent DM serial per-session refresh is not needed for graph placement.",
+    "New metadata uses the existing single HERDR snapshot per verified bound host; pane/tab/Space identity must agree."
+  ],
+  "client_adoption": [
+    "Use state session placement directly; no original_host/spaces join.",
+    "Key graph nodes by opaque host_id and space.id, never labels or native IDs. Hosts with duplicate labels/native Space IDs stay distinct.",
+    "Match catalog_generation when merging a separate placements batch. State captures both in one catalog projection.",
+    "Retain last_known placement with its evidence timestamp/reason; do not display it as currently verified. Unknown remains unknown.",
+    "Join standalone placement history to the desired archive-filtered state list by stable session ID. Host Space catalog is retained history, not proof that every listed Space still exists.",
+    "Review and pin this immutable executable independently; Agent DM source/config were not modified."
+  ],
+  "evidence": {
+    "full_check": {
+      "command": "scripts/check.sh",
+      "passed": 314,
+      "ignored": 7,
+      "format": true,
+      "clippy_warnings_denied": true,
+      "docs_links": true,
+      "contract_schema_and_executable_envelopes": true
+    },
+    "isolated_actual_herdr": {
+      "version": "0.9.5",
+      "test": "installed_herdr_space_move_preserves_process_and_recovers_without_replay",
+      "passed": 1,
+      "provider": "inert fixture",
+      "live_accounts_or_sockets_mounted": false
+    },
+    "focused_coverage": [
+      "legacy live without receipts",
+      "same labels and native IDs on different hosts",
+      "move and rename",
+      "account and attachment changes",
+      "outage and stopped retention",
+      "concurrent attachment replacement rejected",
+      "delayed batch timestamps not renewed",
+      "tmux and unknown placement not inferred"
+    ],
+    "passive_live_reads": [
+      {
+        "elapsed_ms": 4554,
+        "live_herdr": 8,
+        "placement_states": {
+          "observed": 8
+        },
+        "hosts": 1,
+        "spaces": 5,
+        "host_snapshots": 1,
+        "catalog_generations_match": true
+      },
+      {
+        "elapsed_ms": 4433,
+        "live_herdr": 8,
+        "placement_states": {
+          "observed": 8
+        },
+        "hosts": 1,
+        "spaces": 5,
+        "host_snapshots": 1,
+        "catalog_generations_match": true
+      },
+      {
+        "elapsed_ms": 4764,
+        "live_herdr": 8,
+        "placement_states": {
+          "observed": 8
+        },
+        "hosts": 1,
+        "spaces": 5,
+        "host_snapshots": 1,
+        "catalog_generations_match": true
+      }
+    ],
+    "installed_state_and_batch": {
+      "observed_live_herdr": 8,
+      "hosts": 1,
+      "spaces": 5,
+      "state_elapsed_ms": 5594,
+      "placements_elapsed_ms": 3307
+    },
+    "real_provider_send_test": false
+  },
+  "deployment": {
+    "existing_compatible_owner_preserved": true,
+    "live_agents_restarted": false,
+    "agent_dm_modified": false,
+    "local_cli_and_ui_backend_selection_updated": true
+  },
+  "limits": [
+    "Previously unobserved stopped histories have unknown placement; no retrospective guess from names or caller focus.",
+    "Identities persist within this data root and explicit HERDR endpoint/server namespace. Endpoint relocation or native ID reuse after replacing a host is not inferred as continuity.",
+    "Out-of-band attachment loss/change retains last-known membership until ownership is verified again; this read API does not repair or launch agents.",
+    "Existing legacy binding target namespaces must remain unambiguous; this adds no remote-host adoption or socket discovery.",
+    "Discovery retains its existing inventory costs; installed state took 5.594 seconds and the standalone placement batch took 3.307 seconds for eight live sessions. No additional per-session Space RPC is required.",
+    "Freshness is 30 seconds and independent of readiness. Last-known evidence never authorizes lifecycle/message operations."
+  ]
+}
