@@ -1100,6 +1100,68 @@ stores). `api cancel` returns `HEADLESS_CANCELLATION_UNSUPPORTED` while a delive
 pending or executing. Schemas: `ClaudeHeadlessRequest`, `ClaudeHeadlessReceipt`,
 `AccountLoginPlan`, `AccountRefresh`, `AccountRename` in [API v1](contract/v1.json).
 
+### Session identity, continuations and Add to HERDR (revision 12)
+
+Additive; negotiate `contract_revision >= 12`. `api capabilities` adds
+`session_identity`, `add_to_herdr` and `resume_placement` objects.
+
+Native-id re-attachment: a live process is attached to exactly one catalog entry,
+the one whose conversation the process currently runs: for Claude the registry
+`sessions/<pid>.json` `sessionId` (PID and start time verified); for Codex the
+thread of its single open rollout (tmux TUIs), else its `resume <thread>` argv.
+When the same process switches conversation in its terminal, the existing entry
+of the new conversation takes over the exact attachment (name, account, history
+kept) and the entry it left is released to `stopped`; no entry is created for a
+conversation that already has one. A Codex TUI connected to an app-server
+(`--remote`) does not expose a thread switch in argv or open files, so such a
+switch is not observed.
+
+Claude continuations: when Claude Code sends a conversation to its background
+daemon under a new session id, it appends
+`{"type":"continued-in","sessionId":OLD,"continuedInSessionId":NEW}` to the old
+transcript. Only that record type and those two ids are read (bounded tail; it
+counts only while no `user`/`assistant` record follows it and NEW is a transcript
+of the same account home). The entry of OLD then follows NEW: stable id, name and
+account are kept, `previous_conversation_ids` lists OLD, and an entry already
+registered for NEW is merged into it. Generation-checked lookups of a merged id
+fail with `SESSION_MERGED: ...` naming the surviving id; refresh the list. Branches (copied
+records stamped `forkedFrom.sessionId`) stay separate conversations and are
+exposed as `forked_from_conversation_id`. No other lineage is inferred, so no
+manual link operation exists.
+
+Claude sessions add `native.kind` (registry kind, `bg` for background-daemon
+sessions) and `native.job_id`; all sessions add `previous_conversation_ids`,
+`capabilities.add_to_herdr` and `capability_reasons.add_to_herdr`
+(`SESSION_NOT_RUNNING`, `ALREADY_IN_HERDR`, `INTERACTIVE_ELSEWHERE`,
+`ATTACHED_ELSEWHERE`, `CODEX_TERMINAL_NOT_MOVABLE`, each followed by `: text`).
+
+Resume: a recorded terminal blocks resume only while its exact process could
+still hold the conversation. Killed processes, reused PIDs, leftover or unreadable
+registry files of dead processes and terminals that switched conversation do not.
+
+`api spaces --session ID --expected-generation G --herdr-session SERVER
+[--herdr-socket PATH]` lists that server's Spaces for a session not in HERDR:
+`{session_id,generation,herdr_session,current_space_id:null,spaces:[{id,name,current:false}],pane:null}`.
+
+`api session add-to-herdr --session ID --expected-generation G --herdr-session
+SERVER [--herdr-socket PATH] --space SPACE-ID [--name NAME]` opens a running Claude
+background session in a new tab (label NAME, default the session name; a
+different NAME also renames the catalog entry) by running `claude attach <job>`
+with the account environment. The pane records itself before exec and success
+requires the pane's foreground PID to be that recorded `claude attach` client:
+
+```json
+{"state":"attached","session_id","generation","host":"herdr","herdr_session","space_id",
+ "tab_id","pane_id","target","name","job_id","attachment":{...},"starts_agent":false,
+ "sends_input":false}
+```
+
+`state:"attach_unconfirmed"` (generation/attachment null) is never retried;
+refresh. Refusals: the capability reasons above, `SPACE_NOT_FOUND`, `STALE_TARGET`,
+`UNSUPPORTED_PROVIDER_OPERATION` (Codex). `api resume` adds optional `--space
+SPACE-ID` (new tab in that existing Space instead of a new Space) and `--name`
+(tab label and catalog name). Schemas: `HostSpaceChoices`, `AddToHerdrResult`.
+
 ### Batch placement observations (revision 9)
 
 Negotiate `capabilities.placement.version == 1`. `api state` includes each

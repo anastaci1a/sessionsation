@@ -13,6 +13,7 @@ use crate::{
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use serde_json::{Value, json};
+pub mod attach;
 pub mod launch;
 
 use std::{
@@ -488,6 +489,92 @@ fn transcript_metadata(path: &Path) -> (Option<String>, Option<String>, Option<S
     }
     (id, cwd, at)
 }
+/// `forkedFrom.sessionId` on the leading records: Claude copies a branched
+/// conversation into a new session and stamps each copied record with it.
+fn forked_from(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file.take(1024 * 1024));
+    let mut line = String::new();
+    for _ in 0..64 {
+        line.clear();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        #[derive(serde::Deserialize)]
+        struct Fork {
+            #[serde(rename = "forkedFrom")]
+            forked_from: Option<ForkSource>,
+        }
+        #[derive(serde::Deserialize)]
+        struct ForkSource {
+            #[serde(rename = "sessionId")]
+            session_id: Option<String>,
+        }
+        if let Ok(Fork {
+            forked_from: Some(ForkSource {
+                session_id: Some(id),
+            }),
+        }) = serde_json::from_str::<Fork>(&line)
+            && id != stem
+            && uuid::Uuid::parse_str(&id).is_ok()
+        {
+            return Some(id);
+        }
+    }
+    None
+}
+/// Bounded tail read for the continuation marker.
+const CONTINUATION_TAIL: u64 = 1024 * 1024;
+/// The session this transcript continued in, from Claude Code's own
+/// `{"type":"continued-in","sessionId":OLD,"continuedInSessionId":NEW}` record
+/// (written when a conversation is sent to the background daemon under a new
+/// session id). Only the record `type` and these ids are read. The marker counts
+/// only while no user/assistant record follows it, i.e. the old session was not
+/// continued again after the hand-off.
+pub fn continued_in(path: &Path) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    let stem = path.file_stem()?.to_str()?;
+    let mut file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(CONTINUATION_TAIL);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = vec![];
+    file.take(CONTINUATION_TAIL).read_to_end(&mut bytes).ok()?;
+    let mut lines: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    #[derive(serde::Deserialize)]
+    struct Record {
+        #[serde(rename = "type")]
+        kind: Option<String>,
+        #[serde(rename = "sessionId")]
+        session_id: Option<String>,
+        #[serde(rename = "continuedInSessionId")]
+        continued_in: Option<String>,
+    }
+    for line in lines.into_iter().rev() {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let Ok(r) = serde_json::from_slice::<Record>(line) else {
+            continue;
+        };
+        match r.kind.as_deref() {
+            Some("user" | "assistant") => return None,
+            Some("continued-in") => {
+                let next = r.continued_in?;
+                return (r.session_id.as_deref() == Some(stem)
+                    && next != stem
+                    && uuid::Uuid::parse_str(&next).is_ok())
+                .then_some(next);
+            }
+            _ => {}
+        }
+    }
+    None
+}
 /// Transcripts `<home>/projects/*/<uuid>.jsonl` with metadata only.
 pub fn transcripts(home: &Path) -> Vec<Transcript> {
     let mut result = vec![];
@@ -541,6 +628,18 @@ pub struct Live {
     pub cwd: Option<String>,
     pub status: Option<String>,
     pub name: Option<String>,
+    /// Registry `kind` (`interactive`, `bg` for background-daemon sessions, ...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Registry `jobId` of a background session: the handle `claude attach` takes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+}
+impl Live {
+    /// A background-daemon session that `claude attach <job>` can open.
+    pub fn attachable(&self) -> bool {
+        self.kind.as_deref() == Some("bg") && self.job_id.is_some()
+    }
 }
 /// (state, starttime) from /proc/<pid>/stat field 22.
 pub fn proc_start(pid: u32) -> Option<(char, u64)> {
@@ -588,7 +687,9 @@ pub fn live_sessions(home: &Path) -> Result<Vec<Live>> {
     };
     let mut result = vec![];
     for entry in entries {
-        let entry = entry?;
+        let Ok(entry) = entry else {
+            continue;
+        };
         let name = entry.file_name();
         let Some(pid) = name
             .to_str()
@@ -597,13 +698,21 @@ pub fn live_sessions(home: &Path) -> Result<Vec<Live>> {
         else {
             continue;
         };
-        if !entry.file_type()?.is_file() {
+        // A registry file left by a killed process (or removed while listing)
+        // never makes the whole probe fail; an unreadable entry of a still-live
+        // process does, because that process may hold the session.
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
             continue;
         }
         let mut bytes = vec![];
-        fs::File::open(entry.path())?
-            .take(64 * 1024)
-            .read_to_end(&mut bytes)?;
+        let read =
+            fs::File::open(entry.path()).and_then(|f| f.take(64 * 1024).read_to_end(&mut bytes));
+        match read {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) if proc_start(pid).is_none_or(|(s, _)| matches!(s, 'Z' | 'X')) => continue,
+            Err(e) => return Err(e.into()),
+        }
         let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
             continue;
         };
@@ -635,6 +744,12 @@ fn verify_entry(pid: u32, v: &Value, home: &Path) -> Option<Live> {
         cwd: text("cwd"),
         status: text("status").filter(|s| matches!(s.as_str(), "busy" | "idle")),
         name: text("name"),
+        kind: text("kind").filter(|k| k.len() <= 32),
+        job_id: text("jobId").filter(|j| {
+            !j.is_empty()
+                && j.len() <= 64
+                && j.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        }),
     })
 }
 
@@ -680,11 +795,34 @@ pub struct Observation {
     pub started_at: Option<String>,
     pub attachment: Option<catalog::Attachment>,
     pub detail: Option<String>,
+    /// Registry kind of the live process (`bg` = background-daemon session).
+    pub native_kind: Option<String>,
+    /// Background job handle accepted by `claude attach`.
+    pub job_id: Option<String>,
+    /// The recorded attachment's exact process now runs another native session
+    /// (conversation switched in the same terminal); it no longer holds this one.
+    pub attachment_switched: bool,
+    /// `forkedFrom.sessionId` of the copied leading records (a branch/fork; the
+    /// parent conversation remains separate).
+    pub forked_from: Option<String>,
+}
+/// Live registry entries of one home, probed once and shared by observations.
+pub type LiveProbe = std::result::Result<Vec<Live>, String>;
+pub fn probe(home: &Path) -> LiveProbe {
+    live_sessions(home).map_err(|e| e.to_string())
 }
 pub fn observe(
     home: &Path,
     session_id: &str,
     recorded: Option<&catalog::Attachment>,
+) -> Observation {
+    observe_in(home, session_id, recorded, &probe(home))
+}
+pub fn observe_in(
+    home: &Path,
+    session_id: &str,
+    recorded: Option<&catalog::Attachment>,
+    live: &LiveProbe,
 ) -> Observation {
     let transcript = find_transcript(home, session_id);
     let (_, cwd, started_at) = transcript
@@ -702,30 +840,75 @@ pub fn observe(
             .as_deref()
             .and_then(|p| fs::symlink_metadata(p).ok())
             .map(|m| m.len()),
+        forked_from: transcript.as_deref().and_then(forked_from),
         transcript,
         started_at,
         attachment: None,
         detail: None,
+        native_kind: None,
+        job_id: None,
+        attachment_switched: false,
     };
-    match live_sessions(home) {
+    match live {
         Err(e) => o.detail = Some(format!("PROBE_FAILED: {e}")),
-        Ok(live) => match live.into_iter().find(|l| l.session_id == session_id) {
-            Some(l) => {
-                o.availability = "running";
-                o.attachment = host_attachment(&l, recorded);
-                o.native_status = l.status;
-                o.native_name = l.name;
-                o.pid = Some(l.pid);
-                o.process_start = Some(l.process_start);
-                if l.cwd.is_some() {
-                    o.directory = l.cwd;
+        Ok(live) => {
+            o.attachment_switched = recorded.is_some_and(|a| {
+                live.iter().any(|l| {
+                    l.pid == a.pid
+                        && l.process_start == a.process_start
+                        && l.session_id != session_id
+                })
+            });
+            match live.iter().find(|l| l.session_id == session_id) {
+                Some(l) => {
+                    o.availability = "running";
+                    o.attachment = match recorded {
+                        Some(a) if attach_client_observed(a, l) => Some(a.clone()),
+                        _ => host_attachment(l, recorded),
+                    };
+                    o.native_status = l.status.clone();
+                    o.native_name = l.name.clone();
+                    o.native_kind = l.kind.clone();
+                    o.job_id = l.job_id.clone();
+                    o.pid = Some(l.pid);
+                    o.process_start = Some(l.process_start);
+                    if l.cwd.is_some() {
+                        o.directory = l.cwd.clone();
+                    }
                 }
+                None if o.transcript.is_some() => o.availability = "stopped",
+                None => o.availability = "stale",
             }
-            None if o.transcript.is_some() => o.availability = "stopped",
-            None => o.availability = "stale",
-        },
+        }
     }
     o
+}
+fn cmdline(pid: u32) -> Vec<String> {
+    fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|c| {
+            c.split(|b| *b == 0)
+                .map(|a| String::from_utf8_lossy(a).into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+/// A recorded attachment that is a `claude attach` client of this background
+/// session (or sessionsation's own `claude-attach` step just before it execs
+/// that client). Exact PID/start identity; the client is not the agent process.
+pub fn attach_client_observed(a: &catalog::Attachment, live: &Live) -> bool {
+    if !live.attachable()
+        || proc_start(a.pid)
+            .is_none_or(|(state, start)| start != a.process_start || matches!(state, 'Z' | 'X'))
+    {
+        return false;
+    }
+    let args = cmdline(a.pid);
+    let job = live.job_id.as_deref().unwrap_or_default();
+    args.windows(2)
+        .any(|w| w[0] == "attach" && (w[1] == job || w[1] == live.session_id))
+        || args
+            .windows(2)
+            .any(|w| w[0] == "claude-attach" && args.iter().any(|x| x == "--expected-generation"))
 }
 /// True when the exact process recorded for a new/resumed session runs Claude
 /// for that native session (argv check, PID-reuse guarded).
@@ -797,15 +980,99 @@ pub fn deleted(paths: &Paths, name: &str) -> Result<bool> {
         .any(|r| r.account_id == id && r.phase == "complete"))
 }
 
-/// Register discovered transcripts and refresh live attachments for every
-/// Claude account. Returns observations keyed by catalog session id.
+/// Continuation markers keyed by transcript path and (size, mtime), so the
+/// bounded tail of an unchanged transcript is read once, not on every poll.
+struct LineageCache {
+    file: PathBuf,
+    entries: std::collections::BTreeMap<String, (u64, i128, Option<String>)>,
+    changed: bool,
+}
+impl LineageCache {
+    fn load(paths: &Paths) -> Self {
+        let file = paths.root.join("session-catalog/claude-lineage.json");
+        let entries = fs::read(&file)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        Self {
+            file,
+            entries,
+            changed: false,
+        }
+    }
+    fn continued_in(&mut self, path: &Path) -> Option<String> {
+        let meta = fs::symlink_metadata(path).ok()?;
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos() as i128);
+        let key = path.to_string_lossy().into_owned();
+        if let Some((len, at, next)) = self.entries.get(&key)
+            && *len == meta.len()
+            && *at == modified
+        {
+            return next.clone();
+        }
+        let next = continued_in(path);
+        self.entries
+            .insert(key, (meta.len(), modified, next.clone()));
+        self.changed = true;
+        next
+    }
+    fn save(self, live: &std::collections::BTreeSet<String>) {
+        if !self.changed && self.entries.keys().all(|k| live.contains(k)) {
+            return;
+        }
+        let entries: std::collections::BTreeMap<_, _> = self
+            .entries
+            .into_iter()
+            .filter(|(k, _)| live.contains(k))
+            .collect();
+        if let Some(dir) = self.file.parent()
+            && private_dir(dir).is_ok()
+            && let Ok(bytes) = serde_json::to_vec(&entries)
+        {
+            let _ = atomic_write(&self.file, &bytes);
+        }
+    }
+}
+
+/// Register discovered transcripts, link verified continuations and refresh live
+/// attachments for every Claude account. Returns observations keyed by catalog
+/// session id.
+///
+/// Identity rules: a live process is attached to the one catalog entry whose
+/// conversation its registry entry (`sessions/<pid>.json` `sessionId`) currently
+/// names. When the same process switched conversations in its terminal, the
+/// entry it left is released to stopped and the entry of the new conversation
+/// takes over the exact attachment, so no process is ever listed twice.
 pub fn reconcile(
     paths: &Paths,
 ) -> Result<std::collections::BTreeMap<String, (Observation, PathBuf)>> {
     let accounts = enrolled(paths)?;
     let mut discovered = vec![];
+    let mut links = vec![];
+    let mut cache = LineageCache::load(paths);
+    let mut seen = std::collections::BTreeSet::new();
     for a in &accounts {
-        for t in transcripts(&a.home) {
+        let found = transcripts(&a.home);
+        let ids: std::collections::BTreeSet<_> =
+            found.iter().map(|t| t.session_id.clone()).collect();
+        for t in found {
+            seen.insert(t.path.to_string_lossy().into_owned());
+            if let Some(next) = cache.continued_in(&t.path)
+                && ids.contains(&next)
+            {
+                // Continued under a new id in this same account home: the old
+                // conversation is never registered as a separate entry.
+                links.push(catalog::Continuation {
+                    account: a.name.clone(),
+                    from: t.session_id,
+                    to: next,
+                });
+                continue;
+            }
             discovered.push(catalog::Discovered {
                 account: a.name.clone(),
                 conversation_id: t.session_id,
@@ -820,17 +1087,50 @@ pub fn reconcile(
             });
         }
     }
+    cache.save(&seen);
+    catalog::link_continuations(paths, ProviderId::Claude, &links)?;
     let sessions = catalog::register_discovered(paths, ProviderId::Claude, &discovered)?;
+    let probes: std::collections::BTreeMap<_, _> = accounts
+        .iter()
+        .map(|a| (a.name.clone(), probe(&a.home)))
+        .collect();
     let mut observations = std::collections::BTreeMap::new();
     let mut attachments = vec![];
-    for s in sessions {
+    for s in &sessions {
         let Some(a) = accounts.iter().find(|a| a.name == s.account) else {
             continue;
         };
-        let o = observe(&a.home, &s.conversation_id, s.attachment.as_ref());
+        let live = &probes[&a.name];
+        // The exact attachment of the process now running this conversation,
+        // even when it was recorded on the entry that process switched away from.
+        let current = live
+            .as_ref()
+            .ok()
+            .and_then(|l| l.iter().find(|l| l.session_id == s.conversation_id));
+        let recorded = match current {
+            Some(l)
+                if s.attachment
+                    .as_ref()
+                    .is_none_or(|r| r.pid != l.pid || r.process_start != l.process_start)
+                    && !s
+                        .attachment
+                        .as_ref()
+                        .is_some_and(|r| attach_client_observed(r, l)) =>
+            {
+                sessions
+                    .iter()
+                    .filter_map(|o| o.attachment.as_ref())
+                    .find(|r| r.pid == l.pid && r.process_start == l.process_start)
+                    .or(s.attachment.as_ref())
+            }
+            _ => s.attachment.as_ref(),
+        };
+        let o = observe_in(&a.home, &s.conversation_id, recorded, live);
         if o.availability != "unknown" {
             let next = if o.availability == "running" {
                 o.attachment.clone()
+            } else if o.attachment_switched {
+                None
             } else {
                 s.attachment.clone().filter(|r| {
                     !crate::external::attachment_definitely_gone(r.pid, r.process_start)
@@ -1137,6 +1437,63 @@ mod tests {
         if expected {
             assert!(live_sessions(home).unwrap().is_empty());
         }
+    }
+    #[test]
+    fn continuation_and_fork_markers_use_only_claude_metadata_records() {
+        let t = tempfile::tempdir().unwrap();
+        let old = "11111111-1111-4111-8111-111111111111";
+        let new = "22222222-2222-4222-8222-222222222222";
+        let path = t.path().join(format!("{old}.jsonl"));
+        let user = json!({"type":"user","sessionId":old,"message":{"content":format!("\"type\":\"continued-in\" {new}")}});
+        let marker = json!({"type":"continued-in","timestamp":"2026-10-28T00:00:00Z","sessionId":old,"continuedInSessionId":new});
+        fs::write(&path, format!("{user}\n")).unwrap();
+        assert_eq!(continued_in(&path), None, "message text is not a marker");
+        fs::write(
+            &path,
+            format!(
+                "{user}\n{marker}\n{}\n",
+                json!({"type":"last-prompt","sessionId":old})
+            ),
+        )
+        .unwrap();
+        assert_eq!(continued_in(&path).as_deref(), Some(new));
+        fs::write(&path, format!("{user}\n{marker}\n{user}\n")).unwrap();
+        assert_eq!(
+            continued_in(&path),
+            None,
+            "continued again after the hand-off"
+        );
+        let foreign = json!({"type":"continued-in","sessionId":new,"continuedInSessionId":old});
+        fs::write(&path, format!("{foreign}\n")).unwrap();
+        assert_eq!(continued_in(&path), None, "marker must name this session");
+        let forked = t.path().join(format!("{new}.jsonl"));
+        fs::write(&forked, format!("{}\n", json!({"type":"user","sessionId":new,"forkedFrom":{"sessionId":old,"messageUuid":"m"}}))).unwrap();
+        assert_eq!(forked_from(&forked).as_deref(), Some(old));
+        assert_eq!(forked_from(&path), None);
+    }
+    #[test]
+    fn leftover_registry_files_of_killed_processes_never_fail_the_probe() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let dead = child.id();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let file = home.join("sessions").join(format!("{dead}.json"));
+        fs::write(&file, b"{not json").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        fs::write(home.join("sessions/123.json"), b"{\"pid\":124}").unwrap();
+        // Root may still read 0o000 files; either way the probe must succeed.
+        assert!(live_sessions(home).unwrap().is_empty());
+        assert_ne!(
+            observe(home, "11111111-1111-4111-8111-111111111111", None).availability,
+            "unknown"
+        );
     }
     #[test]
     fn statusline_records_only_limits_and_projection_never_invents_zero() {

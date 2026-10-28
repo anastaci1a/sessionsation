@@ -10,6 +10,10 @@ case "$1" in
   --version)
     printf '%s\n' '2.1.312 (Claude Code fake)'
     exit 0 ;;
+  attach)
+    # `claude attach <job>`: a viewer client of a running background session.
+    printf "attach=%s\nconfig_dir=%s\napi_key=%s\n" "$2" "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY:+present}" > "$home/fake-attach"
+    while :; do sleep 1; done ;;
   auth)
     case "$2" in
       status)

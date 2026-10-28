@@ -46,6 +46,14 @@ enum Commands {
     SpaceMoveWorker { request_id: String },
     #[command(hide = true)]
     ResumeRun { request_id: String },
+    /// Pane step of `api session add-to-herdr`: record this HERDR pane, then exec
+    /// `claude attach` for the running background session.
+    #[command(hide = true)]
+    ClaudeAttach {
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+    },
     #[command(hide = true)]
     MessageRecoveryWorker { message_id: String },
     #[command(hide = true)]
@@ -520,6 +528,14 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::ResumeWorker { request_id } => {
             sessionsation::resume::worker(&paths, &request_id).await?
         }
+        Commands::ClaudeAttach {
+            session,
+            expected_generation,
+        } => sessionsation::provider::claude::attach::exec_attach(
+            &paths,
+            &session,
+            &expected_generation,
+        )?,
         Commands::ResumeRun { request_id } => {
             sessionsation::resume::run(&paths, &request_id).await?
         }

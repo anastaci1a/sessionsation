@@ -36,11 +36,14 @@ pub fn ensure_resumable(session: &catalog::Session, observation: &Observation) -
         "stopped" => {}
         _ => bail!("SESSION_STATE_UNVERIFIED: the Claude session state could not be observed"),
     }
+    // A recorded terminal blocks resume only while its exact process may still
+    // hold this conversation: gone (killed, PID reused) or verifiably switched to
+    // another conversation in the same terminal no longer does.
     ensure!(
-        session
-            .attachment
-            .as_ref()
-            .is_none_or(|a| crate::external::attachment_definitely_gone(a.pid, a.process_start)),
+        observation.attachment_switched
+            || session.attachment.as_ref().is_none_or(|a| {
+                crate::external::attachment_definitely_gone(a.pid, a.process_start)
+            }),
         "SESSION_ALREADY_RUNNING: already running; focus it"
     );
     Ok(())

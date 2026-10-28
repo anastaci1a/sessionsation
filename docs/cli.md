@@ -310,6 +310,31 @@ inspect the original request after detaching. The backend uses the saved directo
 account, name and destination Space are explicit choices.
 See [the request and failure contract](contract.md#saved-session-popup-resume).
 
+## Add a running session to HERDR
+
+A running session without a HERDR terminal reports `capabilities.add_to_herdr`
+and `capability_reasons.add_to_herdr` in `api state`. List the destination
+server's existing Spaces, then open it in a new tab (the name defaults to the
+current session name):
+
+```sh
+sessionsation api spaces --session SESSION-ID --expected-generation GENERATION --herdr-session HERDR-SERVER
+sessionsation api session add-to-herdr --session SESSION-ID --expected-generation GENERATION --herdr-session HERDR-SERVER --space SPACE-ID [--name NAME]
+```
+
+Only Claude background-daemon sessions are supported: the new tab runs `claude
+attach <job>` with the account environment, which views the already-running
+session (no agent is started). Interactive Claude sessions in another terminal and
+Codex terminals outside HERDR cannot be moved (`INTERACTIVE_ELSEWHERE`,
+`UNSUPPORTED_PROVIDER_OPERATION`). Stopped sessions use Start Session instead,
+which also accepts a placement:
+
+```sh
+sessionsation api resume --session SESSION-ID --expected-generation GENERATION --herdr-session HERDR-SERVER [--space SPACE-ID] [--name NAME]
+```
+
+See [the contract](contract.md#session-identity-continuations-and-add-to-herdr-revision-12).
+
 ## Move a running session between HERDR Spaces
 
 Read a fresh session ID/generation from `api state`, then list destinations on

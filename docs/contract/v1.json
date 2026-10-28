@@ -176,6 +176,9 @@
             },
             "move_space": {
               "type": "boolean"
+            },
+            "add_to_herdr": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -240,6 +243,13 @@
         },
         "placement": {
           "$ref": "#/$defs/Placement"
+        },
+        "previous_conversation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Native conversations this entry continued from (verified continued-in markers), oldest first."
         }
       },
       "required": [
@@ -3700,6 +3710,156 @@
         }
       },
       "additionalProperties": true
+    },
+    "HostSpaceChoices": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "generation",
+        "herdr_session",
+        "current_space_id",
+        "spaces"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "herdr_session": {
+          "type": "string"
+        },
+        "current_space_id": {
+          "type": "null"
+        },
+        "pane": {
+          "type": "null"
+        },
+        "spaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "current"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "current": {
+                "const": false
+              }
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "AddToHerdrResult": {
+      "type": "object",
+      "required": [
+        "state",
+        "session_id",
+        "generation",
+        "host",
+        "herdr_session",
+        "space_id",
+        "pane_id",
+        "target",
+        "name",
+        "attachment",
+        "starts_agent",
+        "sends_input"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "attached",
+            "attach_unconfirmed"
+          ]
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host": {
+          "const": "herdr"
+        },
+        "herdr_session": {
+          "type": "string"
+        },
+        "space_id": {
+          "type": "string"
+        },
+        "tab_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pane_id": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "attachment": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Attachment"
+            }
+          ]
+        },
+        "starts_agent": {
+          "const": false
+        },
+        "sends_input": {
+          "const": false
+        }
+      },
+      "additionalProperties": true,
+      "if": {
+        "properties": {
+          "state": {
+            "const": "attached"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "generation": {
+            "type": "string"
+          },
+          "attachment": {
+            "$ref": "#/$defs/Attachment"
+          }
+        }
+      }
     }
   }
 }

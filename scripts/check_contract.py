@@ -55,6 +55,16 @@ for invalid in [
 validate(fixtures["recovery_message"], "MessageRequest")
 validate(fixtures["recovery_plan"], "RecoveryPlan")
 validate(fixtures["space_choices"], "SpaceChoices")
+validate(fixtures["host_space_choices"], "HostSpaceChoices")
+for name in ["add_to_herdr_attached", "add_to_herdr_unconfirmed"]:
+    validate(fixtures[name], "AddToHerdrResult")
+for invalid in [{**fixtures["add_to_herdr_attached"], "starts_agent": True}, {**fixtures["add_to_herdr_attached"], "attachment": None}]:
+    try:
+        validate(invalid, "AddToHerdrResult")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Add to HERDR must never start an agent or claim an unverified attachment")
 validate(fixtures["space_move_operation"], "SpaceMoveOperation")
 validate(fixtures["archived_session"], "ArchivedSession")
 validate(fixtures["conversation_operation"], "ConversationOperation")
@@ -111,7 +121,7 @@ with tempfile.TemporaryDirectory() as directory:
         if args == ["placements"]:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 11
+            assert value["result"]["contract_revision"] >= 12
             claude = [p for p in value["result"]["providers"] if p["id"] == "claude"][0]
             assert claude["account_removal"] is True and claude["account_deletion"] is True
             assert claude["headless_delivery"]["automatic_replay"] is False

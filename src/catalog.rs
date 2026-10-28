@@ -30,6 +30,11 @@ pub struct Session {
     /// (Claude). Omitted for Codex, whose generations are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
+    /// Native conversations this entry continued from (oldest first), linked
+    /// only through a provider-recorded continuation marker. Omitted when empty
+    /// so existing generations are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_conversation_ids: Vec<String>,
 }
 
 impl Session {
@@ -47,6 +52,9 @@ struct Catalog {
     sessions: BTreeMap<String, Session>,
     #[serde(default)]
     reservations: BTreeMap<String, String>,
+    /// Catalog ids merged into another entry by a verified continuation link.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    aliases: BTreeMap<String, String>,
 }
 
 fn transaction<T>(paths: &Paths, change: impl FnOnce(&mut Catalog) -> Result<T>) -> Result<T> {
@@ -156,6 +164,7 @@ pub fn record_provider_launch(
             revision: 1,
             attachment,
             directory: directory.map(str::to_owned),
+            previous_conversation_ids: vec![],
         };
         c.sessions.insert(s.id.clone(), s.clone());
         Ok(s)
@@ -179,10 +188,11 @@ pub fn register_discovered(
 ) -> Result<Vec<Session>> {
     transaction(paths, |c| {
         for d in discovered {
-            if c.sessions
-                .values()
-                .any(|s| s.provider == provider.as_str() && s.conversation_id == d.conversation_id)
-            {
+            if c.sessions.values().any(|s| {
+                s.provider == provider.as_str()
+                    && (s.conversation_id == d.conversation_id
+                        || s.previous_conversation_ids.contains(&d.conversation_id))
+            }) {
                 continue;
             }
             let base = d
@@ -214,6 +224,7 @@ pub fn register_discovered(
                 revision: 1,
                 attachment: None,
                 directory: d.directory.clone(),
+                previous_conversation_ids: vec![],
             };
             c.sessions.insert(s.id.clone(), s);
         }
@@ -252,6 +263,95 @@ pub fn observe_provider_sessions(
             }
         }
         Ok(())
+    })
+}
+
+/// A provider-recorded continuation: `from` continued as `to` in one account.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Continuation {
+    pub account: String,
+    pub from: String,
+    pub to: String,
+}
+/// Link verified continuations: the entry of `from` keeps its stable id, name and
+/// account and now follows `to` (`from` is retained in `previous_conversation_ids`).
+/// An entry already registered for `to` is merged into it and left as an alias,
+/// so one conversation lineage never has two catalog entries. Cross-account or
+/// cross-provider links are never applied. Returns the merged (alias) ids.
+pub fn link_continuations(
+    paths: &Paths,
+    provider: ProviderId,
+    links: &[Continuation],
+) -> Result<Vec<(String, String)>> {
+    transaction(paths, |c| {
+        let mut merged = vec![];
+        // Chains (a→b→c) converge within the number of links.
+        for _ in 0..=links.len() {
+            let mut changed = false;
+            for link in links {
+                if link.from == link.to {
+                    continue;
+                }
+                let Some(owner) = c
+                    .sessions
+                    .values()
+                    .find(|s| s.provider == provider.as_str() && s.conversation_id == link.from)
+                    .map(|s| s.id.clone())
+                else {
+                    continue;
+                };
+                if c.sessions[&owner].account != link.account {
+                    continue;
+                }
+                let duplicate = c
+                    .sessions
+                    .values()
+                    .find(|s| {
+                        s.id != owner
+                            && s.provider == provider.as_str()
+                            && s.conversation_id == link.to
+                    })
+                    .cloned();
+                if duplicate
+                    .as_ref()
+                    .is_some_and(|d| d.account != link.account)
+                {
+                    continue;
+                }
+                if let Some(d) = &duplicate {
+                    c.sessions.remove(&d.id);
+                    for target in c.aliases.values_mut() {
+                        if *target == d.id {
+                            *target = owner.clone();
+                        }
+                    }
+                    c.aliases.insert(d.id.clone(), owner.clone());
+                    merged.push((d.id.clone(), owner.clone()));
+                }
+                let s = c.sessions.get_mut(&owner).context("SESSION_NOT_FOUND")?;
+                s.previous_conversation_ids.push(link.from.clone());
+                if let Some(d) = duplicate {
+                    for id in d.previous_conversation_ids {
+                        if !s.previous_conversation_ids.contains(&id) {
+                            s.previous_conversation_ids.push(id);
+                        }
+                    }
+                    if d.attachment.is_some() {
+                        s.attachment = d.attachment;
+                    }
+                    if d.directory.is_some() {
+                        s.directory = d.directory;
+                    }
+                }
+                s.conversation_id = link.to.clone();
+                s.revision += 1;
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+        }
+        Ok(merged)
     })
 }
 
@@ -326,6 +426,7 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
                         revision: 1,
                         attachment,
                         directory: None,
+                        previous_conversation_ids: vec![],
                     },
                 );
             }
@@ -333,6 +434,23 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
         // A missing live binding means detached/stopped/unknown, never permission
         // to restart it on another account. Preserve conversation and owner.
         for s in c.sessions.values_mut() {
+            // The same process now verifiably runs another conversation (native
+            // thread switch in one terminal): release this entry to stopped so the
+            // process is attached to exactly one catalog entry, never duplicated.
+            if s.provider == "codex"
+                && let Some(a) = &s.attachment
+                && instances.iter().any(|i| {
+                    !i.inactive
+                        && !i.thread_id.is_empty()
+                        && i.thread_id != s.conversation_id
+                        && i.pid == a.pid
+                        && i.start_time == a.process_start
+                })
+            {
+                s.attachment = None;
+                s.revision += 1;
+                continue;
+            }
             if s.attachment.is_some()
                 && s.attachment.as_ref().is_some_and(|a| {
                     crate::external::attachment_definitely_gone(a.pid, a.process_start)
@@ -351,6 +469,13 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
 
 pub fn resolve(paths: &Paths, id: &str, generation: &str) -> Result<Session> {
     transaction(paths, |c| {
+        if let Some(target) = c.aliases.get(id)
+            && !c.sessions.contains_key(id)
+        {
+            anyhow::bail!(
+                "SESSION_MERGED: this entry continues as session {target}; refresh the session list"
+            );
+        }
         let s = c.sessions.get(id).context("SESSION_NOT_FOUND")?;
         ensure!(s.generation() == generation, "STALE_TARGET");
         Ok(s.clone())
@@ -439,6 +564,7 @@ mod tests {
                 process_start: 99,
             }),
             directory: None,
+            previous_conversation_ids: vec![],
         };
         transaction(paths, |c| {
             c.sessions.insert(s.id.clone(), s.clone());
@@ -663,6 +789,7 @@ pub fn complete_reserved(
             revision: 1,
             attachment,
             directory: directory.map(str::to_owned),
+            previous_conversation_ids: vec![],
         };
         c.reservations.remove(name);
         c.sessions.insert(s.id.clone(), s.clone());
@@ -757,6 +884,138 @@ mod space_move_tests {
                 .unwrap_err()
                 .to_string()
                 .contains("STALE_TARGET")
+        );
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    fn paths() -> (tempfile::TempDir, Paths) {
+        let t = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(t.path().join("root"))).unwrap();
+        (t, p)
+    }
+    fn found(account: &str, id: &str, label: &str) -> Discovered {
+        Discovered {
+            account: account.into(),
+            conversation_id: id.into(),
+            label: label.into(),
+            directory: Some("/work".into()),
+        }
+    }
+    #[test]
+    fn continuation_inherits_the_entry_merges_the_duplicate_and_never_reappears() {
+        let (_t, p) = paths();
+        let claude = ProviderId::Claude;
+        let all = register_discovered(
+            &p,
+            claude,
+            &[found("main", "a", "work"), found("main", "b", "work")],
+        )
+        .unwrap();
+        assert_eq!(all.len(), 2);
+        let old = all.iter().find(|s| s.conversation_id == "a").unwrap();
+        let old = rename(&p, &old.id, &old.generation(), "sessionstuffs").unwrap();
+        let dup = all
+            .iter()
+            .find(|s| s.conversation_id == "b")
+            .unwrap()
+            .clone();
+        // Cross-account evidence is never applied.
+        let wrong = Continuation {
+            account: "other".into(),
+            from: "a".into(),
+            to: "b".into(),
+        };
+        assert!(link_continuations(&p, claude, &[wrong]).unwrap().is_empty());
+        assert_eq!(list(&p).unwrap().len(), 2);
+        let link = Continuation {
+            account: "main".into(),
+            from: "a".into(),
+            to: "b".into(),
+        };
+        let merged = link_continuations(&p, claude, &[link.clone(), link.clone()]).unwrap();
+        assert_eq!(merged, vec![(dup.id.clone(), old.id.clone())]);
+        let now = list(&p).unwrap();
+        assert_eq!(now.len(), 1, "one lineage, one entry");
+        assert_eq!(now[0].id, old.id);
+        assert_eq!(now[0].name, "sessionstuffs");
+        assert_eq!(now[0].account, "main");
+        assert_eq!(now[0].conversation_id, "b");
+        assert_eq!(now[0].previous_conversation_ids, ["a"]);
+        let e = resolve(&p, &dup.id, &dup.generation())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.starts_with("SESSION_MERGED") && e.contains(&old.id),
+            "{e}"
+        );
+        // Rediscovery of the continued transcript never recreates an entry.
+        let again = register_discovered(
+            &p,
+            claude,
+            &[found("main", "a", "x"), found("main", "b", "x")],
+        )
+        .unwrap();
+        assert_eq!(again.len(), 1);
+        // Chains follow to the newest continuation.
+        register_discovered(&p, claude, &[found("main", "c", "x")]).unwrap();
+        link_continuations(
+            &p,
+            claude,
+            &[
+                link,
+                Continuation {
+                    account: "main".into(),
+                    from: "b".into(),
+                    to: "c".into(),
+                },
+            ],
+        )
+        .unwrap();
+        let now = list(&p).unwrap();
+        assert_eq!(now.len(), 1);
+        assert_eq!(now[0].conversation_id, "c");
+        assert_eq!(now[0].previous_conversation_ids, ["a", "b"]);
+    }
+    #[test]
+    fn codex_process_switching_threads_is_attached_to_exactly_one_entry() {
+        let (_t, p) = paths();
+        let pid = std::process::id();
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let start: u64 = stat
+            .rsplit_once(") ")
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let attachment = Attachment {
+            host: "tmux".into(),
+            target: "%7".into(),
+            pid,
+            process_start: start,
+        };
+        let a = record_launch(&p, "acct", "thread-a", "first", Some(attachment.clone())).unwrap();
+        let b = record_launch(&p, "acct", "thread-b", "second", None).unwrap();
+        // The same TUI process now verifiably holds thread-b.
+        let i: crate::external::Instance = serde_json::from_value(serde_json::json!({"pane":"%7","tmux_session":"t","pid":pid,"start_time":start,"cwd":"/tmp","thread_id":"thread-b","rollout":"/tmp/r","home":"/tmp/h","binary":"codex","resume_options":[],"account":"acct"})).unwrap();
+        let all = reconcile(&p, &[i]).unwrap();
+        assert_eq!(all.len(), 2, "no duplicate entry is created");
+        let a2 = all.iter().find(|s| s.id == a.id).unwrap();
+        let b2 = all.iter().find(|s| s.id == b.id).unwrap();
+        assert!(a2.attachment.is_none(), "the entry it left is released");
+        assert_eq!(a2.name, "first");
+        assert_eq!(b2.attachment.as_ref(), Some(&attachment));
+        assert_eq!(b2.name, "second");
+        assert_eq!(
+            all.iter()
+                .filter(|s| s.attachment.as_ref().is_some_and(|x| x.pid == pid))
+                .count(),
+            1
         );
     }
 }

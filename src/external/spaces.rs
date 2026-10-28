@@ -599,6 +599,31 @@ pub(super) fn caller_target(
     hosting::herdr_target(server, current)
 }
 
+/// Existing Spaces of a named HERDR server, for a session that has no HERDR
+/// terminal yet (Add to HERDR, or Start Session into an existing Space).
+/// Read-only: never creates a server, Space or pane.
+pub fn host_list(
+    paths: &Paths,
+    id: &str,
+    generation: &str,
+    herdr_session: &str,
+    socket: Option<&Path>,
+) -> Result<Value> {
+    let session = crate::catalog::resolve(paths, id, generation)?;
+    ensure!(socket.is_none_or(Path::is_absolute), "INVALID_HOST_SOCKET");
+    let spaces = crate::terminal::call_at(herdr_session, &["workspace", "list"], socket)?;
+    let spaces: Vec<_> = spaces["workspaces"]
+        .as_array()
+        .context("INVALID_HOST_SPACES")?
+        .iter()
+        .map(|s| json!({"id":s["workspace_id"],"name":s["label"],"current":false}))
+        .collect();
+    Ok(
+        json!({"session_id":session.id,"generation":session.generation(),
+        "herdr_session":herdr_session,"current_space_id":null,"spaces":spaces,"pane":null}),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

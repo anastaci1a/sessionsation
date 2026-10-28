@@ -1220,7 +1220,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 11);
+    assert_eq!(caps["contract_revision"], 12);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1604,4 +1604,449 @@ async fn display_names_rename_any_provider_without_changing_identity() {
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["account_rename"], true);
     }
+}
+
+fn proc_start(pid: u32) -> u64 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    stat.rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+/// A transcript with metadata only (and a private message the API must never echo).
+fn transcript(home: &Path, cwd: &Path, id: &str) -> PathBuf {
+    let dir = home
+        .join("projects")
+        .join(cwd.to_string_lossy().replace('/', "-"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{id}.jsonl"));
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n",
+            json!({"type":"user","sessionId":id,"cwd":cwd,"timestamp":"2026-01-01T00:00:00.000Z","message":{"content":"private prompt"}})
+        ),
+    )
+    .unwrap();
+    path
+}
+fn append(path: &Path, record: Value) {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(file, "{record}").unwrap();
+}
+fn registry(home: &Path, pid: u32, session: &str, cwd: &Path, kind: &str, job: Option<&str>) {
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    let mut entry = json!({"pid":pid,"sessionId":session,"cwd":cwd,"procStart":proc_start(pid).to_string(),
+        "kind":kind,"status":"idle","version":"2.1.312"});
+    if let Some(job) = job {
+        entry["jobId"] = json!(job);
+    }
+    std::fs::write(
+        home.join("sessions").join(format!("{pid}.json")),
+        entry.to_string(),
+    )
+    .unwrap();
+}
+fn by_conversation(f: &Fixture, id: &str) -> Value {
+    f.claude_sessions()
+        .into_iter()
+        .find(|s| s["conversation_id"] == id)
+        .unwrap_or_else(|| panic!("no session for {id}"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_identity_follows_switches_continuations_and_killed_processes() {
+    let f = fixture().await;
+    assert!(
+        f.run(&["account", "add", "--platform", "claude", "personal"])
+            .status
+            .success()
+    );
+    let home = f.home("personal");
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+    let other = uuid::Uuid::new_v4().to_string();
+    transcript(&home, &f.project, &other);
+    // A terminal-attached launch (tmux pane recorded before exec).
+    let child = f
+        .command(&["run", "--account", "claude:personal"])
+        .current_dir(&f.project)
+        .env("TMUX_PANE", "%42")
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    wait_for("fake claude launch", || {
+        home.join("sessions").join(format!("{pid}.json")).exists()
+    });
+    let first = read(&home.join("fake-launch-new"))
+        .lines()
+        .find_map(|l| l.strip_prefix("session="))
+        .unwrap()
+        .to_owned();
+    let a = by_conversation(&f, &first);
+    assert_eq!(a["availability"], "running");
+    assert_eq!(a["attachment"]["target"], "%42");
+    assert_eq!(by_conversation(&f, &other)["availability"], "stopped");
+
+    // The same process switches to the other conversation in its terminal (the
+    // registry `sessionId` changes): the existing entry is re-attached and the
+    // entry it left is released to stopped. Never two entries for one process.
+    let registry_file = home.join("sessions").join(format!("{pid}.json"));
+    let mut entry: Value = serde_json::from_str(&read(&registry_file)).unwrap();
+    entry["sessionId"] = json!(other);
+    std::fs::write(&registry_file, entry.to_string()).unwrap();
+    let sessions = f.claude_sessions();
+    assert_eq!(sessions.len(), 2, "no duplicate entry is created");
+    let b = by_conversation(&f, &other);
+    assert_eq!(b["availability"], "running");
+    assert_eq!(b["pid"], pid);
+    assert_eq!(b["attachment"]["target"], "%42");
+    assert_eq!(b["attachment"]["pid"], pid);
+    let a = by_conversation(&f, &first);
+    assert_eq!(a["availability"], "stopped");
+    assert!(a["attachment"].is_null(), "{a}");
+    assert_eq!(a["capabilities"]["resume"], true);
+    assert_eq!(
+        f.claude_sessions()
+            .iter()
+            .filter(|s| s["attachment"]["pid"] == pid)
+            .count(),
+        1
+    );
+
+    // Outage: the process is killed. Its registry file and the catalog
+    // attachment are left behind (plus an unreadable leftover of another
+    // killed process); resume with the pre-outage generation still works.
+    let generation = b["generation"].as_str().unwrap().to_owned();
+    kill(child);
+    let mut dead = Command::new("sleep").arg("30").spawn().unwrap();
+    let dead_pid = dead.id();
+    dead.kill().unwrap();
+    dead.wait().unwrap();
+    let leftover = home.join("sessions").join(format!("{dead_pid}.json"));
+    std::fs::write(&leftover, b"{truncated").unwrap();
+    std::fs::set_permissions(&leftover, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let id = b["id"].as_str().unwrap().to_owned();
+    let resumed = f
+        .command(&["resume", &id, "--expected-generation", &generation])
+        .current_dir("/")
+        .spawn()
+        .unwrap();
+    wait_for("resume after a killed process", || {
+        read(&home.join("fake-launch-resume")).contains(&format!("session={other}"))
+    });
+    wait_for("resumed live", || {
+        by_conversation(&f, &other)["availability"] == "running"
+    });
+    kill(resumed);
+    let b = by_conversation(&f, &other);
+    assert_eq!(b["availability"], "stopped");
+    assert!(b["attachment"].is_null());
+    assert_eq!(b["capabilities"]["resume"], true);
+
+    // Background hand-off: Claude Code continues the conversation under a new
+    // session id and appends a `continued-in` record to the old transcript.
+    // Before the marker exists both are listed; afterwards the continuation
+    // inherits the original entry (stable id, name, account) and the duplicate
+    // is merged.
+    let renamed = f.api(&[
+        "rename",
+        "--session",
+        &id,
+        "--expected-generation",
+        b["generation"].as_str().unwrap(),
+        "--name",
+        "sessionstuffs",
+    ]);
+    assert_eq!(renamed["name"], "sessionstuffs");
+    let next = uuid::Uuid::new_v4().to_string();
+    transcript(&home, &f.project, &next);
+    let duplicate = by_conversation(&f, &next);
+    assert_ne!(duplicate["id"], id);
+    let old_path = std::fs::read_dir(home.join("projects"))
+        .unwrap()
+        .flatten()
+        .map(|d| d.path().join(format!("{other}.jsonl")))
+        .find(|p| p.exists())
+        .unwrap();
+    append(
+        &old_path,
+        json!({"type":"continued-in","timestamp":"2026-10-28T00:00:00Z","sessionId":other,"continuedInSessionId":next}),
+    );
+    let sessions = f.claude_sessions();
+    assert_eq!(sessions.len(), 2, "{sessions:?}");
+    let lineage = by_conversation(&f, &next);
+    assert_eq!(lineage["id"], id);
+    assert_eq!(lineage["name"], "sessionstuffs");
+    assert_eq!(lineage["account_id"], "claude:personal");
+    assert_eq!(lineage["previous_conversation_ids"], json!([other]));
+    assert!(!sessions.iter().any(|s| s["conversation_id"] == other));
+    assert!(
+        f.api_error(&[
+            "session",
+            "--session",
+            duplicate["id"].as_str().unwrap(),
+            "--expected-generation",
+            duplicate["generation"].as_str().unwrap()
+        ])
+        .contains("SESSION_MERGED")
+    );
+    assert!(!f.api(&["state"]).to_string().contains("private prompt"));
+    let caps = f.api(&["capabilities"]);
+    assert_eq!(caps["contract_revision"], 12);
+    assert_eq!(
+        caps["session_identity"]["claude_continuation_marker"],
+        "continued-in"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
+    let f = fixture().await;
+    let tmp = f.paths.root.parent().unwrap().to_path_buf();
+    let bin = tmp.join("fake-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let herdr = bin.join("herdr");
+    std::fs::write(&herdr, include_str!("support/fake-herdr.sh")).unwrap();
+    std::fs::set_permissions(&herdr, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let state = tmp.join("herdr-state");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let hosted = |args: &[&str]| {
+        let mut all = vec!["api"];
+        all.extend_from_slice(args);
+        f.command(&all)
+            .env("PATH", &path)
+            .env("FAKE_HERDR_DIR", &state)
+            .output()
+            .unwrap()
+    };
+    let ok = |args: &[&str]| {
+        let out = hosted(args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
+    };
+    let err = |args: &[&str]| {
+        let out = hosted(args);
+        assert!(!out.status.success(), "{args:?} unexpectedly succeeded");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let calls = || read(&state.join("calls"));
+    assert!(
+        f.run(&["account", "add", "--platform", "claude", "personal"])
+            .status
+            .success()
+    );
+    let home = f.home("personal");
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+
+    // A background-daemon session: a live process registered with kind "bg".
+    let bg = uuid::Uuid::new_v4().to_string();
+    transcript(&home, &f.project, &bg);
+    let agent = Process(
+        Command::new("sleep")
+            .arg("600")
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .spawn()
+            .unwrap(),
+    );
+    let agent_pid = agent.0.id();
+    wait_for("agent exec", || {
+        read(Path::new(&format!("/proc/{agent_pid}/cmdline"))).starts_with("sleep")
+    });
+    registry(&home, agent_pid, &bg, &f.project, "bg", Some(&bg[..8]));
+    // An interactive session in another terminal.
+    let interactive = f
+        .command(&["run", "--account", "claude:personal"])
+        .current_dir(&f.project)
+        .spawn()
+        .unwrap();
+    wait_for("interactive launch", || {
+        home.join("fake-launch-new").exists()
+    });
+    let other = read(&home.join("fake-launch-new"))
+        .lines()
+        .find_map(|l| l.strip_prefix("session="))
+        .unwrap()
+        .to_owned();
+    wait_for("interactive live", || {
+        ok(&["state"])["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["conversation_id"] == other && s["availability"] == "running")
+    });
+    let find = |id: &str| -> Value {
+        ok(&["state"])["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["conversation_id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let s = find(&bg);
+    assert_eq!(s["availability"], "running");
+    assert_eq!(s["native"]["kind"], "bg");
+    assert_eq!(s["capabilities"]["add_to_herdr"], true, "{s}");
+    let i = find(&other);
+    assert_eq!(i["capabilities"]["add_to_herdr"], false);
+    assert!(
+        i["capability_reasons"]["add_to_herdr"]
+            .as_str()
+            .unwrap()
+            .starts_with("INTERACTIVE_ELSEWHERE")
+    );
+    let e = err(&[
+        "session",
+        "add-to-herdr",
+        "--session",
+        i["id"].as_str().unwrap(),
+        "--expected-generation",
+        i["generation"].as_str().unwrap(),
+        "--herdr-session",
+        "fixture",
+        "--space",
+        "w1",
+    ]);
+    assert!(e.contains("INTERACTIVE_ELSEWHERE"), "{e}");
+    assert!(!calls().contains("tab create"), "refusal creates nothing");
+
+    // Spaces of the chosen HERDR server for a session not in HERDR yet.
+    let spaces = ok(&[
+        "spaces",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+        "--herdr-session",
+        "fixture",
+    ]);
+    assert_eq!(spaces["spaces"][0]["id"], "w1");
+    assert!(spaces["current_space_id"].is_null());
+
+    let added = ok(&[
+        "session",
+        "add-to-herdr",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+        "--herdr-session",
+        "fixture",
+        "--space",
+        "w1",
+        "--name",
+        "bg-view",
+    ]);
+    assert_eq!(added["state"], "attached", "{added}");
+    assert_eq!(added["target"], "herdr/fixture/w1:p2");
+    assert_eq!(added["starts_agent"], false);
+    assert_eq!(read(&state.join("label-w1:p2")).trim(), "bg-view");
+    let attach = read(&home.join("fake-attach"));
+    assert!(attach.contains(&format!("attach={}", &bg[..8])), "{attach}");
+    assert!(attach.contains(&format!("config_dir={}", home.display())));
+    let client: u32 = read(&state.join("pid-w1:p2")).trim().parse().unwrap();
+    assert_eq!(added["attachment"]["pid"], client);
+    let after = find(&bg);
+    assert_eq!(after["id"], s["id"], "same catalog entry");
+    assert_eq!(after["name"], "bg-view");
+    assert_eq!(after["pid"], agent_pid, "the agent process is unchanged");
+    assert_eq!(after["attachment"]["host"], "herdr");
+    assert_eq!(after["attachment"]["pid"], client);
+    assert_eq!(after["capabilities"]["add_to_herdr"], false);
+    assert!(
+        after["capability_reasons"]["add_to_herdr"]
+            .as_str()
+            .unwrap()
+            .starts_with("ALREADY_IN_HERDR")
+    );
+    // Never a second client or tab for a live session.
+    let e = err(&[
+        "session",
+        "add-to-herdr",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        after["generation"].as_str().unwrap(),
+        "--herdr-session",
+        "fixture",
+        "--space",
+        "w1",
+    ]);
+    assert!(e.contains("ALREADY_IN_HERDR"), "{e}");
+    assert_eq!(calls().matches("tab create").count(), 1);
+    assert_eq!(
+        ok(&["state"])["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|x| x["conversation_id"] == bg)
+            .count(),
+        1
+    );
+
+    // Codex: not supported, with the reason.
+    let codex =
+        sessionsation::catalog::record_launch(&f.paths, "personal", "thread", "codex", None)
+            .unwrap();
+    let e = err(&[
+        "session",
+        "add-to-herdr",
+        "--session",
+        &codex.id,
+        "--expected-generation",
+        &codex.generation(),
+        "--herdr-session",
+        "fixture",
+        "--space",
+        "w1",
+    ]);
+    assert!(e.contains("UNSUPPORTED_PROVIDER_OPERATION"), "{e}");
+
+    // Start Session of a stopped session into an existing Space with a name.
+    kill(interactive);
+    let stopped = find(&other);
+    assert_eq!(stopped["availability"], "stopped");
+    let resumed = ok(&[
+        "resume",
+        "--session",
+        stopped["id"].as_str().unwrap(),
+        "--expected-generation",
+        stopped["generation"].as_str().unwrap(),
+        "--herdr-session",
+        "fixture",
+        "--space",
+        "w1",
+        "--name",
+        "resumed-tab",
+    ]);
+    assert_eq!(resumed["state"], "running", "{resumed}");
+    assert_eq!(resumed["target"], "herdr/fixture/w1:p3");
+    assert_eq!(read(&state.join("label-w1:p3")).trim(), "resumed-tab");
+    let live = find(&other);
+    assert_eq!(live["name"], "resumed-tab");
+    assert_eq!(live["availability"], "running");
+    for pane in ["w1:p2", "w1:p3"] {
+        if let Ok(pid) = read(&state.join(format!("pid-{pane}")))
+            .trim()
+            .parse::<i32>()
+        {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+    drop(agent);
 }

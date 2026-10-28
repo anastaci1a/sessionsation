@@ -231,6 +231,7 @@ mod tests {
             revision: 1,
             attachment: None,
             directory: None,
+            previous_conversation_ids: vec![],
         }
     }
     #[test]

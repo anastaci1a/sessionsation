@@ -28,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":11,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":12,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -77,12 +77,16 @@ pub enum Command {
         #[arg(long, default_value_t=2, value_parser=clap::value_parser!(u64).range(1..=3600))]
         interval: u64,
     },
-    /// Resolve public session details against its current catalog generation.
+    /// Resolve public session details against its current catalog generation,
+    /// or run a session action (`session add-to-herdr ...`).
+    #[command(args_conflicts_with_subcommands = true)]
     Session {
         #[arg(long)]
-        session: String,
+        session: Option<String>,
         #[arg(long)]
-        expected_generation: String,
+        expected_generation: Option<String>,
+        #[command(subcommand)]
+        action: Option<SessionAction>,
     },
     /// Resolve a current runtime attachment without provider or session discovery.
     Attachment {
@@ -174,13 +178,24 @@ pub enum Command {
         expected_generation: String,
         #[arg(long)]
         herdr_session: String,
+        /// Open in a new tab of this existing Space instead of a new Space.
+        #[arg(long)]
+        space: Option<String>,
+        /// Tab and catalog name (default: the current session name).
+        #[arg(long)]
+        name: Option<String>,
     },
-    /// Read existing Spaces from this session's own HERDR host.
+    /// Read existing Spaces from this session's own HERDR host, or from the named
+    /// HERDR server (`--herdr-session`) for a session that is not in HERDR yet.
     Spaces {
         #[arg(long)]
         session: String,
         #[arg(long)]
         expected_generation: String,
+        #[arg(long)]
+        herdr_session: Option<String>,
+        #[arg(long, requires = "herdr_session")]
+        herdr_socket: Option<std::path::PathBuf>,
     },
     /// Move only the selected terminal into a new tab in an existing Space.
     MoveSpace {
@@ -208,6 +223,29 @@ pub enum Command {
     },
     Cancel {
         message: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SessionAction {
+    /// Open a running session that has no HERDR terminal in a new tab of an
+    /// existing Space (Claude background sessions via `claude attach`).
+    AddToHerdr {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        /// HERDR server name.
+        #[arg(long)]
+        herdr_session: String,
+        #[arg(long)]
+        herdr_socket: Option<std::path::PathBuf>,
+        /// Existing Space (workspace) id from `api spaces`.
+        #[arg(long)]
+        space: String,
+        /// Tab name; defaults to the current session name.
+        #[arg(long)]
+        name: Option<String>,
     },
 }
 
@@ -660,7 +698,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
 }
 
 pub fn capabilities() -> Value {
-    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":11,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":12,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -679,7 +717,11 @@ pub fn capabilities() -> Value {
     "steering":{"version":1,"automatic_compaction":"native_pending_until_continuation","dedicated_compact_turn":"native_rejects_without_injection","compaction_verified_profiles":["0.164.0"],"command":"send","mode":"steer","target_command":"steer-target","providers":["codex"],"requires_expected_turn_id":true,"requires_expected_runtime_generation":true,"requires_expected_generation":true,"acceptance_only":true,"reply_correlation":"unsupported","automatic_replay":false,"queue_fallback":false,"starts_process":false,"interrupts":false},"native_protocol":{"supported_versions":crate::messaging::NATIVE_PROFILES,"version_source":"initialize.userAgent","unknown_versions":"fail_closed"},"message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"exact_item_idle_start":true,"ordinary_send_rejects_terminal_state":true,"start_ack_is_not_input_recorded":true,"owner_reservation_required":"message-recoveries"},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true,"resumable_local_summary_scan":true,"native_budget_seconds":5,"max_turns":1000,"partial_match_is_not_delivery":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
-    "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false})
+    "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false});
+    value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED"});
+    value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session","space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
+    value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
+    value
 }
 
 fn public_session(s: catalog::Session) -> Value {
@@ -716,13 +758,27 @@ fn claude_public(
         .or_else(|| s.directory.clone());
     let attached = s.attachment.is_some();
     let conversation = s.conversation_id.clone();
+    let (add_to_herdr, add_reason) = match observed {
+        Some(o) if !account_deleted => claude::attach::capability(&s, o),
+        _ => (false, Some(claude::attach::NOT_RUNNING)),
+    };
     // name_source follows the same attachment rule as Codex (public_session).
     let mut value = public_session(s);
     value["conversation_id_source"] = json!("native");
     value["availability"] = json!(availability);
     value["native_status"] = json!(observed.and_then(|o| o.native_status.clone()));
     value["native_name"] = json!(observed.and_then(|o| o.native_name.clone()));
-    value["native"] = json!({"conversation_id":conversation,"status":value["native_status"],"name":value["native_name"]});
+    value["native"] = json!({"conversation_id":conversation,"status":value["native_status"],"name":value["native_name"],
+        "kind":observed.and_then(|o| o.native_kind.clone()),"job_id":observed.and_then(|o| o.job_id.clone())});
+    // Lineage evidence: `previous_conversation_ids` (continued-in markers, linked
+    // into this entry) and a branch source that remains a separate conversation.
+    value["previous_conversation_ids"] = json!(
+        value["previous_conversation_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    );
+    value["forked_from_conversation_id"] = json!(observed.and_then(|o| o.forked_from.clone()));
     value["pid"] = json!(observed.and_then(|o| o.pid));
     value["process_start"] = json!(observed.and_then(|o| o.process_start));
     value["host_known"] = json!(attached);
@@ -758,7 +814,7 @@ fn claude_public(
     value["capabilities"] = json!({"rename":true,"native_rename":false,"resume":resumable,
         "focus":running && attached,"switch_account":false,"restart":false,"stop":false,"move_space":false,
         "change_directory":false,"move_project":false,"archive":false,"delete":false,
-        "submit":false,"queue":false,"steer":false});
+        "submit":false,"queue":false,"steer":false,"add_to_herdr":add_to_herdr});
     let resume_reason = if account_deleted {
         Some("ACCOUNT_DELETED")
     } else {
@@ -767,7 +823,7 @@ fn claude_public(
     value["capability_reasons"] = json!({"resume":resume_reason,"native_rename":caps.native_rename.reason,"switch_account":caps.account_switch.reason,
         "restart":caps.restart.reason,"stop":caps.stop.reason,"move_space":caps.move_space.reason,
         "change_directory":caps.relocate.reason,"move_project":caps.relocate.reason,"archive":caps.archive.reason,
-        "delete":caps.delete_session.reason,"submit":caps.submit.reason,"queue":caps.queue.reason,"steer":caps.steer.reason});
+        "delete":caps.delete_session.reason,"submit":caps.submit.reason,"queue":caps.queue.reason,"steer":caps.steer.reason,"add_to_herdr":add_reason});
     value
 }
 
@@ -892,7 +948,11 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["active_since"]=json!(source.filter(|s|!s.inactive).and_then(|s|clock.and_then(|(uptime,hz)|attachment_started_at(now,uptime,s.start_time,hz))));
         let unambiguous=items.iter().filter(|i|!i.inactive && i.thread_id==value["conversation_id"]).count()<=1;
         value["capabilities"]=json!({"rename":true,"move_space":running && unambiguous && source.is_some_and(|s|s.pane.starts_with("herdr/")),"resume":resume_supported && saved,"change_directory":known && running && unambiguous,"move_project":known && running && unambiguous,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":source.is_some_and(|i|i.inactive),"delete":source.is_some_and(|i|i.inactive)});
-        if archived { value["capabilities"]=json!({"rename":false,"change_directory":false,"move_project":false,"resume":false,"switch_account":false,"move_space":false,"restart":false,"stop":false,"archive":false,"delete":value["archive"]["kind"]=="managed","restore":value["archive"]["kind"]=="managed"}); }
+        let (_, add_reason) = claude::attach::codex_capability(running, source.is_some_and(|s|s.pane.starts_with("herdr/")));
+        value["capabilities"]["add_to_herdr"]=json!(false);
+        value["capability_reasons"]=json!({"add_to_herdr":add_reason});
+        value["previous_conversation_ids"]=json!(value["previous_conversation_ids"].as_array().cloned().unwrap_or_default());
+        if archived { value["capabilities"]=json!({"rename":false,"add_to_herdr":false,"change_directory":false,"move_project":false,"resume":false,"switch_account":false,"move_space":false,"restart":false,"stop":false,"archive":false,"delete":value["archive"]["kind"]=="managed","restore":value["archive"]["kind"]=="managed"}); }
         value
     }).filter(|s|match filter { ArchiveFilter::All=>true, ArchiveFilter::Archived=>s["archived"]==true, ArchiveFilter::Active=>s["archived"]!=true }).collect::<Vec<_>>();
     for session in &mut sessions {
@@ -1083,9 +1143,46 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
     let result = match command {
         Command::ResumeLaunch { command } => crate::resume::api(paths, command).await?,
         Command::Session {
+            action:
+                Some(SessionAction::AddToHerdr {
+                    session,
+                    expected_generation,
+                    herdr_session,
+                    herdr_socket,
+                    space,
+                    name,
+                }),
+            ..
+        } => {
+            claude::attach::add_to_herdr(
+                paths,
+                claude::attach::Request {
+                    session: &session,
+                    expected_generation: &expected_generation,
+                    herdr_session: &herdr_session,
+                    herdr_socket: herdr_socket.as_deref(),
+                    space: &space,
+                    name: name.as_deref(),
+                },
+            )
+            .await?
+        }
+        Command::Session {
             session,
             expected_generation,
-        } => session_details(paths, &session, &expected_generation).await?,
+            action: None,
+        } => {
+            session_details(
+                paths,
+                session
+                    .as_deref()
+                    .context("INVALID_ARGUMENT: --session is required")?,
+                expected_generation
+                    .as_deref()
+                    .context("INVALID_ARGUMENT: --expected-generation is required")?,
+            )
+            .await?
+        }
         Command::Attachment {
             session,
             expected_generation,
@@ -1282,20 +1379,27 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             session,
             expected_generation,
             herdr_session,
+            space,
+            name,
         } if catalog::resolve(paths, &session, &expected_generation)
             .is_ok_and(|s| s.provider == ProviderId::Claude.as_str()) =>
         {
             let (s, observation) = claude_selected(paths, &session, &expected_generation)?;
             claude::launch::ensure_resumable(&s, &observation)?;
+            crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
             let directory = claude::launch::resume_directory(&s, &observation)?;
+            let s = named(paths, s, &expected_generation, name.as_deref())?;
             std::env::set_current_dir(&directory)?;
-            external::hosting::launch_checked(
+            external::hosting::launch_placed(
                 paths,
                 &herdr_session,
                 &s.account,
                 Some(&s.conversation_id),
-                &[],
-                (&session, &expected_generation),
+                (&session, &s.generation()),
+                external::hosting::Placement {
+                    space: space.as_deref(),
+                    label: Some(&s.name),
+                },
             )
             .await?
         }
@@ -1303,6 +1407,8 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             session,
             expected_generation,
             herdr_session,
+            space,
+            name,
         } => {
             let (s, source) = selected(paths, &session, &expected_generation).await?;
             ensure!(
@@ -1314,19 +1420,36 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 !matches!(s.account.as_str(), "external" | "unknown"),
                 "ACCOUNT_UNAVAILABLE"
             );
-            external::hosting::launch_checked(
+            let s = named(paths, s, &expected_generation, name.as_deref())?;
+            external::hosting::launch_placed(
                 paths,
                 &herdr_session,
                 &s.account,
                 Some(&s.conversation_id),
-                &[],
-                (&session, &expected_generation),
+                (&session, &s.generation()),
+                external::hosting::Placement {
+                    space: space.as_deref(),
+                    label: name.is_some().then_some(s.name.as_str()),
+                },
             )
             .await?
         }
         Command::Spaces {
             session,
             expected_generation,
+            herdr_session: Some(herdr_session),
+            herdr_socket,
+        } => external::spaces::host_list(
+            paths,
+            &session,
+            &expected_generation,
+            &herdr_session,
+            herdr_socket.as_deref(),
+        )?,
+        Command::Spaces {
+            session,
+            expected_generation,
+            ..
         } => external::spaces::list(paths, &session, &expected_generation).await?,
         Command::MoveSpace { target } => external::spaces::start(paths, target).await?,
         Command::Operations => {
@@ -1384,6 +1507,22 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         }
     };
     print(result)
+}
+
+/// Apply an optional Start Session name before launch (generation-checked).
+fn named(
+    paths: &Paths,
+    s: catalog::Session,
+    generation: &str,
+    name: Option<&str>,
+) -> Result<catalog::Session> {
+    match name {
+        Some(name) if name != s.name => {
+            crate::launch::validate_session_name(name)?;
+            catalog::rename(paths, &s.id, generation, name)
+        }
+        _ => Ok(s),
+    }
 }
 
 fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
@@ -1546,6 +1685,7 @@ mod prefill_tests {
                 process_start: 20,
             }),
             directory: None,
+            previous_conversation_ids: vec![],
         };
         let mut source: external::Instance = serde_json::from_value(json!({"inactive":true,"account":"selected","pane":"","tmux_session":"","pid":0,"cwd":"/tmp","thread_id":"thread","rollout":"/tmp/fixture","home":"/tmp/home","binary":"codex","resume_options":[]})).unwrap();
         assert!(!source_matches(&s, &source));

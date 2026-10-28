@@ -1145,5 +1145,56 @@
       "login",
       "claude:personal"
     ]
+  },
+  "host_space_choices": {
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "generation": "0000000000000000000000000000000000000000000000000000000000000000",
+    "herdr_session": "fixture",
+    "current_space_id": null,
+    "spaces": [
+      {
+        "id": "w1",
+        "name": "Main",
+        "current": false
+      }
+    ],
+    "pane": null
+  },
+  "add_to_herdr_attached": {
+    "state": "attached",
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "generation": "1111111111111111111111111111111111111111111111111111111111111111",
+    "host": "herdr",
+    "herdr_session": "fixture",
+    "space_id": "w1",
+    "tab_id": "w1:t2",
+    "pane_id": "w1:p2",
+    "target": "herdr/fixture/w1:p2",
+    "name": "bg-view",
+    "job_id": "3f9c8301",
+    "attachment": {
+      "host": "herdr",
+      "target": "herdr/fixture/w1:p2",
+      "pid": 4242,
+      "process_start": 99
+    },
+    "starts_agent": false,
+    "sends_input": false
+  },
+  "add_to_herdr_unconfirmed": {
+    "state": "attach_unconfirmed",
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "generation": null,
+    "host": "herdr",
+    "herdr_session": "fixture",
+    "space_id": "w1",
+    "tab_id": "w1:t2",
+    "pane_id": "w1:p2",
+    "target": "herdr/fixture/w1:p2",
+    "name": "bg-view",
+    "job_id": "3f9c8301",
+    "attachment": null,
+    "starts_agent": false,
+    "sends_input": false
   }
 }

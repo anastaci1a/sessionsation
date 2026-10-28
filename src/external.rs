@@ -909,6 +909,10 @@ fn inventory_complete(
         return Ok(result);
     }
     let open_histories = open_rollouts()?;
+    // Completeness is decided after duplicate copies are reduced to the one
+    // surviving copy per thread, from a bounded tail (see rollout_scan).
+    let mut pending_completeness = std::collections::BTreeSet::new();
+    let mut scans = rollout_scan::ScanCache::load(paths);
     let live: std::collections::BTreeSet<_> = result.iter().map(|i| i.thread_id.clone()).collect();
     let config = crate::store::load_config(paths)?;
     let accounts = paths.root.join("accounts");
@@ -976,9 +980,8 @@ fn inventory_complete(
                 Some("busy".into())
             } else if !Path::new(cwd).is_dir() {
                 Some("unknown".into())
-            } else if !complete_rollout(&rollout).unwrap_or(false) {
-                Some("unfinished".into())
             } else {
+                pending_completeness.insert(rollout.clone());
                 None
             };
             result.push(Instance {
@@ -1036,24 +1039,39 @@ fn inventory_complete(
                     }
                     continue;
                 }
-                let old = fs::read(&previous.rollout)?;
-                let new = fs::read(&candidate.rollout)?;
-                let newer_copy = new == old
+                // Sizes first, then a streamed (and cached) prefix comparison:
+                // the same decisions as comparing whole files in memory.
+                let (new_len, old_len, prefix) =
+                    scans.prefix(&candidate.rollout, &previous.rollout)?;
+                let same = prefix && new_len == old_len;
+                let new_extends_old = prefix && new_len > old_len;
+                let old_extends_new = prefix && old_len >= new_len;
+                let newer_copy = same
                     && fs::metadata(&candidate.rollout)?.modified()?
                         > fs::metadata(&previous.rollout)?.modified()?;
-                if (new.starts_with(&old) && new.len() > old.len()) || newer_copy {
+                if new_extends_old || newer_copy {
                     let mut replacement = candidate;
                     if previous.block_reason.as_deref() == Some("diverged") {
                         replacement.block_reason = Some("diverged".into());
                     }
                     entry.insert(replacement);
-                } else if !old.starts_with(&new) {
+                } else if !old_extends_new {
                     entry.get_mut().block_reason = Some("diverged".into());
                 }
             }
         }
     }
-    result.extend(latest.into_values());
+    for mut survivor in latest.into_values() {
+        if survivor.block_reason.is_none()
+            && pending_completeness.contains(&survivor.rollout)
+            && !scans.complete(&survivor.rollout).unwrap_or(false)
+        {
+            survivor.block_reason = Some("unfinished".into());
+            survivor.detail = reason_detail(survivor.block_reason.as_deref()).into();
+        }
+        result.push(survivor);
+    }
+    scans.save();
     result.sort_by(|a, b| {
         a.inactive
             .cmp(&b.inactive)
@@ -2202,38 +2220,7 @@ pub fn respond_background(paths: &Paths, id: &str, approve: bool) -> Result<()> 
     respond_move(paths, id, approve)
 }
 pub(crate) fn complete_rollout(path: &Path) -> Result<bool> {
-    let file = File::open(path)?;
-    let mut terminal = false;
-    let mut seen = false;
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            // Damage in an old turn must not hide newer positive completion.
-            // Damage after the last completion still prevents stopping.
-            terminal = false;
-            seen = false;
-            continue;
-        };
-        if value["type"] != "event_msg" {
-            continue;
-        }
-        match value["payload"]["type"].as_str() {
-            Some("task_started") => {
-                terminal = false;
-                seen = true
-            }
-            Some("task_complete") => {
-                terminal = true;
-                seen = true
-            }
-            Some("turn_aborted") => {
-                terminal = false;
-                seen = true
-            }
-            _ => {}
-        }
-    }
-    Ok(seen && terminal)
+    rollout_scan::complete(path)
 }
 pub(crate) fn rollout_still_open(path: &Path) -> Result<bool> {
     Ok(open_rollouts()?.contains(path))
@@ -2513,6 +2500,7 @@ pub mod hosting;
 mod movement;
 pub mod opening;
 pub mod relocation;
+mod rollout_scan;
 pub mod session_control;
 pub mod spaces;
 pub mod tmux_inventory;

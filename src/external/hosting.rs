@@ -230,7 +230,16 @@ pub async fn launch(
     thread: Option<&str>,
     options: &[String],
 ) -> Result<Value> {
-    launch_inner(paths, session, account, thread, options, None).await
+    launch_inner(
+        paths,
+        session,
+        account,
+        thread,
+        options,
+        None,
+        Placement::default(),
+    )
+    .await
 }
 pub async fn launch_checked(
     paths: &Paths,
@@ -240,7 +249,42 @@ pub async fn launch_checked(
     options: &[String],
     expected: (&str, &str),
 ) -> Result<Value> {
-    launch_inner(paths, session, account, thread, options, Some(expected)).await
+    launch_inner(
+        paths,
+        session,
+        account,
+        thread,
+        options,
+        Some(expected),
+        Placement::default(),
+    )
+    .await
+}
+/// Where Start Session opens: a new tab in an existing Space, or (default) a new
+/// Space; `label` names the new tab.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Placement<'a> {
+    pub space: Option<&'a str>,
+    pub label: Option<&'a str>,
+}
+pub async fn launch_placed(
+    paths: &Paths,
+    session: &str,
+    account: &str,
+    thread: Option<&str>,
+    expected: (&str, &str),
+    placement: Placement<'_>,
+) -> Result<Value> {
+    launch_inner(
+        paths,
+        session,
+        account,
+        thread,
+        &[],
+        Some(expected),
+        placement,
+    )
+    .await
 }
 async fn launch_inner(
     paths: &Paths,
@@ -249,6 +293,7 @@ async fn launch_inner(
     thread: Option<&str>,
     options: &[String],
     expected: Option<(&str, &str)>,
+    placement: Placement<'_>,
 ) -> Result<Value> {
     validate_name(account)?;
     validate_name(session)?;
@@ -268,20 +313,61 @@ async fn launch_inner(
     // Probe before creating topology. An absent server is an explicit error;
     // starting/stopping headless hosting is an owner's separate operation.
     call(session, &["api", "snapshot"])?;
-    let created = call(
-        session,
-        &[
-            "workspace",
-            "create",
-            "--cwd",
-            cwd.to_str().context("working directory is not UTF-8")?,
-            "--label",
-            "sessionsation",
-            "--env",
-            "SESSIONSATION_LAUNCHER_BYPASS=1",
-            "--no-focus",
-        ],
-    )?;
+    let dir = cwd.to_str().context("working directory is not UTF-8")?;
+    let created = match placement.space {
+        Some(space) => {
+            let spaces = call(session, &["workspace", "list"])?;
+            ensure!(
+                spaces["workspaces"]
+                    .as_array()
+                    .context("INVALID_HOST_SPACES")?
+                    .iter()
+                    .any(|w| w["workspace_id"] == space),
+                "SPACE_NOT_FOUND"
+            );
+            let created = call(
+                session,
+                &[
+                    "tab",
+                    "create",
+                    "--workspace",
+                    space,
+                    "--cwd",
+                    dir,
+                    "--label",
+                    placement.label.unwrap_or("sessionsation"),
+                    "--env",
+                    "SESSIONSATION_LAUNCHER_BYPASS=1",
+                    "--no-focus",
+                ],
+            )?;
+            if let Some(actual) = created["tab"]["workspace_id"].as_str() {
+                ensure!(actual == space, "HOST_WRONG_WORKSPACE");
+            }
+            created
+        }
+        None => {
+            let created = call(
+                session,
+                &[
+                    "workspace",
+                    "create",
+                    "--cwd",
+                    dir,
+                    "--label",
+                    "sessionsation",
+                    "--env",
+                    "SESSIONSATION_LAUNCHER_BYPASS=1",
+                    "--no-focus",
+                ],
+            )?;
+            if let (Some(label), Some(tab)) = (placement.label, created["tab"]["tab_id"].as_str()) {
+                // Naming the tab is presentation only; the launch does not depend on it.
+                let _ = call(session, &["tab", "rename", tab, label]);
+            }
+            created
+        }
+    };
     let pane = created["root_pane"]["pane_id"]
         .as_str()
         .context("HERDR pane ID missing")?;
