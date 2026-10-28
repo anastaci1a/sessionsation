@@ -5,7 +5,7 @@
 use crate::{
     daemon, external,
     paths::{Paths, atomic_write, lock_file, private_dir, validate_name},
-    provider::{ProviderId, claude},
+    provider::{ProviderId, native},
 };
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -28,8 +28,12 @@ fn marker(paths: &Paths, name: &str) -> Result<std::path::PathBuf> {
 /// Names are unique across providers, so a removal marker of either provider
 /// hides the one enrolled account with this name.
 pub fn removed(paths: &Paths, name: &str) -> Result<bool> {
-    Ok(removed_for(paths, ProviderId::Codex, name)?
-        || removed_for(paths, ProviderId::Claude, name)?)
+    for provider in ProviderId::ALL {
+        if removed_for(paths, provider, name)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 fn removed_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<bool> {
     let path = marker_for(paths, provider, name)?;
@@ -187,20 +191,21 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
 pub async fn preview_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<Value> {
     match provider {
         ProviderId::Codex => preview(paths, name).await,
-        ProviderId::Claude => claude_preview(paths, name).await,
+        provider => native_preview(paths, provider, name).await,
     }
 }
 
-/// Live use of a Claude home: verified registry sessions, Claude processes with
-/// this CLAUDE_CONFIG_DIR, and unfinished headless deliveries of the account.
-pub(crate) fn claude_activity(
+/// Live use of a native-provider home: verified live sessions, provider processes
+/// with this home in their environment, and unfinished headless deliveries.
+pub(crate) fn native_activity(
     paths: &Paths,
+    provider: ProviderId,
     name: &str,
     home: &Path,
 ) -> Result<(Vec<Value>, bool, Vec<Value>)> {
     let config = crate::store::load_config(paths)?;
     let live = if home.exists() {
-        claude::live_sessions(home)
+        native::live_sessions(provider, home)
             .context("ACCOUNT_OWNERSHIP_UNVERIFIED")?
             .into_iter()
             .map(|l| json!({"conversation_id":l.session_id,"pid":l.pid,"process_start":l.process_start}))
@@ -208,7 +213,7 @@ pub(crate) fn claude_activity(
     } else {
         vec![]
     };
-    let processes = home.exists() && claude::env_in_use(&[home], &config.claude_binary);
+    let processes = home.exists() && native::env_in_use(provider, &config, home);
     let headless = crate::messaging::headless::active_for_account(paths, name)?
         .into_iter()
         .map(|id| json!({"id":id,"phase":"headless_delivery"}))
@@ -216,36 +221,39 @@ pub(crate) fn claude_activity(
     Ok((live, processes, headless))
 }
 
-async fn claude_preview(paths: &Paths, name: &str) -> Result<Value> {
+async fn native_preview(paths: &Paths, provider: ProviderId, name: &str) -> Result<Value> {
     validate_name(name)?;
     let status = daemon::call(paths, "status", json!({})).await?;
     let account = status["accounts"]
         .as_array()
         .and_then(|a| {
             a.iter()
-                .find(|a| a["name"] == name && a["provider"] == ProviderId::Claude.as_str())
+                .find(|a| a["name"] == name && a["provider"] == provider.as_str())
         })
         .context("ACCOUNT_NOT_FOUND")?;
     let adopted = account["config_home"]
         .as_str()
         .map(std::path::PathBuf::from);
-    let home = claude::home(paths, name, adopted.as_deref())?;
-    let (active, processes, operations) = claude_activity(paths, name, &home)?;
-    let transcripts = claude::transcripts(&home);
+    let home = match adopted.as_deref() {
+        Some(adopted) => adopted.to_path_buf(),
+        None => native::default_home(paths, provider, name)?,
+    };
+    let (active, processes, operations) = native_activity(paths, provider, name, &home)?;
+    let transcripts = native::transcripts(provider, &home);
     let affected = crate::catalog::list(paths)?
         .into_iter()
-        .filter(|s| s.provider == "claude" && s.account == name)
+        .filter(|s| s.provider == provider.as_str() && s.account == name)
         .map(|s| json!({"id":s.id,"name":s.name,"conversation_id":s.conversation_id}))
         .collect::<Vec<_>>();
     let history = transcripts
         .iter()
         .map(|t| json!([t.session_id, t.bytes]))
         .collect::<Vec<_>>();
-    let fingerprint = json!({"provider":"claude","name":name,"enabled":account["enabled"],"auth_required":account["auth_required"],
+    let fingerprint = json!({"provider":provider,"name":name,"enabled":account["enabled"],"auth_required":account["auth_required"],
         "config_home":account["config_home"],"history":history,"active":active,"processes":processes,"operations":operations,"affected":affected});
     let revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&fingerprint)?));
     Ok(
-        json!({"account_id":format!("claude:{name}"),"removed":removed_for(paths,ProviderId::Claude,name)?,"revision":revision,
+        json!({"account_id":format!("{provider}:{name}"),"removed":removed_for(paths,provider,name)?,"revision":revision,
         "affected_sessions":affected,"active_sessions":active,"loaded_conversations":[],"pending_operations":operations,
         "active_processes":processes,
         "can_remove":active.is_empty() && !processes && operations.is_empty(),

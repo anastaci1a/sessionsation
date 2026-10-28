@@ -154,13 +154,16 @@ async fn enrollment_requires_a_platform_and_names_are_global_across_providers() 
     assert_eq!(missing.status.code(), Some(2));
     let text = String::from_utf8_lossy(&missing.stderr);
     assert!(
-        text.contains("--platform") && text.contains("codex|claude"),
+        text.contains("--platform") && text.contains("codex|claude|gemini"),
         "{text}"
     );
-    let invalid = f.run(&["account", "add", "--platform", "gemini", "work"]);
+    let invalid = f.run(&["account", "add", "--platform", "gpt", "work"]);
     assert_eq!(invalid.status.code(), Some(2));
     let text = String::from_utf8_lossy(&invalid.stderr);
-    assert!(text.contains("codex") && text.contains("claude"), "{text}");
+    assert!(
+        text.contains("codex") && text.contains("claude") && text.contains("gemini"),
+        "{text}"
+    );
     assert!(!f.paths.root.join("accounts/work").exists());
 
     let add = f.run(&["account", "add", "--platform", "claude", "personal"]);
@@ -1220,7 +1223,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 12);
+    assert_eq!(caps["contract_revision"], 13);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1799,7 +1802,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 12);
+    assert_eq!(caps["contract_revision"], 13);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"

@@ -448,7 +448,7 @@ pub struct Transcript {
     pub path: PathBuf,
     pub bytes: u64,
 }
-fn regular_file(path: &Path) -> bool {
+pub(crate) fn regular_file(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
 }
 fn project_dirs(home: &Path) -> Vec<PathBuf> {
@@ -650,7 +650,7 @@ pub fn proc_start(pid: u32) -> Option<(char, u64)> {
         fields.get(19)?.parse().ok()?,
     ))
 }
-fn environ(pid: u32) -> Option<Vec<(String, String)>> {
+pub(crate) fn environ(pid: u32) -> Option<Vec<(String, String)>> {
     let bytes = fs::read(format!("/proc/{pid}/environ")).ok()?;
     Some(
         bytes

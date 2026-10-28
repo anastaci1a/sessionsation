@@ -175,7 +175,7 @@ fn monitoring_pause_reason(paths: &Paths, name: &str) -> Option<&'static str> {
 
 /// Provider usage in the shared account shape plus `source`/`semantics`.
 /// Codex values are the supervisor's snapshot; Claude values are projected from
-/// the statusline recorder. Returns (usage, usage_fresh, usage_state).
+/// the statusline recorder; Gemini reports no usage (state `unsupported`). Returns (usage, usage_fresh, usage_state).
 fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value, bool, String) {
     match a.provider {
         ProviderId::Codex => {
@@ -192,6 +192,12 @@ fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value
             };
             (usage, fresh, state.into())
         }
+        ProviderId::Gemini => (
+            json!({"short":null,"weekly":null,"observed_at":0,"exhausted":false,"state":"unsupported",
+                "source":crate::provider::gemini::USAGE_SOURCE,"semantics":crate::provider::gemini::USAGE_SEMANTICS}),
+            false,
+            "unsupported".into(),
+        ),
         ProviderId::Claude => match crate::provider::account_home(paths, a) {
             Ok(home) => {
                 let (usage, fresh, state) = crate::provider::claude::project_usage(&home, at);
@@ -385,35 +391,37 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             ensure!(new.codex_binary == config.codex_binary || helpers.is_empty(), "restart supervisor before changing an active Codex binary");
                             save_config(&paths,&new)?; config = new; Ok(json!({"saved":true}))
                         }
-                        "account/delete/prepare" if named(&state,params)?.provider == ProviderId::Claude => {
+                        "account/delete/prepare" if crate::provider::native::is_native(named(&state,params)?.provider) => {
+                            let provider=named(&state,params)?.provider;
                             let name=params["name"].as_str().context("missing account name")?;
                             let id=params["request_id"].as_str().context("missing deletion request")?;
                             uuid::Uuid::parse_str(id)?;
                             let record=crate::account_deletion::status(&paths,id)?;
-                            ensure!(record.account_id==format!("claude:{name}"),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
+                            ensure!(record.account_id==format!("{provider}:{name}"),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
                             let account=state.accounts.get(name).context("ACCOUNT_NOT_FOUND")?;
                             ensure!(account.deletion_id.as_deref().is_none_or(|current|current==id),"ACCOUNT_DELETION_IN_PROGRESS");
                             ensure!(account.config_home==record.external_home,"ACCOUNT_DELETION_IDENTITY_MISMATCH");
                             let home=crate::provider::account_home(&paths,account)?;
-                            crate::account_deletion::claude_idle(&paths,name,&home)?;
+                            crate::account_deletion::native_idle(&paths,provider,name,&home)?;
                             let account=state.accounts.get_mut(name).unwrap();account.deletion_id=Some(id.into());account.enabled=false;
                             store.save(&state,now(),"account_deletion_reserved",name)?;
                             Ok(json!({"reserved":true}))
                         }
-                        "account/delete/finish" if params["provider"]=="claude" => {
+                        "account/delete/finish" if matches!(params["provider"].as_str(),Some("claude"|"gemini")) => {
                             let name=params["name"].as_str().context("missing account name")?;
                             let id=params["request_id"].as_str().context("missing deletion request")?;
+                            let provider=ProviderId::parse(params["provider"].as_str().unwrap_or_default())?;
                             let record=crate::account_deletion::status(&paths,id)?;
-                            ensure!(record.account_id==format!("claude:{name}")&&record.phase=="deleting_local_data","ACCOUNT_DELETION_UNVERIFIED");
+                            ensure!(record.account_id==format!("{provider}:{name}")&&record.phase=="deleting_local_data","ACCOUNT_DELETION_UNVERIFIED");
                             match &record.external_home {
                                 Some(_) => ensure!(record.home_disposition.as_deref()==Some("left_in_place"),"ACCOUNT_DELETION_UNVERIFIED"),
                                 None => {
                                     ensure!(record.history_preserved,"ACCOUNT_DELETION_UNVERIFIED");
-                                    ensure!(!crate::provider::claude::default_home(&paths,name)?.exists(),"ACCOUNT_DATA_STILL_PRESENT");
+                                    ensure!(!crate::provider::native::default_home(&paths,provider,name)?.exists(),"ACCOUNT_DATA_STILL_PRESENT");
                                 }
                             }
                             if let Some(account)=state.accounts.get(name){
-                                ensure!(account.provider==ProviderId::Claude&&account.deletion_id.as_deref()==Some(id),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
+                                ensure!(account.provider==provider&&account.deletion_id.as_deref()==Some(id),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
                             }
                             state.accounts.remove(name);last_poll.remove(name);pending.remove(name);
                             store.save(&state,now(),"account_deleted",name)?;
@@ -456,6 +464,18 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             if let Some(existing) = state.accounts.get(name) { return Err(crate::provider::collision(existing)); }
                             if let Some(owner) = state.accounts.values().find(|a| a.display_name.as_deref() == Some(name)) { bail!("ACCOUNT_NAME_EXISTS: '{name}' is the display name of {}:{}; names and display names are unique across all accounts", owner.provider, owner.name); }
                             let config_dir = params["config_dir"].as_str().map(std::path::PathBuf::from);
+                            if provider == ProviderId::Gemini {
+                                ensure!(config_dir.is_none(), "INVALID_ARGUMENT: --config-dir is only supported for claude accounts");
+                                let (home, existing) = crate::provider::gemini::create_home(&paths,name)?;
+                                let auth = crate::provider::gemini::auth_report(&home);
+                                let mut account = Account::with_provider(ProviderId::Gemini,name.into(),String::new());
+                                account.auth_required = !auth["problem"].is_null();
+                                account.auth_detail = auth["problem"].as_str().map(str::to_owned);
+                                state.accounts.insert(name.into(),account); last_poll.remove(name);
+                                store.save(&state,now(),"account_added",name)?;
+                                return Ok(json!({"name":name,"provider":"gemini","account_id":format!("gemini:{name}"),"home":home,"adopted":false,"existing_home":existing,"auth":auth,
+                                    "login":{"action":"exec","interactive":true,"command":["sessionsation","account","login",format!("gemini:{name}")]}}));
+                            }
                             if provider == ProviderId::Claude {
                                 let adopted = config_dir.map(|dir| crate::provider::claude::validate_adopt(&paths,&state,&dir)).transpose()?;
                                 // The managed home is the normal layout; an operator-populated one is registered as is.
@@ -485,7 +505,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         }
                         "account/login" => {
                             let name = named(&state,params)?.name.clone(); let name = name.as_str();
-                            ensure!(state.accounts[name].provider == ProviderId::Codex, "UNSUPPORTED_PROVIDER_OPERATION: Claude login is interactive; run `sessionsation account login claude:{name}` in a terminal");
+                            ensure!(state.accounts[name].provider == ProviderId::Codex, "UNSUPPORTED_PROVIDER_OPERATION: Claude and Gemini login is interactive; run `sessionsation account login <provider>:{name}` in a terminal");
                             ensure!(state.accounts[name].deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             ensure!(!pending.contains(name), "account poll is in progress; retry shortly");
                             if !helpers.contains_key(name) {let rpc = Rpc::spawn(&config.codex_binary,&paths.account(name)?,&paths.root).await?; helpers.insert(name.into(),rpc);}
@@ -496,22 +516,19 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         }
                         "account/refresh" => {
                             let account = named(&state,params)?;
-                            ensure!(account.provider == ProviderId::Claude, "UNSUPPORTED_PROVIDER_OPERATION: Codex authentication is observed by the supervisor's own account poll");
+                            let provider = account.provider;
+                            ensure!(crate::provider::native::is_native(provider), "UNSUPPORTED_PROVIDER_OPERATION: Codex authentication is observed by the supervisor's own account poll");
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             let name = account.name.clone();
                             let home = crate::provider::account_home(&paths,account)?;
-                            let probed = crate::provider::claude::auth_status(&config,&home).await;
-                            let (problem, mode) = match &probed {
-                                Ok(s) => (s.problem().map(str::to_owned), json!({"logged_in":s.logged_in,"auth_method":s.auth_method,"api_provider":s.api_provider,"subscription_type":s.subscription_type})),
-                                Err(e) => (Some(e.to_string().split(':').next().unwrap_or("AUTH_STATUS_UNAVAILABLE").to_owned()), Value::Null),
-                            };
+                            let (problem, mode) = crate::provider::native::probe(provider,&config,&home).await;
                             last_poll.insert(name.clone(), now());
                             let a = state.accounts.get_mut(&name).context("unknown account")?;
                             if a.auth_required != problem.is_some() || a.auth_detail != problem {
                                 a.auth_required = problem.is_some(); a.auth_detail = problem.clone();
                                 store.save(&state,now(),"account_observed",&name)?;
                             }
-                            Ok(json!({"account_id":format!("claude:{name}"),"provider":"claude","auth_required":problem.is_some(),"auth_detail":problem,"auth_mode":mode,"observed_at":now()}))
+                            Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"auth_required":problem.is_some(),"auth_detail":problem,"auth_mode":mode,"observed_at":now()}))
                         }
                         "account/rename" => {
                             let account = named(&state,params)?;
@@ -624,7 +641,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
             Some(result) = claude_polls.recv() => {
                 pending.remove(&result.name);
                 if let Some(a) = state.accounts.get_mut(&result.name)
-                    && a.provider == ProviderId::Claude
+                    && crate::provider::native::is_native(a.provider)
                 {
                     let required = result.problem.is_some();
                     if a.auth_required != required || a.auth_detail != result.problem {
@@ -643,20 +660,17 @@ pub async fn serve(paths: Paths) -> Result<()> {
             _ = interval.tick() => {
                 for a in state.accounts.values() {
                     if !a.enabled || pending.contains(&a.name) { continue; }
-                    if a.provider == ProviderId::Claude {
-                        // Auth status only: Claude usage comes from its statusline,
-                        // never from a model request or a Codex worker.
+                    if crate::provider::native::is_native(a.provider) {
+                        // Auth status only: Claude usage comes from its statusline and
+                        // Gemini has none; never a model request or a Codex worker.
                         let cadence = if a.auth_required {CLAUDE_AUTH_REQUIRED_POLL_SECONDS} else {config.idle_poll_seconds as i64};
                         if now() - last_poll.get(&a.name).copied().unwrap_or(0) < cadence {continue;}
                         last_poll.insert(a.name.clone(),now());
                         let Ok(home) = crate::provider::account_home(&paths,a) else {continue};
                         pending.insert(a.name.clone());
-                        let (name, config, tx) = (a.name.clone(), config.clone(), claude_tx.clone());
+                        let (name, config, tx, provider) = (a.name.clone(), config.clone(), claude_tx.clone(), a.provider);
                         tokio::spawn(async move {
-                            let problem = match crate::provider::claude::auth_status(&config,&home).await {
-                                Ok(status) => status.problem().map(str::to_owned),
-                                Err(error) => Some(error.to_string().split(':').next().unwrap_or("AUTH_STATUS_UNAVAILABLE").to_owned()),
-                            };
+                            let problem = crate::provider::native::probe(provider,&config,&home).await.0;
                             let _ = tx.send(ClaudePoll{name,problem}).await;
                         });
                         continue;

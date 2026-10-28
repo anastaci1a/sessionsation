@@ -2,12 +2,14 @@
 //! dispatched from here; callers never compare provider strings themselves.
 //!
 //! Account names are globally unique across providers: `work` can be enrolled
-//! as `codex:work` or `claude:work`, never both. Public identifiers are always
+//! as `codex:work`, `claude:work` or `gemini:work`, never two of them. Public identifiers are always
 //! provider-qualified (`<provider>:<name>`). A bare name is accepted only where
 //! a human addresses an existing account (it is unambiguous because names are
 //! global); a qualified identifier must match the enrolled provider.
 pub mod claude;
 pub mod codex;
+pub mod gemini;
+pub mod native;
 
 use crate::{
     model::Account,
@@ -34,21 +36,24 @@ use std::{fmt, path::PathBuf, str::FromStr};
 pub enum ProviderId {
     Codex,
     Claude,
+    Gemini,
 }
 impl ProviderId {
-    pub const ALL: [ProviderId; 2] = [ProviderId::Codex, ProviderId::Claude];
+    pub const ALL: [ProviderId; 3] = [ProviderId::Codex, ProviderId::Claude, ProviderId::Gemini];
     pub fn as_str(self) -> &'static str {
         match self {
             ProviderId::Codex => "codex",
             ProviderId::Claude => "claude",
+            ProviderId::Gemini => "gemini",
         }
     }
     pub fn parse(value: &str) -> Result<Self> {
         match value {
             "codex" => Ok(ProviderId::Codex),
             "claude" => Ok(ProviderId::Claude),
+            "gemini" => Ok(ProviderId::Gemini),
             other => bail!(
-                "UNKNOWN_PROVIDER: '{}' is not a provider; use codex or claude",
+                "UNKNOWN_PROVIDER: '{}' is not a provider; use codex, claude or gemini",
                 other.chars().take(32).collect::<String>()
             ),
         }
@@ -66,7 +71,7 @@ impl FromStr for ProviderId {
     }
 }
 
-/// A provider-qualified account identifier (`codex:work`, `claude:personal`).
+/// A provider-qualified account identifier (`codex:work`, `claude:personal`, `gemini:me`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountRef {
     pub provider: ProviderId,
@@ -77,7 +82,7 @@ impl AccountRef {
     pub fn parse(id: &str) -> Result<Self> {
         let Some((provider, name)) = id.split_once(':') else {
             bail!(
-                "ACCOUNT_PROVIDER_REQUIRED: use <provider>:<name>, for example codex:{id} or claude:{id}"
+                "ACCOUNT_PROVIDER_REQUIRED: use <provider>:<name>, for example codex:{id}, claude:{id} or gemini:{id}"
             );
         };
         let provider = ProviderId::parse(provider)?;
@@ -146,6 +151,7 @@ pub fn account_home(paths: &Paths, account: &Account) -> Result<PathBuf> {
     match account.provider {
         ProviderId::Codex => codex::home(paths, &account.name),
         ProviderId::Claude => claude::home(paths, &account.name, account.config_home.as_deref()),
+        ProviderId::Gemini => gemini::home(paths, &account.name),
     }
 }
 
@@ -203,6 +209,7 @@ pub fn capabilities(provider: ProviderId) -> ProviderCapabilities {
     match provider {
         ProviderId::Codex => codex::capabilities(),
         ProviderId::Claude => claude::capabilities(),
+        ProviderId::Gemini => gemini::capabilities(),
     }
 }
 
@@ -221,12 +228,16 @@ mod tests {
         let bare = AccountRef::parse("work").unwrap_err().to_string();
         assert!(bare.contains("ACCOUNT_PROVIDER_REQUIRED"), "{bare}");
         assert!(
-            AccountRef::parse("gemini:work")
+            AccountRef::parse("gpt:work")
                 .unwrap_err()
                 .to_string()
                 .contains("UNKNOWN_PROVIDER")
         );
         assert!(AccountRef::parse("claude:../x").is_err());
+        assert_eq!(
+            AccountRef::parse("gemini:me").unwrap().provider,
+            ProviderId::Gemini
+        );
         let enrolled = [("work", ProviderId::Codex), ("home", ProviderId::Claude)];
         assert_eq!(
             resolve(enrolled, "work").unwrap().provider,

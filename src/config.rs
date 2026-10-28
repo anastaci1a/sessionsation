@@ -19,6 +19,8 @@ pub struct Config {
     pub claude_binary: String,
     /// Optional HOME for Claude children; unset inherits the caller's HOME.
     pub claude_session_home: Option<std::path::PathBuf>,
+    /// Gemini CLI executable used for every Gemini account.
+    pub gemini_binary: String,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -36,6 +38,7 @@ impl Default for Config {
             codex_binary: "codex".into(),
             claude_binary: "claude".into(),
             claude_session_home: None,
+            gemini_binary: "gemini".into(),
         }
     }
 }
@@ -83,6 +86,10 @@ impl Config {
         ensure!(
             !self.claude_binary.trim().is_empty(),
             "claude_binary is empty"
+        );
+        ensure!(
+            !self.gemini_binary.trim().is_empty(),
+            "gemini_binary is empty"
         );
         ensure!(
             self.claude_session_home

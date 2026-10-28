@@ -80,10 +80,10 @@ fn apply(paths: &Paths, observations: Vec<(Session, String)>) -> Result<()> {
     })
 }
 /// Whether a HERDR-attached session is verified live. Codex sessions match a
-/// discovered instance; Claude sessions (no Codex instance) require the exact
+/// discovered instance; native-provider sessions (no Codex instance) require the exact
 /// recorded process (PID and start time) of their verified attachment.
 fn attached_live(s: &Session, instances: &[external::Instance]) -> bool {
-    if s.provider == ProviderId::Claude.as_str() {
+    if crate::provider::native::of(&s.provider).is_some() {
         return s.attachment.as_ref().is_some_and(|a| {
             external::attachment_is_live(a.pid, a.process_start).unwrap_or(false)
         });
@@ -361,5 +361,55 @@ mod tests {
         )
         .unwrap();
         assert!(!attached_live(&codex, &[]));
+    }
+    #[test]
+    fn gemini_labels_and_liveness_follow_the_native_provider_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let pid = std::process::id();
+        let (_, start) = crate::provider::claude::proc_start(pid).unwrap();
+        let attach = |start| Attachment {
+            host: "herdr".into(),
+            target: "herdr/test/w1:p1".into(),
+            pid,
+            process_start: start,
+        };
+        let gemini = |label: &str, attachment| {
+            record_provider_launch(
+                &p,
+                ProviderId::Gemini,
+                "fixture",
+                &uuid::Uuid::new_v4().to_string(),
+                label,
+                Some("/work"),
+                attachment,
+            )
+            .unwrap()
+        };
+        let live = gemini("live", Some(attach(start)));
+        assert!(attached_live(&live, &[]));
+        assert!(!attached_live(
+            &gemini("reused", Some(attach(start + 1))),
+            &[]
+        ));
+        assert!(!attached_live(&gemini("detached", None), &[]));
+        // A HERDR tab label becomes the catalog label (presentation only);
+        // stale observations never undo it and identity is unchanged.
+        apply(&p, vec![(live.clone(), "HERDR tab".into())]).unwrap();
+        let renamed = list(&p)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == live.id)
+            .unwrap();
+        assert_eq!(renamed.name, "HERDR tab");
+        assert_eq!(renamed.conversation_id, live.conversation_id);
+        assert_eq!(renamed.directory.as_deref(), Some("/work"));
+        apply(&p, vec![(live.clone(), "stale".into())]).unwrap();
+        let kept = list(&p)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == live.id)
+            .unwrap();
+        assert_eq!(kept.name, "HERDR tab");
     }
 }

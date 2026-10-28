@@ -549,6 +549,10 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
             provider: ProviderId::Claude,
             name,
         }) => crate::provider::claude::launch::exec_new(paths, &name, None, Some(id)).await,
+        Ok(AccountRef {
+            provider: ProviderId::Gemini,
+            name,
+        }) => crate::provider::gemini::launch::exec_new(paths, &name, None, Some(id)).await,
     };
     if let Err(error) = result {
         change(paths, id, |r| {
@@ -567,8 +571,8 @@ pub fn attached(
 ) -> Result<catalog::Session> {
     let receipt = status(paths, id)?;
     let account = AccountRef::parse(&receipt.request.account_id)?;
-    // Claude resumes by directory; Codex keeps its directory out of the catalog.
-    let directory = (account.provider == ProviderId::Claude)
+    // Native providers resume by directory; Codex keeps its directory out of the catalog.
+    let directory = crate::provider::native::is_native(account.provider)
         .then(|| receipt.request.directory.path.to_str())
         .flatten();
     let session = catalog::complete_reserved(
@@ -594,7 +598,7 @@ pub fn attached(
 fn launch_observed(paths: &Paths, s: &catalog::Session) -> bool {
     match ProviderId::parse(&s.provider) {
         Ok(ProviderId::Codex) => crate::external::new_launch_observed(paths, s).unwrap_or(false),
-        Ok(ProviderId::Claude) => crate::provider::claude::launch_observed(s),
+        Ok(ProviderId::Claude | ProviderId::Gemini) => crate::provider::native::launch_observed(s),
         Err(_) => false,
     }
 }

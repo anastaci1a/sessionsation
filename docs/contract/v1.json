@@ -1793,7 +1793,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^(codex|claude):"
+          "pattern": "^(codex|claude|gemini):"
         },
         "kind": {
           "const": "account_delete"
@@ -1871,7 +1871,7 @@
       "properties": {
         "account_id": {
           "type": "string",
-          "pattern": "^(codex|claude):"
+          "pattern": "^(codex|claude|gemini):"
         },
         "can_delete": {
           "type": "boolean"
@@ -3255,7 +3255,7 @@
       }
     },
     "ClaudeHeadlessRequest": {
-      "description": "Revision 11: api send for provider claude. mode resume continues a stopped session; mode new starts one.",
+      "description": "Revision 11 (Gemini added in revision 13): api send for provider claude or gemini. mode resume continues a stopped session; mode new starts one.",
       "type": "object",
       "properties": {
         "api_version": {
@@ -3281,7 +3281,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^claude:"
+          "pattern": "^(claude|gemini):"
         },
         "directory": {
           "type": "string",
@@ -3395,7 +3395,7 @@
           "pattern": "^[a-f0-9]{64}$"
         },
         "provider": {
-          "const": "claude"
+          "enum": ["claude", "gemini"]
         },
         "provider_conversation_id": {
           "type": "string",
@@ -3403,7 +3403,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^claude:"
+          "pattern": "^(claude|gemini):"
         },
         "mode": {
           "enum": [
@@ -3641,10 +3641,10 @@
       "properties": {
         "account_id": {
           "type": "string",
-          "pattern": "^claude:"
+          "pattern": "^(claude|gemini):"
         },
         "provider": {
-          "const": "claude"
+          "enum": ["claude", "gemini"]
         },
         "auth_required": {
           "type": "boolean"
@@ -3692,7 +3692,7 @@
       "properties": {
         "account_id": {
           "type": "string",
-          "pattern": "^(codex|claude):"
+          "pattern": "^(codex|claude|gemini):"
         },
         "name": {
           "type": "string"

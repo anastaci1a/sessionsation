@@ -1213,3 +1213,35 @@ Schemas: `Placement`, `PlacementHost`, `Placements` in
 [fixtures](contract/fixtures.json). Clients should accept additive revision changes
 within API 1 and negotiate the placement capability rather than pin a package
 version equality. Existing observation, delivery and owner protocols are unchanged.
+
+### Gemini provider (revision 13)
+
+Additive; negotiate `contract_revision >= 13`. `api capabilities` `providers`
+gains `{"id":"gemini",...}` (same shape as Claude): `enrollment:true`,
+`adopt_config_dir:false`, `login:"interactive_exec"`, `usage:false`,
+`usage_state:"unsupported"`, `usage_source:"gemini-cli-unsupported"`,
+`native_rename:false`, `account_refresh:true`, `account_limits:false`, and
+`headless_delivery` (modes `resume`, `new`; `requires_stopped_session`;
+`approval_mode:"default"`, never `yolo`). `operations` carries the per-operation
+`{supported,reason}` table. `add_to_herdr` gains
+`unsupported:{"gemini":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"}`;
+`session_identity` gains `gemini_process_source:"cmdline_session_id_argument"`.
+
+Accounts use `gemini:NAME` ids. `api account add|login|refresh|rename|remove|restore|
+delete` behave as for Claude (`auth_mode.auth_method` is `"oauth-personal"`;
+`auth_detail` is `AUTH_REQUIRED` or null; there is no `WRONG_AUTH_MODE`). Account
+rows report `usage_state:"unsupported"`, `usage_fresh:false` and `usage` with
+`short`/`weekly` null and `state:"unsupported"`: absence of usage is never 0%.
+`account limits ... --short-used` is `UNSUPPORTED_PROVIDER_OPERATION`.
+
+Sessions have `provider:"gemini"`, `conversation_id_source:"native"`, `native`
+(`kind`/`job_id` null) and the same lifecycle fields as Claude sessions.
+`capabilities.add_to_herdr` is false with `capability_reasons.add_to_herdr`
+`SESSION_NOT_RUNNING`, `ALREADY_IN_HERDR` or `NO_NATIVE_ATTACH`; `api session
+add-to-herdr` for Gemini fails with `UNSUPPORTED_PROVIDER_OPERATION: NO_NATIVE_ATTACH...`.
+`api resume --space/--name` and `launcher` work. `api send` mode `resume`/`new`
+accepts `gemini:` sessions/accounts; receipts carry `provider:"gemini"` and
+`account_id:"gemini:NAME"` (schemas `ClaudeHeadlessRequest`/`ClaudeHeadlessReceipt`
+admit both providers). Records of both providers share
+`DATA_ROOT/claude-deliveries/`; older records without a `provider` field are Claude.
+Login and headless delivery are verified only against fakes until a real login exists.

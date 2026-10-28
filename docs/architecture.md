@@ -77,12 +77,17 @@ Cross-provider conversation conversion is outside this version.
 
 ## Providers
 
-`src/provider/` is the provider boundary: `ProviderId` (`codex`, `claude`),
+`src/provider/` is the provider boundary: `ProviderId` (`codex`, `claude`, `gemini`),
 provider-qualified `AccountRef` parsing, and an explicit `ProviderCapabilities`
 table (supported flag plus reason per operation). Codex behavior remains in the
 supervisor, discovery and lifecycle modules; Claude enrollment, environment,
 authentication probe, launch/resume plans, discovery, live identity and usage live
 in `provider/claude.rs`. Callers dispatch on `ProviderId`, never on strings.
+`provider/native.rs` dispatches the shared native-session model (account home,
+chat/transcript discovery, live identity, launch, headless delivery) between Claude
+and Gemini; Gemini enrollment, environment, file-based auth, discovery from chat
+headers and `projects.json`, /proc-based live identity and launches live in
+`provider/gemini.rs`.
 
 Account records carry `provider` and, for adopted Claude homes, `config_home`.
 Registries written before providers could enroll only Codex, so the named
@@ -97,3 +102,10 @@ history conversion or credential sharing exists. The supervisor only probes
 checked against Claude's [CLI reference](https://code.claude.com/docs/en/cli-reference),
 [authentication guidance](https://code.claude.com/docs/en/authentication) and
 [environment variables](https://code.claude.com/docs/en/env-vars).
+
+Gemini sessions are likewise bound to their `GEMINI_CLI_HOME`. Gemini has no auth
+status, live registry, rename or usage interface, so authentication is file
+presence, liveness is /proc command line plus start time, labels are
+Sessionsation-only and usage is reported as unsupported. See
+[Gemini CLI accounts and sessions](cli.md#gemini-cli-accounts-and-sessions).
+Login and headless delivery are verified only with fakes until a real login exists.

@@ -48,7 +48,7 @@ sessionsation status --json
 ```
 
 Setup starts a metadata supervisor. The config at `DATA_ROOT/config.json` selects
-`codex_binary` (default `codex` on PATH) and monitoring thresholds. Use
+`codex_binary` (default `codex` on PATH), `claude_binary`, `gemini_binary` (default `gemini`) and monitoring thresholds. Use
 `sessionsation config --help` for inspection/editing. Enrolling accounts starts
 account-specific provider workers and authentication; it is separate from setup.
 Stop your new supervisor with `sessionsation daemon stop`. Systemd user installation
@@ -72,6 +72,7 @@ default provider:
 ```sh
 sessionsation account add --platform codex example
 sessionsation account add --platform claude personal
+sessionsation account add --platform gemini me
 sessionsation account add --platform claude --config-dir /home/me/.claude existing
 sessionsation account login claude:personal
 sessionsation account managed-home existing      # adopted Claude home -> managed home
@@ -81,7 +82,7 @@ sessionsation account rename work Office         # display name only; --clear re
 ```
 
 Account names are **unique across providers**: `work` can be `codex:work` or
-`claude:work`, never both. Adding a taken name fails with `ACCOUNT_NAME_EXISTS`
+`claude:work` or `gemini:work`, never two of them. Adding a taken name fails with `ACCOUNT_NAME_EXISTS`
 naming the existing owner. Public IDs are always `<provider>:<name>`. Human
 commands also accept a bare name for an existing account (unambiguous because names
 are global); a qualified ID whose provider differs from the enrolled one fails with
@@ -542,3 +543,78 @@ with the same input and passes its output through. Recorder errors never break t
 statusline. Rate limits appear only for subscription accounts after the first API
 response; missing windows stay `null`, and readings older than 30 minutes or past
 their reset are stale. No model request is made to obtain usage.
+
+## Gemini CLI accounts and sessions
+
+Gemini CLI is the third provider. Each account is an isolated `GEMINI_CLI_HOME`
+at the managed home `DATA_ROOT/gemini-accounts/NAME` (mode 0700); everything
+Gemini keeps for it lives in `HOME/.gemini/`. Adopting an existing directory is
+not supported. An operator-placed home is registered as is under the same rules as
+Claude (`UNSAFE_ACCOUNT_HOME` otherwise). The config key `gemini_binary` (default
+`gemini`) selects the executable. The supported install is the pinned
+`@google/gemini-cli` through the host launcher; updates only by explicit reinstall.
+
+Every Gemini child is built by one function: `GEMINI_CLI_HOME` is the account
+home, `GEMINI_CLI_NO_RELAUNCH=1` (the recorded PID is the real process),
+`GEMINI_FORCE_FILE_STORAGE=true`, and ambient `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+`GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_CLOUD_PROJECT`,
+`GOOGLE_CLOUD_LOCATION`, `GOOGLE_CLOUD_ACCESS_TOKEN`,
+`GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_GEMINI_BASE_URL`,
+`GOOGLE_VERTEX_BASE_URL`, `CLOUD_SHELL`, `GEMINI_CLI_USE_COMPUTE_ADC` and
+`GEMINI_MODEL` are removed. `HOME/.gemini/settings.json` is seeded on enrollment
+and before every launch without clobbering other keys: auto-update and its notice
+off, usage statistics off, automatic session deletion off, and the Login-with-Google
+auth type when none is selected.
+
+Gemini has no `auth status` command. An account is logged in when
+`.gemini/oauth_creds.json` is a non-empty file (only stat'ed, never read) and
+`google_accounts.json` records an active account; validity is not checked without
+a network call. Launch and headless delivery are refused with `AUTH_REQUIRED`
+otherwise. `sessionsation account login gemini:NAME` (plan: `api account login`;
+also returned by `api account add gemini:NAME`) runs interactive `gemini` with
+`NO_BROWSER=true` in the account environment; the user chooses Login with Google and
+pastes the code. Refresh (`api account refresh gemini:NAME`) re-checks the files.
+Add, display-name rename, removal/restore and deletion follow the Claude semantics;
+deletion preserves the chat files, `projects.json` and prompt history in the
+preserved-conversations vault and deletes the home with its credentials, settings
+and trust files.
+
+```sh
+sessionsation account add --platform gemini me
+sessionsation account login gemini:me
+sessionsation run --account gemini:me                 # gemini --session-id UUID
+sessionsation resume SESSION-ID --expected-generation GENERATION   # gemini -r UUID
+```
+
+A new session generates its native id, records the catalog entry and working
+directory, then execs `gemini --session-id UUID`. Resume runs `gemini -r UUID` in
+the recorded directory (sessions are working-directory scoped), including through
+`api resume --herdr-session ... [--space] [--name]`. Discovery reads only the first
+line (`sessionId`, `projectHash`, `startTime`) of
+`.gemini/tmp/SLUG/chats/session-*.jsonl` plus `projects.json` for the directory,
+never message text. Gemini keeps no live registry: a session is `running` only when
+a process's command line names its id (`--session-id`/`-r UUID` after `gemini.js`
+or `gemini`), its environment has this `GEMINI_CLI_HOME` and its PID and start time
+verify. A process maps to the one catalog entry with that native id in that
+account. A conversation switched with `/resume` inside a running process is not
+visible from outside (the command line is unchanged). Otherwise `stopped`, `stale`
+(chat missing) or `unknown`. Labels are Sessionsation labels (`native_rename`
+false); a verified HERDR attachment syncs tab names exactly as for Claude.
+
+Usage is **unsupported**: Gemini exposes quota only in its interactive `/stats
+model`. Accounts report `usage_state:"unsupported"`, `usage.short`/`weekly` null,
+and nothing is shown as 0%. Account limits cannot be set. Stop, restart, account
+switch, relocation, Space moves, archive/delete and Submit/Queue/Steer are
+unsupported. Add to HERDR is unsupported (`NO_NATIVE_ATTACH`; Gemini has no attach
+to a running process): stop it, then use Start Session.
+
+Headless delivery uses `api send` as for Claude, for **stopped** sessions
+(`mode:"resume"`) and `mode:"new"`: `gemini -p "" -o json --approval-mode default
+(-r|--session-id) UUID` with the message on stdin, `GEMINI_CLI_TRUST_WORKSPACE=true`
+and the recorded directory. The approval mode is never `yolo`, so tools that need
+confirmation do not run unattended. The JSON result `{session_id,response,error?}`
+becomes the receipt's `reply`; a different reported id, a timeout or unparseable
+output is `delivery_unknown` and never replayed. Live sessions are refused
+(`SESSION_ALREADY_RUNNING`). Login, the NO_BROWSER flow, headless `-r -p` JSON and
+the process command-line shape are verified only against a fake and the installed
+CLI's source until a real login exists.

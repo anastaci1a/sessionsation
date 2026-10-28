@@ -1,17 +1,21 @@
-//! Claude headless delivery through the public `api send`/`api receipt` contract.
+//! Claude and Gemini headless delivery through the public `api send`/`api receipt`
+//! contract.
 //!
-//! `mode:"resume"` continues a STOPPED native Claude session with `claude -p
-//! --resume ID --output-format json`; `mode:"new"` starts a conversation with a
-//! pre-assigned `--session-id` whose catalog entry is recorded first. Both run in
+//! `mode:"resume"` continues a STOPPED native session (Claude `claude -p --resume
+//! ID --output-format json`; Gemini `gemini -r ID -p "" -o json`, message on stdin);
+//! `mode:"new"` starts a conversation with a pre-assigned `--session-id` whose
+//! catalog entry is recorded first. Both run in
 //! a detached worker under the account environment. The request is journaled
 //! before any provider process starts, the outcome is a durable receipt, and an
 //! uncertain outcome (timeout, crash, unparseable output, session-id mismatch) is
 //! never replayed. Live sessions are never addressed: Claude has no supported
-//! input API for a running interactive session.
+//! input API for a running interactive session. Records of both providers share
+//! `DATA_ROOT/claude-deliveries/` (the directory keeps its original name so
+//! existing receipts stay readable); each record names its provider.
 use crate::{
     catalog,
     paths::{Paths, atomic_write, lock_file, private_dir},
-    provider::{AccountRef, ProviderId, claude},
+    provider::{AccountRef, ProviderId, claude, native},
 };
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
@@ -28,6 +32,13 @@ pub const MAX_TIMEOUT_SECONDS: u64 = 3600;
 const MAX_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPLY_TEXT: usize = 64 * 1024;
 pub const SEMANTICS: &str = "headless_print";
+/// Gemini approval mode for headless turns: never `yolo`; tools that need
+/// confirmation are not run unattended.
+pub const GEMINI_APPROVAL_MODE: &str = "default";
+
+fn claude_provider() -> ProviderId {
+    ProviderId::Claude
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,6 +80,9 @@ pub struct Request {
 pub struct Record {
     pub schema_version: u32,
     pub request: Request,
+    /// Absent in records written before Gemini existed: those are Claude.
+    #[serde(default = "claude_provider")]
+    pub provider: ProviderId,
     pub session_id: String,
     pub conversation_id: String,
     pub account: String,
@@ -177,7 +191,7 @@ pub fn ensure_idle(paths: &Paths, conversation: &str) -> Result<()> {
     for r in all(paths)? {
         ensure!(
             r.conversation_id != conversation || !active(paths, &r)?,
-            "SESSION_OPERATION_IN_PROGRESS: a headless Claude delivery is using this session"
+            "SESSION_OPERATION_IN_PROGRESS: a headless delivery is using this session"
         );
     }
     Ok(())
@@ -192,7 +206,7 @@ pub fn receipt_value(r: &Record) -> Value {
         r.reply.is_some() && r.reported_session_id.as_deref() == Some(r.conversation_id.as_str());
     let correlated = matched && matches!(r.state.as_str(), "completed_with_reply" | "failed");
     json!({"message_id":r.request.message_id,"session_id":r.session_id,"accepted_generation":r.accepted_generation,
-        "provider":"claude","provider_conversation_id":r.conversation_id,"account_id":format!("claude:{}",r.account),
+        "provider":r.provider,"provider_conversation_id":r.conversation_id,"account_id":format!("{}:{}",r.provider,r.account),
         "mode":r.request.mode,"delivery_semantics":SEMANTICS,"state":r.state,"reason":r.reason,
         "facts":{"accepted_local":true,"accepted_native":started,"input_recorded":correlated,
             "input_consumed":if correlated {json!(true)} else {json!("unknown")},"reply_observed":correlated},
@@ -209,14 +223,14 @@ pub fn receipt(paths: &Paths, id: &str, cancelling: bool) -> Result<Value> {
     let r = project(paths, read(paths, id)?)?;
     ensure!(
         !cancelling || !matches!(r.state.as_str(), "pending_local" | "execution_started"),
-        "HEADLESS_CANCELLATION_UNSUPPORTED: a headless Claude delivery cannot be cancelled once admitted; read its receipt"
+        "HEADLESS_CANCELLATION_UNSUPPORTED: a headless delivery cannot be cancelled once admitted; read its receipt"
     );
     Ok(receipt_value(&r))
 }
 
 /// The enrolled, selectable account behind a headless request.
-fn usable_account(paths: &Paths, name: &str) -> Result<claude::Enrolled> {
-    let account = claude::account(paths, name)?;
+fn usable_account(paths: &Paths, provider: ProviderId, name: &str) -> Result<claude::Enrolled> {
+    let account = native::account(paths, provider, name)?;
     crate::accounts::ensure_available(paths, name)?;
     let state = crate::store::load_state_snapshot(paths)?;
     let record = state.accounts.get(name).context("ACCOUNT_NOT_FOUND")?;
@@ -224,7 +238,8 @@ fn usable_account(paths: &Paths, name: &str) -> Result<claude::Enrolled> {
     ensure!(account.enabled, "ACCOUNT_UNAVAILABLE: account is disabled");
     ensure!(
         account.home.is_dir(),
-        "ACCOUNT_HOME_UNAVAILABLE: the Claude config home does not exist"
+        "ACCOUNT_HOME_UNAVAILABLE: the {} home does not exist",
+        native::title(provider)
     );
     Ok(account)
 }
@@ -237,12 +252,22 @@ fn usable_directory(directory: &str) -> Result<()> {
     Ok(())
 }
 /// Resume preconditions against the current catalog entry and native state.
-fn resumable(paths: &Paths, session: &catalog::Session, home: &Path) -> Result<String> {
+fn resumable(
+    paths: &Paths,
+    provider: ProviderId,
+    session: &catalog::Session,
+    home: &Path,
+) -> Result<String> {
     crate::lifecycle::ensure_available(paths, &session.conversation_id, None)?;
     ensure_idle(paths, &session.conversation_id)?;
-    let observation = claude::observe(home, &session.conversation_id, session.attachment.as_ref());
-    claude::launch::ensure_resumable(session, &observation)?;
-    let directory = claude::launch::resume_directory(session, &observation)?;
+    let observation = native::observe(
+        provider,
+        home,
+        &session.conversation_id,
+        session.attachment.as_ref(),
+    );
+    native::ensure_resumable(session, &observation)?;
+    let directory = native::resume_directory(session, &observation)?;
     Ok(directory)
 }
 
@@ -258,7 +283,7 @@ fn shape(request: &Request) -> Result<u64> {
     );
     ensure!(
         request.recovery.as_ref().is_none_or(Value::is_null),
-        "UNSUPPORTED_PROVIDER_OPERATION: Claude resume is headless; omit the Codex recovery intent"
+        "UNSUPPORTED_PROVIDER_OPERATION: resume is headless for this provider; omit the Codex recovery intent"
     );
     ensure!(
         request.steering.as_ref().is_none_or(Value::is_null),
@@ -325,29 +350,28 @@ pub async fn send(paths: &Paths, request: Request) -> Result<Value> {
     let count = all(paths)?.len();
     ensure!(count < 10000, "RECEIPT_CAPACITY_REACHED");
     let config = crate::store::load_config(paths)?;
-    let (session, account, directory) = match request.mode {
+    let (provider, session, account, directory) = match request.mode {
         Mode::Resume => {
             let session = catalog::resolve(
                 paths,
                 request.session_id.as_deref().unwrap_or_default(),
                 request.expected_generation.as_deref().unwrap_or_default(),
             )?;
-            ensure!(
-                session.provider == ProviderId::Claude.as_str(),
-                "UNSUPPORTED_PROVIDER_OPERATION"
-            );
-            let account = usable_account(paths, &session.account)?;
-            let directory = resumable(paths, &session, &account.home)?;
-            claude::prelaunch_gate(&config, &account.home).await?;
-            (session, account, directory)
+            let provider =
+                native::of(&session.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
+            let account = usable_account(paths, provider, &session.account)?;
+            let directory = resumable(paths, provider, &session, &account.home)?;
+            native::prelaunch_gate(provider, &config, &account.home).await?;
+            (provider, session, account, directory)
         }
         Mode::New => {
             let target = AccountRef::parse(request.account_id.as_deref().unwrap_or_default())?;
-            let name = target.require(ProviderId::Claude)?.to_owned();
-            let account = usable_account(paths, &name)?;
+            let provider = native::require(target.provider)?;
+            let name = target.name;
+            let account = usable_account(paths, provider, &name)?;
             let directory = request.directory.clone().unwrap_or_default();
             usable_directory(&directory)?;
-            claude::prelaunch_gate(&config, &account.home).await?;
+            native::prelaunch_gate(provider, &config, &account.home).await?;
             let label = request
                 .name
                 .clone()
@@ -357,23 +381,24 @@ pub async fn send(paths: &Paths, request: Request) -> Result<Value> {
                         .and_then(|n| n.to_str())
                         .map(str::to_owned)
                 })
-                .unwrap_or_else(|| "claude".into());
+                .unwrap_or_else(|| provider.as_str().into());
             // The native id is chosen here and recorded before any execution.
             let conversation = uuid::Uuid::new_v4().to_string();
             let session = catalog::record_provider_launch(
                 paths,
-                ProviderId::Claude,
+                provider,
                 &name,
                 &conversation,
                 &label,
                 Some(&directory),
                 None,
             )?;
-            (session, account, directory)
+            (provider, session, account, directory)
         }
     };
     let mut record = Record {
         schema_version: 1,
+        provider,
         session_id: session.id.clone(),
         conversation_id: session.conversation_id.clone(),
         account: account.name.clone(),
@@ -483,10 +508,10 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
 }
 
 async fn prepare(paths: &Paths, r: &Record) -> Result<(PathBuf, fs::File)> {
-    let account = usable_account(paths, &r.account)?;
+    let account = usable_account(paths, r.provider, &r.account)?;
     let session = catalog::find(paths, &r.session_id)?;
     ensure!(
-        session.provider == ProviderId::Claude.as_str()
+        session.provider == r.provider.as_str()
             && session.account == r.account
             && session.conversation_id == r.conversation_id,
         "STALE_TARGET"
@@ -496,20 +521,21 @@ async fn prepare(paths: &Paths, r: &Record) -> Result<(PathBuf, fs::File)> {
     crate::lifecycle::ensure_available(paths, &r.conversation_id, None)?;
     match r.request.mode {
         Mode::Resume => {
-            let observation = claude::observe(
+            let observation = native::observe(
+                r.provider,
                 &account.home,
                 &r.conversation_id,
                 session.attachment.as_ref(),
             );
-            claude::launch::ensure_resumable(&session, &observation)?;
+            native::ensure_resumable(&session, &observation)?;
         }
         Mode::New => {
             ensure!(
-                claude::find_transcript(&account.home, &r.conversation_id).is_none(),
+                native::find_transcript(r.provider, &account.home, &r.conversation_id).is_none(),
                 "STALE_TARGET: the pre-assigned conversation already exists"
             );
             ensure!(
-                !claude::live_sessions(&account.home)?
+                !native::live_sessions(r.provider, &account.home)?
                     .iter()
                     .any(|l| l.session_id == r.conversation_id),
                 "SESSION_ALREADY_RUNNING"
@@ -518,7 +544,7 @@ async fn prepare(paths: &Paths, r: &Record) -> Result<(PathBuf, fs::File)> {
     }
     usable_directory(&r.directory)?;
     let config = crate::store::load_config(paths)?;
-    claude::prelaunch_gate(&config, &account.home).await?;
+    native::prelaunch_gate(r.provider, &config, &account.home).await?;
     Ok((account.home, lock))
 }
 
@@ -533,23 +559,52 @@ enum Outcome {
 
 /// Argument vector after the binary for one headless turn; the message is
 /// written to stdin (never argv: no option injection or process-list exposure).
-pub fn print_args(mode: Mode, conversation: &str) -> Vec<String> {
-    let flag = match mode {
-        Mode::Resume => "--resume",
-        Mode::New => "--session-id",
+pub fn print_args(provider: ProviderId, mode: Mode, conversation: &str) -> Vec<String> {
+    let args: Vec<&str> = match (provider, mode) {
+        (ProviderId::Gemini, _) => {
+            // `-p` takes a prompt that is appended to stdin; the real message is
+            // on stdin, so the prompt is empty. Tools needing approval are not
+            // run unattended (never yolo).
+            let flag = if mode == Mode::Resume {
+                "-r"
+            } else {
+                "--session-id"
+            };
+            vec![
+                "-p",
+                "",
+                "-o",
+                "json",
+                "--approval-mode",
+                GEMINI_APPROVAL_MODE,
+                flag,
+                conversation,
+            ]
+        }
+        (_, Mode::Resume) => vec!["-p", "--resume", conversation, "--output-format", "json"],
+        (_, Mode::New) => vec![
+            "-p",
+            "--session-id",
+            conversation,
+            "--output-format",
+            "json",
+        ],
     };
-    ["-p", flag, conversation, "--output-format", "json"]
-        .map(str::to_owned)
-        .to_vec()
+    args.into_iter().map(str::to_owned).collect()
 }
 
 async fn execute(config: &crate::config::Config, home: &Path, r: &Record) -> Outcome {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut std_command = claude::command(config, home);
+    let mut std_command = native::command(r.provider, config, home);
+    if r.provider == ProviderId::Gemini {
+        // Headless runs cannot answer the folder-trust prompt; the directory is
+        // the session's recorded one, chosen by the operator.
+        std_command.env("GEMINI_CLI_TRUST_WORKSPACE", "true");
+    }
     std::os::unix::process::CommandExt::process_group(&mut std_command, 0);
     let mut command = tokio::process::Command::from(std_command);
     command
-        .args(print_args(r.request.mode, &r.conversation_id))
+        .args(print_args(r.provider, r.request.mode, &r.conversation_id))
         .current_dir(&r.directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -592,8 +647,8 @@ async fn execute(config: &crate::config::Config, home: &Path, r: &Record) -> Out
     if bytes.len() as u64 > MAX_OUTPUT_BYTES {
         return Outcome::Unknown("OUTPUT_TOO_LARGE".into());
     }
-    let Some(result) = parse(&bytes) else {
-        let exit = status.ok().and_then(|s| s.code());
+    let exit = status.ok().and_then(|s| s.code());
+    let Some(result) = parse(r.provider, &bytes, exit) else {
         return Outcome::Unknown(format!(
             "UNPARSEABLE_OUTPUT (exit {})",
             exit.map_or("signal".into(), |c| c.to_string())
@@ -615,9 +670,36 @@ async fn execute(config: &crate::config::Config, home: &Path, r: &Record) -> Out
     Outcome::Reply { reply, session_id }
 }
 
+/// Gemini `-o json`: `{session_id, response, stats, error?}`, normalised to the
+/// shape the Claude result uses. A reported error, or a non-zero exit with a
+/// parseable result, is an error reply.
+fn parse_gemini(bytes: &[u8], exit: Option<i32>) -> Option<Value> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    if !v.is_object()
+        || !(v.get("session_id").is_some()
+            || v.get("response").is_some()
+            || v.get("error").is_some())
+    {
+        return None;
+    }
+    let error = v.get("error").filter(|e| !e.is_null());
+    let subtype = error
+        .and_then(|e| e["type"].as_str().map(str::to_owned))
+        .or_else(|| exit.filter(|c| *c != 0).map(|c| format!("exit_{c}")));
+    let stats = v.get("stats").filter(|s| s.to_string().len() <= 16 * 1024);
+    Some(
+        json!({"type":"result","result":v["response"],"session_id":v["session_id"],
+        "is_error":error.is_some() || exit != Some(0),"subtype":subtype,"num_turns":null,
+        "usage":stats,"duration_ms":null}),
+    )
+}
+
 /// The `--output-format json` result object (a single object, or the final
 /// `type:"result"` element of an event array).
-fn parse(bytes: &[u8]) -> Option<Value> {
+fn parse(provider: ProviderId, bytes: &[u8], exit: Option<i32>) -> Option<Value> {
+    if provider == ProviderId::Gemini {
+        return parse_gemini(bytes, exit);
+    }
     let v: Value = serde_json::from_slice(bytes).ok()?;
     let result = match v {
         Value::Array(items) => items.into_iter().rev().find(|i| i["type"] == "result")?,
@@ -627,15 +709,16 @@ fn parse(bytes: &[u8]) -> Option<Value> {
     (result["type"] == "result" || result.get("result").is_some()).then_some(result)
 }
 
-/// Explicit refusal for modes Claude cannot perform on a live session.
-pub fn unsupported(mode: &str) -> anyhow::Error {
+/// Explicit refusal for modes a native provider cannot perform on a live session.
+pub fn unsupported(provider: ProviderId, mode: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "UNSUPPORTED_PROVIDER_OPERATION: Claude sessions do not support {mode}: {}; use mode resume for a stopped session or mode new",
-        claude::NO_INPUT_API
+        "UNSUPPORTED_PROVIDER_OPERATION: {} sessions do not support {mode}: {}; use mode resume for a stopped session or mode new",
+        native::title(provider),
+        native::no_input_api(provider)
     )
 }
 
-/// Route one raw `api send` request: Claude headless modes, or the existing
+/// Route one raw `api send` request: Claude and Gemini headless modes, or the existing
 /// Codex contract unchanged.
 pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
     let v: Value = serde_json::from_slice(bytes).context("INVALID_REQUEST")?;
@@ -649,13 +732,14 @@ pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
         let request = headless(v).map_err(|_| anyhow::anyhow!("MESSAGE_ID_CONFLICT"))?;
         return send(paths, request).await;
     }
-    let claude_target = v["session_id"].as_str().is_some_and(|sid| {
-        catalog_provider(paths, sid).as_deref() == Some(ProviderId::Claude.as_str())
-    });
-    if claude_target {
+    let native_target = v["session_id"]
+        .as_str()
+        .and_then(|sid| catalog_provider(paths, sid))
+        .and_then(|p| native::of(&p));
+    if let Some(provider) = native_target {
         match v["mode"].as_str() {
             Some("resume") => return send(paths, headless(v)?).await,
-            Some(mode @ ("submit" | "queue" | "steer")) => return Err(unsupported(mode)),
+            Some(mode @ ("submit" | "queue" | "steer")) => return Err(unsupported(provider, mode)),
             _ => bail!("INVALID_REQUEST"),
         }
     }
@@ -676,22 +760,76 @@ mod tests {
     fn print_args_never_carry_the_message_and_select_the_session_flag() {
         let id = "11111111-1111-4111-8111-111111111111";
         assert_eq!(
-            print_args(Mode::Resume, id),
+            print_args(ProviderId::Claude, Mode::Resume, id),
             ["-p", "--resume", id, "--output-format", "json"]
         );
-        assert_eq!(print_args(Mode::New, id)[1], "--session-id");
+        assert_eq!(
+            print_args(ProviderId::Claude, Mode::New, id)[1],
+            "--session-id"
+        );
+        let g = print_args(ProviderId::Gemini, Mode::Resume, id);
+        assert_eq!(
+            g,
+            [
+                "-p",
+                "",
+                "-o",
+                "json",
+                "--approval-mode",
+                "default",
+                "-r",
+                id
+            ]
+        );
+        assert!(!g.iter().any(|a| a == "yolo" || a == "--yolo" || a == "-y"));
+        assert_eq!(
+            print_args(ProviderId::Gemini, Mode::New, id)[6],
+            "--session-id"
+        );
     }
     #[test]
     fn result_parsing_accepts_object_or_event_array_only() {
-        let o =
-            parse(br#"{"type":"result","result":"hi","session_id":"s","is_error":false}"#).unwrap();
+        let c = ProviderId::Claude;
+        let o = parse(
+            c,
+            br#"{"type":"result","result":"hi","session_id":"s","is_error":false}"#,
+            Some(0),
+        )
+        .unwrap();
         assert_eq!(o["result"], "hi");
-        let a = parse(br#"[{"type":"system"},{"type":"result","result":"x","session_id":"s"}]"#)
-            .unwrap();
+        let a = parse(
+            c,
+            br#"[{"type":"system"},{"type":"result","result":"x","session_id":"s"}]"#,
+            Some(0),
+        )
+        .unwrap();
         assert_eq!(a["result"], "x");
-        assert!(parse(b"not json").is_none());
-        assert!(parse(br#"{"type":"system"}"#).is_none());
-        assert!(parse(b"[]").is_none());
+        assert!(parse(c, b"not json", Some(0)).is_none());
+        assert!(parse(c, br#"{"type":"system"}"#, Some(0)).is_none());
+        assert!(parse(c, b"[]", Some(0)).is_none());
+        let g = ProviderId::Gemini;
+        let ok = parse(
+            g,
+            br#"{"session_id":"s","response":"hi","stats":{"models":{}}}"#,
+            Some(0),
+        )
+        .unwrap();
+        assert_eq!(ok["result"], "hi");
+        assert_eq!(ok["is_error"], false);
+        let failed = parse(
+            g,
+            br#"{"session_id":"s","error":{"type":"FatalError","message":"x"}}"#,
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(failed["is_error"], true);
+        assert_eq!(failed["subtype"], "FatalError");
+        let exit = parse(g, br#"{"session_id":"s","response":"cut"}"#, Some(53)).unwrap();
+        assert_eq!(exit["is_error"], true);
+        assert_eq!(exit["subtype"], "exit_53");
+        assert!(parse(g, b"[]", Some(0)).is_none());
+        assert!(parse(g, br#"{"other":1}"#, Some(0)).is_none());
+        assert!(parse(g, b"plain text", Some(0)).is_none());
     }
     #[test]
     fn stale_worker_projection_is_never_success_and_never_replays() {
@@ -700,6 +838,7 @@ mod tests {
         let id = uuid::Uuid::new_v4().to_string();
         let mut r = Record {
             schema_version: 1,
+            provider: ProviderId::Claude,
             request: Request {
                 api_version: 1,
                 message_id: id.clone(),

@@ -3,10 +3,10 @@
 use crate::{
     catalog, daemon, external,
     paths::Paths,
-    provider::{AccountRef, ProviderId, claude},
+    provider::{AccountRef, ProviderId, claude, native},
     store,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use clap::Subcommand;
 use serde_json::{Value, json};
 use std::{
@@ -28,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":12,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":13,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -268,27 +268,28 @@ pub enum Launcher {
     Shell,
 }
 
-/// Resolve a Claude catalog session and observe it against its account home.
-fn claude_selected(
+/// Resolve a native-provider (Claude or Gemini) catalog session and observe it
+/// against its account home.
+fn native_selected(
     paths: &Paths,
     id: &str,
     generation: &str,
 ) -> Result<(catalog::Session, claude::Observation)> {
     let s = catalog::resolve(paths, id, generation)?;
-    ensure!(
-        s.provider == ProviderId::Claude.as_str(),
-        "UNSUPPORTED_PROVIDER_OPERATION"
+    let provider = native::of(&s.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
+    let account = native::account(paths, provider, &s.account)?;
+    let observation = native::observe(
+        provider,
+        &account.home,
+        &s.conversation_id,
+        s.attachment.as_ref(),
     );
-    let account = claude::account(paths, &s.account)?;
-    let observation = claude::observe(&account.home, &s.conversation_id, s.attachment.as_ref());
     Ok((s, observation))
 }
 
 pub async fn resume_current(paths: &Paths, id: &str, generation: &str) -> Result<()> {
-    if catalog::resolve(paths, id, generation)
-        .is_ok_and(|s| s.provider == ProviderId::Claude.as_str())
-    {
-        return claude::launch::exec_resume(paths, id, generation).await;
+    if catalog::resolve(paths, id, generation).is_ok_and(|s| native::of(&s.provider).is_some()) {
+        return native::exec_resume_session(paths, id, generation).await;
     }
     let (s, source) = selected(paths, id, generation).await?;
     ensure!(
@@ -343,12 +344,12 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
             session,
             expected_generation,
         } if catalog::resolve(paths, &session, &expected_generation)
-            .is_ok_and(|s| s.provider == ProviderId::Claude.as_str()) =>
+            .is_ok_and(|s| native::of(&s.provider).is_some()) =>
         {
-            let (s, observation) = claude_selected(paths, &session, &expected_generation)?;
-            claude::launch::ensure_resumable(&s, &observation)?;
+            let (s, observation) = native_selected(paths, &session, &expected_generation)?;
+            native::ensure_resumable(&s, &observation)?;
             crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
-            cwd = Some(claude::launch::resume_directory(&s, &observation)?);
+            cwd = Some(native::resume_directory(&s, &observation)?);
             argv.extend([
                 "resume".into(),
                 session,
@@ -558,6 +559,10 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             crate::accounts::ensure_available(paths, name)?;
             if let (Some(short), Some(weekly)) = (short_used, weekly_used) {
                 ensure!(
+                    account.provider != ProviderId::Gemini,
+                    "UNSUPPORTED_PROVIDER_OPERATION: Gemini reports no usage, so there is nothing to place limits on"
+                );
+                ensure!(
                     [short, weekly]
                         .iter()
                         .all(|n| n.is_finite() && (0. ..=100.).contains(n)),
@@ -648,7 +653,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 params["config_dir"] = json!(dir);
             }
             let mut value = daemon::call(paths, "account/add", params).await?;
-            if account.provider == ProviderId::Claude {
+            if native::is_native(account.provider) {
                 // The same plan `account login` returns, so a client can go
                 // straight into the interactive login when it is required.
                 value["login"] = login_plan(paths, &account)?["login"].clone();
@@ -674,9 +679,9 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             )
             .await
         }
-        AccountCommand::Login { id } if AccountRef::parse(&id)?.provider == ProviderId::Claude => {
+        AccountCommand::Login { id } if native::is_native(AccountRef::parse(&id)?.provider) => {
             let account = account_ref(paths, &id)?;
-            claude::account(paths, &account.name)?;
+            native::account(paths, account.provider, &account.name)?;
             login_plan(paths, &account)
         }
         command => {
@@ -701,8 +706,20 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
     }
 }
 
+/// The Gemini provider entry of `api capabilities` (built apart: the whole document
+/// exceeds the `json!` macro recursion limit).
+fn gemini_provider() -> Value {
+    json!({"id":"gemini","implemented":true,"enrollment":true,"adopt_config_dir":false,"login":"interactive_exec","usage":false,"usage_state":"unsupported","usage_source":crate::provider::gemini::USAGE_SOURCE,
+        "new":true,"resume":true,"rename":true,"native_rename":false,"stop":false,
+        "account_switch":false,"restart":false,"submit":false,"queue":false,
+        "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
+        "headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false,"approval_mode":crate::messaging::headless::GEMINI_APPROVAL_MODE},
+        "force_interrupt":false,"steer":false,"cross_provider_conversion":false,
+        "operations":crate::provider::capabilities(ProviderId::Gemini)})
+}
+
 pub fn capabilities() -> Value {
-    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":12,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":13,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -712,7 +729,8 @@ pub fn capabilities() -> Value {
          "account_switch":false,"restart":false,"submit":false,"queue":false,
          "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false},
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false,
-         "operations":crate::provider::capabilities(ProviderId::Claude)}
+         "operations":crate::provider::capabilities(ProviderId::Claude)},
+        gemini_provider()
     ],"account_names":{"unique_across_providers":true,"id_format":"<provider>:<name>"},"attachment_lookup":{"version":1,"command":"attachment","discovery":false,"checks":["catalog_generation","pid_start_time"]},"relocation":{"version":1,"preview":true,"move_files":true,"non_steering":true},"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"unfinished_confirmation":true,"directory_selection":true,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "batch_observation":{"command":"observations","max_targets":64,"concurrency":8,"native_budget_seconds":5,"policies":["if_stale","refresh","cached_only"],"cache_hits_renew_evidence":false},
@@ -722,8 +740,8 @@ pub fn capabilities() -> Value {
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true,"resumable_local_summary_scan":true,"native_budget_seconds":5,"max_turns":1000,"partial_match_is_not_delivery":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
     "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false});
-    value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
-    value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session","space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
+    value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","gemini_process_source":"cmdline_session_id_argument","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
+    value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session","space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
     value
 }
@@ -742,10 +760,11 @@ fn public_session(s: catalog::Session) -> Value {
     value
 }
 
-/// Claude session projection. Sessionsation metadata (`name`, `name_source`,
+/// Native-provider (Claude or Gemini) session projection. Sessionsation metadata (`name`, `name_source`,
 /// catalog `directory`) stays distinct from native facts (`native_*`, pid).
 /// Availability is running/stopped/stale/unknown; never derived from a title.
-fn claude_public(
+fn native_public(
+    provider: ProviderId,
     s: catalog::Session,
     observed: Option<&claude::Observation>,
     account_deleted: bool,
@@ -763,7 +782,7 @@ fn claude_public(
     let attached = s.attachment.is_some();
     let conversation = s.conversation_id.clone();
     let (add_to_herdr, add_reason) = match observed {
-        Some(o) if !account_deleted => claude::attach::capability(&s, o),
+        Some(o) if !account_deleted => native::add_to_herdr_capability(provider, &s, o),
         _ => (false, Some(claude::attach::NOT_RUNNING)),
     };
     // name_source follows the same attachment rule as Codex (public_session).
@@ -806,7 +825,7 @@ fn claude_public(
         "stale" => Some("history_unavailable"),
         _ => Some("unverified_history"),
     });
-    let caps = crate::provider::capabilities(ProviderId::Claude);
+    let caps = crate::provider::capabilities(provider);
     let usable_directory = directory
         .as_deref()
         .is_some_and(|d| std::path::Path::new(d).is_absolute() && std::path::Path::new(d).is_dir());
@@ -916,15 +935,15 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
     let accounts = project_accounts(paths, accounts)?;
     let clock = boot_clock();
     let now = daemon::now();
-    let observed = claude::reconcile(paths).unwrap_or_default();
+    let observed = native::reconcile(paths).unwrap_or_default();
     let catalog_sessions = catalog::list(paths)?;
     let placements = catalog::placement::project(paths, &catalog_sessions)?;
     let archives = external::archiving::metadata(paths)?;
     let mut sessions=catalog_sessions.into_iter().filter(|s|archives.get(&s.id).is_none_or(|a|a["state"]!="deleted")).map(|s| {
-        if s.provider == ProviderId::Claude.as_str() {
+        if let Some(provider) = native::of(&s.provider) {
             let id = s.id.clone();
-            let deleted = !observed.contains_key(&id) && claude::deleted(paths, &s.account).unwrap_or(false);
-            let mut value = claude_public(s, observed.get(&id).map(|(o, _)| o), deleted);
+            let deleted = !observed.contains_key(&id) && native::deleted(paths, provider, &s.account).unwrap_or(false);
+            let mut value = native_public(provider, s, observed.get(&id).map(|(o, _)| o), deleted);
             value["placement"] = placements["memberships"][id.as_str()].clone();
             return value;
         }
@@ -1076,7 +1095,7 @@ pub fn attachment(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
 pub fn repair_identity(paths: &Paths) -> Result<Value> {
     let before = catalog::aliases(paths)?;
     let healed = catalog::repair_identity(paths)?;
-    claude::reconcile(paths)?;
+    native::reconcile(paths)?;
     let after = catalog::aliases(paths)?;
     let sessions = catalog::list(paths)?;
     let merged: Vec<Value> = after
@@ -1103,17 +1122,17 @@ pub fn repair_identity(paths: &Paths) -> Result<Value> {
 
 pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
     let items = inventory(paths).await?;
-    let observed = claude::reconcile(paths).unwrap_or_default();
+    let observed = native::reconcile(paths).unwrap_or_default();
     let session = catalog::resolve(paths, id, generation)?;
-    if session.provider == ProviderId::Claude.as_str() {
+    if let Some(provider) = native::of(&session.provider) {
         let placement =
             catalog::placement::project(paths, std::slice::from_ref(&session))?["memberships"]
                 [&session.id]
                 .clone();
         let account_id = format!("{}:{}", session.provider, session.account);
-        let deleted =
-            !observed.contains_key(id) && claude::deleted(paths, &session.account).unwrap_or(false);
-        let mut value = claude_public(session, observed.get(id).map(|(o, _)| o), deleted);
+        let deleted = !observed.contains_key(id)
+            && native::deleted(paths, provider, &session.account).unwrap_or(false);
+        let mut value = native_public(provider, session, observed.get(id).map(|(o, _)| o), deleted);
         value["placement"] = placement;
         value["account_id"] = json!(account_id);
         value["original_host"] = Value::Null;
@@ -1189,6 +1208,14 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 }),
             ..
         } => {
+            if let Ok(s) = catalog::resolve(paths, &session, &expected_generation)
+                && s.provider == ProviderId::Gemini.as_str()
+            {
+                bail!(
+                    "UNSUPPORTED_PROVIDER_OPERATION: {}",
+                    crate::provider::gemini::NO_HERDR_ATTACH
+                );
+            }
             claude::attach::add_to_herdr(
                 paths,
                 claude::attach::Request {
@@ -1307,16 +1334,17 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             name,
         } => {
             inventory(paths).await?;
-            if catalog::resolve(paths, &session, &expected_generation)?.provider
-                == ProviderId::Claude.as_str()
+            if let Some(provider) =
+                native::of(&catalog::resolve(paths, &session, &expected_generation)?.provider)
             {
                 // The same path as Codex: a HERDR-attached session renames its tab
                 // (name_source herdr_last_observed); otherwise the catalog label.
-                // The native Claude title is applied as --name on the next launch/resume.
+                // Claude applies the label as --name on the next launch/resume; Gemini has no native title.
                 let mut value = public_session(
                     catalog::names::rename(paths, &session, &expected_generation, &name).await?,
                 );
-                value["native_rename"] = json!({"supported":false,"reason":claude::LABEL_ONLY});
+                value["native_rename"] =
+                    json!({"supported":false,"reason":native::label_only(provider)});
                 value
             } else {
                 public_session(
@@ -1421,12 +1449,12 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             space,
             name,
         } if catalog::resolve(paths, &session, &expected_generation)
-            .is_ok_and(|s| s.provider == ProviderId::Claude.as_str()) =>
+            .is_ok_and(|s| native::of(&s.provider).is_some()) =>
         {
-            let (s, observation) = claude_selected(paths, &session, &expected_generation)?;
-            claude::launch::ensure_resumable(&s, &observation)?;
+            let (s, observation) = native_selected(paths, &session, &expected_generation)?;
+            native::ensure_resumable(&s, &observation)?;
             crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
-            let directory = claude::launch::resume_directory(&s, &observation)?;
+            let directory = native::resume_directory(&s, &observation)?;
             let s = named(paths, s, &expected_generation, name.as_deref())?;
             std::env::set_current_dir(&directory)?;
             external::hosting::launch_placed(

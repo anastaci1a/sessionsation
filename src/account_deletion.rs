@@ -2,7 +2,7 @@
 use crate::{
     accounts, catalog, daemon, external,
     paths::{Paths, atomic_write, lock_file, private_dir, validate_name},
-    provider::{ProviderId, claude},
+    provider::{ProviderId, native},
 };
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -101,9 +101,9 @@ pub async fn preview(paths: &Paths, provider: ProviderId, name: &str) -> Result<
         .collect();
     let capable = state["capabilities"]["account_deletion"] == true;
     let mut value = json!({"account_id":format!("{provider}:{name}"),"can_delete":capable&&!affected.iter().any(|s|s["running"]==true),"owner_upgrade_required":!capable,"affected_sessions":affected,"preserves_history":true,"deletes_local_credentials":true,"upstream_account_unchanged":true,"file_scanning":false});
-    if provider == ProviderId::Claude {
+    if native::is_native(provider) {
         let adopted = account["config_home"].as_str();
-        value["provider"] = json!("claude");
+        value["provider"] = json!(provider);
         value["adopted_config_home"] = json!(adopted);
         value["home_disposition"] = json!(if adopted.is_some() {
             "left_in_place"
@@ -126,9 +126,12 @@ fn spawn(paths: &Paths, r: &Record) -> Result<()> {
         .env_remove("CODEX_API_KEY")
         .env_remove("CODEX_ACCESS_TOKEN")
         .env_remove("CLAUDE_CONFIG_DIR");
-    for name in crate::provider::claude::STRIPPED_ENV {
-        command.env_remove(name);
+    for provider in native::NATIVE {
+        for name in native::stripped_env(provider) {
+            command.env_remove(name);
+        }
     }
+    command.env_remove("GEMINI_CLI_HOME");
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -146,16 +149,17 @@ fn account_home(paths: &Paths, name: &str) -> Result<PathBuf> {
     );
     paths.account(name)
 }
-/// The managed Claude home, refusing a symlinked or foreign `claude-accounts` parent.
-fn claude_managed_home(paths: &Paths, name: &str) -> Result<PathBuf> {
-    let parent = fs::symlink_metadata(paths.root.join("claude-accounts"))?;
+/// The managed native-provider home, refusing a symlinked or foreign parent
+/// (`claude-accounts` or `gemini-accounts`).
+fn native_managed_home(paths: &Paths, provider: ProviderId, name: &str) -> Result<PathBuf> {
+    let parent = fs::symlink_metadata(paths.root.join(native::managed_parent(provider)))?;
     ensure!(
         parent.is_dir()
             && !parent.file_type().is_symlink()
             && parent.uid() == unsafe { libc::geteuid() },
         "UNSAFE_ACCOUNT_PARENT"
     );
-    claude::default_home(paths, name)
+    native::default_home(paths, provider, name)
 }
 pub async fn start(
     paths: &Paths,
@@ -200,7 +204,7 @@ pub async fn start(
         .context("ACCOUNT_NOT_FOUND")?;
     let external_home = match provider {
         ProviderId::Claude => account["config_home"].as_str().map(PathBuf::from),
-        ProviderId::Codex => None,
+        ProviderId::Codex | ProviderId::Gemini => None,
     };
     let source_inode = match (provider, &external_home) {
         (ProviderId::Codex, _) => {
@@ -211,8 +215,8 @@ pub async fn start(
             );
             Some(home.ino())
         }
-        (ProviderId::Claude, None) => {
-            let home = fs::symlink_metadata(claude_managed_home(paths, name)?)?;
+        (ProviderId::Claude | ProviderId::Gemini, None) => {
+            let home = fs::symlink_metadata(native_managed_home(paths, provider, name)?)?;
             ensure!(
                 home.is_dir() && !home.file_type().is_symlink(),
                 "UNSAFE_ACCOUNT_DATA"
@@ -220,7 +224,7 @@ pub async fn start(
             Some(home.ino())
         }
         // The adopted directory is never modified, so its identity is not a precondition.
-        (ProviderId::Claude, Some(_)) => None,
+        (ProviderId::Claude | ProviderId::Gemini, Some(_)) => None,
     };
     let mut r = Record {
         id: id.into(),
@@ -364,8 +368,10 @@ fn preserve(home: &Path, vault: &Path) -> Result<()> {
     Ok(())
 }
 async fn perform(paths: &Paths, r: &mut Record) -> Result<()> {
-    if r.account_id.starts_with("claude:") {
-        return perform_claude(paths, r).await;
+    for provider in native::NATIVE {
+        if r.account_id.starts_with(&format!("{provider}:")) {
+            return perform_native(paths, r, provider).await;
+        }
     }
     perform_codex(paths, r).await
 }
@@ -567,16 +573,60 @@ fn preserve_claude(home: &Path, vault: &Path) -> Result<()> {
     }
     Ok(())
 }
-/// Refuse while a verified live Claude session, a Claude process using this
-/// CLAUDE_CONFIG_DIR, or an unfinished headless delivery uses the account.
-pub(crate) fn claude_idle(paths: &Paths, name: &str, home: &Path) -> Result<()> {
-    let (live, processes, operations) = accounts::claude_activity(paths, name, home)?;
+/// Gemini conversation history inside a managed home: chat files under
+/// `.gemini/tmp`, prompt history under `.gemini/history` and the project
+/// registry that maps working directories to them. Credentials, account
+/// records, settings and trust files (`oauth_creds.json`, `google_accounts.json`,
+/// `settings.json`, `trustedFolders.json`) stay behind and are deleted with the home.
+fn gemini_history_entry(name: &str) -> bool {
+    matches!(name, "tmp" | "history" | "projects.json")
+}
+fn preserve_gemini(home: &Path, vault: &Path) -> Result<()> {
+    private_dir(vault)?;
+    let source = home.join(".gemini");
+    let Ok(entries) = fs::read_dir(&source) else {
+        return Ok(());
+    };
+    let target = vault.join(".gemini");
+    for e in entries {
+        let e = e?;
+        let name = e.file_name();
+        if !gemini_history_entry(name.to_str().context("INVALID_HISTORY_NAME")?) {
+            continue;
+        }
+        no_symlinks(&e.path())?;
+        private_dir(&target)?;
+        let dest = target.join(&name);
+        ensure!(!dest.exists(), "PRESERVED_HISTORY_COLLISION");
+        fs::rename(e.path(), &dest).context("HISTORY_MOVE_FAILED_SOURCE_RETAINED")?;
+        fs::File::open(&source)?.sync_all()?;
+        fs::File::open(&target)?.sync_all()?;
+    }
+    Ok(())
+}
+fn preserve_native(provider: ProviderId, home: &Path, vault: &Path) -> Result<()> {
+    match provider {
+        ProviderId::Gemini => preserve_gemini(home, vault),
+        _ => preserve_claude(home, vault),
+    }
+}
+/// Refuse while a verified live session, a provider process using this home
+/// (CLAUDE_CONFIG_DIR or GEMINI_CLI_HOME), or an unfinished headless delivery uses
+/// the account.
+pub(crate) fn native_idle(
+    paths: &Paths,
+    provider: ProviderId,
+    name: &str,
+    home: &Path,
+) -> Result<()> {
+    let (live, processes, operations) = accounts::native_activity(paths, provider, name, home)?;
     ensure!(live.is_empty(), "ACCOUNT_HAS_RUNNING_SESSIONS");
     ensure!(!processes, "ACCOUNT_HAS_RUNNING_PROCESSES");
     ensure!(operations.is_empty(), "ACCOUNT_HAS_PENDING_OPERATIONS");
     Ok(())
 }
-async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
+async fn perform_native(paths: &Paths, r: &mut Record, provider: ProviderId) -> Result<()> {
+    let title = native::title(provider);
     ensure!(
         r.history_home
             == paths
@@ -588,7 +638,7 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
     );
     let name = r
         .account_id
-        .strip_prefix("claude:")
+        .strip_prefix(&format!("{provider}:"))
         .context("UNSUPPORTED_PROVIDER_OPERATION")?
         .to_owned();
     let _account = accounts::operation_lock(paths, &name)?;
@@ -598,7 +648,7 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
             daemon::call(
                 &paths,
                 "account/delete/finish",
-                json!({"name":name,"provider":"claude","request_id":id}),
+                json!({"name":name,"provider":provider,"request_id":id}),
             )
             .await
         }
@@ -607,7 +657,7 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
         .as_array()
         .is_some_and(|aa| {
             aa.iter()
-                .any(|a| a["name"] == name.as_str() && a["provider"] == "claude")
+                .any(|a| a["name"] == name.as_str() && a["provider"] == provider.as_str())
         });
     if let Some(external) = r.external_home.clone() {
         // Adopted config directory: only the account record is removed. The
@@ -617,9 +667,9 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
                 paths,
                 r,
                 "checking_active",
-                "Checking live Claude sessions, processes and headless deliveries.",
+                &format!("Checking live {title} sessions, processes and headless deliveries."),
             )?;
-            claude_idle(paths, &name, &external)?;
+            native_idle(paths, provider, &name, &external)?;
             phase(
                 paths,
                 r,
@@ -629,10 +679,10 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
             daemon::call(
                 paths,
                 "account/delete/prepare",
-                json!({"name":name,"provider":"claude","request_id":r.id}),
+                json!({"name":name,"provider":provider,"request_id":r.id}),
             )
             .await?;
-            claude_idle(paths, &name, &external)?;
+            native_idle(paths, provider, &name, &external)?;
             r.home_disposition = Some("left_in_place".into());
             phase(
                 paths,
@@ -649,7 +699,7 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
         );
         return phase(paths, r, "complete", &detail);
     }
-    let home = claude_managed_home(paths, &name)?;
+    let home = native_managed_home(paths, provider, &name)?;
     if !home.exists() {
         ensure!(
             r.source_inode.is_some() && r.history_home.is_dir() && r.history_preserved,
@@ -669,7 +719,7 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
             paths,
             r,
             "complete",
-            "Local Claude config home and credentials deleted; conversation history retained.",
+            &format!("Local {title} home and credentials deleted; conversation history retained."),
         );
     }
     let m = fs::symlink_metadata(&home)?;
@@ -682,9 +732,9 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
         paths,
         r,
         "checking_active",
-        "Checking live Claude sessions, processes and headless deliveries.",
+        &format!("Checking live {title} sessions, processes and headless deliveries."),
     )?;
-    claude_idle(paths, &name, &home)?;
+    native_idle(paths, provider, &name, &home)?;
     phase(
         paths,
         r,
@@ -694,17 +744,17 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
     daemon::call(
         paths,
         "account/delete/prepare",
-        json!({"name":name,"provider":"claude","request_id":r.id}),
+        json!({"name":name,"provider":provider,"request_id":r.id}),
     )
     .await?;
-    claude_idle(paths, &name, &home)?;
+    native_idle(paths, provider, &name, &home)?;
     private_dir(&paths.root.join("preserved-conversations"))?;
     private_dir(r.history_home.parent().context("INVALID_HISTORY_VAULT")?)?;
     phase(
         paths,
         r,
         "preserving_history",
-        "Moving Claude transcripts and history to private preserved storage.",
+        &format!("Moving {title} transcripts and history to private preserved storage."),
     )?;
     let manifest = r
         .history_home
@@ -714,13 +764,13 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
     atomic_write(
         &manifest,
         &serde_json::to_vec(
-            &json!({"version":1,"provider":"claude","account":name,"request_id":r.id,"home":r.history_home}),
+            &json!({"version":1,"provider":provider,"account":name,"request_id":r.id,"home":r.history_home}),
         )?,
     )?;
-    preserve_claude(&home, &r.history_home)?;
+    preserve_native(provider, &home, &r.history_home)?;
     r.history_preserved = true;
     save(paths, r)?;
-    claude_idle(paths, &name, &home)?;
+    native_idle(paths, provider, &name, &home)?;
     ensure!(
         fs::symlink_metadata(&home)?.ino() == r.source_inode.unwrap_or_default(),
         "ACCOUNT_HOME_REPLACED"
@@ -730,16 +780,20 @@ async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
         paths,
         r,
         "deleting_local_data",
-        "Deleting this Claude account's remaining local files and credentials; preserved conversations are outside this directory.",
+        &format!(
+            "Deleting this {title} account's remaining local files and credentials; preserved conversations are outside this directory."
+        ),
     )?;
     fs::remove_dir_all(&home).context("ACCOUNT_LOCAL_DATA_CLEANUP_FAILED")?;
-    fs::File::open(paths.root.join("claude-accounts"))?.sync_all()?;
+    fs::File::open(paths.root.join(native::managed_parent(provider)))?.sync_all()?;
     finish(paths, &name, &r.id).await?;
     phase(
         paths,
         r,
         "complete",
-        "Local Claude config home and credentials deleted. Conversation history preserved; upstream account unchanged.",
+        &format!(
+            "Local {title} home and credentials deleted. Conversation history preserved; upstream account unchanged."
+        ),
     )
 }
 /// Histories stay in discovery under their original account identity after the

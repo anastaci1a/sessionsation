@@ -4,10 +4,14 @@ A Linux CLI for managing coding-agent accounts and named sessions. It keeps acco
 selection, conversation history and lifecycle operations in one backend; terminal
 hosting is handled separately by tmux or [HERDR](https://herdr.dev).
 
-**Early development.** Codex and Claude Code are implemented providers. Claude
+**Early development.** Codex, Claude Code and Gemini CLI are implemented providers. Claude
 supports subscription accounts (isolated config homes), new/resume, live session
 tracking, label rename and statusline usage; lifecycle control, account switching
-and messaging remain Codex-only. There is no cross-provider conversation conversion.
+and messaging remain Codex-only.
+Gemini CLI supports Login-with-Google accounts (isolated homes), new/resume,
+live tracking, label rename and headless delivery to stopped sessions; usage is
+unsupported. Its login and headless delivery are verified only against fakes and
+the installed CLI source until a real login exists. There is no cross-provider conversation conversion.
 
 Today the CLI provides account enrollment, usage/reset reporting, enable/disable,
 local account deletion with preserved conversations, session discovery, new/resume,

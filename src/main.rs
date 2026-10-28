@@ -18,7 +18,7 @@ use std::path::PathBuf;
 #[command(
     version,
     about = "CLI-first account and session manager",
-    long_about = "Account-aware Codex and Claude Code sessions in tmux and HERDR. Use api for the versioned JSON contract."
+    long_about = "Account-aware Codex, Claude Code and Gemini CLI sessions in tmux and HERDR. Use api for the versioned JSON contract."
 )]
 struct Cli {
     #[arg(
@@ -318,7 +318,7 @@ enum Commands {
     /// Run a deterministic offline scenario. Never starts a provider or reads credentials.
     #[command(hide = true)]
     Simulate { scenario: PathBuf },
-    /// Start a session with a selected enrolled account (Codex or Claude Code); managed switching remains gated.
+    /// Start a session with a selected enrolled account (Codex, Claude Code or Gemini CLI); managed switching remains gated.
     Run {
         /// Terminal hosting; inline retains the invoking terminal.
         #[arg(long, value_enum, default_value = "inline")]
@@ -380,21 +380,21 @@ enum ProviderHookCommand {
 enum AccountCommand {
     /// Enroll an account. Names are unique across providers.
     #[command(
-        after_help = "Examples:\n  sessionsation account add --platform codex work\n  sessionsation account add --platform claude personal\n  sessionsation account add --platform claude --config-dir /home/me/.claude existing"
+        after_help = "Examples:\n  sessionsation account add --platform codex work\n  sessionsation account add --platform claude personal\n  sessionsation account add --platform claude --config-dir /home/me/.claude existing\n  sessionsation account add --platform gemini me"
     )]
     Add {
         /// Provider for the new account (required; no default).
-        #[arg(long, value_enum, value_name = "codex|claude")]
+        #[arg(long, value_enum, value_name = "codex|claude|gemini")]
         platform: ProviderId,
         /// Claude only: adopt an existing CLAUDE_CONFIG_DIR in place (absolute; never copied or moved).
         #[arg(long, value_name = "DIR")]
         config_dir: Option<PathBuf>,
-        /// Claude: do not start the interactive login after enrolling a fresh managed home.
+        /// Claude and Gemini: do not start the interactive login after enrolling a fresh managed home.
         #[arg(long)]
         no_login: bool,
         name: String,
     },
-    /// Log in: Codex prints a device code; Claude runs `claude auth login --claudeai` here.
+    /// Log in: Codex prints a device code; Claude runs `claude auth login --claudeai` here; Gemini runs `gemini` with NO_BROWSER=true here (choose Login with Google).
     Login {
         /// NAME or PROVIDER:NAME.
         name: String,
@@ -417,7 +417,7 @@ enum AccountCommand {
     },
     /// List accounts of every provider (table; --json for machine output).
     List {
-        #[arg(long, value_enum, value_name = "codex|claude")]
+        #[arg(long, value_enum, value_name = "codex|claude|gemini")]
         platform: Option<ProviderId>,
         #[arg(long)]
         json: bool,
@@ -604,7 +604,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             daemon::ensure_started(&paths).await?;
             println!(
-                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add --platform codex|claude <name>`.\nNative switching remains blocked; inspect `sessionsation doctor --probe`.",
+                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add --platform codex|claude|gemini <name>`.\nNative switching remains blocked; inspect `sessionsation doctor --probe`.",
                 paths.root.display()
             );
         }
@@ -732,45 +732,48 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Account {
             command: AccountCommand::Login { name },
-        } if resolve_account(&paths, &name)?.provider == ProviderId::Claude => {
-            // Interactive official subscription login in this terminal, with the
-            // account's isolated environment. Credentials never pass through us.
-            use std::os::unix::process::CommandExt;
-            let account = provider::claude::account(&paths, &resolve_account(&paths, &name)?.name)?;
+        } if provider::native::is_native(resolve_account(&paths, &name)?.provider) => {
+            // Interactive official login in this terminal, with the account's
+            // isolated environment. Credentials never pass through us.
+            let resolved = resolve_account(&paths, &name)?;
+            let account = provider::native::account(&paths, resolved.provider, &resolved.name)?;
             let config = store::load_config(&paths)?;
-            let mut command = provider::claude::command(&config, &account.home);
-            command
-                .args(&provider::claude::login_argv(&config)[1..])
-                .current_dir(&account.home);
-            return Err(command.exec()).context("could not start claude auth login");
+            return Err(exec_login(&config, resolved.provider, &account.home));
         }
         Commands::Account {
             command:
                 AccountCommand::Add {
-                    platform: ProviderId::Claude,
+                    platform: platform @ (ProviderId::Claude | ProviderId::Gemini),
                     config_dir,
                     no_login,
                     name,
                 },
         } => {
+            anyhow::ensure!(
+                config_dir.is_none() || platform == ProviderId::Claude,
+                "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
+            );
             daemon::ensure_started(&paths).await?;
             let adopted = config_dir.is_some();
-            let mut params = json!({"name":name,"provider":"claude"});
+            let mut params = json!({"name":name,"provider":platform});
             if let Some(dir) = config_dir {
                 params["config_dir"] = json!(dir);
             }
             let value = daemon::call(&paths, "account/add", params).await?;
             let auth = match value["auth"]["problem"].as_str() {
+                None if platform == ProviderId::Gemini => {
+                    "logged in (Login with Google)".to_owned()
+                }
                 None => "logged in (claude.ai subscription)".to_owned(),
                 Some("AUTH_REQUIRED") => {
-                    format!("not logged in; run: sessionsation account login claude:{name}")
+                    format!("not logged in; run: sessionsation account login {platform}:{name}")
                 }
                 Some(problem) => {
-                    format!("{problem}; run: sessionsation account login claude:{name}")
+                    format!("{problem}; run: sessionsation account login {platform}:{name}")
                 }
             };
             println!(
-                "Enrolled claude:{name} ({} config home {}).\nAuth: {auth}\nCheck: sessionsation account list",
+                "Enrolled {platform}:{name} ({} home {}).\nAuth: {auth}\nCheck: sessionsation account list",
                 if value["existing_home"] == true {
                     "registered existing"
                 } else {
@@ -787,15 +790,13 @@ async fn run(cli: Cli) -> Result<()> {
                 && !no_login
                 && std::io::stdin().is_terminal()
             {
-                use std::os::unix::process::CommandExt;
-                println!("Starting Claude login for claude:{name}...");
-                let account = provider::claude::account(&paths, &name)?;
+                println!(
+                    "Starting {} login for {platform}:{name}...",
+                    provider::native::title(platform)
+                );
+                let account = provider::native::account(&paths, platform, &name)?;
                 let config = store::load_config(&paths)?;
-                let mut command = provider::claude::command(&config, &account.home);
-                command
-                    .args(&provider::claude::login_argv(&config)[1..])
-                    .current_dir(&account.home);
-                return Err(command.exec()).context("could not start claude auth login");
+                return Err(exec_login(&config, platform, &account.home));
             }
         }
         Commands::Account {
@@ -960,7 +961,7 @@ async fn run(cli: Cli) -> Result<()> {
             // HERDR tab/catalog rename path as `api rename`.
             let claude = sessionsation::catalog::list(&paths)?
                 .into_iter()
-                .find(|s| s.id == session && s.provider == ProviderId::Claude.as_str());
+                .find(|s| s.id == session && provider::native::of(&s.provider).is_some());
             if let Some(s) = claude {
                 let renamed =
                     sessionsation::catalog::names::rename(&paths, &s.id, &s.generation(), &name)
@@ -1168,7 +1169,7 @@ async fn run(cli: Cli) -> Result<()> {
                     "--session is reserved for managed launching"
                 );
                 let account = resolve_account(&paths, &account)?;
-                if account.provider == ProviderId::Claude && matches!(host, Host::Inline) {
+                if provider::native::is_native(account.provider) && matches!(host, Host::Inline) {
                     anyhow::ensure!(
                         herdr_session.is_none(),
                         "--herdr-session requires --host herdr"
@@ -1180,13 +1181,24 @@ async fn run(cli: Cli) -> Result<()> {
                     if let Some(thread) = thread {
                         let s = sessionsation::catalog::list(&paths)?
                             .into_iter()
-                            .find(|s| s.provider == "claude" && s.conversation_id == thread && s.account == account.name)
-                            .context("SESSION_NOT_FOUND: no cataloged Claude session with this id on the account")?;
-                        provider::claude::launch::exec_resume(&paths, &s.id, &s.generation())
-                            .await?;
+                            .find(|s| s.provider == account.provider.as_str() && s.conversation_id == thread && s.account == account.name)
+                            .context("SESSION_NOT_FOUND: no cataloged session of this provider with this id on the account")?;
+                        provider::native::exec_resume(
+                            &paths,
+                            account.provider,
+                            &s.id,
+                            &s.generation(),
+                        )
+                        .await?;
                     } else {
-                        provider::claude::launch::exec_new(&paths, &account.name, None, None)
-                            .await?;
+                        provider::native::exec_new(
+                            &paths,
+                            account.provider,
+                            &account.name,
+                            None,
+                            None,
+                        )
+                        .await?;
                     }
                     return Ok(());
                 }
@@ -1246,6 +1258,25 @@ async fn run(cli: Cli) -> Result<()> {
 }
 /// Resolve NAME or PROVIDER:NAME against enrolled accounts (names are global).
 /// An unknown bare name stays on the Codex path, whose launcher reports it.
+/// Exec the official interactive login for a native provider in this terminal.
+/// Returns only on failure to start it.
+fn exec_login(config: &Config, provider: ProviderId, home: &std::path::Path) -> anyhow::Error {
+    use std::os::unix::process::CommandExt;
+    match provider {
+        ProviderId::Gemini => {
+            let mut command = provider::gemini::login_command(config, home);
+            command.current_dir(provider::gemini::login_directory(home));
+            anyhow::Error::new(command.exec()).context("could not start gemini login")
+        }
+        _ => {
+            let mut command = provider::claude::command(config, home);
+            command
+                .args(&provider::claude::login_argv(config)[1..])
+                .current_dir(home);
+            anyhow::Error::new(command.exec()).context("could not start claude auth login")
+        }
+    }
+}
 fn resolve_account(paths: &Paths, id: &str) -> Result<AccountRef> {
     let (wanted, name) = AccountRef::parse_lookup(id)?;
     let state = if paths.root.join("registry.db").exists() {

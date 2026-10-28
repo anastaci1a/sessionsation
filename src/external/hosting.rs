@@ -424,10 +424,10 @@ async fn launch_inner(
         // Providers without a Codex binding record their exact process in the
         // catalog before exec; require that PID to run the expected session.
         if let Some(s) = crate::catalog::list(paths)?.into_iter().find(|s| {
-            s.provider == crate::provider::ProviderId::Claude.as_str()
+            crate::provider::native::of(&s.provider).is_some()
                 && s.account == account
                 && s.attachment.as_ref().is_some_and(|a| a.target == key)
-                && crate::provider::claude::launch_observed(s)
+                && crate::provider::native::launch_observed(s)
         }) {
             return Ok(
                 json!({"schema_version":1,"state":"running","host":"herdr","target":key,"account":account,"thread_id":s.conversation_id,"provider":s.provider,"viewer_attach":["herdr","session","attach",session]}),
