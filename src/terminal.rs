@@ -5,6 +5,29 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Command;
 
+/// The HERDR session a pane belongs to: the explicit SESSIONSATION_HERDR_SESSION /
+/// HERDR_SESSION when set, otherwise derived from the HERDR_SOCKET_PATH that HERDR
+/// always exports into panes (`<data>/herdr.sock` is the default server,
+/// `<data>/sessions/<name>/herdr.sock` a named one). Never guessed from titles.
+pub fn herdr_session_from(get: impl Fn(&str) -> Option<String>) -> Option<String> {
+    if let Some(session) = get("SESSIONSATION_HERDR_SESSION").or_else(|| get("HERDR_SESSION")) {
+        return Some(session);
+    }
+    herdr_session_from_socket(Path::new(&get("HERDR_SOCKET_PATH")?))
+}
+pub fn herdr_session_from_socket(socket: &Path) -> Option<String> {
+    let socket = std::fs::canonicalize(socket).unwrap_or_else(|_| socket.to_path_buf());
+    if socket.file_name()? != "herdr.sock" {
+        return None;
+    }
+    let dir = socket.parent()?;
+    let session = if dir.parent()?.file_name()? == "sessions" {
+        dir.file_name()?.to_str()?.to_owned()
+    } else {
+        "default".to_owned()
+    };
+    validate_name(&session).ok().map(|()| session)
+}
 pub fn herdr_target(session: &str, pane: &str) -> Result<String> {
     validate_name(session)?;
     ensure!(
@@ -280,5 +303,21 @@ mod move_rejection_tests {
         assert!(!move_rejected_before_effect(&anyhow::anyhow!(
             "workspace_not_found"
         )));
+    }
+}
+#[cfg(test)]
+mod session_tests {
+    use super::herdr_session_from_socket;
+    use std::path::Path;
+    #[test]
+    fn herdr_session_is_derived_only_from_the_socket_layout() {
+        let s = |p: &str| herdr_session_from_socket(Path::new(p));
+        assert_eq!(s("/data/herdr/herdr.sock").as_deref(), Some("default"));
+        assert_eq!(
+            s("/data/herdr/sessions/work-1/herdr.sock").as_deref(),
+            Some("work-1")
+        );
+        assert_eq!(s("/data/herdr/other.sock"), None);
+        assert_eq!(s("/data/herdr/sessions/bad name/herdr.sock"), None);
     }
 }

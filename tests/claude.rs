@@ -842,6 +842,13 @@ async fn adopted_home_switches_to_the_managed_home_only_when_every_precondition_
         .env("CLAUDE_CONFIG_DIR", &managed)
         .spawn()
         .unwrap();
+    let holder_cmdline = format!("/proc/{}/cmdline", holder.id());
+    let fake_path = f._tmp.path().join("fake-claude");
+    wait_for("holder exec as the Claude command", || {
+        std::fs::read(&holder_cmdline).is_ok_and(|c| {
+            c.split(|b| *b == 0).next() == Some(fake_path.as_os_str().as_encoded_bytes())
+        })
+    });
     let err = f.api_error(&["account", "managed-home", "claude:moved"]);
     kill(holder);
     assert!(err.contains("ACCOUNT_IN_USE"), "{err}");

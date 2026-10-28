@@ -1480,8 +1480,8 @@ async fn run_account_thread_inner(
             process_start: process_info(std::process::id())?.start_time,
         });
     } else if std::env::var("HERDR_ENV").as_deref() == Ok("1") {
-        let session = std::env::var("SESSIONSATION_HERDR_SESSION")
-            .or_else(|_| std::env::var("HERDR_SESSION"))?;
+        let session = crate::terminal::herdr_session_from(|k| std::env::var(k).ok())
+            .context("HERDR session unknown")?;
         let pane = std::env::var("HERDR_PANE_ID")?;
         let key = spaces::caller_target(paths, &session, &pane, std::process::id())?;
         bind_pane(paths, &key, std::process::id(), &home, id)?;
@@ -2798,9 +2798,8 @@ pub(crate) fn current_attachment(paths: &Paths) -> Result<Option<crate::catalog:
         }));
     }
     if std::env::var("HERDR_ENV").as_deref() == Ok("1")
-        && let (Ok(session), Ok(pane)) = (
-            std::env::var("SESSIONSATION_HERDR_SESSION")
-                .or_else(|_| std::env::var("HERDR_SESSION")),
+        && let (Some(session), Ok(pane)) = (
+            crate::terminal::herdr_session_from(|k| std::env::var(k).ok()),
             std::env::var("HERDR_PANE_ID"),
         )
     {

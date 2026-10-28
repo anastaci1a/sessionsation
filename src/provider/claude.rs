@@ -642,7 +642,7 @@ pub fn host_attachment(
     let env = environ(live.pid)?;
     let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
     let pane = get("HERDR_PANE_ID")?;
-    let session = get("SESSIONSATION_HERDR_SESSION").or_else(|| get("HERDR_SESSION"))?;
+    let session = crate::terminal::herdr_session_from(get)?;
     let socket = get("HERDR_SOCKET_PATH").map(PathBuf::from);
     let target = crate::terminal::herdr_target(&session, &pane).ok()?;
     let (idle, pid) = crate::terminal::state_at(&target, socket.as_deref()).ok()?;
