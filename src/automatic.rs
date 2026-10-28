@@ -431,6 +431,10 @@ impl Policy {
         let mut seen = BTreeSet::new();
         for name in &self.accounts {
             ensure!(accounts.contains_key(name), "unknown account {name}");
+            ensure!(
+                accounts[name].provider == crate::provider::ProviderId::Codex,
+                "UNSUPPORTED_PROVIDER_OPERATION: automatic switching supports only codex accounts ({name})"
+            );
             ensure!(seen.insert(name), "duplicate account {name}");
         }
         Ok(())

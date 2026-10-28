@@ -75,15 +75,25 @@ and new/resume launchers; its older shell tools are separate compatibility entry
 credential and lifecycle logic stays in sessionsation. Verify the backend first.
 Cross-provider conversation conversion is outside this version.
 
-## Claude preparation
+## Providers
 
-Claude runtime support is not implemented. The v1 capability list reserves `claude` and reports `SETUP_REQUIRED` for
-runtime behavior. Codex-only operations reject other provider IDs explicitly.
+`src/provider/` is the provider boundary: `ProviderId` (`codex`, `claude`),
+provider-qualified `AccountRef` parsing, and an explicit `ProviderCapabilities`
+table (supported flag plus reason per operation). Codex behavior remains in the
+supervisor, discovery and lifecycle modules; Claude enrollment, environment,
+authentication probe, launch/resume plans, discovery, live identity and usage live
+in `provider/claude.rs`. Callers dispatch on `ProviderId`, never on strings.
 
-Future implementation must verify the installed binary and isolated config homes
-against Claude's [CLI reference](https://code.claude.com/docs/en/cli-reference),
+Account records carry `provider` and, for adopted Claude homes, `config_home`.
+Registries written before providers could enroll only Codex, so the named
+migration `store::migrate_legacy_codex_provider` sets missing providers to Codex
+once and records one `account.provider_migrated_legacy_codex` event per account;
+it never infers a provider from a name. Account names are global across providers.
+
+Claude sessions are bound to their account config home: no account switch,
+history conversion or credential sharing exists. The supervisor only probes
+`claude auth status`; usage is projected from the statusline recorder. See
+[Claude Code accounts and sessions](cli.md#claude-code-accounts-and-sessions),
+checked against Claude's [CLI reference](https://code.claude.com/docs/en/cli-reference),
 [authentication guidance](https://code.claude.com/docs/en/authentication) and
-[environment variables](https://code.claude.com/docs/en/env-vars). Documented flags
-are not evidence for safe account transfer, usage/reset reporting or live queues.
-Those capabilities remain false until verified; no Codex-to-Claude history
-conversion or credential sharing is implemented.
+[environment variables](https://code.claude.com/docs/en/env-vars).

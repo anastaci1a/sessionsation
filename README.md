@@ -4,8 +4,10 @@ A Linux CLI for managing coding-agent accounts and named sessions. It keeps acco
 selection, conversation history and lifecycle operations in one backend; terminal
 hosting is handled separately by tmux or [HERDR](https://herdr.dev).
 
-**Early development.** Codex is implemented. Claude is a capability placeholder,
-not a working provider. There is no cross-provider conversation conversion.
+**Early development.** Codex and Claude Code are implemented providers. Claude
+supports subscription accounts (isolated config homes), new/resume, live session
+tracking, label rename and statusline usage; lifecycle control, account switching
+and messaging remain Codex-only. There is no cross-provider conversation conversion.
 
 Today the CLI provides account enrollment, usage/reset reporting, enable/disable,
 local account deletion with preserved conversations, session discovery, new/resume,

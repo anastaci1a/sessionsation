@@ -1,6 +1,11 @@
 //! Public machine interface. The inherited CLI and native conversation IDs are
 //! implementation details; consumers use stable catalog IDs and generations.
-use crate::{catalog, daemon, external, paths::Paths, store};
+use crate::{
+    catalog, daemon, external,
+    paths::Paths,
+    provider::{AccountRef, ProviderId, claude},
+    store,
+};
 use anyhow::{Context, Result, ensure};
 use clap::Subcommand;
 use serde_json::{Value, json};
@@ -23,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":9,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":10,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -221,7 +226,28 @@ pub enum Launcher {
     Shell,
 }
 
+/// Resolve a Claude catalog session and observe it against its account home.
+fn claude_selected(
+    paths: &Paths,
+    id: &str,
+    generation: &str,
+) -> Result<(catalog::Session, claude::Observation)> {
+    let s = catalog::resolve(paths, id, generation)?;
+    ensure!(
+        s.provider == ProviderId::Claude.as_str(),
+        "UNSUPPORTED_PROVIDER_OPERATION"
+    );
+    let account = claude::account(paths, &s.account)?;
+    let observation = claude::observe(&account.home, &s.conversation_id, s.attachment.as_ref());
+    Ok((s, observation))
+}
+
 pub async fn resume_current(paths: &Paths, id: &str, generation: &str) -> Result<()> {
+    if catalog::resolve(paths, id, generation)
+        .is_ok_and(|s| s.provider == ProviderId::Claude.as_str())
+    {
+        return claude::launch::exec_resume(paths, id, generation).await;
+    }
     let (s, source) = selected(paths, id, generation).await?;
     ensure!(
         source.inactive && s.attachment.is_none(),
@@ -251,18 +277,43 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
     let mut cwd = None;
     match command {
         Launcher::New { account } => {
-            let name = codex_account(&account)?;
-            crate::accounts::ensure_available(paths, name)?;
+            let account = account_ref(paths, &account)?;
+            let name = account.name.as_str();
+            if account.provider == ProviderId::Codex {
+                crate::accounts::ensure_available(paths, name)?;
+            }
             let status = daemon::call(paths, "status", json!({})).await?;
             ensure!(
                 status["accounts"]
                     .as_array()
                     .is_some_and(|a| a.iter().any(|a| a["name"] == name
+                        && a["provider"].as_str().unwrap_or("codex") == account.provider.as_str()
                         && a["enabled"] == true
                         && a["auth_required"] == false)),
                 "ACCOUNT_UNAVAILABLE"
             );
-            argv.extend(["run".into(), "--account".into(), name.into()]);
+            // Codex keeps its historical bare-name argv; others are qualified.
+            let target = match account.provider {
+                ProviderId::Codex => name.to_owned(),
+                _ => account.id(),
+            };
+            argv.extend(["run".into(), "--account".into(), target]);
+        }
+        Launcher::Resume {
+            session,
+            expected_generation,
+        } if catalog::resolve(paths, &session, &expected_generation)
+            .is_ok_and(|s| s.provider == ProviderId::Claude.as_str()) =>
+        {
+            let (s, observation) = claude_selected(paths, &session, &expected_generation)?;
+            claude::launch::ensure_resumable(&s, &observation)?;
+            cwd = Some(claude::launch::resume_directory(&s, &observation)?);
+            argv.extend([
+                "resume".into(),
+                session,
+                "--expected-generation".into(),
+                expected_generation,
+            ]);
         }
         Launcher::Resume {
             session,
@@ -285,9 +336,17 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
 
 #[derive(Subcommand)]
 pub enum AccountCommand {
-    List,
+    List {
+        /// Only accounts of this provider.
+        #[arg(long, value_enum)]
+        platform: Option<ProviderId>,
+    },
+    /// Enroll `codex:<name>` or `claude:<name>`; names are unique across providers.
     Add {
         id: String,
+        /// Claude only: adopt this existing CLAUDE_CONFIG_DIR in place (never copied).
+        #[arg(long)]
+        config_dir: Option<std::path::PathBuf>,
     },
     Login {
         id: String,
@@ -337,12 +396,37 @@ pub enum AccountCommand {
         weekly_used: Option<f64>,
     },
 }
-fn codex_account(id: &str) -> Result<&str> {
-    let name = id
-        .strip_prefix("codex:")
-        .context("UNSUPPORTED_PROVIDER_OPERATION")?;
-    crate::paths::validate_name(name)?;
-    Ok(name)
+/// Reject a qualified id whose name is enrolled under another provider. The
+/// supervisor repeats this check for the operations it owns.
+fn verify_provider(paths: &Paths, account: &AccountRef) -> Result<()> {
+    if !paths.root.join("registry.db").exists() {
+        return Ok(());
+    }
+    let Ok(state) = store::load_state_snapshot(paths) else {
+        return Ok(());
+    };
+    if let Some(existing) = state.accounts.get(&account.name) {
+        ensure!(
+            existing.provider == account.provider,
+            "ACCOUNT_PROVIDER_MISMATCH: {} is enrolled as {}:{}, not {}",
+            account.name,
+            existing.provider,
+            account.name,
+            account.id()
+        );
+    }
+    Ok(())
+}
+fn account_ref(paths: &Paths, id: &str) -> Result<AccountRef> {
+    let account = AccountRef::parse(id)?;
+    verify_provider(paths, &account)?;
+    Ok(account)
+}
+/// Operations whose implementation is Codex-specific.
+fn codex_account(paths: &Paths, id: &str) -> Result<String> {
+    Ok(account_ref(paths, id)?
+        .require(ProviderId::Codex)?
+        .to_owned())
 }
 
 pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value>> {
@@ -350,9 +434,12 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
         .into_iter()
         .map(|mut a| {
             let name = a["name"].as_str().context("INVALID_SUPERVISOR_RESPONSE")?;
-            let removed = crate::accounts::removed(paths, name)?;
-            a["id"] = json!(format!("codex:{name}"));
-            a["provider"] = json!("codex");
+            // A pre-provider supervisor could only report Codex accounts.
+            let provider = ProviderId::parse(a["provider"].as_str().unwrap_or("codex"))?;
+            let removed = provider == ProviderId::Codex && crate::accounts::removed(paths, name)?;
+            a["id"] = json!(format!("{provider}:{name}"));
+            a["provider"] = json!(provider);
+            a["provider_capabilities"] = json!(crate::provider::capabilities(provider));
             a["membership"] = json!(if removed { "removed" } else { "enrolled" });
             if let Some(id) = a["deletion_id"].as_str() {
                 a["deletion"] = json!(crate::account_deletion::status(paths, id)?);
@@ -373,6 +460,16 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
         .collect()
 }
 
+/// Exec plan for an interactive provider login; no URL or credential passes
+/// through the client.
+pub fn login_plan(paths: &Paths, account: &AccountRef) -> Result<Value> {
+    Ok(
+        json!({"account_id":account.id(),"provider":account.provider,"login":{
+        "action":"exec","interactive":true,"credentials_in_client":false,
+        "argv":[std::env::current_exe()?.to_string_lossy(),"--data-dir",paths.root.to_string_lossy(),"account","login",account.id()]}}),
+    )
+}
+
 async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
     match command {
         AccountCommand::Delete {
@@ -380,11 +477,11 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             confirm,
             request_id,
         } => {
-            let name = codex_account(&id)?;
+            let name = codex_account(paths, &id)?;
             if let (Some(confirm), Some(request)) = (confirm, request_id) {
-                crate::account_deletion::start(paths, name, &request, &confirm).await
+                crate::account_deletion::start(paths, &name, &request, &confirm).await
             } else {
-                crate::account_deletion::preview(paths, name).await
+                crate::account_deletion::preview(paths, &name).await
             }
         }
         AccountCommand::Deletions { request_id } => {
@@ -399,8 +496,11 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             short_used,
             weekly_used,
         } => {
-            let name = codex_account(&id)?;
-            crate::accounts::ensure_available(paths, name)?;
+            let account = account_ref(paths, &id)?;
+            let name = account.name.as_str();
+            if account.provider == ProviderId::Codex {
+                crate::accounts::ensure_available(paths, name)?;
+            }
             if let (Some(short), Some(weekly)) = (short_used, weekly_used) {
                 ensure!(
                     [short, weekly]
@@ -413,7 +513,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 let value = daemon::call(
                     paths,
                     "account/thresholds",
-                    json!({"name":name,"short":short,"weekly":weekly}),
+                    json!({"name":name,"provider":account.provider,"short":short,"weekly":weekly}),
                 )
                 .await?;
                 Ok(json!({"account_id":id,"limits":value["thresholds"],"saved":value["saved"]}))
@@ -423,32 +523,42 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                     .as_array()
                     .and_then(|items| items.iter().find(|a| a["name"] == name))
                     .context("ACCOUNT_NOT_FOUND")?;
-                Ok(json!({"account_id":id,"limits":a["switch_thresholds"],"saved":false}))
+                Ok(
+                    json!({"account_id":id,"limits":a["switch_thresholds"],"saved":false,
+                    "usage":a["usage"],"usage_fresh":a["usage_fresh"],"usage_state":a["usage_state"]}),
+                )
             }
         }
-        AccountCommand::List => {
+        AccountCommand::List { platform } => {
             let v = daemon::call(paths, "status", json!({})).await?;
-            Ok(json!(project_accounts(
-                paths,
-                v["accounts"]
-                    .as_array()
-                    .context("INVALID_SUPERVISOR_RESPONSE")?
-                    .clone()
-            )?))
+            Ok(json!(
+                project_accounts(
+                    paths,
+                    v["accounts"]
+                        .as_array()
+                        .context("INVALID_SUPERVISOR_RESPONSE")?
+                        .clone()
+                )?
+                .into_iter()
+                .filter(|a| platform.is_none_or(|p| a["provider"] == p.as_str()))
+                .collect::<Vec<_>>()
+            ))
         }
         AccountCommand::Remove {
             id,
             confirm,
             revision,
         } => {
-            let name = codex_account(&id)?;
+            let name = codex_account(paths, &id)?;
             if let (Some(confirm), Some(revision)) = (confirm, revision) {
-                crate::accounts::remove(paths, name, &revision, &confirm).await
+                crate::accounts::remove(paths, &name, &revision, &confirm).await
             } else {
-                crate::accounts::preview(paths, name).await
+                crate::accounts::preview(paths, &name).await
             }
         }
-        AccountCommand::Restore { id } => crate::accounts::restore(paths, codex_account(&id)?),
+        AccountCommand::Restore { id } => {
+            crate::accounts::restore(paths, &codex_account(paths, &id)?)
+        }
         AccountCommand::Usage {
             id,
             start,
@@ -459,43 +569,75 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 start < end && (60..=86400).contains(&step),
                 "INVALID_HISTORY_RANGE"
             );
+            let account = account_ref(paths, &id)?;
             daemon::call(
                 paths,
                 "account/history",
-                json!({"name":codex_account(&id)?,"start":start,"end":end,"step":step}),
+                json!({"name":account.name,"provider":account.provider,"start":start,"end":end,"step":step}),
             )
             .await
         }
+        AccountCommand::Add { id, config_dir } => {
+            let account = account_ref(paths, &id)?;
+            crate::paths::validate_new_account_name(&account.name)?;
+            ensure!(
+                config_dir.is_none() || account.provider == ProviderId::Claude,
+                "INVALID_ARGUMENT: --config-dir is only supported for claude accounts"
+            );
+            if account.provider == ProviderId::Codex {
+                crate::accounts::ensure_available(paths, &account.name)?;
+            }
+            daemon::ensure_started(paths).await?;
+            let mut params = json!({"name":account.name,"provider":account.provider});
+            if let Some(dir) = config_dir {
+                params["config_dir"] = json!(dir);
+            }
+            let mut value = daemon::call(paths, "account/add", params).await?;
+            if account.provider == ProviderId::Claude {
+                value["login"] = login_plan(paths, &account)?["login"].clone();
+            }
+            Ok(value)
+        }
+        AccountCommand::Login { id } if AccountRef::parse(&id)?.provider == ProviderId::Claude => {
+            let account = account_ref(paths, &id)?;
+            claude::account(paths, &account.name)?;
+            login_plan(paths, &account)
+        }
         command => {
             let (method, id) = match command {
-                AccountCommand::Add { id } => {
-                    crate::paths::validate_new_account_name(codex_account(&id)?)?;
-                    ("account/add", id)
-                }
                 AccountCommand::Login { id } => ("account/login", id),
                 AccountCommand::Enable { id } => ("account/enable", id),
                 AccountCommand::Disable { id } => ("account/disable", id),
                 _ => unreachable!(),
             };
-            let name = codex_account(&id)?;
-            crate::accounts::ensure_available(paths, name)?;
+            let account = account_ref(paths, &id)?;
+            if account.provider == ProviderId::Codex {
+                crate::accounts::ensure_available(paths, &account.name)?;
+            }
             daemon::ensure_started(paths).await?;
-            daemon::call(paths, method, json!({"name":name})).await
+            daemon::call(
+                paths,
+                method,
+                json!({"name":account.name,"provider":account.provider}),
+            )
+            .await
         }
     }
 }
 
 pub fn capabilities() -> Value {
-    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":9,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":10,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
-         "account_deletion":true,"account_removal":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"purge":false,"force_interrupt":false,"steer":true,"cross_provider_conversion":false},
-        {"id":"claude","implemented":false,"reason":"SETUP_REQUIRED",
-         "enrollment":false,"usage":false,"new":false,"resume":false,
+         "account_deletion":true,"account_removal":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"purge":false,"force_interrupt":false,"steer":true,"cross_provider_conversion":false,"operations":crate::provider::capabilities(ProviderId::Codex)},
+        {"id":"claude","implemented":true,"enrollment":true,"adopt_config_dir":true,"login":"interactive_exec","usage":true,"usage_source":claude::USAGE_SOURCE,
+         "new":true,"resume":true,"rename":true,"native_rename":false,"stop":false,
          "account_switch":false,"restart":false,"submit":false,"queue":false,
-         "force_interrupt":false,"steer":false,"cross_provider_conversion":false}
-    ],"attachment_lookup":{"version":1,"command":"attachment","discovery":false,"checks":["catalog_generation","pid_start_time"]},"relocation":{"version":1,"preview":true,"move_files":true,"non_steering":true},"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"unfinished_confirmation":true,"directory_selection":true,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
+         "account_deletion":false,"account_removal":false,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
+         "force_interrupt":false,"steer":false,"cross_provider_conversion":false,
+         "operations":crate::provider::capabilities(ProviderId::Claude)}
+    ],"account_names":{"unique_across_providers":true,"id_format":"<provider>:<name>"},"attachment_lookup":{"version":1,"command":"attachment","discovery":false,"checks":["catalog_generation","pid_start_time"]},"relocation":{"version":1,"preview":true,"move_files":true,"non_steering":true},"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"unfinished_confirmation":true,"directory_selection":true,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "batch_observation":{"command":"observations","max_targets":64,"concurrency":8,"native_budget_seconds":5,"policies":["if_stale","refresh","cached_only"],"cache_hits_renew_evidence":false},
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
@@ -517,6 +659,59 @@ fn public_session(s: catalog::Session) -> Value {
     } else {
         "catalog"
     });
+    value
+}
+
+/// Claude session projection. Sessionsation metadata (`name`, `name_source`,
+/// catalog `directory`) stays distinct from native facts (`native_*`, pid).
+/// Availability is running/stopped/stale/unknown; never derived from a title.
+fn claude_public(s: catalog::Session, observed: Option<&claude::Observation>) -> Value {
+    let availability = observed.map_or("unknown", |o| o.availability);
+    let running = availability == "running";
+    let directory = observed
+        .and_then(|o| o.directory.clone())
+        .or_else(|| s.directory.clone());
+    let attached = s.attachment.is_some();
+    let conversation = s.conversation_id.clone();
+    let mut value = public_session(s);
+    value["name_source"] = json!("catalog");
+    value["conversation_id_source"] = json!("native");
+    value["availability"] = json!(availability);
+    value["native_status"] = json!(observed.and_then(|o| o.native_status.clone()));
+    value["native_name"] = json!(observed.and_then(|o| o.native_name.clone()));
+    value["native"] = json!({"conversation_id":conversation,"status":value["native_status"],"name":value["native_name"]});
+    value["pid"] = json!(observed.and_then(|o| o.pid));
+    value["process_start"] = json!(observed.and_then(|o| o.process_start));
+    value["host_known"] = json!(attached);
+    value["directory"] = json!(directory);
+    value["conversation_created_at"] = json!(observed.and_then(|o| o.started_at.clone()));
+    value["history_file_bytes"] = json!(observed.and_then(|o| o.transcript_bytes));
+    value["discovery_warnings"] = json!(
+        observed
+            .and_then(|o| o.detail.clone())
+            .into_iter()
+            .collect::<Vec<_>>()
+    );
+    value["activity"] = Value::Null;
+    value["last_accessed"] = Value::Null;
+    value["active_since"] = Value::Null;
+    value["archive"] = json!({"kind":"none","archived":false,"state":"active","archived_at":null,"source":"provider_unsupported"});
+    value["archived"] = json!(false);
+    value["resume_block_reason"] = json!(match availability {
+        "stopped" => None,
+        "running" => Some("already_running"),
+        "stale" => Some("history_unavailable"),
+        _ => Some("unverified_history"),
+    });
+    let caps = crate::provider::capabilities(ProviderId::Claude);
+    value["capabilities"] = json!({"rename":true,"native_rename":false,"resume":availability == "stopped",
+        "focus":running && attached,"switch_account":false,"restart":false,"stop":false,"move_space":false,
+        "change_directory":false,"move_project":false,"archive":false,"delete":false,
+        "submit":false,"queue":false,"steer":false});
+    value["capability_reasons"] = json!({"native_rename":caps.native_rename.reason,"switch_account":caps.account_switch.reason,
+        "restart":caps.restart.reason,"stop":caps.stop.reason,"move_space":caps.move_space.reason,
+        "change_directory":caps.relocate.reason,"move_project":caps.relocate.reason,"archive":caps.archive.reason,
+        "delete":caps.delete_session.reason,"submit":caps.submit.reason,"queue":caps.queue.reason,"steer":caps.steer.reason});
     value
 }
 
@@ -605,10 +800,17 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
     let accounts = project_accounts(paths, accounts)?;
     let clock = boot_clock();
     let now = daemon::now();
+    let observed = claude::reconcile(paths).unwrap_or_default();
     let catalog_sessions = catalog::list(paths)?;
     let placements = catalog::placement::project(paths, &catalog_sessions)?;
     let archives = external::archiving::metadata(paths)?;
     let mut sessions=catalog_sessions.into_iter().filter(|s|archives.get(&s.id).is_none_or(|a|a["state"]!="deleted")).map(|s| {
+        if s.provider == ProviderId::Claude.as_str() {
+            let id = s.id.clone();
+            let mut value = claude_public(s, observed.get(&id).map(|(o, _)| o));
+            value["placement"] = placements["memberships"][id.as_str()].clone();
+            return value;
+        }
         let source=items.iter().find(|i|source_matches(&s,i));
         let known=!matches!(s.account.as_str(),"external"|"unknown");
         let resume_supported=s.provider=="codex";
@@ -749,7 +951,20 @@ pub fn attachment(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
 
 pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
     let items = inventory(paths).await?;
+    let observed = claude::reconcile(paths).unwrap_or_default();
     let session = catalog::resolve(paths, id, generation)?;
+    if session.provider == ProviderId::Claude.as_str() {
+        let placement =
+            catalog::placement::project(paths, std::slice::from_ref(&session))?["memberships"]
+                [&session.id]
+                .clone();
+        let account_id = format!("{}:{}", session.provider, session.account);
+        let mut value = claude_public(session, observed.get(id).map(|(o, _)| o));
+        value["placement"] = placement;
+        value["account_id"] = json!(account_id);
+        value["original_host"] = Value::Null;
+        return Ok(value);
+    }
     let source = items.iter().find(|i| source_matches(&session, i));
     let directory = source.map(|s| s.cwd.clone());
     let reason = if session.attachment.is_some() && source.is_none() {
@@ -897,9 +1112,24 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             name,
         } => {
             inventory(paths).await?;
-            public_session(
-                catalog::names::rename(paths, &session, &expected_generation, &name).await?,
-            )
+            if catalog::resolve(paths, &session, &expected_generation)?.provider
+                == ProviderId::Claude.as_str()
+            {
+                // Catalog label only: applied as --name on the next launch/resume.
+                let mut value = public_session(catalog::rename(
+                    paths,
+                    &session,
+                    &expected_generation,
+                    &name,
+                )?);
+                value["name_source"] = json!("catalog");
+                value["native_rename"] = json!({"supported":false,"reason":claude::LABEL_ONLY});
+                value
+            } else {
+                public_session(
+                    catalog::names::rename(paths, &session, &expected_generation, &name).await?,
+                )
+            }
         }
         Command::Switch {
             session,
@@ -990,6 +1220,27 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 )
                 .await?,
             )?
+        }
+        Command::Resume {
+            session,
+            expected_generation,
+            herdr_session,
+        } if catalog::resolve(paths, &session, &expected_generation)
+            .is_ok_and(|s| s.provider == ProviderId::Claude.as_str()) =>
+        {
+            let (s, observation) = claude_selected(paths, &session, &expected_generation)?;
+            claude::launch::ensure_resumable(&s, &observation)?;
+            let directory = claude::launch::resume_directory(&s, &observation)?;
+            std::env::set_current_dir(&directory)?;
+            external::hosting::launch_checked(
+                paths,
+                &herdr_session,
+                &s.account,
+                Some(&s.conversation_id),
+                &[],
+                (&session, &expected_generation),
+            )
+            .await?
         }
         Command::Resume {
             session,
@@ -1239,6 +1490,7 @@ mod prefill_tests {
                 pid: 10,
                 process_start: 20,
             }),
+            directory: None,
         };
         let mut source: external::Instance = serde_json::from_value(json!({"inactive":true,"account":"selected","pane":"","tmux_session":"","pid":0,"cwd":"/tmp","thread_id":"thread","rollout":"/tmp/fixture","home":"/tmp/home","binary":"codex","resume_options":[]})).unwrap();
         assert!(!source_matches(&s, &source));

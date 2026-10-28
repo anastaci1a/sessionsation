@@ -2,6 +2,7 @@
 use crate::{
     catalog, daemon,
     paths::{Paths, atomic_write, lock_file, private_dir},
+    provider::{AccountRef, ProviderId},
 };
 use anyhow::{Context, Result, ensure};
 use clap::Subcommand;
@@ -115,11 +116,7 @@ fn shape(r: &Request) -> Result<()> {
     validate_id(&r.request_id)?;
     validate_session_name(&r.name)?;
     crate::paths::validate_name(&r.host.session)?;
-    crate::paths::validate_name(
-        r.account_id
-            .strip_prefix("codex:")
-            .context("UNSUPPORTED_PROVIDER_OPERATION")?,
-    )?;
+    AccountRef::parse(&r.account_id)?;
     ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
     if let Space::New { label } = &r.space {
         validate_name(label)?;
@@ -232,12 +229,9 @@ fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
             && r.session_id.as_deref() == Some(s.id.as_str())
             && r.conversation_id.as_deref() == Some(s.conversation_id.as_str())
             && r.generation.as_deref() == Some(s.generation().as_str())
-            && r.request.account_id == format!("codex:{}", s.account)
+            && r.request.account_id == format!("{}:{}", s.provider, s.account)
     });
-    if !session
-        .as_ref()
-        .is_some_and(|s| crate::external::new_launch_observed(paths, s).unwrap_or(false))
-    {
+    if !session.as_ref().is_some_and(|s| launch_observed(paths, s)) {
         return Ok(r);
     }
     // Positive observation only: never resend a host/provider command or refocus
@@ -297,13 +291,18 @@ async fn validate(paths: &Paths, r: &Request) -> Result<()> {
     shape(r)?;
     directory_check(&r.directory)?;
     catalog::check_name(paths, &r.name, &r.request_id)?;
-    let name = r.account_id.strip_prefix("codex:").unwrap();
-    crate::accounts::ensure_available(paths, name)?;
+    let account = AccountRef::parse(&r.account_id)?;
+    if account.provider == ProviderId::Codex {
+        crate::accounts::ensure_available(paths, &account.name)?;
+    }
     let state = daemon::call(paths, "status", json!({})).await?;
     ensure!(
-        state["accounts"].as_array().is_some_and(|a| a
-            .iter()
-            .any(|a| a["name"] == name && a["enabled"] == true && a["auth_required"] == false)),
+        state["accounts"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|a| a["name"] == account.name.as_str()
+                && a["provider"].as_str().unwrap_or("codex") == account.provider.as_str()
+                && a["enabled"] == true
+                && a["auth_required"] == false)),
         "ACCOUNT_UNAVAILABLE"
     );
     let spaces = host_call(&r.host, &["workspace", "list"]).await?;
@@ -512,10 +511,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
         }
         if status.phase == "attached" {
             let session = catalog::list(paths)?.into_iter().find(|s| s.id == *id);
-            if !session
-                .as_ref()
-                .is_some_and(|s| crate::external::new_launch_observed(paths, s).unwrap_or(false))
-            {
+            if !session.as_ref().is_some_and(|s| launch_observed(paths, s)) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -545,13 +541,17 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
         r.phase = "starting_provider".into();
         Ok(())
     })?;
-    let result = crate::external::run_account_new_named(
-        paths,
-        receipt.request.account_id.strip_prefix("codex:").unwrap(),
-        id,
-        &receipt.request.name,
-    )
-    .await;
+    let result = match AccountRef::parse(&receipt.request.account_id) {
+        Err(error) => Err(error),
+        Ok(AccountRef {
+            provider: ProviderId::Codex,
+            name,
+        }) => crate::external::run_account_new_named(paths, &name, id, &receipt.request.name).await,
+        Ok(AccountRef {
+            provider: ProviderId::Claude,
+            name,
+        }) => crate::provider::claude::launch::exec_new(paths, &name, None, Some(id)).await,
+    };
     if let Err(error) = result {
         change(paths, id, |r| {
             r.phase = "uncertain".into();
@@ -566,18 +566,21 @@ pub fn attached(
     id: &str,
     conversation: &str,
     attachment: Option<catalog::Attachment>,
-) -> Result<()> {
+) -> Result<catalog::Session> {
     let receipt = status(paths, id)?;
+    let account = AccountRef::parse(&receipt.request.account_id)?;
+    // Claude resumes by directory; Codex keeps its directory out of the catalog.
+    let directory = (account.provider == ProviderId::Claude)
+        .then(|| receipt.request.directory.path.to_str())
+        .flatten();
     let session = catalog::complete_reserved(
         paths,
         id,
         &receipt.request.name,
-        receipt
-            .request
-            .account_id
-            .strip_prefix("codex:")
-            .context("UNSUPPORTED_PROVIDER_OPERATION")?,
+        account.provider,
+        &account.name,
         conversation,
+        directory,
         attachment,
     )?;
     change(paths, id, |r| {
@@ -587,7 +590,15 @@ pub fn attached(
         r.generation = Some(session.generation());
         Ok(())
     })?;
-    Ok(())
+    Ok(session)
+}
+/// Positive provider-specific evidence that the recorded process runs the session.
+fn launch_observed(paths: &Paths, s: &catalog::Session) -> bool {
+    match ProviderId::parse(&s.provider) {
+        Ok(ProviderId::Codex) => crate::external::new_launch_observed(paths, s).unwrap_or(false),
+        Ok(ProviderId::Claude) => crate::provider::claude::launch_observed(s),
+        Err(_) => false,
+    }
 }
 
 pub(crate) async fn create_terminal(

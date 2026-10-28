@@ -2,6 +2,7 @@
 pub mod names;
 pub mod placement;
 use crate::paths::{Paths, atomic_write, lock_file, private_dir};
+use crate::provider::ProviderId;
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,10 @@ pub struct Session {
     pub conversation_id: String,
     pub revision: u64,
     pub attachment: Option<Attachment>,
+    /// Recorded working directory for providers that resume by directory
+    /// (Claude). Omitted for Codex, whose generations are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
 
 impl Session {
@@ -91,11 +96,31 @@ pub fn record_launch(
     label: &str,
     attachment: Option<Attachment>,
 ) -> Result<Session> {
+    record_provider_launch(
+        paths,
+        ProviderId::Codex,
+        account,
+        conversation,
+        label,
+        None,
+        attachment,
+    )
+}
+
+pub fn record_provider_launch(
+    paths: &Paths,
+    provider: ProviderId,
+    account: &str,
+    conversation: &str,
+    label: &str,
+    directory: Option<&str>,
+    attachment: Option<Attachment>,
+) -> Result<Session> {
     transaction(paths, |c| {
         if let Some(s) = c
             .sessions
             .values_mut()
-            .find(|s| s.provider == "codex" && s.conversation_id == conversation)
+            .find(|s| s.provider == provider.as_str() && s.conversation_id == conversation)
         {
             if s.account != account || s.attachment != attachment {
                 s.account = account.into();
@@ -125,14 +150,108 @@ pub fn record_launch(
         let s = Session {
             id: uuid::Uuid::new_v4().to_string(),
             name,
-            provider: "codex".into(),
+            provider: provider.as_str().into(),
             account: account.into(),
             conversation_id: conversation.into(),
             revision: 1,
             attachment,
+            directory: directory.map(str::to_owned),
         };
         c.sessions.insert(s.id.clone(), s.clone());
         Ok(s)
+    })
+}
+
+/// A provider conversation found on disk (no process implied).
+#[derive(Clone, Debug)]
+pub struct Discovered {
+    pub account: String,
+    pub conversation_id: String,
+    pub label: String,
+    pub directory: Option<String>,
+}
+/// Register discovered conversations of one provider without changing existing
+/// entries; returns every catalog session of that provider.
+pub fn register_discovered(
+    paths: &Paths,
+    provider: ProviderId,
+    discovered: &[Discovered],
+) -> Result<Vec<Session>> {
+    transaction(paths, |c| {
+        for d in discovered {
+            if c.sessions
+                .values()
+                .any(|s| s.provider == provider.as_str() && s.conversation_id == d.conversation_id)
+            {
+                continue;
+            }
+            let base = d
+                .label
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(crate::model::SESSION_NAME_MAX)
+                .collect::<String>();
+            let base = base.trim();
+            let base = if base.is_empty() { "session" } else { base };
+            let mut name = base.to_owned();
+            let mut suffix = 2;
+            while c.sessions.values().any(|s| s.name == name) || c.reservations.contains_key(&name)
+            {
+                let tail = format!("-{suffix}");
+                let prefix: String = base
+                    .chars()
+                    .take(crate::model::SESSION_NAME_MAX.saturating_sub(tail.len()))
+                    .collect();
+                name = format!("{prefix}{tail}");
+                suffix += 1;
+            }
+            let s = Session {
+                id: uuid::Uuid::new_v4().to_string(),
+                name,
+                provider: provider.as_str().into(),
+                account: d.account.clone(),
+                conversation_id: d.conversation_id.clone(),
+                revision: 1,
+                attachment: None,
+                directory: d.directory.clone(),
+            };
+            c.sessions.insert(s.id.clone(), s);
+        }
+        Ok(c.sessions
+            .values()
+            .filter(|s| s.provider == provider.as_str())
+            .cloned()
+            .collect())
+    })
+}
+/// Apply provider observations (attachment, first known directory) only to
+/// entries that have not changed since they were observed.
+pub fn observe_provider_sessions(
+    paths: &Paths,
+    observations: Vec<(Session, Option<Attachment>, Option<String>)>,
+) -> Result<()> {
+    transaction(paths, |c| {
+        for (before, attachment, directory) in observations {
+            let Some(current) = c.sessions.get_mut(&before.id) else {
+                continue;
+            };
+            if current.generation() != before.generation() {
+                continue;
+            }
+            let mut changed = false;
+            if current.attachment != attachment {
+                current.attachment = attachment;
+                changed = true;
+            }
+            if current.directory.is_none() && directory.is_some() {
+                current.directory = directory;
+                changed = true;
+            }
+            if changed {
+                current.revision += 1;
+            }
+        }
+        Ok(())
     })
 }
 
@@ -206,6 +325,7 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
                         conversation_id: i.thread_id.clone(),
                         revision: 1,
                         attachment,
+                        directory: None,
                     },
                 );
             }
@@ -318,6 +438,7 @@ mod tests {
                 pid: 42,
                 process_start: 99,
             }),
+            directory: None,
         };
         transaction(paths, |c| {
             c.sessions.insert(s.id.clone(), s.clone());
@@ -511,12 +632,15 @@ pub fn reserve_name(paths: &Paths, name: &str, request: &str) -> Result<()> {
         Ok(())
     })
 }
+#[allow(clippy::too_many_arguments)]
 pub fn complete_reserved(
     paths: &Paths,
     request: &str,
     name: &str,
+    provider: ProviderId,
     account: &str,
     conversation: &str,
+    directory: Option<&str>,
     attachment: Option<Attachment>,
 ) -> Result<Session> {
     transaction(paths, |c| {
@@ -533,11 +657,12 @@ pub fn complete_reserved(
         let s = Session {
             id: request.into(),
             name: name.into(),
-            provider: "codex".into(),
+            provider: provider.as_str().into(),
             account: account.into(),
             conversation_id: conversation.into(),
             revision: 1,
             attachment,
+            directory: directory.map(str::to_owned),
         };
         c.reservations.remove(name);
         c.sessions.insert(s.id.clone(), s.clone());
@@ -570,8 +695,10 @@ mod reservation_tests {
             &paths,
             "request-a",
             "chosen",
+            ProviderId::Codex,
             "account",
             "conversation-a",
+            None,
             None,
         )
         .unwrap();

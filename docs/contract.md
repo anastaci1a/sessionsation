@@ -668,8 +668,8 @@ fixtures include reconnect errors, acceptance after expiry and projection recove
 credential purging or disabling the original switcher enrollment. The separately
 confirmed `delete` operation deletes local credentials/data while preserving
 conversations; it requires a capable sole owner. Arbitrary history purging remains
-unsupported. Claude is explicitly `SETUP_REQUIRED`; no enrollment,
-usage, account switching or cross-provider conversion is claimed for it.
+unsupported. Codex-only operations (`remove`, `restore`, `delete`) reject
+`claude:` IDs with `UNSUPPORTED_PROVIDER_OPERATION`. See revision 10 below.
 
 Codex capability `account_limits` enables `account limits ID`, returning
 `{account_id,limits,saved:false}`. Supplying both `--short-used` and `--weekly-used`
@@ -986,6 +986,33 @@ Clients should use checkpoint events for an intermediate activity feed, while
 continuing to use the original receipt for delivery/correlation. Do not promote a
 checkpoint to a completed mailbox reply. Compatible additive API revisions should
 be negotiated by capability rather than exact build equality.
+
+### Claude provider (revision 10)
+
+Additive. `capabilities.providers[]` reports `claude` with `implemented:true`, the
+existing flat booleans and an `operations` object (`{supported, reason}` per
+operation; Codex has the same object). `capabilities.account_names` states that
+names are unique across providers. Account snapshots add `provider`,
+`provider_capabilities`, `config_home` (adopted Claude homes), `auth_detail`
+(`AUTH_REQUIRED`/`WRONG_AUTH_MODE`, never identity), `usage_state`
+(`fresh|partial|stale|missing|no_windows|error`) and `usage.source`/`usage.semantics`
+for every provider. Claude usage keeps the shared `usage.short`/`usage.weekly`
+shape (`duration_minutes` 300/10080); a missing window is `null`, never 0.
+
+`account add claude:NAME` returns `existing_home` (an operator-populated managed
+home was registered unchanged) and `auth` (`logged_in`, `auth_method`,
+`api_provider`, `subscription_type`, `problem`). `account add` accepts `claude:NAME` and `--config-dir`; `account login claude:NAME`
+returns `{login:{action:"exec",argv,...}}`; `account list --platform` filters.
+Bare names fail with `ACCOUNT_PROVIDER_REQUIRED`; a provider that differs from the
+enrolled one fails with `ACCOUNT_PROVIDER_MISMATCH`; a taken name fails with
+`ACCOUNT_NAME_EXISTS`.
+
+Claude sessions add `conversation_id_source:"native"`, `native_status`,
+`native_name`, `native`, `pid`, `process_start`, `host_known`,
+`capability_reasons`, and use availability `running|stopped|stale|unknown`.
+`name`/`name_source:"catalog"` are Sessionsation metadata; `native_*` are Claude's.
+`launcher new|resume`, `launch` and `resume` accept Claude accounts/sessions;
+launch receipts keep `account_id: "claude:NAME"`.
 
 ### Batch placement observations (revision 9)
 

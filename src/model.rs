@@ -86,10 +86,30 @@ pub struct Account {
     pub checked_short: f64,
     pub checked_weekly: f64,
     pub last_assigned: i64,
+    /// Required in stored records; pre-provider registries are upgraded by
+    /// `store::migrate_legacy_codex_provider`, never inferred from a name.
+    pub provider: crate::provider::ProviderId,
+    /// Adopted provider configuration home (Claude only); None uses the managed home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_home: Option<std::path::PathBuf>,
+    /// Last provider authentication problem code (e.g. WRONG_AUTH_MODE); no secrets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_detail: Option<String>,
 }
 impl Account {
+    /// A Codex account (the original enrollment kind).
     pub fn new(name: String, identity: String) -> Self {
+        Self::with_provider(crate::provider::ProviderId::Codex, name, identity)
+    }
+    pub fn with_provider(
+        provider: crate::provider::ProviderId,
+        name: String,
+        identity: String,
+    ) -> Self {
         Self {
+            provider,
+            config_home: None,
+            auth_detail: None,
             deletion_id: None,
             switch_thresholds: crate::automatic::Thresholds::default(),
             name,

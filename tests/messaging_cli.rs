@@ -37,6 +37,8 @@ fn call(root: &Path, args: &[&str], input: Option<&Value>) -> (bool, Value) {
 fn shared_contract_cli_offline_round_trip_and_structured_errors() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
+    // Only setup creates data roots; commands fail closed on a missing one.
+    sessionsation::paths::Paths::new(Some(root.clone())).unwrap();
     let fixtures: Value =
         serde_json::from_str(include_str!("../docs/messaging/v1.2.1/fixtures.json")).unwrap();
     let (ok, caps) = call(&root, &["capabilities"], None);

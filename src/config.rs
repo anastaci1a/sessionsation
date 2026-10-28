@@ -15,6 +15,10 @@ pub struct Config {
     pub idle_poll_seconds: u64,
     pub stale_seconds: u64,
     pub codex_binary: String,
+    /// Claude Code executable used for every Claude account.
+    pub claude_binary: String,
+    /// Optional HOME for Claude children; unset inherits the caller's HOME.
+    pub claude_session_home: Option<std::path::PathBuf>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -30,6 +34,8 @@ impl Default for Config {
             idle_poll_seconds: 120,
             stale_seconds: 300,
             codex_binary: "codex".into(),
+            claude_binary: "claude".into(),
+            claude_session_home: None,
         }
     }
 }
@@ -73,6 +79,16 @@ impl Config {
         ensure!(
             !self.codex_binary.trim().is_empty(),
             "codex_binary is empty"
+        );
+        ensure!(
+            !self.claude_binary.trim().is_empty(),
+            "claude_binary is empty"
+        );
+        ensure!(
+            self.claude_session_home
+                .as_ref()
+                .is_none_or(|h| h.is_absolute()),
+            "claude_session_home must be absolute"
         );
         Ok(())
     }

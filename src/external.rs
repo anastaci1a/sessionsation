@@ -2783,6 +2783,43 @@ pub(crate) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+/// The verified terminal hosting the current process, recorded before a
+/// provider is exec'd in place (exec keeps PID and start time). Provider-neutral:
+/// unlike Codex launches, no account-home binding is written.
+pub(crate) fn current_attachment(paths: &Paths) -> Result<Option<crate::catalog::Attachment>> {
+    let pid = std::process::id();
+    let start = process_info(pid)?.start_time;
+    if let Ok(pane) = std::env::var("TMUX_PANE") {
+        return Ok(Some(crate::catalog::Attachment {
+            host: "tmux".into(),
+            target: pane,
+            pid,
+            process_start: start,
+        }));
+    }
+    if std::env::var("HERDR_ENV").as_deref() == Ok("1")
+        && let (Ok(session), Ok(pane)) = (
+            std::env::var("SESSIONSATION_HERDR_SESSION")
+                .or_else(|_| std::env::var("HERDR_SESSION")),
+            std::env::var("HERDR_PANE_ID"),
+        )
+    {
+        return Ok(Some(crate::catalog::Attachment {
+            host: "herdr".into(),
+            target: spaces::caller_target(paths, &session, &pane, pid)?,
+            pid,
+            process_start: start,
+        }));
+    }
+    Ok(None)
+}
+/// Exclusive per-conversation open lock plus the deletion guard.
+pub(crate) fn conversation_lock(paths: &Paths, id: &str) -> Result<File> {
+    let lock = catalog::operation_lock(paths, id)?;
+    catalog::ensure_available(paths, id)?;
+    Ok(lock)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

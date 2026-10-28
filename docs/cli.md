@@ -31,7 +31,12 @@ No provider CLI, credentials or model access is needed for the offline fixtures.
 State defaults to `SESSIONSATION_HOME`, then the platform default:
 `$HOME/.local/share/sessionsation` on Linux, or
 `/mnt/user/appdata/sessionsation` on Unraid (the array must be mounted).
-`--data-dir /absolute/path` overrides both. Use an explicit root consistently in
+`--data-dir /absolute/path` overrides both. Only `sessionsation setup` creates a missing
+root; every other command fails closed with `DATA_ROOT_MISSING` so a stale
+`SESSIONSATION_HOME` or an unmounted array never creates an empty shadow root. The
+supervisor's private runtime directory (control socket) is
+`/tmp/sessionsation-EUID-HASH`, where HASH is the first 16 hex digits of the
+SHA-256 of the canonical data-root path (previously `/tmp/codex-switcher-…`). Use an explicit root consistently in
 services and clients; an empty default root is not an import of another root.
 
 For a new installation, select a private, user-owned directory before setup:
@@ -61,18 +66,43 @@ unmanaged terminal is not automatically adopted.
 ## Accounts
 
 For a fresh private data root, `sessionsation setup` initializes its metadata
-supervisor. Enrollment is interactive through a device/browser login:
+supervisor. Every account belongs to one provider, chosen explicitly; there is no
+default provider:
+
+```sh
+sessionsation account add --platform codex example
+sessionsation account add --platform claude personal
+sessionsation account add --platform claude --config-dir /home/me/.claude existing
+sessionsation account login claude:personal
+sessionsation account list                      # table with a PROVIDER column
+sessionsation account list --platform claude --json
+```
+
+Account names are **unique across providers**: `work` can be `codex:work` or
+`claude:work`, never both. Adding a taken name fails with `ACCOUNT_NAME_EXISTS`
+naming the existing owner. Public IDs are always `<provider>:<name>`. Human
+commands also accept a bare name for an existing account (unambiguous because names
+are global); a qualified ID whose provider differs from the enrolled one fails with
+`ACCOUNT_PROVIDER_MISMATCH`. Missing or unknown `--platform` is an argument error.
+
+The machine API takes qualified IDs only (a bare name is `ACCOUNT_PROVIDER_REQUIRED`):
 
 ```sh
 sessionsation api account add codex:example
+sessionsation api account add claude:personal [--config-dir DIR]
+sessionsation api account list [--platform claude]
 sessionsation api account list
 sessionsation api account login codex:example
 sessionsation api account disable codex:example
 sessionsation api account enable codex:example
 ```
 
-Add/login return the provider's verification URL and user code. Complete the login
-as the user; never copy credentials between homes. Disabled accounts remain listed;
+Codex add/login return the provider's verification URL and user code. Complete the login
+as the user; never copy credentials between homes. Claude login is interactive:
+`sessionsation account login claude:NAME` runs the official `claude auth login
+--claudeai` subscription login in the current terminal with that account's
+environment; `api account login claude:NAME` (and `api account add claude:NAME`)
+return an `exec` argv plan for a terminal client instead of a URL. Disabled accounts remain listed;
 disabling prevents future selection and does not stop existing agents. Usage and
 reported reset timestamps are in account snapshots; do not invent missing windows.
 New account names allow 1–30 ASCII letters, digits, hyphens or underscores
@@ -208,9 +238,9 @@ sessionsation api respond OPERATION-ID yes --sequence CURRENT-SEQUENCE
 sessionsation api cancel-operation OPERATION-ID
 ```
 
-No automatic switching, forced-steer messaging, cross-provider conversion or Claude
-runtime is enabled. Claude is prepared as a separate capability boundary pending
-installation/account verification. See [architecture](architecture.md).
+No automatic switching, forced-steer messaging or cross-provider conversion is
+enabled. See [Claude Code accounts and sessions](#claude-code-accounts-and-sessions)
+and [architecture](architecture.md).
 
 Passive native readiness is available through `sessionsation api observe --session
 BACKEND-ID --expected-generation GENERATION`; see the authoritative
@@ -345,3 +375,64 @@ For a graph already reading `api state`, use `sessions[].placement` and `hosts`
 in that response instead. Match opaque IDs, not Space labels or `original_host`.
 See [placement freshness and identity](contract.md#batch-placement-observations-revision-9)
 for last-known/stopped behavior and capability negotiation.
+
+## Claude Code accounts and sessions
+
+Each Claude account is an isolated `CLAUDE_CONFIG_DIR`. The normal layout is the
+managed home `DATA_ROOT/claude-accounts/NAME` (mode 0700), created by `account
+add --platform claude NAME`. If an operator has already placed a home there (for
+example a copied existing config), `account add` registers it as is: it must be a
+0700 directory owned by the user and not a symlink, and it is never wiped,
+re-initialised or re-permissioned (otherwise `UNSAFE_ACCOUNT_HOME`). Enrollment
+reports the home's current authentication state (`auth.problem`, never identity).
+As an advanced option, `--config-dir DIR` adopts a config directory **in place**: it must be absolute, exist, be a
+directory, lie outside the data root, and not overlap another account's home. It
+is never copied or moved. Config keys `claude_binary` (default `claude`) and
+`claude_session_home` (optional absolute `HOME` for Claude children; unset
+inherits) select the runtime.
+
+Every Claude child is built by one function: `CLAUDE_CONFIG_DIR` is the account
+home, `DISABLE_AUTOUPDATER=1`, and ambient `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`,
+`CLAUDE_CODE_USE_BEDROCK|VERTEX|FOUNDRY`, `ANTHROPIC_BEDROCK_BASE_URL` and
+`ANTHROPIC_VERTEX_PROJECT_ID` are removed so billing/backend cannot switch
+silently. Before any launch, `claude auth status --json` (bounded) must report a
+`claude.ai` login on `firstParty`; otherwise the launch is refused with
+`AUTH_REQUIRED` or `WRONG_AUTH_MODE`. Email and organization fields are never
+stored or printed. The supervisor repeats this probe to report `auth_required`.
+
+```sh
+sessionsation run --account claude:personal          # new session here
+sessionsation resume SESSION-ID --expected-generation GENERATION
+sessionsation api launcher new --account claude:personal
+sessionsation api launcher resume --session SESSION-ID --expected-generation GENERATION
+```
+
+A new session generates its native id, records the catalog entry (provider,
+account, `conversation_id`, directory) and then execs `claude --session-id UUID
+--name LABEL --settings JSON`. Resume runs `claude --resume UUID --name LABEL`
+in the recorded directory; it refuses a verified live session ("already running;
+focus it") and a missing transcript (`SESSION_STALE`). `api launch` and `api
+resume --herdr-session` accept `claude:` accounts and sessions the same way.
+
+Discovery reads only `sessionId`/`cwd`/`timestamp` from transcript headers in
+`projects/*/*.jsonl` (never message text). A session is `running` only when a
+`sessions/PID.json` registry entry names it, the PID exists with the recorded
+`procStart` (PID-reuse guard) and, when readable, the process's config dir is the
+account home; `native_status` (`idle`/`busy`) and `native_name` come from that
+entry. Otherwise it is `stopped` (transcript present), `stale` (transcript
+missing) or `unknown` (probe failed). Names/titles never establish liveness.
+Rename changes only the catalog label (applied as `--name` next launch/resume).
+
+Stop, restart, account switch, relocation, Space moves, archive/delete and
+Submit/Queue/Steer are unsupported for Claude and rejected with
+`UNSUPPORTED_PROVIDER_OPERATION`; capabilities give the reason.
+
+Usage comes only from Claude Code's statusline. Launches pass a statusline that
+runs the hidden `sessionsation provider-hook claude-statusline`, which atomically
+writes `CLAUDE_CONFIG_DIR/.sessionsation/usage.json` (0600) with the rate-limit
+windows only, then runs the account's own `settings.json` `statusLine.command`
+with the same input and passes its output through. Recorder errors never break the
+statusline. Rate limits appear only for subscription accounts after the first API
+response; missing windows stay `null`, and readings older than 30 minutes or past
+their reset are stale. No model request is made to obtain usage.

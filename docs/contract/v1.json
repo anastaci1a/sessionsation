@@ -150,7 +150,10 @@
             "running",
             "saved",
             "unavailable",
-            "archived"
+            "archived",
+            "stopped",
+            "stale",
+            "unknown"
           ]
         },
         "capabilities": {

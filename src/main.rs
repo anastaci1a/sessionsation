@@ -8,6 +8,7 @@ use sessionsation::{
     daemon, external,
     model::State,
     paths::{Paths, atomic_write, private_dir},
+    provider::{self, AccountRef, ProviderId},
     simulation::{self, Input},
     store,
 };
@@ -17,7 +18,7 @@ use std::path::PathBuf;
 #[command(
     version,
     about = "CLI-first account and session manager",
-    long_about = "Account-aware Codex sessions in tmux and HERDR. Use api for the versioned JSON contract. Claude runtime support requires separate setup."
+    long_about = "Account-aware Codex and Claude Code sessions in tmux and HERDR. Use api for the versioned JSON contract."
 )]
 struct Cli {
     #[arg(
@@ -49,6 +50,12 @@ enum Commands {
     MessageRecoveryWorker { message_id: String },
     #[command(hide = true)]
     MessageRecoveryRun { message_id: String },
+    /// Provider integration hooks (invoked by provider processes, not people).
+    #[command(hide = true)]
+    ProviderHook {
+        #[command(subcommand)]
+        command: ProviderHookCommand,
+    },
     /// Versioned machine-readable backend contract (JSON/NDJSON).
     Api {
         #[arg(long, default_value_t=1, value_parser=clap::value_parser!(u32).range(1..=1))]
@@ -351,24 +358,51 @@ enum DaemonCommand {
     Stop,
 }
 #[derive(Subcommand)]
+enum ProviderHookCommand {
+    /// Record Claude statusline rate limits, then chain the account's own statusline.
+    ClaudeStatusline {
+        /// Record only; do not run the account's statusLine command.
+        #[arg(long)]
+        record_only: bool,
+    },
+}
+#[derive(Subcommand)]
 enum AccountCommand {
+    /// Enroll an account. Names are unique across providers.
+    #[command(
+        after_help = "Examples:\n  sessionsation account add --platform codex work\n  sessionsation account add --platform claude personal\n  sessionsation account add --platform claude --config-dir /home/me/.claude existing"
+    )]
     Add {
+        /// Provider for the new account (required; no default).
+        #[arg(long, value_enum, value_name = "codex|claude")]
+        platform: ProviderId,
+        /// Claude only: adopt an existing CLAUDE_CONFIG_DIR in place (absolute; never copied or moved).
+        #[arg(long, value_name = "DIR")]
+        config_dir: Option<PathBuf>,
         name: String,
     },
+    /// Log in: Codex prints a device code; Claude runs `claude auth login --claudeai` here.
     Login {
+        /// NAME or PROVIDER:NAME.
         name: String,
     },
-    List,
+    /// List accounts of every provider (table; --json for machine output).
+    List {
+        #[arg(long, value_enum, value_name = "codex|claude")]
+        platform: Option<ProviderId>,
+        #[arg(long)]
+        json: bool,
+    },
     Enable {
+        /// NAME or PROVIDER:NAME.
         name: String,
     },
     Disable {
+        /// NAME or PROVIDER:NAME.
         name: String,
     },
     /// Read account details, plan, limits and remaining percentages without starting a monitor.
-    Show {
-        name: String,
-    },
+    Show { name: String },
     /// Export the same usage/activity bins shown by the account history UI (JSON).
     History {
         name: String,
@@ -430,7 +464,19 @@ async fn run(cli: Cli) -> Result<()> {
     if let Commands::Simulate { scenario } = &cli.command {
         return simulate(scenario);
     }
-    let paths = Paths::new(cli.data_dir)?;
+    // Runs inside Claude's statusline: never create or touch a data root.
+    if let Commands::ProviderHook {
+        command: ProviderHookCommand::ClaudeStatusline { record_only },
+    } = &cli.command
+    {
+        std::process::exit(provider::claude::statusline_hook(*record_only));
+    }
+    // Only setup may create a data root; everything else fails closed.
+    let paths = if matches!(cli.command, Commands::Setup { .. }) {
+        Paths::new(cli.data_dir)?
+    } else {
+        Paths::open(cli.data_dir)?
+    };
     match cli.command {
         Commands::ConversationWorker { request_id } => {
             sessionsation::external::archiving::worker(&paths, &request_id).await?;
@@ -466,8 +512,9 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Account {
             command: AccountCommand::Show { name },
         } => {
+            let account = resolve_account(&paths, &name)?;
             let status = daemon::call(&paths, "status", json!({})).await?;
-            print_json(&sessionsation::cli_views::account(&status, &name)?)?;
+            print_json(&sessionsation::cli_views::account(&status, &account.name)?)?;
         }
         Commands::Account {
             command:
@@ -488,10 +535,11 @@ async fn run(cli: Cli) -> Result<()> {
             });
             let (start, end, step) =
                 sessionsation::cli_views::history_range(at, hours, start, end, step)?;
+            let account = resolve_account(&paths, &name)?;
             let history = daemon::call(
                 &paths,
                 "account/history",
-                json!({"name":name,"start":start,"end":end,"step":step}),
+                json!({"name":account.name,"provider":account.provider,"start":start,"end":end,"step":step}),
             )
             .await?;
             print_json(
@@ -516,7 +564,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             daemon::ensure_started(&paths).await?;
             println!(
-                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add <name>`.\nNative switching remains blocked; inspect `sessionsation doctor --probe`.",
+                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add --platform codex|claude <name>`.\nNative switching remains blocked; inspect `sessionsation doctor --probe`.",
                 paths.root.display()
             );
         }
@@ -642,25 +690,125 @@ async fn run(cli: Cli) -> Result<()> {
             }
             print_json(&daemon::call(&paths, "account/thresholds", params).await?)?;
         }
-        Commands::Account { command } => {
+        Commands::Account {
+            command: AccountCommand::Login { name },
+        } if resolve_account(&paths, &name)?.provider == ProviderId::Claude => {
+            // Interactive official subscription login in this terminal, with the
+            // account's isolated environment. Credentials never pass through us.
+            use std::os::unix::process::CommandExt;
+            let account = provider::claude::account(&paths, &resolve_account(&paths, &name)?.name)?;
+            let config = store::load_config(&paths)?;
+            let mut command = provider::claude::command(&config, &account.home);
+            command
+                .args(&provider::claude::login_argv(&config)[1..])
+                .current_dir(&account.home);
+            return Err(command.exec()).context("could not start claude auth login");
+        }
+        Commands::Account {
+            command:
+                AccountCommand::Add {
+                    platform: ProviderId::Claude,
+                    config_dir,
+                    name,
+                },
+        } => {
             daemon::ensure_started(&paths).await?;
-            let (method, name) = match command {
-                AccountCommand::Add { name } => ("account/add", Some(name)),
-                AccountCommand::Login { name } => ("account/login", Some(name)),
-                AccountCommand::Enable { name } => ("account/enable", Some(name)),
-                AccountCommand::Disable { name } => ("account/disable", Some(name)),
-                AccountCommand::List => ("status", None),
-                AccountCommand::Show { .. } | AccountCommand::History { .. } => {
-                    unreachable!("read-only account views handled above")
+            let mut params = json!({"name":name,"provider":"claude"});
+            if let Some(dir) = config_dir {
+                params["config_dir"] = json!(dir);
+            }
+            let value = daemon::call(&paths, "account/add", params).await?;
+            let auth = match value["auth"]["problem"].as_str() {
+                None => "logged in (claude.ai subscription)".to_owned(),
+                Some("AUTH_REQUIRED") => {
+                    format!("not logged in; run: sessionsation account login claude:{name}")
+                }
+                Some(problem) => {
+                    format!("{problem}; run: sessionsation account login claude:{name}")
                 }
             };
-            if let Some(name) = name.as_deref() {
-                sessionsation::accounts::ensure_available(&paths, name)?;
+            println!(
+                "Enrolled claude:{name} ({} config home {}).\nAuth: {auth}\nCheck: sessionsation account list",
+                if value["existing_home"] == true {
+                    "registered existing"
+                } else {
+                    "created"
+                },
+                value["home"].as_str().unwrap_or("unknown")
+            );
+        }
+        Commands::Account {
+            command:
+                AccountCommand::List {
+                    platform,
+                    json: as_json,
+                },
+        } => {
+            daemon::ensure_started(&paths).await?;
+            let value = daemon::call(&paths, "status", json!({})).await?;
+            let accounts = sessionsation::api::project_accounts(
+                &paths,
+                value["accounts"]
+                    .as_array()
+                    .context("INVALID_SUPERVISOR_RESPONSE")?
+                    .clone(),
+            )?
+            .into_iter()
+            .filter(|a| platform.is_none_or(|p| a["provider"] == p.as_str()))
+            .collect::<Vec<_>>();
+            if as_json {
+                print_json(&json!(accounts))?;
+            } else {
+                print!("{}", sessionsation::cli_views::account_table(&accounts));
             }
-            let value = daemon::call(&paths, method, json!({"name":name})).await?;
+        }
+        Commands::Account { command } => {
+            daemon::ensure_started(&paths).await?;
+            let (method, name, config_dir) = match command {
+                AccountCommand::Add {
+                    platform: ProviderId::Codex,
+                    config_dir,
+                    name,
+                } => (
+                    "account/add",
+                    AccountRef {
+                        provider: ProviderId::Codex,
+                        name,
+                    },
+                    config_dir,
+                ),
+                AccountCommand::Login { name } => {
+                    ("account/login", resolve_account(&paths, &name)?, None)
+                }
+                AccountCommand::Enable { name } => {
+                    ("account/enable", resolve_account(&paths, &name)?, None)
+                }
+                AccountCommand::Disable { name } => {
+                    ("account/disable", resolve_account(&paths, &name)?, None)
+                }
+                AccountCommand::Add { .. }
+                | AccountCommand::List { .. }
+                | AccountCommand::Show { .. }
+                | AccountCommand::History { .. } => {
+                    unreachable!("handled above")
+                }
+            };
+            anyhow::ensure!(
+                config_dir.is_none(),
+                "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
+            );
+            if name.provider == ProviderId::Codex {
+                sessionsation::accounts::ensure_available(&paths, &name.name)?;
+            }
+            let value = daemon::call(
+                &paths,
+                method,
+                json!({"name":name.name,"provider":name.provider}),
+            )
+            .await?;
             if method == "account/add" || method == "account/login" {
                 println!(
-                    "Open {}\nEnter code: {}\nAccount monitoring will begin automatically after login.\nCheck: codex-switcher account list",
+                    "Open {}\nEnter code: {}\nAccount monitoring will begin automatically after login.\nCheck: sessionsation account list",
                     value["login"]["verificationUrl"]
                         .as_str()
                         .unwrap_or("the verification URL returned by Codex"),
@@ -668,14 +816,6 @@ async fn run(cli: Cli) -> Result<()> {
                         .as_str()
                         .unwrap_or("(no code returned)")
                 );
-            } else if method == "status" {
-                print_json(&json!(sessionsation::api::project_accounts(
-                    &paths,
-                    value["accounts"]
-                        .as_array()
-                        .context("INVALID_SUPERVISOR_RESPONSE")?
-                        .clone()
-                )?))?;
             } else {
                 print_json(&value)?;
             }
@@ -924,6 +1064,30 @@ async fn run(cli: Cli) -> Result<()> {
                     session.is_none(),
                     "--session is reserved for managed launching"
                 );
+                let account = resolve_account(&paths, &account)?;
+                if account.provider == ProviderId::Claude && matches!(host, Host::Inline) {
+                    anyhow::ensure!(
+                        herdr_session.is_none(),
+                        "--herdr-session requires --host herdr"
+                    );
+                    anyhow::ensure!(
+                        codex_options.is_empty(),
+                        "UNSUPPORTED_PROVIDER_OPERATION: provider options after -- are Codex-only"
+                    );
+                    if let Some(thread) = thread {
+                        let s = sessionsation::catalog::list(&paths)?
+                            .into_iter()
+                            .find(|s| s.provider == "claude" && s.conversation_id == thread && s.account == account.name)
+                            .context("SESSION_NOT_FOUND: no cataloged Claude session with this id on the account")?;
+                        provider::claude::launch::exec_resume(&paths, &s.id, &s.generation())
+                            .await?;
+                    } else {
+                        provider::claude::launch::exec_new(&paths, &account.name, None, None)
+                            .await?;
+                    }
+                    return Ok(());
+                }
+                let account = account.name;
                 match host {
                     Host::Inline => {
                         anyhow::ensure!(
@@ -973,9 +1137,34 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Import { .. } | Commands::Pause { .. } => {
             compatibility::require_native_handoff()?
         }
-        Commands::Simulate { .. } => unreachable!(),
+        Commands::Simulate { .. } | Commands::ProviderHook { .. } => unreachable!(),
     }
     Ok(())
+}
+/// Resolve NAME or PROVIDER:NAME against enrolled accounts (names are global).
+/// An unknown bare name stays on the Codex path, whose launcher reports it.
+fn resolve_account(paths: &Paths, id: &str) -> Result<AccountRef> {
+    let (wanted, name) = AccountRef::parse_lookup(id)?;
+    let state = if paths.root.join("registry.db").exists() {
+        store::load_state_snapshot(paths).ok()
+    } else {
+        None
+    };
+    if let Some(state) = state
+        && state.accounts.contains_key(&name)
+    {
+        return provider::resolve(
+            state
+                .accounts
+                .values()
+                .map(|a| (a.name.as_str(), a.provider)),
+            id,
+        );
+    }
+    Ok(AccountRef {
+        provider: wanted.unwrap_or(ProviderId::Codex),
+        name,
+    })
 }
 fn print_json(value: &Value) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
@@ -1032,7 +1221,7 @@ fn install_systemd(paths: &Paths) -> Result<()> {
         ))
     };
     let service = format!(
-        "[Unit]\nDescription=Codex Switcher account monitor\n\n[Service]\nType=simple\nExecStart={} --data-dir {} daemon serve\nRestart=on-failure\nRestartSec=5\nUMask=0077\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=Sessionsation account monitor\n\n[Service]\nType=simple\nExecStart={} --data-dir {} daemon serve\nRestart=on-failure\nRestartSec=5\nUMask=0077\n\n[Install]\nWantedBy=default.target\n",
         quote(&executable)?,
         quote(&paths.root)?
     );

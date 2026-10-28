@@ -230,6 +230,7 @@ mod tests {
             conversation_id: uuid::Uuid::new_v4().to_string(),
             revision: 1,
             attachment: None,
+            directory: None,
         }
     }
     #[test]

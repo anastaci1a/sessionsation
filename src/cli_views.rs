@@ -98,6 +98,42 @@ pub async fn session(paths: &Paths, key: &str) -> Result<Value> {
     )
 }
 
+/// Human account listing across providers. Unknown usage shows `-`, never 0%.
+pub fn account_table(accounts: &[Value]) -> String {
+    let percent = |a: &Value, window: &str| {
+        a["usage"][window]["used_percent"]
+            .as_f64()
+            .map_or("-".to_owned(), |p| format!("{p:.0}%"))
+    };
+    let mut out = format!(
+        "{:<24} {:<8} {:<12} {:>5} {:>5} {}\n",
+        "NAME", "PROVIDER", "STATUS", "5H", "WEEK", "USAGE"
+    );
+    for a in accounts {
+        let status = if a["membership"] == "removed" {
+            "removed".to_owned()
+        } else if a["enabled"] != true {
+            "disabled".to_owned()
+        } else if a["auth_required"] == true {
+            a["auth_detail"]
+                .as_str()
+                .map_or("login".to_owned(), str::to_ascii_lowercase)
+        } else {
+            "ready".to_owned()
+        };
+        out.push_str(&format!(
+            "{:<24} {:<8} {:<12} {:>5} {:>5} {}\n",
+            a["name"].as_str().unwrap_or("?"),
+            a["provider"].as_str().unwrap_or("?"),
+            status,
+            percent(a, "short"),
+            percent(a, "weekly"),
+            a["usage_state"].as_str().unwrap_or("unknown"),
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

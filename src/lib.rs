@@ -15,6 +15,7 @@ mod lifecycle;
 pub mod messaging;
 pub mod model;
 pub mod paths;
+pub mod provider;
 pub mod rpc;
 pub mod scheduler;
 mod self_executable;

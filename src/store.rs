@@ -6,6 +6,7 @@ use crate::{
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags, params};
+use serde_json::Value;
 use std::fs::File;
 
 pub struct Store {
@@ -29,15 +30,35 @@ impl Store {
         crate::usage_history::initialize(&db)?;
         Ok(Self { db, _lock: lock })
     }
+    /// Load the registry, applying and persisting (once, with one event per
+    /// account) the legacy provider migration.
     pub fn load(&self) -> Result<State> {
         let json: Result<String, _> =
             self.db
                 .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0));
-        match json {
-            Ok(s) => Ok(serde_json::from_str(&s)?),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(State::default()),
-            Err(e) => Err(e.into()),
+        let mut value: Value = match json {
+            Ok(s) => serde_json::from_str(&s)?,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(State::default()),
+            Err(e) => return Err(e.into()),
+        };
+        let migrated = migrate_legacy_codex_provider(&mut value);
+        let state: State = serde_json::from_value(value)?;
+        if !migrated.is_empty() {
+            let tx = self.db.unchecked_transaction()?;
+            tx.execute(
+                "UPDATE state SET json=?1 WHERE id=1",
+                [serde_json::to_string(&state)?],
+            )?;
+            let now = crate::daemon::now();
+            for name in &migrated {
+                tx.execute(
+                    "INSERT INTO events(at,kind,entity) VALUES(?1,?2,?3)",
+                    params![now, LEGACY_CODEX_PROVIDER_EVENT, name],
+                )?;
+            }
+            tx.commit()?;
         }
+        Ok(state)
     }
     pub fn save(&mut self, state: &State, now: i64, kind: &str, entity: &str) -> Result<()> {
         let tx = self.db.transaction()?;
@@ -53,13 +74,38 @@ impl Store {
         Ok(())
     }
 }
+/// Read-only snapshot; a legacy registry is migrated in memory only (the
+/// supervisor, as the single writer, persists the migration).
 pub fn load_state_snapshot(paths: &Paths) -> Result<State> {
     let db = Connection::open_with_flags(
         paths.root.join("registry.db"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let json: String = db.query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))?;
-    Ok(serde_json::from_str(&json)?)
+    let mut value: Value = serde_json::from_str(&json)?;
+    migrate_legacy_codex_provider(&mut value);
+    Ok(serde_json::from_value(value)?)
+}
+
+pub const LEGACY_CODEX_PROVIDER_EVENT: &str = "account.provider_migrated_legacy_codex";
+/// Registries written before providers existed could enroll only Codex
+/// (`account add` always started a Codex device login), so an account record
+/// without `provider` is a Codex account. This is the only place that
+/// assigns a provider to a legacy record; names are never used to infer it.
+/// Returns the migrated account names; idempotent.
+pub fn migrate_legacy_codex_provider(state: &mut Value) -> Vec<String> {
+    let mut migrated = vec![];
+    if let Some(accounts) = state.get_mut("accounts").and_then(Value::as_object_mut) {
+        for (name, account) in accounts.iter_mut() {
+            if let Some(record) = account.as_object_mut()
+                && !record.contains_key("provider")
+            {
+                record.insert("provider".into(), Value::String("codex".into()));
+                migrated.push(name.clone());
+            }
+        }
+    }
+    migrated
 }
 pub fn load_config(paths: &Paths) -> Result<Config> {
     let path = paths.root.join("config.json");

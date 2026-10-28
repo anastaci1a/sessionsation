@@ -30,7 +30,7 @@ source/fixture check is distinct from provider compatibility acceptance.
 | Codex terminal 0.162.1 / account app-server 0.163.0 | Earlier authorized disposable native acceptance | Not a promise for all stock builds, newer versions or other account setups |
 | HERDR 0.9.5, terminal protocol 22 | Isolated headless host and PTY tests | Other versions must be checked explicitly |
 | tmux | Isolated discovery, exact process ownership and lifecycle regressions | Existing unrelated live sessions are never silently migrated |
-| Claude | Explicit setup-required capabilities | Enrollment, usage, messaging and lifecycle are not implemented |
+| Claude Code 2.1.312 | Fake-provider fixtures for enrollment, auth gating, launch/resume, live identity and statusline usage | No stop/restart/switch/messaging; usage only while Claude Code runs |
 
 Earlier native acceptance established account-specific launch, reported usage,
 correlated replies, account transfer with history comparison, restart/resume,

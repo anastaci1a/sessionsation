@@ -971,6 +971,7 @@ mod tests {
             conversation_id: input.session_id,
             revision: 1,
             attachment: None,
+            directory: None,
         };
         let request = PublicRequest {
             steering: None,

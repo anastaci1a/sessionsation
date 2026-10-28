@@ -119,17 +119,21 @@ fn shape(r: &Request) -> Result<()> {
             && !r.name.chars().any(char::is_control),
         "INVALID_SESSION_NAME"
     );
-    crate::paths::validate_name(
-        r.account_id
-            .strip_prefix("codex:")
-            .context("UNSUPPORTED_PROVIDER_OPERATION")?,
-    )?;
+    codex_account(r)?;
     crate::paths::validate_name(&r.host.session)?;
     ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
     if let Some(d) = &r.directory {
         launch::directory_shape(d)?;
     }
     Ok(())
+}
+/// Saved-session resume-launch (HERDR transfer worker) is verified only for
+/// Codex; Claude sessions resume through `api resume` or the launcher.
+fn codex_account(r: &Request) -> Result<String> {
+    let account = crate::provider::AccountRef::parse(&r.account_id)?;
+    Ok(account
+        .require(crate::provider::ProviderId::Codex)?
+        .to_owned())
 }
 fn validate_saved_history(source: &external::Instance, confirmed: bool) -> Result<()> {
     ensure!(
@@ -170,7 +174,8 @@ async fn validate(paths: &Paths, r: &Request) -> Result<(catalog::Session, exter
             .any(|other| other.id != s.id && other.name == r.name),
         "SESSION_NAME_EXISTS"
     );
-    let target = r.account_id.strip_prefix("codex:").unwrap();
+    let target = codex_account(r)?;
+    let target = target.as_str();
     crate::accounts::ensure_available(paths, target)?;
     let state = daemon::call(paths, "status", json!({})).await?;
     ensure!(
@@ -396,7 +401,8 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
         r.phase = "dispatching".into();
         Ok(())
     })?;
-    let account = r.account_id.strip_prefix("codex:").unwrap();
+    let account = codex_account(r)?;
+    let account = account.as_str();
     if account != source.account || paths.account(account)? != source.home {
         // Bind the transfer's durable job ID before enqueue; a lost acknowledgment
         // is reconciled by identity, never by starting another transfer.
@@ -460,7 +466,7 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
     })?;
     let result = external::run_account_resume_requested(
         paths,
-        r.request.account_id.strip_prefix("codex:").unwrap(),
+        &codex_account(&r.request)?,
         &r.conversation_id,
         (&r.request.session_id, &r.generation),
         id,

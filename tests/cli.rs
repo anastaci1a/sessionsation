@@ -11,6 +11,7 @@ fn binary() -> &'static str {
 fn reserved_launcher_is_honestly_gated_and_does_not_start_daemon() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
+    sessionsation::paths::Paths::new(Some(root.clone())).unwrap();
     let out = Command::new(binary())
         .args(["--data-dir"])
         .arg(&root)
@@ -24,6 +25,7 @@ fn reserved_launcher_is_honestly_gated_and_does_not_start_daemon() {
 #[test]
 fn offline_status_is_machine_readable_without_starting_daemon() {
     let tmp = tempfile::tempdir().unwrap();
+    sessionsation::paths::Paths::new(Some(tmp.path().join("state"))).unwrap();
     let out = Command::new(binary())
         .arg("--data-dir")
         .arg(tmp.path().join("state"))
@@ -35,6 +37,57 @@ fn offline_status_is_machine_readable_without_starting_daemon() {
     assert_eq!(v["schema_version"], 1);
     assert_eq!(v["daemon"]["running"], false);
     assert_eq!(v["capabilities"]["managed_launch"], false);
+}
+#[test]
+fn missing_data_root_fails_closed_and_only_setup_creates_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("stale-root");
+    for args in [
+        &["status", "--json"][..],
+        &["api", "state"],
+        &["account", "list"],
+    ] {
+        let out = Command::new(binary())
+            .arg("--data-dir")
+            .arg(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            text.contains("DATA_ROOT_MISSING") && text.contains("sessionsation setup"),
+            "{text}"
+        );
+        assert!(!root.exists(), "{args:?} must not create a shadow root");
+    }
+    // Explicit setup creates it (systemd mode writes a unit instead of starting a daemon).
+    let out = Command::new(binary())
+        .arg("--data-dir")
+        .arg(&root)
+        .args(["setup", "--systemd"])
+        .env("HOME", tmp.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(root.join("config.json").is_file());
+    let unit = std::fs::read_to_string(
+        tmp.path()
+            .join(".config/systemd/user/sessionsation.service"),
+    )
+    .unwrap();
+    assert!(unit.contains("Description=Sessionsation"));
+    let out = Command::new(binary())
+        .arg("--data-dir")
+        .arg(&root)
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
 }
 struct Process(std::process::Child);
 impl Drop for Process {

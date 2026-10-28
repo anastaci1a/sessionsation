@@ -3,6 +3,7 @@ use crate::{
     config::Config,
     model::{Account, Credits, State, Usage, Window},
     paths::{Paths, private_dir},
+    provider::ProviderId,
     rpc::{Rpc, read_frame},
     store::{Store, load_config, save_config},
 };
@@ -108,6 +109,35 @@ pub fn parse_usage(value: &Value, at: i64) -> Result<Usage> {
     Ok(usage)
 }
 
+/// The account named by `params.name`, verifying `params.provider` when given.
+fn named<'a>(state: &'a State, params: &Value) -> Result<&'a Account> {
+    let name = params["name"].as_str().context("missing account name")?;
+    let account = state.accounts.get(name).context("unknown account")?;
+    if let Some(provider) = params["provider"].as_str() {
+        let provider = ProviderId::parse(provider)?;
+        ensure!(
+            provider == account.provider,
+            "ACCOUNT_PROVIDER_MISMATCH: {name} is enrolled as {}:{name}, not {provider}:{name}",
+            account.provider
+        );
+    }
+    Ok(account)
+}
+/// Supervisor operations that own a Codex app-server/home.
+fn codex_named<'a>(state: &'a State, params: &Value) -> Result<&'a Account> {
+    let account = named(state, params)?;
+    ensure!(
+        account.provider == ProviderId::Codex,
+        "UNSUPPORTED_PROVIDER_OPERATION: {} accounts do not support this operation",
+        account.provider
+    );
+    Ok(account)
+}
+struct ClaudePoll {
+    name: String,
+    problem: Option<String>,
+}
+
 fn monitoring_pause_reason(paths: &Paths, name: &str) -> Option<&'static str> {
     if paths
         .account(name)
@@ -131,17 +161,54 @@ fn monitoring_pause_reason(paths: &Paths, name: &str) -> Option<&'static str> {
     None
 }
 
+/// Provider usage in the shared account shape plus `source`/`semantics`.
+/// Codex values are the supervisor's snapshot; Claude values are projected from
+/// the statusline recorder. Returns (usage, usage_fresh, usage_state).
+fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value, bool, String) {
+    match a.provider {
+        ProviderId::Codex => {
+            let fresh = a.usage.fresh(at, config.stale_seconds);
+            let mut usage = json!(a.usage);
+            usage["source"] = json!(crate::provider::codex::USAGE_SOURCE);
+            usage["semantics"] = json!(crate::provider::codex::USAGE_SEMANTICS);
+            let state = if fresh {
+                "fresh"
+            } else if a.usage.observed_at == 0 {
+                "missing"
+            } else {
+                "stale"
+            };
+            (usage, fresh, state.into())
+        }
+        ProviderId::Claude => match crate::provider::account_home(paths, a) {
+            Ok(home) => {
+                let (usage, fresh, state) = crate::provider::claude::project_usage(&home, at);
+                (usage, fresh, state.into())
+            }
+            Err(_) => (
+                json!({"short":null,"weekly":null,"observed_at":0,"exhausted":false,"state":"error",
+                    "source":crate::provider::claude::USAGE_SOURCE,"semantics":crate::provider::claude::USAGE_SEMANTICS}),
+                false,
+                "error".into(),
+            ),
+        },
+    }
+}
+
 pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> Value {
     let at = now();
-    let accounts: Vec<_> = state.accounts.values().map(|a|json!({
-        "name":a.name,"enabled":a.enabled,"auth_required":a.auth_required,"deletion_id":a.deletion_id,
+    let accounts: Vec<_> = state.accounts.values().map(|a| {
+        let (usage, fresh, usage_state) = account_usage(paths, a, config, at);
+        json!({
+        "name":a.name,"provider":a.provider,"config_home":a.config_home,
+        "enabled":a.enabled,"auth_required":a.auth_required,"auth_detail":a.auth_detail,"deletion_id":a.deletion_id,
         "switch_thresholds":a.switch_thresholds,
-        "usage":a.usage,"usage_fresh":a.usage.fresh(at,config.stale_seconds),
-        "credit_fresh":a.usage.credits.is_some() && a.usage.observed_fresh(at,config.stale_seconds),
-        "monitoring_pause_reason":monitoring_pause_reason(paths,&a.name),
-        "eligible":crate::scheduler::eligible(a,config,at),
+        "usage":usage,"usage_fresh":fresh,"usage_state":usage_state,
+        "credit_fresh":a.provider == ProviderId::Codex && a.usage.credits.is_some() && a.usage.observed_fresh(at,config.stale_seconds),
+        "monitoring_pause_reason":(a.provider == ProviderId::Codex).then(||monitoring_pause_reason(paths,&a.name)).flatten(),
+        "eligible":a.provider == ProviderId::Codex && crate::scheduler::eligible(a,config,at),
         "assigned_sessions":state.sessions.values().filter(|s|s.account.as_ref()==Some(&a.name)).count()
-    })).collect();
+    })}).collect();
     let sessions: Vec<_> = state.sessions.values().map(|s|json!({"id":s.id,"thread_id":s.root_thread,"cwd":s.cwd,"account":s.account,"phase":s.phase,"reason":s.reason,"tmux_pane":s.tmux_pane,"manual_pause":s.manual_pause,"resume_work":s.resume_work})).collect();
     json!({"schema_version":1,"daemon":{"running":true,"package_version":env!("CARGO_PKG_VERSION"),"api_version":1,"lifecycle_reservations":["message-recoveries","space-moves"]},"codex_version":version,
         "capabilities":{"account_deletion":true,"account_monitoring":true,"scheduler_simulation":true,"manual_exit_handoff":true,"manual_moves":true,"explicit_account_launch":true,"session_inventory":true,"session_open":true,"archive_recovery":true,"project_relocation":true,"session_restart":true,"session_termination":true,"session_pause":true,"job_retry":true,"verified_paginated_moves":true,"managed_launch":false,"experimental_auto_start":true,"experimental_auto_switching":true,"automatic_switching":false,"conversation_import":false},
@@ -248,6 +315,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     let mut pending = BTreeSet::new();
     let mut last_poll = BTreeMap::<String, i64>::new();
     let (poll_tx, mut polls) = mpsc::channel::<Poll>(64);
+    let (claude_tx, mut claude_polls) = mpsc::channel::<ClaudePoll>(64);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -263,7 +331,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                     match method {
                         "status" => Ok(status(&paths,&state,&config,&version)),
                         "account/history" => {
-                            let name = params["name"].as_str().context("missing account name")?;
+                            let name = params["name"].as_str().context("missing account name")?; named(&state,params)?;
                             let account = state.accounts.get(name).context("unknown account")?;
                             let start = params["start"].as_i64().context("missing range start")?;
                             let end = params["end"].as_i64().context("missing range end")?;
@@ -281,7 +349,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             Ok(value)
                         }
                         "account/thresholds" => {
-                            let name = params["name"].as_str().context("missing account name")?;
+                            let name = params["name"].as_str().context("missing account name")?; named(&state,params)?;
                             let account = state.accounts.get_mut(name).context("unknown account")?;
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             let mut thresholds = account.switch_thresholds.clone();
@@ -306,7 +374,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             save_config(&paths,&new)?; config = new; Ok(json!({"saved":true}))
                         }
                         "account/delete/prepare" => {
-                            let name=params["name"].as_str().context("missing account name")?;
+                            let name=params["name"].as_str().context("missing account name")?; codex_named(&state,params)?;
                             let id=params["request_id"].as_str().context("missing deletion request")?;
                             uuid::Uuid::parse_str(id)?;
                             let record=crate::account_deletion::status(&paths,id)?;
@@ -337,7 +405,24 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         "account/add" => {
                             let name = params["name"].as_str().context("missing account name")?;
                             crate::paths::validate_new_account_name(name)?;
-                            ensure!(!state.accounts.contains_key(name), "account name already exists; use account login to reauthenticate");
+                            // Older clients predate providers and could only enroll Codex.
+                            let provider = params["provider"].as_str().map(ProviderId::parse).transpose()?.unwrap_or(ProviderId::Codex);
+                            if let Some(existing) = state.accounts.get(name) { return Err(crate::provider::collision(existing)); }
+                            let config_dir = params["config_dir"].as_str().map(std::path::PathBuf::from);
+                            if provider == ProviderId::Claude {
+                                let adopted = config_dir.map(|dir| crate::provider::claude::validate_adopt(&paths,&state,&dir)).transpose()?;
+                                // The managed home is the normal layout; an operator-populated one is registered as is.
+                                let (home, existing) = match &adopted { Some(dir) => (dir.clone(), true), None => crate::provider::claude::create_home(&paths,name)? };
+                                let auth = crate::provider::claude::auth_report(&config,&home).await;
+                                let mut account = Account::with_provider(ProviderId::Claude,name.into(),String::new());
+                                account.config_home = adopted; account.auth_required = !auth["problem"].is_null();
+                                account.auth_detail = auth["problem"].as_str().map(str::to_owned);
+                                state.accounts.insert(name.into(),account); last_poll.remove(name);
+                                store.save(&state,now(),"account_added",name)?;
+                                return Ok(json!({"name":name,"provider":"claude","account_id":format!("claude:{name}"),"home":home,"adopted":params["config_dir"].is_string(),"existing_home":existing,"auth":auth,
+                                    "login":{"action":"exec","interactive":true,"command":["sessionsation","account","login",format!("claude:{name}")]}}));
+                            }
+                            ensure!(config_dir.is_none(), "INVALID_ARGUMENT: --config-dir is only supported for claude accounts");
                             let home = paths.account(name)?; private_dir(&home)?;
                             let rpc = Rpc::spawn(&config.codex_binary,&home,&paths.root).await?;
                             let login = rpc.request("account/login/start",json!({"type":"chatgptDeviceCode"})).await;
@@ -352,8 +437,8 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             }
                         }
                         "account/login" => {
-                            let name = params["name"].as_str().context("missing account name")?;
-                            ensure!(state.accounts.contains_key(name), "unknown account");
+                            let name = named(&state,params)?.name.clone(); let name = name.as_str();
+                            ensure!(state.accounts[name].provider == ProviderId::Codex, "UNSUPPORTED_PROVIDER_OPERATION: Claude login is interactive; run `sessionsation account login claude:{name}` in a terminal");
                             ensure!(state.accounts[name].deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             ensure!(!pending.contains(name), "account poll is in progress; retry shortly");
                             if !helpers.contains_key(name) {let rpc = Rpc::spawn(&config.codex_binary,&paths.account(name)?,&paths.root).await?; helpers.insert(name.into(),rpc);}
@@ -363,12 +448,12 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             Ok(json!({"name":name,"login":login}))
                         }
                         "account/enable" | "account/disable" => {
-                            let name = params["name"].as_str().context("missing account name")?;
+                            let name = params["name"].as_str().context("missing account name")?; named(&state,params)?;
                             let account=state.accounts.get_mut(name).context("unknown account")?;ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");account.enabled = method == "account/enable";
                             store.save(&state,now(),"account_enabled_changed",name)?; Ok(json!({"saved":true}))
                         }
                         "account/lease" => {
-                            let name = params["name"].as_str().context("missing account name")?;
+                            let name = params["name"].as_str().context("missing account name")?; codex_named(&state,params)?;
                             ensure!(state.accounts.contains_key(name), "unknown account");
                             ensure!(state.accounts[name].deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             ensure!(!pending.contains(name), "account poll in progress; retry shortly");
@@ -379,7 +464,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             Ok(json!({"leased":true}))
                         }
                         "account/prepare" | "account/restart-server" => {
-                            let name = params["name"].as_str().context("missing account name")?;
+                            let name = params["name"].as_str().context("missing account name")?; codex_named(&state,params)?;
                             let account = state.accounts.get(name).context("unknown account")?;
                             ensure!(account.enabled && !account.auth_required, "account needs login or is disabled");
                             ensure!(!pending.contains(name), "account poll in progress; retry shortly");
@@ -438,6 +523,19 @@ pub async fn serve(paths: Paths) -> Result<()> {
                     store.save(&state,now(),"account_observed",&result.name)?;
                 }
             }
+            Some(result) = claude_polls.recv() => {
+                pending.remove(&result.name);
+                if let Some(a) = state.accounts.get_mut(&result.name)
+                    && a.provider == ProviderId::Claude
+                {
+                    let required = result.problem.is_some();
+                    if a.auth_required != required || a.auth_detail != result.problem {
+                        a.auth_required = required;
+                        a.auth_detail = result.problem;
+                        store.save(&state,now(),"account_observed",&result.name)?;
+                    }
+                }
+            }
             Some((at, counts)) = history_rx.recv() => {
                 // History is observational; a storage failure must not stop monitoring/accounts.
                 if let Err(error) = history.observe(&mut store,&state.accounts,at,config.stale_seconds,counts) {
@@ -447,6 +545,24 @@ pub async fn serve(paths: Paths) -> Result<()> {
             _ = interval.tick() => {
                 for a in state.accounts.values() {
                     if !a.enabled || pending.contains(&a.name) { continue; }
+                    if a.provider == ProviderId::Claude {
+                        // Auth status only: Claude usage comes from its statusline,
+                        // never from a model request or a Codex worker.
+                        let cadence = if a.auth_required {15} else {config.idle_poll_seconds as i64};
+                        if now() - last_poll.get(&a.name).copied().unwrap_or(0) < cadence {continue;}
+                        last_poll.insert(a.name.clone(),now());
+                        let Ok(home) = crate::provider::account_home(&paths,a) else {continue};
+                        pending.insert(a.name.clone());
+                        let (name, config, tx) = (a.name.clone(), config.clone(), claude_tx.clone());
+                        tokio::spawn(async move {
+                            let problem = match crate::provider::claude::auth_status(&config,&home).await {
+                                Ok(status) => status.problem().map(str::to_owned),
+                                Err(error) => Some(error.to_string().split(':').next().unwrap_or("AUTH_STATUS_UNAVAILABLE").to_owned()),
+                            };
+                            let _ = tx.send(ClaudePoll{name,problem}).await;
+                        });
+                        continue;
+                    }
                     let shared = crate::control::available(&paths.account(&a.name)?);
                     if !shared && crate::external::destination_tui_may_be_active(&paths,&a.name) {continue;}
                     let lease_path = paths.account(&a.name)?.join(".switcher-lease");
@@ -494,7 +610,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
 pub async fn call(paths: &Paths, method: &str, params: Value) -> Result<Value> {
     let mut stream = UnixStream::connect(paths.control())
         .await
-        .context("supervisor is not running; run `codex-switcher daemon start`")?;
+        .context("supervisor is not running; run `sessionsation daemon start`")?;
     let mut bytes = serde_json::to_vec(&json!({"id":1,"method":method,"params":params}))?;
     bytes.push(b'\n');
     stream.write_all(&bytes).await?;

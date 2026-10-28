@@ -13,7 +13,18 @@ pub struct Paths {
     pub runtime: PathBuf,
 }
 impl Paths {
+    /// Resolve and, if missing, create a data root. Only `setup` (and disposable
+    /// test fixtures) may create a root; every other command uses [`Paths::open`].
     pub fn new(root: Option<PathBuf>) -> Result<Self> {
+        Self::resolve(root, true)
+    }
+    /// Resolve an existing data root and fail closed when it is absent, so a
+    /// stale `SESSIONSATION_HOME` or an unmounted array never creates a fresh,
+    /// empty shadow root.
+    pub fn open(root: Option<PathBuf>) -> Result<Self> {
+        Self::resolve(root, false)
+    }
+    fn resolve(root: Option<PathBuf>, create: bool) -> Result<Self> {
         let unraid = Path::new("/etc/unraid-version").is_file();
         let root = data_root(
             root,
@@ -24,15 +35,23 @@ impl Paths {
         if unraid && root.starts_with("/mnt/user/") {
             ensure!(
                 Path::new("/mnt/user/appdata").is_dir(),
-                "Unraid appdata is unavailable; start the array before Codex Switcher"
+                "Unraid appdata is unavailable; start the array before Sessionsation"
             );
         }
         ensure!(root.is_absolute(), "data directory must be absolute");
+        if !create
+            && fs::symlink_metadata(&root).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
+            anyhow::bail!(
+                "DATA_ROOT_MISSING: data root {} does not exist; run `sessionsation setup` to create a new one",
+                root.display()
+            );
+        }
         private_dir(&root)?;
         let root = fs::canonicalize(root)?;
         let hash = format!("{:x}", Sha256::digest(root.as_os_str().as_encoded_bytes()));
         let runtime = PathBuf::from(format!(
-            "/tmp/codex-switcher-{}-{}",
+            "/tmp/sessionsation-{}-{}",
             unsafe { libc::geteuid() },
             &hash[..16]
         ));
@@ -191,6 +210,28 @@ mod tests {
         super::validate_name(&"x".repeat(64)).unwrap();
     }
 
+    #[test]
+    fn only_explicit_creation_makes_a_missing_root() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("missing");
+        let error = super::Paths::open(Some(root.clone()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("DATA_ROOT_MISSING"), "{error}");
+        assert!(!root.exists());
+        let created = super::Paths::new(Some(root.clone())).unwrap();
+        assert!(
+            created
+                .runtime
+                .to_string_lossy()
+                .starts_with("/tmp/sessionsation-")
+        );
+        let opened = super::Paths::open(Some(root.clone())).unwrap();
+        assert_eq!(opened.root, created.root);
+        assert_eq!(opened.runtime, created.runtime);
+        std::os::unix::fs::symlink(&root, t.path().join("alias")).unwrap();
+        assert!(super::Paths::open(Some(t.path().join("alias"))).is_err());
+    }
     #[test]
     fn unraid_defaults_to_persistent_appdata_without_home() {
         assert_eq!(
