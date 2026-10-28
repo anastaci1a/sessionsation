@@ -351,6 +351,10 @@ pub enum AccountCommand {
     Login {
         id: String,
     },
+    /// Claude: switch an adopted account to its managed home (no files are moved).
+    ManagedHome {
+        id: String,
+    },
     Enable {
         id: String,
     },
@@ -605,6 +609,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
         }
         command => {
             let (method, id) = match command {
+                AccountCommand::ManagedHome { id } => ("account/managed-home", id),
                 AccountCommand::Login { id } => ("account/login", id),
                 AccountCommand::Enable { id } => ("account/enable", id),
                 AccountCommand::Disable { id } => ("account/disable", id),
@@ -704,11 +709,15 @@ fn claude_public(s: catalog::Session, observed: Option<&claude::Observation>) ->
         _ => Some("unverified_history"),
     });
     let caps = crate::provider::capabilities(ProviderId::Claude);
-    value["capabilities"] = json!({"rename":true,"native_rename":false,"resume":availability == "stopped",
+    let usable_directory = directory
+        .as_deref()
+        .is_some_and(|d| std::path::Path::new(d).is_absolute() && std::path::Path::new(d).is_dir());
+    let resumable = availability == "stopped" && usable_directory;
+    value["capabilities"] = json!({"rename":true,"native_rename":false,"resume":resumable,
         "focus":running && attached,"switch_account":false,"restart":false,"stop":false,"move_space":false,
         "change_directory":false,"move_project":false,"archive":false,"delete":false,
         "submit":false,"queue":false,"steer":false});
-    value["capability_reasons"] = json!({"native_rename":caps.native_rename.reason,"switch_account":caps.account_switch.reason,
+    value["capability_reasons"] = json!({"resume":(availability == "stopped" && !usable_directory).then_some("SAVED_DIRECTORY_UNAVAILABLE"),"native_rename":caps.native_rename.reason,"switch_account":caps.account_switch.reason,
         "restart":caps.restart.reason,"stop":caps.stop.reason,"move_space":caps.move_space.reason,
         "change_directory":caps.relocate.reason,"move_project":caps.relocate.reason,"archive":caps.archive.reason,
         "delete":caps.delete_session.reason,"submit":caps.submit.reason,"queue":caps.queue.reason,"steer":caps.steer.reason});

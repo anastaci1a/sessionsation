@@ -663,13 +663,19 @@ fixtures include reconnect errors, acceptance after expiry and projection recove
 
 ## Account operations
 
-`api account list|add|login|enable|disable|usage|limits|remove|restore|delete|deletions` are documented in
+`api account list|add|login|managed-home|enable|disable|usage|limits|remove|restore|delete|deletions` are documented in
 [the CLI guide](cli.md). Removal is local membership removal, not provider deletion,
 credential purging or disabling the original switcher enrollment. The separately
 confirmed `delete` operation deletes local credentials/data while preserving
 conversations; it requires a capable sole owner. Arbitrary history purging remains
 unsupported. Codex-only operations (`remove`, `restore`, `delete`) reject
 `claude:` IDs with `UNSUPPORTED_PROVIDER_OPERATION`. See revision 10 below.
+`api account managed-home claude:NAME` (additive) switches an adopted Claude account to
+`<root>/claude-accounts/NAME` and returns `{account_id,provider,home,previous_home,relocated,already_managed}`
+(`note:"ALREADY_MANAGED"` when idempotent). Error codes: `UNSUPPORTED_PROVIDER_OPERATION`,
+`ACCOUNT_HOME_UNAVAILABLE`, `UNSAFE_ACCOUNT_HOME`, `ACCOUNT_IN_USE`, `AUTH_REQUIRED`,
+`WRONG_AUTH_MODE`, `AUTH_IDENTITY_MISMATCH`. Claude session `capabilities.resume` is false with
+`capability_reasons.resume:"SAVED_DIRECTORY_UNAVAILABLE"` when no existing absolute saved directory is known.
 
 Codex capability `account_limits` enables `account limits ID`, returning
 `{account_id,limits,saved:false}`. Supplying both `--short-used` and `--weekly-used`

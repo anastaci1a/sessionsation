@@ -305,10 +305,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Run a deterministic offline scenario. Never starts Codex or reads credentials.
+    /// Run a deterministic offline scenario. Never starts a provider or reads credentials.
     #[command(hide = true)]
     Simulate { scenario: PathBuf },
-    /// Start Codex with a selected enrolled account; managed switching remains gated.
+    /// Start a session with a selected enrolled account (Codex or Claude Code); managed switching remains gated.
     Run {
         /// Terminal hosting; inline retains the invoking terminal.
         #[arg(long, value_enum, default_value = "inline")]
@@ -384,6 +384,13 @@ enum AccountCommand {
     /// Log in: Codex prints a device code; Claude runs `claude auth login --claudeai` here.
     Login {
         /// NAME or PROVIDER:NAME.
+        name: String,
+    },
+    /// Claude: switch an adopted account to its managed home <root>/claude-accounts/NAME.
+    /// The directory must already exist (0700, yours, no symlink) and hold the same login;
+    /// nothing is copied. Refused while Claude is running on either home.
+    ManagedHome {
+        /// NAME or claude:NAME.
         name: String,
     },
     /// List accounts of every provider (table; --json for machine output).
@@ -780,6 +787,11 @@ async fn run(cli: Cli) -> Result<()> {
                 AccountCommand::Login { name } => {
                     ("account/login", resolve_account(&paths, &name)?, None)
                 }
+                AccountCommand::ManagedHome { name } => (
+                    "account/managed-home",
+                    resolve_account(&paths, &name)?,
+                    None,
+                ),
                 AccountCommand::Enable { name } => {
                     ("account/enable", resolve_account(&paths, &name)?, None)
                 }
@@ -806,7 +818,9 @@ async fn run(cli: Cli) -> Result<()> {
                 json!({"name":name.name,"provider":name.provider}),
             )
             .await?;
-            if method == "account/add" || method == "account/login" {
+            if method == "account/managed-home" {
+                print_json(&value)?;
+            } else if method == "account/add" || method == "account/login" {
                 println!(
                     "Open {}\nEnter code: {}\nAccount monitoring will begin automatically after login.\nCheck: sessionsation account list",
                     value["login"]["verificationUrl"]

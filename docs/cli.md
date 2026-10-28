@@ -74,6 +74,7 @@ sessionsation account add --platform codex example
 sessionsation account add --platform claude personal
 sessionsation account add --platform claude --config-dir /home/me/.claude existing
 sessionsation account login claude:personal
+sessionsation account managed-home existing      # adopted Claude home -> managed home
 sessionsation account list                      # table with a PROVIDER column
 sessionsation account list --platform claude --json
 ```
@@ -105,6 +106,20 @@ environment; `api account login claude:NAME` (and `api account add claude:NAME`)
 return an `exec` argv plan for a terminal client instead of a URL. Disabled accounts remain listed;
 disabling prevents future selection and does not stop existing agents. Usage and
 reported reset timestamps are in account snapshots; do not invent missing windows.
+
+`sessionsation account managed-home NAME` (API: `api account managed-home claude:NAME`)
+switches a Claude account adopted with `--config-dir` to the managed home
+`<root>/claude-accounts/NAME` without changing its id, name or catalog sessions. The
+operator must first copy the config directory there (0700, owned by you, not a
+symlink); sessionsation never creates, copies or moves files. It fails closed with
+`UNSUPPORTED_PROVIDER_OPERATION` (Codex), `ACCOUNT_HOME_UNAVAILABLE` or
+`UNSAFE_ACCOUNT_HOME` (managed directory), `ACCOUNT_IN_USE` (a verified live Claude
+session or any readable process with `CLAUDE_CONFIG_DIR` set to either home),
+`AUTH_REQUIRED`/`WRONG_AUTH_MODE` (managed home not a first-party claude.ai login) or
+`AUTH_IDENTITY_MISMATCH` (a hash of the `auth status` identity differs between the
+homes; identity values are never printed). An already managed account succeeds with
+`already_managed:true` and `note:"ALREADY_MANAGED"`. A change is recorded as event
+`account.claude_home_relocated` through the supervisor.
 New account names allow 1–30 ASCII letters, digits, hyphens or underscores
 (excluding `codex:`), enforced by public API admission and the account owner.
 Existing longer names remain valid for other operations.

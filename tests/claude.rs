@@ -500,6 +500,16 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
     let s = f.session(&id);
     assert_eq!(s["availability"], "stopped");
     assert_eq!(s["capabilities"]["resume"], true);
+    // Without a usable saved directory, resume is declared unavailable up front.
+    let away = f.project.with_extension("away");
+    std::fs::rename(&f.project, &away).unwrap();
+    let gone = f.session(&id);
+    std::fs::rename(&away, &f.project).unwrap();
+    assert_eq!(gone["capabilities"]["resume"], false);
+    assert_eq!(
+        gone["capability_reasons"]["resume"],
+        "SAVED_DIRECTORY_UNAVAILABLE"
+    );
     assert!(s["pid"].is_null());
 
     // Catalog rename: identity unchanged, label persisted, generation checked.
@@ -724,4 +734,153 @@ async fn managed_home_prepopulated_by_an_operator_is_registered_without_clobberi
     assert_eq!(added["auth"]["problem"], "AUTH_REQUIRED");
     assert_eq!(added["login"]["action"], "exec");
     assert_eq!(read(&pending.join("settings.json")), "{\"theme\":\"kept\"}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adopted_home_switches_to_the_managed_home_only_when_every_precondition_holds() {
+    let f = fixture().await;
+    let adopted = f._tmp.path().join("adopted");
+    std::fs::create_dir(&adopted).unwrap();
+    std::fs::write(adopted.join("settings.json"), b"{\"theme\":\"kept\"}").unwrap();
+    let add = f.run(&[
+        "account",
+        "add",
+        "--platform",
+        "claude",
+        "--config-dir",
+        adopted.to_str().unwrap(),
+        "moved",
+    ]);
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let row = || f.api(&["account", "list", "--platform", "claude"])[0].clone();
+    assert!(!row()["config_home"].is_null());
+    let events = || -> Vec<String> {
+        let db = rusqlite::Connection::open(f.paths.root.join("registry.db")).unwrap();
+        db.prepare("SELECT entity FROM events WHERE kind='account.claude_home_relocated'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+
+    // A codex account is refused with the provider error.
+    let add = f.run(&["account", "add", "--platform", "codex", "cx"]);
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let codex = f.api_error(&["account", "managed-home", "codex:cx"]);
+    assert!(codex.contains("UNSUPPORTED_PROVIDER_OPERATION"), "{codex}");
+    let mismatch = f.api_error(&["account", "managed-home", "codex:moved"]);
+    assert!(mismatch.contains("ACCOUNT_PROVIDER_MISMATCH"), "{mismatch}");
+
+    // Missing managed dir.
+    let managed = f.home("moved");
+    let err = f.api_error(&["account", "managed-home", "claude:moved"]);
+    assert!(err.contains("ACCOUNT_HOME_UNAVAILABLE"), "{err}");
+    assert!(!managed.exists(), "never created");
+
+    // Unsafe managed dir (group-readable), left unchanged.
+    std::fs::create_dir_all(&managed).unwrap();
+    std::fs::set_permissions(&managed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let err = f.api_error(&["account", "managed-home", "claude:moved"]);
+    assert!(err.contains("UNSAFE_ACCOUNT_HOME"), "{err}");
+    assert_eq!(
+        std::fs::metadata(&managed).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    std::fs::set_permissions(&managed, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    // A symlinked managed dir is refused.
+    let real = f._tmp.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::remove_dir(&managed).unwrap();
+    std::os::unix::fs::symlink(&real, &managed).unwrap();
+    let err = f.api_error(&["account", "managed-home", "claude:moved"]);
+    assert!(err.contains("UNSAFE_ACCOUNT_HOME"), "{err}");
+    std::fs::remove_file(&managed).unwrap();
+    std::fs::create_dir(&managed).unwrap();
+    std::fs::set_permissions(&managed, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    // Logged-out managed home, then another identity.
+    std::fs::write(managed.join("fake-auth-mode"), "logged_out").unwrap();
+    let err = f.api_error(&["account", "managed-home", "claude:moved"]);
+    assert!(err.contains("AUTH_REQUIRED"), "{err}");
+    std::fs::write(managed.join("fake-auth-mode"), "api_key").unwrap();
+    let err = f.api_error(&["account", "managed-home", "claude:moved"]);
+    assert!(err.contains("WRONG_AUTH_MODE"), "{err}");
+    std::fs::write(managed.join("fake-auth-mode"), "subscription").unwrap();
+    std::fs::write(managed.join("fake-identity"), "someone-else").unwrap();
+    let err = f.api_error(&["account", "managed-home", "claude:moved"]);
+    assert!(err.contains("AUTH_IDENTITY_MISMATCH"), "{err}");
+    assert!(!err.contains("example.invalid") && !err.contains("someone-else"));
+    std::fs::remove_file(managed.join("fake-identity")).unwrap();
+
+    // Any process whose environment names either home blocks the switch.
+    let holder = Command::new("sleep")
+        .arg("60")
+        .env("CLAUDE_CONFIG_DIR", &managed)
+        .spawn()
+        .unwrap();
+    let err = f.api_error(&["account", "managed-home", "claude:moved"]);
+    kill(holder);
+    assert!(err.contains("ACCOUNT_IN_USE"), "{err}");
+    // So does a verified live Claude session on the adopted home.
+    let fake = f._tmp.path().join("fake-claude");
+    let live = Command::new(&fake)
+        .args(["--session-id", "5b0f4b9e-6f1b-4c36-9d0a-1b6f3a1d2c11"])
+        .env("CLAUDE_CONFIG_DIR", &adopted)
+        .current_dir(&f.project)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for("live registry entry", || {
+        std::fs::read_dir(adopted.join("sessions")).is_ok_and(|d| {
+            d.flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".json"))
+        })
+    });
+    let err = f.api_error(&["account", "managed-home", "claude:moved"]);
+    kill(live);
+    // The fake's orphaned `sleep 1` child still carries the environment briefly.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(err.contains("ACCOUNT_IN_USE"), "{err}");
+    assert!(events().is_empty());
+    assert!(
+        !row()["config_home"].is_null(),
+        "nothing changed on refusal"
+    );
+
+    // Success through the human CLI; id, name and catalog are unchanged.
+    let sessions_before = f.claude_sessions();
+    let out = f.run(&["account", "managed-home", "moved"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("\"relocated\": true") && !text.contains("example.invalid"),
+        "{text}"
+    );
+    let r = row();
+    assert_eq!(r["id"], "claude:moved");
+    assert!(r["config_home"].is_null());
+    assert_eq!(f.claude_sessions().len(), sessions_before.len());
+    assert_eq!(events(), vec!["moved".to_owned()]);
+    assert_eq!(read(&adopted.join("settings.json")), "{\"theme\":\"kept\"}");
+
+    // Idempotent via the API: no second event.
+    let again = f.api(&["account", "managed-home", "claude:moved"]);
+    assert_eq!(again["already_managed"], true);
+    assert_eq!(again["note"], "ALREADY_MANAGED");
+    assert_eq!(events().len(), 1);
 }

@@ -113,6 +113,105 @@ pub fn create_home(paths: &Paths, name: &str) -> Result<(PathBuf, bool)> {
         Err(e) => Err(e.into()),
     }
 }
+/// The managed home must already be an operator-populated private directory.
+/// Never created, copied, moved or re-permissioned here.
+pub fn validate_managed_dir(home: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let m = match fs::symlink_metadata(home) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!(
+            "ACCOUNT_HOME_UNAVAILABLE: managed home {} does not exist; copy the config directory there first",
+            home.display()
+        ),
+        Err(e) => bail!("ACCOUNT_HOME_UNAVAILABLE: managed home is not accessible: {e}"),
+    };
+    ensure!(
+        m.file_type().is_dir()
+            && m.uid() == unsafe { libc::geteuid() }
+            && m.mode() & 0o777 == 0o700,
+        "UNSAFE_ACCOUNT_HOME: {} must be a 0700 directory owned by this user and not a symlink; it was left unchanged",
+        home.display()
+    );
+    Ok(())
+}
+/// Any other process (readable environ) whose CLAUDE_CONFIG_DIR is one of `homes`.
+fn env_in_use(homes: &[&Path]) -> bool {
+    let canon: Vec<_> = homes
+        .iter()
+        .filter_map(|h| fs::canonicalize(h).ok())
+        .collect();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return false;
+    };
+    let me = std::process::id();
+    entries.flatten().any(|entry| {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            return false;
+        };
+        if pid == me {
+            return false;
+        }
+        let Some(env) = environ(pid) else {
+            return false;
+        };
+        env.iter()
+            .find(|(k, _)| k == "CLAUDE_CONFIG_DIR")
+            .is_some_and(|(_, v)| {
+                let v = PathBuf::from(v);
+                homes.iter().any(|h| **h == *v)
+                    || fs::canonicalize(&v).is_ok_and(|c| canon.contains(&c))
+            })
+    })
+}
+/// Preconditions for switching an adopted Claude account to its managed home.
+/// Returns the previous adopted home, or None when already managed. Read-only;
+/// the supervisor persists the change. Fails closed before any state change.
+pub async fn check_managed_home(
+    paths: &Paths,
+    config: &Config,
+    name: &str,
+    adopted: Option<&Path>,
+) -> Result<Option<PathBuf>> {
+    let managed = default_home(paths, name)?;
+    validate_managed_dir(&managed)?;
+    let Some(old) = adopted else {
+        return Ok(None);
+    };
+    ensure!(
+        fs::metadata(old).is_ok_and(|m| m.is_dir()),
+        "ACCOUNT_HOME_UNAVAILABLE: adopted home {} is not an accessible directory",
+        old.display()
+    );
+    ensure!(
+        fs::canonicalize(old)? != fs::canonicalize(&managed)?,
+        "UNSAFE_ACCOUNT_HOME: adopted and managed homes are the same directory"
+    );
+    for home in [old, managed.as_path()] {
+        let live = live_sessions(home)
+            .map_err(|e| anyhow::anyhow!("ACCOUNT_IN_USE: cannot verify live sessions: {e}"))?;
+        ensure!(
+            live.is_empty(),
+            "ACCOUNT_IN_USE: a live Claude session uses {}; stop it first",
+            home.display()
+        );
+    }
+    ensure!(
+        !env_in_use(&[old, managed.as_path()]),
+        "ACCOUNT_IN_USE: a running process uses CLAUDE_CONFIG_DIR for the old or managed home; stop it first"
+    );
+    let new_auth = auth_status(config, &managed).await?;
+    new_auth.gate()?;
+    let old_auth = auth_status(config, old).await?;
+    ensure!(
+        old_auth.identity == new_auth.identity,
+        "AUTH_IDENTITY_MISMATCH: the managed home is not logged in as the same Claude identity as the adopted home; nothing changed"
+    );
+    Ok(Some(old.to_path_buf()))
+}
 /// Non-identifying auth summary for enrollment output (never email/org).
 pub async fn auth_report(config: &Config, home: &Path) -> Value {
     match auth_status(config, home).await {
@@ -181,6 +280,10 @@ pub struct AuthStatus {
     pub auth_method: Option<String>,
     pub api_provider: Option<String>,
     pub subscription_type: Option<String>,
+    /// sha256 over (loggedIn, authMethod, apiProvider, orgId, email); the raw
+    /// identity fields are never retained, logged or serialized.
+    #[serde(skip)]
+    pub identity: String,
 }
 impl AuthStatus {
     /// Reads only non-identifying fields; email/org are never retained.
@@ -188,7 +291,15 @@ impl AuthStatus {
         let v: Value = serde_json::from_slice(bytes).context("AUTH_STATUS_UNAVAILABLE")?;
         ensure!(v.is_object(), "AUTH_STATUS_UNAVAILABLE");
         let text = |k: &str| v[k].as_str().map(str::to_owned);
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(v["loggedIn"].as_bool().unwrap_or(false).to_string());
+        for key in ["authMethod", "apiProvider", "orgId", "email"] {
+            hasher.update([0]);
+            hasher.update(v[key].as_str().unwrap_or("").as_bytes());
+        }
         Ok(Self {
+            identity: format!("{:x}", hasher.finalize()),
             logged_in: v["loggedIn"].as_bool().unwrap_or(false),
             auth_method: text("authMethod"),
             api_provider: text("apiProvider"),

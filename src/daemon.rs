@@ -447,6 +447,21 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             store.save(&state,now(),"account_login_started",name)?;
                             Ok(json!({"name":name,"login":login}))
                         }
+                        "account/managed-home" => {
+                            let name = params["name"].as_str().context("missing account name")?;
+                            let account = named(&state,params)?;
+                            ensure!(account.provider == ProviderId::Claude, "UNSUPPORTED_PROVIDER_OPERATION: {} accounts do not support managed-home", account.provider);
+                            ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
+                            let adopted = account.config_home.clone();
+                            let previous = crate::provider::claude::check_managed_home(&paths,&config,name,adopted.as_deref()).await?;
+                            let home = crate::provider::claude::default_home(&paths,name)?;
+                            let Some(previous) = previous else {
+                                return Ok(json!({"account_id":format!("claude:{name}"),"provider":"claude","home":home,"relocated":false,"already_managed":true,"note":"ALREADY_MANAGED"}));
+                            };
+                            state.accounts.get_mut(name).unwrap().config_home = None;
+                            store.save(&state,now(),"account.claude_home_relocated",name)?;
+                            Ok(json!({"account_id":format!("claude:{name}"),"provider":"claude","home":home,"previous_home":previous,"relocated":true,"already_managed":false}))
+                        }
                         "account/enable" | "account/disable" => {
                             let name = params["name"].as_str().context("missing account name")?; named(&state,params)?;
                             let account=state.accounts.get_mut(name).context("unknown account")?;ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");account.enabled = method == "account/enable";

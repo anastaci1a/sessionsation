@@ -3,6 +3,7 @@
 # credential access. Per-account behaviour is selected by files in the account
 # config home ($CLAUDE_CONFIG_DIR):
 #   fake-auth-mode: subscription (default) | logged_out | api_key | bedrock
+#   fake-identity: email local-part reported by auth status (default fixture)
 home="${CLAUDE_CONFIG_DIR:?CLAUDE_CONFIG_DIR is required}"
 now_ms() { printf '%s000' "$(date +%s)"; }
 case "$1" in
@@ -20,7 +21,8 @@ case "$1" in
           logged_out) printf '%s\n' '{"loggedIn":false}'; exit 1 ;;
           api_key) printf '%s\n' '{"loggedIn":true,"authMethod":"apiKey","apiProvider":"firstParty","email":"fixture@example.invalid"}' ;;
           bedrock) printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"bedrock"}' ;;
-          *) printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max","email":"fixture@example.invalid","orgId":"fixture-org","orgName":"Fixture"}' ;;
+          *) who=fixture; [ -f "$home/fake-identity" ] && who=$(cat "$home/fake-identity")
+             printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max","email":"%s@example.invalid","orgId":"fixture-org","orgName":"Fixture"}\n' "$who" ;;
         esac
         exit 0 ;;
       login)
