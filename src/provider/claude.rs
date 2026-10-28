@@ -3,7 +3,7 @@
 //! never reads Claude credentials (`.credentials.json`, `sessions/*.key`); it uses
 //! only `claude auth status --json`, session registry metadata, transcript header
 //! fields (sessionId/cwd/timestamp) and statusline rate-limit fields.
-use super::{ProviderCapabilities, ProviderId, no, yes};
+use super::{Capability, ProviderCapabilities, ProviderId, no, yes};
 use crate::{
     catalog,
     config::Config,
@@ -69,8 +69,20 @@ pub fn capabilities() -> ProviderCapabilities {
         submit: no(NO_INPUT_API),
         queue: no(NO_INPUT_API),
         steer: no(NO_INPUT_API),
-        account_removal: no("Claude accounts are not yet supported by membership removal"),
-        account_deletion: no("deleting a Claude config home is not supported; remove it manually"),
+        account_removal: yes(),
+        account_deletion: Capability {
+            supported: true,
+            reason: Some(
+                "managed homes: conversation history preserved, home and credentials deleted; adopted config directories are left in place and only the account record is removed",
+            ),
+        },
+        account_rename: yes(),
+        headless_delivery: Capability {
+            supported: true,
+            reason: Some(
+                "api send mode resume (stopped session) and mode new run claude -p headlessly; live sessions are refused",
+            ),
+        },
         account_limits: yes(),
         cross_provider_conversion: no("conversations are bound to their provider"),
     }
@@ -162,7 +174,7 @@ fn is_claude_process(pid: u32, claude_binary: &str) -> bool {
                         .is_ok_and(|c| fs::canonicalize(configured).is_ok_and(|d| c == d))
         })
 }
-fn env_in_use(homes: &[&Path], claude_binary: &str) -> bool {
+pub(crate) fn env_in_use(homes: &[&Path], claude_binary: &str) -> bool {
     let canon: Vec<_> = homes
         .iter()
         .filter_map(|h| fs::canonicalize(h).ok())
@@ -768,10 +780,21 @@ pub fn enrolled(paths: &Paths) -> Result<Vec<Enrolled>> {
         .collect()
 }
 pub fn account(paths: &Paths, name: &str) -> Result<Enrolled> {
-    enrolled(paths)?
-        .into_iter()
-        .find(|a| a.name == name)
-        .context("ACCOUNT_NOT_FOUND: no enrolled Claude account with this name")
+    if let Some(a) = enrolled(paths)?.into_iter().find(|a| a.name == name) {
+        return Ok(a);
+    }
+    ensure!(
+        !deleted(paths, name)?,
+        "ACCOUNT_DELETED: claude:{name} was deleted locally; its conversation history is preserved but it cannot be resumed through this account"
+    );
+    bail!("ACCOUNT_NOT_FOUND: no enrolled Claude account with this name")
+}
+/// True when a completed local deletion removed this (no longer enrolled) Claude account.
+pub fn deleted(paths: &Paths, name: &str) -> Result<bool> {
+    let id = format!("claude:{name}");
+    Ok(crate::account_deletion::list(paths)?
+        .iter()
+        .any(|r| r.account_id == id && r.phase == "complete"))
 }
 
 /// Register discovered transcripts and refresh live attachments for every

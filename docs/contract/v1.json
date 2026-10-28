@@ -289,6 +289,14 @@
         },
         "usage_fresh": {
           "type": "boolean"
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 30,
+          "description": "Revision 11: optional display name; id/name/home never change on rename."
         }
       },
       "required": [
@@ -1775,7 +1783,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^codex:"
+          "pattern": "^(codex|claude):"
         },
         "kind": {
           "const": "account_delete"
@@ -1819,6 +1827,20 @@
             "null"
           ],
           "description": "Immutable Unix admission time for new records; absent/null means legacy creation time is unknown. Do not substitute updated_at."
+        },
+        "external_home": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Claude adopted config directory; never modified or deleted."
+        },
+        "home_disposition": {
+          "enum": [
+            "deleted",
+            "left_in_place",
+            null
+          ]
         }
       },
       "required": [
@@ -1839,7 +1861,7 @@
       "properties": {
         "account_id": {
           "type": "string",
-          "pattern": "^codex:"
+          "pattern": "^(codex|claude):"
         },
         "can_delete": {
           "type": "boolean"
@@ -1871,7 +1893,8 @@
           }
         },
         "deletes_local_credentials": {
-          "const": true
+          "type": "boolean",
+          "description": "true except for an adopted Claude config directory, which is left in place."
         },
         "upstream_account_unchanged": {
           "const": true
@@ -1881,6 +1904,12 @@
         },
         "preserves_history": {
           "const": true
+        },
+        "home_disposition": {
+          "enum": [
+            "deleted",
+            "left_in_place"
+          ]
         }
       },
       "required": [
@@ -3214,6 +3243,463 @@
           "const": false
         }
       }
+    },
+    "ClaudeHeadlessRequest": {
+      "description": "Revision 11: api send for provider claude. mode resume continues a stopped session; mode new starts one.",
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": 1
+        },
+        "message_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mode": {
+          "enum": [
+            "resume",
+            "new"
+          ]
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^claude:"
+        },
+        "directory": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "expires_at": {
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "recovery": {
+          "type": "null"
+        },
+        "steering": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "api_version",
+        "message_id",
+        "mode",
+        "text",
+        "expires_at"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "mode": {
+              "const": "resume"
+            }
+          },
+          "required": [
+            "session_id",
+            "expected_generation"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "account_id"
+                ]
+              },
+              {
+                "required": [
+                  "directory"
+                ]
+              },
+              {
+                "required": [
+                  "name"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "new"
+            }
+          },
+          "required": [
+            "account_id",
+            "directory"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "session_id"
+                ]
+              },
+              {
+                "required": [
+                  "expected_generation"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "ClaudeHeadlessReceipt": {
+      "description": "Revision 11: durable receipt of a Claude headless delivery (api send/receipt).",
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "accepted_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "provider": {
+          "const": "claude"
+        },
+        "provider_conversation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^claude:"
+        },
+        "mode": {
+          "enum": [
+            "resume",
+            "new"
+          ]
+        },
+        "delivery_semantics": {
+          "const": "headless_print"
+        },
+        "state": {
+          "enum": [
+            "pending_local",
+            "execution_started",
+            "completed_with_reply",
+            "failed",
+            "delivery_unknown",
+            "rejected",
+            "expired"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "facts": {
+          "type": "object",
+          "required": [
+            "accepted_local",
+            "accepted_native",
+            "input_recorded",
+            "input_consumed",
+            "reply_observed"
+          ]
+        },
+        "correlation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "session_id",
+                "reported_session_id",
+                "matched"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "reported_session_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "matched": {
+                  "type": "boolean"
+                }
+              }
+            }
+          ]
+        },
+        "reply": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "text",
+                "is_error",
+                "session_id"
+              ],
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "text_truncated": {
+                  "type": "boolean"
+                },
+                "is_error": {
+                  "type": "boolean"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "num_turns": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "usage": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "subtype": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "duration_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "execution": {
+          "type": "object",
+          "required": [
+            "phase",
+            "timeout_seconds",
+            "automatic_replay",
+            "new_conversation"
+          ],
+          "properties": {
+            "phase": {
+              "enum": [
+                "admitted",
+                "executing",
+                "complete"
+              ]
+            },
+            "automatic_replay": {
+              "const": false
+            },
+            "timeout_seconds": {
+              "type": "integer"
+            },
+            "new_conversation": {
+              "type": "boolean"
+            }
+          }
+        },
+        "observation": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "message_id",
+        "session_id",
+        "accepted_generation",
+        "provider",
+        "provider_conversation_id",
+        "account_id",
+        "mode",
+        "delivery_semantics",
+        "state",
+        "reason",
+        "facts",
+        "correlation",
+        "reply",
+        "execution"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "completed_with_reply"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reply": {
+                "type": "object"
+              },
+              "correlation": {
+                "type": "object",
+                "properties": {
+                  "matched": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "AccountLoginPlan": {
+      "description": "Revision 11: account add claude:NAME and account login claude:NAME return the same login plan.",
+      "type": "object",
+      "required": [
+        "action",
+        "interactive",
+        "credentials_in_client",
+        "argv"
+      ],
+      "properties": {
+        "action": {
+          "const": "exec"
+        },
+        "interactive": {
+          "const": true
+        },
+        "credentials_in_client": {
+          "const": false
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "AccountRefresh": {
+      "description": "Revision 11: api account refresh claude:NAME probes claude auth status immediately.",
+      "type": "object",
+      "required": [
+        "account_id",
+        "provider",
+        "auth_required",
+        "auth_detail",
+        "auth_mode",
+        "observed_at"
+      ],
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "pattern": "^claude:"
+        },
+        "provider": {
+          "const": "claude"
+        },
+        "auth_required": {
+          "type": "boolean"
+        },
+        "auth_detail": {
+          "enum": [
+            "AUTH_REQUIRED",
+            "WRONG_AUTH_MODE",
+            "AUTH_STATUS_TIMEOUT",
+            "AUTH_STATUS_UNAVAILABLE",
+            null
+          ]
+        },
+        "auth_mode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "logged_in",
+                "auth_method",
+                "api_provider",
+                "subscription_type"
+              ]
+            }
+          ]
+        },
+        "observed_at": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
+    "AccountRename": {
+      "description": "Revision 11: api account rename ID --display-name X | --clear.",
+      "type": "object",
+      "required": [
+        "account_id",
+        "name",
+        "display_name",
+        "changed"
+      ],
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "pattern": "^(codex|claude):"
+        },
+        "name": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 30,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "changed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
     }
   }
 }

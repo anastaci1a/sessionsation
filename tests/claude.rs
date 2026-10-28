@@ -204,8 +204,12 @@ async fn enrollment_requires_a_platform_and_names_are_global_across_providers() 
         text.contains("ACCOUNT_PROVIDER_MISMATCH") && text.contains("codex:work"),
         "{text}"
     );
-    let text = f.api_error(&["account", "remove", "claude:personal"]);
-    assert!(text.contains("UNSUPPORTED_PROVIDER_OPERATION"), "{text}");
+    let preview = f.api(&["account", "remove", "claude:personal"]);
+    assert_eq!(preview["account_id"], "claude:personal");
+    assert!(
+        f.api_error(&["account", "remove", "codex:personal"])
+            .contains("ACCOUNT_PROVIDER_MISMATCH")
+    );
     assert!(
         f.api_error(&["account", "add", "codex:x", "--config-dir", "/tmp"])
             .contains("INVALID_ARGUMENT")
@@ -524,6 +528,10 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
         "relabeled",
     ]);
     assert_eq!(renamed["name"], "relabeled");
+    assert_eq!(
+        renamed["name_source"], "catalog",
+        "detached sessions keep the catalog label"
+    );
     assert_eq!(renamed["native_rename"]["supported"], false);
     assert!(
         f.api_error(&[
@@ -903,4 +911,697 @@ async fn adopted_home_switches_to_the_managed_home_only_when_every_precondition_
     assert_eq!(again["already_managed"], true);
     assert_eq!(again["note"], "ALREADY_MANAGED");
     assert_eq!(events().len(), 1);
+}
+
+// ------------------------------------------------- lifecycle, login, headless
+
+fn now() -> i64 {
+    daemon::now()
+}
+impl Fixture {
+    fn add_logged_in(&self, name: &str) {
+        let out = self.run(&["account", "add", "--platform", "claude", name]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let id = format!("claude:{name}");
+        wait_for("auth status poll", || {
+            self.api(&["account", "list"])
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["id"] == id.as_str() && a["auth_required"] == false)
+        });
+    }
+    /// A stopped session discovered from a transcript in the account home.
+    fn stopped_session(&self, account: &str) -> (String, String) {
+        let native = uuid::Uuid::new_v4().to_string();
+        let slug = self.project.to_string_lossy().replace('/', "-");
+        let dir = self.home(account).join("projects").join(slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{native}.jsonl")),
+            format!(
+                "{}\n",
+                json!({"type":"user","sessionId":native,"cwd":self.project,"timestamp":"2026-01-01T00:00:00Z"})
+            ),
+        )
+        .unwrap();
+        let s = self
+            .claude_sessions()
+            .into_iter()
+            .find(|s| s["conversation_id"] == native.as_str())
+            .unwrap();
+        assert_eq!(s["availability"], "stopped");
+        (s["id"].as_str().unwrap().to_owned(), native)
+    }
+    fn send(&self, body: &Value) -> Output {
+        let mut child = self
+            .command(&["api", "send"])
+            .env("ANTHROPIC_API_KEY", "sk-test-must-not-reach-claude")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(body.to_string().as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    }
+    fn send_ok(&self, body: &Value) -> Value {
+        let out = self.send(body);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
+    }
+    fn send_err(&self, body: &Value) -> String {
+        let out = self.send(body);
+        assert!(!out.status.success(), "unexpectedly accepted {body}");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    }
+    fn settled(&self, message: &str) -> Value {
+        let mut last = Value::Null;
+        wait_for("headless receipt", || {
+            last = self.api(&["receipt", message]);
+            !matches!(
+                last["state"].as_str(),
+                Some("pending_local" | "execution_started")
+            )
+        });
+        last
+    }
+    fn deletion(&self, id: &str) -> Value {
+        let mut last = Value::Null;
+        wait_for("deletion worker", || {
+            last = self.api(&["account", "deletions", "--request-id", id]);
+            matches!(last["phase"].as_str(), Some("complete" | "failed"))
+        });
+        // The worker must have released its lock before another action starts.
+        let lock = self
+            .paths
+            .root
+            .join("account-deletions")
+            .join(format!("{id}.worker.lock"));
+        wait_for("worker exit", || {
+            let f = std::fs::OpenOptions::new().write(true).open(&lock);
+            f.is_err() || fs2::FileExt::try_lock_exclusive(&f.unwrap()).is_ok()
+        });
+        last
+    }
+}
+fn resume_body(id: &str, session: &Value, text: &str) -> Value {
+    json!({"api_version":1,"message_id":id,"mode":"resume","session_id":session["id"],
+        "expected_generation":session["generation"],"text":text,"expires_at":now()+600})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let home = f.home("personal");
+    let (id, native) = f.stopped_session("personal");
+    let session = f.session(&id);
+
+    // Success: stopped session, account environment, recorded directory, stdin message.
+    let m1 = uuid::Uuid::new_v4().to_string();
+    let body = resume_body(&m1, &session, "hello world");
+    let first = f.send_ok(&body);
+    assert_eq!(first["provider"], "claude");
+    assert_eq!(first["delivery_semantics"], "headless_print");
+    let r = f.settled(&m1);
+    assert_eq!(r["state"], "completed_with_reply", "{r}");
+    assert_eq!(r["reply"]["text"], "fake reply to: hello world");
+    assert_eq!(r["reply"]["session_id"], native.as_str());
+    assert_eq!(r["reply"]["num_turns"], 1);
+    assert_eq!(r["reply"]["usage"]["output_tokens"], 4);
+    assert_eq!(r["correlation"]["matched"], true);
+    assert_eq!(r["facts"]["reply_observed"], true);
+    assert_eq!(r["session_id"], id.as_str());
+    assert_eq!(r["provider_conversation_id"], native.as_str());
+    let launch = read(&home.join("fake-print-resume"));
+    assert!(launch.contains(&format!("session={native}")), "{launch}");
+    assert!(
+        launch.contains(&format!("cwd={}", f.project.display())),
+        "{launch}"
+    );
+    assert!(launch.contains("message=hello world"), "{launch}");
+    assert!(
+        launch.contains("api_key=\n") && launch.contains("autoupdater=1"),
+        "{launch}"
+    );
+    assert!(
+        launch.contains(&format!("config_dir={}", home.display())),
+        "{launch}"
+    );
+    assert_eq!(read(&home.join("fake-print-count")).trim(), "1");
+
+    // Idempotent retry returns the same receipt without executing again.
+    let again = f.send_ok(&body);
+    assert_eq!(again["state"], "completed_with_reply");
+    assert_eq!(again["reply"], r["reply"]);
+    assert_eq!(read(&home.join("fake-print-count")).trim(), "1");
+    let mut changed = body.clone();
+    changed["text"] = json!("different");
+    assert!(f.send_err(&changed).contains("MESSAGE_ID_CONFLICT"));
+
+    // Auth gate before admission: nothing journaled or executed.
+    std::fs::write(home.join("fake-auth-mode"), "logged_out").unwrap();
+    let session = f.session(&id);
+    let refused = uuid::Uuid::new_v4().to_string();
+    let err = f.send_err(&resume_body(&refused, &session, "x"));
+    assert!(err.contains("AUTH_REQUIRED"), "{err}");
+    std::fs::remove_file(home.join("fake-auth-mode")).unwrap();
+    assert!(
+        f.api_error(&["receipt", &refused])
+            .contains("receipt_not_found")
+    );
+
+    // Session-id mismatch is never success.
+    std::fs::write(
+        home.join("fake-print-session"),
+        uuid::Uuid::new_v4().to_string(),
+    )
+    .unwrap();
+    let mismatch = uuid::Uuid::new_v4().to_string();
+    f.send_ok(&resume_body(&mismatch, &f.session(&id), "mismatch"));
+    let r = f.settled(&mismatch);
+    std::fs::remove_file(home.join("fake-print-session")).unwrap();
+    assert_eq!(r["state"], "delivery_unknown", "{r}");
+    assert_eq!(r["reason"], "SESSION_ID_MISMATCH");
+    assert_eq!(r["correlation"]["matched"], false);
+    assert!(r["reply"].is_null());
+    assert_eq!(r["facts"]["reply_observed"], false);
+
+    // Timeout: uncertain, recorded once, never replayed.
+    std::fs::write(home.join("fake-print-sleep"), "30").unwrap();
+    let slow = uuid::Uuid::new_v4().to_string();
+    let mut body = resume_body(&slow, &f.session(&id), "slow");
+    body["timeout_seconds"] = json!(1);
+    f.send_ok(&body);
+    let r = f.settled(&slow);
+    std::fs::remove_file(home.join("fake-print-sleep")).unwrap();
+    assert_eq!(r["state"], "delivery_unknown", "{r}");
+    assert_eq!(r["reason"], "EXECUTION_TIMEOUT");
+    assert_eq!(r["execution"]["automatic_replay"], false);
+    let count = read(&home.join("fake-print-count"));
+    let retry = f.send_ok(&body);
+    assert_eq!(retry["state"], "delivery_unknown");
+    assert_eq!(read(&home.join("fake-print-count")), count, "no replay");
+
+    // Stale (transcript missing) and live sessions are refused before admission.
+    let (stale, stale_native) = f.stopped_session("personal");
+    let transcript = std::fs::read_dir(home.join("projects"))
+        .unwrap()
+        .flatten()
+        .map(|d| d.path().join(format!("{stale_native}.jsonl")))
+        .find(|p| p.exists())
+        .unwrap();
+    std::fs::remove_file(transcript).unwrap();
+    let s = f.session(&stale);
+    assert_eq!(s["availability"], "stale");
+    let err = f.send_err(&resume_body(&uuid::Uuid::new_v4().to_string(), &s, "x"));
+    assert!(err.contains("SESSION_STALE"), "{err}");
+    let live_native = uuid::Uuid::new_v4().to_string();
+    let live = Command::new(f._tmp.path().join("fake-claude"))
+        .args(["--session-id", &live_native])
+        .env("CLAUDE_CONFIG_DIR", &home)
+        .current_dir(&f.project)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut live_session = Value::Null;
+    wait_for("live session", || {
+        live_session = f
+            .claude_sessions()
+            .into_iter()
+            .find(|s| s["conversation_id"] == live_native.as_str())
+            .unwrap_or(Value::Null);
+        live_session["availability"] == "running"
+    });
+    let err = f.send_err(&resume_body(
+        &uuid::Uuid::new_v4().to_string(),
+        &live_session,
+        "x",
+    ));
+    kill(live);
+    assert!(err.contains("SESSION_ALREADY_RUNNING"), "{err}");
+
+    // Live input modes stay unsupported with an explicit reason.
+    let mut submit = resume_body(&uuid::Uuid::new_v4().to_string(), &f.session(&id), "x");
+    submit["mode"] = json!("submit");
+    let err = f.send_err(&submit);
+    assert!(
+        err.contains("UNSUPPORTED_PROVIDER_OPERATION")
+            && err.contains("no supported native input API"),
+        "{err}"
+    );
+
+    // New conversation: catalog entry first, pre-assigned --session-id.
+    let created = uuid::Uuid::new_v4().to_string();
+    let new = json!({"api_version":1,"message_id":created,"mode":"new","account_id":"claude:personal",
+        "directory":f.project,"name":"dm-new","text":"start here","expires_at":now()+600});
+    let admitted = f.send_ok(&new);
+    let catalog_id = admitted["session_id"].as_str().unwrap().to_owned();
+    let conversation = admitted["provider_conversation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let r = f.settled(&created);
+    assert_eq!(r["state"], "completed_with_reply", "{r}");
+    assert_eq!(r["execution"]["new_conversation"], true);
+    assert_eq!(r["reply"]["session_id"], conversation.as_str());
+    let launched = read(&home.join("fake-print-new"));
+    assert!(
+        launched.contains(&format!("session={conversation}")),
+        "{launched}"
+    );
+    let s = f.session(&catalog_id);
+    assert_eq!(s["name"], "dm-new");
+    assert_eq!(s["conversation_id"], conversation.as_str());
+    assert_eq!(s["availability"], "stopped");
+    let mut bad = new.clone();
+    bad["message_id"] = json!(uuid::Uuid::new_v4().to_string());
+    bad["directory"] = json!("relative");
+    assert!(f.send_err(&bad).contains("SAVED_DIRECTORY_UNAVAILABLE"));
+    assert!(f.api(&["state"]).to_string().find("start here").is_none());
+
+    // Codex contract unchanged: unknown sessions and receipts keep their errors.
+    let codex = json!({"api_version":1,"message_id":uuid::Uuid::new_v4().to_string(),"mode":"submit",
+        "session_id":uuid::Uuid::new_v4().to_string(),"expected_generation":"a".repeat(64),"text":"x","expires_at":now()+600});
+    assert!(f.send_err(&codex).contains("SESSION_NOT_FOUND"));
+    assert!(
+        f.api_error(&["receipt", &uuid::Uuid::new_v4().to_string()])
+            .contains("receipt_not_found")
+    );
+    let mut reuse = codex.clone();
+    reuse["message_id"] = json!(m1);
+    assert!(f.send_err(&reuse).contains("MESSAGE_ID_CONFLICT"));
+    let caps = f.api(&["capabilities"]);
+    let claude = caps["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "claude")
+        .unwrap()
+        .clone();
+    assert_eq!(claude["operations"]["headless_delivery"]["supported"], true);
+    assert_eq!(claude["headless_delivery"]["automatic_replay"], false);
+    assert_eq!(
+        caps["providers"][0]["operations"]["headless_delivery"]["supported"],
+        false
+    );
+    assert_eq!(caps["contract_revision"], 11);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fresh_claude_home_returns_the_login_plan_and_refresh_observes_login() {
+    let f = fixture().await;
+    std::fs::create_dir_all(f.paths.root.join("claude-accounts")).unwrap();
+    std::fs::set_permissions(
+        f.paths.root.join("claude-accounts"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    std::fs::write(
+        f.paths.root.join("claude-accounts/fake-default-auth"),
+        "logged_out",
+    )
+    .unwrap();
+    let added = f.api(&["account", "add", "claude:fresh"]);
+    assert_eq!(added["existing_home"], false);
+    assert_eq!(added["auth"]["problem"], "AUTH_REQUIRED");
+    assert_eq!(added["login_required"], true);
+    let plan = f.api(&["account", "login", "claude:fresh"]);
+    assert_eq!(
+        added["login"], plan["login"],
+        "add returns the login command's plan"
+    );
+    assert_eq!(plan["login"]["credentials_in_client"], false);
+    let refreshed = f.api(&["account", "refresh", "claude:fresh"]);
+    assert_eq!(refreshed["auth_required"], true);
+    assert_eq!(refreshed["auth_detail"], "AUTH_REQUIRED");
+    // Execute the plan's argv: the official login, account env, keys stripped.
+    let argv: Vec<String> = plan["login"]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    let out = Command::new(&argv[0])
+        .args(&argv[1..])
+        .env("ANTHROPIC_API_KEY", "sk-test-must-not-reach-claude")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let home = f.home("fresh");
+    assert_eq!(
+        read(&home.join("fake-login-args")).trim(),
+        "auth login --claudeai"
+    );
+    let env = read(&home.join("fake-login-env"));
+    assert!(
+        env.contains("api_key=\n") && env.contains("autoupdater=1"),
+        "{env}"
+    );
+    assert!(
+        env.contains(&format!("config_dir={}", home.display())),
+        "{env}"
+    );
+    let refreshed = f.api(&["account", "refresh", "claude:fresh"]);
+    assert_eq!(refreshed["auth_required"], false, "{refreshed}");
+    assert_eq!(refreshed["auth_mode"]["auth_method"], "claude.ai");
+    assert!(!refreshed.to_string().contains("example.invalid"));
+    let row = f.api(&["account", "list", "--platform", "claude"])[0].clone();
+    assert_eq!(row["auth_required"], false);
+    assert_eq!(row["selectable"], true);
+    // A logged-in home reports no required login; Codex refresh is explicit.
+    std::fs::remove_file(f.paths.root.join("claude-accounts/fake-default-auth")).unwrap();
+    let ready = f.api(&["account", "add", "claude:ready"]);
+    assert_eq!(ready["login_required"], false);
+    assert_eq!(ready["login"]["action"], "exec");
+    // The human command without a terminal prints and does not start a login.
+    std::fs::write(
+        f.paths.root.join("claude-accounts/fake-default-auth"),
+        "logged_out",
+    )
+    .unwrap();
+    let out = f.run(&["account", "add", "--platform", "claude", "quiet"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("account login claude:quiet"));
+    assert!(!f.home("quiet").join("fake-login-args").exists());
+    let add = f.run(&["account", "add", "--platform", "codex", "cx"]);
+    assert!(add.status.success());
+    assert!(
+        f.api_error(&["account", "refresh", "codex:cx"])
+            .contains("UNSUPPORTED_PROVIDER_OPERATION")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_membership_removal_and_local_deletion_match_codex_semantics() {
+    let f = fixture().await;
+    f.add_logged_in("gone");
+    let home = f.home("gone");
+    let (id, native) = f.stopped_session("gone");
+    std::fs::write(home.join("history.jsonl"), b"{}\n").unwrap();
+    std::fs::create_dir_all(home.join("todos")).unwrap();
+    std::fs::write(home.join(".credentials.json"), b"synthetic fixture").unwrap();
+
+    // Membership removal: reversible, hidden from selection, data untouched.
+    let preview = f.api(&["account", "remove", "claude:gone"]);
+    assert_eq!(preview["can_remove"], true, "{preview}");
+    assert_eq!(preview["effects"]["delete_history"], false);
+    let revision = preview["revision"].as_str().unwrap().to_owned();
+    assert!(
+        f.api_error(&[
+            "account",
+            "remove",
+            "claude:gone",
+            "--confirm",
+            "codex:gone",
+            "--revision",
+            &revision
+        ])
+        .contains("CONFIRMATION_REQUIRED")
+    );
+    let removed = f.api(&[
+        "account",
+        "remove",
+        "claude:gone",
+        "--confirm",
+        "claude:gone",
+        "--revision",
+        &revision,
+    ]);
+    assert_eq!(removed["removed"], true);
+    let row = f.api(&["account", "list"])[0].clone();
+    assert_eq!(row["membership"], "removed");
+    assert_eq!(row["selectable"], false);
+    assert!(
+        f.api_error(&["launcher", "new", "--account", "claude:gone"])
+            .contains("ACCOUNT_REMOVED")
+    );
+    let s = f.session(&id);
+    let err = f.send_err(&resume_body(&uuid::Uuid::new_v4().to_string(), &s, "x"));
+    assert!(err.contains("ACCOUNT_REMOVED"), "{err}");
+    assert!(home.join(".credentials.json").exists());
+    let restored = f.api(&["account", "restore", "claude:gone"]);
+    assert_eq!(restored["restored"], true);
+    assert_eq!(f.api(&["account", "list"])[0]["selectable"], true);
+    assert!(
+        f.api_error(&["account", "restore", "claude:gone"])
+            .contains("ACCOUNT_NOT_REMOVED")
+    );
+
+    // Deletion refuses while a verified live Claude session uses the home.
+    let live = Command::new(f._tmp.path().join("fake-claude"))
+        .args(["--session-id", &uuid::Uuid::new_v4().to_string()])
+        .env("CLAUDE_CONFIG_DIR", &home)
+        .current_dir(&f.project)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for("live registry", || {
+        f.claude_sessions()
+            .iter()
+            .any(|s| s["availability"] == "running")
+    });
+    let preview = f.api(&["account", "delete", "claude:gone"]);
+    assert_eq!(preview["home_disposition"], "deleted");
+    assert_eq!(preview["deletes_local_credentials"], true);
+    let request = uuid::Uuid::new_v4().to_string();
+    f.api(&[
+        "account",
+        "delete",
+        "claude:gone",
+        "--confirm",
+        "claude:gone",
+        "--request-id",
+        &request,
+    ]);
+    let failed = f.deletion(&request);
+    kill(live);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(failed["phase"], "failed", "{failed}");
+    assert!(
+        failed["detail"]
+            .as_str()
+            .unwrap()
+            .contains("ACCOUNT_HAS_RUNNING"),
+        "{failed}"
+    );
+    assert_eq!(failed["can_recover"], true);
+    assert!(home.join(".credentials.json").exists());
+    assert_eq!(f.api(&["account", "list"]).as_array().unwrap().len(), 1);
+
+    // Explicit recovery continues the original request.
+    f.api(&["recover", &request]);
+    let done = f.deletion(&request);
+    assert_eq!(done["phase"], "complete", "{done}");
+    assert_eq!(done["home_disposition"], "deleted");
+    assert_eq!(done["history_preserved"], true);
+    assert!(!home.exists(), "managed home and credentials removed");
+    let vault = f
+        .paths
+        .root
+        .join("preserved-conversations")
+        .join(&request)
+        .join("home");
+    assert!(vault.join("history.jsonl").is_file());
+    assert!(vault.join("todos").is_dir());
+    assert!(
+        std::fs::read_dir(vault.join("projects"))
+            .unwrap()
+            .flatten()
+            .any(|d| d.path().join(format!("{native}.jsonl")).is_file())
+    );
+    assert!(!vault.join(".credentials.json").exists());
+    assert!(f.api(&["account", "list"]).as_array().unwrap().is_empty());
+    let s = f.session(&id);
+    assert_eq!(s["availability"], "stopped");
+    assert_eq!(s["resume_block_reason"], "account_deleted");
+    assert_eq!(s["capabilities"]["resume"], false);
+    assert_eq!(s["capability_reasons"]["resume"], "ACCOUNT_DELETED");
+    let out = f.run(&[
+        "resume",
+        &id,
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+    ]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ACCOUNT_DELETED"));
+    let err = f.send_err(&resume_body(&uuid::Uuid::new_v4().to_string(), &s, "x"));
+    assert!(err.contains("ACCOUNT_DELETED"), "{err}");
+
+    // Adopted directory: only the record goes; the directory is left in place.
+    let adopted = f._tmp.path().join("adopted-claude");
+    std::fs::create_dir(&adopted).unwrap();
+    std::fs::write(adopted.join(".credentials.json"), b"synthetic fixture").unwrap();
+    std::fs::create_dir_all(adopted.join("projects/-x")).unwrap();
+    std::fs::write(adopted.join("projects/-x/marker"), b"kept").unwrap();
+    let out = f.run(&[
+        "account",
+        "add",
+        "--platform",
+        "claude",
+        "--config-dir",
+        adopted.to_str().unwrap(),
+        "ext",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let preview = f.api(&["account", "delete", "claude:ext"]);
+    assert_eq!(preview["home_disposition"], "left_in_place");
+    assert_eq!(preview["deletes_local_credentials"], false);
+    let request = uuid::Uuid::new_v4().to_string();
+    f.api(&[
+        "account",
+        "delete",
+        "claude:ext",
+        "--confirm",
+        "claude:ext",
+        "--request-id",
+        &request,
+    ]);
+    let done = f.deletion(&request);
+    assert_eq!(done["phase"], "complete", "{done}");
+    assert_eq!(done["home_disposition"], "left_in_place");
+    assert!(done["detail"].as_str().unwrap().contains("left in place"));
+    assert_eq!(
+        read(&adopted.join(".credentials.json")),
+        "synthetic fixture"
+    );
+    assert_eq!(read(&adopted.join("projects/-x/marker")), "kept");
+    assert!(
+        !f.paths
+            .root
+            .join("preserved-conversations")
+            .join(&request)
+            .exists()
+    );
+    assert!(f.api(&["account", "list"]).as_array().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn display_names_rename_any_provider_without_changing_identity() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    assert!(
+        f.run(&["account", "add", "--platform", "codex", "work"])
+            .status
+            .success()
+    );
+    let row = |id: &str| {
+        f.api(&["account", "list"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let codex_before = row("codex:work");
+    let renamed = f.api(&[
+        "account",
+        "rename",
+        "codex:work",
+        "--display-name",
+        "Office",
+    ]);
+    assert_eq!(renamed["display_name"], "Office");
+    assert_eq!(renamed["account_id"], "codex:work");
+    let out = f.run(&["account", "rename", "claude:personal", "Home-Max"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let codex = row("codex:work");
+    assert_eq!(codex["display_name"], "Office");
+    assert_eq!(codex["name"], "work");
+    assert_eq!(codex["config_home"], codex_before["config_home"]);
+    assert!(f.paths.root.join("accounts/work").is_dir());
+    assert_eq!(row("claude:personal")["display_name"], "Home-Max");
+    assert!(f.home("personal").is_dir());
+    // Collisions with any name or display name, and invalid names.
+    for (target, display) in [
+        ("claude:personal", "Office"),
+        ("claude:personal", "work"),
+        ("codex:work", "personal"),
+    ] {
+        let err = f.api_error(&["account", "rename", target, "--display-name", display]);
+        assert!(err.contains("ACCOUNT_DISPLAY_NAME_EXISTS"), "{err}");
+    }
+    assert!(
+        f.api_error(&[
+            "account",
+            "rename",
+            "codex:work",
+            "--display-name",
+            &"x".repeat(31)
+        ])
+        .contains("INVALID_DISPLAY_NAME")
+    );
+    assert!(
+        f.api_error(&["account", "rename", "codex:work", "--display-name", "a b"])
+            .contains("INVALID_DISPLAY_NAME")
+    );
+    let clash = f.run(&["account", "add", "--platform", "codex", "Office"]);
+    assert!(String::from_utf8_lossy(&clash.stderr).contains("ACCOUNT_NAME_EXISTS"));
+    // Human list shows `display (name)`; lookup by unambiguous display name.
+    let table = String::from_utf8_lossy(&f.run(&["account", "list"]).stdout).into_owned();
+    assert!(
+        table.contains("Office (work)") && table.contains("Home-Max (personal)"),
+        "{table}"
+    );
+    let out = f.run(&["account", "disable", "Office"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(row("codex:work")["enabled"], false);
+    // Persisted through the supervisor (single writer), with an event.
+    let db = rusqlite::Connection::open(f.paths.root.join("registry.db")).unwrap();
+    let events: i64 = db
+        .query_row(
+            "SELECT count(*) FROM events WHERE kind='account.renamed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(events, 2);
+    let state = sessionsation::store::load_state_snapshot(&f.paths).unwrap();
+    assert_eq!(
+        state.accounts["work"].display_name.as_deref(),
+        Some("Office")
+    );
+    // Reset with --clear (API) or an empty value.
+    let cleared = f.api(&["account", "rename", "codex:work", "--clear"]);
+    assert!(cleared["display_name"].is_null());
+    let cleared = f.api(&["account", "rename", "claude:personal", "--display-name", ""]);
+    assert!(cleared["display_name"].is_null());
+    assert!(row("claude:personal")["display_name"].is_null());
+    let caps = f.api(&["capabilities"]);
+    for p in caps["providers"].as_array().unwrap() {
+        assert_eq!(p["account_rename"], true);
+    }
 }

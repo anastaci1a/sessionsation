@@ -77,6 +77,7 @@ sessionsation account login claude:personal
 sessionsation account managed-home existing      # adopted Claude home -> managed home
 sessionsation account list                      # table with a PROVIDER column
 sessionsation account list --platform claude --json
+sessionsation account rename work Office         # display name only; --clear resets
 ```
 
 Account names are **unique across providers**: `work` can be `codex:work` or
@@ -96,6 +97,8 @@ sessionsation api account list
 sessionsation api account login codex:example
 sessionsation api account disable codex:example
 sessionsation api account enable codex:example
+sessionsation api account refresh claude:personal
+sessionsation api account rename codex:example --display-name Office   # or --clear
 ```
 
 Codex add/login return the provider's verification URL and user code. Complete the login
@@ -103,7 +106,19 @@ as the user; never copy credentials between homes. Claude login is interactive:
 `sessionsation account login claude:NAME` runs the official `claude auth login
 --claudeai` subscription login in the current terminal with that account's
 environment; `api account login claude:NAME` (and `api account add claude:NAME`)
-return an `exec` argv plan for a terminal client instead of a URL. Disabled accounts remain listed;
+return the same `exec` argv plan (`login`) for a terminal client instead of a URL.
+`api account add claude:NAME` also returns `login_required` (true unless the home
+already holds a first-party claude.ai login), so a client can exec the plan directly.
+The human `account add --platform claude NAME` starts that login immediately when a
+fresh managed home is not logged in and stdin is a terminal (`--no-login` skips it);
+adopted or operator-populated homes are never logged in automatically. The plan runs
+`claude auth login --claudeai` through the single Claude environment builder
+(`CLAUDE_CONFIG_DIR`, `DISABLE_AUTOUPDATER=1`, API-key/backend variables removed).
+After login the supervisor re-probes `claude auth status` every 3 seconds while an
+account is `auth_required`; `api account refresh claude:NAME` probes immediately and
+returns `{account_id,provider,auth_required,auth_detail,auth_mode,observed_at}`
+(`auth_mode` holds `logged_in`, `auth_method`, `api_provider`, `subscription_type`;
+never identity). Codex refresh is `UNSUPPORTED_PROVIDER_OPERATION`. Disabled accounts remain listed;
 disabling prevents future selection and does not stop existing agents. Usage and
 reported reset timestamps are in account snapshots; do not invent missing windows.
 
@@ -128,6 +143,16 @@ scalar values, excluding controls and surrounding whitespace. Existing longer
 catalog names remain readable and keep their identity; new automatic discovery
 labels are shortened with collision-safe suffixes. Space labels and directory
 names retain their separate limits.
+Account display names (`account rename ACCOUNT DISPLAY_NAME`, API `api account
+rename PROVIDER:NAME --display-name X|--clear`) apply to every provider and change
+only the `display_name` shown in account JSON and the human `NAME` column (`display
+(name)`). The stable name, `<provider>:<name>` id and home directory (a live
+`CODEX_HOME` or `CLAUDE_CONFIG_DIR`) never change. Display names use the account-name
+characters, at most 30, and are unique across every account's name and display name
+(`ACCOUNT_DISPLAY_NAME_EXISTS`; a new account name equal to a display name is
+`ACCOUNT_NAME_EXISTS`). An empty value or `--clear` resets it. The change is written
+by the supervisor (event `account.renamed`). Human commands accept an unambiguous
+display name wherever they accept an account name.
 Historical usage uses `api account usage codex:example --start UNIX --end UNIX
 --step 1800`.
 
@@ -152,13 +177,18 @@ operations and stored-data counts/paths. It requires exact ID and fresh revision
 sessionsation api account remove codex:example
 sessionsation api account remove codex:example --confirm codex:example --revision PREVIEW-REVISION
 sessionsation api account restore codex:example
+sessionsation api account remove claude:personal   # same preview/confirm/restore flow
 ```
 
 Removal refuses active/loaded conversations or pending lifecycle jobs. Stop or
 move them explicitly first. It unregisters the account from sessionsation selection
 without disabling the original provider enrollment, stopping agents or deleting
 credentials/history. The original switcher remains independent. Restore reverses
-the membership change. No upstream provider account is deleted.
+the membership change. No upstream provider account is deleted. Claude removal has
+the same API and semantics: its preview reports verified live sessions, Claude
+processes using the home (`active_processes`), unfinished headless deliveries and
+transcript counts; a removed Claude account is hidden from selection and refuses
+launch, resume and headless delivery with `ACCOUNT_REMOVED` until restored.
 
 Actual local account deletion is separate and never deletes saved conversations:
 
@@ -178,7 +208,17 @@ saved/archived rollouts and native history metadata in private
 and credentials. Active processes block deletion; it never stops agents to proceed.
 The upstream provider account is unchanged. Preserved histories remain discoverable
 with their stable session IDs; resume requires an explicit enrolled destination
-account. Paginated history requires native verification before credentials can be
+account. Claude deletion (`api account delete claude:NAME`) uses the same
+commands, journal and recovery. It refuses while a verified live Claude session, a
+Claude process with that `CLAUDE_CONFIG_DIR` or an unfinished headless delivery uses
+the account. For a managed home it moves `projects/`, `history.jsonl`,
+`file-history/` and `todos/` to `preserved-conversations/REQUEST-ID/home`, then
+deletes the managed home including credentials (`home_disposition:"deleted"`). For
+an adopted `--config-dir` home it never modifies or deletes the directory: only the
+account record is removed and the receipt reports `home_disposition:"left_in_place"`
+with `external_home`. The deleted account's catalog sessions stay listed as
+`stopped` with `resume_block_reason:"account_deleted"`; resume and headless delivery
+fail with `ACCOUNT_DELETED`. Paginated history requires native verification before credentials can be
 deleted; unavailable verification blocks deletion while retaining data.
 
 The account owner must advertise `account_deletion`; an older running owner returns
@@ -437,11 +477,33 @@ Discovery reads only `sessionId`/`cwd`/`timestamp` from transcript headers in
 account home; `native_status` (`idle`/`busy`) and `native_name` come from that
 entry. Otherwise it is `stopped` (transcript present), `stale` (transcript
 missing) or `unknown` (probe failed). Names/titles never establish liveness.
-Rename changes only the catalog label (applied as `--name` next launch/resume).
+A Claude session with a verified HERDR attachment (exact PID and start time) uses the
+same name path as Codex: tab label changes flow into the catalog name
+(`name_source:"herdr_last_observed"`) and `api rename`/`rename --session ID` renames
+the HERDR tab. Detached or stopped sessions keep their catalog label (`name_source:
+"catalog"`). The native Claude title is never changed live; the label is applied as
+`--name` on the next launch/resume.
 
 Stop, restart, account switch, relocation, Space moves, archive/delete and
 Submit/Queue/Steer are unsupported for Claude and rejected with
 `UNSUPPORTED_PROVIDER_OPERATION`; capabilities give the reason.
+
+Headless delivery (Agent-DM) uses the existing `api send`/`api receipt` commands.
+`mode:"resume"` continues a **stopped** session (`session_id` +
+`expected_generation`) by running `claude -p --resume UUID --output-format json` in
+its recorded directory under the account environment; `mode:"new"` takes
+`account_id`, an absolute existing `directory` and optional `name`, records the
+catalog entry with a pre-assigned id and runs `claude -p --session-id UUID
+--output-format json`. The message is written to stdin, not argv. Verified live
+sessions (`SESSION_ALREADY_RUNNING`), missing transcripts (`SESSION_STALE`) and auth
+problems are refused before anything is journaled. The request is journaled under
+`DATA_ROOT/claude-deliveries/` before a detached worker starts Claude once, bounded
+by `timeout_seconds` (default 600, max 3600). The receipt's `reply` holds the parsed
+result text, `is_error`, `session_id`, `num_turns` and `usage`. A different reported
+session id, a timeout, unparseable output or a worker that exits mid-run is
+`delivery_unknown` and is never replayed; repeating the same `message_id` and
+payload returns the original receipt, and a changed payload is `MESSAGE_ID_CONFLICT`.
+Interactive resume of the same session is refused while a delivery runs.
 
 Usage comes only from Claude Code's statusline. Launches pass a statusline that
 runs the hidden `sessionsation provider-hook claude-statusline`, which atomically

@@ -38,6 +38,10 @@ pub fn capabilities() -> ProviderCapabilities {
         steer: yes(),
         account_removal: yes(),
         account_deletion: yes(),
+        account_rename: yes(),
+        headless_delivery: no(
+            "Codex delivery uses the verified native queue (submit/queue/steer/resume)",
+        ),
         account_limits: yes(),
         cross_provider_conversion: no("conversations are bound to their provider"),
     }

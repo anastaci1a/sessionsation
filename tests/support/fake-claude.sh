@@ -14,6 +14,8 @@ case "$1" in
     case "$2" in
       status)
         mode=subscription
+        # A fixture may make fresh homes start logged out (claude-accounts/fake-default-auth).
+        [ -f "$home/../fake-default-auth" ] && mode=$(cat "$home/../fake-default-auth")
         [ -f "$home/fake-auth-mode" ] && mode=$(cat "$home/fake-auth-mode")
         # An ambient API key would switch real Claude to API billing.
         [ -n "$ANTHROPIC_API_KEY" ] && mode=api_key
@@ -27,12 +29,47 @@ case "$1" in
         exit 0 ;;
       login)
         printf '%s\n' "$*" > "$home/fake-login-args"
+        printf 'api_key=%s\nconfig_dir=%s\nautoupdater=%s\n' "${ANTHROPIC_API_KEY:+present}" "$CLAUDE_CONFIG_DIR" "$DISABLE_AUTOUPDATER" > "$home/fake-login-env"
         printf '%s\n' 'subscription' > "$home/fake-auth-mode"
         printf '%s\n' 'Fake login complete.'
         exit 0 ;;
     esac
     exit 2 ;;
 esac
+# Headless print mode (`-p --output-format json`): the message arrives on stdin.
+# Controls in the account home: fake-print-sleep (seconds), fake-print-session
+# (session id to report instead of the requested one), fake-print-error.
+for arg in "$@"; do
+  if [ "$arg" = -p ]; then
+    session='' mode='' format=''
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --session-id) session=$2; mode=new; shift 2 ;;
+        --resume) session=$2; mode=resume; shift 2 ;;
+        --output-format) format=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -n "$session" ] && [ "$format" = json ] || exit 2
+    message=$(cat)
+    n=0; [ -f "$home/fake-print-count" ] && n=$(cat "$home/fake-print-count")
+    printf '%s\n' "$((n + 1))" > "$home/fake-print-count"
+    {
+      printf 'mode=%s\nsession=%s\ncwd=%s\nmessage=%s\n' "$mode" "$session" "$PWD" "$message"
+      printf 'api_key=%s\nauth_token=%s\nbase_url=%s\n' "${ANTHROPIC_API_KEY:+present}" "${ANTHROPIC_AUTH_TOKEN:+present}" "${ANTHROPIC_BASE_URL:+present}"
+      printf 'autoupdater=%s\nconfig_dir=%s\n' "$DISABLE_AUTOUPDATER" "$CLAUDE_CONFIG_DIR"
+    } > "$home/fake-print-$mode"
+    [ -f "$home/fake-print-sleep" ] && sleep "$(cat "$home/fake-print-sleep")"
+    slug=$(printf '%s' "$PWD" | tr '/' '-')
+    mkdir -p "$home/projects/$slug"
+    printf '{"type":"user","sessionId":"%s","cwd":"%s","timestamp":"2026-01-01T00:00:00.000Z"}\n' "$session" "$PWD" >> "$home/projects/$slug/$session.jsonl"
+    reported=$session; [ -f "$home/fake-print-session" ] && reported=$(cat "$home/fake-print-session")
+    is_error=false; [ -f "$home/fake-print-error" ] && is_error=true
+    words=$(printf '%s' "$message" | head -n 1 | tr -cd 'A-Za-z0-9 ')
+    printf '{"type":"result","subtype":"success","is_error":%s,"duration_ms":5,"num_turns":1,"result":"fake reply to: %s","session_id":"%s","usage":{"input_tokens":3,"output_tokens":4}}\n' "$is_error" "$words" "$reported"
+    exit 0
+  fi
+done
 session='' name='' mode=''
 while [ $# -gt 0 ]; do
   case "$1" in

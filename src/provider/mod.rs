@@ -192,6 +192,9 @@ pub struct ProviderCapabilities {
     pub steer: Capability,
     pub account_removal: Capability,
     pub account_deletion: Capability,
+    pub account_rename: Capability,
+    /// Bounded headless execution through `api send` (Claude `claude -p`).
+    pub headless_delivery: Capability,
     pub account_limits: Capability,
     pub cross_provider_conversion: Capability,
 }

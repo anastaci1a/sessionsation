@@ -1,9 +1,11 @@
-//! sessionsation account membership. Codex's existing supervisor remains the sole
-//! authentication owner. Removal unregisters locally without disabling or deleting
-//! that provider enrollment, credentials, or conversation history.
+//! sessionsation account membership. The existing supervisor remains the sole
+//! authentication owner. Removal unregisters locally (Codex and Claude) without
+//! disabling or deleting that provider enrollment, credentials, or conversation
+//! history; restore makes the account selectable again.
 use crate::{
     daemon, external,
     paths::{Paths, atomic_write, lock_file, private_dir, validate_name},
+    provider::{ProviderId, claude},
 };
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -11,15 +13,26 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{fs, os::unix::fs::MetadataExt, path::Path};
 
-fn marker(paths: &Paths, name: &str) -> Result<std::path::PathBuf> {
+fn marker_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<std::path::PathBuf> {
     validate_name(name)?;
     Ok(paths
         .root
-        .join("account-catalog/codex")
+        .join("account-catalog")
+        .join(provider.as_str())
         .join(format!("{name}.removed.json")))
 }
+#[cfg(test)]
+fn marker(paths: &Paths, name: &str) -> Result<std::path::PathBuf> {
+    marker_for(paths, ProviderId::Codex, name)
+}
+/// Names are unique across providers, so a removal marker of either provider
+/// hides the one enrolled account with this name.
 pub fn removed(paths: &Paths, name: &str) -> Result<bool> {
-    let path = marker(paths, name)?;
+    Ok(removed_for(paths, ProviderId::Codex, name)?
+        || removed_for(paths, ProviderId::Claude, name)?)
+}
+fn removed_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<bool> {
+    let path = marker_for(paths, provider, name)?;
     match fs::symlink_metadata(path) {
         Ok(m) => {
             ensure!(
@@ -169,17 +182,102 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
     )
 }
 
-pub async fn remove(paths: &Paths, name: &str, revision: &str, confirm: &str) -> Result<Value> {
-    ensure!(confirm == format!("codex:{name}"), "CONFIRMATION_REQUIRED");
+/// Removal preview for either provider; Claude previews never scan beyond
+/// transcript metadata and verified live-session registry entries.
+pub async fn preview_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<Value> {
+    match provider {
+        ProviderId::Codex => preview(paths, name).await,
+        ProviderId::Claude => claude_preview(paths, name).await,
+    }
+}
+
+/// Live use of a Claude home: verified registry sessions, Claude processes with
+/// this CLAUDE_CONFIG_DIR, and unfinished headless deliveries of the account.
+pub(crate) fn claude_activity(
+    paths: &Paths,
+    name: &str,
+    home: &Path,
+) -> Result<(Vec<Value>, bool, Vec<Value>)> {
+    let config = crate::store::load_config(paths)?;
+    let live = if home.exists() {
+        claude::live_sessions(home)
+            .context("ACCOUNT_OWNERSHIP_UNVERIFIED")?
+            .into_iter()
+            .map(|l| json!({"conversation_id":l.session_id,"pid":l.pid,"process_start":l.process_start}))
+            .collect()
+    } else {
+        vec![]
+    };
+    let processes = home.exists() && claude::env_in_use(&[home], &config.claude_binary);
+    let headless = crate::messaging::headless::active_for_account(paths, name)?
+        .into_iter()
+        .map(|id| json!({"id":id,"phase":"headless_delivery"}))
+        .collect();
+    Ok((live, processes, headless))
+}
+
+async fn claude_preview(paths: &Paths, name: &str) -> Result<Value> {
+    validate_name(name)?;
+    let status = daemon::call(paths, "status", json!({})).await?;
+    let account = status["accounts"]
+        .as_array()
+        .and_then(|a| {
+            a.iter()
+                .find(|a| a["name"] == name && a["provider"] == ProviderId::Claude.as_str())
+        })
+        .context("ACCOUNT_NOT_FOUND")?;
+    let adopted = account["config_home"]
+        .as_str()
+        .map(std::path::PathBuf::from);
+    let home = claude::home(paths, name, adopted.as_deref())?;
+    let (active, processes, operations) = claude_activity(paths, name, &home)?;
+    let transcripts = claude::transcripts(&home);
+    let affected = crate::catalog::list(paths)?
+        .into_iter()
+        .filter(|s| s.provider == "claude" && s.account == name)
+        .map(|s| json!({"id":s.id,"name":s.name,"conversation_id":s.conversation_id}))
+        .collect::<Vec<_>>();
+    let history = transcripts
+        .iter()
+        .map(|t| json!([t.session_id, t.bytes]))
+        .collect::<Vec<_>>();
+    let fingerprint = json!({"provider":"claude","name":name,"enabled":account["enabled"],"auth_required":account["auth_required"],
+        "config_home":account["config_home"],"history":history,"active":active,"processes":processes,"operations":operations,"affected":affected});
+    let revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&fingerprint)?));
+    Ok(
+        json!({"account_id":format!("claude:{name}"),"removed":removed_for(paths,ProviderId::Claude,name)?,"revision":revision,
+        "affected_sessions":affected,"active_sessions":active,"loaded_conversations":[],"pending_operations":operations,
+        "active_processes":processes,
+        "can_remove":active.is_empty() && !processes && operations.is_empty(),
+        "stored_data":{"home":home,"adopted":adopted.is_some(),"files":transcripts.len(),"bytes":transcripts.iter().map(|t|t.bytes).sum::<u64>(),
+            "history_ids":transcripts.iter().map(|t|t.session_id.clone()).collect::<Vec<_>>(),"history_files":transcripts.len()},
+        "effects":{"unregister_local_membership":true,"disable_provider_enrollment":false,
+            "stop_agents":false,"delete_credentials":false,"delete_history":false,"delete_upstream_account":false},
+        "purge_supported":false}),
+    )
+}
+
+pub async fn remove(
+    paths: &Paths,
+    provider: ProviderId,
+    name: &str,
+    revision: &str,
+    confirm: &str,
+) -> Result<Value> {
+    ensure!(
+        confirm == format!("{provider}:{name}"),
+        "CONFIRMATION_REQUIRED"
+    );
     let _account = operation_lock(paths, name)?;
     let jobs = paths.root.join("handoff-jobs");
     private_dir(&jobs)?;
     let queue = lock_file(&jobs.join("queue.lock"))?;
     queue.try_lock_exclusive().context("OPERATION_BUSY")?;
-    let current = preview(paths, name).await?;
+    let current = preview_for(paths, provider, name).await?;
     ensure!(current["revision"] == revision, "STALE_ACCOUNT_PREVIEW");
     ensure!(current["can_remove"] == true, "ACCOUNT_IN_USE");
-    let file = marker(paths, name)?;
+    let file = marker_for(paths, provider, name)?;
+    private_dir(file.parent().context("missing membership directory")?)?;
     atomic_write(
         &file,
         &serde_json::to_vec(
@@ -187,18 +285,18 @@ pub async fn remove(paths: &Paths, name: &str, revision: &str, confirm: &str) ->
         )?,
     )?;
     Ok(
-        json!({"account_id":format!("codex:{name}"),"removed":true,"history_preserved":true,"credentials_preserved":true,"upstream_account_unchanged":true}),
+        json!({"account_id":format!("{provider}:{name}"),"removed":true,"history_preserved":true,"credentials_preserved":true,"upstream_account_unchanged":true}),
     )
 }
 
-pub fn restore(paths: &Paths, name: &str) -> Result<Value> {
+pub fn restore(paths: &Paths, provider: ProviderId, name: &str) -> Result<Value> {
     let _account = operation_lock(paths, name)?;
-    let file = marker(paths, name)?;
-    ensure!(removed(paths, name)?, "ACCOUNT_NOT_REMOVED");
+    let file = marker_for(paths, provider, name)?;
+    ensure!(removed_for(paths, provider, name)?, "ACCOUNT_NOT_REMOVED");
     fs::remove_file(&file)?;
     fs::File::open(file.parent().context("missing membership directory")?)?.sync_all()?;
     Ok(
-        json!({"account_id":format!("codex:{name}"),"restored":true,"provider_credentials_unchanged":true}),
+        json!({"account_id":format!("{provider}:{name}"),"restored":true,"provider_credentials_unchanged":true}),
     )
 }
 
@@ -259,7 +357,7 @@ mod tests {
         let file = marker(&p, "test").unwrap();
         atomic_write(&file, b"{}").unwrap();
         assert!(ensure_available(&p, "test").is_err());
-        restore(&p, "test").unwrap();
+        restore(&p, ProviderId::Codex, "test").unwrap();
         assert!(ensure_available(&p, "test").is_ok());
         assert_eq!(
             fs::read(home.join("history.jsonl")).unwrap(),

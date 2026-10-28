@@ -2,6 +2,7 @@
 use crate::{
     accounts, catalog, daemon, external,
     paths::{Paths, atomic_write, lock_file, private_dir, validate_name},
+    provider::{ProviderId, claude},
 };
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -30,6 +31,12 @@ pub struct Record {
     #[serde(default)]
     pub can_recover: bool,
     pub history_preserved: bool,
+    /// Claude adopted config directory: never modified or deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_home: Option<PathBuf>,
+    /// `deleted` (managed home removed) or `left_in_place` (adopted directory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_disposition: Option<String>,
 }
 fn record_file(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id).context("INVALID_REQUEST_ID")?;
@@ -76,39 +83,57 @@ pub fn list(paths: &Paths) -> Result<Vec<Record>> {
     Ok(out)
 }
 /// Fast intent preview: catalog and owner metadata only, no account tree access.
-pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
+pub async fn preview(paths: &Paths, provider: ProviderId, name: &str) -> Result<Value> {
     validate_name(name)?;
     let state = daemon::call(paths, "status", json!({})).await?;
-    ensure!(
-        state["accounts"]
-            .as_array()
-            .is_some_and(|aa| aa.iter().any(|a| a["name"] == name)),
-        "ACCOUNT_NOT_FOUND"
-    );
+    let account = state["accounts"]
+        .as_array()
+        .and_then(|aa| {
+            aa.iter().find(|a| {
+                a["name"] == name && a["provider"].as_str().unwrap_or("codex") == provider.as_str()
+            })
+        })
+        .context("ACCOUNT_NOT_FOUND")?;
     let affected: Vec<_> = catalog::list(paths)?
         .into_iter()
-        .filter(|s| s.provider == "codex" && s.account == name)
+        .filter(|s| s.provider == provider.as_str() && s.account == name)
         .map(|s| json!({"id":s.id,"name":s.name,"running":s.attachment.is_some()}))
         .collect();
-    Ok(
-        json!({"account_id":format!("codex:{name}"),"can_delete":state["capabilities"]["account_deletion"]==true&&!affected.iter().any(|s|s["running"]==true),"owner_upgrade_required":state["capabilities"]["account_deletion"]!=true,"affected_sessions":affected,"preserves_history":true,"deletes_local_credentials":true,"upstream_account_unchanged":true,"file_scanning":false}),
-    )
+    let capable = state["capabilities"]["account_deletion"] == true;
+    let mut value = json!({"account_id":format!("{provider}:{name}"),"can_delete":capable&&!affected.iter().any(|s|s["running"]==true),"owner_upgrade_required":!capable,"affected_sessions":affected,"preserves_history":true,"deletes_local_credentials":true,"upstream_account_unchanged":true,"file_scanning":false});
+    if provider == ProviderId::Claude {
+        let adopted = account["config_home"].as_str();
+        value["provider"] = json!("claude");
+        value["adopted_config_home"] = json!(adopted);
+        value["home_disposition"] = json!(if adopted.is_some() {
+            "left_in_place"
+        } else {
+            "deleted"
+        });
+        // An adopted directory keeps its credentials and history where they are.
+        value["deletes_local_credentials"] = json!(adopted.is_none());
+    }
+    Ok(value)
 }
 fn spawn(paths: &Paths, r: &Record) -> Result<()> {
-    crate::background::detach(&mut std::process::Command::new(
-        crate::self_executable::path()?,
-    ))
-    .arg("--data-dir")
-    .arg(&paths.root)
-    .args(["account-delete-worker", &r.id])
-    .env_remove("CODEX_HOME")
-    .env_remove("OPENAI_API_KEY")
-    .env_remove("CODEX_API_KEY")
-    .env_remove("CODEX_ACCESS_TOKEN")
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .spawn()?;
+    let mut command = std::process::Command::new(crate::self_executable::path()?);
+    crate::background::detach(&mut command)
+        .arg("--data-dir")
+        .arg(&paths.root)
+        .args(["account-delete-worker", &r.id])
+        .env_remove("CODEX_HOME")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("CODEX_API_KEY")
+        .env_remove("CODEX_ACCESS_TOKEN")
+        .env_remove("CLAUDE_CONFIG_DIR");
+    for name in crate::provider::claude::STRIPPED_ENV {
+        command.env_remove(name);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
     Ok(())
 }
 fn account_home(paths: &Paths, name: &str) -> Result<PathBuf> {
@@ -121,9 +146,29 @@ fn account_home(paths: &Paths, name: &str) -> Result<PathBuf> {
     );
     paths.account(name)
 }
-pub async fn start(paths: &Paths, name: &str, id: &str, confirm: &str) -> Result<Value> {
+/// The managed Claude home, refusing a symlinked or foreign `claude-accounts` parent.
+fn claude_managed_home(paths: &Paths, name: &str) -> Result<PathBuf> {
+    let parent = fs::symlink_metadata(paths.root.join("claude-accounts"))?;
+    ensure!(
+        parent.is_dir()
+            && !parent.file_type().is_symlink()
+            && parent.uid() == unsafe { libc::geteuid() },
+        "UNSAFE_ACCOUNT_PARENT"
+    );
+    claude::default_home(paths, name)
+}
+pub async fn start(
+    paths: &Paths,
+    provider: ProviderId,
+    name: &str,
+    id: &str,
+    confirm: &str,
+) -> Result<Value> {
     validate_name(name)?;
-    ensure!(confirm == format!("codex:{name}"), "CONFIRMATION_REQUIRED");
+    ensure!(
+        confirm == format!("{provider}:{name}"),
+        "CONFIRMATION_REQUIRED"
+    );
     record_file(paths, id)?;
     let root = paths.root.join("account-deletions");
     private_dir(&root)?;
@@ -145,17 +190,38 @@ pub async fn start(paths: &Paths, name: &str, id: &str, confirm: &str) -> Result
         owner["capabilities"]["account_deletion"] == true,
         "OWNER_UPGRADE_REQUIRED"
     );
-    ensure!(
-        owner["accounts"]
-            .as_array()
-            .is_some_and(|aa| aa.iter().any(|a| a["name"] == name)),
-        "ACCOUNT_NOT_FOUND"
-    );
-    let home = fs::symlink_metadata(account_home(paths, name)?)?;
-    ensure!(
-        home.is_dir() && !home.file_type().is_symlink(),
-        "UNSAFE_ACCOUNT_DATA"
-    );
+    let account = owner["accounts"]
+        .as_array()
+        .and_then(|aa| {
+            aa.iter().find(|a| {
+                a["name"] == name && a["provider"].as_str().unwrap_or("codex") == provider.as_str()
+            })
+        })
+        .context("ACCOUNT_NOT_FOUND")?;
+    let external_home = match provider {
+        ProviderId::Claude => account["config_home"].as_str().map(PathBuf::from),
+        ProviderId::Codex => None,
+    };
+    let source_inode = match (provider, &external_home) {
+        (ProviderId::Codex, _) => {
+            let home = fs::symlink_metadata(account_home(paths, name)?)?;
+            ensure!(
+                home.is_dir() && !home.file_type().is_symlink(),
+                "UNSAFE_ACCOUNT_DATA"
+            );
+            Some(home.ino())
+        }
+        (ProviderId::Claude, None) => {
+            let home = fs::symlink_metadata(claude_managed_home(paths, name)?)?;
+            ensure!(
+                home.is_dir() && !home.file_type().is_symlink(),
+                "UNSAFE_ACCOUNT_DATA"
+            );
+            Some(home.ino())
+        }
+        // The adopted directory is never modified, so its identity is not a precondition.
+        (ProviderId::Claude, Some(_)) => None,
+    };
     let mut r = Record {
         id: id.into(),
         account_id: confirm.into(),
@@ -169,10 +235,12 @@ pub async fn start(paths: &Paths, name: &str, id: &str, confirm: &str) -> Result
             .join("preserved-conversations")
             .join(id)
             .join("home"),
-        source_inode: Some(home.ino()),
+        source_inode,
         can_cancel: false,
         can_recover: false,
         history_preserved: false,
+        home_disposition: None,
+        external_home,
     };
     save(paths, &mut r)?;
     if let Err(e) = spawn(paths, &r) {
@@ -296,6 +364,12 @@ fn preserve(home: &Path, vault: &Path) -> Result<()> {
     Ok(())
 }
 async fn perform(paths: &Paths, r: &mut Record) -> Result<()> {
+    if r.account_id.starts_with("claude:") {
+        return perform_claude(paths, r).await;
+    }
+    perform_codex(paths, r).await
+}
+async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
     ensure!(
         r.history_home
             == paths
@@ -468,6 +542,206 @@ async fn perform(paths: &Paths, r: &mut Record) -> Result<()> {
         "Local account files and credentials deleted. Saved conversations remain preserved; upstream account unchanged.",
     )
 }
+/// Claude conversation history inside a managed config home. Credentials
+/// (`.credentials.json`), settings and the live registry (`sessions/`) stay behind.
+fn claude_history_entry(name: &str) -> bool {
+    matches!(
+        name,
+        "projects" | "history.jsonl" | "file-history" | "todos"
+    )
+}
+fn preserve_claude(home: &Path, vault: &Path) -> Result<()> {
+    private_dir(vault)?;
+    for e in fs::read_dir(home)? {
+        let e = e?;
+        let name = e.file_name();
+        if !claude_history_entry(name.to_str().context("INVALID_HISTORY_NAME")?) {
+            continue;
+        }
+        no_symlinks(&e.path())?;
+        let dest = vault.join(&name);
+        ensure!(!dest.exists(), "PRESERVED_HISTORY_COLLISION");
+        fs::rename(e.path(), &dest).context("HISTORY_MOVE_FAILED_SOURCE_RETAINED")?;
+        fs::File::open(home)?.sync_all()?;
+        fs::File::open(vault)?.sync_all()?;
+    }
+    Ok(())
+}
+/// Refuse while a verified live Claude session, a Claude process using this
+/// CLAUDE_CONFIG_DIR, or an unfinished headless delivery uses the account.
+pub(crate) fn claude_idle(paths: &Paths, name: &str, home: &Path) -> Result<()> {
+    let (live, processes, operations) = accounts::claude_activity(paths, name, home)?;
+    ensure!(live.is_empty(), "ACCOUNT_HAS_RUNNING_SESSIONS");
+    ensure!(!processes, "ACCOUNT_HAS_RUNNING_PROCESSES");
+    ensure!(operations.is_empty(), "ACCOUNT_HAS_PENDING_OPERATIONS");
+    Ok(())
+}
+async fn perform_claude(paths: &Paths, r: &mut Record) -> Result<()> {
+    ensure!(
+        r.history_home
+            == paths
+                .root
+                .join("preserved-conversations")
+                .join(&r.id)
+                .join("home"),
+        "INVALID_HISTORY_VAULT"
+    );
+    let name = r
+        .account_id
+        .strip_prefix("claude:")
+        .context("UNSUPPORTED_PROVIDER_OPERATION")?
+        .to_owned();
+    let _account = accounts::operation_lock(paths, &name)?;
+    let finish = |paths: &Paths, name: &str, id: &str| {
+        let (paths, name, id) = (paths.clone(), name.to_owned(), id.to_owned());
+        async move {
+            daemon::call(
+                &paths,
+                "account/delete/finish",
+                json!({"name":name,"provider":"claude","request_id":id}),
+            )
+            .await
+        }
+    };
+    let enrolled = daemon::call(paths, "status", json!({})).await?["accounts"]
+        .as_array()
+        .is_some_and(|aa| {
+            aa.iter()
+                .any(|a| a["name"] == name.as_str() && a["provider"] == "claude")
+        });
+    if let Some(external) = r.external_home.clone() {
+        // Adopted config directory: only the account record is removed. The
+        // directory, its credentials and its conversations are never touched.
+        if enrolled {
+            phase(
+                paths,
+                r,
+                "checking_active",
+                "Checking live Claude sessions, processes and headless deliveries.",
+            )?;
+            claude_idle(paths, &name, &external)?;
+            phase(
+                paths,
+                r,
+                "disabling_account",
+                "Disabling future launches through the existing account owner.",
+            )?;
+            daemon::call(
+                paths,
+                "account/delete/prepare",
+                json!({"name":name,"provider":"claude","request_id":r.id}),
+            )
+            .await?;
+            claude_idle(paths, &name, &external)?;
+            r.home_disposition = Some("left_in_place".into());
+            phase(
+                paths,
+                r,
+                "deleting_local_data",
+                "Removing only the account record; the adopted config directory is left in place.",
+            )?;
+            finish(paths, &name, &r.id).await?;
+        }
+        r.home_disposition = Some("left_in_place".into());
+        let detail = format!(
+            "Account record removed. The adopted config directory {} was left in place unchanged, including its credentials and conversations.",
+            external.display()
+        );
+        return phase(paths, r, "complete", &detail);
+    }
+    let home = claude_managed_home(paths, &name)?;
+    if !home.exists() {
+        ensure!(
+            r.source_inode.is_some() && r.history_home.is_dir() && r.history_preserved,
+            "ACCOUNT_DATA_UNAVAILABLE"
+        );
+        r.home_disposition = Some("deleted".into());
+        phase(
+            paths,
+            r,
+            "deleting_local_data",
+            "Completing the original account deletion after verified history preservation.",
+        )?;
+        if enrolled {
+            finish(paths, &name, &r.id).await?;
+        }
+        return phase(
+            paths,
+            r,
+            "complete",
+            "Local Claude config home and credentials deleted; conversation history retained.",
+        );
+    }
+    let m = fs::symlink_metadata(&home)?;
+    ensure!(
+        m.is_dir() && !m.file_type().is_symlink(),
+        "UNSAFE_ACCOUNT_DATA"
+    );
+    ensure!(r.source_inode == Some(m.ino()), "ACCOUNT_HOME_REPLACED");
+    phase(
+        paths,
+        r,
+        "checking_active",
+        "Checking live Claude sessions, processes and headless deliveries.",
+    )?;
+    claude_idle(paths, &name, &home)?;
+    phase(
+        paths,
+        r,
+        "disabling_account",
+        "Disabling future launches through the existing account owner.",
+    )?;
+    daemon::call(
+        paths,
+        "account/delete/prepare",
+        json!({"name":name,"provider":"claude","request_id":r.id}),
+    )
+    .await?;
+    claude_idle(paths, &name, &home)?;
+    private_dir(&paths.root.join("preserved-conversations"))?;
+    private_dir(r.history_home.parent().context("INVALID_HISTORY_VAULT")?)?;
+    phase(
+        paths,
+        r,
+        "preserving_history",
+        "Moving Claude transcripts and history to private preserved storage.",
+    )?;
+    let manifest = r
+        .history_home
+        .parent()
+        .context("INVALID_HISTORY_VAULT")?
+        .join("account.json");
+    atomic_write(
+        &manifest,
+        &serde_json::to_vec(
+            &json!({"version":1,"provider":"claude","account":name,"request_id":r.id,"home":r.history_home}),
+        )?,
+    )?;
+    preserve_claude(&home, &r.history_home)?;
+    r.history_preserved = true;
+    save(paths, r)?;
+    claude_idle(paths, &name, &home)?;
+    ensure!(
+        fs::symlink_metadata(&home)?.ino() == r.source_inode.unwrap_or_default(),
+        "ACCOUNT_HOME_REPLACED"
+    );
+    r.home_disposition = Some("deleted".into());
+    phase(
+        paths,
+        r,
+        "deleting_local_data",
+        "Deleting this Claude account's remaining local files and credentials; preserved conversations are outside this directory.",
+    )?;
+    fs::remove_dir_all(&home).context("ACCOUNT_LOCAL_DATA_CLEANUP_FAILED")?;
+    fs::File::open(paths.root.join("claude-accounts"))?.sync_all()?;
+    finish(paths, &name, &r.id).await?;
+    phase(
+        paths,
+        r,
+        "complete",
+        "Local Claude config home and credentials deleted. Conversation history preserved; upstream account unchanged.",
+    )
+}
 /// Histories stay in discovery under their original account identity after the
 /// registration and credential home have been deleted by the sole owner.
 pub fn preserved_homes(paths: &Paths) -> Result<Vec<(String, PathBuf)>> {
@@ -541,6 +815,8 @@ mod tests {
             can_cancel: false,
             can_recover: false,
             history_preserved: false,
+            external_home: None,
+            home_disposition: None,
         };
         assert!(
             perform(&paths, &mut r)

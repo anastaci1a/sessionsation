@@ -60,6 +60,25 @@ validate(fixtures["archived_session"], "ArchivedSession")
 validate(fixtures["conversation_operation"], "ConversationOperation")
 validate(fixtures["account_deletion"], "AccountDeletion")
 validate(fixtures["account_deletion_preview"], "AccountDeletionPreview")
+for name in ["claude_headless_resume_request", "claude_headless_new_request"]:
+    validate(fixtures[name], "ClaudeHeadlessRequest")
+for name in ["claude_headless_receipt", "claude_headless_receipt_timeout"]:
+    validate(fixtures[name], "ClaudeHeadlessReceipt")
+for invalid, definition in [
+    ({**fixtures["claude_headless_resume_request"], "mode": "submit"}, "ClaudeHeadlessRequest"),
+    ({**fixtures["claude_headless_new_request"], "session_id": fixtures["claude_headless_resume_request"]["session_id"]}, "ClaudeHeadlessRequest"),
+    ({**fixtures["claude_headless_receipt_timeout"], "state": "completed_with_reply"}, "ClaudeHeadlessReceipt"),
+    ({**fixtures["claude_headless_receipt"], "execution": {**fixtures["claude_headless_receipt"]["execution"], "automatic_replay": True}}, "ClaudeHeadlessReceipt"),
+]:
+    try:
+        validate(invalid, definition)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Claude headless delivery must not claim unsupported modes, replay or uncorrelated success")
+validate(fixtures["account_refresh"], "AccountRefresh")
+validate(fixtures["account_rename"], "AccountRename")
+validate(fixtures["claude_login_plan"], "AccountLoginPlan")
 validate(fixtures["launch_request"], "LaunchRequest")
 validate(fixtures["launch_receipt"], "LaunchReceipt")
 validate(fixtures["resume_request"], "ResumeRequest")
@@ -92,7 +111,11 @@ with tempfile.TemporaryDirectory() as directory:
         if args == ["placements"]:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 7
+            assert value["result"]["contract_revision"] >= 11
+            claude = [p for p in value["result"]["providers"] if p["id"] == "claude"][0]
+            assert claude["account_removal"] is True and claude["account_deletion"] is True
+            assert claude["headless_delivery"]["automatic_replay"] is False
+            assert all(p["account_rename"] is True for p in value["result"]["providers"])
             assert value["result"]["checkpoints"]["version"] == 1
             assert value["result"]["checkpoints"]["max_response_bytes"] == 786432
             assert value["result"]["checkpoints"]["history_modes"] == ["legacy", "paginated"]

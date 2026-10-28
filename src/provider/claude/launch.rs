@@ -13,6 +13,7 @@ use std::{os::unix::process::CommandExt, path::Path};
 
 fn context(paths: &Paths, name: &str) -> Result<(Enrolled, Config)> {
     let account = claude::account(paths, name)?;
+    crate::accounts::ensure_available(paths, name)?;
     ensure!(account.enabled, "ACCOUNT_UNAVAILABLE: account is disabled");
     ensure!(
         account.home.is_dir(),
@@ -108,6 +109,7 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
     let (account, config) = context(paths, &session.account)?;
     crate::lifecycle::ensure_available(paths, &session.conversation_id, None)?;
     let _lock = crate::external::conversation_lock(paths, &session.conversation_id)?;
+    crate::messaging::headless::ensure_idle(paths, &session.conversation_id)?;
     let observation = claude::observe(
         &account.home,
         &session.conversation_id,

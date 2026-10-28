@@ -95,6 +95,9 @@ pub struct Account {
     /// Last provider authentication problem code (e.g. WRONG_AUTH_MODE); no secrets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_detail: Option<String>,
+    /// Human display name; the stable name, id and home never change on rename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 impl Account {
     /// A Codex account (the original enrollment kind).
@@ -110,6 +113,7 @@ impl Account {
             provider,
             config_home: None,
             auth_detail: None,
+            display_name: None,
             deletion_id: None,
             switch_thresholds: crate::automatic::Thresholds::default(),
             name,

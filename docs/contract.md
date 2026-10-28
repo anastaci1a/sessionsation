@@ -668,8 +668,8 @@ fixtures include reconnect errors, acceptance after expiry and projection recove
 credential purging or disabling the original switcher enrollment. The separately
 confirmed `delete` operation deletes local credentials/data while preserving
 conversations; it requires a capable sole owner. Arbitrary history purging remains
-unsupported. Codex-only operations (`remove`, `restore`, `delete`) reject
-`claude:` IDs with `UNSUPPORTED_PROVIDER_OPERATION`. See revision 10 below.
+unsupported. Since revision 11 `remove`, `restore` and `delete` also accept
+`claude:` IDs (see revision 11 below; revision 10 rejected them).
 `api account managed-home claude:NAME` (additive) switches an adopted Claude account to
 `<root>/claude-accounts/NAME` and returns `{account_id,provider,home,previous_home,relocated,already_managed}`
 (`note:"ALREADY_MANAGED"` when idempotent). Error codes: `UNSUPPORTED_PROVIDER_OPERATION`,
@@ -1016,9 +1016,89 @@ enrolled one fails with `ACCOUNT_PROVIDER_MISMATCH`; a taken name fails with
 Claude sessions add `conversation_id_source:"native"`, `native_status`,
 `native_name`, `native`, `pid`, `process_start`, `host_known`,
 `capability_reasons`, and use availability `running|stopped|stale|unknown`.
-`name`/`name_source:"catalog"` are Sessionsation metadata; `native_*` are Claude's.
+`name`/`name_source` (`catalog`, or `herdr_last_observed` for HERDR-attached sessions since revision 11) are Sessionsation metadata; `native_*` are Claude's.
 `launcher new|resume`, `launch` and `resume` accept Claude accounts/sessions;
 launch receipts keep `account_id: "claude:NAME"`.
+
+### Claude lifecycle, login, headless delivery and display names (revision 11)
+
+Additive; negotiate `contract_revision >= 11`. Provider entries add flat
+`account_rename:true` (both) and, for Claude, `account_removal:true`,
+`account_deletion:true`, `account_refresh:true` and a `headless_delivery` object
+(`version:1`, `modes:["resume","new"]`, `semantics:"headless_print"`,
+`requires_stopped_session:true`, `timeout_seconds:{default:600,max:3600}`,
+`timeout_is_uncertain:true`, `automatic_replay:false`, `cancellation:false`).
+`operations` adds `account_rename` and `headless_delivery` (`supported:false` for
+Codex); Claude `account_deletion` carries a reason describing the adopted-home case.
+
+Accounts: `remove|restore|delete|deletions|recover` accept `claude:NAME` with the
+Codex request/response shapes. Removal previews add `active_processes` and
+`stored_data.adopted`. Deletion previews add `home_disposition`
+(`deleted|left_in_place`) and `adopted_config_home`; `deletes_local_credentials` is
+false for an adopted directory. Deletion receipts add `external_home` and
+`home_disposition`; an adopted directory is never modified. Sessions of a deleted
+Claude account report `availability:"stopped"`, `resume_block_reason:"account_deleted"`,
+`history_preserved:true` and `capability_reasons.resume:"ACCOUNT_DELETED"`.
+
+Login: `api account add claude:NAME` returns `login` equal to
+`api account login claude:NAME`'s `login` (`{action:"exec",interactive:true,
+credentials_in_client:false,argv}`) plus `login_required` (boolean). `api account
+refresh claude:NAME` probes `claude auth status` now and returns
+`{account_id,provider:"claude",auth_required,auth_detail,auth_mode,observed_at}`
+where `auth_mode` is `{logged_in,auth_method,api_provider,subscription_type}` or
+null when the probe failed. The supervisor also re-probes every 3 seconds while a
+Claude account is `auth_required`.
+
+Session names: a Claude session with a verified HERDR attachment now follows the
+Codex HERDR name contract (revision 6): `name_source:"herdr_last_observed"`, tab
+label changes observed into `name`, and `api rename` renames the tab. Detached and
+stopped Claude sessions keep `name_source:"catalog"`; `native_rename` stays
+unsupported (the label is applied as `--name` on the next launch/resume).
+
+Display names: account snapshots add optional `display_name`. `api account rename
+PROVIDER:NAME --display-name X|--clear` returns `{account_id,name,display_name,changed}`;
+`id`, `name` and the home never change. Errors: `INVALID_DISPLAY_NAME`,
+`ACCOUNT_DISPLAY_NAME_EXISTS`, `ACCOUNT_DELETION_IN_PROGRESS`.
+
+Headless delivery (`api send`, Claude sessions/accounts only):
+
+```json
+{"api_version":1,"message_id":"UUID","mode":"resume","session_id":"UUID",
+ "expected_generation":"HEX64","text":"...","expires_at":UNIX,"timeout_seconds":600}
+{"api_version":1,"message_id":"UUID","mode":"new","account_id":"claude:NAME",
+ "directory":"/abs/dir","name":"optional label","text":"...","expires_at":UNIX}
+```
+
+`recovery`/`steering` must be absent or null; `timeout_seconds` is optional. Submit,
+Queue and Steer addressed to a Claude session fail with
+`UNSUPPORTED_PROVIDER_OPERATION` and the reason. Admission refuses (nothing is
+journaled) on `STALE_TARGET`, `SESSION_ALREADY_RUNNING`, `SESSION_STALE`,
+`SESSION_OPERATION_IN_PROGRESS`, `SAVED_DIRECTORY_UNAVAILABLE`, `ACCOUNT_REMOVED`,
+`ACCOUNT_DELETED`, `ACCOUNT_UNAVAILABLE`, `AUTH_REQUIRED`, `WRONG_AUTH_MODE`,
+`INVALID_EXPIRY`, `INVALID_TIMEOUT`. The response and `api receipt MESSAGE-ID` return:
+
+```json
+{"message_id","session_id","accepted_generation","provider":"claude",
+ "provider_conversation_id","account_id","mode","delivery_semantics":"headless_print",
+ "state","reason","facts":{"accepted_local","accepted_native","input_recorded",
+ "input_consumed","reply_observed"},"correlation":{"session_id","reported_session_id","matched"}|null,
+ "reply":{"text","text_truncated","is_error","subtype","session_id","num_turns","usage","duration_ms"}|null,
+ "execution":{"phase","directory","timeout_seconds","created_at","started_at","finished_at",
+ "new_conversation","automatic_replay":false},"observation":{...}}
+```
+
+`state`: `pending_local` (journaled), `execution_started` (journaled before the
+process starts), `completed_with_reply` (session id matched, `is_error:false`),
+`failed` (matched, `is_error:true`), `rejected` (provably not executed, e.g.
+rechecks failed or `WORKER_EXITED_BEFORE_EXECUTION`), `expired`, or
+`delivery_unknown` (`EXECUTION_TIMEOUT`, `SESSION_ID_MISMATCH`,
+`UNPARSEABLE_OUTPUT`, `OUTPUT_TOO_LARGE`, `WORKER_EXITED_DURING_EXECUTION`). `reply`
+is non-null only for a matched session id. Uncertain outcomes are never replayed;
+the same `message_id` with an identical payload returns the original receipt and a
+changed payload is `MESSAGE_ID_CONFLICT` (message ids are shared with the Codex
+stores). `api cancel` returns `HEADLESS_CANCELLATION_UNSUPPORTED` while a delivery is
+pending or executing. Schemas: `ClaudeHeadlessRequest`, `ClaudeHeadlessReceipt`,
+`AccountLoginPlan`, `AccountRefresh`, `AccountRename` in [API v1](contract/v1.json).
 
 ### Batch placement observations (revision 9)
 

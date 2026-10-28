@@ -999,5 +999,151 @@
     },
     "starts_process": false,
     "sends_input": false
+  },
+  "claude_headless_resume_request": {
+    "api_version": 1,
+    "message_id": "0f4c5a8e-8d1e-4b7e-9a51-2a6f0c3d4e51",
+    "mode": "resume",
+    "session_id": "7b0e8f7e-3c1a-4a52-9d55-0d6d3f1c2a11",
+    "expected_generation": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "text": "Summarize the failing test.",
+    "expires_at": 1893456000,
+    "timeout_seconds": 600
+  },
+  "claude_headless_new_request": {
+    "api_version": 1,
+    "message_id": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+    "mode": "new",
+    "account_id": "claude:personal",
+    "directory": "/srv/project",
+    "name": "dm-review",
+    "text": "Review the diff.",
+    "expires_at": 1893456000
+  },
+  "claude_headless_receipt": {
+    "message_id": "0f4c5a8e-8d1e-4b7e-9a51-2a6f0c3d4e51",
+    "session_id": "7b0e8f7e-3c1a-4a52-9d55-0d6d3f1c2a11",
+    "accepted_generation": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "provider": "claude",
+    "provider_conversation_id": "5b0f4b9e-6f1b-4c36-9d0a-1b6f3a1d2c11",
+    "account_id": "claude:personal",
+    "mode": "resume",
+    "delivery_semantics": "headless_print",
+    "state": "completed_with_reply",
+    "reason": null,
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": true,
+      "input_recorded": true,
+      "input_consumed": true,
+      "reply_observed": true
+    },
+    "correlation": {
+      "session_id": "5b0f4b9e-6f1b-4c36-9d0a-1b6f3a1d2c11",
+      "reported_session_id": "5b0f4b9e-6f1b-4c36-9d0a-1b6f3a1d2c11",
+      "matched": true
+    },
+    "reply": {
+      "text": "The failing test expects UTC.",
+      "text_truncated": false,
+      "is_error": false,
+      "subtype": "success",
+      "session_id": "5b0f4b9e-6f1b-4c36-9d0a-1b6f3a1d2c11",
+      "num_turns": 1,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 4
+      },
+      "duration_ms": 5
+    },
+    "execution": {
+      "phase": "complete",
+      "directory": "/srv/project",
+      "timeout_seconds": 600,
+      "created_at": 1893450000,
+      "started_at": 1893450001,
+      "finished_at": 1893450009,
+      "new_conversation": false,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "cached",
+      "checked_at": 1893450010,
+      "native_attempted_at": 1893450001,
+      "evidence_observed_at": 1893450009,
+      "freshness": "unknown",
+      "error_code": null
+    }
+  },
+  "claude_headless_receipt_timeout": {
+    "message_id": "0f4c5a8e-8d1e-4b7e-9a51-2a6f0c3d4e51",
+    "session_id": "7b0e8f7e-3c1a-4a52-9d55-0d6d3f1c2a11",
+    "accepted_generation": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "provider": "claude",
+    "provider_conversation_id": "5b0f4b9e-6f1b-4c36-9d0a-1b6f3a1d2c11",
+    "account_id": "claude:personal",
+    "mode": "resume",
+    "delivery_semantics": "headless_print",
+    "state": "delivery_unknown",
+    "reason": "EXECUTION_TIMEOUT",
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": true,
+      "input_recorded": false,
+      "input_consumed": "unknown",
+      "reply_observed": false
+    },
+    "correlation": null,
+    "reply": null,
+    "execution": {
+      "phase": "complete",
+      "directory": "/srv/project",
+      "timeout_seconds": 600,
+      "created_at": 1893450000,
+      "started_at": 1893450001,
+      "finished_at": 1893450009,
+      "new_conversation": false,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "cached",
+      "checked_at": 1893450010,
+      "native_attempted_at": 1893450001,
+      "evidence_observed_at": 1893450009,
+      "freshness": "unknown",
+      "error_code": null
+    }
+  },
+  "account_refresh": {
+    "account_id": "claude:personal",
+    "provider": "claude",
+    "auth_required": false,
+    "auth_detail": null,
+    "auth_mode": {
+      "logged_in": true,
+      "auth_method": "claude.ai",
+      "api_provider": "firstParty",
+      "subscription_type": "max"
+    },
+    "observed_at": 1893450000
+  },
+  "account_rename": {
+    "account_id": "codex:work",
+    "name": "work",
+    "display_name": "Office",
+    "changed": true
+  },
+  "claude_login_plan": {
+    "action": "exec",
+    "interactive": true,
+    "credentials_in_client": false,
+    "argv": [
+      "/usr/local/bin/sessionsation",
+      "--data-dir",
+      "/srv/sessionsation",
+      "account",
+      "login",
+      "claude:personal"
+    ]
   }
 }

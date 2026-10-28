@@ -98,6 +98,14 @@ pub async fn session(paths: &Paths, key: &str) -> Result<Value> {
     )
 }
 
+/// `display (name)` when a display name differs from the stable name.
+pub fn account_label(a: &Value) -> String {
+    let name = a["name"].as_str().unwrap_or("?");
+    match a["display_name"].as_str() {
+        Some(display) if display != name => format!("{display} ({name})"),
+        _ => name.to_owned(),
+    }
+}
 /// Human account listing across providers. Unknown usage shows `-`, never 0%.
 pub fn account_table(accounts: &[Value]) -> String {
     let percent = |a: &Value, window: &str| {
@@ -123,7 +131,7 @@ pub fn account_table(accounts: &[Value]) -> String {
         };
         out.push_str(&format!(
             "{:<24} {:<8} {:<12} {:>5} {:>5} {}\n",
-            a["name"].as_str().unwrap_or("?"),
+            account_label(a),
             a["provider"].as_str().unwrap_or("?"),
             status,
             percent(a, "short"),

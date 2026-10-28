@@ -292,9 +292,7 @@ async fn validate(paths: &Paths, r: &Request) -> Result<()> {
     directory_check(&r.directory)?;
     catalog::check_name(paths, &r.name, &r.request_id)?;
     let account = AccountRef::parse(&r.account_id)?;
-    if account.provider == ProviderId::Codex {
-        crate::accounts::ensure_available(paths, &account.name)?;
-    }
+    crate::accounts::ensure_available(paths, &account.name)?;
     let state = daemon::call(paths, "status", json!({})).await?;
     ensure!(
         state["accounts"]

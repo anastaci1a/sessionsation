@@ -76,6 +76,17 @@ fn apply(paths: &Paths, observations: Vec<(Session, String)>) -> Result<()> {
         Ok(())
     })
 }
+/// Whether a HERDR-attached session is verified live. Codex sessions match a
+/// discovered instance; Claude sessions (no Codex instance) require the exact
+/// recorded process (PID and start time) of their verified attachment.
+fn attached_live(s: &Session, instances: &[external::Instance]) -> bool {
+    if s.provider == ProviderId::Claude.as_str() {
+        return s.attachment.as_ref().is_some_and(|a| {
+            external::attachment_is_live(a.pid, a.process_start).unwrap_or(false)
+        });
+    }
+    instances.iter().any(|i| crate::api::source_matches(s, i))
+}
 pub async fn refresh(paths: &Paths, instances: &[external::Instance]) -> Result<()> {
     let Ok(_lock) = lock(paths) else {
         return Ok(());
@@ -93,7 +104,7 @@ pub async fn refresh(paths: &Paths, instances: &[external::Instance]) -> Result<
         let Ok(host) = host(paths, &s) else {
             continue;
         };
-        if !instances.iter().any(|i| crate::api::source_matches(&s, i)) {
+        if !attached_live(&s, instances) {
             placements.push((s.clone(), host, None));
             continue;
         }
@@ -250,5 +261,102 @@ mod tests {
         apply(&p, vec![(s, "stale".into())]).unwrap();
         assert_eq!(list(&p).unwrap()[0].name, "HERDR label");
         assert_eq!(reconcile(&p, &[]).unwrap()[0].name, "HERDR label");
+    }
+    fn claude_session(p: &Paths, label: &str, attachment: Option<Attachment>) -> Session {
+        record_provider_launch(
+            p,
+            ProviderId::Claude,
+            "fixture",
+            &uuid::Uuid::new_v4().to_string(),
+            label,
+            Some("/work"),
+            attachment,
+        )
+        .unwrap()
+    }
+    #[test]
+    fn claude_host_labels_use_the_codex_observation_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let a = claude_session(&p, "one", None);
+        let b = record_launch(
+            &p,
+            "fixture",
+            &uuid::Uuid::new_v4().to_string(),
+            "two",
+            None,
+        )
+        .unwrap();
+        // Host labels are presentation: shared across providers, never suffixed.
+        apply(&p, vec![(a.clone(), "same".into()), (b, "same".into())]).unwrap();
+        let before = list(&p).unwrap();
+        assert!(before.iter().all(|s| s.name == "same"));
+        apply(
+            &p,
+            before.iter().cloned().map(|s| (s, "same".into())).collect(),
+        )
+        .unwrap();
+        assert_eq!(
+            before.iter().map(Session::generation).collect::<Vec<_>>(),
+            list(&p)
+                .unwrap()
+                .iter()
+                .map(Session::generation)
+                .collect::<Vec<_>>(),
+            "unchanged reads do not change generation"
+        );
+        let current = list(&p)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == a.id)
+            .unwrap();
+        apply(&p, vec![(current.clone(), "HERDR label".into())]).unwrap();
+        let renamed = list(&p)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == a.id)
+            .unwrap();
+        assert_eq!(renamed.name, "HERDR label");
+        assert_eq!(renamed.conversation_id, a.conversation_id);
+        assert_eq!(renamed.directory.as_deref(), Some("/work"));
+        apply(&p, vec![(current, "stale".into())]).unwrap();
+        let kept = list(&p)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == a.id)
+            .unwrap();
+        assert_eq!(
+            kept.name, "HERDR label",
+            "stale observations never undo a rename"
+        );
+    }
+    #[test]
+    fn claude_sessions_are_live_only_through_their_exact_verified_attachment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let pid = std::process::id();
+        let (_, start) = crate::provider::claude::proc_start(pid).unwrap();
+        let attach = |start| Attachment {
+            host: "herdr".into(),
+            target: "herdr/test/w1:p1".into(),
+            pid,
+            process_start: start,
+        };
+        let live = claude_session(&p, "live", Some(attach(start)));
+        assert!(attached_live(&live, &[]));
+        let reused = claude_session(&p, "reused", Some(attach(start + 1)));
+        assert!(!attached_live(&reused, &[]), "PID reuse is not liveness");
+        let detached = claude_session(&p, "detached", None);
+        assert!(!attached_live(&detached, &[]));
+        // Codex keeps requiring a discovered instance, never a bare PID.
+        let codex = record_launch(
+            &p,
+            "fixture",
+            &uuid::Uuid::new_v4().to_string(),
+            "codex",
+            Some(attach(start)),
+        )
+        .unwrap();
+        assert!(!attached_live(&codex, &[]));
     }
 }

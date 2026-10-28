@@ -50,6 +50,8 @@ enum Commands {
     MessageRecoveryWorker { message_id: String },
     #[command(hide = true)]
     MessageRecoveryRun { message_id: String },
+    #[command(hide = true)]
+    ClaudeDeliveryWorker { message_id: String },
     /// Provider integration hooks (invoked by provider processes, not people).
     #[command(hide = true)]
     ProviderHook {
@@ -379,12 +381,24 @@ enum AccountCommand {
         /// Claude only: adopt an existing CLAUDE_CONFIG_DIR in place (absolute; never copied or moved).
         #[arg(long, value_name = "DIR")]
         config_dir: Option<PathBuf>,
+        /// Claude: do not start the interactive login after enrolling a fresh managed home.
+        #[arg(long)]
+        no_login: bool,
         name: String,
     },
     /// Log in: Codex prints a device code; Claude runs `claude auth login --claudeai` here.
     Login {
         /// NAME or PROVIDER:NAME.
         name: String,
+    },
+    /// Set a display name (the stable name, id and home never change); --clear resets it.
+    Rename {
+        /// NAME, PROVIDER:NAME or an unambiguous display name.
+        name: String,
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        display_name: Option<String>,
+        #[arg(long)]
+        clear: bool,
     },
     /// Claude: switch an adopted account to its managed home <root>/claude-accounts/NAME.
     /// The directory must already exist (0700, yours, no symlink) and hold the same login;
@@ -487,6 +501,9 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::ConversationWorker { request_id } => {
             sessionsation::external::archiving::worker(&paths, &request_id).await?;
+        }
+        Commands::ClaudeDeliveryWorker { message_id } => {
+            sessionsation::messaging::headless::worker(&paths, &message_id).await?
         }
         Commands::AccountDeleteWorker { request_id } => {
             sessionsation::account_deletion::worker(&paths, &request_id).await?
@@ -716,10 +733,12 @@ async fn run(cli: Cli) -> Result<()> {
                 AccountCommand::Add {
                     platform: ProviderId::Claude,
                     config_dir,
+                    no_login,
                     name,
                 },
         } => {
             daemon::ensure_started(&paths).await?;
+            let adopted = config_dir.is_some();
             let mut params = json!({"name":name,"provider":"claude"});
             if let Some(dir) = config_dir {
                 params["config_dir"] = json!(dir);
@@ -743,6 +762,46 @@ async fn run(cli: Cli) -> Result<()> {
                 },
                 value["home"].as_str().unwrap_or("unknown")
             );
+            // A fresh managed home goes straight into the same interactive login
+            // `account login` runs, when there is a terminal to run it in.
+            use std::io::IsTerminal;
+            if value["auth"]["problem"] == "AUTH_REQUIRED"
+                && !adopted
+                && value["existing_home"] != true
+                && !no_login
+                && std::io::stdin().is_terminal()
+            {
+                use std::os::unix::process::CommandExt;
+                println!("Starting Claude login for claude:{name}...");
+                let account = provider::claude::account(&paths, &name)?;
+                let config = store::load_config(&paths)?;
+                let mut command = provider::claude::command(&config, &account.home);
+                command
+                    .args(&provider::claude::login_argv(&config)[1..])
+                    .current_dir(&account.home);
+                return Err(command.exec()).context("could not start claude auth login");
+            }
+        }
+        Commands::Account {
+            command:
+                AccountCommand::Rename {
+                    name,
+                    display_name,
+                    clear,
+                },
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            daemon::ensure_started(&paths).await?;
+            let value = daemon::call(
+                &paths,
+                "account/rename",
+                json!({"name":account.name,"provider":account.provider,"display_name":if clear {None} else {display_name}}),
+            )
+            .await?;
+            match value["display_name"].as_str() {
+                Some(display) => println!("{} is now shown as {display}.", account.id()),
+                None => println!("{} display name cleared.", account.id()),
+            }
         }
         Commands::Account {
             command:
@@ -776,6 +835,7 @@ async fn run(cli: Cli) -> Result<()> {
                     platform: ProviderId::Codex,
                     config_dir,
                     name,
+                    ..
                 } => (
                     "account/add",
                     AccountRef {
@@ -800,6 +860,7 @@ async fn run(cli: Cli) -> Result<()> {
                 }
                 AccountCommand::Add { .. }
                 | AccountCommand::List { .. }
+                | AccountCommand::Rename { .. }
                 | AccountCommand::Show { .. }
                 | AccountCommand::History { .. } => {
                     unreachable!("handled above")
@@ -809,9 +870,7 @@ async fn run(cli: Cli) -> Result<()> {
                 config_dir.is_none(),
                 "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
             );
-            if name.provider == ProviderId::Codex {
-                sessionsation::accounts::ensure_available(&paths, &name.name)?;
-            }
+            sessionsation::accounts::ensure_available(&paths, &name.name)?;
             let value = daemon::call(
                 &paths,
                 method,
@@ -881,7 +940,21 @@ async fn run(cli: Cli) -> Result<()> {
             print_json(&external::opening::open(&paths, &session, name.as_deref()).await?)?
         }
         Commands::Rename { session, name } => {
-            print_json(&external::catalog::rename(&paths, &session, &name).await?)?
+            // Claude sessions are addressed by stable catalog id and take the same
+            // HERDR tab/catalog rename path as `api rename`.
+            let claude = sessionsation::catalog::list(&paths)?
+                .into_iter()
+                .find(|s| s.id == session && s.provider == ProviderId::Claude.as_str());
+            if let Some(s) = claude {
+                let renamed =
+                    sessionsation::catalog::names::rename(&paths, &s.id, &s.generation(), &name)
+                        .await?;
+                print_json(
+                    &json!({"schema_version":1,"id":renamed.id,"thread_id":renamed.conversation_id,"name":renamed.name}),
+                )?
+            } else {
+                print_json(&external::catalog::rename(&paths, &session, &name).await?)?
+            }
         }
         Commands::DeleteSession {
             session,
@@ -1164,7 +1237,7 @@ fn resolve_account(paths: &Paths, id: &str) -> Result<AccountRef> {
     } else {
         None
     };
-    if let Some(state) = state
+    if let Some(state) = &state
         && state.accounts.contains_key(&name)
     {
         return provider::resolve(
@@ -1174,6 +1247,25 @@ fn resolve_account(paths: &Paths, id: &str) -> Result<AccountRef> {
                 .map(|a| (a.name.as_str(), a.provider)),
             id,
         );
+    }
+    // Human commands may address an account by display name when unambiguous.
+    if let Some(state) = &state {
+        let matches: Vec<_> = state
+            .accounts
+            .values()
+            .filter(|a| a.display_name.as_deref() == Some(name.as_str()))
+            .filter(|a| wanted.is_none_or(|p| p == a.provider))
+            .collect();
+        anyhow::ensure!(
+            matches.len() <= 1,
+            "ACCOUNT_AMBIGUOUS: display name '{name}' matches several accounts; use PROVIDER:NAME"
+        );
+        if let Some(a) = matches.first() {
+            return Ok(AccountRef {
+                provider: a.provider,
+                name: a.name.clone(),
+            });
+        }
     }
     Ok(AccountRef {
         provider: wanted.unwrap_or(ProviderId::Codex),

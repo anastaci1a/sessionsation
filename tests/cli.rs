@@ -536,9 +536,13 @@ async fn account_delete_is_async_preserves_conversations_and_removes_only_dispos
     let outside = tmp.path().join("outside");
     fs::create_dir(&outside).unwrap();
     symlink(&outside, home.join("sessions/unsafe")).unwrap();
-    let preview = sessionsation::account_deletion::preview(&paths, "disposable")
-        .await
-        .unwrap();
+    let preview = sessionsation::account_deletion::preview(
+        &paths,
+        sessionsation::provider::ProviderId::Codex,
+        "disposable",
+    )
+    .await
+    .unwrap();
     assert_eq!(preview["file_scanning"], false);
     assert_eq!(preview["can_delete"], true);
     fs::remove_file(home.join("sessions/unsafe")).unwrap();

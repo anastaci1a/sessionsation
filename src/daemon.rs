@@ -133,6 +133,18 @@ fn codex_named<'a>(state: &'a State, params: &Value) -> Result<&'a Account> {
     );
     Ok(account)
 }
+/// Display names follow account-name characters, up to 30 bytes.
+pub fn validate_display_name(display: &str) -> Result<()> {
+    ensure!(
+        display.len() <= crate::paths::NEW_ACCOUNT_NAME_MAX
+            && crate::paths::validate_name(display).is_ok(),
+        "INVALID_DISPLAY_NAME: use 1-30 ASCII letters, digits, hyphens or underscores"
+    );
+    Ok(())
+}
+/// While a Claude account awaits login, re-probe `auth status` this often so a
+/// completed interactive login is reflected within seconds.
+pub const CLAUDE_AUTH_REQUIRED_POLL_SECONDS: i64 = 3;
 struct ClaudePoll {
     name: String,
     problem: Option<String>,
@@ -200,7 +212,7 @@ pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> V
     let accounts: Vec<_> = state.accounts.values().map(|a| {
         let (usage, fresh, usage_state) = account_usage(paths, a, config, at);
         json!({
-        "name":a.name,"provider":a.provider,"config_home":a.config_home,
+        "name":a.name,"display_name":a.display_name,"provider":a.provider,"config_home":a.config_home,
         "enabled":a.enabled,"auth_required":a.auth_required,"auth_detail":a.auth_detail,"deletion_id":a.deletion_id,
         "switch_thresholds":a.switch_thresholds,
         "usage":usage,"usage_fresh":fresh,"usage_state":usage_state,
@@ -373,6 +385,40 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             ensure!(new.codex_binary == config.codex_binary || helpers.is_empty(), "restart supervisor before changing an active Codex binary");
                             save_config(&paths,&new)?; config = new; Ok(json!({"saved":true}))
                         }
+                        "account/delete/prepare" if named(&state,params)?.provider == ProviderId::Claude => {
+                            let name=params["name"].as_str().context("missing account name")?;
+                            let id=params["request_id"].as_str().context("missing deletion request")?;
+                            uuid::Uuid::parse_str(id)?;
+                            let record=crate::account_deletion::status(&paths,id)?;
+                            ensure!(record.account_id==format!("claude:{name}"),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
+                            let account=state.accounts.get(name).context("ACCOUNT_NOT_FOUND")?;
+                            ensure!(account.deletion_id.as_deref().is_none_or(|current|current==id),"ACCOUNT_DELETION_IN_PROGRESS");
+                            ensure!(account.config_home==record.external_home,"ACCOUNT_DELETION_IDENTITY_MISMATCH");
+                            let home=crate::provider::account_home(&paths,account)?;
+                            crate::account_deletion::claude_idle(&paths,name,&home)?;
+                            let account=state.accounts.get_mut(name).unwrap();account.deletion_id=Some(id.into());account.enabled=false;
+                            store.save(&state,now(),"account_deletion_reserved",name)?;
+                            Ok(json!({"reserved":true}))
+                        }
+                        "account/delete/finish" if params["provider"]=="claude" => {
+                            let name=params["name"].as_str().context("missing account name")?;
+                            let id=params["request_id"].as_str().context("missing deletion request")?;
+                            let record=crate::account_deletion::status(&paths,id)?;
+                            ensure!(record.account_id==format!("claude:{name}")&&record.phase=="deleting_local_data","ACCOUNT_DELETION_UNVERIFIED");
+                            match &record.external_home {
+                                Some(_) => ensure!(record.home_disposition.as_deref()==Some("left_in_place"),"ACCOUNT_DELETION_UNVERIFIED"),
+                                None => {
+                                    ensure!(record.history_preserved,"ACCOUNT_DELETION_UNVERIFIED");
+                                    ensure!(!crate::provider::claude::default_home(&paths,name)?.exists(),"ACCOUNT_DATA_STILL_PRESENT");
+                                }
+                            }
+                            if let Some(account)=state.accounts.get(name){
+                                ensure!(account.provider==ProviderId::Claude&&account.deletion_id.as_deref()==Some(id),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
+                            }
+                            state.accounts.remove(name);last_poll.remove(name);pending.remove(name);
+                            store.save(&state,now(),"account_deleted",name)?;
+                            Ok(json!({"deleted":true}))
+                        }
                         "account/delete/prepare" => {
                             let name=params["name"].as_str().context("missing account name")?; codex_named(&state,params)?;
                             let id=params["request_id"].as_str().context("missing deletion request")?;
@@ -408,6 +454,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             // Older clients predate providers and could only enroll Codex.
                             let provider = params["provider"].as_str().map(ProviderId::parse).transpose()?.unwrap_or(ProviderId::Codex);
                             if let Some(existing) = state.accounts.get(name) { return Err(crate::provider::collision(existing)); }
+                            if let Some(owner) = state.accounts.values().find(|a| a.display_name.as_deref() == Some(name)) { bail!("ACCOUNT_NAME_EXISTS: '{name}' is the display name of {}:{}; names and display names are unique across all accounts", owner.provider, owner.name); }
                             let config_dir = params["config_dir"].as_str().map(std::path::PathBuf::from);
                             if provider == ProviderId::Claude {
                                 let adopted = config_dir.map(|dir| crate::provider::claude::validate_adopt(&paths,&state,&dir)).transpose()?;
@@ -446,6 +493,42 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             state.accounts.get_mut(name).unwrap().auth_required = true;
                             store.save(&state,now(),"account_login_started",name)?;
                             Ok(json!({"name":name,"login":login}))
+                        }
+                        "account/refresh" => {
+                            let account = named(&state,params)?;
+                            ensure!(account.provider == ProviderId::Claude, "UNSUPPORTED_PROVIDER_OPERATION: Codex authentication is observed by the supervisor's own account poll");
+                            ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
+                            let name = account.name.clone();
+                            let home = crate::provider::account_home(&paths,account)?;
+                            let probed = crate::provider::claude::auth_status(&config,&home).await;
+                            let (problem, mode) = match &probed {
+                                Ok(s) => (s.problem().map(str::to_owned), json!({"logged_in":s.logged_in,"auth_method":s.auth_method,"api_provider":s.api_provider,"subscription_type":s.subscription_type})),
+                                Err(e) => (Some(e.to_string().split(':').next().unwrap_or("AUTH_STATUS_UNAVAILABLE").to_owned()), Value::Null),
+                            };
+                            last_poll.insert(name.clone(), now());
+                            let a = state.accounts.get_mut(&name).context("unknown account")?;
+                            if a.auth_required != problem.is_some() || a.auth_detail != problem {
+                                a.auth_required = problem.is_some(); a.auth_detail = problem.clone();
+                                store.save(&state,now(),"account_observed",&name)?;
+                            }
+                            Ok(json!({"account_id":format!("claude:{name}"),"provider":"claude","auth_required":problem.is_some(),"auth_detail":problem,"auth_mode":mode,"observed_at":now()}))
+                        }
+                        "account/rename" => {
+                            let account = named(&state,params)?;
+                            ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
+                            let name = account.name.clone();
+                            let next = params["display_name"].as_str().map(str::trim).filter(|d| !d.is_empty() && *d != name).map(str::to_owned);
+                            if let Some(display) = &next {
+                                validate_display_name(display)?;
+                                if let Some(owner) = state.accounts.values().find(|a| a.name != name && (a.name == *display || a.display_name.as_deref() == Some(display))) {
+                                    bail!("ACCOUNT_DISPLAY_NAME_EXISTS: '{display}' is already used by {}:{}; names and display names are unique across all accounts", owner.provider, owner.name);
+                                }
+                            }
+                            let a = state.accounts.get_mut(&name).context("unknown account")?;
+                            let changed = a.display_name != next;
+                            if changed { a.display_name = next.clone(); store.save(&state,now(),"account.renamed",&name)?; }
+                            let provider = state.accounts[&name].provider;
+                            Ok(json!({"account_id":format!("{provider}:{name}"),"name":name,"display_name":next,"changed":changed}))
                         }
                         "account/managed-home" => {
                             let name = params["name"].as_str().context("missing account name")?;
@@ -563,7 +646,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                     if a.provider == ProviderId::Claude {
                         // Auth status only: Claude usage comes from its statusline,
                         // never from a model request or a Codex worker.
-                        let cadence = if a.auth_required {15} else {config.idle_poll_seconds as i64};
+                        let cadence = if a.auth_required {CLAUDE_AUTH_REQUIRED_POLL_SECONDS} else {config.idle_poll_seconds as i64};
                         if now() - last_poll.get(&a.name).copied().unwrap_or(0) < cadence {continue;}
                         last_poll.insert(a.name.clone(),now());
                         let Ok(home) = crate::provider::account_home(&paths,a) else {continue};
