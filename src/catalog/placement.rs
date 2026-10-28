@@ -188,6 +188,11 @@ pub fn project(paths: &Paths, sessions: &[Session]) -> Result<Value> {
     )
 }
 
+/// Catalog ids that host placement evidence was recorded for (ids only).
+pub(crate) fn evidence_ids(paths: &Paths) -> Result<Vec<String>> {
+    Ok(read(paths)?.sessions.into_keys().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

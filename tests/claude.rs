@@ -2050,3 +2050,164 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
     }
     drop(agent);
 }
+
+/// Live regression: two continued-in chains, the newest conversation of one is a
+/// running background session, and a pre-revision-12 release keeps rewriting the
+/// catalog without `aliases`/`previous_conversation_ids` and re-registering the
+/// old conversations. Identity must never be deleted and recreated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continuation_identity_is_stable_across_repeated_state_calls_and_old_writers() {
+    let f = fixture().await;
+    assert!(
+        f.run(&["account", "add", "--platform", "claude", "personal"])
+            .status
+            .success()
+    );
+    let home = f.home("personal");
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+    let [a1, a2, b1, b2] = std::array::from_fn(|_| uuid::Uuid::new_v4().to_string());
+    let paths: Vec<_> = [&a1, &a2, &b1, &b2]
+        .iter()
+        .map(|id| transcript(&home, &f.project, id))
+        .collect();
+    // a2 is live in the background daemon (registry sessionId = newest id).
+    let agent = Process(
+        Command::new("sleep")
+            .arg("600")
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = agent.0.id();
+    wait_for("agent exec", || {
+        read(Path::new(&format!("/proc/{pid}/cmdline"))).starts_with("sleep")
+    });
+    registry(&home, pid, &a2, &f.project, "bg", Some(&a2[..8]));
+    // Before the hand-offs every conversation has its own entry.
+    let before = f.claude_sessions();
+    assert_eq!(before.len(), 4, "{before:?}");
+    let entry = |c: &str| by_conversation(&f, c);
+    let (ea1, ea2, eb1, eb2) = (entry(&a1), entry(&a2), entry(&b1), entry(&b2));
+    let ea1 = f.api(&[
+        "rename",
+        "--session",
+        ea1["id"].as_str().unwrap(),
+        "--expected-generation",
+        ea1["generation"].as_str().unwrap(),
+        "--name",
+        "sessionstuffs-claude",
+    ]);
+    for (old, new) in [(&paths[0], &a2), (&paths[2], &b2)] {
+        let from = old.file_stem().unwrap().to_str().unwrap();
+        append(
+            old,
+            json!({"type":"continued-in","timestamp":"2026-10-28T00:00:00Z","sessionId":from,"continuedInSessionId":new}),
+        );
+    }
+    let snapshot = || {
+        let mut v: Vec<_> = f
+            .claude_sessions()
+            .into_iter()
+            .map(|s| {
+                (
+                    s["id"].as_str().unwrap().to_owned(),
+                    s["name"].as_str().unwrap().to_owned(),
+                    s["conversation_id"].as_str().unwrap().to_owned(),
+                    s["previous_conversation_ids"].clone(),
+                    s["availability"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        v.sort_by(|x, y| x.0.cmp(&y.0));
+        v
+    };
+    let expected = snapshot();
+    assert_eq!(expected.len(), 2, "{expected:?}");
+    let a = expected.iter().find(|s| s.0 == ea1["id"]).unwrap();
+    assert_eq!(
+        (a.1.as_str(), a.2.as_str(), &a.3, a.4.as_str()),
+        ("sessionstuffs-claude", a2.as_str(), &json!([a1]), "running")
+    );
+    let b = expected.iter().find(|s| s.0 == eb1["id"]).unwrap();
+    assert_eq!(
+        (&b.1, b.2.as_str(), &b.3),
+        (
+            &eb1["name"].as_str().unwrap().to_owned(),
+            b2.as_str(),
+            &json!([b1])
+        )
+    );
+    for _ in 0..5 {
+        assert_eq!(snapshot(), expected);
+    }
+    // Merged ids resolve to SESSION_MERGED for lookups and actions.
+    let merged_error = |dup: &Value, survivor: &Value| {
+        let id = dup["id"].as_str().unwrap();
+        let generation = dup["generation"].as_str().unwrap();
+        for args in [
+            vec![
+                "session",
+                "--session",
+                id,
+                "--expected-generation",
+                generation,
+            ],
+            vec![
+                "rename",
+                "--session",
+                id,
+                "--expected-generation",
+                generation,
+                "--name",
+                "x",
+            ],
+        ] {
+            let e = f.api_error(&args);
+            assert!(
+                e.contains("SESSION_MERGED") && e.contains(survivor["id"].as_str().unwrap()),
+                "{e}"
+            );
+        }
+    };
+    merged_error(&ea2, &ea1);
+    merged_error(&eb2, &eb1);
+
+    // An older release rewrites the catalog: drops both identity fields and
+    // registers the continued conversations again. The next calls restore the
+    // exact identity (never steal it) and keep every id resolvable.
+    let file = f.paths.root.join("session-catalog/catalog.json");
+    let mut stray = vec![];
+    for round in 0..2 {
+        let mut v: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("aliases");
+        for s in v["sessions"].as_object_mut().unwrap().values_mut() {
+            s.as_object_mut()
+                .unwrap()
+                .remove("previous_conversation_ids");
+        }
+        for c in [&a1, &b1] {
+            let id = uuid::Uuid::new_v4().to_string();
+            v["sessions"][&id] = json!({"id":id,"name":format!("projects-{round}{}", &c[..4]),"provider":"claude",
+                "account":"personal","conversation_id":c,"revision":1,"attachment":null,"directory":f.project});
+            stray.push(id);
+        }
+        std::fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
+        for _ in 0..5 {
+            assert_eq!(snapshot(), expected);
+        }
+    }
+    let repaired = f.api(&["session", "repair-identity"]);
+    assert_eq!(repaired["restored_aliases"], json!([]));
+    assert_eq!(repaired["merged"], json!([]));
+    assert_eq!(repaired["lineages"], 2);
+    assert_eq!(repaired["unresolved_ids"], json!([]));
+    assert_eq!(snapshot(), expected);
+    for id in &stray {
+        let e = f.api_error(&["session", "--session", id, "--expected-generation", "x"]);
+        assert!(e.contains("SESSION_MERGED"), "{e}");
+    }
+    merged_error(&ea2, &ea1);
+    drop(agent);
+}

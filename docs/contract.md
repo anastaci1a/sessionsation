@@ -1124,7 +1124,17 @@ counts only while no `user`/`assistant` record follows it and NEW is a transcrip
 of the same account home). The entry of OLD then follows NEW: stable id, name and
 account are kept, `previous_conversation_ids` lists OLD, and an entry already
 registered for NEW is merged into it. Generation-checked lookups of a merged id
-fail with `SESSION_MERGED: ...` naming the surviving id; refresh the list. Branches (copied
+fail with `SESSION_MERGED: ...` naming the surviving id; refresh the list. Merging
+never deletes and recreates identity: the survivor is the entry that already
+records the lineage, else the pre-existing entry of the earliest conversation; a
+later entry for a conversation already in a lineage (for example one re-registered
+by an older release) is merged into it, not the reverse. Aliases and lineage are
+mirrored in `session-catalog/identity.json`, which older releases do not rewrite,
+and are restored from it on every catalog access. `api session repair-identity`
+runs that restore plus continuation linking explicitly and reports
+`{restored_aliases,restored_lineage,merged,aliases,lineages,unresolved_ids,unresolved_reason}`;
+`unresolved_ids` are ids that placement evidence names but no entry, alias or
+identity record resolves. They are reported, never recreated. Branches (copied
 records stamped `forkedFrom.sessionId`) stay separate conversations and are
 exposed as `forked_from_conversation_id`. No other lineage is inferred, so no
 manual link operation exists.

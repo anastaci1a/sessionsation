@@ -484,10 +484,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
 
 async fn prepare(paths: &Paths, r: &Record) -> Result<(PathBuf, fs::File)> {
     let account = usable_account(paths, &r.account)?;
-    let session = catalog::list(paths)?
-        .into_iter()
-        .find(|s| s.id == r.session_id)
-        .context("SESSION_NOT_FOUND")?;
+    let session = catalog::find(paths, &r.session_id)?;
     ensure!(
         session.provider == ProviderId::Claude.as_str()
             && session.account == r.account

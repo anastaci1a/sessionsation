@@ -57,12 +57,99 @@ struct Catalog {
     aliases: BTreeMap<String, String>,
 }
 
+/// Identity facts mirrored outside `catalog.json`: merged ids and continuation
+/// lineage. Releases before contract revision 12 rewrite `catalog.json` with a
+/// schema that has neither field, so a mixed-version writer silently dropped
+/// them; this file is unknown to such releases and restores them.
+#[derive(Default, PartialEq, Serialize, Deserialize)]
+struct Identity {
+    schema_version: u32,
+    #[serde(default)]
+    aliases: BTreeMap<String, String>,
+    /// Catalog id -> `previous_conversation_ids` (oldest first).
+    #[serde(default)]
+    lineage: BTreeMap<String, Vec<String>>,
+}
+impl Identity {
+    fn of(c: &Catalog) -> Self {
+        Self {
+            schema_version: 1,
+            aliases: c.aliases.clone(),
+            lineage: c
+                .sessions
+                .values()
+                .filter(|s| !s.previous_conversation_ids.is_empty())
+                .map(|s| (s.id.clone(), s.previous_conversation_ids.clone()))
+                .collect(),
+        }
+    }
+}
+
+/// What restoring the identity record changed in `catalog.json`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Healed {
+    pub restored_aliases: Vec<String>,
+    pub restored_lineage: Vec<String>,
+}
+
+/// Restore merged ids and lineage the identity record holds but the catalog
+/// lost (never removes or recreates an entry).
+fn heal(c: &mut Catalog, identity: &Identity) -> Healed {
+    let mut healed = Healed::default();
+    for (alias, target) in &identity.aliases {
+        if !c.sessions.contains_key(alias) && !c.aliases.contains_key(alias) {
+            c.aliases.insert(alias.clone(), target.clone());
+            healed.restored_aliases.push(alias.clone());
+        }
+    }
+    // Merged targets that were merged again resolve to the current survivor.
+    let snapshot = c.aliases.clone();
+    for target in c.aliases.values_mut() {
+        let mut hops = 0;
+        while let Some(next) = snapshot.get(target.as_str())
+            && hops <= snapshot.len()
+        {
+            *target = next.clone();
+            hops += 1;
+        }
+    }
+    for (id, previous) in &identity.lineage {
+        let Some(s) = c.sessions.get_mut(id) else {
+            continue;
+        };
+        let mut merged: Vec<String> = previous
+            .iter()
+            .filter(|p| **p != s.conversation_id)
+            .cloned()
+            .collect();
+        for p in &s.previous_conversation_ids {
+            if !merged.contains(p) {
+                merged.push(p.clone());
+            }
+        }
+        if merged != s.previous_conversation_ids {
+            s.previous_conversation_ids = merged;
+            s.revision += 1;
+            healed.restored_lineage.push(id.clone());
+        }
+    }
+    healed
+}
+
 fn transaction<T>(paths: &Paths, change: impl FnOnce(&mut Catalog) -> Result<T>) -> Result<T> {
+    healing_transaction(paths, |c, _| change(c))
+}
+
+fn healing_transaction<T>(
+    paths: &Paths,
+    change: impl FnOnce(&mut Catalog, &Healed) -> Result<T>,
+) -> Result<T> {
     let dir = paths.root.join("session-catalog");
     private_dir(&dir)?;
     let lock = lock_file(&dir.join("catalog.lock"))?;
     lock.lock_exclusive()?;
     let file = dir.join("catalog.json");
+    let identity_file = dir.join("identity.json");
     let mut catalog = if file.exists() {
         let c: Catalog = serde_json::from_slice(&fs::read(&file)?)?;
         ensure!(c.schema_version == 1, "UNSUPPORTED_CATALOG_VERSION");
@@ -73,13 +160,37 @@ fn transaction<T>(paths: &Paths, change: impl FnOnce(&mut Catalog) -> Result<T>)
             ..Default::default()
         }
     };
+    let identity: Identity = match fs::read(&identity_file) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("UNREADABLE_IDENTITY_RECORD")?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Identity::default(),
+        Err(e) => return Err(e.into()),
+    };
     let before = serde_json::to_vec(&catalog)?;
-    let result = change(&mut catalog)?;
+    let healed = heal(&mut catalog, &identity);
+    let result = change(&mut catalog, &healed)?;
     let after = serde_json::to_vec(&catalog)?;
+    // The identity record is written first: a crash between the two writes
+    // leaves a record the next transaction restores from, never a loss.
+    let next = Identity::of(&catalog);
+    if next != identity && (identity_file.exists() || next != Identity::of(&Catalog::default())) {
+        atomic_write(&identity_file, &serde_json::to_vec(&next)?)?;
+    }
     if before != after || !file.exists() {
         atomic_write(&file, &after)?;
     }
     Ok(result)
+}
+
+/// The live entry `id`, or `SESSION_MERGED` naming its survivor.
+fn live<'a>(c: &'a mut Catalog, id: &str) -> Result<&'a mut Session> {
+    if !c.sessions.contains_key(id)
+        && let Some(target) = c.aliases.get(id)
+    {
+        anyhow::bail!(
+            "SESSION_MERGED: this entry continues as session {target}; refresh the session list"
+        );
+    }
+    c.sessions.get_mut(id).context("SESSION_NOT_FOUND")
 }
 
 fn validate_name(name: &str) -> Result<()> {
@@ -273,11 +384,76 @@ pub struct Continuation {
     pub from: String,
     pub to: String,
 }
-/// Link verified continuations: the entry of `from` keeps its stable id, name and
-/// account and now follows `to` (`from` is retained in `previous_conversation_ids`).
-/// An entry already registered for `to` is merged into it and left as an alias,
-/// so one conversation lineage never has two catalog entries. Cross-account or
-/// cross-provider links are never applied. Returns the merged (alias) ids.
+
+/// The conversations of one entry, oldest first (previous ids, then current).
+fn chain(s: &Session) -> Vec<String> {
+    let mut all = s.previous_conversation_ids.clone();
+    all.push(s.conversation_id.clone());
+    all
+}
+
+/// Merge `dup` into `survivor`. The survivor keeps its id, name, account and
+/// history; `dup` becomes a persisted alias (`SESSION_MERGED`). When `dup`'s
+/// current conversation already belongs to the survivor's lineage, `dup` was a
+/// re-registration of an older conversation and the survivor's conversation is
+/// kept; otherwise the survivor moves on to `dup`'s (newer) conversation.
+fn merge(c: &mut Catalog, dup: &str, survivor: &str, merged: &mut Vec<(String, String)>) {
+    let Some(d) = c.sessions.remove(dup) else {
+        return;
+    };
+    for target in c.aliases.values_mut() {
+        if *target == d.id {
+            *target = survivor.to_owned();
+        }
+    }
+    c.aliases.insert(d.id.clone(), survivor.to_owned());
+    merged.push((d.id.clone(), survivor.to_owned()));
+    let Some(s) = c.sessions.get_mut(survivor) else {
+        return;
+    };
+    let mut lineage = chain(s);
+    let theirs = chain(&d);
+    let follows = if let Some(at) = lineage.iter().position(|x| *x == d.conversation_id) {
+        // Re-registration of a conversation already in the lineage: only its
+        // unknown earlier conversations are added, before it.
+        let missing: Vec<String> = theirs
+            .iter()
+            .filter(|x| !lineage.contains(x))
+            .cloned()
+            .collect();
+        lineage.splice(at..at, missing);
+        false
+    } else {
+        for x in theirs {
+            if !lineage.contains(&x) {
+                lineage.push(x);
+            }
+        }
+        true
+    };
+    s.conversation_id = lineage.pop().expect("non-empty lineage");
+    s.previous_conversation_ids = lineage;
+    // Only the process of the conversation the survivor now follows moves with
+    // it; an attachment of an older, re-registered conversation never does.
+    if follows && d.attachment.is_some() {
+        s.attachment = d.attachment;
+    }
+    if s.directory.is_none() {
+        s.directory = d.directory;
+    }
+    s.revision += 1;
+}
+
+/// Link verified continuations without ever deleting and recreating identity.
+///
+/// The survivor of a lineage is the entry that already records it (`from` in
+/// its `previous_conversation_ids`); otherwise the pre-existing entry of the
+/// earliest conversation (`from`), which keeps its stable id, name and account
+/// and moves to `to`. Any other entry of a conversation in the lineage is merged
+/// into the survivor and kept as an alias, so one lineage has one entry. With no
+/// entry for `from`, the entry of `to` records `from` as previous. Cross-account
+/// or cross-provider links are never applied. Idempotent and independent of
+/// link order. Returns the merged (alias, survivor) ids.
 pub fn link_continuations(
     paths: &Paths,
     provider: ProviderId,
@@ -285,67 +461,80 @@ pub fn link_continuations(
 ) -> Result<Vec<(String, String)>> {
     transaction(paths, |c| {
         let mut merged = vec![];
-        // Chains (a→b→c) converge within the number of links.
-        for _ in 0..=links.len() {
+        let candidates = |c: &Catalog, account: &str, pick: &dyn Fn(&Session) -> bool| {
+            c.sessions
+                .values()
+                .filter(|s| s.provider == provider.as_str() && s.account == account && pick(s))
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>()
+        };
+        // Each pass either merges an entry or advances one; bounded.
+        for _ in 0..=(links.len() + c.sessions.len()) {
             let mut changed = false;
             for link in links {
                 if link.from == link.to {
                     continue;
                 }
-                let Some(owner) = c
-                    .sessions
-                    .values()
-                    .find(|s| s.provider == provider.as_str() && s.conversation_id == link.from)
-                    .map(|s| s.id.clone())
-                else {
+                // A link whose conversations belong to another account is never applied.
+                let foreign = c.sessions.values().any(|s| {
+                    s.provider == provider.as_str()
+                        && s.account != link.account
+                        && (s.conversation_id == link.from || s.conversation_id == link.to)
+                });
+                if foreign {
                     continue;
+                }
+                let recorded = candidates(c, &link.account, &|s| {
+                    s.previous_conversation_ids.contains(&link.from)
+                });
+                let survivor = match recorded.as_slice() {
+                    [one] => Some(one.clone()),
+                    [] => candidates(c, &link.account, &|s| s.conversation_id == link.from)
+                        .into_iter()
+                        .next(),
+                    // Two entries already claim the same lineage: never guess.
+                    _ => continue,
                 };
-                if c.sessions[&owner].account != link.account {
-                    continue;
-                }
-                let duplicate = c
-                    .sessions
-                    .values()
-                    .find(|s| {
-                        s.id != owner
-                            && s.provider == provider.as_str()
-                            && s.conversation_id == link.to
-                    })
-                    .cloned();
-                if duplicate
-                    .as_ref()
-                    .is_some_and(|d| d.account != link.account)
-                {
-                    continue;
-                }
-                if let Some(d) = &duplicate {
-                    c.sessions.remove(&d.id);
-                    for target in c.aliases.values_mut() {
-                        if *target == d.id {
-                            *target = owner.clone();
+                let lineage = |s: &Session| {
+                    s.conversation_id == link.from
+                        || s.conversation_id == link.to
+                        || s.previous_conversation_ids.contains(&link.to)
+                };
+                match survivor {
+                    Some(survivor) => {
+                        for dup in candidates(c, &link.account, &lineage) {
+                            if dup != survivor {
+                                merge(c, &dup, &survivor, &mut merged);
+                                changed = true;
+                            }
+                        }
+                        let s = c.sessions.get_mut(&survivor).context("SESSION_NOT_FOUND")?;
+                        if s.conversation_id == link.from {
+                            s.previous_conversation_ids.push(link.from.clone());
+                            s.conversation_id = link.to.clone();
+                            s.revision += 1;
+                            changed = true;
                         }
                     }
-                    c.aliases.insert(d.id.clone(), owner.clone());
-                    merged.push((d.id.clone(), owner.clone()));
+                    None => {
+                        let owners = candidates(c, &link.account, &|s| {
+                            s.conversation_id == link.to
+                                || s.previous_conversation_ids.contains(&link.to)
+                        });
+                        let [owner] = owners.as_slice() else {
+                            continue;
+                        };
+                        let s = c.sessions.get_mut(owner).context("SESSION_NOT_FOUND")?;
+                        let at = s
+                            .previous_conversation_ids
+                            .iter()
+                            .position(|x| *x == link.to)
+                            .unwrap_or(s.previous_conversation_ids.len());
+                        s.previous_conversation_ids.insert(at, link.from.clone());
+                        s.revision += 1;
+                        changed = true;
+                    }
                 }
-                let s = c.sessions.get_mut(&owner).context("SESSION_NOT_FOUND")?;
-                s.previous_conversation_ids.push(link.from.clone());
-                if let Some(d) = duplicate {
-                    for id in d.previous_conversation_ids {
-                        if !s.previous_conversation_ids.contains(&id) {
-                            s.previous_conversation_ids.push(id);
-                        }
-                    }
-                    if d.attachment.is_some() {
-                        s.attachment = d.attachment;
-                    }
-                    if d.directory.is_some() {
-                        s.directory = d.directory;
-                    }
-                }
-                s.conversation_id = link.to.clone();
-                s.revision += 1;
-                changed = true;
             }
             if !changed {
                 break;
@@ -469,22 +658,34 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
 
 pub fn resolve(paths: &Paths, id: &str, generation: &str) -> Result<Session> {
     transaction(paths, |c| {
-        if let Some(target) = c.aliases.get(id)
-            && !c.sessions.contains_key(id)
-        {
-            anyhow::bail!(
-                "SESSION_MERGED: this entry continues as session {target}; refresh the session list"
-            );
-        }
-        let s = c.sessions.get(id).context("SESSION_NOT_FOUND")?;
+        let s = live(c, id)?;
         ensure!(s.generation() == generation, "STALE_TARGET");
         Ok(s.clone())
     })
 }
 
+/// The current entry `id` without a generation check (`SESSION_MERGED` for a
+/// merged id).
+pub fn find(paths: &Paths, id: &str) -> Result<Session> {
+    transaction(paths, |c| Ok(live(c, id)?.clone()))
+}
+
+/// Explicit, idempotent identity repair: restore merged ids and continuation
+/// lineage recorded in the identity file but lost from `catalog.json` (for
+/// example by an older release rewriting it). It never removes, recreates or
+/// renames an entry and never invents an id.
+pub fn repair_identity(paths: &Paths) -> Result<Healed> {
+    healing_transaction(paths, |_, healed| Ok(healed.clone()))
+}
+
+/// Merged ids (alias -> survivor) currently recorded.
+pub fn aliases(paths: &Paths) -> Result<BTreeMap<String, String>> {
+    transaction(paths, |c| Ok(c.aliases.clone()))
+}
+
 pub(crate) fn invalidate(paths: &Paths, id: &str, generation: &str) -> Result<Session> {
     transaction(paths, |c| {
-        let s = c.sessions.get_mut(id).context("SESSION_NOT_FOUND")?;
+        let s = live(c, id)?;
         ensure!(s.generation() == generation, "STALE_TARGET");
         s.attachment = None;
         s.revision += 1;
@@ -494,7 +695,7 @@ pub(crate) fn invalidate(paths: &Paths, id: &str, generation: &str) -> Result<Se
 pub fn rename(paths: &Paths, id: &str, generation: &str, name: &str) -> Result<Session> {
     validate_name(name)?;
     transaction(paths, |c| {
-        let current = c.sessions.get(id).context("SESSION_NOT_FOUND")?;
+        let current = live(c, id)?;
         ensure!(current.generation() == generation, "STALE_TARGET");
         if current.name == name {
             return Ok(current.clone());
@@ -522,10 +723,7 @@ pub(crate) fn move_attachment(
     attachment: Option<Attachment>,
 ) -> Result<Session> {
     transaction(paths, |c| {
-        let current = c
-            .sessions
-            .get_mut(&before.id)
-            .context("SESSION_NOT_FOUND")?;
+        let current = live(c, &before.id)?;
         ensure!(
             current.provider == before.provider
                 && current.account == before.account
@@ -1017,5 +1215,217 @@ mod identity_tests {
                 .count(),
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod stable_identity_tests {
+    use super::*;
+    fn paths() -> (tempfile::TempDir, Paths) {
+        let t = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(t.path().join("root"))).unwrap();
+        (t, p)
+    }
+    fn found(id: &str) -> Discovered {
+        Discovered {
+            account: "main".into(),
+            conversation_id: id.into(),
+            label: "projects".into(),
+            directory: Some("/work".into()),
+        }
+    }
+    fn link(from: &str, to: &str) -> Continuation {
+        Continuation {
+            account: "main".into(),
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+    fn by_conversation(p: &Paths, id: &str) -> Session {
+        list(p)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.conversation_id == id)
+            .unwrap()
+    }
+    /// What a release without `aliases`/`previous_conversation_ids` does on any
+    /// write: both fields are dropped, and its discovery registers the continued
+    /// (old) conversations again under fresh ids and suffixed names.
+    fn old_release_rewrite(p: &Paths, reregister: &[&str]) -> Vec<String> {
+        let file = p.root.join("session-catalog/catalog.json");
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("aliases");
+        for s in v["sessions"].as_object_mut().unwrap().values_mut() {
+            s.as_object_mut()
+                .unwrap()
+                .remove("previous_conversation_ids");
+        }
+        let mut ids = vec![];
+        for (n, conversation) in reregister.iter().enumerate() {
+            let id = uuid::Uuid::new_v4().to_string();
+            v["sessions"][&id] = serde_json::json!({"id":id,"name":format!("projects-{}", n + 10),
+                "provider":"claude","account":"main","conversation_id":conversation,"revision":1,
+                "attachment":null,"directory":"/work"});
+            ids.push(id);
+        }
+        fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
+        ids
+    }
+    fn merged(p: &Paths, id: &str, survivor: &str) {
+        for e in [
+            resolve(p, id, "any").unwrap_err().to_string(),
+            rename(p, id, "any", "other-name").unwrap_err().to_string(),
+            find(p, id).unwrap_err().to_string(),
+            invalidate(p, id, "any").unwrap_err().to_string(),
+        ] {
+            assert!(
+                e.starts_with("SESSION_MERGED") && e.contains(survivor),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_chains_keep_their_entries_across_repeated_reconciles_and_old_release_rewrites() {
+        let (_t, p) = paths();
+        let claude = ProviderId::Claude;
+        let codex = record_launch(&p, "codex-acct", "thread-x", "codex-one", None).unwrap();
+        // Before the hand-offs: chains a1→a2 and b1→b2, every conversation listed.
+        register_discovered(
+            &p,
+            claude,
+            &[found("a1"), found("a2"), found("b1"), found("b2")],
+        )
+        .unwrap();
+        let a1 = by_conversation(&p, "a1");
+        let a1 = rename(&p, &a1.id, &a1.generation(), "sessionstuffs-claude").unwrap();
+        let a2 = by_conversation(&p, "a2");
+        let b1 = by_conversation(&p, "b1");
+        let b2 = by_conversation(&p, "b2");
+        let links = [link("a1", "a2"), link("b1", "b2")];
+        let reversed = [link("b1", "b2"), link("a1", "a2")];
+        // Discovery after the markers: the old conversations are not candidates,
+        // the newest ones are (and are already owned).
+        let candidates = [found("a2"), found("b2")];
+        type Row = (String, String, String, Vec<String>);
+        let mut seen: Option<Vec<Row>> = None;
+        let mut reregistered = vec![];
+        for round in 0..8 {
+            if round == 3 || round == 5 {
+                reregistered.extend(old_release_rewrite(&p, &["a1", "b1"]));
+            }
+            let order: &[Continuation] = if round % 2 == 0 { &links } else { &reversed };
+            link_continuations(&p, claude, order).unwrap();
+            register_discovered(&p, claude, &candidates).unwrap();
+            let now: Vec<_> = list(&p)
+                .unwrap()
+                .into_iter()
+                .filter(|s| s.provider == "claude")
+                .map(|s| (s.id, s.name, s.conversation_id, s.previous_conversation_ids))
+                .collect();
+            assert_eq!(now.len(), 2, "round {round}: {now:?}");
+            if let Some(seen) = &seen {
+                assert_eq!(seen, &now, "round {round}");
+            }
+            seen = Some(now);
+        }
+        // The survivors are the pre-existing entries of the earliest conversations.
+        let a = find(&p, &a1.id).unwrap();
+        assert_eq!(a.name, "sessionstuffs-claude");
+        assert_eq!(a.conversation_id, "a2");
+        assert_eq!(a.previous_conversation_ids, ["a1"]);
+        let b = find(&p, &b1.id).unwrap();
+        assert_eq!(b.name, b1.name);
+        assert_eq!(b.conversation_id, "b2");
+        assert_eq!(b.previous_conversation_ids, ["b1"]);
+        merged(&p, &a2.id, &a1.id);
+        merged(&p, &b2.id, &b1.id);
+        assert_eq!(reregistered.len(), 4);
+        for (n, id) in reregistered.iter().enumerate() {
+            merged(&p, id, if n % 2 == 0 { &a1.id } else { &b1.id });
+        }
+        // Restart: a fresh handle reads the same identity; an unchanged catalog is
+        // not rewritten and an explicit repair has nothing left to restore.
+        let file = p.root.join("session-catalog/catalog.json");
+        let bytes = fs::read(&file).unwrap();
+        let reloaded = Paths::new(Some(p.root.clone())).unwrap();
+        assert_eq!(repair_identity(&reloaded).unwrap(), Healed::default());
+        link_continuations(&reloaded, claude, &links).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), bytes);
+        assert_eq!(
+            find(&reloaded, &a1.id).unwrap().name,
+            "sessionstuffs-claude"
+        );
+        // Codex is untouched by Claude lineage and identity healing.
+        let codex_now = find(&p, &codex.id).unwrap();
+        assert_eq!(codex_now.generation(), codex.generation());
+    }
+
+    #[test]
+    fn explicit_repair_restores_lost_aliases_and_lineage_idempotently() {
+        let (_t, p) = paths();
+        let claude = ProviderId::Claude;
+        register_discovered(&p, claude, &[found("a1"), found("a2")]).unwrap();
+        let a1 = by_conversation(&p, "a1");
+        let a2 = by_conversation(&p, "a2");
+        link_continuations(&p, claude, &[link("a1", "a2")]).unwrap();
+        old_release_rewrite(&p, &[]);
+        let healed = repair_identity(&p).unwrap();
+        assert_eq!(healed.restored_aliases, std::slice::from_ref(&a2.id));
+        assert_eq!(healed.restored_lineage, std::slice::from_ref(&a1.id));
+        assert_eq!(repair_identity(&p).unwrap(), Healed::default());
+        merged(&p, &a2.id, &a1.id);
+        assert_eq!(find(&p, &a1.id).unwrap().previous_conversation_ids, ["a1"]);
+        // Without any identity record nothing is invented.
+        let (_t2, q) = paths();
+        register_discovered(&q, claude, &[found("x")]).unwrap();
+        assert_eq!(repair_identity(&q).unwrap(), Healed::default());
+        assert!(aliases(&q).unwrap().is_empty());
+        assert!(
+            find(&q, "91f47291-0000-4000-8000-000000000000")
+                .unwrap_err()
+                .to_string()
+                .starts_with("SESSION_NOT_FOUND")
+        );
+    }
+
+    #[test]
+    fn chains_converge_on_the_earliest_entry_in_any_link_order() {
+        for order in [["a", "b"], ["b", "a"]] {
+            let (_t, p) = paths();
+            let claude = ProviderId::Claude;
+            register_discovered(&p, claude, &[found("a"), found("b"), found("c")]).unwrap();
+            let ea = by_conversation(&p, "a");
+            let links: Vec<_> = order
+                .iter()
+                .map(|f| {
+                    if *f == "a" {
+                        link("a", "b")
+                    } else {
+                        link("b", "c")
+                    }
+                })
+                .collect();
+            for _ in 0..3 {
+                link_continuations(&p, claude, &links).unwrap();
+            }
+            let all = list(&p).unwrap();
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].id, ea.id);
+            assert_eq!(all[0].name, ea.name);
+            assert_eq!(all[0].conversation_id, "c");
+            assert_eq!(all[0].previous_conversation_ids, ["a", "b"]);
+            assert_eq!(aliases(&p).unwrap().len(), 2);
+            assert!(aliases(&p).unwrap().values().all(|t| *t == ea.id));
+        }
+        // An entry that exists only for the newest conversation records the lineage.
+        let (_t, p) = paths();
+        register_discovered(&p, ProviderId::Claude, &[found("n")]).unwrap();
+        let n = by_conversation(&p, "n");
+        link_continuations(&p, ProviderId::Claude, &[link("o", "n")]).unwrap();
+        let after = find(&p, &n.id).unwrap();
+        assert_eq!(after.previous_conversation_ids, ["o"]);
+        link_continuations(&p, ProviderId::Claude, &[link("o", "n")]).unwrap();
+        assert_eq!(find(&p, &n.id).unwrap().generation(), after.generation());
     }
 }

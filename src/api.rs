@@ -247,6 +247,10 @@ pub enum SessionAction {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Restore stable session identity (merged ids, continuation lineage) that
+    /// the identity record holds but the catalog lost, then reconcile. Idempotent;
+    /// never deletes, recreates or renames an entry.
+    RepairIdentity,
 }
 
 #[derive(Subcommand)]
@@ -718,7 +722,7 @@ pub fn capabilities() -> Value {
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true,"resumable_local_summary_scan":true,"native_budget_seconds":5,"max_turns":1000,"partial_match_is_not_delivery":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
     "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false});
-    value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED"});
+    value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
     value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session","space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
     value
@@ -1066,6 +1070,37 @@ pub fn attachment(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
     Ok(value)
 }
 
+/// `api session repair-identity`: restore what the identity record holds, link
+/// verified continuations, and report ids that other on-disk evidence names but
+/// no catalog entry or alias resolves (never invented, never recreated).
+pub fn repair_identity(paths: &Paths) -> Result<Value> {
+    let before = catalog::aliases(paths)?;
+    let healed = catalog::repair_identity(paths)?;
+    claude::reconcile(paths)?;
+    let after = catalog::aliases(paths)?;
+    let sessions = catalog::list(paths)?;
+    let merged: Vec<Value> = after
+        .iter()
+        .filter(|(alias, _)| !before.contains_key(*alias))
+        .map(|(alias, into)| json!({"id":alias,"merged_into":into}))
+        .collect();
+    let mut unresolved: Vec<String> = catalog::placement::evidence_ids(paths)?
+        .into_iter()
+        .filter(|id| !after.contains_key(id) && !sessions.iter().any(|s| s.id == *id))
+        .collect();
+    unresolved.sort();
+    unresolved.dedup();
+    Ok(json!({
+        "restored_aliases": healed.restored_aliases,
+        "restored_lineage": healed.restored_lineage,
+        "merged": merged,
+        "aliases": after.len(),
+        "lineages": sessions.iter().filter(|s| !s.previous_conversation_ids.is_empty()).count(),
+        "unresolved_ids": unresolved,
+        "unresolved_reason": "no catalog entry, alias or identity record names these ids; they are not recreated",
+    }))
+}
+
 pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
     let items = inventory(paths).await?;
     let observed = claude::reconcile(paths).unwrap_or_default();
@@ -1167,6 +1202,10 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             )
             .await?
         }
+        Command::Session {
+            action: Some(SessionAction::RepairIdentity),
+            ..
+        } => repair_identity(paths)?,
         Command::Session {
             session,
             expected_generation,

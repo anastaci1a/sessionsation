@@ -312,6 +312,10 @@ See [the request and failure contract](contract.md#saved-session-popup-resume).
 
 ## Add a running session to HERDR
 
+`sessionsation api session repair-identity` restores merged session ids and
+continuation lineage that an older release dropped from the catalog. It is
+idempotent and never deletes, recreates or renames an entry.
+
 A running session without a HERDR terminal reports `capabilities.add_to_herdr`
 and `capability_reasons.add_to_herdr` in `api state`. List the destination
 server's existing Spaces, then open it in a new tab (the name defaults to the
