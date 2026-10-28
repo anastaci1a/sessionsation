@@ -24,8 +24,11 @@ fn host(paths: &Paths, s: &Session) -> Result<Host> {
     let (server, _) = crate::terminal::target(&a.target)?;
     Ok(Host {
         session: server.into(),
-        socket: external::hosting::socket_for(paths, &a.target)?
-            .context("HOST_SOCKET_UNAVAILABLE")?,
+        socket: match external::hosting::socket_for(paths, &a.target)? {
+            Some(socket) => socket,
+            None => external::hosting::live_process_socket(a.pid, a.process_start)
+                .context("HOST_SOCKET_UNAVAILABLE")?,
+        },
     })
 }
 async fn snapshot(host: &Host) -> Result<Value> {

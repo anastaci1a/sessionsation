@@ -15,6 +15,14 @@ pub use crate::terminal::herdr_target;
 pub(super) use crate::terminal::retain;
 use crate::terminal::{call, target};
 
+/// HERDR socket of a still-identical process (same start time), read from the
+/// HERDR_SOCKET_PATH it was started with; for sessions sessionsation did not launch.
+pub(crate) fn live_process_socket(pid: u32, start_time: u64) -> Option<PathBuf> {
+    process_info(pid)
+        .ok()
+        .filter(|p| p.start_time == start_time && !matches!(p.state, 'Z' | 'X'))
+        .and_then(|p| process_socket(p.pid))
+}
 fn process_socket(pid: u32) -> Option<PathBuf> {
     let bytes = fs::read(format!("/proc/{pid}/environ")).ok()?;
     bytes
@@ -395,6 +403,32 @@ pub(super) fn rebind(
 #[cfg(test)]
 mod discovery_tests {
     use super::*;
+    #[test]
+    fn live_process_socket_requires_the_same_process() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .env("HERDR_SOCKET_PATH", "/tmp/herdr-test/herdr.sock")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        // Wait until the child has exec'd (its environ is then the new image's).
+        for _ in 0..200 {
+            if fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| c.starts_with(b"sleep\0")) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let start = process_info(pid).unwrap().start_time;
+        assert_eq!(
+            live_process_socket(pid, start),
+            Some(PathBuf::from("/tmp/herdr-test/herdr.sock"))
+        );
+        // A different start time is a different (reused-PID) process.
+        assert_eq!(live_process_socket(pid, start + 1), None);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(live_process_socket(pid, start), None);
+    }
     #[test]
     fn stale_bindings_never_contact_a_host_and_remain_recoverable() {
         let dir = tempfile::tempdir().unwrap();
