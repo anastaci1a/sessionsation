@@ -821,11 +821,24 @@ async fn adopted_home_switches_to_the_managed_home_only_when_every_precondition_
     let err = f.api_error(&["account", "managed-home", "claude:moved"]);
     assert!(err.contains("AUTH_IDENTITY_MISMATCH"), "{err}");
     assert!(!err.contains("example.invalid") && !err.contains("someone-else"));
+    // A non-Claude process that merely inherited CLAUDE_CONFIG_DIR (e.g. a provider
+    // server started from a Claude shell) does not trip the in-use check: the switch
+    // proceeds to (and is refused by) the identity check instead.
+    let bystander = Command::new("sleep")
+        .arg("60")
+        .env("CLAUDE_CONFIG_DIR", &managed)
+        .spawn()
+        .unwrap();
+    let err = f.api_error(&["account", "managed-home", "claude:moved"]);
+    kill(bystander);
+    assert!(err.contains("AUTH_IDENTITY_MISMATCH"), "{err}");
     std::fs::remove_file(managed.join("fake-identity")).unwrap();
 
-    // Any process whose environment names either home blocks the switch.
-    let holder = Command::new("sleep")
-        .arg("60")
+    // ...but a process started as the configured Claude command does.
+    let holder = Command::new("bash")
+        .arg("-c")
+        .arg("exec -a \"$0\" sleep 60")
+        .arg(f._tmp.path().join("fake-claude"))
         .env("CLAUDE_CONFIG_DIR", &managed)
         .spawn()
         .unwrap();

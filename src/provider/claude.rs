@@ -135,7 +135,34 @@ pub fn validate_managed_dir(home: &Path) -> Result<()> {
     Ok(())
 }
 /// Any other process (readable environ) whose CLAUDE_CONFIG_DIR is one of `homes`.
-fn env_in_use(homes: &[&Path]) -> bool {
+/// A Claude Code process: its executable is a native Claude build (`.../claude/versions/<v>`
+/// or a file named `claude`), or it was started as the configured Claude command. Other
+/// processes that merely inherited CLAUDE_CONFIG_DIR do not use the config home.
+fn is_claude_process(pid: u32, claude_binary: &str) -> bool {
+    let exe = fs::read_link(format!("/proc/{pid}/exe")).ok();
+    if exe.as_deref().is_some_and(|e| {
+        e.file_name().is_some_and(|n| n == "claude")
+            || e.components().any(|c| c.as_os_str() == "claude")
+                && e.components().any(|c| c.as_os_str() == "versions")
+    }) {
+        return true;
+    }
+    let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    let configured = Path::new(claude_binary);
+    cmdline
+        .split(|b| *b == 0)
+        .take(2)
+        .filter_map(|a| std::str::from_utf8(a).ok())
+        .any(|a| {
+            Path::new(a) == configured
+                || Path::new(a).is_absolute()
+                    && fs::canonicalize(a)
+                        .is_ok_and(|c| fs::canonicalize(configured).is_ok_and(|d| c == d))
+        })
+}
+fn env_in_use(homes: &[&Path], claude_binary: &str) -> bool {
     let canon: Vec<_> = homes
         .iter()
         .filter_map(|h| fs::canonicalize(h).ok())
@@ -152,7 +179,7 @@ fn env_in_use(homes: &[&Path]) -> bool {
         else {
             return false;
         };
-        if pid == me {
+        if pid == me || !is_claude_process(pid, claude_binary) {
             return false;
         }
         let Some(env) = environ(pid) else {
@@ -200,8 +227,8 @@ pub async fn check_managed_home(
         );
     }
     ensure!(
-        !env_in_use(&[old, managed.as_path()]),
-        "ACCOUNT_IN_USE: a running process uses CLAUDE_CONFIG_DIR for the old or managed home; stop it first"
+        !env_in_use(&[old, managed.as_path()], &config.claude_binary),
+        "ACCOUNT_IN_USE: a running Claude process uses CLAUDE_CONFIG_DIR for the old or managed home; stop it first"
     );
     let new_auth = auth_status(config, &managed).await?;
     new_auth.gate()?;
