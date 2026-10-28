@@ -399,6 +399,18 @@ enum AccountCommand {
         /// NAME or PROVIDER:NAME.
         name: String,
     },
+    /// Move an account to a 0-based position in the shared account order (list and UI).
+    Reorder {
+        /// NAME or PROVIDER:NAME.
+        name: String,
+        #[arg(long)]
+        position: u32,
+    },
+    /// Sign out: Codex app-server account/logout (or `codex logout`), `claude auth logout`, or Gemini's own credential clearing. Refused while the account is in use; log in again afterwards.
+    Logout {
+        /// NAME or PROVIDER:NAME.
+        name: String,
+    },
     /// Set a display name (the stable name, id and home never change); --clear resets it.
     Rename {
         /// NAME, PROVIDER:NAME or an unambiguous display name.
@@ -548,6 +560,38 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Api { command, .. } => sessionsation::api::run(&paths, command).await?,
         Commands::Session { session } => {
             print_json(&sessionsation::cli_views::session(&paths, &session).await?)?;
+        }
+        Commands::Account {
+            command: AccountCommand::Reorder { name, position },
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            daemon::ensure_started(&paths).await?;
+            let value = daemon::call(
+                &paths,
+                "account/reorder",
+                json!({"name":account.name,"provider":account.provider,"position":position}),
+            )
+            .await?;
+            print_json(&value)?;
+        }
+        Commands::Account {
+            command: AccountCommand::Logout { name },
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            sessionsation::accounts::ensure_available(&paths, &account.name)?;
+            daemon::ensure_started(&paths).await?;
+            let value = daemon::call(
+                &paths,
+                "account/logout",
+                json!({"name":account.name,"provider":account.provider}),
+            )
+            .await?;
+            println!(
+                "{} logged out ({}).\nLog in again: sessionsation account login {}",
+                account.id(),
+                value["method"].as_str().unwrap_or("provider logout"),
+                account.id()
+            );
         }
         Commands::Account {
             command: AccountCommand::Show { name },
@@ -738,7 +782,7 @@ async fn run(cli: Cli) -> Result<()> {
             let resolved = resolve_account(&paths, &name)?;
             let account = provider::native::account(&paths, resolved.provider, &resolved.name)?;
             let config = store::load_config(&paths)?;
-            return Err(exec_login(&config, resolved.provider, &account.home));
+            return exec_login(&config, resolved.provider, &account.home);
         }
         Commands::Account {
             command:
@@ -796,7 +840,7 @@ async fn run(cli: Cli) -> Result<()> {
                 );
                 let account = provider::native::account(&paths, platform, &name)?;
                 let config = store::load_config(&paths)?;
-                return Err(exec_login(&config, platform, &account.home));
+                return exec_login(&config, platform, &account.home);
             }
         }
         Commands::Account {
@@ -878,6 +922,8 @@ async fn run(cli: Cli) -> Result<()> {
                 AccountCommand::Add { .. }
                 | AccountCommand::List { .. }
                 | AccountCommand::Rename { .. }
+                | AccountCommand::Logout { .. }
+                | AccountCommand::Reorder { .. }
                 | AccountCommand::Show { .. }
                 | AccountCommand::History { .. } => {
                     unreachable!("handled above")
@@ -1260,20 +1306,29 @@ async fn run(cli: Cli) -> Result<()> {
 /// An unknown bare name stays on the Codex path, whose launcher reports it.
 /// Exec the official interactive login for a native provider in this terminal.
 /// Returns only on failure to start it.
-fn exec_login(config: &Config, provider: ProviderId, home: &std::path::Path) -> anyhow::Error {
+fn exec_login(config: &Config, provider: ProviderId, home: &std::path::Path) -> Result<()> {
     use std::os::unix::process::CommandExt;
     match provider {
         ProviderId::Gemini => {
             let mut command = provider::gemini::login_command(config, home);
             command.current_dir(provider::gemini::login_directory(home));
-            anyhow::Error::new(command.exec()).context("could not start gemini login")
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                // Gemini continues into its chat after sign-in: supervise it and
+                // end the login as soon as the credentials exist.
+                let home = home.to_path_buf();
+                let before = provider::gemini::credentials_stamp(&home);
+                return sessionsation::login::supervise(command, move || {
+                    provider::gemini::login_completed(&home, before)
+                });
+            }
+            Err(anyhow::Error::new(command.exec()).context("could not start gemini login"))
         }
         _ => {
             let mut command = provider::claude::command(config, home);
             command
                 .args(&provider::claude::login_argv(config)[1..])
                 .current_dir(home);
-            anyhow::Error::new(command.exec()).context("could not start claude auth login")
+            Err(anyhow::Error::new(command.exec()).context("could not start claude auth login"))
         }
     }
 }

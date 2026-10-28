@@ -98,6 +98,53 @@ pub struct Account {
     /// Human display name; the stable name, id and home never change on rename.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Persistent display order shared by CLI and UI (0-based, unique; None until migrated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<u32>,
+}
+impl State {
+    /// Accounts in persistent order (then name).
+    pub fn ordered(&self) -> Vec<&Account> {
+        let mut all: Vec<_> = self.accounts.values().collect();
+        all.sort_by(|a, b| (a.order, &a.name).cmp(&(b.order, &b.name)));
+        all
+    }
+    /// Idempotent: accounts without an order are appended in alphabetical
+    /// order after the highest assigned one (existing accounts keep today's
+    /// alphabetical order; a new account goes last). Returns the names changed.
+    pub fn normalize_order(&mut self) -> Vec<String> {
+        let next = self
+            .accounts
+            .values()
+            .filter_map(|a| a.order)
+            .max()
+            .map_or(0, |m| m + 1);
+        let mut changed = vec![];
+        for (offset, a) in self
+            .accounts
+            .values_mut()
+            .filter(|a| a.order.is_none())
+            .enumerate()
+        {
+            a.order = Some(next + offset as u32);
+            changed.push(a.name.clone());
+        }
+        changed
+    }
+    /// Move one account to a 0-based position and renumber densely.
+    pub fn reorder(&mut self, name: &str, position: usize) -> bool {
+        self.normalize_order();
+        let mut names: Vec<String> = self.ordered().iter().map(|a| a.name.clone()).collect();
+        let Some(current) = names.iter().position(|n| n == name) else {
+            return false;
+        };
+        let item = names.remove(current);
+        names.insert(position.min(names.len()), item);
+        for (i, n) in names.iter().enumerate() {
+            self.accounts.get_mut(n).unwrap().order = Some(i as u32);
+        }
+        current != position.min(names.len() - 1)
+    }
 }
 impl Account {
     /// A Codex account (the original enrollment kind).
@@ -114,6 +161,7 @@ impl Account {
             config_home: None,
             auth_detail: None,
             display_name: None,
+            order: None,
             deletion_id: None,
             switch_thresholds: crate::automatic::Thresholds::default(),
             name,
@@ -225,5 +273,37 @@ impl Quiescence {
             && self.no_pending_approvals
             && self.history_flushed
             && self.no_ambiguous_side_effects
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+    #[test]
+    fn order_migration_is_alphabetical_idempotent_and_appends_new_accounts() {
+        let mut state = State::default();
+        for n in ["b", "a", "c"] {
+            state
+                .accounts
+                .insert(n.into(), Account::new(n.into(), String::new()));
+        }
+        assert_eq!(state.normalize_order(), ["a", "b", "c"]);
+        assert!(state.normalize_order().is_empty());
+        state
+            .accounts
+            .insert("0new".into(), Account::new("0new".into(), String::new()));
+        state.normalize_order();
+        let names = |s: &State| {
+            s.ordered()
+                .iter()
+                .map(|a| a.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&state), ["a", "b", "c", "0new"]);
+        assert!(state.reorder("0new", 0));
+        assert_eq!(names(&state), ["0new", "a", "b", "c"]);
+        assert!(!state.reorder("0new", 0));
+        assert!(state.reorder("0new", 99));
+        assert_eq!(names(&state), ["a", "b", "c", "0new"]);
     }
 }

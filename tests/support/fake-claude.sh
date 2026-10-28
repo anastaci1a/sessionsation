@@ -31,6 +31,11 @@ case "$1" in
              printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max","email":"%s@example.invalid","orgId":"fixture-org","orgName":"Fixture"}\n' "$who" ;;
         esac
         exit 0 ;;
+      logout)
+        printf 'config_dir=%s\nargs=%s\n' "$CLAUDE_CONFIG_DIR" "$*" > "$home/fake-logout"
+        printf '%s\n' logged_out > "$home/fake-auth-mode"
+        printf '%s\n' 'Fake logout complete.'
+        exit 0 ;;
       login)
         printf '%s\n' "$*" > "$home/fake-login-args"
         printf 'api_key=%s\nconfig_dir=%s\nautoupdater=%s\n' "${ANTHROPIC_API_KEY:+present}" "$CLAUDE_CONFIG_DIR" "$DISABLE_AUTOUPDATER" > "$home/fake-login-env"

@@ -980,7 +980,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     assert_eq!(gemini["operations"]["headless_delivery"]["supported"], true);
     assert_eq!(gemini["headless_delivery"]["automatic_replay"], false);
     assert_eq!(gemini["headless_delivery"]["approval_mode"], "default");
-    assert_eq!(caps["contract_revision"], 13);
+    assert_eq!(caps["contract_revision"], 14);
     assert_eq!(
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
@@ -1280,4 +1280,115 @@ async fn usage_is_unsupported_not_zero_and_herdr_placement_resumes_but_cannot_at
             libc::kill(pid, libc::SIGKILL);
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gemini_logout_clears_the_cached_credentials_like_the_cli_and_refuses_in_use() {
+    let f = fixture().await;
+    f.add_logged_in("me");
+    let home = f.home("me");
+    // A live gemini process using the home refuses the logout.
+    let script = home.parent().unwrap().join("gemini.js");
+    std::fs::write(&script, "sleep 600; :\n").unwrap();
+    let agent = Process(
+        Command::new("sh")
+            .arg(&script)
+            .env("GEMINI_CLI_HOME", &home)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = agent.0.id();
+    wait_for("agent exec", || {
+        read(Path::new(&format!("/proc/{pid}/cmdline"))).contains("gemini.js")
+    });
+    let refused = f.api_error(&["account", "logout", "gemini:me"]);
+    assert!(refused.contains("ACCOUNT_IN_USE"), "{refused}");
+    assert!(home.join(".gemini/oauth_creds.json").exists());
+    drop(agent);
+
+    let out = f.api(&["account", "logout", "gemini:me"]);
+    assert_eq!(out["account_id"], "gemini:me");
+    assert_eq!(out["provider"], "gemini");
+    assert_eq!(out["logged_out"], true);
+    assert_eq!(out["auth_required"], true);
+    assert!(
+        out["method"]
+            .as_str()
+            .unwrap()
+            .contains("clearCachedCredentialFile")
+    );
+    assert!(!home.join(".gemini/oauth_creds.json").exists());
+    let accounts: Value =
+        serde_json::from_str(&read(&home.join(".gemini/google_accounts.json"))).unwrap();
+    assert_eq!(accounts["active"], Value::Null);
+    assert_eq!(accounts["old"], json!(["fixture@example.invalid"]));
+    assert!(!out.to_string().contains("example.invalid"));
+    let row = f.api(&["account", "list", "--platform", "gemini"])[0].clone();
+    assert_eq!(row["auth_required"], true);
+    assert_eq!(row["selectable"], false);
+    assert_eq!(row["usage"]["observed_at"], Value::Null);
+    assert_eq!(
+        f.api(&["account", "refresh", "gemini:me"])["auth_required"],
+        true,
+        "the supervisor's probe agrees"
+    );
+    assert_eq!(
+        f.api(&["account", "login", "gemini:me"])["login"]["action"],
+        "exec"
+    );
+    // Idempotent; and a fresh login works again.
+    let again = f.api(&["account", "logout", "gemini:me"]);
+    assert_eq!(again["logged_out"], true);
+    let accounts: Value =
+        serde_json::from_str(&read(&home.join(".gemini/google_accounts.json"))).unwrap();
+    assert_eq!(accounts["old"], json!(["fixture@example.invalid"]));
+    login(&home);
+    assert_eq!(
+        f.api(&["account", "refresh", "gemini:me"])["auth_required"],
+        false
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cached_state_serves_the_last_snapshot_without_scanning_or_writing() {
+    let f = fixture().await;
+    for account in ["a", "b", "c"] {
+        f.add_logged_in(account);
+        for _ in 0..15 {
+            chat(
+                &f.home(account),
+                &f.project,
+                &uuid::Uuid::new_v4().to_string(),
+            );
+        }
+    }
+    // No snapshot yet: the first cached call computes (and stores) a full state.
+    let first = f.api(&["state", "--cached"]);
+    assert_eq!(first["snapshot"]["cached"], false);
+    assert_eq!(first["sessions"].as_array().unwrap().len(), 45);
+    let started = Instant::now();
+    let full = f.api(&["state"]);
+    let full_ms = started.elapsed();
+    assert_eq!(full["snapshot"]["cached"], false);
+
+    // A transcript that appears afterwards is invisible to the cached read,
+    // which neither scans nor registers it, but visible to the next full state.
+    let late = uuid::Uuid::new_v4().to_string();
+    chat(&f.home("a"), &f.project, &late);
+    let started = Instant::now();
+    let cached = f.api(&["state", "--cached"]);
+    let cached_ms = started.elapsed();
+    assert_eq!(cached["snapshot"]["cached"], true);
+    assert_eq!(cached["snapshot"]["fresh"], true);
+    assert_eq!(cached["snapshot"]["observed_at"], full["observed_at"]);
+    assert_eq!(cached["sessions"], full["sessions"]);
+    assert!(
+        !cached.to_string().contains(&late),
+        "cached state must not scan transcripts"
+    );
+    assert_eq!(cached["capabilities"]["state_cached"], true);
+    eprintln!("state timing: full {full_ms:?}, cached {cached_ms:?} (45 transcripts)");
+    let refreshed = f.api(&["state"]);
+    assert!(refreshed.to_string().contains(&late));
+    assert!(f.api(&["state", "--cached"]).to_string().contains(&late));
 }

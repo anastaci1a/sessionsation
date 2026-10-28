@@ -78,6 +78,10 @@ pub fn capabilities() -> ProviderCapabilities {
             ),
         },
         account_rename: yes(),
+        account_logout: Capability {
+            supported: true,
+            reason: Some(crate::logout::CLAUDE_METHOD),
+        },
         headless_delivery: Capability {
             supported: true,
             reason: Some(
@@ -1227,7 +1231,7 @@ fn chained_command(home: &Path) -> Option<String> {
 /// Missing windows stay null (never 0%). Returns (usage, fresh, state).
 pub fn project_usage(home: &Path, now: i64) -> (Value, bool, &'static str) {
     let base = |state: &'static str| {
-        json!({"short":null,"weekly":null,"observed_at":0,"exhausted":false,
+        json!({"short":null,"weekly":null,"observed_at":null,"exhausted":false,
             "source":USAGE_SOURCE,"semantics":USAGE_SEMANTICS,"state":state})
     };
     let bytes = match fs::read(usage_file(home)) {

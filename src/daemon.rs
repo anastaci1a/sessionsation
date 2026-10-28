@@ -181,6 +181,9 @@ fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value
         ProviderId::Codex => {
             let fresh = a.usage.fresh(at, config.stale_seconds);
             let mut usage = json!(a.usage);
+            if a.usage.observed_at == 0 {
+                usage["observed_at"] = Value::Null;
+            }
             usage["source"] = json!(crate::provider::codex::USAGE_SOURCE);
             usage["semantics"] = json!(crate::provider::codex::USAGE_SEMANTICS);
             let state = if fresh {
@@ -193,7 +196,7 @@ fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value
             (usage, fresh, state.into())
         }
         ProviderId::Gemini => (
-            json!({"short":null,"weekly":null,"observed_at":0,"exhausted":false,"state":"unsupported",
+            json!({"short":null,"weekly":null,"observed_at":null,"exhausted":false,"state":"unsupported",
                 "source":crate::provider::gemini::USAGE_SOURCE,"semantics":crate::provider::gemini::USAGE_SEMANTICS}),
             false,
             "unsupported".into(),
@@ -204,7 +207,7 @@ fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value
                 (usage, fresh, state.into())
             }
             Err(_) => (
-                json!({"short":null,"weekly":null,"observed_at":0,"exhausted":false,"state":"error",
+                json!({"short":null,"weekly":null,"observed_at":null,"exhausted":false,"state":"error",
                     "source":crate::provider::claude::USAGE_SOURCE,"semantics":crate::provider::claude::USAGE_SEMANTICS}),
                 false,
                 "error".into(),
@@ -215,10 +218,10 @@ fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value
 
 pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> Value {
     let at = now();
-    let accounts: Vec<_> = state.accounts.values().map(|a| {
+    let accounts: Vec<_> = state.ordered().into_iter().map(|a| {
         let (usage, fresh, usage_state) = account_usage(paths, a, config, at);
         json!({
-        "name":a.name,"display_name":a.display_name,"provider":a.provider,"config_home":a.config_home,
+        "name":a.name,"order":a.order,"display_name":a.display_name,"provider":a.provider,"config_home":a.config_home,
         "enabled":a.enabled,"auth_required":a.auth_required,"auth_detail":a.auth_detail,"deletion_id":a.deletion_id,
         "switch_thresholds":a.switch_thresholds,
         "usage":usage,"usage_fresh":fresh,"usage_state":usage_state,
@@ -271,6 +274,9 @@ pub async fn serve(paths: Paths) -> Result<()> {
     let mut store = Store::open(&paths)?;
     let mut state = store.load()?;
     crate::automatic::reconcile(&mut state);
+    if !state.normalize_order().is_empty() {
+        store.save(&state, now(), "account.order_migrated", "")?;
+    }
     crate::autostart::reconcile(&mut state);
     store.save(&state, now(), "automatic_reconciled", "")?;
     let mut config = load_config(&paths)?;
@@ -514,6 +520,44 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             store.save(&state,now(),"account_login_started",name)?;
                             Ok(json!({"name":name,"login":login}))
                         }
+                        "account/logout" => {
+                            let name = params["name"].as_str().context("missing account name")?;
+                            let account = state.accounts.get(name).with_context(|| format!("ACCOUNT_NOT_FOUND: no enrolled account named {name} (a deleted account has no login to clear)"))?;
+                            let provider = account.provider;
+                            if let Some(wanted) = params["provider"].as_str() {
+                                let wanted = ProviderId::parse(wanted)?;
+                                ensure!(wanted == provider, "ACCOUNT_PROVIDER_MISMATCH: {name} is enrolled as {provider}:{name}, not {wanted}:{name}");
+                            }
+                            ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
+                            ensure!(!pending.contains(name), "ACCOUNT_POLL_IN_PROGRESS: account poll is in progress; retry shortly");
+                            let home = crate::provider::account_home(&paths,account)?;
+                            let was_required = account.auth_required;
+                            crate::logout::ensure_idle(&paths,provider,name,&home).await?;
+                            match provider {
+                                ProviderId::Codex => crate::logout::codex(&config,&home,helpers.get(name)).await?,
+                                ProviderId::Claude => crate::logout::claude(&config,&home).await?,
+                                ProviderId::Gemini => crate::logout::gemini(&home)?,
+                            }
+                            let detail = crate::provider::native::is_native(provider).then(|| "AUTH_REQUIRED".to_owned());
+                            let a = state.accounts.get_mut(name).context("unknown account")?;
+                            let changed = !was_required || a.auth_detail != detail;
+                            a.auth_required = true; a.auth_detail = detail;
+                            last_poll.insert(name.to_owned(), now());
+                            if changed { store.save(&state,now(),"account.logged_out",name)?; }
+                            Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"logged_out":true,"auth_required":true,"method":crate::logout::method(provider)}))
+                        }
+                        "account/reorder" => {
+                            let name = params["name"].as_str().context("missing account name")?;
+                            let account = named(&state,params)?;
+                            let provider = account.provider;
+                            let position = params["position"].as_u64().context("INVALID_ARGUMENT: position must be a non-negative integer")? as usize;
+                            let total = state.accounts.len();
+                            ensure!(position < total, "INVALID_POSITION: position must be between 0 and {}", total - 1);
+                            let changed = state.reorder(name, position);
+                            if changed { store.save(&state,now(),"account.reordered",name)?; }
+                            let order: Vec<String> = state.ordered().iter().map(|a| format!("{}:{}", a.provider, a.name)).collect();
+                            Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"position":position,"changed":changed,"order":order}))
+                        }
                         "account/refresh" => {
                             let account = named(&state,params)?;
                             let provider = account.provider;
@@ -616,6 +660,9 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         _ => bail!("unknown control method"),
                     }
                 }.await;
+                if result.is_ok() && !state.normalize_order().is_empty() {
+                    let _ = store.save(&state, now(), "account.order_assigned", "");
+                }
                 let response = match result {Ok(result) => json!({"id":request.value["id"],"result":result}),Err(error) => json!({"id":request.value["id"],"error":{"code":if method.starts_with("session/") {"NATIVE_HANDOFF_UNVERIFIED"} else {"REQUEST_FAILED"},"message":error.to_string()}})};
                 let _ = request.reply.send(response);
                 if stopping {
@@ -787,6 +834,36 @@ pub async fn ensure_started(paths: &Paths) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unobserved_usage_reports_null_observed_at_never_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        let config = Config::default();
+        let mut state = State::default();
+        state
+            .accounts
+            .insert("cx".into(), Account::new("cx".into(), "fixture".into()));
+        state
+            .accounts
+            .insert("real".into(), Account::new("real".into(), "fixture".into()));
+        state.accounts.get_mut("real").unwrap().usage.observed_at = 1234;
+        state.accounts.insert(
+            "gm".into(),
+            Account::with_provider(ProviderId::Gemini, "gm".into(), String::new()),
+        );
+        state.accounts.insert(
+            "cl".into(),
+            Account::with_provider(ProviderId::Claude, "cl".into(), String::new()),
+        );
+        let report = status(&paths, &state, &config, "fixture");
+        for a in report["accounts"].as_array().unwrap() {
+            let observed = &a["usage"]["observed_at"];
+            match a["name"].as_str().unwrap() {
+                "real" => assert_eq!(observed, 1234),
+                name => assert!(observed.is_null(), "{name}: {observed}"),
+            }
+        }
+    }
 
     #[test]
     fn locked_account_reports_paused_monitoring_without_claiming_fresh_usage() {

@@ -26,6 +26,8 @@ pub mod usage_history;
 mod terminal;
 
 pub mod launch;
+pub mod login;
+pub mod logout;
 pub mod resume;
 
 pub mod account_deletion;

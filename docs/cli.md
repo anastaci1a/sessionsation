@@ -79,6 +79,8 @@ sessionsation account managed-home existing      # adopted Claude home -> manage
 sessionsation account list                      # table with a PROVIDER column
 sessionsation account list --platform claude --json
 sessionsation account rename work Office         # display name only; --clear resets
+sessionsation account logout claude:personal   # sign out; log in again with account login
+sessionsation account reorder claude:personal --position 0   # shared with the UI
 ```
 
 Account names are **unique across providers**: `work` can be `codex:work` or
@@ -99,6 +101,7 @@ sessionsation api account login codex:example
 sessionsation api account disable codex:example
 sessionsation api account enable codex:example
 sessionsation api account refresh claude:personal
+sessionsation api account logout claude:personal
 sessionsation api account rename codex:example --display-name Office   # or --clear
 ```
 
@@ -281,6 +284,7 @@ supported contract versions. All API output is JSON; watch uses NDJSON.
 
 ```sh
 sessionsation api state
+sessionsation api state --cached                 # last snapshot, no scans (see contract revision 14)
 sessionsation api state --watch --interval 2
 sessionsation api launcher new --account codex:example
 sessionsation api operations
@@ -618,3 +622,21 @@ output is `delivery_unknown` and never replayed. Live sessions are refused
 (`SESSION_ALREADY_RUNNING`). Login, the NO_BROWSER flow, headless `-r -p` JSON and
 the process command-line shape are verified only against a fake and the installed
 CLI's source until a real login exists.
+
+## Account log out
+
+`sessionsation account logout ACCOUNT` (API: `api account logout PROVIDER:NAME`)
+signs the account out with the provider's own mechanism and leaves the account
+enrolled with `auth_required: true`, so the login plan (`account login`) is
+available again. History, enrollment and the home are untouched. Codex asks the
+account's app-server (`account/logout`, so no process keeps stale auth), or runs
+`codex logout` with the account's `CODEX_HOME` when no server runs. Claude runs
+`claude auth logout` with the account environment and confirms with `claude auth
+status`. Gemini CLI 0.66.0 has no logout command: its `/auth signout` calls
+`clearCachedCredentialFile()`, which removes `.gemini/oauth_creds.json` and moves
+the active entry of `.gemini/google_accounts.json` to `old` (active becomes null);
+sessionsation applies exactly those two effects. The command is refused with
+`ACCOUNT_IN_USE` while a live session or provider process uses the account, and
+fails clearly for unknown (`ACCOUNT_NOT_FOUND`, including deleted), removed
+(`ACCOUNT_REMOVED`) and mismatched-provider accounts. Repeating it on an
+already-logged-out account succeeds.

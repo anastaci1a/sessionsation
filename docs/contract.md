@@ -1245,3 +1245,57 @@ accepts `gemini:` sessions/accounts; receipts carry `provider:"gemini"` and
 admit both providers). Records of both providers share
 `DATA_ROOT/claude-deliveries/`; older records without a `provider` field are Claude.
 Login and headless delivery are verified only against fakes until a real login exists.
+
+### Account log out (revision 14)
+
+Additive; negotiate `contract_revision >= 14`. Every `providers[]` entry of `api
+capabilities` gains `account_logout:true`, and `operations.account_logout` is
+`{supported:true,reason:<method text>}`. `api account logout <provider:name>`
+returns
+
+```json
+{"account_id":"claude:work","provider":"claude","logged_out":true,"auth_required":true,"method":"claude auth logout"}
+```
+
+`method` names the mechanism: Codex `account/logout` of the account's app-server
+(or `codex logout` when none runs), Claude `claude auth logout`, Gemini the
+credential clearing of gemini-cli's `clearCachedCredentialFile` (no logout
+command exists in 0.66.0). Errors: `ACCOUNT_IN_USE` (live session or provider
+process, or held Codex lease), `ACCOUNT_NOT_FOUND` (unknown or deleted),
+`ACCOUNT_REMOVED`, `ACCOUNT_PROVIDER_MISMATCH`, `ACCOUNT_DELETION_IN_PROGRESS`,
+`LOGOUT_INCOMPLETE` (the provider still reports a login). The call is idempotent.
+Afterwards the account row has `auth_required:true`, `selectable:false`, and the
+supervisor's probe agrees; `api account login` returns the plan. The supervisor
+records event `account.logged_out` when the stored state changed.
+
+Also in revision 14: `usage.observed_at` is `null` (never `0`) whenever the
+account has no real usage observation (Gemini always; Codex and Claude until
+first observed).
+
+### Cached state (revision 14)
+
+`api state --cached [--archive-filter F]` serves the last full result of the same
+filter with the identical JSON shape plus `snapshot: {observed_at, fresh, cached}`;
+`fresh` is true while the snapshot is at most 15 seconds old. It performs no
+transcript scan, process probe or catalog write (`capabilities` is current).
+Every full `api state` stores its result atomically as
+`DATA_ROOT/state-snapshot-<filter>.json` (and reports `snapshot.cached:false`);
+there is no second writer. With no snapshot yet, `--cached` computes a full state.
+`api capabilities` advertises `state_cached:true`. Clients should refresh with a full
+`state` periodically and render `--cached` between refreshes; a cached read never
+reflects a session started after the snapshot.
+
+Full `state` also runs inventory and the supervisor status concurrently, takes one
+`/proc` pass for all Gemini accounts, and resolves deleted-account checks once per
+account. Identity and merge semantics are unchanged.
+
+### Account order (revision 14)
+
+Accounts have a persistent order shared by the CLI and UI: field `order` (0-based,
+dense) on each account row; `account list` and `state` accounts are sorted by it.
+Existing accounts get today's alphabetical order once (event
+`account.order_migrated`, idempotent); a new account is appended last. `api account
+reorder <provider:name> --position N` (human: `account reorder NAME --position N`)
+moves it and renumbers: `{"account_id","provider","position","changed","order":[ids]}`,
+event `account.reordered` only when the order changed; `N` beyond the last position
+is `INVALID_POSITION`. `api capabilities` advertises top-level `account_reorder:true`.

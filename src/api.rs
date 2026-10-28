@@ -28,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":13,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":14,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -74,6 +74,9 @@ pub enum Command {
         watch: bool,
         #[arg(long, value_enum, default_value_t=ArchiveFilter::Active)]
         archive_filter: ArchiveFilter,
+        /// Serve the last reconciled snapshot without transcript scans or process probes.
+        #[arg(long)]
+        cached: bool,
         #[arg(long, default_value_t=2, value_parser=clap::value_parser!(u64).range(1..=3600))]
         interval: u64,
     },
@@ -393,6 +396,16 @@ pub enum AccountCommand {
     Login {
         id: String,
     },
+    /// Sign out with the provider's own mechanism; refused while the account is in use.
+    Logout {
+        id: String,
+    },
+    /// Move an account to a 0-based position in the shared account order.
+    Reorder {
+        id: String,
+        #[arg(long)]
+        position: u32,
+    },
     /// Claude: probe `claude auth status` now and update the account auth state.
     Refresh {
         id: String,
@@ -679,6 +692,17 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             )
             .await
         }
+        AccountCommand::Reorder { id, position } => {
+            let account = account_ref(paths, &id)?;
+            crate::accounts::ensure_available(paths, &account.name)?;
+            daemon::ensure_started(paths).await?;
+            daemon::call(
+                paths,
+                "account/reorder",
+                json!({"name":account.name,"provider":account.provider,"position":position}),
+            )
+            .await
+        }
         AccountCommand::Login { id } if native::is_native(AccountRef::parse(&id)?.provider) => {
             let account = account_ref(paths, &id)?;
             native::account(paths, account.provider, &account.name)?;
@@ -689,6 +713,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 AccountCommand::ManagedHome { id } => ("account/managed-home", id),
                 AccountCommand::Refresh { id } => ("account/refresh", id),
                 AccountCommand::Login { id } => ("account/login", id),
+                AccountCommand::Logout { id } => ("account/logout", id),
                 AccountCommand::Enable { id } => ("account/enable", id),
                 AccountCommand::Disable { id } => ("account/disable", id),
                 _ => unreachable!(),
@@ -719,7 +744,7 @@ fn gemini_provider() -> Value {
 }
 
 pub fn capabilities() -> Value {
-    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":13,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":14,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -740,6 +765,11 @@ pub fn capabilities() -> Value {
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true,"resumable_local_summary_scan":true,"native_budget_seconds":5,"max_turns":1000,"partial_match_is_not_delivery":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
     "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false});
+    for provider in value["providers"].as_array_mut().into_iter().flatten() {
+        provider["account_logout"] = json!(true);
+    }
+    value["state_cached"] = json!(true);
+    value["account_reorder"] = json!(true);
     value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","gemini_process_source":"cmdline_session_id_argument","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
     value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session","space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
@@ -895,20 +925,61 @@ fn archive_info(
 pub async fn state(paths: &Paths) -> Result<Value> {
     state_filtered(paths, ArchiveFilter::Active).await
 }
+/// A snapshot older than this is reported `fresh:false`.
+pub const SNAPSHOT_FRESH_SECONDS: i64 = 15;
+fn snapshot_file(paths: &Paths, filter: ArchiveFilter) -> std::path::PathBuf {
+    let name = match filter {
+        ArchiveFilter::Active => "active",
+        ArchiveFilter::Archived => "archived",
+        ArchiveFilter::All => "all",
+    };
+    paths.root.join(format!("state-snapshot-{name}.json"))
+}
+/// Every full `state` leaves its result for `state --cached` (atomic replace;
+/// best effort, never the catalog).
+fn write_snapshot(paths: &Paths, filter: ArchiveFilter, value: &Value) {
+    if let Ok(bytes) = serde_json::to_vec(value) {
+        let _ = crate::paths::atomic_write(&snapshot_file(paths, filter), &bytes);
+    }
+}
+/// `api state --cached`: the last full result with no catalog write, transcript
+/// scan or process probe. Without a snapshot a full state is computed.
+pub async fn state_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value> {
+    let read = std::fs::read(snapshot_file(paths, filter))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .filter(|v| v["observed_at"].is_i64() && v["sessions"].is_array());
+    let Some(mut value) = read else {
+        return state_filtered(paths, filter).await;
+    };
+    let observed_at = value["observed_at"].as_i64().unwrap_or(0);
+    value["snapshot"] = json!({"observed_at":observed_at,"fresh":daemon::now() - observed_at <= SNAPSHOT_FRESH_SECONDS,"cached":true});
+    value["capabilities"] = capabilities();
+    Ok(value)
+}
 pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Value> {
     let started = std::time::Instant::now();
-    let items = inventory(paths).await?;
-    let inventory_ms = started.elapsed().as_millis();
-    let status_started = std::time::Instant::now();
-    let status = match tokio::time::timeout(
-        Duration::from_secs(1),
-        daemon::call(paths, "status", json!({})),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(anyhow::anyhow!("Account status snapshot timed out")),
+    // Inventory and the supervisor's account status are independent reads.
+    let inventory_task = async {
+        let items = inventory(paths).await;
+        (items, started.elapsed().as_millis())
     };
+    let status_task = async {
+        let status_started = std::time::Instant::now();
+        let status = match tokio::time::timeout(
+            Duration::from_secs(1),
+            daemon::call(paths, "status", json!({})),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!("Account status snapshot timed out")),
+        };
+        (status, status_started.elapsed().as_millis())
+    };
+    let ((items, inventory_ms), (status, account_status_ms)) =
+        tokio::join!(inventory_task, status_task);
+    let items = items?;
     let (accounts, source) = match status {
         Ok(v) => (
             v["accounts"]
@@ -931,7 +1002,6 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         }
         Err(_) => (vec![], "uninitialized"),
     };
-    let account_status_ms = status_started.elapsed().as_millis();
     let accounts = project_accounts(paths, accounts)?;
     let clock = boot_clock();
     let now = daemon::now();
@@ -939,10 +1009,14 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
     let catalog_sessions = catalog::list(paths)?;
     let placements = catalog::placement::project(paths, &catalog_sessions)?;
     let archives = external::archiving::metadata(paths)?;
+    let mut deleted_accounts = std::collections::HashMap::new();
     let mut sessions=catalog_sessions.into_iter().filter(|s|archives.get(&s.id).is_none_or(|a|a["state"]!="deleted")).map(|s| {
         if let Some(provider) = native::of(&s.provider) {
             let id = s.id.clone();
-            let deleted = !observed.contains_key(&id) && native::deleted(paths, provider, &s.account).unwrap_or(false);
+            let deleted = !observed.contains_key(&id)
+                && *deleted_accounts
+                    .entry((provider, s.account.clone()))
+                    .or_insert_with(|| native::deleted(paths, provider, &s.account).unwrap_or(false));
             let mut value = native_public(provider, s, observed.get(&id).map(|(o, _)| o), deleted);
             value["placement"] = placements["memberships"][id.as_str()].clone();
             return value;
@@ -1006,10 +1080,14 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
             session["resume_block_reason"] = json!("moving");
         }
     }
-    Ok(json!({"observed_at":daemon::now(),"account_source":source,
+    let observed_at = daemon::now();
+    let value = json!({"observed_at":observed_at,"account_source":source,
         "accounts":accounts,"sessions":sessions,"hosts":placements["hosts"],
+        "snapshot":{"observed_at":observed_at,"fresh":true,"cached":false},
         "timing":{"inventory_ms":inventory_ms,"account_status_ms":account_status_ms,"total_ms":started.elapsed().as_millis()},
-        "capabilities":capabilities()}))
+        "capabilities":capabilities()});
+    write_snapshot(paths, filter, &value);
+    Ok(value)
 }
 
 pub(crate) async fn selected(
@@ -1280,8 +1358,13 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             watch,
             interval,
             archive_filter,
+            cached,
         } => loop {
-            print(state_filtered(paths, archive_filter).await?)?;
+            print(if cached {
+                state_cached(paths, archive_filter).await?
+            } else {
+                state_filtered(paths, archive_filter).await?
+            })?;
             if !watch {
                 return Ok(());
             }

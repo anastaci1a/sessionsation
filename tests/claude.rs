@@ -1223,7 +1223,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 13);
+    assert_eq!(caps["contract_revision"], 14);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1802,7 +1802,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 13);
+    assert_eq!(caps["contract_revision"], 14);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2213,4 +2213,248 @@ async fn continuation_identity_is_stable_across_repeated_state_calls_and_old_wri
     }
     merged_error(&ea2, &ea1);
     drop(agent);
+}
+
+fn logout_events(f: &Fixture) -> Vec<String> {
+    let db = rusqlite::Connection::open(f.paths.root.join("registry.db")).unwrap();
+    db.prepare("SELECT entity FROM events WHERE kind='account.logged_out' ORDER BY rowid")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_logout_uses_the_official_command_refuses_in_use_and_is_idempotent() {
+    let f = fixture().await;
+    assert!(
+        f.run(&[
+            "account",
+            "add",
+            "--platform",
+            "claude",
+            "work",
+            "--no-login"
+        ])
+        .status
+        .success()
+    );
+    let home = f.home("work");
+    f.api(&["account", "refresh", "claude:work"]);
+    assert_eq!(f.api(&["account", "list"])[0]["selectable"], true);
+
+    // A live provider process using the account refuses the logout.
+    let agent = Process(
+        Command::new("sleep")
+            .arg("600")
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = agent.0.id();
+    wait_for("agent exec", || {
+        read(Path::new(&format!("/proc/{pid}/cmdline"))).starts_with("sleep")
+    });
+    let live = uuid::Uuid::new_v4().to_string();
+    registry(&home, pid, &live, &f.project, "bg", Some(&live[..8]));
+    let refused = f.api_error(&["account", "logout", "claude:work"]);
+    assert!(refused.contains("ACCOUNT_IN_USE"), "{refused}");
+    assert!(!home.join("fake-logout").exists());
+    assert_eq!(
+        f.api(&["account", "refresh", "claude:work"])["auth_required"],
+        false
+    );
+    drop(agent);
+
+    let out = f.api(&["account", "logout", "claude:work"]);
+    assert_eq!(
+        out,
+        json!({"account_id":"claude:work","provider":"claude","logged_out":true,"auth_required":true,
+            "method":"claude auth logout"})
+    );
+    let record = read(&home.join("fake-logout"));
+    assert!(
+        record.contains(&format!("config_dir={}", home.display())),
+        "{record}"
+    );
+    assert!(record.contains("args=auth logout"), "{record}");
+    let row = f.api(&["account", "list"])[0].clone();
+    assert_eq!(row["auth_required"], true);
+    assert_eq!(row["selectable"], false);
+    assert_eq!(row["auth_detail"], "AUTH_REQUIRED");
+    assert_eq!(
+        f.api(&["account", "refresh", "claude:work"])["auth_required"],
+        true,
+        "the supervisor's own probe agrees"
+    );
+    assert_eq!(
+        f.api(&["account", "login", "claude:work"])["login"]["action"],
+        "exec"
+    );
+    let capabilities = f.api(&["capabilities"]);
+    assert!(capabilities["contract_revision"].as_i64().unwrap() >= 14);
+    for provider in capabilities["providers"].as_array().unwrap() {
+        assert_eq!(provider["account_logout"], true);
+        assert_eq!(provider["operations"]["account_logout"]["supported"], true);
+        assert!(provider["operations"]["account_logout"]["reason"].is_string());
+    }
+    assert_eq!(logout_events(&f), vec!["work".to_owned()]);
+
+    // Already logged out: the same call succeeds without a second event.
+    let again = f.api(&["account", "logout", "claude:work"]);
+    assert_eq!(again["logged_out"], true);
+    assert_eq!(logout_events(&f).len(), 1);
+    let human = f.run(&["account", "logout", "work"]);
+    assert!(human.status.success());
+    assert!(String::from_utf8_lossy(&human.stdout).contains("claude:work logged out"));
+
+    // Unknown, mismatched and de-registered accounts get clear errors.
+    assert!(
+        f.api_error(&["account", "logout", "claude:ghost"])
+            .contains("ACCOUNT_NOT_FOUND")
+    );
+    assert!(
+        f.api_error(&["account", "logout", "codex:work"])
+            .contains("ACCOUNT_PROVIDER_MISMATCH")
+    );
+    let marker = f.paths.root.join("account-catalog/claude");
+    std::fs::create_dir_all(&marker).unwrap();
+    std::fs::write(marker.join("work.removed.json"), "{}").unwrap();
+    assert!(
+        f.api_error(&["account", "logout", "claude:work"])
+            .contains("ACCOUNT_REMOVED")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_logout_goes_through_the_account_helper_and_refuses_a_held_lease() {
+    use fs2::FileExt;
+    let f = fixture().await;
+    assert!(
+        f.run(&["account", "add", "--platform", "codex", "cx"])
+            .status
+            .success()
+    );
+    let home = f.paths.account("cx").unwrap();
+    wait_for("codex auth observed", || {
+        f.api(&["account", "list"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == "codex:cx" && a["auth_required"] == false)
+    });
+    let lease = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(home.join(".switcher-lease"))
+        .unwrap();
+    lease.try_lock_exclusive().unwrap();
+    let refused = f.api_error(&["account", "logout", "codex:cx"]);
+    assert!(refused.contains("ACCOUNT_IN_USE"), "{refused}");
+    assert!(!home.join("fake-logout").exists());
+    FileExt::unlock(&lease).unwrap();
+
+    let out = f.api(&["account", "logout", "codex:cx"]);
+    assert_eq!(out["account_id"], "codex:cx");
+    assert_eq!(out["provider"], "codex");
+    assert_eq!(out["logged_out"], true);
+    assert_eq!(out["auth_required"], true);
+    assert!(out["method"].as_str().unwrap().contains("account/logout"));
+    assert_eq!(read(&home.join("fake-logout")).trim(), "rpc");
+    assert!(!home.join("auth.json").exists());
+    let row = f.api(&["account", "list"])[0].clone();
+    assert_eq!(row["auth_required"], true);
+    assert_eq!(row["selectable"], false);
+    // The supervisor's poll keeps agreeing and never revives the login.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(f.api(&["account", "list"])[0]["auth_required"], true);
+    let again = f.api(&["account", "logout", "codex:cx"]);
+    assert_eq!(again["logged_out"], true);
+    assert_eq!(logout_events(&f), vec!["cx".to_owned()]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_order_is_persistent_shared_and_reorderable() {
+    let f = fixture().await;
+    let ids = |f: &Fixture| -> Vec<String> {
+        f.api(&["account", "list"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(
+        f.run(&["account", "add", "--platform", "codex", "zeta"])
+            .status
+            .success()
+    );
+    assert!(
+        f.run(&[
+            "account",
+            "add",
+            "--platform",
+            "claude",
+            "alpha",
+            "--no-login"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        f.run(&["account", "add", "--platform", "codex", "mid"])
+            .status
+            .success()
+    );
+    // New accounts are appended in enrollment order, not alphabetically.
+    assert_eq!(ids(&f), ["codex:zeta", "claude:alpha", "codex:mid"]);
+    let moved = f.api(&["account", "reorder", "codex:mid", "--position", "0"]);
+    assert_eq!(moved["changed"], true);
+    assert_eq!(
+        moved["order"],
+        json!(["codex:mid", "codex:zeta", "claude:alpha"])
+    );
+    assert_eq!(ids(&f), ["codex:mid", "codex:zeta", "claude:alpha"]);
+    let state_ids: Vec<String> = f.api(&["state"])["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(state_ids, ids(&f));
+    // The human command moves too, and an unchanged position is a no-op.
+    assert!(
+        f.run(&["account", "reorder", "alpha", "--position", "2"])
+            .status
+            .success()
+    );
+    assert_eq!(ids(&f), ["codex:mid", "codex:zeta", "claude:alpha"]);
+    assert_eq!(
+        f.api(&["account", "reorder", "claude:alpha", "--position", "2"])["changed"],
+        false
+    );
+    assert!(
+        f.api_error(&["account", "reorder", "claude:alpha", "--position", "3"])
+            .contains("INVALID_POSITION")
+    );
+    assert!(
+        f.api_error(&["account", "reorder", "claude:ghost", "--position", "0"])
+            .contains("unknown account")
+    );
+    let caps = f.api(&["capabilities"]);
+    assert_eq!(caps["account_reorder"], true);
+    assert_eq!(caps["state_cached"], true);
+    let events = {
+        let db = rusqlite::Connection::open(f.paths.root.join("registry.db")).unwrap();
+        db.prepare("SELECT entity FROM events WHERE kind='account.reordered' ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(events, ["mid"]);
 }

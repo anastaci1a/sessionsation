@@ -1,7 +1,7 @@
 //! Codex provider surface. The behavior itself remains in the supervisor
 //! (`daemon`), discovery/launch (`external`) and lifecycle modules; this file
 //! names what Codex supports so dispatch stays explicit.
-use super::{ProviderCapabilities, no, yes};
+use super::{Capability, ProviderCapabilities, no, yes};
 use crate::paths::Paths;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -39,6 +39,10 @@ pub fn capabilities() -> ProviderCapabilities {
         account_removal: yes(),
         account_deletion: yes(),
         account_rename: yes(),
+        account_logout: Capability {
+            supported: true,
+            reason: Some(crate::logout::CODEX_METHOD),
+        },
         headless_delivery: no(
             "Codex delivery uses the verified native queue (submit/queue/steer/resume)",
         ),

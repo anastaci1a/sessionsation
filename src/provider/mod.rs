@@ -199,6 +199,8 @@ pub struct ProviderCapabilities {
     pub account_removal: Capability,
     pub account_deletion: Capability,
     pub account_rename: Capability,
+    /// Official sign-out of the stored login (reason names the mechanism).
+    pub account_logout: Capability,
     /// Bounded headless execution through `api send` (Claude `claude -p`).
     pub headless_delivery: Capability,
     pub account_limits: Capability,

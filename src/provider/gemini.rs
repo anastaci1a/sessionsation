@@ -94,6 +94,10 @@ pub fn capabilities() -> ProviderCapabilities {
             ),
         },
         account_rename: yes(),
+        account_logout: Capability {
+            supported: true,
+            reason: Some(crate::logout::GEMINI_METHOD),
+        },
         headless_delivery: Capability {
             supported: true,
             reason: Some(
@@ -278,6 +282,54 @@ pub fn auth_status(home: &Path) -> AuthStatus {
     AuthStatus {
         logged_in: credentials && active,
     }
+}
+/// Gemini CLI 0.66.0 has no logout command. Its `/auth signout` (`/logout`)
+/// runs `clearCachedCredentialFile()` (core `code_assist/oauth2.ts`): with file
+/// storage (forced here by GEMINI_FORCE_FILE_STORAGE) it removes
+/// `<GEMINI_CLI_HOME>/.gemini/oauth_creds.json` (`rm -f`), then
+/// `UserAccountManager.clearCachedGoogleAccount()` moves `active` from
+/// `google_accounts.json` into `old` and sets `active` to null. Both effects are
+/// reproduced; the signed-in email in `old` is preserved exactly as Gemini does.
+/// The CLI's `security.auth.selectedType` reset is intentionally not applied:
+/// the managed `settings.json` keeps Login with Google selected for the next login.
+pub fn logout(home: &Path) -> Result<()> {
+    let dir = home.join(".gemini");
+    match fs::remove_file(dir.join("oauth_creds.json")) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("LOGOUT_FAILED: could not remove the cached credentials"),
+    }
+    let accounts = dir.join("google_accounts.json");
+    let mut bytes = vec![];
+    match fs::File::open(&accounts) {
+        Ok(file) => {
+            file.take(64 * 1024).read_to_end(&mut bytes)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).context("LOGOUT_FAILED: could not read the account record"),
+    }
+    let mut value: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
+    let old = value["old"].as_array().cloned().unwrap_or_default();
+    let mut old = old;
+    if let Some(active) = value["active"].as_str().filter(|s| !s.is_empty()) {
+        if !old.iter().any(|o| o.as_str() == Some(active)) {
+            old.push(json!(active));
+        }
+    }
+    value["old"] = json!(old);
+    value["active"] = Value::Null;
+    atomic_write(&accounts, &serde_json::to_vec_pretty(&value)?)
+        .context("LOGOUT_FAILED: could not update the account record")
+}
+/// Identity of the credential file (modified time and size), stat only. A login
+/// is complete when the account is logged in and this differs from before.
+pub fn credentials_stamp(home: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = fs::symlink_metadata(home.join(".gemini/oauth_creds.json")).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+/// True once a login that started with `before` has produced credentials.
+pub fn login_completed(home: &Path, before: Option<(std::time::SystemTime, u64)>) -> bool {
+    auth_status(home).logged_in && credentials_stamp(home) != before
 }
 /// Non-identifying auth summary for enrollment output (never email).
 pub fn auth_report(home: &Path) -> Value {
@@ -504,20 +556,39 @@ fn pids() -> Vec<u32> {
 /// Verified live interactive sessions of one home: a Gemini process whose
 /// command line names the session, whose `GEMINI_CLI_HOME` is this home and
 /// that is not a zombie. The PID plus /proc start time is the identity.
-pub fn live_sessions(home: &Path) -> Result<Vec<Live>> {
-    let mut result = vec![];
-    for pid in pids() {
-        let Some(args) = arguments(pid) else { continue };
-        if !is_gemini_arguments(&args) {
-            continue;
+/// One /proc pass: every live Gemini process that names a session, shared by
+/// all accounts of a call instead of one scan per account.
+pub struct ProcessSnapshot(Vec<(u32, u64, String)>);
+impl ProcessSnapshot {
+    pub fn take() -> Self {
+        let mut found = vec![];
+        for pid in pids() {
+            let Some(args) = arguments(pid) else { continue };
+            if !is_gemini_arguments(&args) {
+                continue;
+            }
+            let Some(session_id) = session_argument(&args) else {
+                continue;
+            };
+            let Some((state, start)) = proc_start(pid) else {
+                continue;
+            };
+            if matches!(state, 'Z' | 'X') {
+                continue;
+            }
+            found.push((pid, start, session_id));
         }
-        let Some(session_id) = session_argument(&args) else {
-            continue;
-        };
-        let Some((state, start)) = proc_start(pid) else {
-            continue;
-        };
-        if matches!(state, 'Z' | 'X') || !home_matches(pid, home) {
+        Self(found)
+    }
+}
+pub fn live_sessions(home: &Path) -> Result<Vec<Live>> {
+    live_sessions_in(&ProcessSnapshot::take(), home)
+}
+/// Verified live sessions of one home from a shared process snapshot.
+pub fn live_sessions_in(snapshot: &ProcessSnapshot, home: &Path) -> Result<Vec<Live>> {
+    let mut result = vec![];
+    for (pid, start, session_id) in snapshot.0.iter().cloned() {
+        if !home_matches(pid, home) {
             continue;
         }
         result.push(Live {
@@ -665,6 +736,7 @@ pub fn deleted(paths: &Paths, name: &str) -> Result<bool> {
 pub fn reconcile(paths: &Paths) -> Result<BTreeMap<String, (Observation, PathBuf)>> {
     let accounts = enrolled(paths)?;
     let mut discovered = vec![];
+    let snapshot = ProcessSnapshot::take();
     let mut scans = BTreeMap::new();
     for a in &accounts {
         let found = transcripts(&a.home);
@@ -682,8 +754,8 @@ pub fn reconcile(paths: &Paths) -> Result<BTreeMap<String, (Observation, PathBuf
                 directory: t.cwd.clone(),
             });
         }
-        // One /proc scan per account, however many sessions it holds.
-        let live = live_sessions(&a.home).map_err(|e| e.to_string());
+        // One /proc scan per call, shared by every account.
+        let live = live_sessions_in(&snapshot, &a.home).map_err(|e| e.to_string());
         scans.insert(a.name.clone(), (found, live));
     }
     let sessions = catalog::register_discovered(paths, ProviderId::Gemini, &discovered)?;
@@ -846,6 +918,33 @@ mod tests {
         fs::set_permissions(&creds, fs::Permissions::from_mode(0o600)).unwrap();
         fs::write(&creds, "").unwrap();
         assert!(!auth_status(home).logged_in, "empty credential file");
+    }
+
+    #[test]
+    fn login_completes_only_when_credentials_appear_or_change() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path();
+        let dir = home.join(".gemini");
+        fs::create_dir_all(&dir).unwrap();
+        let before = credentials_stamp(home);
+        assert!(!login_completed(home, before));
+        fs::write(dir.join("oauth_creds.json"), "{}").unwrap();
+        fs::write(
+            dir.join("google_accounts.json"),
+            json!({"active":"a@example.invalid"}).to_string(),
+        )
+        .unwrap();
+        assert!(
+            login_completed(home, before),
+            "new credentials complete the login"
+        );
+        let existing = credentials_stamp(home);
+        assert!(
+            !login_completed(home, existing),
+            "an already-logged-in account is not complete until relogin rewrites it"
+        );
+        fs::write(dir.join("oauth_creds.json"), "{\"refreshed\":1}").unwrap();
+        assert!(login_completed(home, existing));
     }
 
     #[test]
