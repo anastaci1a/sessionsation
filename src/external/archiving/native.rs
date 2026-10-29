@@ -660,16 +660,20 @@ fn delete(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()> 
         let digest = tree_digest(current)?.1;
         move_entry(current, &staging.join("files").join(&st.staged), &digest)?;
     }
-    let removed = crate::catalog::remove(paths, &s)?;
+    if let Some(home) = home.as_deref().filter(|_| provider == ProviderId::Claude) {
+        for (_, original) in &sources {
+            remove_empty_project_dir(home, original, s.directory.as_deref());
+        }
+    }
+    let removed = redacted(crate::catalog::remove(paths, &s)?);
     save(
         paths,
         &Manifest {
             version: 1,
             session: removed,
             provider: provider.as_str().into(),
-            home: home
-                .or(prior.as_ref().map(|m| m.home.clone()))
-                .unwrap_or_default(),
+            // A deleted manifest keeps ids only: no name, directory or home path.
+            home: PathBuf::new(),
             state: "deleted".into(),
             archived_at: daemon::now(),
             bundle: o.id.clone(),
@@ -688,4 +692,44 @@ fn delete(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()> 
         "complete",
         "Conversation, its sidecar files and its catalog entry deleted. Project files, account credentials and upstream accounts are unchanged.",
     )
+}
+
+/// What a deleted manifest keeps: the ids that stop a replayed or stale
+/// request (`id`, provider, account, conversation ids, revision) and nothing
+/// that names the user's work (name, directory, pane attachment).
+fn redacted(mut s: Session) -> Session {
+    s.name = String::new();
+    s.directory = None;
+    s.attachment = None;
+    s
+}
+
+/// Claude keeps a conversation in `<home>/projects/<encoded cwd>/`. After the
+/// conversation's files are staged away, remove that directory only if it is
+/// the direct project directory of the deleted file (and, when the entry
+/// recorded a directory, the one that directory encodes to) and it is empty.
+/// `remove_dir` (rmdir) fails on a non-empty directory, so no other file is
+/// ever touched; symlinks are never followed or removed.
+fn remove_empty_project_dir(home: &Path, original: &Path, directory: Option<&str>) {
+    let Some(dir) = original.parent() else {
+        return;
+    };
+    if dir.parent() != Some(home.join("projects").as_path()) {
+        return;
+    }
+    let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    if let Some(cwd) = directory {
+        let encoded: String = cwd
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        if encoded != name && cwd.replace('/', "-") != name {
+            return;
+        }
+    }
+    if fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir()) {
+        let _ = fs::remove_dir(dir);
+    }
 }

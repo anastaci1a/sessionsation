@@ -2943,3 +2943,47 @@ async fn active_since_comes_from_the_registry_never_a_bg_spare_and_is_null_when_
     assert_eq!(row["availability"], "stopped");
     assert!(row["active_since"].is_null(), "{row}");
 }
+
+/// Audit C: deleting a throwaway session removes its now-empty project dir and
+/// redacts the deleted manifest to ids; other dirs and non-empty ones stay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_removes_only_its_own_empty_project_dir_and_redacts_the_manifest() {
+    let f = fixture().await;
+    assert!(
+        f.run(&["account", "add", "--platform", "claude", "personal"])
+            .status
+            .success()
+    );
+    let home = f.home("personal");
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+    let mine = uuid::Uuid::new_v4().to_string();
+    let path = transcript(&home, &f.project, &mine);
+    let dir = path.parent().unwrap().to_path_buf();
+    let unrelated = home.join("projects/-tmp-someone-elses-empty");
+    std::fs::create_dir_all(&unrelated).unwrap();
+    let session = by_conversation(&f, &mine);
+    conversation_job(&f, "delete-session", &session);
+    assert!(!dir.exists(), "its own now-empty project dir is removed");
+    assert!(unrelated.exists(), "directories it does not own stay");
+    assert!(home.join("projects").exists());
+    let manifest = read(
+        &f.paths
+            .root
+            .join("archived-sessions")
+            .join(session["id"].as_str().unwrap())
+            .join("native.json"),
+    );
+    let m: Value = serde_json::from_str(&manifest).unwrap();
+    assert_eq!(m["state"], "deleted");
+    assert_eq!(m["session"]["id"], session["id"]);
+    assert_eq!(m["session"]["name"], "");
+    assert!(m["session"]["directory"].is_null(), "{manifest}");
+    assert!(m["session"]["attachment"].is_null());
+    assert_eq!(m["home"], "");
+    assert!(
+        !manifest.contains(f.project.to_str().unwrap()),
+        "{manifest}"
+    );
+}

@@ -481,7 +481,7 @@ async fn archive(paths: &Paths, o: &mut Operation) -> Result<()> {
         "Verified compressed archive saved; clearing original native history without touching project files.",
     )?;
     crate::catalog::resolve(paths, &o.session.id, &o.expected_generation)?;
-    deletion::delete(paths, &source.key(), &source.thread_id, &plan.revision).await?;
+    deletion::delete_history(paths, &source.key(), &source.thread_id, &plan.revision).await?;
     a.state = "archived".into();
     a.session = crate::catalog::invalidate(paths, &o.session.id, &o.expected_generation)?;
     save(paths, &a)?;
@@ -633,9 +633,16 @@ async fn delete(paths: &Paths, o: &mut Operation) -> Result<()> {
         "Deleting this conversation's local native history and archive copies; project files and credentials are unchanged.",
     )?;
     let plan = deletion::preview(paths, &source.key()).await?;
-    crate::catalog::resolve(paths, &o.session.id, &o.expected_generation)?;
-    deletion::delete(paths, &source.key(), &source.thread_id, &plan.revision).await?;
-    let session = crate::catalog::invalidate(paths, &o.session.id, &o.expected_generation)?;
+    let current = crate::catalog::resolve(paths, &o.session.id, &o.expected_generation)?;
+    deletion::delete_history(paths, &source.key(), &source.thread_id, &plan.revision).await?;
+    // The entry goes with the conversation; the record keeps ids only.
+    let mut session = crate::catalog::remove(paths, &current)?;
+    session.name.clear();
+    session.directory = None;
+    session.attachment = None;
+    let mut source = source;
+    deletion::redact_source(&mut source);
+    deletion::forget(paths, &plan.thread_ids, &source.thread_id)?;
     let dir = slot(paths, &session.id)?;
     // The directory belongs solely to this backend session. Refuse symlinks.
     fn validate(p: &Path) -> Result<()> {

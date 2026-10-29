@@ -2385,6 +2385,26 @@ async fn permanent_delete_requires_fresh_confirmation_and_keeps_project_files() 
     let backup = f.paths.root.join("move-backups/old/backup.jsonl");
     fs::create_dir_all(backup.parent().unwrap()).unwrap();
     fs::copy(&a, &backup).unwrap();
+    // Audit C: the session-catalog entry for this conversation (and only it).
+    sessionsation::catalog::register_discovered(
+        &f.paths,
+        sessionsation::provider::ProviderId::Codex,
+        &[
+            sessionsation::catalog::Discovered {
+                account: "personal".into(),
+                conversation_id: ID.into(),
+                label: "secret-name".into(),
+                directory: Some(project.to_string_lossy().into_owned()),
+            },
+            sessionsation::catalog::Discovered {
+                account: "work".into(),
+                conversation_id: "22222222-2222-4222-8222-222222222222".into(),
+                label: "unrelated".into(),
+                directory: None,
+            },
+        ],
+    )
+    .unwrap();
     let key = format!("thread:{ID}");
     let preview = f.invoke(&["delete-session", "--session", &key]);
     assert_eq!(preview["copies"].as_array().unwrap().len(), 4);
@@ -2442,6 +2462,28 @@ async fn permanent_delete_requires_fresh_confirmation_and_keeps_project_files() 
         preview["revision"].as_str().unwrap(),
     ]);
     assert_eq!(result["deleted"], true);
+    let remaining = sessionsation::catalog::list(&f.paths).unwrap();
+    assert!(
+        !remaining.iter().any(|s| s.conversation_id == ID),
+        "catalog entry removed with the conversation"
+    );
+    assert!(remaining.iter().any(|s| s.name == "unrelated"));
+    let journal = f.paths.root.join("deletions").join(format!("{ID}.json"));
+    assert!(
+        !journal.exists(),
+        "completed journal (name, cwd) is removed"
+    );
+    let record = fs::read_to_string(
+        f.paths
+            .root
+            .join("conversations")
+            .join(format!("{ID}.json")),
+    )
+    .unwrap();
+    assert!(
+        record.contains("\"deleted\":true") && !record.contains("secret-name"),
+        "{record}"
+    );
     assert!(!a.exists() && !b.exists() && !backup.exists() && !child.exists());
     let deleted: Vec<_> =
         f.a.lock()

@@ -243,7 +243,25 @@ pub async fn preview(paths: &Paths, key: &str) -> Result<Plan> {
     let confirmation = format!("DELETE {}", catalog::label(&source));
     Ok(Plan { source, revision, confirmation, thread_ids, copies, detail: "Permanently delete this conversation and its subagent history from every known local account, including archives and switcher history backups. /resume and switcher recovery cannot undo this. Project folders and their files are NOT deleted. Copies on other machines or external backups are outside this operation.".into() })
 }
+/// Permanent user-facing deletion: the history, then every leftover that names
+/// the conversation (session-catalog entry, recovery journal, label, home path).
 pub async fn delete(paths: &Paths, key: &str, confirm: &str, revision: &str) -> Result<Value> {
+    let plan = preview(paths, key).await?;
+    let result = delete_history(paths, key, confirm, revision).await?;
+    for session in catalog_entries(paths, &plan.thread_ids)? {
+        crate::catalog::remove(paths, &session)?;
+    }
+    forget(paths, &plan.thread_ids, confirm)?;
+    Ok(result)
+}
+
+/// Deletes the history only; archiving reuses it and keeps its catalog entry.
+pub(super) async fn delete_history(
+    paths: &Paths,
+    key: &str,
+    confirm: &str,
+    revision: &str,
+) -> Result<Value> {
     let initial = preview(paths, key).await?;
     ensure!(
         confirm == initial.source.thread_id,
@@ -354,4 +372,38 @@ pub async fn delete(paths: &Paths, key: &str, confirm: &str, revision: &str) -> 
     Ok(
         json!({"schema_version":1,"deleted":true,"thread_id":confirm,"history_copies":plan.copies.len(),"project_files_deleted":false}),
     )
+}
+
+/// Session-catalog entries of these exact Codex conversations.
+fn catalog_entries(paths: &Paths, ids: &BTreeSet<String>) -> Result<Vec<crate::catalog::Session>> {
+    Ok(crate::catalog::list(paths)?
+        .into_iter()
+        .filter(|s| {
+            s.provider == "codex"
+                && (ids.contains(&s.conversation_id)
+                    || s.previous_conversation_ids.iter().any(|p| ids.contains(p)))
+        })
+        .collect())
+}
+
+/// After a completed permanent deletion: the conversation's label and home path
+/// go from its record, and its recovery journal (name, directory) is removed.
+/// Recovery needs both only while the record says `deleting`.
+pub(super) fn forget(paths: &Paths, ids: &BTreeSet<String>, thread_id: &str) -> Result<()> {
+    for id in ids {
+        catalog::redact_deleted(paths, id)?;
+    }
+    let _ = fs::remove_file(journal(paths, thread_id)?);
+    Ok(())
+}
+
+/// A deleted archive record keeps ids and state, not what names the work.
+pub(super) fn redact_source(source: &mut Instance) {
+    source.display_name.clear();
+    source.tmux_session.clear();
+    source.cwd.clear();
+    source.rollout = PathBuf::new();
+    source.home = PathBuf::new();
+    source.detail.clear();
+    source.warnings.clear();
 }

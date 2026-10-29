@@ -334,6 +334,16 @@ pub(super) fn restore_archived(paths: &Paths, id: &str, home: &Path) -> Result<(
     })
 }
 
+/// A permanently deleted conversation keeps only its ids: the label and the
+/// owning home path go (`deleted` alone is what blocks reuse).
+pub(super) fn redact_deleted(paths: &Paths, id: &str) -> Result<()> {
+    update(paths, id, |r| {
+        if r.deleted {
+            r.name = None;
+            r.owner = None;
+        }
+    })
+}
 #[cfg(test)]
 mod stop_tests {
     use super::*;
