@@ -183,7 +183,11 @@ pub enum Command {
         herdr_session: String,
         /// Open in a new tab of this existing Space instead of a new Space.
         #[arg(long)]
+        #[arg(long, conflicts_with = "new_space")]
         space: Option<String>,
+        /// Create a new Space with this label (exclusive with `--space`).
+        #[arg(long, conflicts_with = "space")]
+        new_space: Option<String>,
         /// Tab and catalog name (default: the current session name).
         #[arg(long)]
         name: Option<String>,
@@ -249,8 +253,15 @@ pub enum SessionAction {
         #[arg(long)]
         herdr_socket: Option<std::path::PathBuf>,
         /// Existing Space (workspace) id from `api spaces`.
-        #[arg(long)]
-        space: String,
+        #[arg(
+            long,
+            conflicts_with = "new_space",
+            required_unless_present = "new_space"
+        )]
+        space: Option<String>,
+        /// Label of a Space to create (exclusive with `--space`).
+        #[arg(long, conflicts_with = "space", required_unless_present = "space")]
+        new_space: Option<String>,
         /// Tab name; defaults to the current session name.
         #[arg(long)]
         name: Option<String>,
@@ -940,7 +951,8 @@ pub fn capabilities() -> Value {
     value["launch_permissions"] = json!({"since_revision":19,"values":["yolo","default"],"built_in_default":crate::config::Config::default().launch_permissions.as_str(),"setting":"launch_permissions","request_field":"permissions","requests":["launch","resume-launch"],"cli_option":"--permissions","codex":{"yolo":{"approval_policy":"never","sandbox":"danger-full-access"}},"claude":{"yolo":"--dangerously-skip-permissions"},"gemini":{"yolo":"--approval-mode yolo"},"applies_to":["new","resume","restart","account_switch","hosted"],"headless_delivery":"unchanged"});
     value["account_reorder"] = json!(true);
     value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","gemini_process_source":"cmdline_session_id_argument","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
-    value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session","space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
+    value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session"],"requires_one_of":["space","new_space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
+    value["new_space"] = json!({"version":1,"resume":true,"add_to_herdr":true,"move_space":true,"label_validation":"validate_name","exists_error":"WORKSPACE_NAME_EXISTS"});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
     if let Some(claude) = value["providers"]
         .as_array_mut()
@@ -1575,6 +1587,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     herdr_session,
                     herdr_socket,
                     space,
+                    new_space,
                     name,
                 }),
             ..
@@ -1594,7 +1607,8 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     expected_generation: &expected_generation,
                     herdr_session: &herdr_session,
                     herdr_socket: herdr_socket.as_deref(),
-                    space: &space,
+                    space: space.as_deref(),
+                    new_space: new_space.as_deref(),
                     name: name.as_deref(),
                 },
             )
@@ -1824,6 +1838,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             expected_generation,
             herdr_session,
             space,
+            new_space,
             name,
         } if catalog::resolve(paths, &session, &expected_generation)
             .is_ok_and(|s| native::of(&s.provider).is_some()) =>
@@ -1840,7 +1855,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 &s.account,
                 Some(&s.conversation_id),
                 (&session, &s.generation()),
-                resume_placement(space.as_deref(), &s),
+                resume_placement(space.as_deref(), new_space.as_deref(), &s),
             )
             .await?
         }
@@ -1849,6 +1864,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             expected_generation,
             herdr_session,
             space,
+            new_space,
             name,
         } => {
             let (s, source) = selected(paths, &session, &expected_generation).await?;
@@ -1870,7 +1886,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 &s.account,
                 Some(&s.conversation_id),
                 (&session, &s.generation()),
-                resume_placement(space.as_deref(), &s),
+                resume_placement(space.as_deref(), new_space.as_deref(), &s),
             )
             .await?
         }
@@ -1956,10 +1972,12 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
 /// would rename the session.
 fn resume_placement<'a>(
     space: Option<&'a str>,
+    new_space: Option<&'a str>,
     s: &'a catalog::Session,
 ) -> external::hosting::Placement<'a> {
     external::hosting::Placement {
         space,
+        new_space,
         label: Some(s.name.as_str()).filter(|n| !n.trim().is_empty()),
         strict: true,
     }
@@ -2154,7 +2172,7 @@ mod prefill_tests {
         // Without --name the existing name labels the tab (live HERDR names follow the
         // tab label), never the "sessionsation" default.
         for space in [Some("w1"), None] {
-            let p = resume_placement(space, &s);
+            let p = resume_placement(space, None, &s);
             assert_eq!(p.space, space);
             assert_eq!(p.label, Some("my-work"));
             assert!(p.strict);
@@ -2163,7 +2181,7 @@ mod prefill_tests {
             name: " ".into(),
             ..s
         };
-        assert_eq!(resume_placement(Some("w1"), &unnamed).label, None);
+        assert_eq!(resume_placement(Some("w1"), None, &unnamed).label, None);
     }
     #[test]
     fn an_unobserved_attachment_is_not_an_inactive_history_source() {

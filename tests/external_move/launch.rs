@@ -1640,3 +1640,156 @@ async fn wait_space_move(f: &Fixture, id: &str, phase: &str) -> Value {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
+
+/// Moving into a new Space creates it around the moved pane: no initial shell
+/// pane exists, a retry never creates a second Space, and an existing label is
+/// refused before anything changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires isolated HERDR binary; see docs/operations.md"]
+async fn installed_herdr_space_move_creates_new_space_without_stray_shell_or_replay() {
+    assert_eq!(
+        std::env::var("SESSIONSATION_ISOLATED_HOST_TEST").as_deref(),
+        Ok("1")
+    );
+    let f = Fixture::new().await;
+    let host = ActualHost::start(&f).await;
+    let socket = host.config.join("herdr/sessions/fixture/herdr.sock");
+    let origin = host.call(&[
+        "workspace",
+        "create",
+        "--label",
+        "Origin",
+        "--cwd",
+        f.tmp.path().to_str().unwrap(),
+    ]);
+    let w1 = origin["workspace"]["workspace_id"].as_str().unwrap();
+    let mut r = request(&f, &socket, "New space fixture");
+    r["space"]["id"] = json!(w1);
+    let id = r["request_id"].as_str().unwrap();
+    assert!(api(&f, &["launch", "start"], Some(&r)).status.success());
+    let until = Instant::now() + Duration::from_secs(40);
+    let receipt = loop {
+        let out = api(&f, &["launch", "status", "--request-id", id], None);
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        if v["result"]["phase"] == "running" {
+            break v["result"].clone();
+        }
+        assert!(Instant::now() < until, "{v}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let pane = receipt["pane_id"].as_str().unwrap();
+    let terminal = host.call(&["pane", "get", pane])["pane"]["terminal_id"].clone();
+    // The source tab keeps a sibling so the move cannot empty the Origin Space.
+    host.call(&["pane", "split", pane, "--direction", "right", "--no-focus"]);
+    let sessions: Value = serde_json::from_slice(&foreign_api(&f, &["state"]).stdout).unwrap();
+    let session = sessions["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap()
+        .clone();
+    let generation = session["generation"].as_str().unwrap();
+    let spaces_before = host.call(&["workspace", "list"])["workspaces"]
+        .as_array()
+        .unwrap()
+        .len();
+    let panes_before = host.call(&["pane", "list"])["panes"]
+        .as_array()
+        .unwrap()
+        .len();
+    let move_id = uuid::Uuid::new_v4().to_string();
+    let args = [
+        "move-space",
+        "--session",
+        id,
+        "--expected-generation",
+        generation,
+        "--new-space",
+        "Fresh",
+        "--request-id",
+        &move_id,
+    ];
+    assert!(
+        !foreign_api(
+            &f,
+            &[
+                "move-space",
+                "--session",
+                id,
+                "--expected-generation",
+                generation,
+                "--new-space",
+                "A",
+                "--space",
+                w1,
+                "--request-id",
+                &move_id
+            ]
+        )
+        .status
+        .success(),
+        "--space and --new-space are exclusive"
+    );
+    let taken = uuid::Uuid::new_v4().to_string();
+    let refused = foreign_api(
+        &f,
+        &[
+            "move-space",
+            "--session",
+            id,
+            "--expected-generation",
+            generation,
+            "--new-space",
+            "Origin",
+            "--request-id",
+            &taken,
+        ],
+    );
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("WORKSPACE_NAME_EXISTS"));
+    assert!(
+        !f.paths
+            .root
+            .join(format!("space-moves/{taken}.json"))
+            .exists()
+    );
+    let started = foreign_api(&f, &args);
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let done = wait_space_move(&f, &move_id, "complete").await;
+    let created = done["created_space"].as_str().unwrap().to_owned();
+    assert_eq!(done["pane"]["terminal_id"], terminal);
+    let list = host.call(&["workspace", "list"]);
+    let list = list["workspaces"].as_array().unwrap();
+    assert_eq!(list.len(), spaces_before + 1);
+    let fresh = list
+        .iter()
+        .find(|w| w["workspace_id"] == created.as_str())
+        .unwrap();
+    assert_eq!(fresh["label"], "Fresh");
+    assert_eq!(
+        (fresh["pane_count"].as_u64(), fresh["tab_count"].as_u64()),
+        (Some(1), Some(1)),
+        "no stray shell: {fresh}"
+    );
+    assert_eq!(
+        host.call(&["pane", "list"])["panes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        panes_before
+    );
+    let repeat: Value = serde_json::from_slice(&foreign_api(&f, &args).stdout).unwrap();
+    assert_eq!(repeat["result"]["created_space_id"], created.as_str());
+    assert_eq!(repeat["result"]["space_id"], created.as_str());
+    assert_eq!(
+        host.call(&["workspace", "list"])["workspaces"]
+            .as_array()
+            .unwrap()
+            .len(),
+        spaces_before + 1
+    );
+}

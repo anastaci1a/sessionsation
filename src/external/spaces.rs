@@ -9,8 +9,18 @@ pub struct Target {
     pub session: String,
     #[arg(long)]
     pub expected_generation: String,
-    #[arg(long)]
-    pub space: String,
+    /// Existing destination Space id (exclusive with `--new-space`).
+    #[arg(
+        long,
+        conflicts_with = "new_space",
+        required_unless_present = "new_space"
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
+    /// Label of a destination Space to create (exclusive with `--space`).
+    #[arg(long, conflicts_with = "space", required_unless_present = "space")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_space: Option<String>,
     #[arg(long)]
     pub request_id: String,
 }
@@ -24,6 +34,12 @@ struct Operation {
     #[serde(default)]
     epoch: Option<String>,
     previous_space: String,
+    /// Space ids that existed before a new-Space request was admitted.
+    #[serde(default)]
+    known_spaces: Vec<String>,
+    /// Space this operation created (journaled before ownership is rebound).
+    #[serde(default)]
+    created_space: Option<String>,
     phase: String,
     detail: String,
     pane: Option<Value>,
@@ -74,7 +90,7 @@ fn public(paths: &Paths, op: &Operation) -> Result<Value> {
         json!({"id":op.request.request_id,"kind":"move_space","session_id":op.session.id,
         "phase":op.phase,"detail":op.detail,"created_at":op.created_at,"updated_at":op.updated_at,
         "can_cancel":false,"can_respond":false,"can_recover":recovering && crate::background::worker_stopped(&file(paths,&op.request.request_id)?.with_extension("lock"))?,
-        "previous_space_id":op.previous_space,"space_id":op.request.space,"pane":op.pane}),
+        "previous_space_id":op.previous_space,"space_id":destination(op),"new_space":op.request.new_space,"created_space_id":op.created_space,"pane":op.pane}),
     )
 }
 pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
@@ -82,6 +98,20 @@ pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
 }
 pub fn exists(paths: &Paths, id: &str) -> bool {
     file(paths, id).is_ok_and(|p| p.exists())
+}
+/// Destination Space id: the requested one, or the one this operation created.
+fn destination(op: &Operation) -> Option<&str> {
+    op.request.space.as_deref().or(op.created_space.as_deref())
+}
+/// A new-Space move must name a fresh label; never match an existing Space.
+fn fresh_label(available: &Value, label: &str) -> Result<()> {
+    ensure!(
+        !available["spaces"]
+            .as_array()
+            .is_some_and(|ss| ss.iter().any(|s| s["name"] == label)),
+        "WORKSPACE_NAME_EXISTS"
+    );
+    Ok(())
 }
 fn host(op: &Operation, args: &[&str]) -> Result<Value> {
     let (session, _) = crate::terminal::target(&op.source.pane)?;
@@ -145,9 +175,32 @@ fn relabel_args(tab: Option<&str>, name: &str) -> Option<Vec<String>> {
 }
 fn finish(paths: &Paths, op: &mut Operation, current: Value) -> Result<()> {
     ensure!(
-        current["terminal_id"] == op.terminal_id && current["workspace_id"] == op.request.space,
+        current["terminal_id"] == op.terminal_id,
         "SPACE_MOVE_IDENTITY_MISMATCH"
     );
+    let space = current["workspace_id"]
+        .as_str()
+        .context("INVALID_HOST_SPACE")?
+        .to_owned();
+    match (&op.request.space, &op.request.new_space) {
+        (Some(wanted), _) => ensure!(*wanted == space, "SPACE_MOVE_IDENTITY_MISMATCH"),
+        (None, Some(label)) => {
+            // Only a Space absent before admission, carrying the requested label.
+            ensure!(
+                !op.known_spaces.contains(&space),
+                "SPACE_MOVE_IDENTITY_MISMATCH"
+            );
+            let all = host(op, &["workspace", "list"])?;
+            ensure!(
+                all["workspaces"].as_array().is_some_and(|ws| ws
+                    .iter()
+                    .any(|w| w["workspace_id"] == space.as_str() && w["label"] == label.as_str())),
+                "SPACE_MOVE_IDENTITY_MISMATCH"
+            );
+            op.created_space = Some(space);
+        }
+        (None, None) => bail!("INVALID_SPACE_MOVE"),
+    }
     let id = current["pane_id"].as_str().context("INVALID_HOST_PANE")?;
     let (server, _) = crate::terminal::target(&op.source.pane)?;
     let target = hosting::herdr_target(server, id)?;
@@ -201,6 +254,21 @@ fn finish(paths: &Paths, op: &mut Operation, current: Value) -> Result<()> {
         "Session moved to the selected Space. No agent was restarted and no message was sent.",
     )
 }
+fn check_destination(request: &Target, available: &Value) -> Result<()> {
+    if let Some(space) = &request.space {
+        ensure!(
+            available["spaces"]
+                .as_array()
+                .is_some_and(|ss| ss.iter().any(|s| s["id"] == space.as_str())),
+            "SPACE_NOT_FOUND"
+        );
+    }
+    if let Some(label) = &request.new_space {
+        crate::paths::validate_name(label)?;
+        fresh_label(available, label)?;
+    }
+    Ok(())
+}
 pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
     let record = file(paths, &request.request_id)?;
     if record.exists() {
@@ -229,12 +297,7 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         .map_err(|_| anyhow::anyhow!("SESSION_OPERATION_IN_PROGRESS"))?;
     let socket = hosting::socket_for(paths, &source.pane)?.context("MISSING_HOST_SOCKET")?;
     let available = choices(&session, &source, &socket)?;
-    ensure!(
-        available["spaces"]
-            .as_array()
-            .is_some_and(|ss| ss.iter().any(|s| s["id"] == request.space)),
-        "SPACE_NOT_FOUND"
-    );
+    check_destination(&request, &available)?;
     crate::catalog::resolve(paths, &request.session, &request.expected_generation)?;
     let epoch = receipt_location(paths, &session.id)?.map(|(id, _)| id);
     let mut op = Operation {
@@ -251,6 +314,13 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
             .as_str()
             .context("INVALID_HOST_SPACE")?
             .into(),
+        known_spaces: available["spaces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s["id"].as_str().map(str::to_owned))
+            .collect(),
+        created_space: None,
         phase: String::new(),
         detail: String::new(),
         pane: None,
@@ -263,7 +333,7 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         "admitted",
         "Preparing to move only this terminal; its process and conversation will remain in place.",
     )?;
-    if op.request.space == op.previous_space {
+    if op.request.space.as_deref() == Some(op.previous_space.as_str()) {
         op.pane = Some(available["pane"].clone());
         save(
             paths,
@@ -332,12 +402,7 @@ fn execute(paths: &Paths, op: &mut Operation) -> Result<()> {
             && available["current_space_id"] == op.previous_space,
         "STALE_TARGET"
     );
-    ensure!(
-        available["spaces"]
-            .as_array()
-            .is_some_and(|ss| ss.iter().any(|s| s["id"] == op.request.space)),
-        "SPACE_NOT_FOUND"
-    );
+    check_destination(&op.request, &available)?;
     save(
         paths,
         op,
@@ -345,18 +410,16 @@ fn execute(paths: &Paths, op: &mut Operation) -> Result<()> {
         "Moving the existing terminal into a new tab in the selected Space. No provider command is sent.",
     )?;
     let (_, id) = crate::terminal::target(&op.source.pane)?;
-    let moved = host(
-        op,
-        &[
-            "pane",
-            "move",
-            id,
-            "--new-tab",
-            "--workspace",
-            &op.request.space,
-            "--no-focus",
-        ],
-    );
+    // One atomic host request: for a new Space HERDR creates the Space around
+    // the moved pane itself, so no initial shell pane is ever created.
+    let mut args = vec!["pane", "move", id];
+    match (&op.request.space, &op.request.new_space) {
+        (Some(space), _) => args.extend(["--new-tab", "--workspace", space]),
+        (None, Some(label)) => args.extend(["--new-workspace", "--label", label]),
+        (None, None) => bail!("INVALID_SPACE_MOVE"),
+    }
+    args.push("--no-focus");
+    let moved = host(op, &args);
     match moved {
         Ok(result) if result["move_result"]["changed"] == false => {
             save(
@@ -422,7 +485,10 @@ pub fn recover(paths: &Paths, id: &str) -> Result<Value> {
         )?;
     } else {
         // No mutation RPC in recovery. Match the stable terminal, not an old pane alias.
-        let all = host(&op, &["pane", "list", "--workspace", &op.request.space])?;
+        let all = match &op.request.space {
+            Some(space) => host(&op, &["pane", "list", "--workspace", space])?,
+            None => host(&op, &["pane", "list"])?,
+        };
         let candidates: Vec<_> = all["panes"]
             .as_array()
             .context("INVALID_HOST_PANES")?
@@ -658,7 +724,8 @@ mod tests {
             request: Target {
                 session: session.id.clone(),
                 expected_generation: session.generation(),
-                space: "w2".into(),
+                space: Some("w2".into()),
+                new_space: None,
                 request_id: uuid::Uuid::new_v4().to_string(),
             },
             session,
@@ -667,12 +734,67 @@ mod tests {
             terminal_id: "terminal-fixture".into(),
             epoch: None,
             previous_space: "w1".into(),
+            known_spaces: vec![],
+            created_space: None,
             phase: String::new(),
             detail: String::new(),
             pane: None,
             created_at: 1,
             updated_at: 1,
         }
+    }
+    #[test]
+    fn new_space_is_exclusive_fresh_and_legacy_journals_still_load() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            target: Target,
+        }
+        let base = [
+            "x",
+            "--session",
+            "s",
+            "--expected-generation",
+            "g",
+            "--request-id",
+            "r",
+        ];
+        let parse = |extra: &[&str]| Cli::try_parse_from(base.iter().chain(extra));
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["--space", "w1", "--new-space", "N"]).is_err());
+        assert_eq!(
+            parse(&["--new-space", "N"])
+                .unwrap()
+                .target
+                .new_space
+                .as_deref(),
+            Some("N")
+        );
+        assert_eq!(
+            parse(&["--space", "w1"]).unwrap().target.space.as_deref(),
+            Some("w1")
+        );
+        let old: Target = serde_json::from_value(
+            json!({"session":"s","expected_generation":"g","space":"w2","request_id":"r"}),
+        )
+        .unwrap();
+        assert_eq!(
+            (old.space.as_deref(), old.new_space.as_deref()),
+            (Some("w2"), None)
+        );
+        let available = json!({"spaces":[{"id":"w1","name":"Main"}]});
+        assert!(
+            fresh_label(&available, "Main")
+                .unwrap_err()
+                .to_string()
+                .contains("WORKSPACE_NAME_EXISTS")
+        );
+        fresh_label(&available, "Other").unwrap();
+        let mut request = old;
+        request.space = None;
+        request.new_space = Some("../bad".into());
+        assert!(check_destination(&request, &available).is_err());
     }
     #[test]
     fn move_restores_session_label_on_the_new_tab() {
@@ -748,7 +870,7 @@ mod tests {
             "dispatching"
         );
         let mut changed = op.request.clone();
-        changed.space = "w3".into();
+        changed.space = Some("w3".into());
         assert!(
             start(&paths, changed)
                 .await
@@ -780,7 +902,7 @@ mod tests {
         next.request.expected_generation = next.session.generation();
         next.source = op.source.clone();
         next.source.pane = "herdr/fixture/w2:p2".into();
-        next.request.space = "w3".into();
+        next.request.space = Some("w3".into());
         next.pane = Some(
             json!({"pane_id":"w3:p3","workspace_id":"w3","tab_id":"w3:t3","terminal_id":op.terminal_id}),
         );
@@ -801,7 +923,7 @@ mod tests {
         back.request.expected_generation = back.session.generation();
         back.source = next.source.clone();
         back.source.pane = "herdr/fixture/w3:p3".into();
-        back.request.space = "w1".into();
+        back.request.space = Some("w1".into());
         back.pane = Some(
             json!({"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","terminal_id":op.terminal_id}),
         );

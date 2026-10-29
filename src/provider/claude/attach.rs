@@ -70,7 +70,10 @@ pub struct Request<'a> {
     pub expected_generation: &'a str,
     pub herdr_session: &'a str,
     pub herdr_socket: Option<&'a Path>,
-    pub space: &'a str,
+    /// Existing Space id; exactly one of `space` and `new_space` is set.
+    pub space: Option<&'a str>,
+    /// Label of a Space to create for the viewer.
+    pub new_space: Option<&'a str>,
     pub name: Option<&'a str>,
 }
 
@@ -82,6 +85,10 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
     ensure!(
         r.herdr_socket.is_none_or(Path::is_absolute),
         "INVALID_HOST_SOCKET"
+    );
+    ensure!(
+        r.space.is_some() != r.new_space.is_some(),
+        "INVALID_ARGUMENT: pass exactly one of --space and --new-space"
     );
     let s = catalog::resolve(paths, r.session, r.expected_generation)?;
     if s.provider == ProviderId::Codex.as_str() {
@@ -108,14 +115,22 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         }
         let job = o.job_id.clone().context(INTERACTIVE_ELSEWHERE)?;
         let spaces = host(r.herdr_session, r.herdr_socket, &["workspace", "list"])?;
-        ensure!(
-            spaces["workspaces"]
-                .as_array()
-                .context("INVALID_HOST_SPACES")?
-                .iter()
-                .any(|w| w["workspace_id"] == r.space),
-            "SPACE_NOT_FOUND"
-        );
+        let list = spaces["workspaces"]
+            .as_array()
+            .context("INVALID_HOST_SPACES")?;
+        if let Some(space) = r.space {
+            ensure!(
+                list.iter().any(|w| w["workspace_id"] == space),
+                "SPACE_NOT_FOUND"
+            );
+        }
+        if let Some(label) = r.new_space {
+            crate::paths::validate_name(label)?;
+            ensure!(
+                !list.iter().any(|w| w["label"] == label),
+                "WORKSPACE_NAME_EXISTS"
+            );
+        }
         let name = r.name.unwrap_or(&s.name);
         crate::launch::validate_session_name(name)?;
         let session = if name == s.name {
@@ -134,30 +149,61 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         (session, directory, job)
     };
     let dir = directory.to_str().context("INVALID_DIRECTORY")?;
-    let created = host(
-        r.herdr_session,
-        r.herdr_socket,
-        &[
-            "tab",
-            "create",
-            "--workspace",
-            r.space,
-            "--cwd",
-            dir,
-            "--label",
-            &session.name,
-            "--env",
-            "SESSIONSATION_LAUNCHER_BYPASS=1",
-            "--no-focus",
-        ],
-    )?;
+    // A new Space is created with its own initial shell pane, which becomes the
+    // viewer pane (as New session does): no extra pane is created or closed.
+    let created = match (r.space, r.new_space) {
+        (Some(space), _) => host(
+            r.herdr_session,
+            r.herdr_socket,
+            &[
+                "tab",
+                "create",
+                "--workspace",
+                space,
+                "--cwd",
+                dir,
+                "--label",
+                &session.name,
+                "--env",
+                "SESSIONSATION_LAUNCHER_BYPASS=1",
+                "--no-focus",
+            ],
+        )?,
+        (None, label) => host(
+            r.herdr_session,
+            r.herdr_socket,
+            &[
+                "workspace",
+                "create",
+                "--cwd",
+                dir,
+                "--label",
+                label.context("INVALID_ARGUMENT")?,
+                "--env",
+                "SESSIONSATION_LAUNCHER_BYPASS=1",
+                "--no-focus",
+            ],
+        )?,
+    };
     let pane = created["root_pane"]["pane_id"]
         .as_str()
         .context("HOST_PANE_ID_MISSING")?
         .to_owned();
     let tab = created["tab"]["tab_id"].as_str().map(str::to_owned);
-    if let Some(space) = created["tab"]["workspace_id"].as_str() {
-        ensure!(space == r.space, "HOST_WRONG_WORKSPACE");
+    let space_id = created["tab"]["workspace_id"]
+        .as_str()
+        .or_else(|| created["workspace"]["workspace_id"].as_str())
+        .context("HOST_WORKSPACE_ID_MISSING")?
+        .to_owned();
+    if let Some(space) = r.space {
+        ensure!(space == space_id, "HOST_WRONG_WORKSPACE");
+    } else if let Some(tab) = &tab {
+        // HERDR names a new Space's first tab by number; use the session label.
+        let _ = host(
+            r.herdr_session,
+            r.herdr_socket,
+            &["tab", "rename", tab, &session.name],
+        );
     }
     let key = crate::terminal::herdr_target(r.herdr_session, &pane)?;
     let mut ready = false;
@@ -168,7 +214,10 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    ensure!(ready, "HERDR_SHELL_UNAVAILABLE: {key}");
+    ensure!(
+        ready,
+        "HERDR_SHELL_UNAVAILABLE: {key} (space {space_id}); the session was not attached"
+    );
     let q = crate::terminal::shell_quote;
     let command = format!(
         "cd -- {} && exec env -u TMUX -u TMUX_PANE SESSIONSATION_HERDR_SESSION={} {} --data-dir {} claude-attach {} --expected-generation {}",
@@ -185,7 +234,7 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         &["pane", "run", &pane, &command],
     )?;
     let base = json!({"session_id":session.id,"host":"herdr","herdr_session":r.herdr_session,
-        "space_id":r.space,"tab_id":tab,"pane_id":pane,"target":key,"name":session.name,
+        "space_id":space_id,"new_space":r.new_space.is_some(),"tab_id":tab,"pane_id":pane,"target":key,"name":session.name,
         "job_id":job,"starts_agent":false,"sends_input":false});
     for _ in 0..150 {
         if let Some(current) = catalog::list(paths)?

@@ -888,6 +888,22 @@ observes the saved result before generation resolution; changed input is
 `REQUEST_ID_CONFLICT`. Stale generation or missing destination is rejected before
 dispatch. Selecting the current Space completes without mutation.
 
+New Space (additive): `api move-space ... --new-space LABEL --request-id UUID`
+replaces `--space` (the two are mutually exclusive; one is required). The
+label passes `validate_name` and must not match any Space label in a fresh
+`workspace list` of the session's own HERDR instance (`WORKSPACE_NAME_EXISTS`,
+before any journal or host mutation). The worker issues one host request,
+`pane move PANE --new-workspace --label LABEL --no-focus`: HERDR creates the
+Space around the moved pane, so no initial shell pane exists and nothing is
+closed. `workspace create` is not used. The created Space id is journaled
+(`created_space`) only after it is verified as absent before admission, carrying
+the label and holding the exact terminal; it is reported as `space_id` and
+`created_space_id` (both null until then; `new_space` echoes the label).
+A retry with the same UUID observes the saved result, a changed payload is
+`REQUEST_ID_CONFLICT`, a lost reply is `uncertain` and `api recover` finds
+the terminal by its stable terminal id in any Space (read-only), so no second
+Space is ever created. `capabilities.new_space.move_space` gates this form.
+
 HERDR can change the pane ID during a move. The stable terminal ID and verified
 kernel process identity tie the returned pane to the original runtime. Only
 attachment placement/revision changes; the backend ID, provider conversation ID,
@@ -1130,6 +1146,16 @@ pending or executing. Schemas: `ClaudeHeadlessRequest`, `ClaudeHeadlessReceipt`,
 
 Additive; negotiate `contract_revision >= 12`. `api capabilities` adds
 `session_identity`, `add_to_herdr` and `resume_placement` objects.
+`capabilities.new_space` ({version, resume, add_to_herdr, move_space}, booleans)
+advertises `--new-space LABEL` on `api resume`, `api session add-to-herdr` and
+`api move-space`. Each is exclusive with `--space`, validated with
+`validate_name` and refused with `WORKSPACE_NAME_EXISTS` when a Space of that
+label already exists on the session's HERDR server. Resume and add-to-herdr use
+the new Space's own initial shell pane for the session (nothing extra is created
+or closed); add-to-herdr names its first tab with the session name, and its result
+adds `new_space: bool`. Without any Space flag, `api resume` still opens an
+unnamed new Space. `capabilities.add_to_herdr.requires_one_of` is
+`["space","new_space"]` (`space` is no longer in `requires`).
 
 Native-id re-attachment: a live process is attached to exactly one catalog entry,
 the one whose conversation the process currently runs: for Claude the registry

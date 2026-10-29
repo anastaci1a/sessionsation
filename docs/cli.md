@@ -370,8 +370,12 @@ current session name):
 
 ```sh
 sessionsation api spaces --session SESSION-ID --expected-generation GENERATION --herdr-session HERDR-SERVER
-sessionsation api session add-to-herdr --session SESSION-ID --expected-generation GENERATION --herdr-session HERDR-SERVER --space SPACE-ID [--name NAME]
+sessionsation api session add-to-herdr --session SESSION-ID --expected-generation GENERATION --herdr-session HERDR-SERVER (--space SPACE-ID | --new-space LABEL) [--name NAME]
 ```
+
+`--new-space LABEL` creates a Space with that label (refused with
+`WORKSPACE_NAME_EXISTS` if the server already has one) and uses its own initial
+shell pane for the viewer, so no empty shell is left behind.
 
 Only Claude background-daemon sessions are supported: the new tab runs `claude
 attach <job>` with the account environment, which views the already-running
@@ -381,8 +385,11 @@ Codex terminals outside HERDR cannot be moved (`INTERACTIVE_ELSEWHERE`,
 which also accepts a placement:
 
 ```sh
-sessionsation api resume --session SESSION-ID --expected-generation GENERATION --herdr-session HERDR-SERVER [--space SPACE-ID] [--name NAME]
+sessionsation api resume --session SESSION-ID --expected-generation GENERATION --herdr-session HERDR-SERVER [--space SPACE-ID | --new-space LABEL] [--name NAME]
 ```
+
+With neither flag a new unnamed Space opens; `--new-space LABEL` names it (same
+`WORKSPACE_NAME_EXISTS` refusal).
 
 See [the contract](contract.md#session-identity-continuations-and-add-to-herdr-revision-12).
 
@@ -393,7 +400,7 @@ that session's own HERDR instance (not the invoking terminal's current instance)
 
 ```sh
 sessionsation api spaces --session SESSION-ID --expected-generation GENERATION
-sessionsation api move-space --session SESSION-ID --expected-generation GENERATION --space SPACE-ID --request-id REQUEST-UUID
+sessionsation api move-space --session SESSION-ID --expected-generation GENERATION (--space SPACE-ID | --new-space LABEL) --request-id REQUEST-UUID
 sessionsation api operations
 sessionsation api recover REQUEST-UUID
 ```
@@ -404,7 +411,10 @@ agent process, account, conversation, working directory and permissions survive.
 Busy agents can move without interruption or a provider command. Split siblings
 stay in the source tab; HERDR may close an empty source tab/Space. A zoomed tab may
 need to be unzoomed first. tmux sessions, inactive conversations, cross-instance
-moves and creating a destination Space are outside this action. Use New/Resume
+moves are outside this action. `--new-space LABEL` creates the destination in the
+same host request (`pane move --new-workspace`), so the new Space contains only the
+moved terminal's tab and no stray shell; an existing label is `WORKSPACE_NAME_EXISTS`,
+and the created Space id is journaled so Recover/retry never create a second one. Use New/Resume
 for a saved session's launch destination.
 
 The request returns an `admitted` receipt; a detached worker completes the move

@@ -266,6 +266,8 @@ pub async fn launch_checked(
 pub struct Placement<'a> {
     pub space: Option<&'a str>,
     pub label: Option<&'a str>,
+    /// Create the new Space with this label (refused if one already exists).
+    pub new_space: Option<&'a str>,
     /// Resume callers: an unconfirmed launch, or a command that visibly exits
     /// again, is an error rather than `ok`.
     pub strict: bool,
@@ -376,6 +378,20 @@ async fn launch_inner(
             created
         }
         None => {
+            if let Some(label) = placement.new_space {
+                validate_name(label)?;
+                let spaces = call(session, &["workspace", "list"])?;
+                ensure!(
+                    !spaces["workspaces"]
+                        .as_array()
+                        .context("INVALID_HOST_SPACES")?
+                        .iter()
+                        .any(|w| w["label"] == label),
+                    "WORKSPACE_NAME_EXISTS"
+                );
+            }
+            // The new Space's own initial shell is the pane that runs the
+            // session; nothing extra is created or closed.
             let created = call(
                 session,
                 &[
@@ -384,7 +400,7 @@ async fn launch_inner(
                     "--cwd",
                     dir,
                     "--label",
-                    "sessionsation",
+                    placement.new_space.unwrap_or("sessionsation"),
                     "--env",
                     "SESSIONSATION_LAUNCHER_BYPASS=1",
                     "--no-focus",

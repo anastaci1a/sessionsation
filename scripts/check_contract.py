@@ -82,6 +82,7 @@ for invalid in [{**fixtures["add_to_herdr_attached"], "starts_agent": True}, {**
     else:
         raise AssertionError("Add to HERDR must never start an agent or claim an unverified attachment")
 validate(fixtures["space_move_operation"], "SpaceMoveOperation")
+validate(fixtures["space_move_operation_new_space"], "SpaceMoveOperation")
 validate(fixtures["archived_session"], "ArchivedSession")
 validate(fixtures["archived_session_claude"], "ArchivedSession")
 validate(fixtures["native_conversation_archive"], "NativeConversationArchive")

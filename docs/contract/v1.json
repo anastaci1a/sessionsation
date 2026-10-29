@@ -2480,7 +2480,25 @@
           "type": "string"
         },
         "space_id": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Requested Space, or the Space this operation created (null only before a new Space is created)."
+        },
+        "new_space": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Label of the Space requested with --new-space, else null."
+        },
+        "created_space_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Id of the Space this operation created, journaled before ownership is rebound."
         },
         "pane": {
           "type": [

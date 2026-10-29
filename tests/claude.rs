@@ -2032,6 +2032,66 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
         1
     );
 
+    // New Space: refused for a label that exists or alongside --space, creates
+    // nothing; with a fresh label the new Space's own shell pane hosts the viewer.
+    unsafe {
+        libc::kill(client as i32, libc::SIGKILL);
+    }
+    wait_for("viewer gone", || {
+        find(&bg)["capabilities"]["add_to_herdr"] == true
+    });
+    let again = find(&bg);
+    let base = |extra: &[&str]| -> Vec<String> {
+        let mut v: Vec<String> = [
+            "session",
+            "add-to-herdr",
+            "--session",
+            again["id"].as_str().unwrap(),
+            "--expected-generation",
+            again["generation"].as_str().unwrap(),
+            "--herdr-session",
+            "fixture",
+        ]
+        .map(String::from)
+        .into();
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v
+    };
+    let run = |extra: &[&str]| {
+        let v = base(extra);
+        let refs: Vec<&str> = v.iter().map(String::as_str).collect();
+        hosted(&refs)
+    };
+    let exists = run(&["--new-space", "Main"]);
+    assert!(String::from_utf8_lossy(&exists.stderr).contains("WORKSPACE_NAME_EXISTS"));
+    assert!(!run(&["--new-space", "X", "--space", "w1"]).status.success());
+    assert!(!run(&[]).status.success());
+    assert!(!run(&["--new-space", "bad/label"]).status.success());
+    assert!(
+        !calls().contains("workspace create"),
+        "refusals create nothing"
+    );
+    let fresh = run(&["--new-space", "Fresh", "--name", "new-view"]);
+    assert!(
+        fresh.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fresh.stderr)
+    );
+    let fresh: Value = serde_json::from_slice(&fresh.stdout).unwrap();
+    let fresh = &fresh["result"];
+    assert_eq!(fresh["state"], "attached", "{fresh}");
+    assert_eq!(fresh["space_id"], "w9");
+    assert_eq!(fresh["target"], "herdr/fixture/w9:p1");
+    assert_eq!(calls().matches("workspace create").count(), 1);
+    assert!(calls().contains("--label Fresh"));
+    assert_eq!(
+        calls().matches("tab create").count(),
+        1,
+        "no extra tab or pane"
+    );
+    assert!(!calls().contains("pane close"));
+    assert_eq!(read(&state.join("renamed-w9:t1")).trim(), "new-view");
+
     // Codex: not supported, with the reason.
     let codex =
         sessionsation::catalog::record_launch(&f.paths, "personal", "thread", "codex", None)
@@ -2054,6 +2114,28 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
     kill(interactive);
     let stopped = find(&other);
     assert_eq!(stopped["availability"], "stopped");
+    let creates = calls().matches("workspace create").count();
+    for extra in [
+        vec!["--new-space", "Main"],
+        vec!["--new-space", "Z", "--space", "w1"],
+    ] {
+        let mut v = vec![
+            "resume",
+            "--session",
+            stopped["id"].as_str().unwrap(),
+            "--expected-generation",
+            stopped["generation"].as_str().unwrap(),
+            "--herdr-session",
+            "fixture",
+        ];
+        v.extend(extra);
+        let message = err(&v);
+        assert!(
+            message.contains("WORKSPACE_NAME_EXISTS") || message.contains("cannot be used"),
+            "{message}"
+        );
+    }
+    assert_eq!(calls().matches("workspace create").count(), creates);
     let resumed = ok(&[
         "resume",
         "--session",
@@ -2073,7 +2155,7 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
     let live = find(&other);
     assert_eq!(live["name"], "resumed-tab");
     assert_eq!(live["availability"], "running");
-    for pane in ["w1:p2", "w1:p3"] {
+    for pane in ["w1:p2", "w1:p3", "w9:p1"] {
         if let Ok(pid) = read(&state.join(format!("pid-{pane}")))
             .trim()
             .parse::<i32>()
