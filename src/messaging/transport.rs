@@ -401,6 +401,25 @@ impl Transport {
         )
         .await
     }
+    /// Steer reply attribution: one full turn per page, newest first. The caller
+    /// verifies the exact turn ID and materializes only item identifiers, client
+    /// IDs and assistant text; never writes, launches or steers.
+    pub(super) async fn steer_turn_page<T: serde::de::DeserializeOwned>(
+        &mut self,
+        id: &str,
+        cursor: Option<&str>,
+    ) -> Result<T> {
+        super::uuid(id)?;
+        if !self.verified_profile || cursor.is_some_and(|s| s.is_empty() || s.len() > 4096) {
+            return Err(Fault("unsupported"));
+        }
+        self.rpc_budget(
+            "thread/turns/list",
+            json!({"threadId":id,"itemsView":"full","sortDirection":"desc","limit":1,"cursor":cursor}),
+            Duration::from_secs(3),
+        )
+        .await
+    }
     /// Only the checkpoint projection may request one full latest legacy turn.
     /// The caller verifies its exact turn ID and discards non-public items.
     pub(super) async fn checkpoint_legacy_turn<T: serde::de::DeserializeOwned>(

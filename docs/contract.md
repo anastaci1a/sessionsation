@@ -380,7 +380,7 @@ a failed preflight produces a terminal rejected receipt. Cancellation can cancel
 only provably unsent local intent; accepted/uncertain steering cannot be cancelled
 through this API (`STEERING_CANCELLATION_UNSUPPORTED`).
 
-Native 0.164.0 distinguishes automatic compaction within a regular turn from a
+Native 0.164.0 and 0.165.0 distinguish automatic compaction within a regular turn from a
 dedicated compact turn. Automatic compaction retains accepted Steer input until
 model continuation; it does not interrupt the compaction request. No extra local
 queue or automatic retry is added. Dedicated compact/review turns reject injection
@@ -393,16 +393,15 @@ again and explicitly choose a new action; never reuse the ID with a different tu
 or payload. Capabilities publish this behavior and the verified profile. The
 [native fixture](operations.md#native-messaging-compatibility) describes verification.
 
-Steering receipts use `delivery_semantics:"deliberate_in_turn_steer"` and are
-**acceptance-only**. `acknowledged_turn_id` is present only after a matching native
-acknowledgement. `facts.native_acceptance` distinguishes `accepted`, `unknown`
-(possible dispatch), and `not_attempted`. A lost/malformed acknowledgement or
-unclassified native error remains `delivery_unknown`; it is not safe to resend.
-The inspected summary protocol cannot reliably correlate a steer with a distinct
-reply. Therefore `reply_correlation:"unsupported"`, `input_recorded:false`,
-`input_consumed:"unknown"`, `turn_completed:"unknown"`, `reply_observed:false`,
-and null `reply`/`correlation` remain explicit. Receipt polling never borrows the
-active turn's eventual reply or attempts delivery. The native queue ID is null.
+Steering receipts use `delivery_semantics:"deliberate_in_turn_steer"`.
+`acknowledged_turn_id` is present only after a matching native acknowledgement.
+`facts.native_acceptance` distinguishes `accepted`, `input_observed` (no
+acknowledgement, but the steer's own input item was found), `unknown` (possible
+dispatch), and `not_attempted`. A lost/malformed acknowledgement or unclassified
+native error remains `delivery_unknown`; it is not safe to resend. Before revision
+15 receipts were acceptance-only; reply attribution is described in
+[steer reply correlation](#steer-reply-correlation-revision-15). Receipt polling
+never attempts delivery. The native queue ID is null.
 
 Schema definitions `SteeringIntent`, `SteeringTarget`, and the conditional
 `MessageRequest`/`Receipt` rules are in [v1.json](contract/v1.json); request
@@ -433,7 +432,7 @@ does not authorize sending.
 API v1 contract revision 3 adds `api send` with `mode:"resume"`. Negotiate
 `message_recovery` from `api capabilities`; the older provider `resume` flag
 refers to saved-session launching and does not imply this message mode. Codex's
-verified native protocol profiles are **0.163.0 and 0.164.0**. Claude recovery is unsupported.
+verified native protocol profiles are **0.163.0, 0.164.0 and 0.165.0**. Claude recovery is unsupported.
 This is caller-requested continuation of the same conversation, never conversion,
 new-conversation creation, steering, forced interruption or automatic restart.
 Revision 4 adds `message_recovery.exact_item_idle_start` and separate native start
@@ -932,8 +931,8 @@ No observer, terminal supervisor, credential writer or subscription is started.
   a changed item emits another revision. Order is first observation in native page
   order, not proof of causal ordering between messages. Deduplicate by `event_id`.
 - Association is **turn-only**. Text does not prove Steer consumption, causation,
-  a correlated reply, message delivery or completion. Steering receipts stay
-  acceptance-only. Even `phase:final_answer` is not completion evidence by itself;
+  a correlated reply, message delivery or completion; steer replies come only
+  from steering receipts (revision 15). Even `phase:final_answer` is not completion evidence by itself;
   `turn_status` is separately observed native state.
 - The exact requested turn must still be the latest visible native turn, before and
   after the item read. Its status may be in progress, completed, failed or interrupted.
@@ -1299,3 +1298,65 @@ reorder <provider:name> --position N` (human: `account reorder NAME --position N
 moves it and renumbers: `{"account_id","provider","position","changed","order":[ids]}`,
 event `account.reordered` only when the order changed; `N` beyond the last position
 is `INVALID_POSITION`. `api capabilities` advertises top-level `account_reorder:true`.
+
+### Steer reply correlation (revision 15)
+
+Additive; negotiate `contract_revision >= 15` and
+`capabilities.steering.reply_correlation == "after_steer_item"`
+(`steering.reply_observation` publishes the bounds). Requests are unchanged.
+Steering receipts, `api steer-target` and readiness `actions.steer` now report
+`acceptance_only:false` and `reply_correlation:"after_steer_item"`.
+
+Native behavior (verified live on Codex 0.165.0): `turn/steer` carries
+`clientUserMessageId` = the request `message_id`, and the steered turn's full
+item history then contains a `userMessage` whose `clientId` is that ID, placed
+after the input that started the turn. Assistant items produced after it follow
+it in the same turn. An assistant item that was still streaming when the steer
+arrived can be discarded natively and never appear in history. The summary items
+view omits steer inputs, so only the full view of the single steered turn is read.
+
+- **Anchor.** Immediately before `turn/steer`, Sessionsation reads that turn
+  (`thread/turns/list`, `itemsView:full`, `limit:1`) and records item identifiers
+  only: the count of earlier user inputs and items, and the last assistant item ID.
+  The turn must still be latest and in progress and must not already contain the
+  ID, otherwise the steer is rejected unsent (`active_turn_changed`,
+  `ambiguous_native_correlation`).
+- **Observation.** `api receipt` on a `native_accepted`, `delivery_unknown` or
+  `execution_started` steer reads the same turn newest-first (at most 8 one-turn
+  pages, 8192 items) and locates the steer input by `clientId`. Only item IDs,
+  client IDs and assistant text are read; user text, reasoning and tool output are
+  skipped. It never resends and does not hold the writer lock during the read.
+- **Attribution.** The reply window starts after the steer input and ends at the
+  next user input (a later steer) or the end of the turn. `reply` is the last
+  `final_answer` assistant item in that window, otherwise the last non-empty one.
+  When the window runs to the end of the turn the same text also answers the turn's
+  earlier input: `facts.shared_with_turn_tail:true`. A later steer bounds the window
+  (`correlation.next_input_item_id`).
+- **States.** `execution_started` (input recorded, turn in progress, `reply` may be
+  a partial with `final:false`); `completed_with_reply` (turn completed;
+  `reply.final:true`); `completed_without_reply`; `failed` with reason
+  `steer_turn_interrupted` (turn interrupted or failed, partial reply kept) or
+  `input_not_consumed` (acknowledged, but the turn ended without the steer input).
+  An unacknowledged (`delivery_unknown`) steer only gains positive evidence; it never
+  becomes `input_not_consumed`. Terminal states are cached and never regressed.
+- **Re-verification.** Every read re-checks the anchor: the steer input must keep
+  its item ID, appear after at least as many user inputs as at steer time, and the
+  recorded pre-steer assistant item must not appear after it. A recorded input that
+  disappears (for example after a history rewrite around compaction) reports
+  `observation.error_code:"steer_anchor_lost"` and keeps the stored evidence. The
+  ID appearing in a different turn reports `correlation_changed`. Ambiguous or
+  oversized evidence (`ambiguous_native_correlation`, `reply_too_large`) is never
+  attributed.
+
+New receipt fields: `facts.turn_status`, `facts.reply_final`,
+`facts.shared_with_turn_tail`; `facts.input_recorded`, `input_consumed`
+(`true`, `false` or `"unknown"`) and `turn_completed` now carry observed values.
+`correlation` is `{native_turn_id, steer_input_item_id, next_input_item_id,
+reply_item_id, observed_runtime_generation, anchor}` once the input is recorded;
+`reply` is `{item_id, text, phase, final, shared_with_turn_tail}`. `observation.state`
+is `acceptance_only` (send result or non-observable), `observed`, `uncorrelated`,
+`unavailable` (with `error_code`) or `cached`. Receipts made before revision 15 have
+no anchor and are still correlated by `clientId` without the anchor checks. Fixtures:
+`receipt_steer_progress`, `receipt_steer_reply`, `receipt_steer_interrupted`,
+`receipt_steer_not_consumed`. The account switcher's pause steer now also sends a
+`clientUserMessageId`.

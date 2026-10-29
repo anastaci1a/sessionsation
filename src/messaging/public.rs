@@ -308,7 +308,43 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
                 ledger.save(&receipt)?;
             }
         }
-        return Ok(steering::receipt(&binding, &receipt));
+        if !steering::observable(&receipt) {
+            let observation = if receipt
+                .steer
+                .as_ref()
+                .is_some_and(|s| s.turn_status.is_some())
+            {
+                json!({"state":"cached"})
+            } else {
+                json!({"state":"acceptance_only"})
+            };
+            return Ok(steering::observed(&binding, &receipt, observation));
+        }
+        // Read-only item observation without the writer lease; never resends.
+        let original = receipt.clone();
+        drop(ledger);
+        let observation = steering::snapshot(paths, &original).await;
+        let mut ledger = Ledger::open(paths)?;
+        binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
+        receipt = ledger.get(id)?.ok_or(Fault("receipt_not_found"))?;
+        let status = if receipt != original {
+            json!({"state":"unavailable","code":"receipt_changed_during_observation"})
+        } else {
+            match observation {
+                Ok(Some(observed)) => {
+                    steering::commit(&mut ledger, &mut receipt, observed)?;
+                    binding.evidence_observed_at = Some(crate::daemon::now());
+                    ledger.db.execute(
+                        "UPDATE public_messages SET binding=? WHERE id=?",
+                        params![serde_json::to_string(&binding)?, id],
+                    )?;
+                    json!({"state":"observed"})
+                }
+                Ok(None) => json!({"state":"uncorrelated"}),
+                Err(e) => json!({"state":"unavailable","code":e.0}),
+            }
+        };
+        return Ok(steering::observed(&binding, &receipt, status));
     }
     if cancelling {
         cancel(paths, &mut ledger, &mut receipt).await?;

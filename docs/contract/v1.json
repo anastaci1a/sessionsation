@@ -549,6 +549,7 @@
             "native_accepted",
             "execution_started",
             "completed_with_reply",
+            "completed_without_reply",
             "delivery_unknown",
             "rejected",
             "failed",
@@ -567,13 +568,9 @@
           "$ref": "#/$defs/ReceiptFacts"
         },
         "reply": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/PublicReply"
-            }
+          "type": [
+            "object",
+            "null"
           ]
         },
         "accepted_runtime_generation": {
@@ -601,13 +598,9 @@
           ]
         },
         "correlation": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/PublicCorrelation"
-            }
+          "type": [
+            "object",
+            "null"
           ]
         },
         "observation": {
@@ -733,10 +726,13 @@
                 "const": "deliberate_in_turn_steer"
               },
               "acceptance_only": {
-                "const": true
+                "type": "boolean"
               },
               "reply_correlation": {
-                "const": "unsupported"
+                "enum": [
+                  "unsupported",
+                  "after_steer_item"
+                ]
               },
               "state": {
                 "enum": [
@@ -745,38 +741,80 @@
                   "delivery_unknown",
                   "rejected",
                   "cancelled",
-                  "expired"
+                  "expired",
+                  "execution_started",
+                  "completed_with_reply",
+                  "completed_without_reply",
+                  "failed"
                 ]
               },
               "native_queue_id": {
                 "type": "null"
               },
               "correlation": {
-                "type": "null"
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/SteerCorrelation"
+                  }
+                ]
               },
               "reply": {
-                "type": "null"
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/SteerReply"
+                  }
+                ]
               },
               "facts": {
                 "properties": {
                   "input_recorded": {
-                    "const": false
+                    "type": "boolean"
                   },
                   "input_consumed": {
-                    "const": "unknown"
+                    "enum": [
+                      "unknown",
+                      true,
+                      false
+                    ]
                   },
                   "reply_observed": {
-                    "const": false
+                    "type": "boolean"
                   },
                   "native_acceptance": {
                     "enum": [
                       "accepted",
+                      "input_observed",
                       "unknown",
                       "not_attempted"
                     ]
                   },
                   "turn_completed": {
-                    "const": "unknown"
+                    "enum": [
+                      "unknown",
+                      true,
+                      false
+                    ]
+                  },
+                  "turn_status": {
+                    "enum": [
+                      null,
+                      "inProgress",
+                      "completed",
+                      "interrupted",
+                      "failed"
+                    ]
+                  },
+                  "reply_final": {
+                    "type": "boolean"
+                  },
+                  "shared_with_turn_tail": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -784,12 +822,173 @@
                   "turn_completed"
                 ]
               }
-            }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "pending_local",
+                        "native_accepted",
+                        "delivery_unknown",
+                        "rejected",
+                        "cancelled",
+                        "expired"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "correlation": {
+                      "type": "null"
+                    },
+                    "reply": {
+                      "type": "null"
+                    },
+                    "facts": {
+                      "properties": {
+                        "input_recorded": {
+                          "const": false
+                        },
+                        "input_consumed": {
+                          "const": "unknown"
+                        },
+                        "reply_observed": {
+                          "const": false
+                        },
+                        "turn_completed": {
+                          "const": "unknown"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "execution_started",
+                        "completed_with_reply",
+                        "completed_without_reply"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "state"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "correlation": {
+                      "$ref": "#/$defs/SteerCorrelation"
+                    },
+                    "facts": {
+                      "properties": {
+                        "input_recorded": {
+                          "const": true
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "const": "completed_with_reply"
+                    }
+                  },
+                  "required": [
+                    "state"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "reply": {
+                      "$ref": "#/$defs/SteerReply",
+                      "properties": {
+                        "final": {
+                          "const": true
+                        }
+                      }
+                    },
+                    "facts": {
+                      "properties": {
+                        "turn_completed": {
+                          "const": true
+                        },
+                        "reply_final": {
+                          "const": true
+                        }
+                      }
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "reply": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "properties": {
+                            "final": {
+                              "const": false
+                            }
+                          },
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "facts": {
+                      "properties": {
+                        "reply_final": {
+                          "const": false
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
           },
           "else": {
             "properties": {
               "delivery_semantics": {
                 "const": "non_steering_native_queue"
+              },
+              "reply": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/PublicReply"
+                  }
+                ]
+              },
+              "correlation": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/PublicCorrelation"
+                  }
+                ]
+              },
+              "facts": {
+                "properties": {
+                  "input_consumed": {
+                    "const": "unknown"
+                  }
+                }
               }
             }
           }
@@ -1042,10 +1241,13 @@
                       "const": true
                     },
                     "acceptance_only": {
-                      "const": true
+                      "type": "boolean"
                     },
                     "reply_correlation": {
-                      "const": "unsupported"
+                      "enum": [
+                        "unsupported",
+                        "after_steer_item"
+                      ]
                     }
                   }
                 }
@@ -1332,7 +1534,11 @@
           "type": "boolean"
         },
         "input_consumed": {
-          "const": "unknown"
+          "enum": [
+            "unknown",
+            true,
+            false
+          ]
         },
         "reply_observed": {
           "type": "boolean"
@@ -2752,10 +2958,13 @@
           "const": false
         },
         "acceptance_only": {
-          "const": true
+          "type": "boolean"
         },
         "reply_correlation": {
-          "const": "unsupported"
+          "enum": [
+            "unsupported",
+            "after_steer_item"
+          ]
         }
       },
       "additionalProperties": true
@@ -3395,7 +3604,10 @@
           "pattern": "^[a-f0-9]{64}$"
         },
         "provider": {
-          "enum": ["claude", "gemini"]
+          "enum": [
+            "claude",
+            "gemini"
+          ]
         },
         "provider_conversation_id": {
           "type": "string",
@@ -3644,7 +3856,10 @@
           "pattern": "^(claude|gemini):"
         },
         "provider": {
-          "enum": ["claude", "gemini"]
+          "enum": [
+            "claude",
+            "gemini"
+          ]
         },
         "auth_required": {
           "type": "boolean"
@@ -3860,6 +4075,139 @@
           }
         }
       }
+    },
+    "SteerCorrelation": {
+      "type": "object",
+      "required": [
+        "native_turn_id",
+        "steer_input_item_id",
+        "next_input_item_id",
+        "reply_item_id",
+        "observed_runtime_generation",
+        "anchor"
+      ],
+      "properties": {
+        "native_turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "steer_input_item_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "next_input_item_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            }
+          ]
+        },
+        "reply_item_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            }
+          ]
+        },
+        "observed_runtime_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "anchor": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "user_items_before",
+                "items_before",
+                "last_agent_item_id"
+              ],
+              "properties": {
+                "user_items_before": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "items_before": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "last_agent_item_id": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "SteerReply": {
+      "type": "object",
+      "required": [
+        "item_id",
+        "text",
+        "phase",
+        "final",
+        "shared_with_turn_tail"
+      ],
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "phase": {
+          "enum": [
+            "commentary",
+            "partial_answer",
+            "final_answer",
+            null
+          ]
+        },
+        "final": {
+          "type": "boolean"
+        },
+        "shared_with_turn_tail": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
     }
   }
 }

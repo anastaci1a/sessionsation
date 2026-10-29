@@ -52,6 +52,22 @@ for invalid in [
         pass
     else:
         raise AssertionError("Steering acceptance must not imply consumption or reply correlation")
+for name in ["receipt_steer_progress", "receipt_steer_reply", "receipt_steer_interrupted", "receipt_steer_not_consumed"]:
+    validate(fixtures[name], "Receipt")
+progress, final = fixtures["receipt_steer_progress"], fixtures["receipt_steer_reply"]
+for invalid in [
+    {**progress, "reply": {**progress["reply"], "final": True}},
+    {**progress, "correlation": None},
+    {**final, "reply": {**final["reply"], "final": False}},
+    {**final, "facts": {**final["facts"], "turn_completed": False}},
+    {**final, "reply": None},
+]:
+    try:
+        validate(invalid, "Receipt")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("A steer reply is final only after its turn completed, and needs its input anchor")
 validate(fixtures["recovery_message"], "MessageRequest")
 validate(fixtures["recovery_plan"], "RecoveryPlan")
 validate(fixtures["space_choices"], "SpaceChoices")
@@ -132,7 +148,9 @@ with tempfile.TemporaryDirectory() as directory:
             assert value["result"]["checkpoints"]["delivery_evidence"] is False
             assert value["result"]["session_names"]["version"] == 1
             assert value["result"]["steering"]["version"] == 1
-            assert value["result"]["steering"]["acceptance_only"] is True
+            assert value["result"]["steering"]["acceptance_only"] is False
+            assert value["result"]["steering"]["reply_correlation"] == "after_steer_item"
+            assert value["result"]["steering"]["reply_observation"]["items_view"] == "full"
             assert value["result"]["providers"][0]["steer"] is True
         if args == ["version"]:
             validate(value["result"], "ExecutableVersion")

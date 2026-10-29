@@ -4,6 +4,8 @@ Only a separately supplied Codex binary is mounted; no credentials or live roots
 """
 import json, pathlib, subprocess, tempfile, threading, queue, time, http.server, os, sys
 manual = False
+# Exact native profiles this fixture has verified.
+VERIFIED = ('0.164.0', '0.165.0')
 requests = []
 gate = threading.Event()
 compact = threading.Event()
@@ -92,7 +94,8 @@ with tempfile.TemporaryDirectory() as tmp:
         raise RuntimeError('timeout ' + method)
     try:
         peer = rpc('initialize', {'clientInfo': {'name': 'fixture', 'version': '1'}, 'capabilities': {'experimentalApi': True}}).get('userAgent', '')
-        assert '/0.164.0 ' in peer, 'Fixture requires native peer 0.164.0'
+        native = next((v for v in VERIFIED if f'/{v} ' in peer), None)
+        assert native, f'Fixture requires a native peer in {VERIFIED}'
         print('initialize', peer, flush=True)
         thread = rpc('thread/start', {'cwd': tmp, 'model': 'gpt-5.4', 'modelProvider': 'fixture'})['thread']['id']
         turn = rpc('turn/start', {'threadId': thread, 'input': [{'type': 'text', 'text': 'inert first fixture', 'text_elements': []}]})['turn']['id']
@@ -125,7 +128,7 @@ with tempfile.TemporaryDirectory() as tmp:
         time.sleep(0.3)
         assert len(requests) == before and before not in disconnected
         gate.set()
-        print(json.dumps({'automatic': automatic_evidence, 'dedicated_compact_rejected': True, 'dedicated_compact_not_interrupted': True, 'native_version': '0.164.0', 'provider': 'loopback_fixture', 'real_provider_calls': 0}))
+        print(json.dumps({'automatic': automatic_evidence, 'dedicated_compact_rejected': True, 'dedicated_compact_not_interrupted': True, 'native_version': native, 'provider': 'loopback_fixture', 'real_provider_calls': 0}))
     finally:
         gate.set()
         p.terminate()

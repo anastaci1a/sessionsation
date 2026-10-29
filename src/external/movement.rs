@@ -133,7 +133,9 @@ async fn pause(paths: &Paths, job: &mut Job, control: Option<&mut Control>) -> R
             }
             job.steered_turns.insert(key.clone(), "sending".into());
             save_job(paths, job)?;
-            control.request("turn/steer",json!({"threadId":id,"expectedTurnId":turn,"input":[{"type":"text","text":message}]})).await?;
+            // A client ID lets the native item history identify this exact steer input.
+            let client = uuid::Uuid::new_v4().to_string();
+            control.request("turn/steer",json!({"threadId":id,"clientUserMessageId":client,"expectedTurnId":turn,"input":[{"type":"text","text":message}]})).await?;
             job.steered_turns.insert(key, "accepted".into());
             save_job(paths, job)?;
         }

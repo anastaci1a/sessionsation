@@ -629,8 +629,8 @@
     "valid_until": 105,
     "sends_input": false,
     "starts_process": false,
-    "acceptance_only": true,
-    "reply_correlation": "unsupported"
+    "acceptance_only": false,
+    "reply_correlation": "after_steer_item"
   },
   "receipt_steer_accepted": {
     "message_id": "11111111-1111-4111-8111-111111111111",
@@ -653,7 +653,10 @@
       "input_recorded": false,
       "input_consumed": "unknown",
       "turn_completed": "unknown",
-      "reply_observed": false
+      "reply_observed": false,
+      "turn_status": null,
+      "reply_final": false,
+      "shared_with_turn_tail": false
     },
     "observation": {
       "state": "acceptance_only",
@@ -665,8 +668,8 @@
     },
     "expected_turn_id": "turn-active",
     "acknowledged_turn_id": "turn-active",
-    "acceptance_only": true,
-    "reply_correlation": "unsupported"
+    "acceptance_only": false,
+    "reply_correlation": "after_steer_item"
   },
   "receipt_steer_unknown": {
     "message_id": "11111111-1111-4111-8111-111111111111",
@@ -689,7 +692,10 @@
       "input_recorded": false,
       "input_consumed": "unknown",
       "turn_completed": "unknown",
-      "reply_observed": false
+      "reply_observed": false,
+      "turn_status": null,
+      "reply_final": false,
+      "shared_with_turn_tail": false
     },
     "observation": {
       "state": "acceptance_only",
@@ -701,8 +707,8 @@
     },
     "expected_turn_id": "turn-active",
     "acknowledged_turn_id": null,
-    "acceptance_only": true,
-    "reply_correlation": "unsupported"
+    "acceptance_only": false,
+    "reply_correlation": "after_steer_item"
   },
   "readiness_steer": {
     "session_id": "22222222-2222-4222-8222-222222222222",
@@ -739,8 +745,8 @@
         "target_command": "steer-target",
         "requires_expected_turn_id": true,
         "requires_expected_runtime_generation": true,
-        "acceptance_only": true,
-        "reply_correlation": "unsupported"
+        "acceptance_only": false,
+        "reply_correlation": "after_steer_item"
       }
     }
   },
@@ -864,7 +870,10 @@
       "input_recorded": false,
       "input_consumed": "unknown",
       "turn_completed": "unknown",
-      "reply_observed": false
+      "reply_observed": false,
+      "turn_status": null,
+      "reply_final": false,
+      "shared_with_turn_tail": false
     },
     "observation": {
       "state": "acceptance_only",
@@ -876,8 +885,8 @@
     },
     "expected_turn_id": "turn-active",
     "acknowledged_turn_id": null,
-    "acceptance_only": true,
-    "reply_correlation": "unsupported"
+    "acceptance_only": false,
+    "reply_correlation": "after_steer_item"
   },
   "placement": {
     "version": 1,
@@ -1196,5 +1205,212 @@
     "attachment": null,
     "starts_agent": false,
     "sends_input": false
+  },
+  "receipt_steer_progress": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "accepted_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "accepted_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "provider": "codex",
+    "provider_conversation_id": "11111111-1111-4111-8111-111111111111",
+    "mode": "steer",
+    "delivery_semantics": "deliberate_in_turn_steer",
+    "state": "execution_started",
+    "reason": null,
+    "native_queue_id": null,
+    "correlation": {
+      "native_turn_id": "turn-active",
+      "steer_input_item_id": "01900000-0000-7000-8000-000000000002",
+      "next_input_item_id": null,
+      "reply_item_id": "msg_0000000000000000000000000000000000000000000000a2",
+      "observed_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "anchor": {
+        "user_items_before": 1,
+        "items_before": 3,
+        "last_agent_item_id": "msg_0000000000000000000000000000000000000000000000a1"
+      }
+    },
+    "reply": {
+      "item_id": "msg_0000000000000000000000000000000000000000000000a2",
+      "text": "Synthetic partial reply.",
+      "phase": "commentary",
+      "final": false,
+      "shared_with_turn_tail": true
+    },
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": true,
+      "native_acceptance": "accepted",
+      "input_recorded": true,
+      "input_consumed": true,
+      "turn_completed": false,
+      "reply_observed": true,
+      "turn_status": "inProgress",
+      "reply_final": false,
+      "shared_with_turn_tail": true
+    },
+    "observation": {
+      "state": "observed",
+      "checked_at": 110,
+      "native_attempted_at": 110,
+      "evidence_observed_at": 110,
+      "freshness": "fresh",
+      "error_code": null
+    },
+    "expected_turn_id": "turn-active",
+    "acknowledged_turn_id": "turn-active",
+    "acceptance_only": false,
+    "reply_correlation": "after_steer_item"
+  },
+  "receipt_steer_reply": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "accepted_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "accepted_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "provider": "codex",
+    "provider_conversation_id": "11111111-1111-4111-8111-111111111111",
+    "mode": "steer",
+    "delivery_semantics": "deliberate_in_turn_steer",
+    "state": "completed_with_reply",
+    "reason": null,
+    "native_queue_id": null,
+    "correlation": {
+      "native_turn_id": "turn-active",
+      "steer_input_item_id": "01900000-0000-7000-8000-000000000002",
+      "next_input_item_id": null,
+      "reply_item_id": "msg_0000000000000000000000000000000000000000000000a3",
+      "observed_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "anchor": {
+        "user_items_before": 1,
+        "items_before": 3,
+        "last_agent_item_id": "msg_0000000000000000000000000000000000000000000000a1"
+      }
+    },
+    "reply": {
+      "item_id": "msg_0000000000000000000000000000000000000000000000a3",
+      "text": "Synthetic final reply.",
+      "phase": "final_answer",
+      "final": true,
+      "shared_with_turn_tail": true
+    },
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": true,
+      "native_acceptance": "accepted",
+      "input_recorded": true,
+      "input_consumed": true,
+      "turn_completed": true,
+      "reply_observed": true,
+      "turn_status": "completed",
+      "reply_final": true,
+      "shared_with_turn_tail": true
+    },
+    "observation": {
+      "state": "observed",
+      "checked_at": 110,
+      "native_attempted_at": 110,
+      "evidence_observed_at": 110,
+      "freshness": "fresh",
+      "error_code": null
+    },
+    "expected_turn_id": "turn-active",
+    "acknowledged_turn_id": "turn-active",
+    "acceptance_only": false,
+    "reply_correlation": "after_steer_item"
+  },
+  "receipt_steer_interrupted": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "accepted_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "accepted_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "provider": "codex",
+    "provider_conversation_id": "11111111-1111-4111-8111-111111111111",
+    "mode": "steer",
+    "delivery_semantics": "deliberate_in_turn_steer",
+    "state": "failed",
+    "reason": "steer_turn_interrupted",
+    "native_queue_id": null,
+    "correlation": {
+      "native_turn_id": "turn-active",
+      "steer_input_item_id": "01900000-0000-7000-8000-000000000002",
+      "next_input_item_id": "01900000-0000-7000-8000-000000000003",
+      "reply_item_id": "msg_0000000000000000000000000000000000000000000000a4",
+      "observed_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "anchor": {
+        "user_items_before": 1,
+        "items_before": 3,
+        "last_agent_item_id": "msg_0000000000000000000000000000000000000000000000a1"
+      }
+    },
+    "reply": {
+      "item_id": "msg_0000000000000000000000000000000000000000000000a4",
+      "text": "Synthetic partial reply.",
+      "phase": "commentary",
+      "final": false,
+      "shared_with_turn_tail": false
+    },
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": true,
+      "native_acceptance": "accepted",
+      "input_recorded": true,
+      "input_consumed": true,
+      "turn_completed": false,
+      "reply_observed": true,
+      "turn_status": "interrupted",
+      "reply_final": false,
+      "shared_with_turn_tail": false
+    },
+    "observation": {
+      "state": "observed",
+      "checked_at": 110,
+      "native_attempted_at": 110,
+      "evidence_observed_at": 110,
+      "freshness": "fresh",
+      "error_code": null
+    },
+    "expected_turn_id": "turn-active",
+    "acknowledged_turn_id": "turn-active",
+    "acceptance_only": false,
+    "reply_correlation": "after_steer_item"
+  },
+  "receipt_steer_not_consumed": {
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "accepted_generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "accepted_runtime_generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "provider": "codex",
+    "provider_conversation_id": "11111111-1111-4111-8111-111111111111",
+    "mode": "steer",
+    "delivery_semantics": "deliberate_in_turn_steer",
+    "state": "failed",
+    "reason": "input_not_consumed",
+    "native_queue_id": null,
+    "correlation": null,
+    "reply": null,
+    "facts": {
+      "accepted_local": true,
+      "accepted_native": true,
+      "native_acceptance": "accepted",
+      "input_recorded": false,
+      "input_consumed": false,
+      "turn_completed": true,
+      "reply_observed": false,
+      "turn_status": "completed",
+      "reply_final": false,
+      "shared_with_turn_tail": false
+    },
+    "observation": {
+      "state": "observed",
+      "checked_at": 110,
+      "native_attempted_at": 110,
+      "evidence_observed_at": 110,
+      "freshness": "fresh",
+      "error_code": null
+    },
+    "expected_turn_id": "turn-active",
+    "acknowledged_turn_id": "turn-active",
+    "acceptance_only": false,
+    "reply_correlation": "after_steer_item"
   }
 }

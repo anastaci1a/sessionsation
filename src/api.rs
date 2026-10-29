@@ -28,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":14,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":15,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -744,7 +744,7 @@ fn gemini_provider() -> Value {
 }
 
 pub fn capabilities() -> Value {
-    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":14,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":15,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -761,7 +761,7 @@ pub fn capabilities() -> Value {
     "batch_observation":{"command":"observations","max_targets":64,"concurrency":8,"native_budget_seconds":5,"policies":["if_stale","refresh","cached_only"],"cache_hits_renew_evidence":false},
     "session_observation":{"command":"observe","native_timeout_seconds":5,"valid_for_seconds":5,"passive":true},
     "turn_observation":{"version":1,"command":"turn-target","includes_terminal_turns":true,"requires_sending_enabled":false,"sends_input":false,"starts_process":false,"association":"turn_only"},
-    "steering":{"version":1,"automatic_compaction":"native_pending_until_continuation","dedicated_compact_turn":"native_rejects_without_injection","compaction_verified_profiles":["0.164.0"],"command":"send","mode":"steer","target_command":"steer-target","providers":["codex"],"requires_expected_turn_id":true,"requires_expected_runtime_generation":true,"requires_expected_generation":true,"acceptance_only":true,"reply_correlation":"unsupported","automatic_replay":false,"queue_fallback":false,"starts_process":false,"interrupts":false},"native_protocol":{"supported_versions":crate::messaging::NATIVE_PROFILES,"version_source":"initialize.userAgent","unknown_versions":"fail_closed"},"message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"exact_item_idle_start":true,"ordinary_send_rejects_terminal_state":true,"start_ack_is_not_input_recorded":true,"owner_reservation_required":"message-recoveries"},
+    "steering":{"version":1,"automatic_compaction":"native_pending_until_continuation","dedicated_compact_turn":"native_rejects_without_injection","compaction_verified_profiles":["0.164.0","0.165.0"],"command":"send","mode":"steer","target_command":"steer-target","providers":["codex"],"requires_expected_turn_id":true,"requires_expected_runtime_generation":true,"requires_expected_generation":true,"acceptance_only":false,"reply_correlation":"after_steer_item","automatic_replay":false,"queue_fallback":false,"starts_process":false,"interrupts":false},"native_protocol":{"supported_versions":crate::messaging::NATIVE_PROFILES,"version_source":"initialize.userAgent","unknown_versions":"fail_closed"},"message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"exact_item_idle_start":true,"ordinary_send_rejects_terminal_state":true,"start_ack_is_not_input_recorded":true,"owner_reservation_required":"message-recoveries"},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true,"resumable_local_summary_scan":true,"native_budget_seconds":5,"max_turns":1000,"partial_match_is_not_delivery":true},
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
     "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false});
@@ -769,6 +769,8 @@ pub fn capabilities() -> Value {
         provider["account_logout"] = json!(true);
     }
     value["state_cached"] = json!(true);
+    // Revision 15: steer replies are attributed after the steer's own input item.
+    value["steering"]["reply_observation"] = json!({"since_revision":15,"command":"receipt","native_method":"thread/turns/list","items_view":"full","scope":"steered_turn_only","anchor":"user_message_client_id","window":"until_next_user_input_or_turn_end","max_pages":8,"max_text_bytes":65536,"final_only_when_turn_completed":true});
     value["account_reorder"] = json!(true);
     value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","gemini_process_source":"cmdline_session_id_argument","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
     value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session","space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});

@@ -124,6 +124,35 @@ Unknown versions remain blocked. The public contract owns version discovery
 and mismatch diagnostics; compare the app-server handshake, not just the terminal
 CLI version. Source compatibility and synthetic tests do not prove a model send.
 
+### Profile 0.165.0
+
+0.165.0 was added through the same gate, without provider calls except one
+operator-approved live steer:
+
+- Generated `app-server generate-json-schema --experimental` output of the exact
+  0.164.0 and 0.165.0 executables was diffed structurally. Every type Sessionsation
+  uses is byte-identical: `turn/start`, `turn/steer` (params and `{turnId}`
+  response), `turn/interrupt`, `thread/read`, `thread/turns/list` params
+  (`itemsView` notLoaded/summary/full), `thread/items/list`, `thread/queue/*`,
+  `thread/resume`, `item/started`/`item/completed`, the account rate-limit response and
+  update notification, and login/logout/account-read params; no request method was
+  removed or renamed. Differences are
+  additive only: a `modelNotFound` `CodexErrorInfo` value (carried inside turn
+  errors), a `gcp` account variant, `thread/memory/read`, optional
+  `ThreadListParams.attachedToThreadId`, `ThreadForkParams.attachToSource`,
+  `ThreadSampleParams.threadSource` and `NetworkRequirements.reviewDomains`.
+  `activeTurnNotSteerable` is unchanged.
+- `doctor --probe` against a temporary data root: isolated stdio handshake, graceful
+  idle exit, required schemas and the Unix WebSocket passed;
+  `external_token_contract` reports the same unchanged login schema as 0.164.0.
+- `scripts/check_native_compaction.py` (both modes) and the native checkpoint
+  fixture below passed against 0.165.0 in a network-disabled container.
+- A live steer on a disposable thread recorded the item order that steer reply
+  correlation relies on (see the contract's revision 15 section).
+
+The queue service and handler source bodies were not re-read for 0.165.0; the
+queue request/response schemas are identical.
+
 The checkpoint native-boundary fixture uses the exact supported native executable
 against synthetic legacy history in a disposable home, with no credentials or
 model calls. It proves the real -32601 item-list gate, then checkpoint/continuation
@@ -139,7 +168,7 @@ This fixture is distinct from the synthetic active-turn HERDR/tmux cases. It doe
 not send input to, resume, or interrupt an installed working session.
 
 Compaction/Steer can be verified without provider access using Python 3 and an
-explicit Codex 0.164.0 executable:
+explicit Codex 0.164.0 or 0.165.0 executable:
 
 ```sh
 python3 scripts/check_native_compaction.py /absolute/path/to/codex

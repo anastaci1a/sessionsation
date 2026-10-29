@@ -449,9 +449,11 @@ For inactive sessions, choose the directory in the Resume launch plan instead.
 ## Explicit in-turn steering
 
 For a deliberate message to a busy turn, use `api steer-target --session ID --expected-generation GENERATION`, then `api send` with `mode:"steer"` and the
-returned turn/runtime preconditions. This is acceptance-only and never creates,
-restarts or interrupts a session. See the [steering contract](contract.md#deliberate-in-turn-steering-revision-5)
-for the request, receipt, retry and capability-negotiation rules.
+returned turn/runtime preconditions. It never creates, restarts or interrupts a
+session. `api receipt` then reports the reply attributed to that steer. See the
+[steering contract](contract.md#deliberate-in-turn-steering-revision-5) and
+[steer replies](contract.md#steer-reply-correlation-revision-15) for the request,
+receipt, retry and capability-negotiation rules.
 
 For read-only intermediate assistant updates from an exact tracked turn, use
 `api checkpoints < request.json`; see [public turn checkpoints](contract.md#public-turn-checkpoints-revision-7)

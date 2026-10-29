@@ -32,7 +32,7 @@ pub use transport::NativeReadFailure;
 use transport::Transport;
 
 /// Exact upstream profiles inspected for queue, cancellation and summary semantics.
-pub const NATIVE_PROFILES: &[&str] = &["0.163.0", "0.164.0"];
+pub const NATIVE_PROFILES: &[&str] = &["0.163.0", "0.164.0", "0.165.0"];
 pub const VERSION: &str = "1.2.1";
 type Result<T> = std::result::Result<T, Fault>;
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +112,35 @@ pub struct Receipt {
     pub reply: Option<observe::Reply>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submit: Option<SubmitEvidence>,
+    /// Steer-only reply attribution evidence (contract revision 15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<SteerEvidence>,
+}
+/// Native item positions recorded immediately before a steer and re-verified on
+/// every observation. Contains item identifiers only, never input text.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SteerAnchor {
+    pub turn_id: String,
+    pub user_items_before: u32,
+    pub items_before: u32,
+    pub last_agent_item_id: Option<String>,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SteerEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<SteerAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_input_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_status: Option<String>,
+    #[serde(default)]
+    pub agent_items_after: u32,
+    #[serde(default)]
+    pub shared_with_turn_tail: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct RecoveryStart {
@@ -458,6 +487,7 @@ impl Ledger {
             correlation: None,
             reply: None,
             submit: binding.as_ref().and_then(|b| b.2.clone()),
+            steer: None,
         };
         let data = serde_json::to_string(&receipt).map_err(|_| Fault("storage_error"))?;
         let tx = self.db.transaction()?;

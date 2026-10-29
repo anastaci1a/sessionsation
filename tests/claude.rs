@@ -1223,7 +1223,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 14);
+    assert_eq!(caps["contract_revision"], 15);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1802,7 +1802,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 14);
+    assert_eq!(caps["contract_revision"], 15);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
