@@ -216,6 +216,19 @@ validate(fixtures["error"])
 validate(fixtures["capabilities"])
 for name, definition in [("session", "Session"), ("session_host_label", "Session"), ("snapshot", "Snapshot"), ("readiness", "Readiness"), ("readiness_stopped", "Readiness"), ("readiness_steer", "Readiness")]:
     validate(fixtures[name], definition)
+# Revision 23: pending questions and answer receipts.
+for name in ["pending_question", "pending_question_blocking"]:
+    validate(fixtures[name], "PendingQuestion")
+    validate({**fixtures["session"], "pending_questions": [fixtures[name]]}, "Session")
+validate(fixtures["question_answers"], "QuestionAnswers")
+validate(fixtures["question_answer_receipt"], "QuestionAnswerReceipt")
+for bad in [{**fixtures["pending_question"], "questions": []}, {**fixtures["pending_question"], "kind": "gemini_ask_user"}]:
+    try:
+        validate(bad, "PendingQuestion")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Invalid pending questions must be rejected")
 for name, value in fixtures.items():
     if name.startswith("receipt_"):
         validate(value, "Receipt")
@@ -226,10 +239,17 @@ with tempfile.TemporaryDirectory() as directory:
         validate(value)
         if args[0] == "state":
             validate(value["result"], "Snapshot")
+            assert all(isinstance(s["pending_questions"], list) for s in value["result"]["sessions"])
         if args == ["placements"]:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 22
+            assert value["result"]["contract_revision"] >= 23
+            # Revision 23: pending questions.
+            questions = value["result"]["questions"]
+            assert questions["since_revision"] == 23 and questions["replay"] == "never"
+            assert questions["providers"]["codex"]["answer"] is True
+            assert questions["providers"]["claude"]["answer"] == "hosted_only"
+            assert questions["providers"]["gemini"]["detect"] is False and questions["providers"]["gemini"]["reason"]
             # Revision 21: per-account Gemini authentication modes.
             gemini = next(p for p in value["result"]["providers"] if p["id"] == "gemini")
             assert [m["id"] for m in gemini["auth_modes"]] == ["google_personal", "google_workspace", "api_key"]
@@ -287,7 +307,7 @@ with tempfile.TemporaryDirectory() as directory:
     batch=json.loads(subprocess.check_output(command + ["observations"], input=json.dumps({"api_version":1,"sessions":[],"policy":"cached_only"}), text=True))
     validate(batch)
     assert batch["result"]["results"] == []
-    for args in [["--api-version", "99", "capabilities"], ["rename", "--session", "missing", "--expected-generation", "stale", "--name", "x"]]:
+    for args in [["--api-version", "99", "capabilities"], ["rename", "--session", "missing", "--expected-generation", "stale", "--name", "x"], ["answer", "--session", "missing", "--expected-generation", "stale", "--request-id", "r", "--answers", "{}"]]:
         result = subprocess.run(command + args, capture_output=True, text=True)
         assert result.returncode in (1, 2)
         assert not result.stdout

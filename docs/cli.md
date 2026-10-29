@@ -513,6 +513,28 @@ Cross-filesystem moves retain the original backup. Poll the returned operation
 through `api operations`; never automatically retry an uncertain mutation.
 For inactive sessions, choose the directory in the Resume launch plan instead.
 
+## Pending questions (revision 23)
+
+Agents can ask the user a question in the middle of a turn: Codex
+`request_user_input` (Plan mode; the turn waits) and `request_user_input_async`
+(Default mode; the turn keeps running and the TUI shows "? 1 question"), and Claude
+Code `AskUserQuestion`. `api state` lists them per session in `pending_questions`:
+
+```sh
+sessionsation api state | jq ".result.sessions[] | select(.pending_questions != []) | {id, generation, pending_questions}"
+sessionsation api answer --session ID --expected-generation GENERATION --request-id call_... \
+  --answers '{"q1":{"option_ids":["o1"]}}'
+echo '{"color":{"option_ids":["o2"]},"name":{"text":"zebra"}}' | \
+  sessionsation api answer --session ID --expected-generation GENERATION --request-id call_...
+```
+
+An async Codex answer is sent as a follow-up message on the native queue, like the
+TUI. It is delivered when the running turn ends. Questions in a Claude terminal are
+read-only (answer them there); hosted Claude sessions can be answered. Gemini
+`ask_user` questions cannot be seen outside the terminal. An answer is sent once:
+repeat the same command to read its receipt. Semantics and errors are in the
+[contract](contract.md#pending-questions-revision-23).
+
 ## Explicit in-turn steering
 
 For a deliberate message to a busy turn, use `api steer-target --session ID --expected-generation GENERATION`, then `api send` with `mode:"steer"` and the

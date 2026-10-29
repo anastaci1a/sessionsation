@@ -207,6 +207,17 @@
           ],
           "description": "Native conversation timestamp when recorded; never filesystem mtime."
         },
+        "pending_questions": {
+          "type": "array",
+          "description": "Revision 23: questions the agent asked and is waiting on (detected passively; not secret). Empty when none or the session is not running.",
+          "items": {
+            "$ref": "#/$defs/PendingQuestion"
+          }
+        },
+        "pending_questions_unsupported_reason": {
+          "type": "string",
+          "description": "Revision 23: why pending questions cannot be detected for this provider (Gemini)."
+        },
         "history_file_bytes": {
           "type": [
             "integer",
@@ -2571,6 +2582,204 @@
         }
       },
       "additionalProperties": true
+    },
+    "PendingQuestion": {
+      "type": "object",
+      "required": [
+        "request_id",
+        "asked_at",
+        "kind",
+        "blocking",
+        "answerable",
+        "questions"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Pass to api answer --request-id. Codex: the tool call id; hosted Claude: the permission request id; terminal Claude: the tool_use id."
+        },
+        "asked_at": {
+          "type": "integer",
+          "description": "Unix seconds."
+        },
+        "kind": {
+          "enum": [
+            "codex_request_user_input",
+            "codex_request_user_input_async",
+            "claude_ask_user_question",
+            "claude_hosted_ask_user_question"
+          ]
+        },
+        "blocking": {
+          "type": "boolean",
+          "description": "The agent waits for the answer; false for Codex request_user_input_async, whose turn keeps running."
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "answerable": {
+          "type": "boolean"
+        },
+        "unanswerable_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set when answerable is false (read-only question)."
+        },
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/QuestionPrompt"
+          }
+        }
+      }
+    },
+    "QuestionPrompt": {
+      "type": "object",
+      "required": [
+        "id",
+        "text",
+        "options",
+        "multi",
+        "allow_free_text"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string"
+        },
+        "header": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "label"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^o[0-9]+$"
+              },
+              "label": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "multi": {
+          "type": "boolean"
+        },
+        "allow_free_text": {
+          "type": "boolean"
+        }
+      }
+    },
+    "QuestionAnswers": {
+      "type": "object",
+      "description": "api answer --answers (or stdin): every question id maps to option ids and/or free text.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "option_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "QuestionAnswerReceipt": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "request_id",
+        "kind",
+        "state",
+        "answers_digest",
+        "created_at",
+        "updated_at",
+        "replay"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PendingQuestion/properties/kind"
+        },
+        "state": {
+          "enum": [
+            "dispatching",
+            "answered",
+            "queued",
+            "delivery_unknown",
+            "rejected"
+          ],
+          "description": "answered: the provider confirmed (Codex serverRequest/resolved, hosted Claude response written); queued: an async Codex answer accepted by the public non-steering queue (see message_receipt); delivery_unknown: never resent; rejected: nothing was sent."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "answers_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "integer"
+        },
+        "replay": {
+          "const": "never"
+        },
+        "message_receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Receipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
     },
     "ExecutableVersion": {
       "type": "object",

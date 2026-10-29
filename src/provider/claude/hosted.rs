@@ -523,6 +523,8 @@ enum Op {
         request_id: String,
         allow: bool,
         message: Option<String>,
+        /// AskUserQuestion answers: the tool input with `answers` added.
+        updated_input: Option<Value>,
     },
     Interrupt,
 }
@@ -670,8 +672,8 @@ pub async fn worker(paths: &Paths, c: &str) -> Result<()> {
                         }
                         None => json!({"ok":false,"error":"HOST_STOPPING"}),
                     },
-                    Op::Respond { request_id, allow, message } => {
-                        respond(paths, c, &h, stdin.as_mut(), &request_id, allow, message).await
+                    Op::Respond { request_id, allow, message, updated_input } => {
+                        respond(paths, c, &h, stdin.as_mut(), &request_id, allow, message, updated_input).await
                     }
                     Op::Stop { timeout, interrupt } => {
                         if interrupt && let Some(input) = stdin.as_mut() {
@@ -795,6 +797,7 @@ async fn accept(
                     request_id,
                     allow: v["behavior"] == "allow",
                     message: text("message"),
+                    updated_input: v.get("updated_input").filter(|u| u.is_object()).cloned(),
                 }),
                 Some("ping") => {
                     let _ = write.write_all(b"{\"ok\":true}\n").await;
@@ -871,6 +874,7 @@ async fn deliver(
     json!({"ok":ok,"dispatched":true})
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn respond(
     paths: &Paths,
     c: &str,
@@ -879,6 +883,7 @@ async fn respond(
     request_id: &str,
     allow: bool,
     message: Option<String>,
+    updated_input: Option<Value>,
 ) -> Value {
     let pending = read(paths, c).ok().flatten().and_then(|h| {
         h.pending_permissions
@@ -892,7 +897,19 @@ async fn respond(
         return json!({"ok":false,"error":"HOST_STOPPING"});
     };
     let decision = if allow {
-        json!({"behavior":"allow","updatedInput":pending["input"]})
+        // An AskUserQuestion answer replaces the input with the same questions plus
+        // `answers`; it applies only to that tool.
+        let input = match updated_input {
+            Some(u)
+                if pending["tool_name"] == "AskUserQuestion"
+                    && u["questions"] == pending["input"]["questions"] =>
+            {
+                u
+            }
+            Some(_) => return json!({"ok":false,"error":"INVALID_UPDATED_INPUT"}),
+            None => pending["input"].clone(),
+        };
+        json!({"behavior":"allow","updatedInput":input})
     } else {
         json!({"behavior":"deny","message":message.unwrap_or_else(|| "Denied by the operator".into())})
     };

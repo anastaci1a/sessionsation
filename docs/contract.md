@@ -1979,3 +1979,59 @@ touched. Claude account rows add `bypass_warning` (`skip` when the stored value 
 `true`, else `show`), `bypass_warning_value` (the raw boolean or `null`) and
 `bypass_warning_setting`. Codex and Gemini rows lack the fields; the command
 fails with `UNSUPPORTED_PROVIDER_OPERATION` for them.
+
+### Pending questions (revision 23)
+
+Additive; negotiate `contract_revision >= 23` and `capabilities.questions.version == 1`.
+Every `api state` session row has `pending_questions` (empty when none or the
+session is not running): questions an agent asked the user and is waiting on.
+Question text and option labels are included; they are not secret.
+
+```json
+{"request_id":"call_…","asked_at":1793285639,"kind":"codex_request_user_input_async",
+ "blocking":false,"turn_id":"…","answerable":true,"unanswerable_reason":null,
+ "questions":[{"id":"q1","text":"Which inputs…?","options":[{"id":"o1","label":"Synthetic"}],
+   "multi":false,"allow_free_text":true}]}
+```
+
+Detection is passive (incremental history scan; no provider contact, no extra
+process) and also survives `state --cached`:
+
+| kind | provider tool | ends when | answer path |
+|---|---|---|---|
+| `codex_request_user_input` | Plan-mode `request_user_input` (blocking) | its tool output, or the turn ends | `item/tool/requestUserInput` response |
+| `codex_request_user_input_async` | Default-mode `request_user_input_async` (the turn keeps running) | a new turn starts, or Sessionsation answers | follow-up message on the public non-steering queue |
+| `claude_hosted_ask_user_question` | `AskUserQuestion` in a hosted session | its permission request is answered | `can_use_tool` allow with `updatedInput.answers` |
+| `claude_ask_user_question` | `AskUserQuestion` in a Claude terminal | its `tool_result` | none: `answerable:false`, `unanswerable_reason` `PROVIDER_TERMINAL_ONLY` |
+
+Gemini CLI records `ask_user` tool calls only after they complete, so its rows have
+`pending_questions:[]` and `pending_questions_unsupported_reason`. An async Codex
+question answered in the TUI is not visible to Sessionsation until the next turn
+starts; answer each question in one place.
+
+`api answer --session ID --expected-generation G --request-id R [--answers JSON]`
+(stdin when `--answers` is absent, at most 16 KiB) answers once. `QuestionAnswers`
+maps every question id to `{"option_ids":[…],"text":"…"}`: at least one of them,
+one option unless `multi`, text only when `allow_free_text`. Codex encodes text as
+`user_note: …` after the selected labels; Claude joins labels and text with `, `.
+The result is a `QuestionAnswerReceipt`:
+
+- `answered`: the provider confirmed it (Codex `serverRequest/resolved`; the hosted
+  worker wrote its control response).
+- `queued`: an async Codex answer accepted by `api send` mode `queue`;
+  `message_receipt` is that public receipt.
+- `delivery_unknown`: the write may have happened. It is never resent.
+- `rejected`: nothing was sent (`reason`); the question stays pending.
+
+Safety: the catalog generation is checked (`STALE_TARGET`) and one answer per
+session runs at a time (`OPERATION_BUSY`). The receipt is journaled before the
+native write. Repeating the identical answer returns the original receipt with no
+native I/O. A different answer after an attempt is `QUESTION_ALREADY_ANSWERED`.
+A question that is gone, answered elsewhere or superseded is `QUESTION_NOT_PENDING`.
+For a blocking Codex question Sessionsation reads the thread first and never loads
+it. It subscribes with `thread/resume` (`excludeTurns`), which makes the app-server
+replay the pending request to the new client. It answers only the replayed request
+whose `itemId` equals `request_id`; if the request is not replayed it sends
+nothing. Codex accepts the first response from any client and ignores later ones.
+Answers are recorded in `questions/events.jsonl` under the data root.
+See [CLI](cli.md#pending-questions-revision-23).

@@ -28,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":22,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":23,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -227,6 +227,19 @@ pub enum Command {
     Hosted {
         #[command(subcommand)]
         command: crate::provider::claude::hosted::Command,
+    },
+    /// Answer an agent's pending question (`pending_questions` in state); answers
+    /// JSON from --answers or stdin. Idempotent; an attempted answer is never resent.
+    Answer {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        #[arg(long)]
+        request_id: String,
+        /// `{"<question id>":{"option_ids":["o1"],"text":"..."}}`; read from stdin when absent.
+        #[arg(long)]
+        answers: Option<String>,
     },
     /// Read a versioned Submit/Queue/Resume/explicit Steer request from stdin.
     Send,
@@ -1100,7 +1113,7 @@ fn gemini_provider() -> Value {
 }
 
 pub fn capabilities() -> Value {
-    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":22,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":23,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -1162,6 +1175,7 @@ pub fn capabilities() -> Value {
     value["claude_input_delivery"] = claude_input_delivery();
     // Revision 17: Gemini submit/queue/steer as typed input into a HERDR pane.
     value["gemini_input_delivery"] = crate::messaging::claude_steer::gemini::input_delivery();
+    value["questions"] = crate::questions::capability();
     value
 }
 
@@ -1307,6 +1321,14 @@ async fn inventory(paths: &Paths) -> Result<Vec<external::Instance>> {
     catalog::names::refresh(paths, &items).await?;
     Ok(items)
 }
+/// The verified discovery source of a Codex session (read-only; no catalog write).
+pub(crate) async fn codex_source(
+    paths: &Paths,
+    s: &catalog::Session,
+) -> Result<Option<external::Instance>> {
+    let items = external::discover_catalog(paths).await?;
+    Ok(items.into_iter().find(|i| source_matches(s, i)))
+}
 pub(crate) fn source_matches(s: &catalog::Session, i: &external::Instance) -> bool {
     i.thread_id == s.conversation_id
         && i.account == s.account
@@ -1446,6 +1468,17 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                 crate::messaging::claude_steer::gemini::apply_session_input(&mut value, observed.get(&id).map(|(_, h)| h.as_path()), crate::messaging::claude_steer::terminal::enabled(paths));
             }
             external::archiving::native::apply_session(paths, provider, &mut value, observed.get(&id).map(|(_, h)| h.as_path()), archives.get(&id));
+            let running = value["availability"] == "running";
+            value["pending_questions"] = match provider {
+                ProviderId::Claude if running => {
+                    let conversation = value["conversation_id"].as_str().unwrap_or_default().to_owned();
+                    crate::questions::to_values(crate::questions::claude_pending(paths, &id, &conversation, observed.get(&id).map(|(_, h)| h.as_path())))
+                }
+                _ => json!([]),
+            };
+            if provider == ProviderId::Gemini {
+                value["pending_questions_unsupported_reason"] = json!(crate::questions::NO_DETECTION_GEMINI);
+            }
             value["placement"] = placements["memberships"][id.as_str()].clone();
             return value;
         }
@@ -1469,6 +1502,10 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["conversation_created_at"]=facts["conversation_created_at"].clone();
         value["history_file_bytes"]=facts["history_file_bytes"].clone();
         value["activity"]=source.map(|s|json!(s.activity)).unwrap_or(Value::Null);
+        value["pending_questions"]=match source.filter(|i|!i.inactive && !archived) {
+            Some(i)=>crate::questions::to_values(crate::questions::codex_pending(paths,value["id"].as_str().unwrap_or_default(),&i.rollout)),
+            None=>json!([]),
+        };
         value["last_accessed"]=source.and_then(|s|s.last_accessed).map_or(Value::Null,|n|json!(n));
         value["active_since"]=json!(source.filter(|s|!s.inactive).and_then(|s|clock.and_then(|(uptime,hz)|attachment_started_at(now,uptime,s.start_time,hz))));
         let unambiguous=items.iter().filter(|i|!i.inactive && i.thread_id==value["conversation_id"]).count()<=1;
@@ -1895,6 +1932,33 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             session,
             expected_generation,
         } => crate::messaging::steering_target(paths, &session, &expected_generation).await?,
+        Command::Answer {
+            session,
+            expected_generation,
+            request_id,
+            answers,
+        } => {
+            let raw = match answers {
+                Some(raw) => raw,
+                None => {
+                    let mut bytes = Vec::new();
+                    std::io::stdin()
+                        .take(16 * 1024 + 1)
+                        .read_to_end(&mut bytes)?;
+                    String::from_utf8(bytes).context("INVALID_ANSWERS")?
+                }
+            };
+            crate::questions::answer(
+                paths,
+                crate::questions::AnswerRequest {
+                    session,
+                    expected_generation,
+                    request_id,
+                    answers: crate::questions::parse_answers(&raw)?,
+                },
+            )
+            .await?
+        }
         Command::Checkpoints => {
             let mut bytes = Vec::new();
             std::io::stdin().take(32769).read_to_end(&mut bytes)?;

@@ -1,0 +1,64 @@
+{
+  "handoff_version": 1,
+  "feature": "pending_questions",
+  "status": "implemented_tested_not_deployed",
+  "source": {
+    "repository": "https://github.com/anastaci1a/sessionsation",
+    "note": "The commit that adds this file. Not installed; deploy through the normal release path first."
+  },
+  "negotiation": {
+    "command": "api capabilities",
+    "required": {
+      "contract_revision_min": 23,
+      "questions.version": 1
+    },
+    "providers": {
+      "codex": "detect and answer (request_user_input and request_user_input_async)",
+      "claude": "detect; answer only hosted sessions (terminal: answerable false, unanswerable_reason PROVIDER_TERMINAL_ONLY)",
+      "gemini": "no detection (pending_questions_unsupported_reason)"
+    }
+  },
+  "commands": {
+    "observe": "api state (or api state --cached / --watch): sessions[].pending_questions",
+    "answer": "api answer --session UUID --expected-generation CATALOG_GENERATION --request-id REQUEST_ID [--answers JSON]",
+    "answers_stdin": "without --answers, the QuestionAnswers JSON is read from stdin (max 16 KiB)",
+    "receipt": "repeat the identical api answer call; it returns the original receipt without native I/O"
+  },
+  "schema": {
+    "file": "docs/contract/v1.json",
+    "definitions": ["PendingQuestion", "QuestionPrompt", "QuestionAnswers", "QuestionAnswerReceipt"],
+    "fixtures": ["pending_question", "pending_question_blocking", "question_answers", "question_answer_receipt"]
+  },
+  "semantics": {
+    "answers_shape": {"<question id>": {"option_ids": ["o1"], "text": "free text"}},
+    "states": {
+      "answered": "provider confirmed",
+      "queued": "async Codex answer accepted by the public queue; see message_receipt",
+      "delivery_unknown": "possibly written; never resent",
+      "rejected": "nothing sent; the question stays pending"
+    },
+    "errors": ["STALE_TARGET", "QUESTION_NOT_PENDING", "QUESTION_ALREADY_ANSWERED", "INVALID_ANSWERS", "OPERATION_BUSY", "PROVIDER_TERMINAL_ONLY", "UNSUPPORTED_PROVIDER_OPERATION"],
+    "replay": "never",
+    "async_codex_tui_caveat": "An async question answered in the Codex TUI stays listed until the next turn starts."
+  },
+  "client_steps": [
+    "Show sessions[].pending_questions with answerable true as an answer form (options by id, free text when allow_free_text, several options when multi).",
+    "Show answerable false questions read-only with unanswerable_reason.",
+    "Send api answer with the row's current generation; on STALE_TARGET refresh state and ask again before retrying.",
+    "Treat delivery_unknown as possibly answered; never resend a different answer for the same request_id.",
+    "Never answer a question the operator has not answered: the backend does not decide answers."
+  ],
+  "tests": [
+    "questions::tests::fake_app_server_question_round_trip_answers_once",
+    "questions::tests::a_request_the_server_no_longer_has_is_rejected_without_sending",
+    "questions::tests::a_stale_question_and_a_double_answer_are_definite_rejections",
+    "questions::tests::answers_are_validated_and_encoded_per_provider",
+    "questions::tests::claude_ask_user_question_pending_until_tool_result_and_multi_select",
+    "questions::tests::codex_async_question_survives_its_turn_and_is_superseded_by_a_new_turn",
+    "questions::tests::codex_blocking_question_is_pending_until_its_output_and_scans_incrementally"
+  ],
+  "deployment": {
+    "performed": false,
+    "note": "Requires an operator-authorized release; the live root was not touched."
+  }
+}
