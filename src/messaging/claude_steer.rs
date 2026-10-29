@@ -385,7 +385,7 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
             })?;
             ensure!(
                 request.mode != "queue",
-                "TERMINAL_QUEUE_UNSUPPORTED: typed input runs at the next tool boundary or as the next turn; queue needs a peer message (account live-steering --enable)"
+                "TERMINAL_QUEUE_UNSUPPORTED: typed input runs at the next tool boundary or as the next turn; queue needs a peer message"
             );
             ensure!(
                 !interrupt,
@@ -1324,6 +1324,15 @@ fn path_label(path: Option<&str>) -> Option<&'static str> {
 /// Whether terminal input applies to a row: the operator switch is on and the
 /// attachment is the verified HERDR pane of its running process (see
 /// [`terminal::row_reason`]).
+/// Why `queue` is unavailable when no peer path applies. Typed input cannot queue, but when
+/// live steering is already on the real blocker is the peer path, so name that instead.
+fn queue_blocked_reason(terminal_available: bool, peer: &Result<(), String>) -> Option<String> {
+    let peer_reason = peer.as_ref().err()?;
+    if terminal_available && peer_reason.starts_with("LIVE_STEERING_DISABLED") {
+        return Some("TERMINAL_QUEUE_UNSUPPORTED: typed input cannot wait for a later turn; enable live steering for peer queue".into());
+    }
+    Some(peer_reason.clone())
+}
 fn terminal_reason(value: &Value, enabled: bool) -> Option<&'static str> {
     if !enabled {
         return Some("TERMINAL_INPUT_DISABLED");
@@ -1411,10 +1420,8 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
                 m.1 = Some(terminal::SEMANTICS);
             } else if peer.is_ok() {
                 m.1 = Some(PEER_SEMANTICS);
-            } else if typed.is_none() {
-                m.2 = Some("TERMINAL_QUEUE_UNSUPPORTED: typed input cannot wait for a later turn; enable live steering for peer queue".into());
             } else {
-                m.2 = peer.clone().err();
+                m.2 = queue_blocked_reason(typed.is_none(), &peer);
             }
         }
     }
@@ -1448,6 +1455,23 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn queue_reason_names_the_real_peer_blocker() {
+        // Terminal available, live steering on, socket unlinked.
+        let unlinked: Result<(), String> = Err(claude::peer::SOCKET_UNLINKED.into());
+        let r = queue_blocked_reason(true, &unlinked).unwrap();
+        assert!(r.starts_with("PEER_SOCKET_UNLINKED"), "{r}");
+        assert!(!r.contains("enable live steering"), "{r}");
+        let off: Result<(), String> = Err(claude::peer::DISABLED.into());
+        let r = queue_blocked_reason(true, &off).unwrap();
+        assert!(
+            r.starts_with("TERMINAL_QUEUE_UNSUPPORTED") && r.contains("enable live steering"),
+            "{r}"
+        );
+        let r = queue_blocked_reason(false, &off).unwrap();
+        assert!(r.starts_with("LIVE_STEERING_DISABLED"), "{r}");
+        assert_eq!(queue_blocked_reason(true, &Ok(())), None);
+    }
     #[test]
     fn transcript_scan_needs_the_anchor_and_stops_at_the_next_input() {
         let d = tempfile::tempdir().unwrap();

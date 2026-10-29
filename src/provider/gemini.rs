@@ -1062,20 +1062,22 @@ mod tests {
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&other).unwrap();
         let script = d.path().join("gemini.js");
-        fs::write(&script, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        fs::write(&script, "#!/bin/sh\nread _\n").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
         let id = "11111111-1111-4111-8111-111111111111";
         let spawn = |home: &Path, flag: &str, id: &str| {
             std::process::Command::new(&script)
                 .args([flag, id])
                 .env("GEMINI_CLI_HOME", home)
+                .stdin(std::process::Stdio::piped())
                 .spawn()
                 .unwrap()
         };
         let mut child = spawn(&home, "--session-id", id);
         let mut stranger = spawn(&other, "-r", "22222222-2222-4222-8222-222222222222");
         let pid = child.id();
-        // `exec sleep` replaces the script: wait for the script's own command line.
+        // The shell blocks in the `read` builtin and never execs, so its command line stays the
+        // script's; wait only for the fork-to-exec window.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let start = loop {
             if let Some((_, start)) = proc_start(pid)
