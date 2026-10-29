@@ -168,6 +168,19 @@ validate(fixtures["gemini_steer_request"], "ClaudeSteerRequest")
 for name in ["gemini_steer_receipt_queued", "gemini_steer_receipt_steer_applied", "gemini_steer_receipt_steer_after_turn", "gemini_steer_receipt_refused"]:
     validate(fixtures[name], "GeminiSteerReceipt")
     validate(fixtures[name], "ClaudeSteerReceipt")
+validate(fixtures["antigravity_steer_receipt_queued"], "ClaudeSteerReceipt")
+for invalid in [
+    {**fixtures["antigravity_steer_receipt_queued"], "antigravity_input": None},
+    {**fixtures["antigravity_steer_receipt_queued"], "gemini_input": {}},
+    {**fixtures["antigravity_steer_receipt_queued"], "account_id": "claude:personal"},
+    {**fixtures["gemini_steer_receipt_queued"], "provider": "antigravity"},
+]:
+    try:
+        validate(invalid, "ClaudeSteerReceipt")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Antigravity receipts need antigravity_input, an antigravity: account and no Gemini fields")
 validate(fixtures["gemini_live_steering"], "GeminiLiveSteering")
 applied, after = fixtures["gemini_steer_receipt_steer_applied"], fixtures["gemini_steer_receipt_steer_after_turn"]
 for invalid, definition in [
@@ -319,4 +332,63 @@ with tempfile.TemporaryDirectory() as directory:
         assert result.returncode in (1, 2)
         assert not result.stdout
         validate(json.loads(result.stderr))
+
+# Real CLI output for Antigravity (fake agy, disposable data dir, daemon) must satisfy the schema.
+import shutil, time, uuid
+with tempfile.TemporaryDirectory() as directory:
+    data = Path(directory) / "state"
+    data.mkdir()
+    bindir = Path(directory) / "bin"
+    bindir.mkdir()
+    fake = bindir / "agy"
+    shutil.copy(root / "tests/support/fake-agy.sh", fake)
+    fake.chmod(0o700)
+    (data / "config.json").write_text(json.dumps({"antigravity_binary": str(fake), "codex_binary": "/nonexistent/codex", "claude_binary": "/nonexistent/claude", "gemini_binary": "/nonexistent/gemini"}))
+    project = Path(directory) / "project"
+    project.mkdir()
+    binary = str(Path(os.environ.get("CARGO_TARGET_DIR", root / "target")) / "debug/sessionsation")
+    env = {**os.environ, "XDG_RUNTIME_DIR": directory}
+    for key in ["TMUX", "TMUX_PANE", "HERDR_ENV", "AGY_ACCOUNT_HOME"]:
+        env.pop(key, None)
+    cli = [binary, "--data-dir", str(data)]
+    def api(*args, stdin=None):
+        out = subprocess.run(cli + ["api", *args], input=stdin, capture_output=True, text=True, env=env)
+        assert out.returncode == 0, (args, out.stderr)
+        value = json.loads(out.stdout)
+        validate(value)
+        return value["result"]
+    daemon = subprocess.Popen(cli + ["daemon", "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    try:
+        for _ in range(200):
+            if subprocess.run(cli + ["daemon", "status"], capture_output=True, env=env).returncode == 0:
+                break
+            time.sleep(0.05)
+        added = api("account", "add", "antigravity:schema")
+        assert added["provider"] == "antigravity"
+        subprocess.run(cli + ["account", "login", "antigravity:schema"], check=True, capture_output=True, env=env)
+        api("account", "refresh", "antigravity:schema")
+        rows = api("account", "list")
+        row = next(a for a in rows if a["id"] == "antigravity:schema")
+        validate(row, "Account")
+        message = str(uuid.uuid4())
+        body = {"api_version": 1, "message_id": message, "mode": "new", "account_id": "antigravity:schema", "directory": str(project), "text": "hello", "expires_at": int(time.time()) + 600}
+        api("send", stdin=json.dumps(body))
+        receipt = None
+        for _ in range(400):
+            receipt = api("receipt", message)
+            if receipt["state"] not in ("pending_local", "execution_started"):
+                break
+            time.sleep(0.05)
+        assert receipt["provider"] == "antigravity" and receipt["account_id"] == "antigravity:schema", receipt
+        validate(receipt, "ClaudeHeadlessReceipt")
+        snapshot = api("state")
+        validate(snapshot, "Snapshot")
+        session = next(s for s in snapshot["sessions"] if s["provider"] == "antigravity")
+        validate(session, "Session")
+        # Operations and requests that name the account.
+        refresh = api("account", "refresh", "antigravity:schema")
+        validate(refresh, "AccountRefresh")
+    finally:
+        daemon.terminate()
+        daemon.wait(timeout=10)
 print("Contract schema, fixtures and CLI envelopes passed")

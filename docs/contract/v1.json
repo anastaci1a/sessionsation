@@ -1645,7 +1645,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^(codex|claude|gemini):[A-Za-z0-9_-]+$"
+          "pattern": "^(codex|claude|gemini|antigravity):[A-Za-z0-9_-]+$"
         },
         "name": {
           "type": "string",
@@ -2112,7 +2112,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^(codex|claude|gemini):"
+          "pattern": "^(codex|claude|gemini|antigravity):"
         },
         "kind": {
           "const": "account_delete"
@@ -2190,7 +2190,7 @@
       "properties": {
         "account_id": {
           "type": "string",
-          "pattern": "^(codex|claude|gemini):"
+          "pattern": "^(codex|claude|gemini|antigravity):"
         },
         "can_delete": {
           "type": "boolean"
@@ -3966,7 +3966,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^(claude|gemini):"
+          "pattern": "^(claude|gemini|antigravity):"
         },
         "mode": {
           "enum": [
@@ -4204,7 +4204,7 @@
       "properties": {
         "account_id": {
           "type": "string",
-          "pattern": "^(claude|gemini):"
+          "pattern": "^(claude|gemini|antigravity):"
         },
         "provider": {
           "enum": [
@@ -4260,7 +4260,7 @@
       "properties": {
         "account_id": {
           "type": "string",
-          "pattern": "^(codex|claude|gemini):"
+          "pattern": "^(codex|claude|gemini|antigravity):"
         },
         "name": {
           "type": "string"
@@ -4725,7 +4725,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^(claude|gemini):"
+          "pattern": "^(claude|gemini|antigravity):"
         },
         "mode": {
           "enum": [
@@ -5188,10 +5188,41 @@
             }
           },
           "else": {
-            "properties": {
-              "gemini_input": false,
-              "account_id": {
-                "pattern": "^claude:"
+            "if": {
+              "properties": {
+                "provider": {
+                  "const": "antigravity"
+                }
+              },
+              "required": [
+                "provider"
+              ]
+            },
+            "then": {
+              "required": [
+                "antigravity_input",
+                "terminal_input"
+              ],
+              "properties": {
+                "delivery_semantics": {
+                  "const": "terminal_input"
+                },
+                "gemini_input": false,
+                "antigravity_input": {
+                  "type": "object"
+                },
+                "account_id": {
+                  "pattern": "^antigravity:"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "gemini_input": false,
+                "antigravity_input": false,
+                "account_id": {
+                  "pattern": "^claude:"
+                }
               }
             }
           }
