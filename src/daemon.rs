@@ -549,10 +549,28 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         "account/live-steering" => {
                             let account = named(&state,params)?;
                             let provider = account.provider;
-                            ensure!(provider == ProviderId::Claude, "UNSUPPORTED_PROVIDER_OPERATION: live steering uses Claude Code peer messaging");
+                            ensure!(matches!(provider, ProviderId::Claude | ProviderId::Gemini), "UNSUPPORTED_PROVIDER_OPERATION: live steering uses Claude Code peer messaging or Gemini CLI model steering");
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             let name = account.name.clone();
                             let home = crate::provider::account_home(&paths,account)?;
+                            if provider == ProviderId::Gemini {
+                                // Gemini: experimental.modelSteering, read by each session at startup.
+                                use crate::provider::gemini::steering;
+                                let (changed, previous) = match params["enable"].as_bool() {
+                                    Some(enable) => {
+                                        let t = steering::set(&home, enable)?;
+                                        if t.changed { store.save(&state,now(),if enable {"account.live_steering_enabled"} else {"account.live_steering_disabled"},&name)?; }
+                                        (t.changed, t.previous)
+                                    }
+                                    None => (false, steering::configured(&home).map(Value::Bool)),
+                                };
+                                let value = steering::configured(&home);
+                                let running = crate::provider::gemini::live_sessions(&home).map(|l| l.len()).unwrap_or(0);
+                                return Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"live_steering":value==Some(true),
+                                    "setting":steering::SETTING,"value":value,"previous":previous,"changed":changed,
+                                    "settings_file":steering::settings_file(&home),"applies_to":"sessions_started_after_the_change",
+                                    "restart_required":changed && running > 0,"running_sessions":running}));
+                            }
                             let (changed, previous) = match params["enable"].as_bool() {
                                 Some(enable) => {
                                     let t = crate::provider::claude::peer::set(&home, enable)?;

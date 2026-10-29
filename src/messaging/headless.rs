@@ -748,13 +748,12 @@ pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
         .as_str()
         .and_then(|sid| catalog_provider(paths, sid))
         .and_then(|p| native::of(&p));
-    if let Some(provider) = native_target {
+    if native_target.is_some() {
         match v["mode"].as_str() {
             Some("resume") => return send(paths, headless(v)?).await,
-            Some("submit" | "queue" | "steer") if provider == ProviderId::Claude => {
+            Some("submit" | "queue" | "steer") => {
                 return super::claude_steer::send(paths, v).await;
             }
-            Some(mode @ ("submit" | "queue" | "steer")) => return Err(unsupported(provider, mode)),
             _ => bail!("INVALID_REQUEST"),
         }
     }

@@ -480,6 +480,7 @@ pub enum AccountCommand {
         id: String,
     },
     /// Claude: show, enable or disable live steering (peer messages) for this account.
+    /// Gemini: show, set or remove experimental.modelSteering (restart sessions to apply).
     LiveSteering {
         id: String,
         #[arg(long, conflicts_with = "disable")]
@@ -815,10 +816,10 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
 fn gemini_provider() -> Value {
     json!({"id":"gemini","implemented":true,"enrollment":true,"adopt_config_dir":false,"login":"interactive_exec","usage":false,"usage_state":"unsupported","usage_source":crate::provider::gemini::USAGE_SOURCE,
         "new":true,"resume":true,"rename":true,"native_rename":false,"stop":false,
-        "account_switch":false,"restart":false,"submit":false,"queue":false,
+        "account_switch":false,"restart":false,"submit":true,"queue":true,
         "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
         "headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false,"approval_mode":crate::messaging::headless::GEMINI_APPROVAL_MODE},
-        "force_interrupt":false,"steer":false,"cross_provider_conversion":false,
+        "force_interrupt":false,"steer":true,"input_delivery":crate::messaging::claude_steer::gemini::input_delivery(),"cross_provider_conversion":false,
         "operations":crate::provider::capabilities(ProviderId::Gemini)})
 }
 
@@ -872,6 +873,8 @@ pub fn capabilities() -> Value {
         claude["input_delivery"] = claude_input_delivery();
     }
     value["claude_input_delivery"] = claude_input_delivery();
+    // Revision 17: Gemini submit/queue/steer as typed input into a HERDR pane.
+    value["gemini_input_delivery"] = crate::messaging::claude_steer::gemini::input_delivery();
     value
 }
 
@@ -1151,6 +1154,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
             let mut value = native_public(provider, s, observed.get(&id).map(|(o, _)| o), deleted);
             if provider == ProviderId::Claude {
                 crate::messaging::claude_steer::apply_session_input(paths, &mut value, observed.get(&id).map(|(_, h)| h.as_path()));
+            } else if provider == ProviderId::Gemini {
+                crate::messaging::claude_steer::gemini::apply_session_input(&mut value, observed.get(&id).map(|(_, h)| h.as_path()));
             }
             external::archiving::native::apply_session(paths, provider, &mut value, observed.get(&id).map(|(_, h)| h.as_path()), archives.get(&id));
             value["placement"] = placements["memberships"][id.as_str()].clone();
@@ -1349,6 +1354,11 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
         if provider == ProviderId::Claude {
             crate::messaging::claude_steer::apply_session_input(
                 paths,
+                &mut value,
+                observed.get(id).map(|(_, h)| h.as_path()),
+            );
+        } else if provider == ProviderId::Gemini {
+            crate::messaging::claude_steer::gemini::apply_session_input(
                 &mut value,
                 observed.get(id).map(|(_, h)| h.as_path()),
             );

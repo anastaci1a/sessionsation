@@ -50,14 +50,14 @@ pub const LABEL: &str = "Typed into the session's HERDR terminal as the user's o
 pub const MAX_TEXT: usize = 4096;
 const CHUNK: usize = 32;
 const CHUNK_PAUSE: Duration = Duration::from_millis(15);
-const SETTLE: Duration = Duration::from_millis(120);
-const SCREEN_WAIT: Duration = Duration::from_secs(3);
+pub(crate) const SETTLE: Duration = Duration::from_millis(120);
+pub(crate) const SCREEN_WAIT: Duration = Duration::from_secs(3);
 /// Rows a draft may occupy and still be read back exactly.
 const MAX_DRAFT_ROWS: usize = 12;
 /// Rows a typed message may occupy and still be verified.
 const MAX_TYPED_ROWS: usize = 60;
 /// Window in which the typed input must appear in the transcript.
-const CONFIRM_SECONDS: u64 = 60;
+pub(crate) const CONFIRM_SECONDS: u64 = 60;
 const MAX_SCAN: u64 = 16 * 1024 * 1024;
 
 pub const REASONS: &[&str] = &[
@@ -111,6 +111,9 @@ pub struct Terminal {
     pub input_record: Option<String>,
     pub turn_ended: bool,
     pub steps: Vec<String>,
+    /// Gemini CLI sessions only (see [`super::gemini`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini: Option<super::gemini::Facts>,
 }
 
 // ---------------------------------------------------------------- payload
@@ -161,6 +164,9 @@ pub(crate) struct Style {
     pub dim: bool,
     pub fg: bool,
     pub inverse: bool,
+    /// Foreground colour id (0 = default): SGR 30-37/90-97, 1000+n for
+    /// 256-colour, 0x1000000|rgb for true colour.
+    pub color: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Cell {
@@ -223,11 +229,25 @@ fn sgr(style: &mut Style, params: &str) {
             22 => style.dim = false,
             7 => style.inverse = true,
             27 => style.inverse = false,
-            30..=37 | 90..=97 => style.fg = true,
-            39 => style.fg = false,
+            c @ (30..=37 | 90..=97) => {
+                style.fg = true;
+                style.color = c;
+            }
+            39 => {
+                style.fg = false;
+                style.color = 0;
+            }
             38 => {
                 style.fg = true;
-                i += if codes.get(i + 1) == Some(&5) { 2 } else { 4 };
+                let at = |k: usize| codes.get(i + k).copied().unwrap_or(0);
+                if at(1) == 5 {
+                    style.color = 1000 + at(2);
+                    i += 2;
+                } else {
+                    style.color =
+                        0x100_0000 | (at(2) & 0xff) << 16 | (at(3) & 0xff) << 8 | (at(4) & 0xff);
+                    i += 4;
+                }
             }
             48 => i += if codes.get(i + 1) == Some(&5) { 2 } else { 4 },
             _ => {}
@@ -235,12 +255,12 @@ fn sgr(style: &mut Style, params: &str) {
         i += 1;
     }
 }
-fn text(row: &[Cell]) -> String {
+pub(crate) fn row_text(row: &[Cell]) -> String {
     row.iter().map(|c| c.ch).collect()
 }
 /// Columns a row occupies; anything outside ASCII counts as wide (two columns),
 /// which can only make the wrap check stricter.
-fn columns(row: &[Cell]) -> usize {
+pub(crate) fn columns(row: &[Cell]) -> usize {
     row.iter()
         .map(|c| if c.ch.is_ascii() { 1 } else { 2 })
         .sum()
@@ -264,7 +284,7 @@ pub(crate) enum View {
 /// strict reads back text the worker typed (soft wraps allowed, dim ghost
 /// text ignored, compared without whitespace by the caller).
 pub(crate) fn classify(rows: &[Vec<Cell>], strict: bool) -> Result<View, &'static str> {
-    let lines: Vec<String> = rows.iter().map(|r| text(r)).collect();
+    let lines: Vec<String> = rows.iter().map(|r| row_text(r)).collect();
     if lines
         .iter()
         .any(|l| l.contains("Showing detailed transcript"))
@@ -366,7 +386,7 @@ pub(crate) fn classify(rows: &[Vec<Cell>], strict: bool) -> Result<View, &'stati
             if content.len() > 1 {
                 return Err("TERMINAL_DRAFT_UNRECONSTRUCTABLE");
             }
-            let line = text(content[0]);
+            let line = row_text(content[0]);
             if line.trim_start().starts_with("Message @") {
                 return Err("TERMINAL_VIEW_NOT_MAIN");
             }
@@ -416,7 +436,7 @@ fn placeholder(row: &[Cell]) -> bool {
             .enumerate()
             .all(|(i, c)| c.style.dim || (i == 0 && c.style.inverse))
 }
-fn squash(s: &str) -> String {
+pub(crate) fn squash(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
@@ -426,49 +446,55 @@ pub(crate) struct Host {
     session: String,
     pane: String,
     socket: Option<PathBuf>,
+    /// HERDR's agent kind for this provider (`claude`, `gemini`).
+    agent: &'static str,
 }
 impl Host {
     fn new(t: &Terminal) -> Result<Self> {
+        Self::for_agent(t, "claude")
+    }
+    pub(crate) fn for_agent(t: &Terminal, agent: &'static str) -> Result<Self> {
         let (session, pane) = crate::terminal::target(&t.target)?;
         Ok(Self {
             session: session.into(),
             pane: pane.into(),
             socket: t.socket.clone(),
+            agent,
         })
     }
     fn raw(&self, args: &[&str]) -> Result<Vec<u8>> {
         crate::terminal::raw_at(&self.session, args, self.socket.as_deref())
     }
     /// HERDR's agent status for this pane (`idle|working|blocked|done|unknown`),
-    /// None when HERDR reports no Claude agent there.
-    fn agent_status(&self) -> Result<Option<String>> {
+    /// None when HERDR reports no agent of this kind there.
+    pub(crate) fn agent_status(&self) -> Result<Option<String>> {
         let v =
             crate::terminal::call_at(&self.session, &["agent", "list"], self.socket.as_deref())?;
         Ok(v["agents"].as_array().and_then(|a| {
             a.iter()
-                .find(|x| x["pane_id"] == self.pane.as_str() && x["agent"] == "claude")
+                .find(|x| x["pane_id"] == self.pane.as_str() && x["agent"] == self.agent)
                 .and_then(|x| x["agent_status"].as_str().map(str::to_owned))
         }))
     }
-    fn screen(&self) -> Result<Vec<Vec<Cell>>> {
+    pub(crate) fn screen(&self) -> Result<Vec<Vec<Cell>>> {
         let out = self.raw(&[
             "pane", "read", &self.pane, "--source", "visible", "--format", "ansi",
         ])?;
         Ok(cells(&String::from_utf8_lossy(&out)))
     }
-    fn keys(&self, keys: &[&str]) -> Result<()> {
+    pub(crate) fn keys(&self, keys: &[&str]) -> Result<()> {
         let mut args = vec!["pane", "send-keys", self.pane.as_str()];
         args.extend_from_slice(keys);
         self.raw(&args).map(|_| ())
     }
-    fn text(&self, s: &str) -> Result<()> {
+    pub(crate) fn text(&self, s: &str) -> Result<()> {
         // HERDR 0.9.5 takes the text verbatim (leading hyphens included) and
         // writes it without a bracketed-paste wrapper.
         self.raw(&["pane", "send-text", &self.pane, s]).map(|_| ())
     }
     /// Type text as keystrokes: small chunks, ctrl+j (`chat:newline`) for
     /// newlines; never Enter.
-    async fn type_text(&self, s: &str) -> Result<()> {
+    pub(crate) async fn type_text(&self, s: &str) -> Result<()> {
         for (i, line) in s.split('\n').enumerate() {
             if i > 0 {
                 self.keys(&["ctrl+j"])?;
@@ -545,7 +571,7 @@ pub fn prepare(request: &Request, mut t: Terminal) -> Result<Terminal> {
 
 // ---------------------------------------------------------------- worker
 
-fn reason(e: &anyhow::Error) -> String {
+pub(crate) fn reason(e: &anyhow::Error) -> String {
     let s = e.to_string();
     let code = s.split(':').next().unwrap_or("REJECTED");
     if code.chars().all(|c| c.is_ascii_uppercase() || c == '_') && !code.is_empty() {
@@ -554,7 +580,7 @@ fn reason(e: &anyhow::Error) -> String {
         "TERMINAL_HOST_UNAVAILABLE".to_owned()
     }
 }
-fn step(paths: &Paths, id: &str, s: &str, f: impl FnOnce(&mut Record)) -> Result<()> {
+pub(crate) fn step(paths: &Paths, id: &str, s: &str, f: impl FnOnce(&mut Record)) -> Result<()> {
     change(paths, id, |r| {
         if let Some(t) = r.terminal.as_mut()
             && t.steps.len() < 64
@@ -565,7 +591,7 @@ fn step(paths: &Paths, id: &str, s: &str, f: impl FnOnce(&mut Record)) -> Result
         Ok(())
     })
 }
-fn reject(paths: &Paths, id: &str, code: &str) -> Result<()> {
+pub(crate) fn reject(paths: &Paths, id: &str, code: &str) -> Result<()> {
     change(paths, id, |r| {
         finish(r, "rejected", Some(code));
         Ok(())
@@ -605,7 +631,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         return Ok(());
     }
     let r = read(paths, id)?;
-    if r.phase != "admitted" || r.kind != "terminal" {
+    if r.phase != "admitted" || r.kind != "terminal" || super::gemini::is_gemini(&r) {
         return Ok(());
     }
     if r.request.expires_at <= crate::daemon::now() {
@@ -860,7 +886,7 @@ async fn restore(paths: &Paths, id: &str, host: &Host, draft: &str) -> Result<()
 
 // ---------------------------------------------------------------- transcript
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)

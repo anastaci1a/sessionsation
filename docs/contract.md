@@ -1622,3 +1622,67 @@ Fixtures: `claude_steer_request_terminal`, `claude_steer_receipt_terminal`,
 `claude_steer_receipt_terminal_refused`. The screen grammar and keys come from
 the Claude Code 2.1.312 bundle and HERDR 0.9.5; tests use fakes only (see
 [CLI](cli.md#claude-terminal-input-revision-17)).
+
+### Gemini terminal input (revision 17)
+
+Additive in revision 17. Gemini sessions take `api send` modes `submit`, `queue`
+and `steer` (the `ClaudeSteerRequest` shape; `delivery` `auto` or
+`terminal_input`, anything else `DELIVERY_UNAVAILABLE`) as typed input into the
+session's verified HERDR pane, through the same journal, procedure and refusal
+codes as [Claude terminal input](#claude-terminal-input-revision-17). The
+provider entry reports `submit`, `queue` and `steer` true with
+`input_delivery`, and `capabilities.gemini_input_delivery`
+(`GeminiTerminalInputDelivery`) describes the path. Gemini rows fill
+`capabilities.submit|queue|steer`, `capability_reasons` and `input_delivery`
+(`semantics`, `label`, `steer` as `GeminiSteerSemantics`, `modes`, `available`,
+`terminal_input:{available,reason}`, `model_steering:{enabled,configured,source,
+restart_required,reason}`).
+
+Enter in Gemini CLI 0.66.0 means: a user turn when idle; mid-turn, the native
+message queue with `experimental.modelSteering` off, or a user steering update
+with it on. Hence `queue` needs the setting off (`GEMINI_QUEUE_WOULD_STEER`),
+`steer` needs it on (`GEMINI_STEERING_DISABLED`), and a mid-turn `submit` is
+refused when it is on (`GEMINI_SUBMIT_WOULD_STEER`). The CLI reads the setting at
+startup only; a settings file changed after the process started makes it
+`GEMINI_STEERING_RESTART_REQUIRED`, an unreadable or trust-dependent value
+`GEMINI_STEERING_UNKNOWN`. The admission and the worker (before the first key and
+again before Enter) check these.
+
+Receipts (`GeminiSteerReceipt`: a `ClaudeSteerReceipt` with `provider:"gemini"`,
+`account_id` `gemini:NAME` and `delivery_semantics:"terminal_input"`) add
+`gemini_input` (`GeminiTerminalInput`): `model_steering`, `steering_source`,
+`busy_at_submit`, `expected` (`user_turn`, `native_queue`, `steering_update`),
+`screen_evidence` (`queued` or `steering_hint` seen right after a mid-turn Enter;
+then `facts.accepted_native` is true and the state `native_accepted`), `outcome`
+and `steering:{applied,fate}`. The anchor is the first `user` chat record at or
+after the submit whose text contains the typed text:
+
+- `submitted` / `queued`: a prompt carrying the text (`record_type:"user"`). A
+  queued message shares its record with every other message queued during that
+  turn (joined with a blank line); `batched` is then true and
+  `facts.shared_with_turn` true.
+- `steering_applied`: a record that carries the steering update with the next
+  tool response (`record_type:"steering_update"`, `steering.applied:true`,
+  `fate:"applied_at_next_tool_step"`, `facts.folded` true).
+- `steering_after_turn`: the turn ended without a tool call, and Gemini submitted
+  the update alone as a new prompt once idle (`steering.applied:false`,
+  `fate:"submitted_after_turn_as_steering_prompt"`). It is not dropped; it is
+  lost only if the process exits before it is idle again, which leaves the
+  receipt `delivery_unknown`.
+
+The reply is Gemini's text after the anchor until the next user prompt (tool
+responses continue the turn). A mid-turn Enter that Gemini visibly queued or took
+as a hint may stay unrecorded until the turn reaches it, so its confirmation
+window is `timeout_seconds`; otherwise 60 seconds, as for Claude. Nothing is
+re-sent. Never sent: Esc and Ctrl+C (both cancel a running Gemini request),
+Ctrl+D, Ctrl+L.
+
+`api account live-steering gemini:NAME [--enable|--disable]` returns
+`GeminiLiveSteering`: it sets or removes only `experimental.modelSteering` in
+`GEMINI_CLI_HOME/.gemini/settings.json` (atomic replace, mode kept, symlinks and
+commented files refused), with `applies_to:"sessions_started_after_the_change"`,
+`restart_required` and `running_sessions`. Fixtures: `gemini_steer_request`,
+`gemini_steer_receipt_queued`, `gemini_steer_receipt_steer_applied`,
+`gemini_steer_receipt_steer_after_turn`, `gemini_steer_receipt_refused`,
+`gemini_live_steering`. Grammar and keys come from the Gemini CLI 0.66.0 bundle;
+tests use a fake HERDR pane (see [CLI](cli.md#gemini-terminal-input-revision-17)).

@@ -827,7 +827,8 @@ false); a verified HERDR attachment syncs tab names exactly as for Claude.
 Usage is **unsupported**: Gemini exposes quota only in its interactive `/stats
 model`. Accounts report `usage_state:"unsupported"`, `usage.short`/`weekly` null,
 and nothing is shown as 0%. Account limits cannot be set. Stop, restart, account
-switch, relocation, Space moves and Submit/Queue/Steer are unsupported. Archive,
+switch, relocation and Space moves are unsupported. Submit, Queue and Steer work as
+[typed terminal input](#gemini-terminal-input-revision-17) for a live session in a HERDR pane. Archive,
 restore and delete work as for Claude
 ([revision 17](#claude-and-gemini-archive-and-delete-revision-17)). Add to HERDR is unsupported (`NO_NATIVE_ATTACH`; Gemini has no attach
 to a running process): stop it, then use Start Session.
@@ -842,6 +843,77 @@ output is `delivery_unknown` and never replayed. Live sessions are refused
 (`SESSION_ALREADY_RUNNING`). Login, the NO_BROWSER flow, headless `-r -p` JSON and
 the process command-line shape are verified only against a fake and the installed
 CLI's source until a real login exists.
+
+### Gemini terminal input (revision 17)
+
+Gemini CLI 0.66.0 has no live input API Sessionsation can use: there is no
+stream-json input, and its ACP mode (`--acp`) cancels the running turn when a new
+prompt arrives. A tracked Gemini session that runs in a verified HERDR pane
+(`attachment.host:"herdr"`, exact PID and start time) therefore takes `submit`,
+`queue` and `steer` as **typed input**, with the same procedure as
+[Claude terminal input](#claude-terminal-input-revision-17): agent and screen
+checks, the draft read, cleared, typed back and verified, every step journaled,
+one Enter, the reply anchored to the transcript, nothing ever re-sent. Receipts
+carry `delivery_semantics:"terminal_input"`, `provider:"gemini"`,
+`terminal_input` and `gemini_input`. A stopped session still uses headless
+`mode:"resume"`.
+
+What Enter does depends on the turn and on the account setting
+`experimental.modelSteering` (off by default):
+
+| Session | Model steering off | Model steering on |
+|---|---|---|
+| idle | a normal user turn | a normal user turn |
+| running a turn | Gemini's own message queue | a "user steering update" |
+
+- **Submit** types and submits. On a running session it is queued when model
+  steering is off, and refused (`GEMINI_SUBMIT_WOULD_STEER`) when it is on.
+- **Queue** needs model steering off (`GEMINI_QUEUE_WOULD_STEER`). Queued
+  messages are recorded by Gemini only when the turn ends, and all of them are
+  joined with a blank line into one user prompt: `gemini_input.batched` is true
+  when the anchoring record carries other text too.
+- **Steer** needs model steering on (`GEMINI_STEERING_DISABLED`). Gemini adds
+  the text to the next tool response of the running turn
+  (`outcome:"steering_applied"`). If the turn ends without another tool call,
+  Gemini does not drop it: once idle it submits it on its own as a new prompt
+  ("User steering update: <user_input>…</user_input>" plus an instruction to
+  re-plan), reported as `steering.applied:false`,
+  `fate:"submitted_after_turn_as_steering_prompt"`. Gemini collapses the text's
+  whitespace. Agent-DM shows the mode as "Steer" with that caveat
+  (`input_delivery.steer.caveat`). A steer or queue on an idle session is a
+  normal turn (`outcome:"submitted"`).
+
+```sh
+sessionsation account live-steering gemini:me --enable    # or --disable
+```
+
+The toggle sets (or removes) only `experimental.modelSteering` in
+`HOME/.gemini/settings.json`, with an atomic replace that keeps the file mode; a
+symlinked or non-JSON (commented) settings file is refused unchanged. Gemini
+reads the value once at startup and does not watch the file, so running sessions
+keep their old value: the result reports `restart_required` and
+`running_sessions`, and a session whose settings files changed after it started
+reports `GEMINI_STEERING_RESTART_REQUIRED` for queue and steer until restarted.
+Session rows show the effective value under `input_delivery.model_steering`
+(user, workspace and system settings layers; a workspace value that disagrees is
+treated as unknown because folder trust is not checked).
+
+Gemini-specific keys: ctrl+e, ctrl+u, ctrl+k and backspace clear the draft; the
+shortcut panel (`?` on an empty prompt) is closed with backspace; ctrl+j types a
+newline; a leading `/`, `!` or `?` is escaped with a backslash. Enter is sent at
+least 30 ms after the last typed key, because Gemini turns a faster Enter into a
+newline. Text is at most 1000 bytes and 8 lines, since the input box shows 10
+rows. Esc and Ctrl+C cancel a running Gemini request and are never sent, nor are
+Ctrl+D or Ctrl+L. Shell mode, vim mode, reverse search, completions, dialogs,
+placeholders (`[Pasted Text: N lines]`), drafts in two colours (ghost text) and
+drafts that may be soft-wrapped are refused before any key. The input box is
+recognised only with its half-block or line borders; a terminal without true
+colour that pads it with blank rows is refused (`TERMINAL_VIEW_UNDETERMINED`).
+A queued or steered message may wait for the whole turn, so it stays
+`native_accepted` (Gemini's queue or hint was seen on screen) for up to
+`timeout_seconds` before it is `delivery_unknown`. The screen grammar and keys come from the
+Gemini CLI 0.66.0 bundle; HERDR's agent kind `gemini` and the `backspace` key name
+are not yet verified against a live pane. Tests use a fake HERDR pane only.
 
 ## Account log out
 

@@ -28,6 +28,7 @@ use std::{
     path::{Path, PathBuf},
 };
 pub mod launch;
+pub mod steering;
 
 /// Ambient variables that would silently switch Gemini to API-key billing, a
 /// Vertex/Cloud project, another endpoint or a different model. Removed from
@@ -54,6 +55,13 @@ pub const NATIVE_HOME_BOUND: &str = "native session is bound to its account home
 /// Gemini CLI has no supported way to attach a terminal to a running process.
 pub const NO_HERDR_ATTACH: &str = "NO_NATIVE_ATTACH: Gemini CLI has no supported attach to a running session; stop it in its terminal, then use Start Session";
 pub const NO_INPUT_API: &str = "no supported native input API for a live Gemini session";
+pub const INPUT_DELIVERY: &str = "live sessions in a verified HERDR pane take typed input (terminal_input); queue needs experimental.modelSteering off and steer needs it on (account live-steering); see each session's capabilities";
+fn input() -> Capability {
+    Capability {
+        supported: true,
+        reason: Some(INPUT_DELIVERY),
+    }
+}
 pub const LABEL_ONLY: &str =
     "label is a Sessionsation catalog label; Gemini CLI has no native session rename";
 const NO_LIFECYCLE: &str = "no verified Gemini process lifecycle control; stop it in its terminal";
@@ -89,9 +97,9 @@ pub fn capabilities() -> ProviderCapabilities {
             supported: true,
             reason: Some(super::claude::NATIVE_DELETE),
         },
-        submit: no(NO_INPUT_API),
-        queue: no(NO_INPUT_API),
-        steer: no(NO_INPUT_API),
+        submit: input(),
+        queue: input(),
+        steer: input(),
         account_removal: yes(),
         account_deletion: Capability {
             supported: true,

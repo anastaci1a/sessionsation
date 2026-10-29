@@ -66,6 +66,8 @@ enum Commands {
     ClaudePeerWorker { message_id: String },
     #[command(hide = true)]
     ClaudeTerminalWorker { message_id: String },
+    #[command(hide = true)]
+    GeminiTerminalWorker { message_id: String },
     /// Render a Sessionsation-hosted Claude session live (t + Enter takes it over).
     View {
         /// Catalog session id or hosted conversation id.
@@ -444,9 +446,11 @@ enum AccountCommand {
     },
     /// Claude: let live sessions of this account accept Sessionsation steering as peer
     /// messages (sets `crossSessionInbound: accept` in its settings.json), or stop.
-    /// Without a flag, shows the current setting.
+    /// Gemini: turn Gemini CLI model steering on or off (sets or removes
+    /// `experimental.modelSteering` in GEMINI_CLI_HOME/.gemini/settings.json); running
+    /// sessions keep their value until restarted. Without a flag, shows the current setting.
     LiveSteering {
-        /// NAME or claude:NAME.
+        /// NAME, claude:NAME or gemini:NAME.
         name: String,
         #[arg(long, conflicts_with = "disable")]
         enable: bool,
@@ -566,6 +570,9 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::ClaudeTerminalWorker { message_id } => {
             sessionsation::messaging::claude_steer::terminal::worker(&paths, &message_id).await?
+        }
+        Commands::GeminiTerminalWorker { message_id } => {
+            sessionsation::messaging::claude_steer::gemini::worker(&paths, &message_id).await?
         }
         Commands::View { session, once } => {
             sessionsation::provider::claude::hosted::view(&paths, &session, once).await?

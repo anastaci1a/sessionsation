@@ -4284,7 +4284,7 @@
       "additionalProperties": true
     },
     "ClaudeSteerRequest": {
-      "description": "Revision 16: api send mode submit|queue|steer addressed to a Claude session (hosted worker or opted-in live session). Revision 17 adds delivery: auto (default: hosted, else terminal_input for submit/steer on a verified HERDR pane, else peer_message), or one path explicitly.",
+      "description": "Revision 16: api send mode submit|queue|steer addressed to a Claude session (hosted worker or opted-in live session). Revision 17 adds delivery: auto (default: hosted, else terminal_input for submit/steer on a verified HERDR pane, else peer_message), or one path explicitly. Revision 17: the same request addresses a Gemini session (submit, queue or steer as terminal_input; delivery auto or terminal_input).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -4386,7 +4386,7 @@
       }
     },
     "ClaudeSteerReceipt": {
-      "description": "Revision 16: durable receipt of a Claude submit/queue/steer. hosted_stream_json correlates by command uuid and needs both the turn's result and the input's terminal command_lifecycle: completed_* only after 'completed'; an input whose consuming turn was cut ('cancelled' after 'started', even after a success result) ends interrupted with a non-final reply. peer_message correlates only by a transcript anchor. Revision 17 terminal_input (typed into the session's HERDR pane as the user's own input) correlates only by the human transcript record (user, or queued_command with origin human) that carries exactly the typed text after the submit; without it a submit is delivery_unknown (TERMINAL_INPUT_UNCONFIRMED) and is never re-sent.",
+      "description": "Revision 16: durable receipt of a Claude submit/queue/steer. hosted_stream_json correlates by command uuid and needs both the turn's result and the input's terminal command_lifecycle: completed_* only after 'completed'; an input whose consuming turn was cut ('cancelled' after 'started', even after a success result) ends interrupted with a non-final reply. peer_message correlates only by a transcript anchor. Revision 17 terminal_input (typed into the session's HERDR pane as the user's own input) correlates only by the human transcript record (user, or queued_command with origin human) that carries exactly the typed text after the submit; without it a submit is delivery_unknown (TERMINAL_INPUT_UNCONFIRMED) and is never re-sent. Revision 17 also uses this shape for Gemini CLI sessions (provider gemini, delivery_semantics terminal_input only, plus gemini_input; see GeminiSteerReceipt).",
       "type": "object",
       "required": [
         "message_id",
@@ -4420,7 +4420,10 @@
           "pattern": "^[a-f0-9]{64}$"
         },
         "provider": {
-          "const": "claude"
+          "enum": [
+            "claude",
+            "gemini"
+          ]
         },
         "provider_conversation_id": {
           "type": "string",
@@ -4428,7 +4431,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^claude:"
+          "pattern": "^(claude|gemini):"
         },
         "mode": {
           "enum": [
@@ -4559,8 +4562,10 @@
                   "enum": [
                     "user",
                     "queued_command",
+                    "steering_update",
                     null
-                  ]
+                  ],
+                  "description": "steering_update: Gemini user record carrying a user steering update (with the next tool response, or alone after the turn)."
                 }
               }
             }
@@ -4627,6 +4632,9 @@
         },
         "terminal_input": {
           "$ref": "#/$defs/ClaudeTerminalInput"
+        },
+        "gemini_input": {
+          "$ref": "#/$defs/GeminiTerminalInput"
         }
       },
       "allOf": [
@@ -4856,6 +4864,40 @@
                     "type": "string"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "gemini"
+              }
+            },
+            "required": [
+              "provider"
+            ]
+          },
+          "then": {
+            "required": [
+              "gemini_input",
+              "terminal_input"
+            ],
+            "properties": {
+              "delivery_semantics": {
+                "const": "terminal_input"
+              },
+              "account_id": {
+                "pattern": "^gemini:"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "gemini_input": false,
+              "account_id": {
+                "pattern": "^claude:"
               }
             }
           }
@@ -5290,6 +5332,417 @@
           "contains": {
             "const": "SESSION_RUNNING"
           }
+        }
+      }
+    },
+    "GeminiSteerReceipt": {
+      "description": "Revision 17: receipt of a Gemini submit/queue/steer (typed input into the session's HERDR pane).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ClaudeSteerReceipt"
+        },
+        {
+          "required": [
+            "gemini_input"
+          ],
+          "properties": {
+            "provider": {
+              "const": "gemini"
+            }
+          }
+        }
+      ]
+    },
+    "GeminiTerminalInput": {
+      "description": "Revision 17: gemini_input part of a Gemini receipt. What Enter did depends on whether a turn was running and on the session's experimental.modelSteering. outcome and steering come only from the transcript record; screen_evidence only from the screen right after Enter.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "model_steering",
+        "steering_source",
+        "busy_at_submit",
+        "expected",
+        "screen_evidence",
+        "outcome",
+        "batched",
+        "steering",
+        "caveat"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "model_steering": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "steering_source": {
+          "enum": [
+            "default",
+            "user",
+            "workspace",
+            "system",
+            "system_defaults",
+            null
+          ]
+        },
+        "busy_at_submit": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "expected": {
+          "enum": [
+            "user_turn",
+            "native_queue",
+            "steering_update",
+            null
+          ]
+        },
+        "screen_evidence": {
+          "enum": [
+            "queued",
+            "steering_hint",
+            null
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "submitted",
+            "queued",
+            "steering_applied",
+            "steering_after_turn",
+            null
+          ]
+        },
+        "batched": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "The anchoring user record carries more than this text: queued messages joined into one prompt, or a prompt Gemini expanded."
+        },
+        "steering": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "applied",
+            "fate"
+          ],
+          "properties": {
+            "applied": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "fate": {
+              "enum": [
+                "applied_at_next_tool_step",
+                "submitted_after_turn_as_steering_prompt",
+                "pending_next_tool_step_or_turn_end",
+                null
+              ]
+            }
+          }
+        },
+        "caveat": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "steering_applied"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "steering": {
+                "properties": {
+                  "applied": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "steering_after_turn"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "steering": {
+                "properties": {
+                  "applied": {
+                    "const": false
+                  },
+                  "fate": {
+                    "const": "submitted_after_turn_as_steering_prompt"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "enum": [
+                  "submitted",
+                  "queued"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "steering": {
+                "properties": {
+                  "applied": {
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "GeminiSteerSemantics": {
+      "description": "Revision 17: what a Gemini steer does (capabilities.gemini_input_delivery.steer and a Gemini row's input_delivery.steer). Agent-DM shows it as Steer with the caveat.",
+      "type": "object",
+      "required": [
+        "priority",
+        "interrupts",
+        "delivery",
+        "interrupt_option",
+        "label",
+        "caveat",
+        "not_applied"
+      ],
+      "properties": {
+        "priority": {
+          "const": "next"
+        },
+        "interrupts": {
+          "const": false
+        },
+        "delivery": {
+          "const": "next_tool_step_or_after_turn"
+        },
+        "interrupt_option": {
+          "const": null
+        },
+        "label": {
+          "const": "Steer"
+        },
+        "caveat": {
+          "type": "string"
+        },
+        "not_applied": {
+          "const": "submitted_after_turn_as_steering_prompt"
+        }
+      }
+    },
+    "GeminiTerminalInputDelivery": {
+      "description": "Revision 17: capabilities.gemini_input_delivery (and the gemini provider's input_delivery).",
+      "type": "object",
+      "required": [
+        "version",
+        "since_revision",
+        "semantics",
+        "modes",
+        "enter",
+        "mode_requirements",
+        "queue",
+        "steer",
+        "model_steering",
+        "keys",
+        "refusal_reasons",
+        "automatic_replay",
+        "interrupt"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "since_revision": {
+          "const": 17
+        },
+        "semantics": {
+          "const": "terminal_input"
+        },
+        "modes": {
+          "const": [
+            "submit",
+            "queue",
+            "steer"
+          ]
+        },
+        "enter": {
+          "type": "object",
+          "required": [
+            "idle",
+            "busy_model_steering_off",
+            "busy_model_steering_on"
+          ],
+          "properties": {
+            "idle": {
+              "const": "user_turn"
+            },
+            "busy_model_steering_off": {
+              "const": "native_queue"
+            },
+            "busy_model_steering_on": {
+              "const": "steering_update"
+            }
+          }
+        },
+        "mode_requirements": {
+          "type": "object"
+        },
+        "queue": {
+          "type": "object",
+          "required": [
+            "batching"
+          ]
+        },
+        "steer": {
+          "$ref": "#/$defs/GeminiSteerSemantics"
+        },
+        "model_steering": {
+          "type": "object",
+          "required": [
+            "setting",
+            "default",
+            "read_at",
+            "restart_required"
+          ],
+          "properties": {
+            "setting": {
+              "const": "experimental.modelSteering"
+            },
+            "default": {
+              "const": false
+            },
+            "read_at": {
+              "const": "session_start"
+            },
+            "restart_required": {
+              "const": true
+            }
+          }
+        },
+        "keys": {
+          "type": "object",
+          "required": [
+            "never"
+          ],
+          "properties": {
+            "never": {
+              "type": "array",
+              "allOf": [
+                {
+                  "contains": {
+                    "const": "esc"
+                  }
+                },
+                {
+                  "contains": {
+                    "const": "ctrl+c"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "refusal_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(TERMINAL|GEMINI)_[A-Z_]+$"
+          }
+        },
+        "automatic_replay": {
+          "const": false
+        },
+        "interrupt": {
+          "const": false
+        }
+      }
+    },
+    "GeminiLiveSteering": {
+      "description": "Revision 17: api account live-steering gemini:NAME [--enable|--disable]. Sets or removes experimental.modelSteering in GEMINI_CLI_HOME/.gemini/settings.json (only that key; atomic replace; mode kept; symlinks refused). Running sessions read it at startup, so restart_required is true when it changed while sessions ran.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_id",
+        "provider",
+        "live_steering",
+        "setting",
+        "value",
+        "previous",
+        "changed",
+        "settings_file",
+        "applies_to",
+        "restart_required",
+        "running_sessions"
+      ],
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "pattern": "^gemini:"
+        },
+        "provider": {
+          "const": "gemini"
+        },
+        "live_steering": {
+          "type": "boolean"
+        },
+        "setting": {
+          "const": "experimental.modelSteering"
+        },
+        "value": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "previous": {},
+        "changed": {
+          "type": "boolean"
+        },
+        "settings_file": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "applies_to": {
+          "const": "sessions_started_after_the_change"
+        },
+        "restart_required": {
+          "type": "boolean"
+        },
+        "running_sessions": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     }

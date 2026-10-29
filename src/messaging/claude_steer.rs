@@ -45,6 +45,7 @@ use std::{
     time::Duration,
 };
 
+pub mod gemini;
 pub mod terminal;
 
 pub const PEER_SEMANTICS: &str = "peer_message";
@@ -137,6 +138,9 @@ pub struct Record {
     pub reply_truncated: bool,
     pub result: Option<Value>,
     pub peer: Option<Peer>,
+    /// `gemini` for Gemini CLI sessions (terminal input only); absent for Claude.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// Terminal-input delivery state (kind `terminal`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<terminal::Terminal>,
@@ -308,17 +312,29 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
     );
     ensure!(all(paths).len() < 10000, "RECEIPT_CAPACITY_REACHED");
     let session = catalog::resolve(paths, &request.session_id, &request.expected_generation)?;
+    let is_gemini = session.provider == ProviderId::Gemini.as_str();
     ensure!(
-        session.provider == ProviderId::Claude.as_str(),
+        is_gemini || session.provider == ProviderId::Claude.as_str(),
         "UNSUPPORTED_PROVIDER_OPERATION"
     );
-    let account = super::headless::usable_account(paths, ProviderId::Claude, &session.account)?;
+    let account = super::headless::usable_account(
+        paths,
+        if is_gemini {
+            ProviderId::Gemini
+        } else {
+            ProviderId::Claude
+        },
+        &session.account,
+    )?;
     crate::lifecycle::ensure_available(paths, &session.conversation_id, None)?;
     let c = session.conversation_id.clone();
     let interrupt = request.steering.as_ref().is_some_and(|s| s.interrupt);
     let wanted = request.delivery.as_deref().unwrap_or("auto");
     let mut typed = None;
-    let (kind, epoch, peer) = if let Some(h) = hosted::accepting(paths, &c) {
+    let (kind, epoch, peer) = if is_gemini {
+        typed = Some(gemini::admit(&request, &session, &account.home)?);
+        ("terminal", None, None)
+    } else if let Some(h) = hosted::accepting(paths, &c) {
         ensure!(
             matches!(wanted, "auto" | "hosted_stream_json"),
             "DELIVERY_UNAVAILABLE: this session is hosted; use delivery hosted_stream_json or auto"
@@ -416,6 +432,7 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         reply_truncated: false,
         result: None,
         peer,
+        provider: is_gemini.then(|| "gemini".to_owned()),
         terminal: typed,
         observation_error: None,
         created_at: now,
@@ -447,7 +464,9 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         ))
         .arg("--data-dir")
         .arg(&paths.root)
-        .arg(if kind == "terminal" {
+        .arg(if is_gemini {
+            "gemini-terminal-worker"
+        } else if kind == "terminal" {
             "claude-terminal-worker"
         } else {
             "claude-peer-worker"
@@ -1121,7 +1140,12 @@ fn reconcile(paths: &Paths, id: &str) -> Result<Record> {
         _ => {
             let stopped = crate::background::worker_stopped(&worker_lock(paths, id)?)?;
             let typed = r.kind == "terminal";
-            if r.facts.written && typed {
+            if r.facts.written && typed && gemini::is_gemini(&r) {
+                gemini::observe(paths, id, false)?;
+                if stopped {
+                    gemini::unconfirmed_after_exit(paths, id)?;
+                }
+            } else if r.facts.written && typed {
                 terminal::observe(paths, id, false)?;
                 if stopped {
                     terminal::unconfirmed_after_exit(paths, id)?;
@@ -1162,6 +1186,7 @@ fn semantics_of(r: &Record) -> &'static str {
 }
 
 pub fn receipt_value(r: &Record) -> Value {
+    let provider = r.provider.as_deref().unwrap_or("claude");
     let peer = r.kind == "peer";
     let completed = matches!(
         r.state.as_str(),
@@ -1216,7 +1241,7 @@ pub fn receipt_value(r: &Record) -> Value {
         "observed"
     };
     let mut v = json!({"message_id":r.request.message_id,"session_id":r.session_id,"accepted_generation":r.accepted_generation,
-        "provider":"claude","provider_conversation_id":r.conversation_id,"account_id":format!("claude:{}",r.account),
+        "provider":provider,"provider_conversation_id":r.conversation_id,"account_id":format!("{provider}:{}",r.account),
         "mode":r.request.mode,"priority":r.priority,
         "delivery_semantics":semantics_of(r),
         "state":r.state,"reason":r.reason,
@@ -1236,6 +1261,9 @@ pub fn receipt_value(r: &Record) -> Value {
     }
     if r.kind == "terminal" {
         terminal::receipt_fields(r, &mut v);
+        if gemini::is_gemini(r) {
+            gemini::receipt_fields(r, &mut v);
+        }
     }
     v
 }

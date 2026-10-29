@@ -163,6 +163,27 @@ for invalid, definition in [
         pass
     else:
         raise AssertionError("Terminal input must anchor replies to the typed human record and never expose the draft")
+validate(fixtures["gemini_steer_request"], "ClaudeSteerRequest")
+for name in ["gemini_steer_receipt_queued", "gemini_steer_receipt_steer_applied", "gemini_steer_receipt_steer_after_turn", "gemini_steer_receipt_refused"]:
+    validate(fixtures[name], "GeminiSteerReceipt")
+    validate(fixtures[name], "ClaudeSteerReceipt")
+validate(fixtures["gemini_live_steering"], "GeminiLiveSteering")
+applied, after = fixtures["gemini_steer_receipt_steer_applied"], fixtures["gemini_steer_receipt_steer_after_turn"]
+for invalid, definition in [
+    ({**applied, "gemini_input": None}, "GeminiSteerReceipt"),
+    ({**applied, "delivery_semantics": "peer_message"}, "GeminiSteerReceipt"),
+    ({**applied, "account_id": "claude:personal"}, "GeminiSteerReceipt"),
+    ({**after, "gemini_input": {**after["gemini_input"], "steering": {"applied": True, "fate": "applied_at_next_tool_step"}}}, "GeminiSteerReceipt"),
+    ({**applied, "gemini_input": {**applied["gemini_input"], "steering": {"applied": False, "fate": None}}}, "GeminiSteerReceipt"),
+    ({**fixtures["claude_steer_receipt_terminal"], "gemini_input": applied["gemini_input"]}, "ClaudeSteerReceipt"),
+    ({**fixtures["gemini_live_steering"], "setting": "crossSessionInbound"}, "GeminiLiveSteering"),
+]:
+    try:
+        validate(invalid, definition)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Gemini receipts must report the steering fate honestly and stay terminal_input only")
 validate(fixtures["account_refresh"], "AccountRefresh")
 validate(fixtures["account_rename"], "AccountRename")
 validate(fixtures["claude_login_plan"], "AccountLoginPlan")
@@ -211,6 +232,11 @@ with tempfile.TemporaryDirectory() as directory:
             assert "interrupted" in value["result"]["claude_input_delivery"]["states"]
             validate(value["result"]["claude_input_delivery"]["terminal_input"], "ClaudeTerminalInputDelivery")
             assert value["result"]["claude_input_delivery"]["preference"][:2] == ["hosted_stream_json", "terminal_input"]
+            validate(value["result"]["gemini_input_delivery"], "GeminiTerminalInputDelivery")
+            gemini = [p for p in value["result"]["providers"] if p["id"] == "gemini"][0]
+            validate(gemini["input_delivery"], "GeminiTerminalInputDelivery")
+            assert gemini["steer"] is True and gemini["input_delivery"]["automatic_replay"] is False
+            assert "esc" in gemini["input_delivery"]["keys"]["never"] and "ctrl+c" in gemini["input_delivery"]["keys"]["never"]
             claude = [p for p in value["result"]["providers"] if p["id"] == "claude"][0]
             assert claude["account_removal"] is True and claude["account_deletion"] is True
             assert claude["headless_delivery"]["automatic_replay"] is False

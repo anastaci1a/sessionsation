@@ -109,7 +109,7 @@ pub fn set(home: &Path, enable: bool) -> Result<Toggle> {
 /// Atomic same-directory replacement that keeps the file's mode (0600 when new)
 /// and never alters the (possibly adopted) home's own permissions. A symlinked
 /// settings file is refused rather than silently replaced by a regular file.
-fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::{io::Write, os::unix::fs::PermissionsExt};
     let mode = match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() => {

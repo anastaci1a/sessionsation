@@ -911,16 +911,11 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     drop(live);
     assert!(err.contains("SESSION_ALREADY_RUNNING"), "{err}");
 
-    // Live input modes stay unsupported with an explicit reason.
+    // Live input modes need a running session in a HERDR pane (terminal input).
     let mut submit = resume_body(&uuid::Uuid::new_v4().to_string(), &f.session(&id), "x");
     submit["mode"] = json!("submit");
     let err = f.send_err(&submit);
-    assert!(
-        err.contains("UNSUPPORTED_PROVIDER_OPERATION")
-            && err.contains("Gemini")
-            && err.contains("no supported native input API"),
-        "{err}"
-    );
+    assert!(err.contains("SESSION_NOT_RUNNING"), "{err}");
 
     // New conversation: catalog entry first, pre-assigned --session-id.
     let created = uuid::Uuid::new_v4().to_string();
