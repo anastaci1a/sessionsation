@@ -132,6 +132,10 @@ pub struct SteerEvidence {
     pub anchor: Option<SteerAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_item_id: Option<String>,
+    /// Completion-projection id of the same input when Codex renumbered legacy
+    /// `item-N` ids at turn end; `input_item_id` keeps the in-progress id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_input_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_input_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

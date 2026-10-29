@@ -323,7 +323,7 @@ fn project(b: &Binding, r: &Receipt, observation: Value) -> Value {
             "shared_with_turn_tail":steer.shared_with_turn_tail},
         "native_queue_id":null,
         "correlation":if recorded {json!({"native_turn_id":r.submit.as_ref().map(|s|&s.expected_turn_id),
-            "steer_input_item_id":steer.input_item_id,"next_input_item_id":steer.next_input_item_id,
+            "steer_input_item_id":steer.input_item_id,"completion_input_item_id":steer.completed_input_item_id,"next_input_item_id":steer.next_input_item_id,
             "reply_item_id":r.reply.as_ref().map(|x|&x.item_id),"observed_runtime_generation":steer.observed_generation,
             "anchor":steer.anchor.as_ref().map(|a|json!({"user_items_before":a.user_items_before,"items_before":a.items_before,"last_agent_item_id":a.last_agent_item_id}))})} else {Value::Null},
         "reply":r.reply.as_ref().map(|x|json!({"item_id":x.item_id,"text":x.text,"phase":x.phase,"final":final_reply,"shared_with_turn_tail":steer.shared_with_turn_tail})),

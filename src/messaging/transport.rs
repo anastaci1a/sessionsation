@@ -25,6 +25,14 @@ pub(super) const CHECKPOINT_FRAME_LIMIT: usize = 8 * 1024 * 1024;
 /// Peak memory stays a small multiple of this bound; larger frames still fail
 /// closed with `native_frame_limit` before any native write.
 pub(super) const STEER_FRAME_LIMIT: usize = 64 * 1024 * 1024;
+/// Slowest local frame throughput budgeted for: a read that may carry a whole
+/// bounded frame gets its base budget plus the time to move that frame, so a
+/// large legitimate turn is not cut off by a budget sized for 1 MiB.
+const FRAME_BYTES_PER_SECOND: u64 = 16 * 1024 * 1024;
+/// `base` plus the transfer time of one `max_bytes` frame.
+pub(super) fn frame_budget(base: Duration, max_bytes: usize) -> Duration {
+    base + Duration::from_millis(max_bytes as u64 * 1000 / FRAME_BYTES_PER_SECOND)
+}
 #[derive(Deserialize)]
 struct Frame<'a> {
     method: Option<serde::de::IgnoredAny>,
@@ -106,6 +114,7 @@ pub(super) struct Transport {
     last_non_steerable: Option<&'static str>,
     verified_profile: bool,
     pub(super) provider_version: Option<String>,
+    max_bytes: usize,
 }
 impl Drop for Transport {
     fn drop(&mut self) {
@@ -190,6 +199,7 @@ impl Transport {
             last_non_steerable: None,
             verified_profile: false,
             provider_version: None,
+            max_bytes,
         })
     }
     pub(super) async fn initialize(&mut self) -> Result<()> {
@@ -406,7 +416,7 @@ impl Transport {
         self.rpc_budget(
             "thread/items/list",
             json!({"threadId":id,"turnId":turn,"cursor":cursor,"limit":50,"sortDirection":"asc"}),
-            Duration::from_secs(3),
+            frame_budget(Duration::from_secs(3), self.max_bytes),
         )
         .await
     }
@@ -425,7 +435,7 @@ impl Transport {
         self.rpc_budget(
             "thread/turns/list",
             json!({"threadId":id,"itemsView":"full","sortDirection":"desc","limit":1,"cursor":cursor}),
-            Duration::from_secs(3),
+            frame_budget(Duration::from_secs(3), self.max_bytes),
         )
         .await
     }
@@ -442,7 +452,7 @@ impl Transport {
         self.rpc_budget(
             "thread/turns/list",
             json!({"threadId":id,"itemsView":"full","sortDirection":"desc","limit":1}),
-            Duration::from_secs(3),
+            frame_budget(Duration::from_secs(3), self.max_bytes),
         )
         .await
     }
@@ -488,5 +498,22 @@ impl Transport {
             });
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    #[test]
+    fn full_read_budget_scales_with_the_frame_bound() {
+        let base = Duration::from_secs(3);
+        // An ordinary 1 MiB connection keeps essentially its base budget.
+        assert!(frame_budget(base, FRAME_LIMIT) < base + Duration::from_millis(100));
+        // A 64 MiB steer frame gets the time to move it at the budgeted floor.
+        assert_eq!(
+            frame_budget(base, STEER_FRAME_LIMIT),
+            base + Duration::from_secs(4)
+        );
+        assert!(frame_budget(base, CHECKPOINT_FRAME_LIMIT) > base);
     }
 }

@@ -250,23 +250,49 @@ fn attribute(turn: Turn, receipt: &Receipt, generation: &str) -> Result<Option<R
     let Item::User(input) = &turn.items[position] else {
         unreachable!()
     };
-    if previous
-        .input_item_id
-        .as_ref()
-        .is_some_and(|id| id != &input.id)
-    {
-        return Err(Fault("correlation_changed"));
+    // Codex renumbers legacy `item-N` ids when it rebuilds a turn from history
+    // at turn end. Exactly as for submit (`observe::legacy_projection_id`), only
+    // that verified transition reconciles an id: the client ID still matched
+    // exactly once, the earlier id came from the in-progress projection, and
+    // both ids are legacy counters. Anything else stays `correlation_changed`.
+    let mut original_input_id = input.id.clone();
+    let mut completed_input_id = None;
+    if let Some(old) = &previous.input_item_id {
+        let known = previous.completed_input_item_id.as_ref().unwrap_or(old);
+        if known != &input.id {
+            if !terminal
+                || previous.completed_input_item_id.is_some()
+                || previous.turn_status.as_deref() != Some("inProgress")
+                || !observe::legacy_projection_id(old)
+                || !observe::legacy_projection_id(&input.id)
+            {
+                return Err(Fault("correlation_changed"));
+            }
+            completed_input_id = Some(input.id.clone());
+        } else if previous.completed_input_item_id.is_some() {
+            completed_input_id = Some(input.id.clone());
+        }
+        original_input_id = old.clone();
     }
     if let Some(anchor) = &previous.anchor {
         let users_before = turn.items[..position]
             .iter()
             .filter(|i| matches!(i, Item::User(_)))
             .count();
-        let late_agent = anchor.last_agent_item_id.as_ref().is_some_and(|id| {
-            turn.items[position + 1..]
-                .iter()
-                .any(|i| matches!(i, Item::Agent(a) if &a.id == id))
-        });
+        // The anchor's agent id was read from the in-progress projection; in a
+        // finished turn rebuilt with renumbered legacy ids, the same counter may
+        // name a different item, so it is no evidence either way there.
+        let renumbered = terminal
+            && anchor
+                .last_agent_item_id
+                .as_deref()
+                .is_some_and(observe::legacy_projection_id);
+        let late_agent = !renumbered
+            && anchor.last_agent_item_id.as_ref().is_some_and(|id| {
+                turn.items[position + 1..]
+                    .iter()
+                    .any(|i| matches!(i, Item::Agent(a) if &a.id == id))
+            });
         if anchor.turn_id != receipt.submit.as_ref().map_or("", |s| &s.expected_turn_id)
             || users_before < anchor.user_items_before as usize
             || late_agent
@@ -302,7 +328,8 @@ fn attribute(turn: Turn, receipt: &Receipt, generation: &str) -> Result<Option<R
     }
     observed.steer = Some(SteerEvidence {
         anchor: previous.anchor,
-        input_item_id: Some(input.id.clone()),
+        input_item_id: Some(original_input_id),
+        completed_input_item_id: completed_input_id,
         next_input_item_id: next_input.clone(),
         turn_status: Some(turn.status.clone()),
         agent_items_after: agents.len() as u32,
@@ -353,7 +380,12 @@ pub(in crate::messaging) async fn snapshot(
         .ok_or(Fault("steer_anchor_missing"))?;
     let selected = attachment(paths, &receipt.session_id)?;
     let generation = selected.generation();
-    let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    // The receipt budget grows with the one full-turn frame it may read.
+    let budget = crate::messaging::transport::frame_budget(
+        std::time::Duration::from_secs(5),
+        crate::messaging::transport::STEER_FRAME_LIMIT,
+    );
+    let observed = tokio::time::timeout(budget, async {
         let mut c = selected.connect_steer().await?;
         let t = locate(&mut c, &receipt.session_id, &turn, &receipt.message_id).await?;
         attribute(t, receipt, &generation)
@@ -547,6 +579,100 @@ mod tests {
         let o = run("inProgress", early, &r).unwrap().unwrap();
         assert_eq!(o.state, "execution_started");
         assert!(o.reply.is_none() && !o.steer.unwrap().shared_with_turn_tail);
+    }
+    /// Live shape (steer 5e998050): anchored and first observed in progress
+    /// with legacy ids, then Codex rebuilt the finished turn with new counters.
+    fn renumbered_receipt() -> Receipt {
+        let r: Receipt = serde_json::from_value(json!({
+            "message_id":ME,"session_id":"22222222-2222-4222-8222-222222222222",
+            "generation":"g","state":"execution_started","native_queue_id":null,"reason":null,
+            "submit":{"expected_turn_id":"turn-1","acknowledged_turn_id":"turn-1","action":"public_steer"},
+            "steer":{"anchor":{"turn_id":"turn-1","user_items_before":1,"items_before":4,"last_agent_item_id":"item-2"},
+                "input_item_id":"item-3","turn_status":"inProgress","agent_items_after":0,
+                "shared_with_turn_tail":false,"observed_generation":"gen"}
+        }))
+        .unwrap();
+        r
+    }
+    fn renumbered_turn() -> Vec<Item> {
+        vec![
+            user("item-1", None),
+            user("item-4", Some(ME)),
+            // The old anchor counter now names the reply after the steer.
+            agent("item-2", "done STEERED", "final_answer"),
+        ]
+    }
+    #[test]
+    fn completion_renumbering_of_legacy_ids_reaches_a_terminal_reply() {
+        let stuck = renumbered_receipt();
+        let o = run("completed", renumbered_turn(), &stuck)
+            .unwrap()
+            .unwrap();
+        assert_eq!(o.state, "completed_with_reply");
+        let s = o.steer.clone().unwrap();
+        assert_eq!(s.input_item_id.as_deref(), Some("item-3"));
+        assert_eq!(s.completed_input_item_id.as_deref(), Some("item-4"));
+        assert_eq!(s.anchor, stuck.steer.as_ref().unwrap().anchor);
+        assert_eq!(o.reply.as_ref().unwrap().text, "done STEERED");
+        // Re-observing the reconciled evidence is stable, never a new change.
+        let again = run("completed", renumbered_turn(), &o).unwrap().unwrap();
+        assert_eq!(again, o);
+        // Interrupted turns reconcile the same way and stay an honest failure.
+        let o = run("interrupted", renumbered_turn(), &stuck)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (o.state.as_str(), o.reason.as_deref()),
+            ("failed", Some("steer_turn_interrupted"))
+        );
+    }
+    #[test]
+    fn only_the_verified_completion_transition_reconciles_an_input_id() {
+        let stuck = renumbered_receipt();
+        // Still in progress: the same projection must keep the same id.
+        assert_eq!(
+            run("inProgress", renumbered_turn(), &stuck).unwrap_err().0,
+            "correlation_changed"
+        );
+        // Non-legacy ids are stable identities; a change is never reconciled.
+        let mut stable = stuck.clone();
+        stable.steer.as_mut().unwrap().input_item_id = Some("u-3".into());
+        let mut items = renumbered_turn();
+        items[1] = user("u-4", Some(ME));
+        assert_eq!(
+            run("completed", items, &stable).unwrap_err().0,
+            "correlation_changed"
+        );
+        let mut items = renumbered_turn();
+        items[1] = user("u-4", Some(ME));
+        assert_eq!(
+            run("completed", items, &stuck).unwrap_err().0,
+            "correlation_changed"
+        );
+        // A second renumbering after reconciliation is not accepted.
+        let done = run("completed", renumbered_turn(), &stuck)
+            .unwrap()
+            .unwrap();
+        let mut items = renumbered_turn();
+        items[1] = user("item-7", Some(ME));
+        assert_eq!(
+            run("completed", items, &done).unwrap_err().0,
+            "correlation_changed"
+        );
+        // The earlier-input count is still enforced on a renumbered turn.
+        assert_eq!(
+            run(
+                "completed",
+                vec![
+                    user("item-4", Some(ME)),
+                    agent("item-2", "x", "final_answer")
+                ],
+                &stuck
+            )
+            .unwrap_err()
+            .0,
+            "correlation_changed"
+        );
     }
     #[test]
     fn multiple_steers_are_bounded_by_the_next_input() {

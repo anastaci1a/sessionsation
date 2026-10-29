@@ -63,7 +63,7 @@ fn valid_id(id: &str) -> Result<()> {
 
 // Native legacy projections use independent positive item-N counters for live
 // turns and persisted history. Other identifier schemes are not evidence.
-fn legacy_projection_id(id: &str) -> bool {
+pub(super) fn legacy_projection_id(id: &str) -> bool {
     id.strip_prefix("item-")
         .and_then(|n| n.parse::<u64>().ok())
         .is_some_and(|n| n > 0 && id == format!("item-{n}"))

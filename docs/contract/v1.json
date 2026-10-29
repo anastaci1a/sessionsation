@@ -4173,6 +4173,20 @@
           "maxLength": 256,
           "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
         },
+        "completion_input_item_id": {
+          "description": "Revision 18: the same input's id in the finished turn when Codex renumbered legacy item-N ids at turn end; steer_input_item_id keeps the in-progress id.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            }
+          ]
+        },
         "next_input_item_id": {
           "oneOf": [
             {

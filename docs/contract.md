@@ -1383,6 +1383,18 @@ no anchor and are still correlated by `clientId` without the anchor checks. Fixt
 `receipt_steer_not_consumed`. The account switcher's pause steer now also sends a
 `clientUserMessageId`.
 
+Revision 18: Codex renumbers legacy `item-N` ids when it rebuilds a finished
+turn. As for submit, a steer input first observed in progress as one legacy id
+and found under another legacy id in the completed, interrupted or failed turn
+(same `clientId`, still exactly once) is reconciled: `steer_input_item_id` keeps
+the in-progress id and the optional `correlation.completion_input_item_id` names
+the finished-turn id. The anchor's legacy `last_agent_item_id` is then not
+compared (it names a different item after renumbering); the earlier-input count
+still is. Any other id change remains `correlation_changed`. Receipts left at
+`execution_started` by that error progress on their next poll. Full-turn reads
+scale their time budget with the 64 MiB frame bound (base plus about one second
+per 16 MiB).
+
 ### Claude steering, hosted sessions and live peer messages (revision 16)
 
 Additive; negotiate `contract_revision >= 16` and `capabilities.claude_input_delivery`
