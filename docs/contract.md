@@ -1198,6 +1198,14 @@ refresh. Refusals: the capability reasons above, `SPACE_NOT_FOUND`, `STALE_TARGE
 SPACE-ID` (new tab in that existing Space instead of a new Space) and `--name`
 (tab label and catalog name). Schemas: `HostSpaceChoices`, `AddToHerdrResult`.
 
+Revision 18: `api resume` (Codex and native) starts the provider in the session's saved
+directory, refusing with `SAVED_DIRECTORY_UNAVAILABLE` when it is not an absolute
+existing directory. It no longer reports `ok` for an unconfirmed launch: no observed
+running session within the poll fails with `RESUME_LAUNCH_UNCONFIRMED`, and a pane
+command that runs and then returns to an idle shell fails promptly with
+`RESUME_LAUNCH_FAILED`. `move-space` keeps the session label on the new tab, and
+restoring an archive keeps a relocated directory. New-session launches are unchanged.
+
 ### Batch placement observations (revision 9)
 
 Negotiate `capabilities.placement.version == 1`. `api state` includes each

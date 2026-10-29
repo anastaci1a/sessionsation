@@ -436,6 +436,16 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
     Ok(json!({"action":"exec","argv":argv,"cwd":cwd,"credentials_in_client":false}))
 }
 
+/// The recorded Codex session directory, which must still be an absolute directory.
+fn resume_cwd(cwd: &str) -> Result<std::path::PathBuf> {
+    let p = std::path::PathBuf::from(cwd);
+    ensure!(
+        p.is_absolute() && p.is_dir(),
+        "SAVED_DIRECTORY_UNAVAILABLE: {cwd}"
+    );
+    Ok(p)
+}
+
 #[derive(Subcommand)]
 pub enum AccountCommand {
     List {
@@ -1713,6 +1723,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 external::hosting::Placement {
                     space: space.as_deref(),
                     label: Some(&s.name),
+                    strict: true,
                 },
             )
             .await?
@@ -1734,7 +1745,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 !matches!(s.account.as_str(), "external" | "unknown"),
                 "ACCOUNT_UNAVAILABLE"
             );
+            let directory = resume_cwd(&source.cwd)?;
             let s = named(paths, s, &expected_generation, name.as_deref())?;
+            std::env::set_current_dir(&directory)?;
             external::hosting::launch_placed(
                 paths,
                 &herdr_session,
@@ -1744,6 +1757,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 external::hosting::Placement {
                     space: space.as_deref(),
                     label: name.is_some().then_some(s.name.as_str()),
+                    strict: true,
                 },
             )
             .await?
@@ -1908,6 +1922,21 @@ pub fn account_prefill(a: &Value, now: i64, stale_seconds: u64) -> Value {
 #[cfg(test)]
 mod prefill_tests {
     use super::*;
+    #[test]
+    fn resume_cwd_requires_absolute_existing_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resume_cwd(tmp.path().to_str().unwrap()).unwrap(),
+            tmp.path()
+        );
+        for bad in ["", "relative", "/nonexistent/sessionsation-dir"] {
+            let e = resume_cwd(bad).unwrap_err().to_string();
+            assert!(e.starts_with("SAVED_DIRECTORY_UNAVAILABLE"), "{e}");
+        }
+        let f = tmp.path().join("f");
+        std::fs::write(&f, "").unwrap();
+        assert!(resume_cwd(f.to_str().unwrap()).is_err());
+    }
     #[test]
     fn attachment_lookup_is_read_only_and_checks_catalog_and_process_epochs() {
         let tmp = tempfile::tempdir().unwrap();

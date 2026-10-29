@@ -266,6 +266,35 @@ pub async fn launch_checked(
 pub struct Placement<'a> {
     pub space: Option<&'a str>,
     pub label: Option<&'a str>,
+    /// Resume callers: an unconfirmed launch, or a command that visibly exits
+    /// again, is an error rather than `ok`.
+    pub strict: bool,
+}
+
+/// Outcome of one launch poll tick for a pane that was handed a command.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PaneWatch {
+    Waiting,
+    /// The command ran (pane was busy) and the shell is idle again.
+    Exited,
+}
+
+/// `busy_seen`: the pane was non-idle earlier in this poll; `idle`: it is idle now.
+pub(crate) fn watch_pane(busy_seen: bool, idle: bool) -> PaneWatch {
+    if busy_seen && idle {
+        PaneWatch::Exited
+    } else {
+        PaneWatch::Waiting
+    }
+}
+
+/// Strict-mode error for a launch that never confirmed.
+pub(crate) fn unconfirmed_error(target: &str, exited: bool) -> String {
+    if exited {
+        format!("RESUME_LAUNCH_FAILED: the command exited before the session appeared in {target}")
+    } else {
+        format!("RESUME_LAUNCH_UNCONFIRMED: no running session was observed in {target}")
+    }
 }
 pub async fn launch_placed(
     paths: &Paths,
@@ -415,6 +444,7 @@ async fn launch_inner(
             .join(" ")
     );
     call(session, &["pane", "run", pane, &command])?;
+    let mut busy_seen = false;
     for _ in 0..150 {
         if let Some(i) = instances(paths)?.into_iter().find(|i| i.pane == key) {
             return Ok(
@@ -433,7 +463,18 @@ async fn launch_inner(
                 json!({"schema_version":1,"state":"running","host":"herdr","target":key,"account":account,"thread_id":s.conversation_id,"provider":s.provider,"viewer_attach":["herdr","session","attach",session]}),
             );
         }
+        if placement.strict {
+            if let Ok((idle, _)) = state(paths, &key) {
+                if watch_pane(busy_seen, idle) == PaneWatch::Exited {
+                    bail!("{}", unconfirmed_error(&key, true));
+                }
+                busy_seen |= !idle;
+            }
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if placement.strict {
+        bail!("{}", unconfirmed_error(&key, false));
     }
     Ok(
         json!({"schema_version":1,"state":"launch_unconfirmed","host":"herdr",
@@ -489,6 +530,16 @@ pub(super) fn rebind(
 #[cfg(test)]
 mod discovery_tests {
     use super::*;
+    #[test]
+    fn strict_launch_watch_detects_exit_after_busy() {
+        assert_eq!(watch_pane(false, true), PaneWatch::Waiting);
+        assert_eq!(watch_pane(false, false), PaneWatch::Waiting);
+        assert_eq!(watch_pane(true, false), PaneWatch::Waiting);
+        assert_eq!(watch_pane(true, true), PaneWatch::Exited);
+        assert!(unconfirmed_error("p", true).starts_with("RESUME_LAUNCH_FAILED"));
+        assert!(unconfirmed_error("p", false).starts_with("RESUME_LAUNCH_UNCONFIRMED: "));
+        assert!(unconfirmed_error("pane-1", false).contains("pane-1"));
+    }
     #[test]
     fn live_process_socket_requires_the_same_process() {
         let mut child = std::process::Command::new("sleep")
