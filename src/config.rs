@@ -25,6 +25,12 @@ pub struct Config {
     /// and Gemini). Off: rows report `terminal_input` unavailable with
     /// `TERMINAL_INPUT_DISABLED` and no request types into a pane.
     pub terminal_input_enabled: bool,
+    /// Days a certain-terminal message receipt is kept before it is retired
+    /// to a tombstone (contract revision 18).
+    pub receipt_retention_days: u32,
+    /// Days after which an unfinished or uncertain receipt is recorded as
+    /// `expired` (`outcome_unknown_at_retention_horizon`) and retired.
+    pub receipt_unknown_horizon_days: u32,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -44,6 +50,8 @@ impl Default for Config {
             claude_session_home: None,
             gemini_binary: "gemini".into(),
             terminal_input_enabled: true,
+            receipt_retention_days: 14,
+            receipt_unknown_horizon_days: 90,
         }
     }
 }
@@ -95,6 +103,12 @@ impl Config {
         ensure!(
             !self.gemini_binary.trim().is_empty(),
             "gemini_binary is empty"
+        );
+        ensure!(
+            (1..=3650).contains(&self.receipt_retention_days)
+                && (self.receipt_retention_days..=3650)
+                    .contains(&self.receipt_unknown_horizon_days),
+            "receipt_retention_days must be 1..=3650 and receipt_unknown_horizon_days at least that and at most 3650"
         );
         ensure!(
             self.claude_session_home

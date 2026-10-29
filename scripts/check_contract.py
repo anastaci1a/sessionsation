@@ -219,7 +219,7 @@ with tempfile.TemporaryDirectory() as directory:
         if args == ["placements"]:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 17
+            assert value["result"]["contract_revision"] >= 18
             validate(value["result"]["conversation_archive"]["native"], "NativeConversationArchive")
             assert value["result"]["conversation_archive"]["providers"] == ["codex", "claude", "gemini"]
             for p in value["result"]["providers"]:

@@ -140,6 +140,7 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
                 ledger.get(&request.message_id)?.is_none(),
                 "MESSAGE_ID_CONFLICT"
             );
+            super::retention::ensure_not_retired(&ledger, &request.message_id)?;
             let s =
                 crate::catalog::resolve(paths, &request.session_id, &request.expected_generation)?;
             anyhow::ensure!(s.provider == "codex", "UNSUPPORTED_PROVIDER_OPERATION");
@@ -170,6 +171,7 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
             };
             // Bind the logical request before any native mutation. A crash here is
             // provably unsent; later retries retain the exact original native target.
+            super::retention::maybe_run(&mut ledger, now);
             let count: i64 =
                 ledger
                     .db
@@ -268,6 +270,7 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
             );
             return super::recovery::pending_receipt(paths, id);
         }
+        super::retention::ensure_not_retired(&ledger, id)?;
         return Err(Fault("receipt_not_found").into());
     };
     if binding.cancelled {

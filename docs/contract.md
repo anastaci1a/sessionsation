@@ -569,7 +569,8 @@ release the local reservation, preserving the original delivery ledger. If launc
 remains ambiguous, it refuses and retains the reservation: inspect the destination
 and original IDs instead of starting a replacement. Routine receipt polling does
 not take over a worker. Pending recovery cancellation without verified worker
-quiescence is unsupported. The 10,000-entry bound never evicts replay protection.
+quiescence is unsupported. The 10,000-entry bound never evicts replay protection:
+retired ids keep a tombstone ([receipt retention](#receipt-retention-revision-18)).
 
 Actionable refusals distinguish missing plans, changed executable/configuration/
 history/runtime/stop/turn, missing permissions or directories, unavailable accounts,
@@ -584,13 +585,18 @@ send/status/receipt/cancel operations. It is held through native dispatch or
 observation. Contention returns `ADAPTER_BUSY` without waiting; an adapter-local
 serialized lane reduces self-contention but cannot coordinate other processes.
 Do not remove locks, stop legacy observers or introduce another owner to bypass it.
+Revision 18: Claude and Gemini sends check the shared message-id namespace under
+this lock; that check waits up to three seconds for a concurrent Codex observer
+instead of returning `ADAPTER_BUSY` at once (observations hold the lock for up
+to their native-read budget, which was the cause of intermittent `ADAPTER_BUSY`
+on Claude/Gemini sends). Codex sends and receipts still refuse at once.
 
 For **that invocation of `api send`**, `ADAPTER_BUSY` precedes request binding,
 admission and native dispatch. It does not negate an earlier admission of the same ID.
 Ordinary messages bind in SQLite; explicit Resume first binds in its recovery
 journal before any launch. Submission uncertainty is saved before touching the
-queue socket. There is no automatic receipt or
-binding eviction. For `api receipt`, `ADAPTER_BUSY` means lookup could not run;
+queue socket. Receipts and bindings are retired only by
+[receipt retention](#receipt-retention-revision-18), which keeps a tombstone. For `api receipt`, `ADAPTER_BUSY` means lookup could not run;
 it says nothing about whether the send succeeded. Preserve operation context and
 the original error instead of converting a receipt error into a send rejection.
 
@@ -651,7 +657,7 @@ persisting progress avoids lost work, not that upstream reconstruction cost.
 | completed_with_reply | Correlated public terminal reply observed |
 | delivery_unknown | Submission may have occurred; never automatically replay |
 | rejected | Preflight refused this request |
-| expired | Submission deadline passed while provably unsent |
+| expired | Submission deadline passed while provably unsent; or, with reason `outcome_unknown_at_retention_horizon`, retired unfinished (see [receipt retention](#receipt-retention-revision-18)) |
 | cancelled | Local cancellation or positive supported native cancellation |
 | failed | Correlated native turn failed/interrupted; no successful reply |
 
@@ -1736,3 +1742,35 @@ commented files refused), with `applies_to:"sessions_started_after_the_change"`,
 `gemini_steer_receipt_steer_after_turn`, `gemini_steer_receipt_refused`,
 `gemini_live_steering`. Grammar and keys come from the Gemini CLI 0.66.0 bundle;
 tests use a fake HERDR pane (see [CLI](cli.md#gemini-terminal-input-revision-17)).
+
+### Receipt retention (revision 18)
+
+Additive; negotiate `contract_revision >= 18` (`api capabilities.receipt_retention`).
+Each receipt store (Codex messaging ledger, Claude/Gemini input journal, headless
+deliveries) holds at most 10,000 receipts. Without retention every send would
+eventually fail with `RECEIPT_CAPACITY_REACHED`, so a retention pass runs at most
+once per hour during send admission, under the exclusive messaging lock:
+
+- A certainly terminal receipt (`completed_with_reply`, `completed_without_reply`,
+  `failed`, `rejected`, `cancelled`, `expired`) is retired once it is older than
+  `receipt_retention_days` (default 14). Age is counted from the submission deadline
+  (`expires_at`) for Codex receipts and from the last record update for journals.
+- A non-terminal or uncertain receipt (`pending_local`, `native_accepted`,
+  `execution_started`, `delivery_unknown`) is never retired before
+  `receipt_unknown_horizon_days` (default 90). Past that horizon it is first saved
+  as terminal `expired` with reason `outcome_unknown_at_retention_horizon` (a
+  provably unsent `pending_local` becomes `expired` without that reason), then
+  retired. That reason means Sessionsation stopped observing: the native outcome
+  is unknown, and the message must never be resent.
+- A Codex binding that never produced a receipt is retired as `cancelled` (when
+  cancelled) or, past the horizon, `expired`. Recovery journals are not retired.
+- Unreadable records are kept.
+
+Every retired id keeps a compact tombstone (id, final state, reason, retirement
+time; no text, target or reply). Tombstones are not counted toward capacity and
+are not pruned. A retired id is never accepted again by any delivery path, with
+the same or different content: `api send` and `api receipt` return
+`RECEIPT_RETIRED` with the final state in the message (legacy messaging:
+`receipt_retired`). Clients must keep their own copy of a reply they need beyond
+the retention window. Both settings are `sessionsation config set` keys
+(1..=3650 days; the horizon must not be shorter than the retention).

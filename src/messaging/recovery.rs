@@ -578,6 +578,7 @@ pub(super) async fn send(paths: &Paths, request: PublicRequest) -> anyhow::Resul
             && ledger.get(&request.message_id)?.is_none(),
         "MESSAGE_ID_CONFLICT"
     );
+    super::retention::ensure_not_retired(&ledger, &request.message_id)?;
     let selected =
         crate::catalog::resolve(paths, &request.session_id, &request.expected_generation)?;
     let _admission =

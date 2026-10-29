@@ -310,7 +310,11 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         request.expires_at > now && request.expires_at <= now + 86400,
         "INVALID_EXPIRY"
     );
-    ensure!(all(paths).len() < 10000, "RECEIPT_CAPACITY_REACHED");
+    // Count without reading every record (retention keeps the journal bounded).
+    ensure!(
+        super::retention::count_journal(&dir(paths)) < 10000,
+        "RECEIPT_CAPACITY_REACHED"
+    );
     let session = catalog::resolve(paths, &request.session_id, &request.expected_generation)?;
     let is_gemini = session.provider == ProviderId::Gemini.as_str();
     ensure!(

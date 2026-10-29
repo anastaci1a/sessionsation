@@ -51,9 +51,9 @@ fn mode_record(ledger: &Ledger, id: &str) -> Result<bool> {
 fn receipt(ledger: &Ledger, id: &str) -> Result<Receipt> {
     uuid(id)?;
     if !mode_record(ledger, id)? {
-        return Err(Fault("receipt_not_found"));
+        return ledger.lookup(id).and(Err(Fault("receipt_not_found")));
     }
-    ledger.get(id)?.ok_or(Fault("receipt_not_found"))
+    ledger.lookup(id)
 }
 fn wrap(delivery: Value) -> Value {
     if !delivery["submit"].is_null() {

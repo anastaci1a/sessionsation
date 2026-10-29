@@ -326,8 +326,13 @@ pub(crate) fn ensure_unused_elsewhere(paths: &Paths, id: &str) -> Result<()> {
         !super::claude_steer::exists(paths, id),
         "MESSAGE_ID_CONFLICT"
     );
-    let ledger = super::Ledger::open(paths).map_err(anyhow::Error::from)?;
+    // Only an id check: wait briefly for a Codex observer instead of failing
+    // a Claude/Gemini send with ADAPTER_BUSY.
+    let mut ledger = super::Ledger::open_waiting(paths, std::time::Duration::from_secs(3))
+        .map_err(anyhow::Error::from)?;
     super::public::initialize(&ledger).map_err(anyhow::Error::from)?;
+    super::retention::ensure_not_retired(&ledger, id)?;
+    super::retention::maybe_run(&mut ledger, crate::daemon::now());
     ensure!(
         super::public::get(&ledger, id)
             .map_err(anyhow::Error::from)?
@@ -356,7 +361,7 @@ pub async fn send(paths: &Paths, request: Request) -> Result<Value> {
         request.expires_at > now && request.expires_at <= now + 86400,
         "INVALID_EXPIRY"
     );
-    let count = all(paths)?.len();
+    let count = super::retention::count_journal(&dir(paths));
     ensure!(count < 10000, "RECEIPT_CAPACITY_REACHED");
     let config = crate::store::load_config(paths)?;
     let (provider, session, account, directory) = match request.mode {

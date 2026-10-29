@@ -7,6 +7,7 @@ mod modes;
 mod public;
 mod readiness;
 pub mod recovery;
+mod retention;
 pub use batch::{BatchRequest, observations};
 pub use public::{
     PublicMode, PublicRequest, SteeringIntent, receipt_public, send_public, steering_target,
@@ -348,11 +349,12 @@ async fn resolve(paths: &Paths, id: &str) -> Result<Value> {
     )
 }
 fn capabilities() -> Value {
-    json!({"protocol_version":VERSION,"schema":"urn:codex-switcher:messaging:1.2.1","experimental":true,"live_validated":false,"native_profiles":NATIVE_PROFILES,"operations":{"sessions":true,"resolve":true,"enqueue":true,"status":true,"observe":true,"events":true,"cancel":true},"native_queue":{"method":"thread/queue/add","delivery":"non_steering_idle_dispatch","deduplication":"adapter_only","expiry":"submission_deadline_only","cancel":"delete_true_under_native_dispatch_lock"},"events":{"scope":"adapter_lifecycle_and_terminal_replies","retained":1000,"page_size":100,"public_replies":"correlated_terminal_summary","execution_correlation":"public_client_id","native_replay":"unsupported"},"receipts":{"capacity":10000,"automatic_eviction":false,"uncertain_submission":"never_replayed"},"reply_observation":{"mode":"poll_status_or_observe","native_method":"thread/turns/list","items_view":"summary","max_pages":20,"max_text_bytes":65536},"unsupported_reason":"native_push_subscription_and_token_streaming_not_supported"})
+    json!({"protocol_version":VERSION,"schema":"urn:codex-switcher:messaging:1.2.1","experimental":true,"live_validated":false,"native_profiles":NATIVE_PROFILES,"operations":{"sessions":true,"resolve":true,"enqueue":true,"status":true,"observe":true,"events":true,"cancel":true},"native_queue":{"method":"thread/queue/add","delivery":"non_steering_idle_dispatch","deduplication":"adapter_only","expiry":"submission_deadline_only","cancel":"delete_true_under_native_dispatch_lock"},"events":{"scope":"adapter_lifecycle_and_terminal_replies","retained":1000,"page_size":100,"public_replies":"correlated_terminal_summary","execution_correlation":"public_client_id","native_replay":"unsupported"},"receipts":{"capacity":10000,"automatic_eviction":true,"eviction":"certain_terminal_after_retention_days_with_tombstone","retired_lookup":"receipt_retired","uncertain_submission":"never_replayed"},"reply_observation":{"mode":"poll_status_or_observe","native_method":"thread/turns/list","items_view":"summary","max_pages":20,"max_text_bytes":65536},"unsupported_reason":"native_push_subscription_and_token_streaming_not_supported"})
 }
 
 struct Ledger {
     db: Connection,
+    paths: Paths,
     _lock: fs::File,
 }
 impl Ledger {
@@ -375,7 +377,24 @@ impl Ledger {
                 [uuid::Uuid::new_v4().to_string()],
             )?;
         }
-        Ok(Self { db, _lock: lock })
+        Ok(Self {
+            db,
+            paths: paths.clone(),
+            _lock: lock,
+        })
+    }
+    /// Like `open`, but waits up to `budget` for a concurrent holder. Only for
+    /// local id checks of other stores, never to bypass the lock.
+    fn open_waiting(paths: &Paths, budget: std::time::Duration) -> Result<Self> {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            match Self::open(paths) {
+                Err(Fault("adapter_busy")) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                other => return other,
+            }
+        }
     }
     fn get(&self, id: &str) -> Result<Option<Receipt>> {
         let text: Option<String> = self
@@ -386,6 +405,14 @@ impl Ledger {
             .optional()?;
         text.map(|s| serde_json::from_str(&s).map_err(|_| Fault("storage_error")))
             .transpose()
+    }
+    /// A receipt by id; a retired id is `receipt_retired`, never `not_found`.
+    fn lookup(&self, id: &str) -> Result<Receipt> {
+        match self.get(id)? {
+            Some(r) => Ok(r),
+            None if retention::retired(self, id)?.is_some() => Err(Fault("receipt_retired")),
+            None => Err(Fault("receipt_not_found")),
+        }
     }
     fn save(&mut self, receipt: &Receipt) -> Result<()> {
         let data = serde_json::to_string(receipt).map_err(|_| Fault("storage_error"))?;
@@ -466,9 +493,13 @@ impl Ledger {
             }
             return Ok(receipt);
         }
+        if retention::retired(self, &input.message_id)?.is_some() {
+            return Err(Fault("receipt_retired"));
+        }
         if input.expires_at <= now || input.expires_at > now + 86400 {
             return Err(Fault("invalid_expiry"));
         }
+        retention::maybe_run(self, now);
         if self
             .db
             .query_row("SELECT count(*) FROM receipts", [], |r| r.get::<_, i64>(0))?
@@ -827,7 +858,7 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
         Command::Status { message } | Command::Observe { message } => {
             uuid(&message)?;
             let mut ledger = Ledger::open(paths)?;
-            let mut receipt = ledger.get(&message)?.ok_or(Fault("receipt_not_found"))?;
+            let mut receipt = ledger.lookup(&message)?;
             if receipt.submit.is_some() {
                 return Err(Fault("mode_receipt_requires_modes_status"));
             }
@@ -848,7 +879,7 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
         Command::Cancel { message } => {
             uuid(&message)?;
             let mut ledger = Ledger::open(paths)?;
-            let mut receipt = ledger.get(&message)?.ok_or(Fault("receipt_not_found"))?;
+            let mut receipt = ledger.lookup(&message)?;
             if receipt.submit.is_some() {
                 return Err(Fault("mode_receipt_requires_modes_cancel"));
             }
