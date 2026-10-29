@@ -270,6 +270,8 @@ async fn poll(name: String, rpc: Rpc, home: std::path::PathBuf) -> Poll {
 
 pub async fn serve(paths: Paths) -> Result<()> {
     std::env::set_current_dir(&paths.root)?;
+    // A crash between create and rename of an atomic write leaves a `.tmp*` file.
+    crate::paths::sweep_stale_temps(&paths.root, crate::paths::STALE_TEMP_AGE);
     // Must precede removing the stale socket and opening the database.
     let mut store = Store::open(&paths)?;
     let mut state = store.load()?;

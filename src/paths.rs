@@ -171,9 +171,129 @@ fn journal_paths_from_entries(directory: &Path, entries: Vec<PathBuf>) -> Vec<Pa
     paths.into_iter().collect()
 }
 
+/// Directories under the data root that only sessionsation writes through
+/// [`atomic_write`]. Account homes, archives, backups and project data are
+/// deliberately absent.
+const TEMP_SWEEP_DIRS: &[&str] = &[
+    "messaging",
+    "observations",
+    "conversations",
+    "deletions",
+    "session-catalog",
+    "launches",
+    "conversation-operations",
+    "account-deletions",
+    "account-catalog",
+    "claude-steer",
+    "claude-deliveries",
+    "handoff-jobs",
+    "message-recoveries",
+    "resumptions",
+    "thread-locations",
+    "managed-panes",
+    "herdr-panes",
+    "lifecycle-admission",
+];
+pub const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// `tempfile::NamedTempFile` names: exactly `.tmp` plus six alphanumerics.
+fn is_temp_name(name: &str) -> bool {
+    name.strip_prefix(".tmp")
+        .is_some_and(|r| r.len() == 6 && r.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
+/// Remove temp files that an interrupted [`atomic_write`] left behind: regular
+/// files (never symlinks) owned by this user, named exactly like the helper's
+/// temp files and untouched for `max_age`. Returns how many were removed.
+pub fn sweep_stale_temps(root: &Path, max_age: std::time::Duration) -> usize {
+    fn walk(dir: &Path, depth: usize, max_age: std::time::Duration, uid: u32, n: &mut usize) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() {
+                if depth < 6 {
+                    walk(&path, depth + 1, max_age, uid, n);
+                }
+                continue;
+            }
+            let name = entry.file_name();
+            if !kind.is_file() || !name.to_str().is_some_and(is_temp_name) {
+                continue;
+            }
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let old = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age >= max_age);
+            if meta.file_type().is_file()
+                && meta.uid() == uid
+                && old
+                && fs::remove_file(&path).is_ok()
+            {
+                *n += 1;
+            }
+        }
+    }
+    let uid = unsafe { libc::geteuid() };
+    let mut removed = 0;
+    for name in TEMP_SWEEP_DIRS {
+        let dir = root.join(name);
+        if fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_dir()) {
+            walk(&dir, 0, max_age, uid, &mut removed);
+        }
+    }
+    removed
+}
+
 #[cfg(test)]
 mod tests {
 
+    #[test]
+    fn stale_atomic_write_temps_are_swept_and_nothing_else() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("observations/native-turns");
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join(".tmpl2no68");
+        let fresh = dir.join(".tmpAbC123");
+        let lookalike = dir.join(".tmpl2no68.json");
+        let real = dir.join("turn.json");
+        let link_target = root.path().join("elsewhere");
+        std::fs::write(&link_target, "x").unwrap();
+        let link = dir.join(".tmpZZZZZZ");
+        std::os::unix::fs::symlink(&link_target, &link).unwrap();
+        let outside = root.path().join("claude-accounts/a");
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside = outside.join(".tmpl2no68");
+        for p in [&stale, &fresh, &lookalike, &real, &outside] {
+            std::fs::write(p, "x").unwrap();
+        }
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        for p in [&stale, &lookalike, &real, &outside] {
+            std::fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        assert_eq!(
+            super::sweep_stale_temps(root.path(), super::STALE_TEMP_AGE),
+            1
+        );
+        assert!(!stale.exists());
+        assert!(fresh.exists(), "recent temp may belong to a live writer");
+        assert!(lookalike.exists() && real.exists());
+        assert!(std::fs::symlink_metadata(&link).is_ok() && link_target.exists());
+        assert!(outside.exists(), "account homes are not swept");
+    }
     #[test]
     fn stable_worker_entries_recover_journals_omitted_by_readdir() {
         let temp = tempfile::tempdir().unwrap();

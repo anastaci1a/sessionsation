@@ -77,6 +77,11 @@ or mount an operator's credentials into their container.
 Back up the entire private data root consistently, including databases, catalogs,
 request/receipt journals, account homes and archives. Protect backups like credentials.
 Keep project files separate. An archive is recoverable history, not a backup of
+
+At startup the daemon removes leftover `.tmp` files (exactly `.tmp` plus six
+characters, regular files, owned by the daemon user, unmodified for an hour) from
+its own state directories; account homes and archives are never swept. Deleted
+sessions leave only ids in their manifest.
 credentials or a running process; external backups are outside session deletion.
 
 Use one supervisor per root. Updating a client executable does not update the owner.
