@@ -10,16 +10,27 @@ use tokio::{
 };
 use tokio_tungstenite::{
     WebSocketStream,
-    tungstenite::{Message, protocol::WebSocketConfig},
+    tungstenite::{Message, Utf8Bytes, protocol::WebSocketConfig},
 };
 
 type Rejections = Arc<Mutex<HashMap<u64, (i64, Option<&'static str>)>>>;
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Box<RawValue>>>>>>;
+// Waiters receive the whole response frame; the typed result is parsed once from
+// it, so a large frame is never copied into a second owned buffer.
+type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Utf8Bytes>>>>>;
+/// Ordinary messaging connections: one native frame or message.
+pub(super) const FRAME_LIMIT: usize = 1024 * 1024;
+/// Checkpoint projection connections.
+pub(super) const CHECKPOINT_FRAME_LIMIT: usize = 8 * 1024 * 1024;
+/// Steer anchor and reply observation: one full native turn of a long session.
+/// Peak memory stays a small multiple of this bound; larger frames still fail
+/// closed with `native_frame_limit` before any native write.
+pub(super) const STEER_FRAME_LIMIT: usize = 64 * 1024 * 1024;
 #[derive(Deserialize)]
-struct Frame {
+struct Frame<'a> {
     method: Option<serde::de::IgnoredAny>,
     id: Option<Value>,
-    result: Option<Box<RawValue>>,
+    #[serde(borrow)]
+    result: Option<&'a RawValue>,
     error: Option<NativeError>,
     // Payloads of unsolicited events (including reasoning) are never deserialized.
 }
@@ -102,13 +113,8 @@ impl Drop for Transport {
     }
 }
 impl Transport {
-    pub(super) async fn connect(path: &Path) -> Result<Self> {
-        tokio::time::timeout(Duration::from_secs(3), Self::open(path, 1024 * 1024))
-            .await
-            .map_err(|_| Fault("endpoint_unavailable"))?
-    }
-    pub(super) async fn connect_checkpoints(path: &Path) -> Result<Self> {
-        tokio::time::timeout(Duration::from_secs(3), Self::open(path, 8 * 1024 * 1024))
+    pub(super) async fn connect(path: &Path, max_bytes: usize) -> Result<Self> {
+        tokio::time::timeout(Duration::from_secs(3), Self::open(path, max_bytes))
             .await
             .map_err(|_| Fault("endpoint_unavailable"))?
     }
@@ -141,7 +147,7 @@ impl Transport {
                 };
                 match message {
                     Message::Text(text) => {
-                        let Ok(frame) = serde_json::from_str::<Frame>(&text) else {
+                        let Ok(frame) = serde_json::from_str::<Frame>(text.as_str()) else {
                             break;
                         };
                         // Server requests have their own ID namespace; never consume an RPC waiter.
@@ -157,7 +163,10 @@ impl Transport {
                                         .insert(id, (error.code, error.non_steerable()));
                                     Err(Fault("native_rejected"))
                                 } else {
-                                    frame.result.ok_or(Fault("malformed_response"))
+                                    frame
+                                        .result
+                                        .map(|_| text.clone())
+                                        .ok_or(Fault("malformed_response"))
                                 };
                                 let _ = tx.send(result);
                             }
@@ -458,8 +467,14 @@ impl Transport {
                 ))
                 .await
                 .map_err(|_| Fault("disconnected"))?;
-            let raw = rx.await.map_err(|_| Fault("disconnected"))??;
-            serde_json::from_str(raw.get()).map_err(|_| Fault("malformed_response"))
+            #[derive(Deserialize)]
+            struct Envelope<T> {
+                result: T,
+            }
+            let frame = rx.await.map_err(|_| Fault("disconnected"))??;
+            serde_json::from_str::<Envelope<T>>(frame.as_str())
+                .map(|e| e.result)
+                .map_err(|_| Fault("malformed_response"))
         };
         let result = tokio::time::timeout(budget, request)
             .await

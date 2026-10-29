@@ -187,15 +187,21 @@ impl Attachment {
         self.connect_with_profile(&mut None).await
     }
     async fn connect_with_profile(&self, version: &mut Option<String>) -> Result<Transport> {
-        self.connect_profile(version, false).await
+        self.connect_profile(version, transport::FRAME_LIMIT).await
     }
     async fn connect_checkpoints(&self) -> Result<Transport> {
-        self.connect_profile(&mut None, true).await
+        self.connect_profile(&mut None, transport::CHECKPOINT_FRAME_LIMIT)
+            .await
+    }
+    /// Steer anchor and reply observation read one full native turn.
+    async fn connect_steer(&self) -> Result<Transport> {
+        self.connect_profile(&mut None, transport::STEER_FRAME_LIMIT)
+            .await
     }
     async fn connect_profile(
         &self,
         version: &mut Option<String>,
-        checkpoints: bool,
+        max_bytes: usize,
     ) -> Result<Transport> {
         let path = self.endpoint();
         let meta = fs::symlink_metadata(&path).map_err(|_| Fault("endpoint_unavailable"))?;
@@ -219,11 +225,7 @@ impl Attachment {
         {
             return Err(Fault("unsafe_endpoint"));
         }
-        let mut transport = if checkpoints {
-            Transport::connect_checkpoints(&resolved).await?
-        } else {
-            Transport::connect(&resolved).await?
-        };
+        let mut transport = Transport::connect(&resolved, max_bytes).await?;
         let initialized = transport.initialize().await;
         *version = transport.provider_version.clone();
         initialized?;

@@ -965,8 +965,9 @@ No observer, terminal supervisor, credential writer or subscription is started.
   existing event IDs. Both routes return at most 50 retained events.
   `history_mode` reports the selected native route; capability
   `checkpoints.history_modes` advertises this compatibility correction. The 8 MiB
-  input allowance is exclusive to checkpoint connections; ordinary messaging
-  connections retain their 1 MiB frame limit. `NATIVE_FRAME_LIMIT` or
+  input allowance is exclusive to checkpoint connections; steer anchor and reply
+  observation reads use a 64 MiB bound (see Steer reply correlation); other ordinary
+  messaging connections retain their 1 MiB frame limit. `NATIVE_FRAME_LIMIT` or
   `CHECKPOINT_LEGACY_LIMIT` refuses oversized input without returning partial text.
   The complete compact success JSON envelope plus trailing newline is capped at
   **786432 bytes (768 KiB)**, below a 1 MiB client transport ceiling. JSON escaping
@@ -1337,6 +1338,11 @@ view omits steer inputs, so only the full view of the single steered turn is rea
   The turn must still be latest and in progress and must not already contain the
   ID, otherwise the steer is rejected unsent (`active_turn_changed`,
   `ambiguous_native_correlation`).
+- **Read bound.** Anchor and observation reads accept one native frame of up to
+  64 MiB (a long turn's full items include tool output; 1.86 MB was observed live).
+  Only item identifiers, client IDs and assistant text are retained while parsing.
+  A larger frame fails closed with `native_frame_limit` before `turn/steer`, so the
+  steer stays provably unsent; more than 8192 items is `steer_turn_too_large`.
 - **Observation.** `api receipt` on a `native_accepted`, `delivery_unknown` or
   `execution_started` steer reads the same turn newest-first (at most 8 one-turn
   pages, 8192 items) and locates the steer input by `clientId`. Only item IDs,

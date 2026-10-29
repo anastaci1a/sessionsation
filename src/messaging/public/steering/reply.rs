@@ -25,21 +25,63 @@ struct FullTurn {
     status: String,
     #[serde(rename = "itemsView")]
     view: String,
-    items: Vec<Box<RawValue>>,
+    items: Items,
 }
+/// One native item reduced while parsing: only the type and the fields a
+/// projection may read are kept as raw JSON, and every other field
+/// (tool output, reasoning, user content) is skipped without being copied.
 #[derive(Deserialize)]
-struct Kind {
+struct RawItem {
     #[serde(rename = "type")]
     kind: String,
+    id: Option<Box<RawValue>>,
+    #[serde(rename = "clientId")]
+    client: Option<Box<RawValue>>,
+    text: Option<Box<RawValue>>,
+    phase: Option<Box<RawValue>>,
 }
-#[derive(Deserialize)]
+/// Turn items, retaining at most `MAX_ITEMS`; a larger turn is consumed without
+/// allocation and reported as too large instead of growing memory.
+struct Items {
+    items: Vec<RawItem>,
+    overflow: bool,
+}
+impl<'de> Deserialize<'de> for Items {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Items;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an item array")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Items, A::Error> {
+                let mut out = Items {
+                    items: Vec::new(),
+                    overflow: false,
+                };
+                while out.items.len() < MAX_ITEMS {
+                    match seq.next_element()? {
+                        Some(item) => out.items.push(item),
+                        None => return Ok(out),
+                    }
+                }
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    out.overflow = true;
+                }
+                Ok(out)
+            }
+        }
+        d.deserialize_seq(Visit)
+    }
+}
 struct User {
     id: String,
-    #[serde(rename = "clientId")]
     client: Option<String>,
     // Deliberately no content field.
 }
-#[derive(Deserialize)]
 struct Agent {
     id: String,
     text: String,
@@ -57,25 +99,33 @@ struct Turn {
 fn valid(id: &str) -> bool {
     !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
 }
-fn parse<T: serde::de::DeserializeOwned>(raw: &RawValue) -> Result<T> {
-    serde_json::from_str(raw.get()).map_err(|_| Fault("malformed_response"))
+fn parse<T: serde::de::DeserializeOwned>(raw: Option<&RawValue>) -> Result<T> {
+    serde_json::from_str(raw.map_or("null", RawValue::get)).map_err(|_| Fault("malformed_response"))
 }
-fn project(raw: Vec<Box<RawValue>>) -> Result<Vec<Item>> {
-    if raw.len() > MAX_ITEMS {
+fn project(raw: Items) -> Result<Vec<Item>> {
+    if raw.overflow {
         return Err(Fault("steer_turn_too_large"));
     }
-    raw.iter()
+    raw.items
+        .into_iter()
         .map(|item| {
-            Ok(match parse::<Kind>(item)?.kind.as_str() {
+            Ok(match item.kind.as_str() {
                 "userMessage" => {
-                    let u: User = parse(item)?;
+                    let u = User {
+                        id: parse(item.id.as_deref())?,
+                        client: parse(item.client.as_deref())?,
+                    };
                     if !valid(&u.id) {
                         return Err(Fault("malformed_response"));
                     }
                     Item::User(u)
                 }
                 "agentMessage" => {
-                    let a: Agent = parse(item)?;
+                    let a = Agent {
+                        id: parse(item.id.as_deref())?,
+                        text: parse(item.text.as_deref())?,
+                        phase: parse(item.phase.as_deref())?,
+                    };
                     if !valid(&a.id) {
                         return Err(Fault("malformed_response"));
                     }
@@ -304,7 +354,7 @@ pub(in crate::messaging) async fn snapshot(
     let selected = attachment(paths, &receipt.session_id)?;
     let generation = selected.generation();
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let mut c = selected.connect().await?;
+        let mut c = selected.connect_steer().await?;
         let t = locate(&mut c, &receipt.session_id, &turn, &receipt.message_id).await?;
         attribute(t, receipt, &generation)
     })
@@ -319,6 +369,106 @@ pub(in crate::messaging) async fn snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messaging::tests::{attachment_fixture, fixture, scripted_server};
+    use std::sync::{Arc as SArc, Mutex as SMutex};
+    const TURN: &str = "turn-big";
+    /// A live-shaped full in-progress turn whose tool output pushes one native
+    /// frame past `bytes`; only the small user and agent items matter.
+    fn big_turn(bytes: usize) -> Value {
+        json!({"data":[{"id":TURN,"status":"inProgress","itemsView":"full","items":[
+            {"type":"userMessage","id":"u0","clientId":null,"content":[{"type":"text","text":"start"}]},
+            {"type":"commandExecution","id":"c0","aggregatedOutput":"x".repeat(bytes),"command":"cat big"},
+            {"type":"plan","id":"p0","text":"plan"},
+            {"type":"agentMessage","id":"a0","text":"working","phase":"commentary"}
+        ]}],"nextCursor":null})
+    }
+    async fn steer_against(
+        page: Value,
+        steer: bool,
+    ) -> (Result<SteerAnchor>, Result<String>, Vec<String>) {
+        let (_dir, paths, input, _) = fixture();
+        let a = attachment_fixture(&paths, &input);
+        let id = a.id.clone();
+        let calls = SArc::new(SMutex::new(Vec::new()));
+        let seen = calls.clone();
+        let server = scripted_server(&a.endpoint(), move |req| {
+            let method = req["method"].as_str().unwrap().to_owned();
+            seen.lock().unwrap().push(method.clone());
+            match method.as_str() {
+                "thread/turns/list" => {
+                    assert_eq!(req["params"]["itemsView"], "full");
+                    Some(page.clone())
+                }
+                "turn/steer" => Some(json!({"turnId":TURN})),
+                _ => None,
+            }
+        })
+        .await;
+        let mut c = a.connect_steer().await.unwrap();
+        let anchored = anchor(&mut c, &id, TURN, ME).await;
+        let steered = if steer && anchored.is_ok() {
+            c.steer(&id, ME, TURN, "hello").await
+        } else {
+            Err(Fault("not_sent"))
+        };
+        drop(c);
+        server.abort();
+        let calls = calls.lock().unwrap().clone();
+        (anchored, steered, calls)
+    }
+    #[tokio::test]
+    async fn steer_to_a_turn_larger_than_one_mib_is_anchored_and_sent() {
+        // localica-lead: the latest full turn was 1.86 MB on the 1 MiB connection.
+        let (anchored, steered, calls) = steer_against(big_turn(3 * 1024 * 1024), true).await;
+        let anchored = anchored.unwrap();
+        assert_eq!((anchored.user_items_before, anchored.items_before), (1, 4));
+        assert_eq!(anchored.last_agent_item_id.as_deref(), Some("a0"));
+        assert_eq!(steered.unwrap(), TURN);
+        assert_eq!(calls, ["thread/turns/list", "turn/steer"]);
+    }
+    #[tokio::test]
+    async fn ordinary_connection_keeps_its_one_mib_limit() {
+        let (_dir, paths, input, _) = fixture();
+        let a = attachment_fixture(&paths, &input);
+        let id = a.id.clone();
+        let page = big_turn(2 * 1024 * 1024);
+        let server = scripted_server(&a.endpoint(), move |_| Some(page.clone())).await;
+        let mut c = a.connect().await.unwrap();
+        let e = anchor(&mut c, &id, TURN, ME).await.unwrap_err();
+        assert_eq!(e.0, "native_frame_limit");
+        server.abort();
+    }
+    #[tokio::test]
+    async fn frame_over_the_steer_bound_fails_closed_without_sending() {
+        let over = crate::messaging::transport::STEER_FRAME_LIMIT + 1024;
+        let (anchored, steered, calls) = steer_against(big_turn(over), true).await;
+        assert_eq!(anchored.unwrap_err().0, "native_frame_limit");
+        assert_eq!(steered.unwrap_err().0, "not_sent");
+        assert_eq!(calls, ["thread/turns/list"]);
+    }
+    #[test]
+    fn projection_retains_only_identifiers_and_bounded_item_count() {
+        let page: Page = serde_json::from_value(big_turn(1024 * 1024)).unwrap();
+        let items = &page.data[0].items.items;
+        assert!(!page.data[0].items.overflow);
+        // Tool output and user content are skipped, never retained.
+        let retained: usize = items
+            .iter()
+            .map(|i| {
+                [&i.id, &i.client, &i.text, &i.phase]
+                    .iter()
+                    .map(|f| f.as_ref().map_or(0, |r| r.get().len()))
+                    .sum::<usize>()
+            })
+            .sum();
+        assert!(retained < 256, "{retained}");
+        let many = json!({"data":[{"id":TURN,"status":"inProgress","itemsView":"full",
+            "items":vec![json!({"type":"sleep","id":"s"}); MAX_ITEMS + 5]}],"nextCursor":null});
+        let page: Page = serde_json::from_value(many).unwrap();
+        let t = page.data.into_iter().next().unwrap();
+        assert!(t.items.overflow && t.items.items.len() == MAX_ITEMS);
+        assert_eq!(project(t.items).err().unwrap().0, "steer_turn_too_large");
+    }
     fn user(id: &str, client: Option<&str>) -> Item {
         Item::User(User {
             id: id.into(),

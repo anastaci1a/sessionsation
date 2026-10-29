@@ -92,7 +92,7 @@ async fn active_turn(c: &mut Transport, id: &str) -> Result<String> {
 }
 async fn connect_active(a: &Attachment) -> Result<(Transport, String)> {
     tokio::time::timeout(Duration::from_secs(5), async {
-        let mut c = a.connect().await?;
+        let mut c = a.connect_steer().await?;
         let turn = active_turn(&mut c, &a.id).await?;
         Ok((c, turn))
     })
