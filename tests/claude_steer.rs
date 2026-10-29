@@ -350,15 +350,25 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
         .count();
     assert_eq!(echoes, 1, "never written twice");
 
-    // Fold: a steer (priority now) mid-turn joins the running turn; its reply
-    // starts at its own `started`, and both receipts say the reply is shared.
+    // Steer during a running turn (Claude Code 2.1.312 semantics): sent as
+    // priority `next`, it never cuts the turn; it is folded in at the turn's
+    // next tool round. Its reply starts at its own `started`, both receipts
+    // complete normally and say the reply is shared.
+    assert_eq!(
+        f.session(&id)["input_delivery"]["steer"]["interrupts"],
+        false
+    );
+    assert_eq!(
+        f.session(&id)["input_delivery"]["steer"]["priority"],
+        "next"
+    );
     let a = body("submit", &f.session(&id), "slow alpha");
     let b = body("steer", &f.session(&id), "beta");
     f.send_ok(&a);
     let ma = a["message_id"].as_str().unwrap().to_owned();
     f.receipt_until(&ma, |r| r["state"] == "execution_started");
     let steer = f.send_ok(&b);
-    assert_eq!(steer["priority"], "now");
+    assert_eq!(steer["priority"], "next");
     let mb = b["message_id"].as_str().unwrap().to_owned();
     let ra = f.settled(&ma);
     let rb = f.settled(&mb);
@@ -375,6 +385,67 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
     assert_eq!(rb["facts"]["folded"], true);
     assert_eq!(rb["facts"]["shared_with_turn"], true);
     assert_eq!(rb["correlation"]["user_message_uuids"], json!([ma, mb]));
+    assert_eq!(ra["reply"]["final"], true);
+    assert_eq!(rb["reply"]["final"], true);
+    assert_eq!(
+        ra["correlation"]["lifecycle"],
+        json!(["queued", "started", "completed"])
+    );
+    assert_eq!(
+        rb["correlation"]["lifecycle"],
+        json!(["queued", "started", "completed"])
+    );
+    assert_eq!(ra["facts"]["folded"], false);
+
+    // A steer to a running turn that has no further tool round is not folded:
+    // the turn completes unchanged and the steer runs as the next turn, each
+    // reply anchored to its own input.
+    let long = body("submit", &f.session(&id), "long theta");
+    f.send_ok(&long);
+    let ml = long["message_id"].as_str().unwrap().to_owned();
+    f.receipt_until(&ml, |r| r["state"] == "execution_started");
+    let late = body("steer", &f.session(&id), "iota");
+    f.send_ok(&late);
+    let mi = late["message_id"].as_str().unwrap().to_owned();
+    let rl = f.settled(&ml);
+    let ri = f.settled(&mi);
+    assert_eq!(rl["state"], "completed_with_reply", "{rl}");
+    assert_eq!(
+        rl["reply"]["text"],
+        "working on: long theta\n\nfake reply to: long theta"
+    );
+    assert_eq!(rl["reply"]["final"], true);
+    assert_eq!(rl["facts"]["shared_with_turn"], false);
+    assert_eq!(rl["correlation"]["user_message_uuids"], json!([ml]));
+    assert_eq!(ri["state"], "completed_with_reply", "{ri}");
+    assert_eq!(
+        ri["reply"]["text"],
+        "working on: iota\n\nfake reply to: iota"
+    );
+    assert_eq!(ri["facts"]["folded"], false);
+    assert_eq!(ri["correlation"]["user_message_uuids"], json!([mi]));
+
+    // A turn Claude Code cuts (as for another client's `now` input) still
+    // emits a `success` result; only the `cancelled` lifecycle after it
+    // tells. The submit is never completed: `interrupted`, partial reply
+    // kept but not final, nothing replayed.
+    let cut = body("submit", &f.session(&id), "long cut-by-now kappa");
+    f.send_ok(&cut);
+    let mk = cut["message_id"].as_str().unwrap().to_owned();
+    let rk = f.settled(&mk);
+    assert_eq!(rk["state"], "interrupted", "{rk}");
+    assert_eq!(rk["reason"], "TURN_CANCELLED_BY_PROVIDER");
+    assert_eq!(rk["reply"]["text"], "working on: long cut-by-now kappa");
+    assert_eq!(rk["reply"]["final"], false);
+    assert_eq!(rk["reply"]["is_error"], false);
+    assert_eq!(rk["facts"]["reply_final"], false);
+    assert_eq!(rk["facts"]["input_consumed"], true);
+    assert_eq!(
+        rk["correlation"]["lifecycle"],
+        json!(["queued", "started", "cancelled"])
+    );
+    assert_eq!(rk["correlation"]["user_message_uuids"], json!([mk]));
+    assert_eq!(rk["execution"]["automatic_replay"], false);
 
     // Queue (later) and a native refusal.
     let q = body("queue", &f.session(&id), "queued item");
@@ -389,7 +460,8 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
     assert_eq!(rn["reason"], "NATIVE_REFUSED");
     assert!(rn["reply"].is_null());
 
-    // Interrupt: the running turn fails as interrupted; the steer gets its own reply.
+    // Interrupt: the running turn's submit ends `interrupted` (partial reply,
+    // not final); the steer gets its own reply.
     let c = body("submit", &f.session(&id), "slow gamma");
     f.send_ok(&c);
     let mc = c["message_id"].as_str().unwrap().to_owned();
@@ -404,8 +476,16 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
     f.send_ok(&d);
     let rc = f.settled(&mc);
     let rd = f.settled(d["message_id"].as_str().unwrap());
-    assert_eq!(rc["state"], "failed", "{rc}");
+    assert_eq!(rc["state"], "interrupted", "{rc}");
     assert_eq!(rc["reason"], "TURN_INTERRUPTED");
+    assert_eq!(rc["reply"]["text"], "working on: slow gamma");
+    assert_eq!(rc["reply"]["final"], false);
+    assert_eq!(rc["facts"]["reply_final"], false);
+    assert!(rc["facts"]["lifecycle"].to_string().contains("cancelled"));
+    assert_eq!(
+        rd["correlation"]["user_message_uuids"],
+        json!([d["message_id"]])
+    );
     assert_eq!(rd["state"], "completed_with_reply", "{rd}");
     assert_eq!(rd["facts"]["interrupt_requested"], true);
     assert_eq!(
@@ -795,7 +875,7 @@ async fn peer_messages_need_opt_in_and_claim_replies_only_with_transcript_proof(
     assert_eq!(user["uuid"], m.as_str());
     assert_eq!(user["msg_id"], m.as_str());
     assert_eq!(user["session_id"], conversation.as_str());
-    assert_eq!(user["priority"], "now");
+    assert_eq!(user["priority"], "next");
     assert!(user["from"].as_str().unwrap().starts_with("uds:/"));
     assert!(frames.iter().any(|f| f["type"] == "notify_when_idle"));
     assert!(

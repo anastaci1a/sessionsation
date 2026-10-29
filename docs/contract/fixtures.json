@@ -1434,7 +1434,7 @@
     "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
     "account_id": "claude:work",
     "mode": "steer",
-    "priority": "now",
+    "priority": "next",
     "delivery_semantics": "hosted_stream_json",
     "state": "completed_with_reply",
     "reason": null,
@@ -1511,7 +1511,7 @@
     "mode": "submit",
     "priority": "next",
     "delivery_semantics": "hosted_stream_json",
-    "state": "failed",
+    "state": "interrupted",
     "reason": "TURN_INTERRUPTED",
     "facts": {
       "accepted_local": true,
@@ -1527,7 +1527,7 @@
       "lifecycle": [
         "queued",
         "started",
-        "completed"
+        "cancelled"
       ],
       "held": false,
       "peer_status": null,
@@ -1539,10 +1539,9 @@
       "lifecycle": [
         "queued",
         "started",
-        "completed"
+        "cancelled"
       ],
       "user_message_uuids": [
-        "7d4c2a52-2c5d-4c1e-9d55-4b3c3b5e9a10",
         "0aea28e9-f0f8-4bfd-bf50-3280c620def2"
       ]
     },
@@ -1576,6 +1575,80 @@
       "error_code": null
     }
   },
+  "claude_steer_receipt_cut": {
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "accepted_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "provider": "claude",
+    "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "mode": "submit",
+    "priority": "next",
+    "delivery_semantics": "hosted_stream_json",
+    "state": "interrupted",
+    "reason": "TURN_CANCELLED_BY_PROVIDER",
+    "facts": {
+      "accepted_local": true,
+      "written": true,
+      "accepted_native": true,
+      "input_recorded": true,
+      "input_consumed": true,
+      "reply_observed": true,
+      "reply_final": false,
+      "folded": false,
+      "shared_with_turn": false,
+      "interrupt_requested": false,
+      "lifecycle": [
+        "queued",
+        "started",
+        "cancelled"
+      ],
+      "held": false,
+      "peer_status": null,
+      "idle_notice": false
+    },
+    "correlation": {
+      "kind": "command_uuid",
+      "command_uuid": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+      "lifecycle": [
+        "queued",
+        "started",
+        "cancelled"
+      ],
+      "user_message_uuids": [
+        "0aea28e9-f0f8-4bfd-bf50-3280c620def2"
+      ]
+    },
+    "reply": {
+      "text": "one\ntwo\nthree\nfour",
+      "text_truncated": false,
+      "final": false,
+      "shared_with_turn": false,
+      "is_error": false,
+      "subtype": "success",
+      "num_turns": 1,
+      "duration_ms": 5120,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 4
+      }
+    },
+    "execution": {
+      "phase": "complete",
+      "created_at": 1793234130,
+      "dispatched_at": 1793234130,
+      "started_at": 1793234131,
+      "finished_at": 1793234136,
+      "host_epoch": 1,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "cached",
+      "checked_at": 1793234140,
+      "evidence_observed_at": 1793234136,
+      "error_code": null
+    }
+  },
   "claude_steer_receipt_peer": {
     "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
     "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
@@ -1584,7 +1657,7 @@
     "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
     "account_id": "claude:work",
     "mode": "steer",
-    "priority": "now",
+    "priority": "next",
     "delivery_semantics": "peer_message",
     "state": "completed_with_reply",
     "reason": null,
@@ -1651,7 +1724,7 @@
     "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
     "account_id": "claude:work",
     "mode": "steer",
-    "priority": "now",
+    "priority": "next",
     "delivery_semantics": "peer_message",
     "state": "native_accepted",
     "reason": null,
@@ -1851,5 +1924,12 @@
     "hosted": {
       "permission_mode": "account"
     }
+  },
+  "claude_steer_semantics": {
+    "priority": "next",
+    "interrupts": false,
+    "delivery": "next_tool_boundary_or_next_turn",
+    "interrupt_option": "steering.interrupt",
+    "interrupted_inputs_state": "interrupted"
   }
 }

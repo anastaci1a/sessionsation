@@ -103,7 +103,8 @@ for invalid, definition in [
     else:
         raise AssertionError("Claude headless delivery must not claim unsupported modes, replay or uncorrelated success")
 validate(fixtures["claude_steer_request"], "ClaudeSteerRequest")
-for name in ["claude_steer_receipt_hosted", "claude_steer_receipt_interrupted", "claude_steer_receipt_peer", "claude_steer_receipt_peer_unanchored", "claude_steer_receipt_held"]:
+validate(fixtures["claude_steer_semantics"], "ClaudeSteerSemantics")
+for name in ["claude_steer_receipt_hosted", "claude_steer_receipt_interrupted", "claude_steer_receipt_cut", "claude_steer_receipt_peer", "claude_steer_receipt_peer_unanchored", "claude_steer_receipt_held"]:
     validate(fixtures[name], "ClaudeSteerReceipt")
 validate(fixtures["hosted_session"], "HostedSession")
 validate(fixtures["live_steering"], "LiveSteering")
@@ -115,6 +116,10 @@ for invalid, definition in [
     ({**hosted, "execution": {**hosted["execution"], "automatic_replay": True}}, "ClaudeSteerReceipt"),
     ({**hosted, "correlation": None}, "ClaudeSteerReceipt"),
     ({**hosted, "reply": {**hosted["reply"], "final": False}}, "ClaudeSteerReceipt"),
+    # A cut turn's success result is not completion: the cancelled lifecycle wins.
+    ({**fixtures["claude_steer_receipt_cut"], "state": "completed_with_reply", "reply": {**fixtures["claude_steer_receipt_cut"]["reply"], "final": True}, "facts": {**fixtures["claude_steer_receipt_cut"]["facts"], "reply_final": True}}, "ClaudeSteerReceipt"),
+    ({**fixtures["claude_steer_receipt_cut"], "reply": {**fixtures["claude_steer_receipt_cut"]["reply"], "final": True}}, "ClaudeSteerReceipt"),
+    ({**fixtures["claude_steer_semantics"], "interrupts": True}, "ClaudeSteerSemantics"),
     ({**unanchored, "reply": peer["reply"]}, "ClaudeSteerReceipt"),
     ({**unanchored, "state": "completed_with_reply"}, "ClaudeSteerReceipt"),
     ({**peer, "peer_message": None}, "ClaudeSteerReceipt"),
@@ -166,6 +171,9 @@ with tempfile.TemporaryDirectory() as directory:
             assert value["result"]["claude_input_delivery"]["automatic_replay"] is False
             assert value["result"]["claude_input_delivery"]["hosted"]["implicit_bypass"] is False
             assert value["result"]["claude_input_delivery"]["peer_message"]["reply_requires_anchor"] is True
+            validate(value["result"]["claude_input_delivery"]["steer"], "ClaudeSteerSemantics")
+            assert value["result"]["claude_input_delivery"]["priority"]["steer"] == "next"
+            assert "interrupted" in value["result"]["claude_input_delivery"]["states"]
             claude = [p for p in value["result"]["providers"] if p["id"] == "claude"][0]
             assert claude["account_removal"] is True and claude["account_deletion"] is True
             assert claude["headless_delivery"]["automatic_replay"] is False

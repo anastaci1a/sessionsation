@@ -870,14 +870,16 @@ pub fn capabilities() -> Value {
 /// Revision 16: Claude submit/queue/steer (hosted stream-json or live peer messages).
 fn claude_input_delivery() -> Value {
     use crate::{messaging::claude_steer, provider::claude::hosted};
-    json!({"version":1,"since_revision":16,"modes":["submit","queue","steer"],"priority":{"submit":"next","queue":"later","steer":"now"},
+    json!({"version":1,"since_revision":16,"modes":["submit","queue","steer"],"priority":{"submit":"next","queue":"later","steer":"next"},
+        "steer":crate::messaging::claude_steer::steer_semantics(),
         "session_capability":"capabilities.submit|queue|steer with capability_reasons and input_delivery.semantics",
         "hosted":{"semantics":hosted::SEMANTICS,"command":"hosted","launch":["launch start hosted","launcher new --hosted","launcher resume --hosted","run --hosted"],
             "permission_modes":hosted::PERMISSION_MODES,"default_permission_mode":"account","implicit_bypass":false,"permission_prompts":"pending_until_answered",
             "interrupt":"steering.interrupt","correlation":"command_lifecycle_and_result_user_message_uuids","viewer":"view","take_over":"take-over"},
         "peer_message":{"semantics":claude_steer::PEER_SEMANTICS,"label":claude_steer::PEER_LABEL,"opt_in":"account live-steering --enable","setting":"crossSessionInbound","interrupt":false,
             "correlation":"transcript_anchor_by_message_id","reply_requires_anchor":true},
-        "states":["pending_local","held","native_accepted","execution_started","completed_with_reply","completed_without_reply","failed","cancelled","refused","rejected","expired","delivery_unknown"],
+        "states":["pending_local","held","native_accepted","execution_started","completed_with_reply","completed_without_reply","failed","interrupted","cancelled","refused","rejected","expired","delivery_unknown"],
+        "completion_requires":"result_and_completed_lifecycle",
         "timeout_seconds":{"default":claude_steer::DEFAULT_TIMEOUT_SECONDS,"max":3600},"automatic_replay":false,"cancellation":"before_delivery_only"})
 }
 

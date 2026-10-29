@@ -1381,7 +1381,17 @@ Request (`ClaudeSteerRequest`): the ordinary `api send` fields with
 `mode:"submit"|"queue"|"steer"`, optional `timeout_seconds` (peer reply wait,
 default 600, max 3600) and, for steer only, `"steering":{"version":1,"interrupt":bool}`
 (a Codex `expected_turn_id` target is `INVALID_REQUEST`). Priorities: submit `next`,
-queue `later`, steer `now`. There is no idle preflight: the provider orders inputs.
+queue `later`, steer `next`. There is no idle preflight: the provider orders inputs.
+Claude Code 2.1.312 folds a `next` input into a running turn at its next tool round
+(or runs it as the next turn when the turn ends without one) and never cuts the
+turn for it; `later` runs as its own later turn; `now` would **cancel** the running
+turn, so Sessionsation never sends it. A steer therefore never interrupts:
+`claude_input_delivery.steer` and each session row's `input_delivery.steer`
+(`ClaudeSteerSemantics`, null when the row takes no input) report
+`{priority:"next",interrupts:false,delivery:"next_tool_boundary_or_next_turn",
+interrupt_option:"steering.interrupt",interrupted_inputs_state:"interrupted"}`.
+Only `steering.interrupt:true` cancels the running turn (its inputs end
+`interrupted`) before the steer runs as a new turn.
 Admission refuses without journaling on `STALE_TARGET`, `SESSION_NOT_RUNNING` (use
 mode `resume`), `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`,
 `PEER_INTERRUPT_UNSUPPORTED`, `SESSION_OPERATION_IN_PROGRESS`, account/auth errors and
@@ -1397,19 +1407,30 @@ plus the hosted `result` fields `is_error,subtype,num_turns,duration_ms,usage`),
 `execution` (`phase` admitted/dispatching/written/complete, `host_epoch`,
 `automatic_replay:false`) and `observation`. States: `pending_local`, `held`,
 `native_accepted`, `execution_started`, `completed_with_reply`,
-`completed_without_reply`, `failed`, `cancelled`, `refused`, `rejected`, `expired`,
-`delivery_unknown`. Terminal states are never regressed.
+`completed_without_reply`, `failed`, `interrupted`, `cancelled`, `refused`, `rejected`,
+`expired`, `delivery_unknown`. Terminal states are never regressed. Only
+`completed_*` carries `reply.final:true`/`facts.reply_final:true`; every other state
+keeps any partial text with `final:false`.
 
 - **Hosted** (`hosted_stream_json`). The record is journaled, then the worker
   marks it `dispatching` before writing the stdin frame (`uuid` = `message_id`);
   a request the worker never claimed becomes `rejected` (`HOST_UNREACHABLE_NOT_SENT`,
   `HOST_STOPPED_BEFORE_DELIVERY`). `command_lifecycle` `queued` → `native_accepted`,
-  `started` → `execution_started`; `cancelled`/`discarded` → `cancelled`,
-  `refused` → `refused`. The `result` whose `user_message_uuids` contains the id
-  (all started inputs when absent) is terminal: `completed_with_reply` /
-  `completed_without_reply`, or `failed` (`TURN_INTERRUPTED` after a requested
-  interrupt, else `PROVIDER_REPORTED_ERROR`); another reported `session_id` is
-  `delivery_unknown` (`SESSION_ID_MISMATCH`). `correlation` is
+  `started` → `execution_started`; `cancelled`/`discarded` before `started` →
+  `cancelled` (`NATIVE_CANCELLED`/`NATIVE_DISCARDED`), `refused` → `refused`. The
+  terminal state needs both the `result` whose `user_message_uuids` contains the id
+  (all started inputs when absent) and the id's terminal lifecycle, in either order
+  (a fresh turn's `completed` follows its result, a folded input's precedes it):
+  `completed` → `completed_with_reply` / `completed_without_reply`, or `failed`
+  (`PROVIDER_REPORTED_ERROR`) for an error result. `cancelled`/`discarded` after
+  `started` means the consuming turn was cut: Claude Code still emits a `success`
+  result with the partial text, so the input ends `interrupted` (`TURN_INTERRUPTED`
+  after a requested interrupt, else `TURN_CANCELLED_BY_PROVIDER`; `failed` with
+  `PROVIDER_REPORTED_ERROR` when the result was an error), the partial reply kept with
+  `final:false`, never replayed. Another reported `session_id` is
+  `delivery_unknown` (`SESSION_ID_MISMATCH`). If a later turn starts first, a
+  result without a terminal lifecycle is settled from the result; if the provider
+  exits first it is `delivery_unknown` (`…_BEFORE_TURN_OUTCOME`). `correlation` is
   `{kind:"command_uuid",command_uuid,lifecycle,user_message_uuids}`. A provider or
   worker exit makes in-flight messages `failed` (`*_DURING_TURN`, turn started) or
   `delivery_unknown` (`PROVIDER_EXITED…`, `HOST_WORKER_EXITED`, `STDIN_WRITE_FAILED`).
@@ -1448,7 +1469,7 @@ Live steering opt-in (`LiveSteering`): `api account live-steering claude:NAME
 "crossSessionInbound",value,previous,changed,settings_file}`; events
 `account.live_steering_enabled|disabled` are recorded only on change. Fixtures:
 `claude_steer_request`, `claude_steer_receipt_hosted`,
-`claude_steer_receipt_interrupted`, `claude_steer_receipt_peer`,
+`claude_steer_receipt_interrupted`, `claude_steer_receipt_cut`, `claude_steer_semantics`, `claude_steer_receipt_peer`,
 `claude_steer_receipt_peer_unanchored`, `claude_steer_receipt_held`,
 `hosted_session`, `live_steering`, `launch_request_hosted`. Both paths are verified
 against fakes only; see [CLI](cli.md#hosted-claude-sessions-and-steering-revision-16).

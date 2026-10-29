@@ -812,6 +812,9 @@ fn interrupt_frame() -> Value {
 pub(crate) struct Turns {
     pub active: Vec<String>,
     pub interrupted: bool,
+    /// Inputs named by a `result` whose terminal `command_lifecycle` has not
+    /// arrived yet (a cut turn reports `success`, then `cancelled`).
+    pub awaiting: Vec<String>,
 }
 
 async fn deliver(

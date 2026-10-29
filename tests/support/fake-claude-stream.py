@@ -2,12 +2,25 @@
 """Fake `claude -p --input-format stream-json --output-format stream-json` for
 hosted-session tests. No network, model or credential access.
 
-Behaviour by message text: "slow" (3 s turn), "refuse-me" (lifecycle refused),
-"needs-permission" (a can_use_tool control request that waits for the host's
-answer), "crash-now" (exit 3 after the turn started). A `now` message that
-arrives while a turn runs is folded into it. An interrupt control request ends
-the running turn with an error result. End of input ends the process after
-the queued work. The transcript is appended so a later `--resume` works.
+Behaviour by message text: "slow" (3 s turn with tool rounds), "long" (3 s
+turn without tool rounds), "refuse-me" (lifecycle refused), "needs-permission"
+(a can_use_tool control request that waits for the host's answer), "crash-now"
+(exit 3 after the turn started), "cut-by-now" (0.3 s in, the turn is cut as
+if another client's `now` input had arrived).
+
+Priorities model Claude Code 2.1.312 (see docs/cli.md, hosted sessions):
+- `next` arriving mid-turn is folded into the running turn at its next tool
+  round ("slow" turns); a turn without another tool round ("long") finishes
+  first and the message runs as its own turn. Folded inputs report
+  `completed` BEFORE the turn's result, fresh-turn inputs AFTER it.
+- `now` arriving mid-turn CANCELS the running turn: the cut turn still emits a
+  `success` result (is_error false, partial text) and then `cancelled` for
+  its inputs; the `now` message starts a new turn.
+- `later` never folds; it runs as its own turn.
+- An interrupt control request aborts the running turn the same way (an
+  `error_during_execution` result, then `cancelled`).
+End of input ends the process after the queued work. The transcript is
+appended so a later `--resume` works.
 """
 import json
 import os
@@ -124,7 +137,14 @@ def handle(msg):
             lifecycle(uid, "refused")
             return
         lifecycle(uid, "queued")
-        if turn and not turn["interrupted"] and not turn["perm"] and msg.get("priority") == "now":
+        if turn and msg.get("priority") == "now":
+            # Real Claude Code cuts the running turn for a `now` input.
+            cut(turn, "success", False)
+            turn = None
+            pending.insert(0, msg)
+            return
+        if turn and turn["tools"] and not turn["interrupted"] and not turn["perm"] and msg.get("priority", "next") == "next":
+            # Folded at the running turn's next tool round.
             turn["uuids"].append(uid)
             turn["folded"].append(text)
             lifecycle(uid, "started")
@@ -143,6 +163,13 @@ def handle(msg):
         answers[response.get("request_id")] = response.get("response", {}).get("behavior")
 
 
+def cut(t, subtype, is_error):
+    emit({"type": "result", "subtype": subtype, "is_error": is_error, "session_id": session,
+          "num_turns": 1, "duration_ms": 5, "user_message_uuids": t["uuids"], "queued_turn_count": len(pending)})
+    for uid in t["uuids"]:
+        lifecycle(uid, "cancelled")
+
+
 def advance():
     global turn
     now = time.time()
@@ -150,8 +177,10 @@ def advance():
         m = pending.pop(0)
         uid = m.get("uuid")
         text = text_of(m)
-        duration = 3.0 if "slow" in text else 0.2
-        turn = {"uuids": [uid], "text": text, "folded": [], "deadline": now + duration, "interrupted": False, "perm": None}
+        duration = 3.0 if ("slow" in text or "long" in text) else 0.2
+        turn = {"uuids": [uid], "text": text, "folded": [], "deadline": now + duration, "interrupted": False,
+                "perm": None, "tools": "slow" in text,
+                "cut_at": now + 0.3 if "cut-by-now" in text else None}
         lifecycle(uid, "started")
         record({"type": "user", "uuid": uid, "message": {"role": "user", "content": text}})
         assistant("working on: " + text)
@@ -165,10 +194,11 @@ def advance():
     if turn is None:
         return
     if turn["interrupted"]:
-        emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "session_id": session,
-              "user_message_uuids": turn["uuids"], "queued_turn_count": len(pending)})
-        for uid in turn["uuids"]:
-            lifecycle(uid, "completed")
+        cut(turn, "error_during_execution", True)
+        turn = None
+        return
+    if turn["cut_at"] and now >= turn["cut_at"]:
+        cut(turn, "success", False)
         turn = None
         return
     if turn["perm"] and turn["perm"] not in answers:
@@ -182,11 +212,13 @@ def advance():
     for text in turn["folded"]:
         last = "noted: " + text
         assistant(last)
+    first = turn["uuids"][0]
+    for uid in turn["uuids"][1:]:
+        lifecycle(uid, "completed")
     emit({"type": "result", "subtype": "success", "is_error": False, "result": last, "session_id": session,
           "num_turns": 1, "duration_ms": 5, "usage": {"input_tokens": 3, "output_tokens": 4},
           "user_message_uuids": turn["uuids"], "queued_turn_count": len(pending)})
-    for uid in turn["uuids"]:
-        lifecycle(uid, "completed")
+    lifecycle(first, "completed")
     turn = None
 
 

@@ -4,10 +4,15 @@
 //! - **hosted** (`delivery_semantics:"hosted_stream_json"`): the session is run
 //!   by a Sessionsation worker (`provider::claude::hosted`). The message is a
 //!   stream-json stdin frame carrying `uuid` = message id and a priority
-//!   (submit=`next`, queue=`later`, steer=`now`, optional interrupt first).
-//!   Correlation uses `command_lifecycle` events for that uuid and the
-//!   `user_message_uuids` of the `result` that closes its turn; the reply is the
-//!   assistant text streamed between `started` and that result.
+//!   (submit=`next`, queue=`later`, steer=`next`, optional interrupt first).
+//!   Claude Code folds a `next` input into a running turn at its next tool
+//!   round (or runs it as the next turn); `now` would CANCEL the running turn,
+//!   so it is never sent. Correlation uses `command_lifecycle` events for that
+//!   uuid and the `user_message_uuids` of the `result` that closes its turn;
+//!   the reply is the assistant text streamed between `started` and that
+//!   result. The terminal state needs both: a cut turn still emits a
+//!   `success` result and only its `cancelled` lifecycle (after the result)
+//!   tells it apart, so such inputs end `interrupted` with a non-final reply.
 //! - **peer message** (`delivery_semantics:"peer_message"`): a live interactive
 //!   session of an account that opted in (`crossSessionInbound: accept`). A
 //!   detached worker owns a private listening socket, sends one inbound frame
@@ -80,6 +85,13 @@ pub struct Facts {
     pub interrupt_requested: bool,
     pub peer_status: Vec<Value>,
     pub idle_notice: Option<Value>,
+    /// The `result` naming this input arrived; the terminal state waits for
+    /// its terminal `command_lifecycle` (`completed` or `cancelled`).
+    #[serde(default)]
+    pub result_seen: bool,
+    /// An interrupt was requested while the consuming turn ran.
+    #[serde(default)]
+    pub turn_interrupted: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -188,7 +200,7 @@ fn finish(r: &mut Record, state: &str, reason: Option<&str>) {
 }
 fn priority(mode: &str) -> &'static str {
     match mode {
-        "steer" => "now",
+        // Never `now`: Claude Code cancels the running turn for it.
         "queue" => "later",
         _ => "next",
     }
@@ -460,6 +472,10 @@ pub(crate) fn hosted_lifecycle(
     state: &str,
     turns: &mut hosted::Turns,
 ) -> Result<()> {
+    if state == "started" {
+        // A new turn (or fold) proves the earlier turns' lifecycles were sent.
+        settle_awaiting(paths, c, turns, Some(id))?;
+    }
     if hosted_record(paths, c, id).is_none() {
         return Ok(());
     }
@@ -467,15 +483,20 @@ pub(crate) fn hosted_lifecycle(
     if state == "started" && !turns.active.iter().any(|a| a == id) {
         turns.active.push(id.to_owned());
     }
+    if matches!(state, "completed" | "cancelled" | "discarded" | "refused") {
+        turns.awaiting.retain(|a| a != id);
+    }
     if matches!(state, "cancelled" | "discarded" | "refused") {
         turns.active.retain(|a| a != id);
     }
+    let interrupted = turns.interrupted;
     change(paths, id, |r| {
         r.facts.lifecycle.push(state.into());
         r.evidence_at = Some(crate::daemon::now());
         if is_terminal(r) {
             return Ok(());
         }
+        let started = r.facts.lifecycle.iter().any(|s| s == "started");
         match state {
             "queued" if r.state == "pending_local" => r.state = "native_accepted".into(),
             "started" => {
@@ -484,6 +505,14 @@ pub(crate) fn hosted_lifecycle(
                 r.facts.input_recorded = true;
                 r.facts.folded = folded;
             }
+            // Folded inputs complete before the result; wait for it.
+            "completed" if r.facts.result_seen => settle(r),
+            // Consumed by a turn that was cut (interrupt, a `now` input of
+            // another client) or died: never `completed`, reply not final.
+            "cancelled" | "discarded" if started => {
+                r.facts.turn_interrupted |= interrupted;
+                interrupt_end(r);
+            }
             "cancelled" => finish(r, "cancelled", Some("NATIVE_CANCELLED")),
             "discarded" => finish(r, "cancelled", Some("NATIVE_DISCARDED")),
             "refused" => finish(r, "refused", Some("NATIVE_REFUSED")),
@@ -491,6 +520,64 @@ pub(crate) fn hosted_lifecycle(
         }
         Ok(())
     })
+}
+fn result_is_error(r: &Record) -> bool {
+    r.result.as_ref().is_some_and(|v| {
+        v["is_error"] == true
+            || v["subtype"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("error"))
+    })
+}
+/// Terminal state of an input whose consuming turn was cut after it started.
+fn interrupt_end(r: &mut Record) {
+    if r.facts.turn_interrupted {
+        finish(r, "interrupted", Some("TURN_INTERRUPTED"));
+    } else if result_is_error(r) {
+        finish(r, "failed", Some("PROVIDER_REPORTED_ERROR"));
+    } else {
+        finish(r, "interrupted", Some("TURN_CANCELLED_BY_PROVIDER"));
+    }
+}
+/// Terminal state once both the result and a `completed` lifecycle are known.
+fn settle(r: &mut Record) {
+    if r.facts.turn_interrupted && result_is_error(r) {
+        finish(r, "interrupted", Some("TURN_INTERRUPTED"));
+    } else if result_is_error(r) {
+        finish(r, "failed", Some("PROVIDER_REPORTED_ERROR"));
+    } else if r.reply_text.is_empty() {
+        finish(r, "completed_without_reply", None);
+    } else {
+        finish(r, "completed_with_reply", None);
+    }
+}
+/// Inputs whose result arrived but whose terminal lifecycle never did, once a
+/// later turn shows that none will come (a turn that threw, older producers):
+/// settled from the result. A cut turn always sends `cancelled` first.
+fn settle_awaiting(
+    paths: &Paths,
+    c: &str,
+    turns: &mut hosted::Turns,
+    except: Option<&str>,
+) -> Result<()> {
+    let waiting: Vec<String> = turns
+        .awaiting
+        .iter()
+        .filter(|a| Some(a.as_str()) != except)
+        .cloned()
+        .collect();
+    turns.awaiting.retain(|a| Some(a.as_str()) == except);
+    for id in waiting {
+        if hosted_record(paths, c, &id).is_some() {
+            change(paths, &id, |r| {
+                if !is_terminal(r) && r.facts.result_seen {
+                    settle(r);
+                }
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
 }
 pub(crate) fn hosted_echo(paths: &Paths, c: &str, id: &str) -> Result<()> {
     if hosted_record(paths, c, id).is_none() {
@@ -537,6 +624,8 @@ pub(crate) fn hosted_result(
             .collect()
     });
     let ids = listed.unwrap_or_else(|| turns.active.clone());
+    // Inputs of an earlier result still without a lifecycle terminal.
+    settle_awaiting(paths, c, turns, None)?;
     let interrupted = std::mem::take(&mut turns.interrupted);
     let result = json!({"subtype":v["subtype"],"is_error":v["is_error"],"num_turns":v["num_turns"],
         "duration_ms":v["duration_ms"],"usage":v["usage"],"session_id":v["session_id"],
@@ -552,34 +641,30 @@ pub(crate) fn hosted_result(
                 return Ok(());
             }
             r.result = Some(result.clone());
+            r.facts.result_seen = true;
+            r.facts.turn_interrupted |= interrupted;
             r.facts.shared_with_turn |= shared;
             r.facts.input_recorded = true;
             r.evidence_at = Some(crate::daemon::now());
             if v["session_id"].as_str().is_some_and(|s| s != c) {
                 finish(r, "delivery_unknown", Some("SESSION_ID_MISMATCH"));
-            } else if v["is_error"] == true
-                || v["subtype"]
-                    .as_str()
-                    .is_some_and(|s| s.starts_with("error"))
+                return Ok(());
+            }
+            if r.reply_text.is_empty()
+                && ids.len() == 1
+                && !result_is_error(r)
+                && let Some(text) = v["result"].as_str().filter(|t| !t.is_empty())
             {
-                let reason = if interrupted {
-                    "TURN_INTERRUPTED"
-                } else {
-                    "PROVIDER_REPORTED_ERROR"
-                };
-                finish(r, "failed", Some(reason));
-            } else {
-                if r.reply_text.is_empty()
-                    && ids.len() == 1
-                    && let Some(text) = v["result"].as_str().filter(|t| !t.is_empty())
-                {
-                    append_reply(r, text);
-                }
-                if r.reply_text.is_empty() {
-                    finish(r, "completed_without_reply", None);
-                } else {
-                    finish(r, "completed_with_reply", None);
-                }
+                append_reply(r, text);
+            }
+            // A success result alone is not completion: a turn cut by an
+            // interrupt or a `now` input also ends with one, followed by
+            // `cancelled`. A fresh turn's `completed` follows the result; a
+            // folded input's `completed` came before it.
+            if r.facts.lifecycle.iter().any(|s| s == "completed") {
+                settle(r);
+            } else if !turns.awaiting.iter().any(|a| a == id) {
+                turns.awaiting.push(id.clone());
             }
             Ok(())
         })?;
@@ -601,7 +686,11 @@ pub fn hosted_exited(paths: &Paths, c: &str, epoch: u64, reason: &str) -> Result
             if is_terminal(r) || r.phase == "admitted" {
                 return Ok(());
             }
-            if r.state == "execution_started" {
+            if r.facts.result_seen {
+                // The turn ended but its completed/cancelled never arrived.
+                let why = format!("{reason}_BEFORE_TURN_OUTCOME");
+                finish(r, "delivery_unknown", Some(&why));
+            } else if r.state == "execution_started" {
                 let why = format!("{reason}_DURING_TURN");
                 finish(r, "failed", Some(&why));
             } else {
@@ -1008,8 +1097,11 @@ pub fn receipt_value(r: &Record) -> Value {
     let reply_observed = !r.reply_text.is_empty()
         && (r.facts.input_recorded || r.peer.as_ref().is_some_and(|p| p.anchor_found));
     let consumed = if r.facts.input_recorded
-        && (completed || r.state == "execution_started" || r.state == "failed")
-    {
+        && (completed
+            || matches!(
+                r.state.as_str(),
+                "execution_started" | "failed" | "interrupted"
+            )) {
         json!(true)
     } else {
         json!("unknown")
@@ -1084,6 +1176,16 @@ pub async fn receipt(paths: &Paths, id: &str, cancelling: bool) -> Result<Value>
 
 // ------------------------------------------------------- session capability
 
+/// What a Claude steer does to a running turn (both paths send priority
+/// `next`): it never interrupts; Claude Code folds it into the running turn
+/// at the turn's next tool round, or runs it as the next turn when the turn
+/// ends without one. `steering.interrupt:true` (hosted only) cancels the
+/// running turn first; that turn's inputs then end `interrupted`.
+pub fn steer_semantics() -> Value {
+    json!({"priority":"next","interrupts":false,"delivery":"next_tool_boundary_or_next_turn",
+        "interrupt_option":"steering.interrupt","interrupted_inputs_state":"interrupted"})
+}
+
 /// Per-session submit/queue/steer support (and the hosted host summary) for a
 /// Claude session row. Hosted sessions also report `availability:"running"`.
 pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>) {
@@ -1141,7 +1243,8 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
         value["capability_reasons"][k] = json!(reason);
     }
     value["input_delivery"] = json!({"semantics":path,"interrupt":accepting,
-        "label":if path == Some(PEER_SEMANTICS) {Some(PEER_LABEL)} else {None}});
+        "label":if path == Some(PEER_SEMANTICS) {Some(PEER_LABEL)} else {None},
+        "steer":path.map(|_| steer_semantics())});
 }
 
 #[cfg(test)]
@@ -1198,7 +1301,7 @@ mod tests {
         let mut codex = base.clone();
         codex["steering"] = json!({"version":1,"expected_turn_id":"t"});
         assert!(serde_json::from_value::<Request>(codex).is_err());
-        assert_eq!(priority("steer"), "now");
+        assert_eq!(priority("steer"), "next");
         assert_eq!(priority("submit"), "next");
         assert_eq!(priority("queue"), "later");
     }

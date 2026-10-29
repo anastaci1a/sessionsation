@@ -595,12 +595,31 @@ interactive `claude --resume UUID` in the same terminal.
 
 `api send` modes `submit`, `queue` and `steer` on a hosted session write one
 stream-json user frame with `uuid` = `message_id` and priority `next`, `later` or
-`now`; `"steering":{"version":1,"interrupt":true}` (steer only) first interrupts the
-running turn. Receipts (`delivery_semantics:"hosted_stream_json"`) follow the
-`command_lifecycle` events of that uuid and finish on the `result` whose
-`user_message_uuids` names it; the reply is the assistant text streamed between
-`started` and that result. A steer folded into a running turn has
-`facts.folded:true` and, like the turn's other inputs, `shared_with_turn:true`.
+`next`. Claude Code (verified in 2.1.312) treats the priorities as follows:
+
+- `next` sent during a running turn **does not interrupt it**: the message is folded
+  into that turn at its next tool round (between tool calls, as when you type
+  mid-turn in the TUI). A turn that ends without another tool round finishes
+  unchanged, and the message then runs as the next turn.
+- `later` is never folded; it runs as its own turn after the current one.
+- `now` **cancels** the running turn and starts a new one with the message.
+  Sessionsation never sends `now`, so a steer never interrupts by itself;
+  session rows say so in `input_delivery.steer` (`{priority:"next",
+  interrupts:false, delivery:"next_tool_boundary_or_next_turn", ...}`).
+
+`"steering":{"version":1,"interrupt":true}` (steer only) is the explicit way to
+cancel the running turn first; the steer then runs as a new turn. Receipts
+(`delivery_semantics:"hosted_stream_json"`) follow the `command_lifecycle` events
+of that uuid and the `result` whose `user_message_uuids` names it; the reply is the
+assistant text streamed between `started` and that result. A message is
+`completed_with_reply`/`completed_without_reply` only after both its result and
+its `completed` lifecycle. A cut turn still emits a `success` result with the
+partial text, followed by `cancelled` for its inputs; such a message ends
+`interrupted` (`TURN_INTERRUPTED` after a requested interrupt,
+`TURN_CANCELLED_BY_PROVIDER` otherwise) with the partial reply kept and
+`reply.final:false`. It is never replayed. A steer folded into a running turn has
+`facts.folded:true`; its reply starts at its own `started`, and like the turn's
+other inputs it has `shared_with_turn:true`.
 
 **Live steering** reaches a normal interactive session through Claude Code's
 cross-session messaging. It is per-account opt-in:
@@ -624,13 +643,14 @@ Claude session**, which the model may only partially follow; receipts say so
 the transcript after the record carrying the message id, up to the next input;
 without that anchor the receipt never claims an answer. `held` (waiting for the
 session's approval), `refused`, `expired` and dropped messages are reported as such;
-peer messages cannot interrupt. Without the opt-in, submit/queue/steer are refused
+peer messages use the same priorities (a steer is `next`: read between tool
+calls, or a new turn when idle) and cannot interrupt. Without the opt-in, submit/queue/steer are refused
 with `LIVE_STEERING_DISABLED`; session rows carry `capabilities.submit|queue|steer`,
 `capability_reasons` and `input_delivery.semantics`.
 
 Both paths journal under `DATA_ROOT/claude-steer/` before writing, share the
 message-id namespace with every other store and never replay an uncertain send.
-Hosted and live steering are verified only against fakes so far.
+Hosted and live steering are tested against fakes; the fake hosted provider models the priority and cut-turn behaviour observed live with Claude Code 2.1.312.
 
 ## Gemini CLI accounts and sessions
 

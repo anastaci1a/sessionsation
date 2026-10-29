@@ -4331,7 +4331,7 @@
       }
     },
     "ClaudeSteerReceipt": {
-      "description": "Revision 16: durable receipt of a Claude submit/queue/steer. hosted_stream_json correlates by command uuid; peer_message only by a transcript anchor.",
+      "description": "Revision 16: durable receipt of a Claude submit/queue/steer. hosted_stream_json correlates by command uuid and needs both the turn's result and the input's terminal command_lifecycle: completed_* only after 'completed'; an input whose consuming turn was cut ('cancelled' after 'started', even after a success result) ends interrupted with a non-final reply. peer_message correlates only by a transcript anchor.",
       "type": "object",
       "required": [
         "message_id",
@@ -4387,7 +4387,8 @@
             "now",
             "next",
             "later"
-          ]
+          ],
+          "description": "submit next, queue later, steer next. Sessionsation never sends now (Claude Code cancels the running turn for it); now appears only on records written by pre-release revision-16 builds."
         },
         "delivery_semantics": {
           "enum": [
@@ -4404,6 +4405,7 @@
             "completed_with_reply",
             "completed_without_reply",
             "failed",
+            "interrupted",
             "cancelled",
             "refused",
             "rejected",
@@ -4640,6 +4642,86 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "interrupted",
+                  "failed",
+                  "cancelled",
+                  "delivery_unknown",
+                  "refused",
+                  "rejected",
+                  "expired"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reply": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "final": {
+                        "const": false
+                      }
+                    }
+                  }
+                ]
+              },
+              "facts": {
+                "properties": {
+                  "reply_final": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "delivery_semantics": {
+                "const": "hosted_stream_json"
+              },
+              "state": {
+                "enum": [
+                  "completed_with_reply",
+                  "completed_without_reply"
+                ]
+              }
+            },
+            "required": [
+              "delivery_semantics",
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "facts": {
+                "properties": {
+                  "lifecycle": {
+                    "contains": {
+                      "const": "completed"
+                    },
+                    "not": {
+                      "contains": {
+                        "const": "cancelled"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -4812,6 +4894,35 @@
         "settings_file": {
           "type": "string",
           "pattern": "^/"
+        }
+      }
+    },
+    "ClaudeSteerSemantics": {
+      "description": "Revision 16: what a Claude steer does to a running turn (claude_input_delivery.steer and the session row's input_delivery.steer, null when the session takes no input). A steer never interrupts: Claude Code folds a priority-next input into the running turn at its next tool round, or runs it as the next turn when the turn ends without one. steering.interrupt:true (hosted only) cancels the running turn first; that turn's inputs end interrupted.",
+      "type": "object",
+      "required": [
+        "priority",
+        "interrupts",
+        "delivery",
+        "interrupt_option",
+        "interrupted_inputs_state"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "priority": {
+          "const": "next"
+        },
+        "interrupts": {
+          "const": false
+        },
+        "delivery": {
+          "const": "next_tool_boundary_or_next_turn"
+        },
+        "interrupt_option": {
+          "const": "steering.interrupt"
+        },
+        "interrupted_inputs_state": {
+          "const": "interrupted"
         }
       }
     }
