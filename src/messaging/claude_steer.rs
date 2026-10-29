@@ -377,16 +377,10 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
             "peer_message" => false,
             _ => attached.is_ok() && !(request.mode == "queue" && peer_on),
         };
-        if use_terminal {
-            let t = attached.map_err(|code| {
-                if code == "TERMINAL_INPUT_DISABLED" {
-                    anyhow::anyhow!("{}", terminal::DISABLED)
-                } else {
-                    anyhow::anyhow!(
-                        "{code}: terminal input needs a running session attached to a verified HERDR pane"
-                    )
-                }
-            })?;
+        // Auto with no usable path: the terminal ineligibility is the actionable reason.
+        let auto_terminal_blocked = wanted == "auto" && !peer_on && attached.is_err();
+        if use_terminal || auto_terminal_blocked {
+            let t = attached.map_err(terminal_unavailable)?;
             ensure!(
                 request.mode != "queue",
                 "TERMINAL_QUEUE_UNSUPPORTED: typed input runs at the next tool boundary or as the next turn; queue needs a peer message"
@@ -1337,6 +1331,56 @@ fn queue_blocked_reason(terminal_available: bool, peer: &Result<(), String>) -> 
     }
     Some(peer_reason.clone())
 }
+pub const HOSTED_STOP: &str = "HOSTED_SESSION: this is a Sessionsation-hosted session; stop it with `api hosted stop` (restart = stop, then resume)";
+pub const HOSTED_NO_TERMINAL: &str = "HOSTED_SESSION: a hosted stream-json worker has no terminal to add to HERDR; drive it with the hosted API, or stop it and use Start Session";
+/// Error for a terminal path that is not eligible (the code names the blocker).
+fn terminal_unavailable(code: &'static str) -> anyhow::Error {
+    if code == "TERMINAL_INPUT_DISABLED" {
+        anyhow::anyhow!("{}", terminal::DISABLED)
+    } else {
+        anyhow::anyhow!(
+            "{code}: terminal input needs a running session attached to a verified HERDR pane"
+        )
+    }
+}
+/// Keep a peer endpoint failure's own code (`CODE` or `CODE: detail`); anything else is
+/// reported as an unavailable endpoint with the real message.
+fn peer_endpoint_reason(error: &anyhow::Error) -> String {
+    let text = error.to_string();
+    let code = text.split(':').next().unwrap_or_default();
+    if !code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return text;
+    }
+    let detail: String = text.chars().take(200).collect();
+    format!("PEER_ENDPOINT_UNAVAILABLE: {detail}")
+}
+/// Row reason when neither path works: a disabled peer must not hide the terminal blocker.
+fn row_blocked_reason(
+    typed: Option<&str>,
+    terminal_available: bool,
+    peer: &Result<(), String>,
+) -> Option<String> {
+    match (typed, peer) {
+        (Some(t), Err(p)) if p.starts_with("LIVE_STEERING_DISABLED") => Some(t.to_owned()),
+        _ => queue_blocked_reason(terminal_available, peer),
+    }
+}
+/// A hosted worker has no terminal and stops through the hosted API, not a process kill.
+fn apply_hosted_reasons(value: &mut Value, hosted: bool) {
+    if !hosted {
+        return;
+    }
+    value["capabilities"]["stop"] = json!(false);
+    value["capability_reasons"]["stop"] = json!(HOSTED_STOP);
+    value["capability_reasons"]["restart"] = json!(HOSTED_STOP);
+    value["capabilities"]["add_to_herdr"] = json!(false);
+    value["capability_reasons"]["add_to_herdr"] = json!(HOSTED_NO_TERMINAL);
+}
 fn terminal_reason(value: &Value, enabled: bool) -> Option<&'static str> {
     if !enabled {
         return Some("TERMINAL_INPUT_DISABLED");
@@ -1411,10 +1455,8 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
             });
             match endpoint {
                 Some(Ok(_)) => Ok(()),
-                Some(Err(e)) if e.to_string().starts_with("PEER_SOCKET_UNLINKED") => {
-                    Err(e.to_string())
-                }
-                _ => Err(claude::peer::NO_ENDPOINT.into()),
+                Some(Err(e)) => Err(peer_endpoint_reason(&e)),
+                None => Err(claude::peer::NO_ENDPOINT.into()),
             }
         };
         let typed = terminal_reason(value, terminal::enabled(paths));
@@ -1425,7 +1467,7 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
             } else if peer.is_ok() {
                 m.1 = Some(PEER_SEMANTICS);
             } else {
-                m.2 = queue_blocked_reason(typed.is_none(), &peer);
+                m.2 = row_blocked_reason(typed, typed.is_none(), &peer);
             }
         }
     }
@@ -1433,6 +1475,7 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
         value["capabilities"][*k] = json!(path.is_some());
         value["capability_reasons"][*k] = json!(reason);
     }
+    apply_hosted_reasons(value, busy_host);
     // The primary path is the one submit and steer use.
     let path = modes[0].1;
     let mut available: Vec<&str> = vec![];
@@ -1475,6 +1518,70 @@ mod tests {
         let r = queue_blocked_reason(false, &off).unwrap();
         assert!(r.starts_with("LIVE_STEERING_DISABLED"), "{r}");
         assert_eq!(queue_blocked_reason(true, &Ok(())), None);
+    }
+    #[test]
+    fn peer_failures_keep_their_own_code_and_terminal_blocker_wins() {
+        let e = anyhow::anyhow!(claude::peer::SOCKET_UNLINKED);
+        assert!(peer_endpoint_reason(&e).starts_with("PEER_SOCKET_UNLINKED"));
+        let e = anyhow::anyhow!("PERMISSION_DENIED");
+        assert_eq!(peer_endpoint_reason(&e), "PERMISSION_DENIED");
+        let e = anyhow::anyhow!("socket is stale");
+        assert_eq!(
+            peer_endpoint_reason(&e),
+            "PEER_ENDPOINT_UNAVAILABLE: socket is stale"
+        );
+        let off: Result<(), String> = Err(claude::peer::DISABLED.into());
+        assert_eq!(
+            row_blocked_reason(Some("NOT_IN_HERDR"), false, &off).as_deref(),
+            Some("NOT_IN_HERDR")
+        );
+        assert!(
+            row_blocked_reason(None, true, &off)
+                .unwrap()
+                .starts_with("TERMINAL_QUEUE_UNSUPPORTED")
+        );
+        let unlinked: Result<(), String> = Err(claude::peer::SOCKET_UNLINKED.into());
+        assert!(
+            row_blocked_reason(Some("NOT_IN_HERDR"), false, &unlinked)
+                .unwrap()
+                .starts_with("PEER_SOCKET_UNLINKED")
+        );
+        assert_eq!(
+            terminal_unavailable("TERMINAL_INPUT_DISABLED").to_string(),
+            terminal::DISABLED
+        );
+    }
+    #[test]
+    fn hosted_rows_point_stop_at_the_hosted_api_and_explain_add_to_herdr() {
+        let mut v = json!({"capabilities":{"stop":false,"add_to_herdr":false},"capability_reasons":{
+            "stop":"no verified Claude process lifecycle control","add_to_herdr":"INTERACTIVE_ELSEWHERE: x"}});
+        apply_hosted_reasons(&mut v, false);
+        assert!(
+            v["capability_reasons"]["stop"]
+                .as_str()
+                .unwrap()
+                .starts_with("no verified")
+        );
+        apply_hosted_reasons(&mut v, true);
+        assert!(
+            v["capability_reasons"]["stop"]
+                .as_str()
+                .unwrap()
+                .contains("api hosted stop")
+        );
+        assert!(
+            v["capability_reasons"]["restart"]
+                .as_str()
+                .unwrap()
+                .starts_with("HOSTED_SESSION")
+        );
+        assert!(
+            v["capability_reasons"]["add_to_herdr"]
+                .as_str()
+                .unwrap()
+                .starts_with("HOSTED_SESSION")
+        );
+        assert_eq!(v["capabilities"]["add_to_herdr"], false);
     }
     #[test]
     fn transcript_scan_needs_the_anchor_and_stops_at_the_next_input() {

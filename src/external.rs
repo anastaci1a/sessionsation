@@ -1835,7 +1835,7 @@ pub async fn queue_automatic(
         !jobs(paths)?
             .iter()
             .any(|job| job_conflicts_with_source(paths, job, &source)),
-        "another session operation is already in progress"
+        "SESSION_OPERATION_IN_PROGRESS: another session operation is already in progress"
     );
     enqueue_with_id(
         paths,
@@ -1910,7 +1910,7 @@ fn enqueue_with_id(
     {
         ensure!(
             automatic_id.is_none(),
-            "another session operation is already in progress"
+            "SESSION_OPERATION_IN_PROGRESS: another session operation is already in progress"
         );
         ensure!(
             !policy.non_steering || existing.non_steering,
@@ -1928,7 +1928,7 @@ fn enqueue_with_id(
         };
         ensure!(
             existing.kind == kind && existing.target == target && same_relocation,
-            "a different move is already queued for this conversation ({}); cancel it before choosing another destination",
+            "SESSION_OPERATION_IN_PROGRESS: a different move is already queued for this conversation ({}); cancel it before choosing another destination",
             existing.id
         );
         return Ok(existing);

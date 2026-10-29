@@ -212,7 +212,7 @@ pub fn request(
                         || p.last_job.as_ref().is_some_and(|id| jobs
                             .iter()
                             .any(|j| j.id == *id && !terminal(&j.phase)))),
-                "an automatic operation is already in progress"
+                "SESSION_OPERATION_IN_PROGRESS: an automatic operation is already in progress"
             );
             let current = params["current_account"]
                 .as_str()

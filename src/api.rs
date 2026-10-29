@@ -1203,6 +1203,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["capability_reasons"]=json!({"add_to_herdr":add_reason});
         value["previous_conversation_ids"]=json!(value["previous_conversation_ids"].as_array().cloned().unwrap_or_default());
         if archived { value["capabilities"]=json!({"rename":false,"add_to_herdr":false,"change_directory":false,"move_project":false,"resume":false,"switch_account":false,"move_space":false,"restart":false,"stop":false,"archive":false,"delete":value["archive"]["kind"]=="managed","restore":value["archive"]["kind"]=="managed"}); }
+        let ctx = CodexReasonContext { running, unambiguous, known, in_herdr: source.is_some_and(|s|s.pane.starts_with("herdr/")), resume_supported, archived };
+        fill_codex_reasons(&mut value, &ctx);
         value
     }).filter(|s|match filter { ArchiveFilter::All=>true, ArchiveFilter::Archived=>s["archived"]==true, ArchiveFilter::Active=>s["archived"]!=true }).collect::<Vec<_>>();
     for session in &mut sessions {
@@ -1229,6 +1231,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                 "delete",
             ] {
                 session["capabilities"][capability] = json!(false);
+                session["capability_reasons"][capability] = json!("SESSION_OPERATION_IN_PROGRESS");
             }
             session["resume_block_reason"] = json!("moving");
         }
@@ -1274,6 +1277,56 @@ pub(crate) async fn selected(
 }
 
 /// Public reason for an unavailable resume; observations are rechecked at launch.
+pub(crate) struct CodexReasonContext {
+    pub running: bool,
+    pub unambiguous: bool,
+    pub known: bool,
+    pub in_herdr: bool,
+    pub resume_supported: bool,
+    pub archived: bool,
+}
+
+/// Gives every false Codex capability a stable reason code (existing reasons are kept).
+pub(crate) fn fill_codex_reasons(value: &mut Value, c: &CodexReasonContext) {
+    let caps = value["capabilities"].clone();
+    for key in [
+        "move_space",
+        "resume",
+        "change_directory",
+        "move_project",
+        "switch_account",
+        "restart",
+        "stop",
+        "archive",
+        "delete",
+        "restore",
+        "rename",
+    ] {
+        if caps[key] != json!(false) || !value["capability_reasons"][key].is_null() {
+            continue;
+        }
+        let reason = if c.archived {
+            "SESSION_ARCHIVED"
+        } else {
+            match key {
+                "resume" if !c.resume_supported => "UNSUPPORTED_PROVIDER_OPERATION",
+                "resume" if c.running => "SESSION_ALREADY_RUNNING",
+                "resume" => "HISTORY_UNAVAILABLE",
+                "archive" | "delete" if c.running => "SESSION_RUNNING_STOP_FIRST",
+                "archive" | "delete" => "HISTORY_UNAVAILABLE",
+                "restore" => "NOT_ARCHIVED",
+                "rename" => "RENAME_UNAVAILABLE",
+                _ if !c.known => "ACCOUNT_UNKNOWN",
+                _ if !c.running => "SESSION_NOT_RUNNING",
+                _ if !c.unambiguous => "AMBIGUOUS_SESSION",
+                "move_space" if !c.in_herdr => "NOT_IN_HERDR",
+                _ => "UNAVAILABLE",
+            }
+        };
+        value["capability_reasons"][key] = json!(reason);
+    }
+}
+
 fn resume_block_reason(
     supported: bool,
     source: Option<&external::Instance>,
@@ -2094,5 +2147,73 @@ mod prefill_tests {
         assert_eq!(account_prefill(&a, 101, 210)["eligible"], false);
         a["usage"]["exhausted"] = json!(false);
         assert_eq!(account_prefill(&a, 311, 210)["eligible"], false);
+    }
+}
+
+#[cfg(test)]
+mod codex_reason_tests {
+    use super::*;
+    fn row(caps: Value) -> Value {
+        json!({"capabilities":caps,"capability_reasons":{"add_to_herdr":"X"}})
+    }
+    #[test]
+    fn every_false_codex_capability_has_a_reason() {
+        let all = [
+            "move_space",
+            "resume",
+            "change_directory",
+            "move_project",
+            "switch_account",
+            "restart",
+            "stop",
+            "archive",
+            "delete",
+        ];
+        let falses = |v: &Value| {
+            let mut v = v.clone();
+            for k in all {
+                v["capabilities"][k] = json!(false);
+            }
+            v
+        };
+        let ctx = |running, unambiguous, known, in_herdr, archived| CodexReasonContext {
+            running,
+            unambiguous,
+            known,
+            in_herdr,
+            resume_supported: true,
+            archived,
+        };
+        let mut v = falses(&row(json!({})));
+        fill_codex_reasons(&mut v, &ctx(false, true, true, false, false));
+        for k in all {
+            assert!(v["capability_reasons"][k].is_string(), "{k}: {v}");
+        }
+        assert_eq!(v["capability_reasons"]["stop"], "SESSION_NOT_RUNNING");
+        assert_eq!(
+            v["capability_reasons"]["add_to_herdr"], "X",
+            "existing reasons are kept"
+        );
+        let mut v = falses(&row(json!({})));
+        fill_codex_reasons(&mut v, &ctx(true, false, true, true, false));
+        assert_eq!(v["capability_reasons"]["stop"], "AMBIGUOUS_SESSION");
+        assert_eq!(
+            v["capability_reasons"]["archive"],
+            "SESSION_RUNNING_STOP_FIRST"
+        );
+        assert_eq!(v["capability_reasons"]["resume"], "SESSION_ALREADY_RUNNING");
+        let mut v = falses(&row(json!({})));
+        fill_codex_reasons(&mut v, &ctx(true, true, true, false, false));
+        assert_eq!(v["capability_reasons"]["move_space"], "NOT_IN_HERDR");
+        let mut v = falses(&row(json!({})));
+        fill_codex_reasons(&mut v, &ctx(true, true, false, true, false));
+        assert_eq!(v["capability_reasons"]["switch_account"], "ACCOUNT_UNKNOWN");
+        let mut v = falses(&row(json!({})));
+        fill_codex_reasons(&mut v, &ctx(false, true, true, false, true));
+        assert_eq!(v["capability_reasons"]["restart"], "SESSION_ARCHIVED");
+        // True capabilities get no reason.
+        let mut v = row(json!({"stop":true}));
+        fill_codex_reasons(&mut v, &ctx(true, true, true, true, false));
+        assert!(v["capability_reasons"]["stop"].is_null());
     }
 }

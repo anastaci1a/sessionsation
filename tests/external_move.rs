@@ -3702,3 +3702,36 @@ async fn inventory_native_budget_retains_identity_and_reports_partial_enrichment
             .any(|(m, _)| matches!(m.as_str(), "turn/start" | "thread/resume"))
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn second_operation_on_a_busy_session_reports_operation_in_progress() {
+    let f = Fixture::new().await;
+    let pane = f.live(ID, true);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let j = f.invoke(&["move", "--pane", &pane, "--to", "work"]);
+    let id = j["id"].as_str().unwrap();
+    f.wait(id, "awaiting_pause_confirmation").await;
+    let destination = f.tmp.path().join("elsewhere");
+    fs::create_dir(&destination).unwrap();
+    let rejected = command(
+        &f.paths.root,
+        &f.socket,
+        &[
+            "relocate",
+            "--pane",
+            &pane,
+            "--to",
+            destination.to_str().unwrap(),
+        ],
+    );
+    assert!(!rejected.status.success());
+    let error: Value = serde_json::from_slice(&rejected.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "SESSION_OPERATION_IN_PROGRESS");
+    assert_eq!(error["error"]["retryable"], true);
+    assert!(
+        error["error"]["message"].as_str().unwrap().contains(id),
+        "the queued job id stays in the message: {error}"
+    );
+    f.invoke(&["cancel-move", id]);
+    f.wait(id, "cancelled").await;
+}

@@ -929,6 +929,9 @@ pub type LiveProbe = std::result::Result<Vec<Live>, String>;
 pub fn probe(home: &Path) -> LiveProbe {
     live_sessions(home).map_err(|e| e.to_string())
 }
+/// A launched Claude process (verified by argv) that has not yet registered or written a
+/// transcript, e.g. while it waits on a trust or login prompt.
+pub const NO_CONVERSATION_YET: &str = "NO_CONVERSATION_YET: the Claude process for this session is running but has not started a conversation (it may be waiting on a trust or login prompt)";
 pub fn observe(
     home: &Path,
     session_id: &str,
@@ -997,7 +1000,18 @@ pub fn observe_in(
                     }
                 }
                 None if o.transcript.is_some() => o.availability = "stopped",
-                None => o.availability = "stale",
+                None => match recorded.filter(|a| process_runs_session(a, session_id)) {
+                    // Launched, process verified by argv, but no registry entry or transcript
+                    // yet (e.g. a trust prompt): running, with no conversation fabricated.
+                    Some(a) => {
+                        o.availability = "running";
+                        o.attachment = Some(a.clone());
+                        o.pid = Some(a.pid);
+                        o.process_start = Some(a.process_start);
+                        o.detail = Some(NO_CONVERSATION_YET.into());
+                    }
+                    None => o.availability = "stale",
+                },
             }
         }
     }
@@ -1047,9 +1061,13 @@ pub fn attach_client_observed(a: &catalog::Attachment, live: &Live) -> bool {
 /// True when the exact process recorded for a new/resumed session runs Claude
 /// for that native session (argv check, PID-reuse guarded).
 pub fn launch_observed(session: &catalog::Session) -> bool {
-    let Some(a) = &session.attachment else {
-        return false;
-    };
+    session
+        .attachment
+        .as_ref()
+        .is_some_and(|a| process_runs_session(a, &session.conversation_id))
+}
+/// The exact recorded process (PID and start time) runs Claude for this native session.
+fn process_runs_session(a: &catalog::Attachment, conversation_id: &str) -> bool {
     if proc_start(a.pid)
         .is_none_or(|(state, start)| start != a.process_start || matches!(state, 'Z' | 'X'))
     {
@@ -1064,8 +1082,7 @@ pub fn launch_observed(session: &catalog::Session) -> bool {
         .collect();
     // `view <conversation>` is the viewer of a Sessionsation-hosted session.
     args.windows(2).any(|w| {
-        matches!(w[0].as_str(), "--session-id" | "--resume" | "view")
-            && w[1] == session.conversation_id
+        matches!(w[0].as_str(), "--session-id" | "--resume" | "view") && w[1] == conversation_id
     })
 }
 
@@ -1804,5 +1821,54 @@ mod tests {
         client.kill().unwrap();
         spare.wait().unwrap();
         client.wait().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+    #[test]
+    fn launched_process_without_registry_or_transcript_is_running_not_stale() {
+        let home = tempfile::tempdir().unwrap();
+        let id = "44444444-4444-4444-8444-444444444444";
+        let mut child = std::process::Command::new("bash")
+            .args(["-c", "sleep 30; sleep 1", "_", "--session-id", id])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let (_, process_start) = proc_start(pid).unwrap();
+        let a = catalog::Attachment {
+            host: "herdr".into(),
+            target: "herdr/1:1:1".into(),
+            pid,
+            process_start,
+        };
+        let live: LiveProbe = Ok(vec![]);
+        let o = observe_in(home.path(), id, Some(&a), &live);
+        assert_eq!(o.availability, "running");
+        assert_eq!(o.pid, Some(pid));
+        assert!(o.transcript.is_none(), "no conversation is fabricated");
+        assert!(
+            o.detail
+                .as_deref()
+                .unwrap()
+                .starts_with("NO_CONVERSATION_YET")
+        );
+        // Another conversation id, or no recorded process, stays stale.
+        let other = "55555555-5555-4555-8555-555555555555";
+        assert_eq!(
+            observe_in(home.path(), other, Some(&a), &live).availability,
+            "stale"
+        );
+        assert_eq!(
+            observe_in(home.path(), id, None, &live).availability,
+            "stale"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(
+            observe_in(home.path(), id, Some(&a), &live).availability,
+            "stale"
+        );
     }
 }
