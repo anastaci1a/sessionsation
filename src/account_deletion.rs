@@ -204,7 +204,7 @@ pub async fn start(
         .context("ACCOUNT_NOT_FOUND")?;
     let external_home = match provider {
         ProviderId::Claude => account["config_home"].as_str().map(PathBuf::from),
-        ProviderId::Codex | ProviderId::Gemini => None,
+        ProviderId::Codex | ProviderId::Gemini | ProviderId::Antigravity => None,
     };
     let source_inode = match (provider, &external_home) {
         (ProviderId::Codex, _) => {
@@ -215,7 +215,7 @@ pub async fn start(
             );
             Some(home.ino())
         }
-        (ProviderId::Claude | ProviderId::Gemini, None) => {
+        (ProviderId::Claude | ProviderId::Gemini | ProviderId::Antigravity, None) => {
             let home = fs::symlink_metadata(native_managed_home(paths, provider, name)?)?;
             ensure!(
                 home.is_dir() && !home.file_type().is_symlink(),
@@ -224,7 +224,7 @@ pub async fn start(
             Some(home.ino())
         }
         // The adopted directory is never modified, so its identity is not a precondition.
-        (ProviderId::Claude | ProviderId::Gemini, Some(_)) => None,
+        (ProviderId::Claude | ProviderId::Gemini | ProviderId::Antigravity, Some(_)) => None,
     };
     let mut r = Record {
         id: id.into(),
@@ -604,10 +604,53 @@ fn preserve_gemini(home: &Path, vault: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// Antigravity conversation history inside a managed home: the per-conversation
+/// databases, transcripts and artifacts (`conversations`, `brain`, `annotations`,
+/// `implicit`), the conversation index and prompt history, all under
+/// `.gemini/antigravity-cli`. The OAuth token, settings, logs and caches stay
+/// behind and are deleted with the home.
+fn antigravity_history_entry(name: &str) -> bool {
+    matches!(
+        name,
+        "conversations"
+            | "brain"
+            | "annotations"
+            | "implicit"
+            | "conversation_summaries.db"
+            | "conversation_summaries.db-wal"
+            | "conversation_summaries.db-shm"
+            | "history.jsonl"
+    )
+}
+fn preserve_antigravity(home: &Path, vault: &Path) -> Result<()> {
+    private_dir(vault)?;
+    let source = crate::provider::antigravity::state_dir(home);
+    let Ok(entries) = fs::read_dir(&source) else {
+        return Ok(());
+    };
+    let target = vault.join(".gemini/antigravity-cli");
+    for e in entries {
+        let e = e?;
+        let name = e.file_name();
+        if !antigravity_history_entry(name.to_str().context("INVALID_HISTORY_NAME")?) {
+            continue;
+        }
+        no_symlinks(&e.path())?;
+        private_dir(&vault.join(".gemini"))?;
+        private_dir(&target)?;
+        let dest = target.join(&name);
+        ensure!(!dest.exists(), "PRESERVED_HISTORY_COLLISION");
+        fs::rename(e.path(), &dest).context("HISTORY_MOVE_FAILED_SOURCE_RETAINED")?;
+        fs::File::open(&source)?.sync_all()?;
+        fs::File::open(&target)?.sync_all()?;
+    }
+    Ok(())
+}
 fn preserve_native(provider: ProviderId, home: &Path, vault: &Path) -> Result<()> {
     match provider {
         ProviderId::Gemini => preserve_gemini(home, vault),
-        _ => preserve_claude(home, vault),
+        ProviderId::Antigravity => preserve_antigravity(home, vault),
+        ProviderId::Claude | ProviderId::Codex => preserve_claude(home, vault),
     }
 }
 /// Refuse while a verified live session, a provider process using this home

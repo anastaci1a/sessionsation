@@ -14,6 +14,9 @@ use std::{path::Path, process::Stdio, time::Duration};
 pub const CODEX_METHOD: &str = "codex app-server account/logout (running helper or account server); `codex logout` when none runs";
 pub const CLAUDE_METHOD: &str = "claude auth logout";
 pub const GEMINI_METHOD: &str = "gemini-cli 0.66.0 clearCachedCredentialFile: remove .gemini/oauth_creds.json and clear the active account in .gemini/google_accounts.json (file storage; gemini has no logout command)";
+/// Antigravity CLI signs out only inside its own TUI (`/logout`): unsupported here.
+pub const ANTIGRAVITY_METHOD: &str =
+    "unsupported: Antigravity CLI signs out only with /logout inside agy";
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn method(provider: ProviderId) -> &'static str {
@@ -21,6 +24,7 @@ pub fn method(provider: ProviderId) -> &'static str {
         ProviderId::Codex => CODEX_METHOD,
         ProviderId::Claude => CLAUDE_METHOD,
         ProviderId::Gemini => GEMINI_METHOD,
+        ProviderId::Antigravity => ANTIGRAVITY_METHOD,
     }
 }
 

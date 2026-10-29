@@ -130,6 +130,9 @@ pub struct Terminal {
     /// Gemini CLI sessions only (see [`super::gemini`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gemini: Option<super::gemini::Facts>,
+    /// Antigravity CLI sessions only (see [`super::antigravity`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub antigravity: Option<super::antigravity::Facts>,
 }
 
 // ---------------------------------------------------------------- payload
@@ -763,7 +766,11 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         return Ok(());
     }
     let r = read(paths, id)?;
-    if r.phase != "admitted" || r.kind != "terminal" || super::gemini::is_gemini(&r) {
+    if r.phase != "admitted"
+        || r.kind != "terminal"
+        || super::gemini::is_gemini(&r)
+        || super::antigravity::is_antigravity(&r)
+    {
         return Ok(());
     }
     if r.request.expires_at <= crate::daemon::now() {

@@ -3840,7 +3840,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^(claude|gemini):"
+          "pattern": "^(claude|gemini|antigravity):"
         },
         "directory": {
           "type": "string",
@@ -3956,7 +3956,8 @@
         "provider": {
           "enum": [
             "claude",
-            "gemini"
+            "gemini",
+            "antigravity"
           ]
         },
         "provider_conversation_id": {
@@ -4208,7 +4209,8 @@
         "provider": {
           "enum": [
             "claude",
-            "gemini"
+            "gemini",
+            "antigravity"
           ]
         },
         "auth_required": {
@@ -4713,7 +4715,8 @@
         "provider": {
           "enum": [
             "claude",
-            "gemini"
+            "gemini",
+            "antigravity"
           ]
         },
         "provider_conversation_id": {

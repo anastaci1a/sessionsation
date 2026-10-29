@@ -48,7 +48,7 @@ sessionsation status --json
 ```
 
 Setup starts a metadata supervisor. The config at `DATA_ROOT/config.json` selects
-`codex_binary` (default `codex` on PATH), `claude_binary`, `gemini_binary` (default `gemini`) and monitoring thresholds. Use
+`codex_binary` (default `codex` on PATH), `claude_binary`, `gemini_binary` (default `gemini`), `antigravity_binary` (default `agy`) and monitoring thresholds. Use
 `sessionsation config --help` for inspection/editing. Enrolling accounts starts
 account-specific provider workers and authentication; it is separate from setup.
 Stop your new supervisor with `sessionsation daemon stop`. Systemd user installation
@@ -70,10 +70,10 @@ Every provider process Sessionsation starts for a session (Start Session /
 account switch, move recovery, saved-session open and hosted Claude) uses one
 permission mode, the `launch_permissions` setting:
 
-| Mode | Codex | Claude Code | Gemini CLI |
-|---|---|---|---|
-| `yolo` (default) | `thread/start`/`thread/resume` with approval `never` and the `:danger-full-access` profile | `--dangerously-skip-permissions`, `IS_SANDBOX=1` and the flag setting `skipDangerousModePermissionPrompt` | `--approval-mode yolo` |
-| `default` | no override for new threads; resumes keep the conversation's recorded approval/sandbox | no flag | no flag |
+| Mode | Codex | Claude Code | Gemini CLI | Antigravity CLI |
+|---|---|---|---|---|
+| `yolo` (default) | `thread/start`/`thread/resume` with approval `never` and the `:danger-full-access` profile | `--dangerously-skip-permissions`, `IS_SANDBOX=1` and the flag setting `skipDangerousModePermissionPrompt` | `--approval-mode yolo` | `--dangerously-skip-permissions` |
+| `default` | no override for new threads; resumes keep the conversation's recorded approval/sandbox | no flag | no flag | no flag |
 
 ```sh
 sessionsation config set launch_permissions default   # or yolo
@@ -1065,6 +1065,91 @@ A queued or steered message may wait for the whole turn, so it stays
 `timeout_seconds` before it is `delivery_unknown`. The screen grammar and keys come from the
 Gemini CLI 0.66.0 bundle; HERDR's agent kind `gemini` and the `backspace` key name
 are not yet verified against a live pane. Tests use a fake HERDR pane only.
+
+## Antigravity CLI accounts and sessions (revision 24)
+
+Google Antigravity CLI (`agy`, verified with 1.4.10) is the fourth provider. Each
+account is an isolated `HOME` at the managed home
+`DATA_ROOT/antigravity-accounts/NAME` (mode 0700); agy keeps its state in
+`HOME/.gemini/antigravity-cli/` (plus `.gemini/config` and `.config/antigravity`).
+The config key `antigravity_binary` (default `agy`, the host wrapper) selects the
+executable. Every agy child gets `AGY_ACCOUNT_HOME` and `HOME` set to the account
+home, `XDG_CACHE_HOME=HOME/.cache` and `AGY_CLI_DISABLE_AUTO_UPDATE=1`; ambient
+Google/Gemini keys, Vertex/Cloud project and endpoint overrides, `GEMINI_MODEL`,
+`ANTIGRAVITY_API_KEY`, `AGY_LLM_GATEWAY_*`, `AGY_ADC_AUTH` and `XDG_RUNTIME_DIR` are
+removed.
+
+```sh
+sessionsation account add --platform antigravity me
+sessionsation account login antigravity:me     # agy: Google OAuth, open the URL, paste the code
+sessionsation run --account antigravity:me      # agy --conversation UUID
+sessionsation resume SESSION-ID --expected-generation GENERATION
+```
+
+An account is logged in when `.gemini/antigravity-cli/antigravity-oauth-token` is a
+non-empty file (stat only; never read). Launch and headless delivery are refused
+with `AUTH_REQUIRED` otherwise, so agy never waits on a browser sign-in. `account
+login` runs `agy` in the account environment: agy offers "Google OAuth", prints the
+Google URL (also shown as the supervised login's clickable bottom row) and reads the
+pasted code; the login ends when the token file appears. Log out is unsupported
+(`account_logout:false`): use `/logout` inside agy. Usage is unsupported: agy shows
+quota only in its interactive `/usage` view and its headless JSON reports token
+counts only, so accounts report `usage_state:"unsupported"` and limits cannot be set.
+
+agy cannot pre-assign a conversation id. A new session therefore first creates an
+empty conversation in the launch directory with a bounded headless run that sends
+no prompt (`agy --input-format stream-json --output-format stream-json
+--print-timeout 20s --disable-slash-commands -p=` with empty stdin, at most 30 s),
+records the catalog entry with the id from its `init` event, then execs `agy
+--conversation UUID`. Resume runs the same command in the recorded directory.
+`launch_permissions` `yolo` adds `--dangerously-skip-permissions`; `default` adds
+nothing. agy asks once per folder whether to trust it; that dialog is answered in
+the terminal.
+
+Discovery reads agy's index `conversation_summaries.db` read-only (id, workspace
+URI, step count, modification time); conversations with at least one step are
+registered, and a conversation exists while `conversations/UUID.db` does (`stale`
+otherwise). A session is `running` when an interactive `agy` process whose `HOME`
+is this home holds `presence/UUID.lock` (or `conversations/UUID.db`) open, or names
+`--conversation UUID` before opening it; PID and start time verify the attachment.
+Because the open lock is read, a conversation switched with `/resume` or `/clear`
+inside a running agy is followed. Labels are Sessionsation labels.
+
+Headless delivery (`api send` `mode:"resume"` for a stopped session, `mode:"new"`)
+runs `agy --conversation UUID --input-format stream-json --output-format stream-json
+--print-timeout Ns --disable-slash-commands -p=` in the recorded directory with the
+message as one stream-json user event on stdin (never argv; `N` is the request
+timeout minus 5 s). `mode:"new"` creates the conversation at admission as above.
+The final `result` event `{conversation_id,status,response,error?}` becomes the
+receipt's `reply`; a status other than `SUCCESS` is `failed`, a different
+conversation id, a timeout or unparseable output is `delivery_unknown`, and an agy
+sign-in prompt with no turn is a definite `AUTH_REQUIRED` refusal. Never
+`--dangerously-skip-permissions`.
+
+Submit, Queue and Steer are typed terminal input into a verified HERDR pane (HERDR
+agent kind `agy`), on the Claude/Gemini machinery: the screen must show agy's main
+prompt (the input box between two full-width rules and one footer row: `? for
+shortcuts`, `esc to cancel` or `Press up to edit queued messages`); menus, panels,
+pickers, the trust or permission dialog and an armed exit (`press ctrl+c again to
+exit`) are refused. A draft is read, cleared with alt+> then ctrl+u/backspace,
+typed back unsubmitted and verified. Idle: Enter starts a turn. Busy: agy's
+`queuedMessages` decides — `queue` (default): Enter queues, alt+m sends to the
+running turn; `send-immediately`: the reverse. `queue` and `steer` press the
+matching key and are refused (`ANTIGRAVITY_QUEUE_MODE_UNKNOWN`) when the setting
+cannot be read (an inline `--settings` JSON on the command line wins over
+`settings.json`). Text starting with `/`, `?` or `!` is refused (no verified escape).
+Esc, Ctrl+C, Ctrl+D, Ctrl+K, Ctrl+L and up/down are never sent. The receipt is
+anchored on the first explicit `USER_INPUT` step in
+`brain/UUID/.system_generated/logs/transcript.jsonl` whose `<USER_REQUEST>` holds
+the text, and carries `antigravity_input` (`queue_mode`, `key`, `expected`,
+`screen_evidence` `queued|sending`, `outcome` `submitted|queued|sent_immediately`).
+
+Archive, restore and delete of conversations are unsupported: agy deletes
+conversations only from its own `/resume` picker (F4), and Sessionsation does not
+edit agy's index. Stop, restart, account switch, relocation, Space moves, Add to
+HERDR and pending questions are unsupported. Account deletion preserves
+`conversations`, `brain`, `annotations`, `implicit`, the index and `history.jsonl`
+in the preserved-conversations vault and deletes the home with the token.
 
 ## Account log out
 

@@ -70,7 +70,14 @@ pub fn find_auth_url(text: &str, cols: usize) -> Option<String> {
     let mut filled = end == first.len() && lines[start].chars().count() + 4 >= cols;
     let mut next = start + 1;
     while filled && next < lines.len() {
-        let line = lines[next];
+        // A CLI that indents the URL (Antigravity: one space) indents its
+        // continuation rows the same way.
+        let line = match lines[next].get(..offset) {
+            Some(indent) if offset > 0 && indent.chars().all(|c| c == ' ') => {
+                &lines[next][offset..]
+            }
+            _ => lines[next],
+        };
         let end = line.find(|c: char| !url_char(c)).unwrap_or(line.len());
         if end == 0 {
             break;
@@ -342,6 +349,18 @@ mod tests {
         assert_eq!(
             url,
             "https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&redirect_uri=https%3A%2F%2Fcodeassist.google.com&state=xyz"
+        );
+    }
+
+    #[test]
+    fn rejoins_an_indented_url_box_like_antigravity_prints() {
+        // agy 1.4.10: " Open the URL below", a rule, then the URL indented by one
+        // space and wrapped with the same indent (synthetic values).
+        let text = " Open the URL below in your browser:\r\n ────────────────────\r\n https://accounts.google.com/o/oauth2/auth?access_type=off\r\n line&client_id=fake.apps.googleusercontent.com&state=abcd\r\n ef\r\n ────────────────────\r\n";
+        let url = find_auth_url(text, 58).unwrap();
+        assert_eq!(
+            url,
+            "https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=fake.apps.googleusercontent.com&state=abcdef"
         );
     }
 

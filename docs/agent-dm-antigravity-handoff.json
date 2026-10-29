@@ -1,0 +1,51 @@
+{
+  "handoff_version": 1,
+  "feature": "antigravity_provider",
+  "status": "implemented_tested_not_deployed",
+  "source": {
+    "repository": "https://github.com/anastaci1a/sessionsation",
+    "note": "The commit that adds this file. Not installed; deploy through the normal release path first."
+  },
+  "negotiation": {
+    "command": "api capabilities",
+    "required": {
+      "contract_revision_min": 24,
+      "providers[].id": "antigravity",
+      "antigravity_input_delivery.version": 1
+    }
+  },
+  "provider": {
+    "id": "antigravity",
+    "account_id_format": "antigravity:<name>",
+    "binary_setting": "antigravity_binary (default agy)",
+    "home": "DATA_ROOT/antigravity-accounts/<name> as AGY_ACCOUNT_HOME and HOME",
+    "verified_version": "1.4.10"
+  },
+  "supported": {
+    "accounts": "add, login (interactive agy: Google OAuth URL + pasted code), refresh, rename, remove/restore, delete (history preserved)",
+    "sessions": "new and resume in HERDR or a terminal (agy --conversation UUID; yolo adds --dangerously-skip-permissions)",
+    "headless": "api send mode resume (stopped) and new: agy -p= stream-json stdin, --print-timeout, auth-gated",
+    "terminal_input": "submit/queue/steer typed into a verified HERDR pane; queue/steer key chosen by queuedMessages (Enter or alt+m)"
+  },
+  "unsupported": {
+    "usage": "agy shows quota only in its interactive /usage view",
+    "account_logout": "use /logout inside agy",
+    "archive_delete": "agy deletes conversations only from its /resume picker",
+    "pending_questions": "not detected",
+    "add_to_herdr_stop_restart_switch_move": "no supported mechanism"
+  },
+  "client_steps": [
+    "Show antigravity accounts and sessions like Gemini ones; hide auth-mode, API-key and live-steering items.",
+    "Use capabilities and capability_reasons per row; never infer support from the provider id.",
+    "Treat delivery_unknown as possibly delivered; never resend."
+  ],
+  "tests": [
+    "tests/antigravity.rs",
+    "provider::antigravity::tests",
+    "messaging::claude_steer::antigravity::tests (real-screen fixtures in tests/fixtures/antigravity-screens)"
+  ],
+  "deployment": {
+    "performed": false,
+    "note": "Requires an operator-authorized release; the live root was not touched."
+  }
+}

@@ -201,6 +201,12 @@ fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value
             false,
             "unsupported".into(),
         ),
+        ProviderId::Antigravity => (
+            json!({"short":null,"weekly":null,"observed_at":null,"exhausted":false,"state":"unsupported",
+                "source":crate::provider::antigravity::USAGE_SOURCE,"semantics":crate::provider::antigravity::USAGE_SEMANTICS}),
+            false,
+            "unsupported".into(),
+        ),
         ProviderId::Claude => match crate::provider::account_home(paths, a) {
             Ok(home) => {
                 let (usage, fresh, state) = crate::provider::claude::project_usage(&home, at);
@@ -415,7 +421,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             store.save(&state,now(),"account_deletion_reserved",name)?;
                             Ok(json!({"reserved":true}))
                         }
-                        "account/delete/finish" if matches!(params["provider"].as_str(),Some("claude"|"gemini")) => {
+                        "account/delete/finish" if matches!(params["provider"].as_str(),Some("claude"|"gemini"|"antigravity")) => {
                             let name=params["name"].as_str().context("missing account name")?;
                             let id=params["request_id"].as_str().context("missing deletion request")?;
                             let provider=ProviderId::parse(params["provider"].as_str().unwrap_or_default())?;
@@ -484,6 +490,18 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 return Ok(json!({"name":name,"provider":"gemini","account_id":format!("gemini:{name}"),"home":home,"adopted":false,"existing_home":existing,"auth":auth,
                                     "login":{"action":"exec","interactive":true,"command":["sessionsation","account","login",format!("gemini:{name}")]}}));
                             }
+                            if provider == ProviderId::Antigravity {
+                                ensure!(config_dir.is_none(), "INVALID_ARGUMENT: --config-dir is only supported for claude accounts");
+                                let (home, existing) = crate::provider::antigravity::create_home(&paths,name)?;
+                                let auth = crate::provider::antigravity::auth_report(&home);
+                                let mut account = Account::with_provider(ProviderId::Antigravity,name.into(),String::new());
+                                account.auth_required = !auth["problem"].is_null();
+                                account.auth_detail = auth["problem"].as_str().map(str::to_owned);
+                                state.accounts.insert(name.into(),account); last_poll.remove(name);
+                                store.save(&state,now(),"account_added",name)?;
+                                return Ok(json!({"name":name,"provider":"antigravity","account_id":format!("antigravity:{name}"),"home":home,"adopted":false,"existing_home":existing,"auth":auth,
+                                    "login":{"action":"exec","interactive":true,"command":["sessionsation","account","login",format!("antigravity:{name}")]}}));
+                            }
                             if provider == ProviderId::Claude {
                                 let adopted = config_dir.map(|dir| crate::provider::claude::validate_adopt(&paths,&state,&dir)).transpose()?;
                                 // The managed home is the normal layout; an operator-populated one is registered as is.
@@ -535,11 +553,13 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             ensure!(!pending.contains(name), "ACCOUNT_POLL_IN_PROGRESS: account poll is in progress; retry shortly");
                             let home = crate::provider::account_home(&paths,account)?;
                             let was_required = account.auth_required;
+                            ensure!(provider != ProviderId::Antigravity, "{}", crate::provider::antigravity::NO_LOGOUT);
                             crate::logout::ensure_idle(&paths,provider,name,&home).await?;
                             match provider {
                                 ProviderId::Codex => crate::logout::codex(&config,&home,helpers.get(name)).await?,
                                 ProviderId::Claude => crate::logout::claude(&config,&home).await?,
                                 ProviderId::Gemini => crate::logout::gemini(&home)?,
+                                ProviderId::Antigravity => bail!("{}", crate::provider::antigravity::NO_LOGOUT),
                             }
                             let detail = crate::provider::native::is_native(provider).then(|| "AUTH_REQUIRED".to_owned());
                             let a = state.accounts.get_mut(name).context("unknown account")?;

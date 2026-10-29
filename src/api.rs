@@ -28,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":23,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":24,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -884,8 +884,11 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             crate::accounts::ensure_available(paths, name)?;
             if let (Some(short), Some(weekly)) = (short_used, weekly_used) {
                 ensure!(
-                    account.provider != ProviderId::Gemini,
-                    "UNSUPPORTED_PROVIDER_OPERATION: Gemini reports no usage, so there is nothing to place limits on"
+                    !matches!(
+                        account.provider,
+                        ProviderId::Gemini | ProviderId::Antigravity
+                    ),
+                    "UNSUPPORTED_PROVIDER_OPERATION: Gemini and Antigravity report no usage, so there is nothing to place limits on"
                 );
                 ensure!(
                     [short, weekly]
@@ -1112,8 +1115,19 @@ fn gemini_provider() -> Value {
         "operations":crate::provider::capabilities(ProviderId::Gemini)})
 }
 
+/// The Antigravity provider entry of `api capabilities` (revision 24).
+fn antigravity_provider() -> Value {
+    json!({"id":"antigravity","implemented":true,"since_revision":24,"enrollment":true,"adopt_config_dir":false,"login":"interactive_exec","usage":false,"usage_state":"unsupported","usage_source":crate::provider::antigravity::USAGE_SOURCE,
+        "new":true,"resume":true,"rename":true,"native_rename":false,"stop":false,
+        "account_switch":false,"restart":false,"submit":true,"queue":true,
+        "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
+        "headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false,"approval":"agy default (never --dangerously-skip-permissions)","print_timeout":true,"new_conversation":"empty conversation created first, without a prompt"},
+        "force_interrupt":false,"steer":true,"input_delivery":crate::messaging::claude_steer::antigravity::input_delivery(),"cross_provider_conversion":false,
+        "operations":crate::provider::capabilities(ProviderId::Antigravity)})
+}
+
 pub fn capabilities() -> Value {
-    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":23,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":24,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -1124,7 +1138,8 @@ pub fn capabilities() -> Value {
          "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false},
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false,
          "operations":crate::provider::capabilities(ProviderId::Claude)},
-        gemini_provider()
+        gemini_provider(),
+        antigravity_provider()
     ],"account_names":{"unique_across_providers":true,"id_format":"<provider>:<name>"},"attachment_lookup":{"version":1,"command":"attachment","discovery":false,"checks":["catalog_generation","pid_start_time"]},"relocation":{"version":1,"preview":true,"move_files":true,"non_steering":true},"launch":{"version":1,"validate":true,"start":true,"status":true,"list":true},"resume":{"version":1,"unfinished_confirmation":true,"directory_selection":true,"validate":true,"start":true,"status":true,"list":true},"hosts":["tmux","herdr"],"identity":"stable_backend_session_uuid",
     "mutations_require":"expected_generation","watch":"complete_ndjson_snapshots",
     "batch_observation":{"command":"observations","max_targets":64,"concurrency":8,"native_budget_seconds":5,"policies":["if_stale","refresh","cached_only"],"cache_hits_renew_evidence":false},
@@ -1135,7 +1150,7 @@ pub fn capabilities() -> Value {
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
     "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false});
     for provider in value["providers"].as_array_mut().into_iter().flatten() {
-        provider["account_logout"] = json!(true);
+        provider["account_logout"] = json!(provider["id"] != "antigravity");
     }
     value["state_cached"] = json!(true);
     // Revision 17: Claude and Gemini archive/restore/delete (moved native files).
@@ -1152,14 +1167,14 @@ pub fn capabilities() -> Value {
     let retention = crate::config::Config::default();
     value["receipt_retention"] = json!({"since_revision":18,"capacity_per_store":10000,"default_terminal_retention_days":retention.receipt_retention_days,"default_unknown_horizon_days":retention.receipt_unknown_horizon_days,"age_from":"expires_at_or_last_update","horizon_state":"expired","horizon_reason":"outcome_unknown_at_retention_horizon","retired_ids":"tombstoned_never_reaccepted","retired_error":"RECEIPT_RETIRED","settings":["receipt_retention_days","receipt_unknown_horizon_days"],"recovery_journals_retained":true});
     // Revision 19: permission mode of newly started provider processes.
-    value["launch_permissions"] = json!({"since_revision":19,"values":["yolo","default"],"built_in_default":crate::config::Config::default().launch_permissions.as_str(),"setting":"launch_permissions","request_field":"permissions","requests":["launch","resume-launch"],"cli_option":"--permissions","codex":{"yolo":{"approval_policy":"never","sandbox":"danger-full-access"}},"claude":{"yolo":"--dangerously-skip-permissions"},"gemini":{"yolo":"--approval-mode yolo"},"applies_to":["new","resume","restart","account_switch","hosted"],"headless_delivery":"unchanged"});
+    value["launch_permissions"] = json!({"since_revision":19,"values":["yolo","default"],"built_in_default":crate::config::Config::default().launch_permissions.as_str(),"setting":"launch_permissions","request_field":"permissions","requests":["launch","resume-launch"],"cli_option":"--permissions","codex":{"yolo":{"approval_policy":"never","sandbox":"danger-full-access"}},"claude":{"yolo":"--dangerously-skip-permissions"},"gemini":{"yolo":"--approval-mode yolo"},"antigravity":{"yolo":"--dangerously-skip-permissions"},"applies_to":["new","resume","restart","account_switch","hosted"],"headless_delivery":"unchanged"});
     // Revision 20: folder trust pre-accepted for yolo Claude starts.
     value["claude_folder_trust"] = json!({"since_revision":20,"setting":"claude_pretrust_folders","built_in_default":crate::config::Config::default().claude_pretrust_folders,"applies_when":"launch_permissions_yolo","applies_to":["interactive","hosted"],"config_file":"CLAUDE_CONFIG_DIR/.claude.json","key":"projects.<directory>.hasTrustDialogAccepted","other_content":"preserved","symlink":"refused","credentials_read":false});
     // Revision 21: per-account Claude bypass-permissions warning.
     value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     value["account_reorder"] = json!(true);
-    value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","gemini_process_source":"cmdline_session_id_argument","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
-    value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session"],"requires_one_of":["space","new_space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
+    value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","gemini_process_source":"cmdline_session_id_argument","antigravity_process_source":"open_presence_lock_or_conversation_argument","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
+    value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session"],"requires_one_of":["space","new_space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","antigravity":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
     // Revision 20: create a new Space by label on resume, add-to-HERDR and move.
     value["new_space"] = json!({"since_revision":20,"version":1,"resume":true,"add_to_herdr":true,"move_space":true,"label_validation":"space_label","exists_error":"WORKSPACE_NAME_EXISTS"});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
@@ -1175,6 +1190,9 @@ pub fn capabilities() -> Value {
     value["claude_input_delivery"] = claude_input_delivery();
     // Revision 17: Gemini submit/queue/steer as typed input into a HERDR pane.
     value["gemini_input_delivery"] = crate::messaging::claude_steer::gemini::input_delivery();
+    // Revision 24: Antigravity submit/queue/steer as typed input into a HERDR pane.
+    value["antigravity_input_delivery"] =
+        crate::messaging::claude_steer::antigravity::input_delivery();
     value["questions"] = crate::questions::capability();
     value
 }
@@ -1466,6 +1484,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                 crate::messaging::claude_steer::apply_session_input(paths, &mut value, observed.get(&id).map(|(_, h)| h.as_path()));
             } else if provider == ProviderId::Gemini {
                 crate::messaging::claude_steer::gemini::apply_session_input(&mut value, observed.get(&id).map(|(_, h)| h.as_path()), crate::messaging::claude_steer::terminal::enabled(paths));
+            } else if provider == ProviderId::Antigravity {
+                crate::messaging::claude_steer::antigravity::apply_session_input(&mut value, observed.get(&id).map(|(_, h)| h.as_path()), crate::messaging::claude_steer::terminal::enabled(paths));
             }
             external::archiving::native::apply_session(paths, provider, &mut value, observed.get(&id).map(|(_, h)| h.as_path()), archives.get(&id));
             let running = value["availability"] == "running";
@@ -1478,6 +1498,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
             };
             if provider == ProviderId::Gemini {
                 value["pending_questions_unsupported_reason"] = json!(crate::questions::NO_DETECTION_GEMINI);
+            } else if provider == ProviderId::Antigravity {
+                value["pending_questions_unsupported_reason"] = json!(crate::questions::NO_DETECTION_ANTIGRAVITY);
             }
             value["placement"] = placements["memberships"][id.as_str()].clone();
             return value;
@@ -1741,6 +1763,12 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
                 observed.get(id).map(|(_, h)| h.as_path()),
                 crate::messaging::claude_steer::terminal::enabled(paths),
             );
+        } else if provider == ProviderId::Antigravity {
+            crate::messaging::claude_steer::antigravity::apply_session_input(
+                &mut value,
+                observed.get(id).map(|(_, h)| h.as_path()),
+                crate::messaging::claude_steer::terminal::enabled(paths),
+            );
         }
         external::archiving::native::apply_session(
             paths,
@@ -1831,6 +1859,14 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 bail!(
                     "UNSUPPORTED_PROVIDER_OPERATION: {}",
                     crate::provider::gemini::NO_HERDR_ATTACH
+                );
+            }
+            if let Ok(s) = catalog::resolve(paths, &session, &expected_generation)
+                && s.provider == ProviderId::Antigravity.as_str()
+            {
+                bail!(
+                    "UNSUPPORTED_PROVIDER_OPERATION: {}",
+                    crate::provider::antigravity::NO_HERDR_ATTACH
                 );
             }
             claude::attach::add_to_herdr(

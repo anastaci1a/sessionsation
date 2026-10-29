@@ -175,6 +175,18 @@ pub fn apply_session(
     home: Option<&Path>,
     archive: Option<&Value>,
 ) {
+    if provider == ProviderId::Antigravity {
+        // agy deletes conversations only from its own picker: never moved here.
+        let reason = format!(
+            "UNSUPPORTED_PROVIDER_OPERATION: {}",
+            crate::provider::antigravity::NO_ARCHIVE
+        );
+        for k in ["archive", "delete", "restore"] {
+            value["capabilities"][k] = json!(false);
+            value["capability_reasons"][k] = json!(reason);
+        }
+        return;
+    }
     if let Some(a) = archive.filter(|a| a["archived"] == true) {
         value["archive"] = a.clone();
         value["archived"] = json!(true);
@@ -256,6 +268,11 @@ pub fn apply_session(
 /// Admission checks before a job is journaled (rechecked by the worker).
 pub(super) fn admit(paths: &Paths, kind: Kind, s: &Session) -> Result<()> {
     let provider = native::of(&s.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
+    ensure!(
+        provider != ProviderId::Antigravity,
+        "UNSUPPORTED_PROVIDER_OPERATION: {}",
+        crate::provider::antigravity::NO_ARCHIVE
+    );
     let archived = load(paths, &s.id)?.is_some_and(|m| archived_state(&m.state));
     match kind {
         Kind::Archive => ensure!(!archived, "SESSION_ALREADY_ARCHIVED"),
@@ -450,6 +467,11 @@ fn bundle_dir(paths: &Paths, m: &Manifest) -> Result<PathBuf> {
 
 pub(super) fn run(paths: &Paths, o: &mut Operation) -> Result<()> {
     let provider = native::of(&o.session.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
+    ensure!(
+        provider != ProviderId::Antigravity,
+        "UNSUPPORTED_PROVIDER_OPERATION: {}",
+        crate::provider::antigravity::NO_ARCHIVE
+    );
     let _account = crate::accounts::operation_lock(paths, &o.session.account)?;
     match o.kind {
         Kind::Archive => archive(paths, provider, o),

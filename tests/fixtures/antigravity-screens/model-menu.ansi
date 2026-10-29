@@ -1,0 +1,37 @@
+  [0m[1mcollisions[0m are inevitable. Hash maps resolve collisions using
+  two primary techniques:
+
+  • [0m[1mSeparate Chaining:[0m Each array bucket stores a secondary
+  data structure (like a linked list or balanced search tree)
+  holding all entries that share that index.
+  • [0m[1mOpen Addressing:[0m If the target bucket is occupied, the map
+  searches alternative slots according to a sequence (such as
+  linear probing) until an empty spot is found.
+
+  To maintain 𝒪(1) efficiency, the map monitors its [0m[1mload factor[0m
+  (stored items relative to bucket count). When this exceeds a
+  set threshold, the underlying array resizes—typically
+  doubling in size—and all keys are rehashed.
+
+  STEER-OK
+
+[0m[38;5;8m──────────────────────────────────────────────────────────────────[0m
+[0m[38;5;12m>[0m
+[0m[38;5;8m──────────────────────────────────────────────────────────────────[0m
+[0m[1mSwitch Model[0m
+
+  Search: [0m[7m[38;5;7m [0m
+          [0m[38;5;8m────────────────────[0m
+
+[0m[38;5;12m> Gemini 3.8 Flash            [0m[2m (current)[0m
+  Claude Sonnet 4.6 (Thinking)
+  Claude Opus 4.6 (Thinking)
+  GPT-OSS 120B (Medium)
+  [0m[2mGemini 4 Argon[0m
+
+  Effort  [0m[38;5;12m◂[0m [0m[38;5;1m       ●━━━━━━━━━━━━━━●━━━━━━━━━━━━━━◉[0m[2m       [0m [0m[2m▸[0m
+            [0m[2m      low          medium     [0m[1m[38;5;1m     high      [0m
+
+[0m[1mKeyboard: [0m[38;5;12m↑/↓[0m [0m[38;5;8mNavigate[0m  [0m[38;5;12m←/→[0m [0m[38;5;8mEffort[0m  [0m[38;5;12menter[0m [0m[38;5;8mSelect[0m  [0m[38;5;12mesc[0m [0m[38;5;8mGo Back[0m
+
+                                           [0m[2mGemini 3.8 Flash · high[0m

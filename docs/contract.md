@@ -2035,3 +2035,33 @@ whose `itemId` equals `request_id`; if the request is not replayed it sends
 nothing. Codex accepts the first response from any client and ignores later ones.
 Answers are recorded in `questions/events.jsonl` under the data root.
 See [CLI](cli.md#pending-questions-revision-23).
+
+### Antigravity provider (revision 24)
+
+Additive; negotiate `contract_revision >= 24`. `api capabilities` `providers` gains
+`{"id":"antigravity","since_revision":24,...}` shaped like the Gemini entry without
+`auth_modes`/`auth_command`: `enrollment:true`, `login:"interactive_exec"`,
+`usage:false`, `usage_state:"unsupported"`, `usage_source:"antigravity-cli-unsupported"`,
+`account_limits:false`, `account_logout:false`, `submit`/`queue`/`steer` true,
+`input_delivery` and `headless_delivery` (modes `resume`, `new`; `print_timeout:true`;
+`new_conversation` created first without a prompt). `operations` reports `archive`,
+`delete_session` and `account_logout` unsupported with reasons. New top-level
+`antigravity_input_delivery` (version 1: `herdr_agent:"agy"`,
+`keys_by_queued_messages`, refusal reasons including `ANTIGRAVITY_QUEUE_MODE_UNKNOWN`
+and `TERMINAL_EXIT_ARMED`); `launch_permissions.antigravity.yolo` is
+`--dangerously-skip-permissions`; `add_to_herdr.unsupported.antigravity` is
+`NO_NATIVE_ATTACH`; `session_identity.antigravity_process_source` is
+`open_presence_lock_or_conversation_argument`; `questions.providers.antigravity` is
+`{detect:false,answer:false}`. `conversation_archive.providers` is unchanged.
+
+Accounts use `antigravity:NAME` ids; `api account add` returns the login plan (as for
+Gemini), `refresh` reports `auth_mode.auth_method:"google-oauth"` when the token file
+exists, `logout` and `limits` fail with `UNSUPPORTED_PROVIDER_OPERATION`. Account rows
+report `usage_state:"unsupported"` with null windows. Session rows have
+`provider:"antigravity"`, the Gemini-style `input_delivery` plus
+`input_delivery.queued_messages {value,source}`, `capabilities.archive|delete|restore`
+false (`UNSUPPORTED_PROVIDER_OPERATION`) and `pending_questions_unsupported_reason`.
+`api send` accepts `antigravity:` accounts and sessions: headless receipts and
+terminal-input receipts carry `provider:"antigravity"`; terminal receipts add
+`antigravity_input` `{label,queue_mode,queue_mode_source,busy_at_submit,key,expected,
+screen_evidence,outcome,caveat}`. Behaviour and limits: [CLI](cli.md#antigravity-cli-accounts-and-sessions-revision-24).

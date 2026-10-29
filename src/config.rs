@@ -21,6 +21,8 @@ pub struct Config {
     pub claude_session_home: Option<std::path::PathBuf>,
     /// Gemini CLI executable used for every Gemini account.
     pub gemini_binary: String,
+    /// Antigravity CLI (`agy`) executable used for every Antigravity account.
+    pub antigravity_binary: String,
     /// Operator kill switch for typed terminal input into HERDR panes (Claude
     /// and Gemini). Off: rows report `terminal_input` unavailable with
     /// `TERMINAL_INPUT_DISABLED` and no request types into a pane.
@@ -57,6 +59,7 @@ impl Default for Config {
             claude_binary: "claude".into(),
             claude_session_home: None,
             gemini_binary: "gemini".into(),
+            antigravity_binary: "agy".into(),
             terminal_input_enabled: true,
             receipt_retention_days: 14,
             receipt_unknown_horizon_days: 90,
@@ -113,6 +116,10 @@ impl Config {
         ensure!(
             !self.gemini_binary.trim().is_empty(),
             "gemini_binary is empty"
+        );
+        ensure!(
+            !self.antigravity_binary.trim().is_empty(),
+            "antigravity_binary is empty"
         );
         ensure!(
             (1..=3650).contains(&self.receipt_retention_days)

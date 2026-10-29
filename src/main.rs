@@ -75,6 +75,8 @@ enum Commands {
     ClaudeTerminalWorker { message_id: String },
     #[command(hide = true)]
     GeminiTerminalWorker { message_id: String },
+    #[command(hide = true)]
+    AntigravityTerminalWorker { message_id: String },
     /// Render a Sessionsation-hosted Claude session live (t + Enter takes it over).
     View {
         /// Catalog session id or hosted conversation id.
@@ -411,7 +413,7 @@ enum ProviderHookCommand {
 enum AccountCommand {
     /// Enroll an account. Names are unique across providers.
     #[command(
-        after_help = "Examples:\n  sessionsation account add --platform codex work\n  sessionsation account add --platform claude personal\n  sessionsation account add --platform claude --config-dir /home/me/.claude existing\n  sessionsation account add --platform gemini me"
+        after_help = "Examples:\n  sessionsation account add --platform codex work\n  sessionsation account add --platform claude personal\n  sessionsation account add --platform claude --config-dir /home/me/.claude existing\n  sessionsation account add --platform gemini me\n  sessionsation account add --platform antigravity me"
     )]
     Add {
         /// Provider for the new account (required; no default).
@@ -612,6 +614,9 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::GeminiTerminalWorker { message_id } => {
             sessionsation::messaging::claude_steer::gemini::worker(&paths, &message_id).await?
         }
+        Commands::AntigravityTerminalWorker { message_id } => {
+            sessionsation::messaging::claude_steer::antigravity::worker(&paths, &message_id).await?
+        }
         Commands::View { session, once } => {
             sessionsation::provider::claude::hosted::view(&paths, &session, once).await?
         }
@@ -802,7 +807,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             daemon::ensure_started(&paths).await?;
             println!(
-                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add --platform codex|claude|gemini <name>`.\nNative switching remains blocked; inspect `sessionsation doctor --probe`.",
+                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add --platform codex|claude|gemini|antigravity <name>`.\nNative switching remains blocked; inspect `sessionsation doctor --probe`.",
                 paths.root.display()
             );
         }
@@ -954,7 +959,8 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Account {
             command:
                 AccountCommand::Add {
-                    platform: platform @ (ProviderId::Claude | ProviderId::Gemini),
+                    platform:
+                        platform @ (ProviderId::Claude | ProviderId::Gemini | ProviderId::Antigravity),
                     config_dir,
                     no_login,
                     name,
@@ -974,6 +980,9 @@ async fn run(cli: Cli) -> Result<()> {
             let auth = match value["auth"]["problem"].as_str() {
                 None if platform == ProviderId::Gemini => {
                     "logged in (Login with Google)".to_owned()
+                }
+                None if platform == ProviderId::Antigravity => {
+                    "logged in (Google OAuth)".to_owned()
                 }
                 None => "logged in (claude.ai subscription)".to_owned(),
                 Some("AUTH_REQUIRED") => {
@@ -1535,7 +1544,29 @@ fn exec_login(
             }
             Err(anyhow::Error::new(command.exec()).context("could not start gemini login"))
         }
-        _ => {
+        ProviderId::Antigravity => {
+            // agy shows "Select login method" (Google OAuth), prints the Google URL
+            // and reads the pasted code; the user completes it, nothing is automated.
+            let mut command = provider::antigravity::login_command(config, home);
+            command.current_dir(provider::antigravity::login_directory(home));
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                // agy continues into its chat after sign-in: supervise it and end
+                // the login as soon as the token exists.
+                let home = home.to_path_buf();
+                let before = provider::antigravity::credentials_stamp(&home);
+                let (ok, _) = sessionsation::login::supervise_capture(command, {
+                    let home = home.clone();
+                    move || provider::antigravity::login_completed(&home, before)
+                })?;
+                anyhow::ensure!(
+                    ok,
+                    "Login did not complete: the CLI exited before sign-in finished"
+                );
+                return Ok(());
+            }
+            Err(anyhow::Error::new(command.exec()).context("could not start agy login"))
+        }
+        ProviderId::Claude | ProviderId::Codex => {
             let mut command = provider::claude::command(config, home);
             command
                 .args(&provider::claude::login_argv(config)[1..])

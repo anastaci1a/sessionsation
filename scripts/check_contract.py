@@ -270,7 +270,14 @@ with tempfile.TemporaryDirectory() as directory:
             validate(value["result"]["conversation_archive"]["native"], "NativeConversationArchive")
             assert value["result"]["conversation_archive"]["providers"] == ["codex", "claude", "gemini"]
             for p in value["result"]["providers"]:
-                assert p["operations"]["archive"]["supported"] is True and p["operations"]["delete_session"]["supported"] is True
+                # Revision 24: Antigravity declares archive/delete unsupported (agy owns deletion).
+                supported = p["id"] != "antigravity"
+                assert p["operations"]["archive"]["supported"] is supported and p["operations"]["delete_session"]["supported"] is supported
+            agy = [p for p in value["result"]["providers"] if p["id"] == "antigravity"][0]
+            assert value["result"]["contract_revision"] >= 24 and agy["account_logout"] is False
+            assert agy["input_delivery"]["herdr_agent"] == "agy" and agy["input_delivery"]["automatic_replay"] is False
+            assert "esc" in agy["input_delivery"]["keys"]["never"] and "ctrl+c" in agy["input_delivery"]["keys"]["never"]
+            assert value["result"]["antigravity_input_delivery"]["since_revision"] == 24
             assert value["result"]["claude_input_delivery"]["automatic_replay"] is False
             assert value["result"]["claude_input_delivery"]["hosted"]["implicit_bypass"] is False
             assert value["result"]["claude_input_delivery"]["peer_message"]["reply_requires_anchor"] is True

@@ -45,6 +45,7 @@ use std::{
     time::Duration,
 };
 
+pub mod antigravity;
 pub mod gemini;
 pub mod terminal;
 
@@ -317,14 +318,17 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
     );
     let session = catalog::resolve(paths, &request.session_id, &request.expected_generation)?;
     let is_gemini = session.provider == ProviderId::Gemini.as_str();
+    let is_agy = session.provider == ProviderId::Antigravity.as_str();
     ensure!(
-        is_gemini || session.provider == ProviderId::Claude.as_str(),
+        is_gemini || is_agy || session.provider == ProviderId::Claude.as_str(),
         "UNSUPPORTED_PROVIDER_OPERATION"
     );
     let account = super::headless::usable_account(
         paths,
         if is_gemini {
             ProviderId::Gemini
+        } else if is_agy {
+            ProviderId::Antigravity
         } else {
             ProviderId::Claude
         },
@@ -338,6 +342,10 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
     let (kind, epoch, peer) = if is_gemini {
         ensure!(terminal::enabled(paths), "{}", terminal::DISABLED);
         typed = Some(gemini::admit(&request, &session, &account.home)?);
+        ("terminal", None, None)
+    } else if is_agy {
+        ensure!(terminal::enabled(paths), "{}", terminal::DISABLED);
+        typed = Some(antigravity::admit(&request, &session, &account.home)?);
         ("terminal", None, None)
     } else if let Some(h) = hosted::accepting(paths, &c) {
         ensure!(
@@ -447,7 +455,13 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         reply_truncated: false,
         result: None,
         peer,
-        provider: is_gemini.then(|| "gemini".to_owned()),
+        provider: if is_gemini {
+            Some("gemini".to_owned())
+        } else if is_agy {
+            Some(antigravity::PROVIDER.to_owned())
+        } else {
+            None
+        },
         terminal: typed,
         observation_error: None,
         created_at: now,
@@ -481,6 +495,8 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         .arg(&paths.root)
         .arg(if is_gemini {
             "gemini-terminal-worker"
+        } else if is_agy {
+            "antigravity-terminal-worker"
         } else if kind == "terminal" {
             "claude-terminal-worker"
         } else {
@@ -1159,6 +1175,11 @@ fn reconcile(paths: &Paths, id: &str) -> Result<Record> {
                 if stopped {
                     gemini::unconfirmed_after_exit(paths, id)?;
                 }
+            } else if r.facts.written && typed && antigravity::is_antigravity(&r) {
+                antigravity::observe(paths, id, false)?;
+                if stopped {
+                    antigravity::unconfirmed_after_exit(paths, id)?;
+                }
             } else if r.facts.written && typed {
                 terminal::observe(paths, id, false)?;
                 if stopped {
@@ -1277,6 +1298,9 @@ pub fn receipt_value(r: &Record) -> Value {
         terminal::receipt_fields(r, &mut v);
         if gemini::is_gemini(r) {
             gemini::receipt_fields(r, &mut v);
+        }
+        if antigravity::is_antigravity(r) {
+            antigravity::receipt_fields(r, &mut v);
         }
     }
     v

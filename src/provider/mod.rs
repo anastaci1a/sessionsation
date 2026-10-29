@@ -2,10 +2,11 @@
 //! dispatched from here; callers never compare provider strings themselves.
 //!
 //! Account names are globally unique across providers: `work` can be enrolled
-//! as `codex:work`, `claude:work` or `gemini:work`, never two of them. Public identifiers are always
+//! as `codex:work`, `claude:work`, `gemini:work` or `antigravity:work`, never two of them. Public identifiers are always
 //! provider-qualified (`<provider>:<name>`). A bare name is accepted only where
 //! a human addresses an existing account (it is unambiguous because names are
 //! global); a qualified identifier must match the enrolled provider.
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod gemini;
@@ -37,14 +38,21 @@ pub enum ProviderId {
     Codex,
     Claude,
     Gemini,
+    Antigravity,
 }
 impl ProviderId {
-    pub const ALL: [ProviderId; 3] = [ProviderId::Codex, ProviderId::Claude, ProviderId::Gemini];
+    pub const ALL: [ProviderId; 4] = [
+        ProviderId::Codex,
+        ProviderId::Claude,
+        ProviderId::Gemini,
+        ProviderId::Antigravity,
+    ];
     pub fn as_str(self) -> &'static str {
         match self {
             ProviderId::Codex => "codex",
             ProviderId::Claude => "claude",
             ProviderId::Gemini => "gemini",
+            ProviderId::Antigravity => "antigravity",
         }
     }
     pub fn parse(value: &str) -> Result<Self> {
@@ -52,8 +60,9 @@ impl ProviderId {
             "codex" => Ok(ProviderId::Codex),
             "claude" => Ok(ProviderId::Claude),
             "gemini" => Ok(ProviderId::Gemini),
+            "antigravity" => Ok(ProviderId::Antigravity),
             other => bail!(
-                "UNKNOWN_PROVIDER: '{}' is not a provider; use codex, claude or gemini",
+                "UNKNOWN_PROVIDER: '{}' is not a provider; use codex, claude, gemini or antigravity",
                 other.chars().take(32).collect::<String>()
             ),
         }
@@ -152,6 +161,7 @@ pub fn account_home(paths: &Paths, account: &Account) -> Result<PathBuf> {
         ProviderId::Codex => codex::home(paths, &account.name),
         ProviderId::Claude => claude::home(paths, &account.name, account.config_home.as_deref()),
         ProviderId::Gemini => gemini::home(paths, &account.name),
+        ProviderId::Antigravity => antigravity::home(paths, &account.name),
     }
 }
 
@@ -212,6 +222,7 @@ pub fn capabilities(provider: ProviderId) -> ProviderCapabilities {
         ProviderId::Codex => codex::capabilities(),
         ProviderId::Claude => claude::capabilities(),
         ProviderId::Gemini => gemini::capabilities(),
+        ProviderId::Antigravity => antigravity::capabilities(),
     }
 }
 

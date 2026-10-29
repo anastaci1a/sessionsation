@@ -603,6 +603,7 @@ fn digest(request: &str, answers: &Answers) -> String {
 
 pub const NO_EXTERNAL_ANSWER_CLAUDE_TERMINAL: &str = "PROVIDER_TERMINAL_ONLY: Claude Code answers AskUserQuestion only in its own terminal; a Sessionsation-hosted session can be answered";
 pub const NO_DETECTION_GEMINI: &str = "Gemini CLI records ask_user tool calls only after they complete, so a pending question is not visible outside its terminal";
+pub const NO_DETECTION_ANTIGRAVITY: &str = "Antigravity CLI asks its questions only inside its own terminal; Sessionsation does not detect or answer them";
 
 fn project(paths: &Paths, session: &str, open: Vec<Pending>) -> Vec<Pending> {
     open.into_iter()
@@ -680,7 +681,8 @@ pub fn capability() -> Value {
                 "async":"follow-up user message on the public non-steering queue"},
             "claude":{"detect":true,"answer":"hosted_only","kinds":[KIND_CLAUDE,KIND_CLAUDE_HOSTED],
                 "reason":NO_EXTERNAL_ANSWER_CLAUDE_TERMINAL},
-            "gemini":{"detect":false,"answer":false,"reason":NO_DETECTION_GEMINI}}})
+            "gemini":{"detect":false,"answer":false,"reason":NO_DETECTION_GEMINI},
+            "antigravity":{"detect":false,"answer":false,"reason":NO_DETECTION_ANTIGRAVITY}}})
 }
 
 // ------------------------------------------------------------------ answering
@@ -777,6 +779,9 @@ pub async fn answer(paths: &Paths, request: AnswerRequest) -> Result<Value> {
             )
         }
         ProviderId::Gemini => bail!("UNSUPPORTED_PROVIDER_OPERATION: {NO_DETECTION_GEMINI}"),
+        ProviderId::Antigravity => {
+            bail!("UNSUPPORTED_PROVIDER_OPERATION: {NO_DETECTION_ANTIGRAVITY}")
+        }
     };
     let found = pending.iter().find(|p| p.request_id == request.request_id);
     let mut receipt = match admit(paths, &s.id, found, &request.request_id, &request.answers)? {

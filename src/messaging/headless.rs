@@ -397,7 +397,21 @@ pub async fn send(paths: &Paths, request: Request) -> Result<Value> {
                 })
                 .unwrap_or_else(|| provider.as_str().into());
             // The native id is chosen here and recorded before any execution.
-            let conversation = uuid::Uuid::new_v4().to_string();
+            let conversation = if provider == ProviderId::Antigravity {
+                // agy cannot pre-assign an id: create the empty conversation now
+                // (no prompt is sent), then record it before any execution.
+                let (config, home, dir) = (
+                    config.clone(),
+                    account.home.clone(),
+                    PathBuf::from(&directory),
+                );
+                tokio::task::spawn_blocking(move || {
+                    crate::provider::antigravity::allocate(&config, &home, &dir)
+                })
+                .await??
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            };
             let session = catalog::record_provider_launch(
                 paths,
                 provider,
@@ -543,6 +557,19 @@ async fn prepare(paths: &Paths, r: &Record) -> Result<(PathBuf, fs::File)> {
             );
             native::ensure_resumable(&session, &observation)?;
         }
+        Mode::New if r.provider == ProviderId::Antigravity => {
+            // agy cannot pre-assign an id: admission created the (empty) conversation.
+            ensure!(
+                native::find_transcript(r.provider, &account.home, &r.conversation_id).is_some(),
+                "STALE_TARGET: the created conversation is missing"
+            );
+            ensure!(
+                !native::live_sessions(r.provider, &account.home)?
+                    .iter()
+                    .any(|l| l.session_id == r.conversation_id),
+                "SESSION_ALREADY_RUNNING"
+            );
+        }
         Mode::New => {
             ensure!(
                 native::find_transcript(r.provider, &account.home, &r.conversation_id).is_none(),
@@ -624,24 +651,35 @@ async fn execute(
     // The conversation file before the run: unchanged afterwards (with a sign-in
     // failure) proves the prompt was never recorded as sent.
     let before = transcript_stamp(r.provider, home, &r.conversation_id);
+    let agy = r.provider == ProviderId::Antigravity;
     let mut command = tokio::process::Command::from(std_command);
     command
-        .args(print_args(r.provider, r.request.mode, &r.conversation_id))
+        .args(if agy {
+            antigravity_args(&r.conversation_id, r.timeout_seconds)
+        } else {
+            print_args(r.provider, r.request.mode, &r.conversation_id)
+        })
         .current_dir(&r.directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(if r.provider == ProviderId::Gemini {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stderr(
+            if matches!(r.provider, ProviderId::Gemini | ProviderId::Antigravity) {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            },
+        )
         .kill_on_drop(true);
     let mut child = match command.spawn() {
         Ok(c) => c,
         Err(_) => return Outcome::NotStarted("PROVIDER_COULD_NOT_START".into()),
     };
     let pid = child.id();
-    let text = r.request.text.clone();
+    let text = if agy {
+        antigravity_input(&r.request.text)
+    } else {
+        r.request.text.clone()
+    };
     let mut stdin = child.stdin.take();
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
@@ -696,6 +734,9 @@ async fn execute(
     } else {
         None
     };
+    if agy && let Some(reason) = antigravity_sign_in_refusal(&bytes, &errors) {
+        return Outcome::NotStarted(reason);
+    }
     let Some(result) = parse(r.provider, &bytes, exit) else {
         // Unparseable output after the CLI failed to establish its sign-in, with the
         // conversation untouched: the prompt never reached the model, so this is a
@@ -959,11 +1000,95 @@ fn parse_gemini(bytes: &[u8], exit: Option<i32>) -> Option<Value> {
     )
 }
 
+/// agy headless turn on an existing conversation: one stream-json user message
+/// on stdin (never argv), agy's own `--print-timeout` a little inside ours,
+/// slash commands off so the text is never run as a command. Never
+/// `--dangerously-skip-permissions`.
+pub fn antigravity_args(conversation: &str, timeout_seconds: u64) -> Vec<String> {
+    let print_timeout = format!("{}s", timeout_seconds.saturating_sub(5).max(1));
+    [
+        "--conversation",
+        conversation,
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--print-timeout",
+        &print_timeout,
+        "--disable-slash-commands",
+        "-p=",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+/// The single NDJSON stream-json user message agy 1.4.10 reads.
+pub fn antigravity_input(text: &str) -> String {
+    let mut line =
+        json!({"event":"user","message":{"role":"user","content":[{"type":"text","text":text}]}})
+            .to_string();
+    line.push('\n');
+    line
+}
+/// A definite refusal: agy stopped at its sign-in prompt (stderr) and its
+/// result reports an error with no turn, so the message never reached a model.
+fn antigravity_sign_in_refusal(stdout: &[u8], stderr: &[u8]) -> Option<String> {
+    let err = String::from_utf8_lossy(stderr);
+    if !err.contains("Authentication required") {
+        return None;
+    }
+    let result = parse_antigravity(stdout, None);
+    let untouched = result.as_ref().is_none_or(|r| {
+        r["num_turns"].as_i64().unwrap_or(0) == 0 && r["result"].as_str().unwrap_or("").is_empty()
+    });
+    untouched.then(|| {
+        "AUTH_REQUIRED: Antigravity asked for a browser sign-in; run `sessionsation account login antigravity:<name>`; nothing was sent to the model".to_owned()
+    })
+}
+/// agy stream-json output: the final `{"event":"result","result":{conversation_id,
+/// status,response,error?,num_turns,usage,duration_seconds}}`, normalised to the
+/// shape the Claude result uses. A status other than SUCCESS, an error or a
+/// non-zero exit is an error reply.
+fn parse_antigravity(bytes: &[u8], exit: Option<i32>) -> Option<Value> {
+    let result = bytes.split(|b| *b == b'\n').rev().find_map(|line| {
+        let v: Value = serde_json::from_slice(line).ok()?;
+        (v["event"] == "result" && v["result"].is_object()).then(|| v["result"].clone())
+    })?;
+    let error = result
+        .get("error")
+        .filter(|e| !e.is_null() && e.as_str() != Some(""));
+    let ok = result["status"] == "SUCCESS" && error.is_none() && exit.is_none_or(|c| c == 0);
+    let subtype = if ok {
+        None
+    } else {
+        Some(
+            result["status"]
+                .as_str()
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_else(|| "error".into()),
+        )
+    };
+    let usage = result
+        .get("usage")
+        .filter(|s| s.to_string().len() <= 16 * 1024);
+    let session = result["conversation_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    Some(
+        json!({"type":"result","result":result["response"],"session_id":session,
+        "is_error":!ok,"subtype":subtype,"error":error,"num_turns":result["num_turns"],
+        "usage":usage,"duration_ms":result["duration_seconds"].as_f64().map(|s| (s * 1000.0) as u64)}),
+    )
+}
+
 /// The `--output-format json` result object (a single object, or the final
 /// `type:"result"` element of an event array).
 fn parse(provider: ProviderId, bytes: &[u8], exit: Option<i32>) -> Option<Value> {
     if provider == ProviderId::Gemini {
         return parse_gemini(bytes, exit);
+    }
+    if provider == ProviderId::Antigravity {
+        return parse_antigravity(bytes, exit);
     }
     let v: Value = serde_json::from_slice(bytes).ok()?;
     let result = match v {
