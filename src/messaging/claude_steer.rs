@@ -406,9 +406,8 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
                     _ => bail!("{}", claude::peer::DISABLED),
                 }
             }
-            let live = claude::live_sessions(&account.home)?
-                .into_iter()
-                .find(|l| l.session_id == c)
+            let live = claude::holder(&claude::live_sessions(&account.home)?, &c)
+                .cloned()
                 .context("SESSION_NOT_RUNNING")?;
             let endpoint = claude::peer::endpoint(&account.home, &live)?;
             let transcript = claude::find_transcript(&account.home, &c);
@@ -952,9 +951,8 @@ fn peer_recheck(paths: &Paths, r: &Record) -> Result<Peer> {
         claude::peer::DISABLED
     );
     let recorded = r.peer.clone().context("STALE_TARGET")?;
-    let live = claude::live_sessions(&account.home)?
-        .into_iter()
-        .find(|l| l.session_id == r.conversation_id)
+    let live = claude::holder(&claude::live_sessions(&account.home)?, &r.conversation_id)
+        .cloned()
         .context("SESSION_NOT_RUNNING")?;
     ensure!(
         live.pid == recorded.pid && live.process_start == recorded.process_start,

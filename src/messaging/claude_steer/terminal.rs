@@ -627,8 +627,9 @@ impl Host {
 /// The verified HERDR attachment of a running session, or why there is none.
 ///
 /// The pane runs either the Claude process itself, or, for a background
-/// (`bg`) session, a `claude attach <job>` client of it: keys typed there
-/// reach the background session and land in its transcript. The client is
+/// (`bg`) session, a `claude attach <job>` client of it or the interactive
+/// process parked into it (registry `parkedJobId`): keys typed there reach the
+/// background session and land in its transcript. The client is
 /// accepted only when it is the exact recorded process (PID and start time)
 /// and HERDR reports it as the pane's only foreground process.
 pub fn eligible(o: &claude::Observation) -> Result<Terminal, &'static str> {
@@ -662,12 +663,13 @@ pub fn eligible(o: &claude::Observation) -> Result<Terminal, &'static str> {
         ..Default::default()
     })
 }
-/// The attachment is a `claude attach` client of this running background session.
+/// The attachment is a `claude attach` client of this running background
+/// session, or the interactive process parked into it.
 fn attach_client(o: &claude::Observation, a: &crate::catalog::Attachment) -> bool {
     o.native_kind.as_deref() == Some("bg")
         && o.job_id
             .as_deref()
-            .is_some_and(|job| claude::is_attach_client(a.pid, a.process_start, job))
+            .is_some_and(|job| claude::is_terminal_client(a.pid, a.process_start, job))
 }
 /// Row-level availability (no HERDR call): `None` when terminal input applies.
 /// A background session's attach client is checked by its exact process; the
@@ -685,7 +687,7 @@ pub fn row_reason(value: &Value) -> Option<&'static str> {
             && value["native"]["job_id"]
                 .as_str()
                 .zip(pid.zip(start))
-                .is_some_and(|(job, (pid, start))| claude::is_attach_client(pid, start, job))
+                .is_some_and(|(job, (pid, start))| claude::is_terminal_client(pid, start, job))
     };
     let verified = a["host"] == "herdr" && pid.is_some() && target_ok && (direct || bg_client());
     (!verified).then_some("TERMINAL_NOT_ATTACHED")
@@ -1786,5 +1788,40 @@ mod tests {
         assert_eq!(row_reason(&direct), None);
         let _ = client.kill();
         let _ = client.wait();
+    }
+    #[test]
+    fn a_parked_interactive_pane_is_the_terminal_of_its_job() {
+        let t = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(t.path()).unwrap();
+        let mut pane = std::process::Command::new("sleep")
+            .arg("600")
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .spawn()
+            .unwrap();
+        let pid = pane.id();
+        let start = claude::proc_start(pid).unwrap().1;
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        fs::write(
+            home.join(format!("sessions/{pid}.json")),
+            json!({"pid":pid,"sessionId":"0946656e-447e-4bcd-a8df-d047792a191a",
+                "procStart":start.to_string(),"kind":"interactive","parkedJobId":"job12345"})
+            .to_string(),
+        )
+        .unwrap();
+        let row = |job: &str, start: u64| {
+            json!({"pid":999_999,"process_start":1,"native":{"kind":"bg","job_id":job},
+                "attachment":{"host":"herdr","target":"herdr/default/wR:pH","pid":pid,"process_start":start}})
+        };
+        assert_eq!(row_reason(&row("job12345", start)), None);
+        assert_eq!(
+            row_reason(&row("job99999", start)),
+            Some("TERMINAL_NOT_ATTACHED")
+        );
+        assert_eq!(
+            row_reason(&row("job12345", start + 1)),
+            Some("TERMINAL_NOT_ATTACHED")
+        );
+        let _ = pane.kill();
+        let _ = pane.wait();
     }
 }

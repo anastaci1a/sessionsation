@@ -668,6 +668,8 @@ pub fn live_sessions_in(snapshot: &ProcessSnapshot, home: &Path) -> Result<Vec<L
             job_id: None,
             registry_started_ms: None,
             spare: false,
+            parked_job_id: None,
+            name_source: None,
         });
     }
     result.sort_by_key(|l| l.pid);

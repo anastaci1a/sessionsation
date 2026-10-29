@@ -1182,6 +1182,18 @@ records stamped `forkedFrom.sessionId`) stay separate conversations and are
 exposed as `forked_from_conversation_id`. No other lineage is inferred, so no
 manual link operation exists.
 
+Parked Claude sessions: moving an interactive session to the background with
+Claude Code's left-arrow gesture records `parkedJobId` in the interactive
+process's registry entry and forks the conversation into that `bg` job
+(`continued-in` on the old transcript). The interactive process stays in its
+terminal as the job's frontend (the agents view with the job open), and input
+typed there lands in the job's transcript. That process is therefore the
+entry's terminal: the attachment is kept (or verified anew from its HERDR pane),
+`terminal_input` uses it, peer messages go to the job's own messaging socket,
+and a generated job title (`nameSource:"auto"`) never replaces the name given to
+the parked session. A parked record no longer holds its old session id. When
+Claude clears `parkedJobId`, the process is no longer a terminal of the job.
+
 Claude sessions add `native.kind` (registry kind, `bg` for background-daemon
 sessions) and `native.job_id`; all sessions add `previous_conversation_ids`,
 `capabilities.add_to_herdr` and `capability_reasons.add_to_herdr`

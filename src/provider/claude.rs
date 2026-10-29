@@ -701,12 +701,47 @@ pub struct Live {
     /// (and registry `startedAt`) predates the session it later serves.
     #[serde(skip)]
     pub spare: bool,
+    /// Registry `parkedJobId`: this interactive session was moved to the
+    /// background (Claude Code's `←` gesture). Claude forks the conversation
+    /// into that `bg` job (a `continued-in` marker on the old transcript) and
+    /// the process stays in its terminal as the job's frontend (`claude agents`
+    /// view with the job open): input typed there reaches the job, and the old
+    /// session id is no longer held by this process.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parked_job_id: Option<String>,
+    /// Registry `nameSource` (`user`, `peer`, `hook`, `auto`, `derived`, ...).
+    #[serde(skip)]
+    pub name_source: Option<String>,
 }
 impl Live {
     /// A background-daemon session that `claude attach <job>` can open.
     pub fn attachable(&self) -> bool {
         self.kind.as_deref() == Some("bg") && self.job_id.is_some()
     }
+    /// The name was given (by the operator, a peer or a hook), not generated.
+    fn name_given(&self) -> bool {
+        matches!(self.name_source.as_deref(), Some("user" | "peer" | "hook"))
+    }
+}
+/// The live process holding a conversation. A parked interactive record still
+/// names its old session id but no longer holds it (Claude Code itself skips
+/// such records when it looks for a session's holder or messaging target).
+pub fn holder<'a>(live: &'a [Live], session_id: &str) -> Option<&'a Live> {
+    live.iter()
+        .find(|l| l.session_id == session_id && l.parked_job_id.is_none())
+}
+/// The terminal frontend of a background job: the one live interactive process
+/// whose session was parked into it. None when absent or ambiguous.
+pub fn parked_frontend<'a>(live: &'a [Live], job: &Live) -> Option<&'a Live> {
+    let id = job.job_id.as_deref().filter(|_| job.attachable())?;
+    let mut found = live
+        .iter()
+        .filter(|l| l.pid != job.pid && l.parked_job_id.as_deref() == Some(id));
+    let one = found.next()?;
+    found.next().is_none().then_some(one)
+}
+fn valid_job_id(j: &str) -> bool {
+    !j.is_empty() && j.len() <= 64 && j.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 /// Unix seconds of a process start given /proc start ticks (boot clock based).
 pub fn process_started_at(ticks: u64) -> Option<i64> {
@@ -839,11 +874,9 @@ fn verify_entry(pid: u32, v: &Value, home: &Path) -> Option<Live> {
         status: text("status").filter(|s| matches!(s.as_str(), "busy" | "idle")),
         name: text("name"),
         kind: text("kind").filter(|k| k.len() <= 32),
-        job_id: text("jobId").filter(|j| {
-            !j.is_empty()
-                && j.len() <= 64
-                && j.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        }),
+        job_id: text("jobId").filter(|j| valid_job_id(j)),
+        parked_job_id: text("parkedJobId").filter(|j| valid_job_id(j)),
+        name_source: text("nameSource").filter(|s| s.len() <= 32),
         registry_started_ms: v["startedAt"].as_u64(),
         spare: cmdline(pid).iter().any(|a| a == "--bg-spare"),
     })
@@ -1007,22 +1040,35 @@ pub fn observe_in(
     match live {
         Err(e) => o.detail = Some(format!("PROBE_FAILED: {e}")),
         Ok(live) => {
+            let held = holder(live, session_id);
+            // The interactive process parked into this background job is the
+            // terminal it is shown and typed in: not a switch away from it.
+            let frontend = held.and_then(|l| parked_frontend(live, l));
+            let same = |l: &Live, a: &catalog::Attachment| {
+                l.pid == a.pid && l.process_start == a.process_start
+            };
             o.attachment_switched = recorded.is_some_and(|a| {
-                live.iter().any(|l| {
-                    l.pid == a.pid
-                        && l.process_start == a.process_start
-                        && l.session_id != session_id
-                })
+                !frontend.is_some_and(|f| same(f, a))
+                    && live
+                        .iter()
+                        .any(|l| same(l, a) && l.session_id != session_id)
             });
-            match live.iter().find(|l| l.session_id == session_id) {
+            match held {
                 Some(l) => {
                     o.availability = "running";
                     o.attachment = match recorded {
                         Some(a) if attach_client_observed(a, l) => Some(a.clone()),
-                        _ => host_attachment(l, recorded),
+                        Some(a) if frontend.is_some_and(|f| same(f, a)) => Some(a.clone()),
+                        _ => host_attachment(l, recorded)
+                            .or_else(|| frontend.and_then(|f| host_attachment(f, recorded))),
                     };
                     o.native_status = l.status.clone();
-                    o.native_name = l.name.clone();
+                    // A generated job title never replaces the name the operator
+                    // gave the session that was parked into this job.
+                    o.native_name = frontend
+                        .filter(|f| f.name_given() && !l.name_given())
+                        .and_then(|f| f.name.clone())
+                        .or_else(|| l.name.clone());
                     o.native_kind = l.kind.clone();
                     o.job_id = l.job_id.clone();
                     o.pid = Some(l.pid);
@@ -1090,6 +1136,45 @@ pub fn attach_client_observed(a: &catalog::Attachment, live: &Live) -> bool {
         || args
             .windows(2)
             .any(|w| w[0] == "claude-attach" && args.iter().any(|x| x == "--expected-generation"))
+        || is_parked_frontend(a.pid, a.process_start, job)
+}
+/// The exact process (PID and start time) is the interactive Claude process
+/// parked into background job `job_id` (its own registry entry, verified like
+/// any live entry, carries `parkedJobId`): the terminal that job is shown and
+/// typed in. Only `sessions/<pid>.json` of the process's own config home is read.
+pub fn is_parked_frontend(pid: u32, process_start: u64, job_id: &str) -> bool {
+    if job_id.is_empty() {
+        return false;
+    }
+    let Some(env) = environ(pid) else {
+        return false;
+    };
+    let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let Some(home) = get("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| get("HOME").map(|h| PathBuf::from(h).join(".claude")))
+        .filter(|h| h.is_absolute())
+    else {
+        return false;
+    };
+    let mut bytes = vec![];
+    if fs::File::open(home.join("sessions").join(format!("{pid}.json")))
+        .and_then(|f| f.take(64 * 1024).read_to_end(&mut bytes))
+        .is_err()
+    {
+        return false;
+    }
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|v| verify_entry(pid, &v, &home))
+        .is_some_and(|l| {
+            l.process_start == process_start && l.parked_job_id.as_deref() == Some(job_id)
+        })
+}
+/// The exact process is a terminal of background job `job_id`: a `claude attach`
+/// client, or the interactive process parked into it.
+pub fn is_terminal_client(pid: u32, process_start: u64, job_id: &str) -> bool {
+    is_attach_client(pid, process_start, job_id) || is_parked_frontend(pid, process_start, job_id)
 }
 /// True when the exact process recorded for a new/resumed session runs Claude
 /// for that native session (argv check, PID-reuse guarded).
@@ -1292,7 +1377,7 @@ pub fn reconcile(
         let current = live
             .as_ref()
             .ok()
-            .and_then(|l| l.iter().find(|l| l.session_id == s.conversation_id));
+            .and_then(|l| holder(l, &s.conversation_id));
         let recorded = match current {
             Some(l)
                 if s.attachment
@@ -1840,6 +1925,8 @@ mod tests {
             job_id: Some("job".into()),
             registry_started_ms: ms,
             spare,
+            parked_job_id: None,
+            name_source: None,
         }
     }
     #[test]
@@ -1874,6 +1961,153 @@ mod tests {
         client.kill().unwrap();
         spare.wait().unwrap();
         client.wait().unwrap();
+    }
+    /// Claude Code's `←` gesture, as recorded live: the interactive pane process
+    /// keeps its registry entry (old session id, operator name, `parkedJobId`)
+    /// and a `bg` job forked with `--fork-session` holds the conversation, whose
+    /// old transcript ends in a `continued-in` marker.
+    #[test]
+    fn parked_interactive_is_the_terminal_of_its_background_job() {
+        let t = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(t.path()).unwrap();
+        let spawn = || {
+            let child = std::process::Command::new("sleep")
+                .arg("600")
+                .env("CLAUDE_CONFIG_DIR", &home)
+                .spawn()
+                .unwrap();
+            let start = proc_start(child.id()).unwrap().1;
+            (child, start)
+        };
+        let (mut pane, pane_start) = spawn();
+        let (mut job, job_start) = spawn();
+        let (pane_pid, job_pid) = (pane.id(), job.id());
+        let old = "0946656e-447e-4bcd-a8df-d047792a191a";
+        let new = "4ac804e6-c52b-4596-9ca1-603077aebd6e";
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let job_sock = home.join("81356.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&job_sock).unwrap();
+        let pane_entry = |parked: Option<&str>| {
+            let mut v = json!({"pid":pane_pid,"sessionId":old,"procStart":pane_start.to_string(),
+                "peerProtocol":1,"kind":"interactive","messagingSocketPath":"/tmp/cc-socks/76131.sock",
+                "name":"localica-auditor","nameSource":"user","status":"idle"});
+            if let Some(p) = parked {
+                v["parkedJobId"] = json!(p);
+            }
+            fs::write(sessions.join(format!("{pane_pid}.json")), v.to_string()).unwrap();
+        };
+        pane_entry(Some("4ac804e6"));
+        fs::write(
+            sessions.join(format!("{job_pid}.json")),
+            json!({"pid":job_pid,"sessionId":new,"procStart":job_start.to_string(),"peerProtocol":1,
+                "kind":"bg","jobId":"4ac804e6","messagingSocketPath":job_sock,
+                "name":"set-effort-level","nameSource":"auto","status":"idle"})
+            .to_string(),
+        )
+        .unwrap();
+        // Fork-session lineage: the old transcript hands off to the job's; the
+        // job's transcript carries no `forkedFrom` (it is not a side branch).
+        let dir = home.join("projects/-work");
+        fs::create_dir_all(&dir).unwrap();
+        let user = |id: &str| json!({"type":"user","sessionId":id,"cwd":"/work","timestamp":"2026-10-29T16:45:47Z","message":{"content":"/effort"}});
+        fs::write(
+            dir.join(format!("{old}.jsonl")),
+            format!(
+                "{}\n{}\n",
+                user(old),
+                json!({"type":"continued-in","sessionId":old,"continuedInSessionId":new})
+            ),
+        )
+        .unwrap();
+        fs::write(dir.join(format!("{new}.jsonl")), format!("{}\n", user(new))).unwrap();
+        assert_eq!(
+            continued_in(&dir.join(format!("{old}.jsonl"))).as_deref(),
+            Some(new)
+        );
+        assert_eq!(forked_from(&dir.join(format!("{new}.jsonl"))), None);
+
+        let live = live_sessions(&home).unwrap();
+        assert_eq!(live.len(), 2, "{live:?}");
+        let probe: LiveProbe = Ok(live.clone());
+        // The parked record no longer holds the old id; the job holds the new one.
+        assert!(holder(&live, old).is_none());
+        let bg = holder(&live, new).unwrap();
+        assert_eq!(bg.pid, job_pid);
+        let front = parked_frontend(&live, bg).unwrap();
+        assert_eq!((front.pid, front.process_start), (pane_pid, pane_start));
+        assert!(
+            parked_frontend(&live, front).is_none(),
+            "only a bg job has a frontend"
+        );
+
+        let pane_attachment = catalog::Attachment {
+            host: "herdr".into(),
+            target: "herdr/default/wR:pH".into(),
+            pid: pane_pid,
+            process_start: pane_start,
+        };
+        // The entry bound to the job keeps the pane as its terminal, and the
+        // generated job title does not replace the operator's name.
+        let o = observe_in(&home, new, Some(&pane_attachment), &probe);
+        assert_eq!(o.availability, "running");
+        assert_eq!(o.attachment.as_ref(), Some(&pane_attachment));
+        assert!(!o.attachment_switched);
+        assert_eq!(o.pid, Some(job_pid));
+        assert_eq!(o.native_kind.as_deref(), Some("bg"));
+        assert_eq!(o.job_id.as_deref(), Some("4ac804e6"));
+        assert_eq!(o.native_name.as_deref(), Some("localica-auditor"));
+        assert!(o.transcript.unwrap().ends_with(format!("{new}.jsonl")));
+        // The old id is not held by the parked pane process.
+        let o = observe_in(&home, old, Some(&pane_attachment), &probe);
+        assert_eq!(o.availability, "stopped");
+        assert!(o.attachment.is_none());
+        // Exact identity of the frontend, as terminal input admission checks it.
+        assert!(attach_client_observed(&pane_attachment, bg));
+        assert!(is_parked_frontend(pane_pid, pane_start, "4ac804e6"));
+        assert!(is_terminal_client(pane_pid, pane_start, "4ac804e6"));
+        assert!(!is_parked_frontend(pane_pid, pane_start + 1, "4ac804e6"));
+        assert!(!is_parked_frontend(pane_pid, pane_start, "other123"));
+        assert!(!is_parked_frontend(job_pid, job_start, "4ac804e6"));
+        // Peer messages (weak steer) go to the job's own socket, not the pane's.
+        let endpoint = peer::endpoint(&home, bg).unwrap();
+        assert_eq!(endpoint.socket, job_sock);
+        assert_eq!(endpoint.pid, job_pid);
+
+        // Unparked (the agents view closed): the pane holds its own session
+        // again and is no longer a terminal of the job.
+        pane_entry(None);
+        let live = live_sessions(&home).unwrap();
+        assert_eq!(holder(&live, old).map(|l| l.pid), Some(pane_pid));
+        assert!(parked_frontend(&live, holder(&live, new).unwrap()).is_none());
+        assert!(!is_parked_frontend(pane_pid, pane_start, "4ac804e6"));
+        let o = observe_in(&home, new, Some(&pane_attachment), &Ok(live));
+        assert!(o.attachment.is_none());
+        assert!(o.attachment_switched);
+        assert_eq!(o.native_name.as_deref(), Some("set-effort-level"));
+
+        for c in [&mut pane, &mut job] {
+            c.kill().unwrap();
+            c.wait().unwrap();
+        }
+    }
+    #[test]
+    fn a_job_with_two_parked_frontends_has_none() {
+        let mk = |pid: u32, parked: Option<&str>, kind: &str, job: Option<&str>| Live {
+            parked_job_id: parked.map(str::to_owned),
+            kind: Some(kind.into()),
+            job_id: job.map(str::to_owned),
+            ..live(pid, 1, None, false)
+        };
+        let bg = mk(1, None, "bg", Some("job"));
+        let one = vec![bg.clone(), mk(2, Some("job"), "interactive", None)];
+        assert_eq!(parked_frontend(&one, &bg).map(|l| l.pid), Some(2));
+        let two = vec![
+            bg.clone(),
+            mk(2, Some("job"), "interactive", None),
+            mk(3, Some("job"), "interactive", None),
+        ];
+        assert!(parked_frontend(&two, &bg).is_none());
     }
 }
 
