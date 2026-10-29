@@ -405,6 +405,8 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
     assert!(f.claude_sessions().is_empty());
     std::fs::remove_file(home.join("fake-auth-mode")).unwrap();
 
+    // Revision 20: a yolo start pre-accepts Claude's folder trust in .claude.json.
+    std::fs::write(home.join(".claude.json"), "{\"numStartups\": 3}").unwrap();
     // New launch: ambient API credentials are stripped; native id is recorded first.
     let child = f
         .command(&["run", "--account", "personal"])
@@ -417,6 +419,15 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
         home.join("fake-launch-new").exists()
             && std::fs::read_dir(home.join("sessions")).is_ok_and(|d| d.count() >= 2)
     });
+    let config: Value =
+        serde_json::from_slice(&std::fs::read(home.join(".claude.json")).unwrap()).unwrap();
+    let trusted = std::fs::canonicalize(&f.project).unwrap();
+    assert_eq!(config["numStartups"], 3, "{config}");
+    assert_eq!(
+        config["projects"][trusted.to_str().unwrap()]["hasTrustDialogAccepted"],
+        true,
+        "{config}"
+    );
     let launch = read(&home.join("fake-launch-new"));
     assert!(
         launch.contains("api_key=\n") && launch.contains("base_url=\n"),
@@ -583,6 +594,8 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
     ]);
     assert_eq!(plan["cwd"], json!(f.project));
     // An explicit `--permissions default` resume starts Claude without bypass.
+    // ... and leaves folder trust alone.
+    std::fs::write(home.join(".claude.json"), "{\"numStartups\": 4}").unwrap();
     let child = f
         .command(&[
             "resume",
@@ -605,6 +618,10 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
         "{resume}"
     );
     assert!(resume.contains("name=relabeled"), "{resume}");
+    assert_eq!(
+        std::fs::read_to_string(home.join(".claude.json")).unwrap(),
+        "{\"numStartups\": 4}"
+    );
     assert!(
         resume.contains(&format!("cwd={}", f.project.display())),
         "{resume}"
@@ -1247,7 +1264,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 19);
+    assert_eq!(caps["contract_revision"], 20);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1834,7 +1851,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 19);
+    assert_eq!(caps["contract_revision"], 20);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2067,11 +2084,12 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
     assert!(!run(&["--new-space", "X", "--space", "w1"]).status.success());
     assert!(!run(&[]).status.success());
     assert!(!run(&["--new-space", "bad/label"]).status.success());
+    assert!(!run(&["--new-space", " Padded"]).status.success());
     assert!(
         !calls().contains("workspace create"),
         "refusals create nothing"
     );
-    let fresh = run(&["--new-space", "Fresh", "--name", "new-view"]);
+    let fresh = run(&["--new-space", "Fresh Space", "--name", "new-view"]);
     assert!(
         fresh.status.success(),
         "{}",
@@ -2083,7 +2101,7 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
     assert_eq!(fresh["space_id"], "w9");
     assert_eq!(fresh["target"], "herdr/fixture/w9:p1");
     assert_eq!(calls().matches("workspace create").count(), 1);
-    assert!(calls().contains("--label Fresh"));
+    assert!(calls().contains("--label Fresh Space"), "{}", calls());
     assert_eq!(
         calls().matches("tab create").count(),
         1,
@@ -2690,7 +2708,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 19);
+    assert_eq!(caps["contract_revision"], 20);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()

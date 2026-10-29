@@ -105,6 +105,22 @@ pub fn validate_name(name: &str) -> Result<()> {
     );
     Ok(())
 }
+/// A HERDR Space label for `--new-space` (revision 20): 1..=128 bytes, no
+/// surrounding whitespace, control characters or `/`, not `.`/`..`. The same
+/// rule the UI applies to Space names, so labels with spaces are accepted.
+pub fn validate_space_label(label: &str) -> Result<()> {
+    ensure!(
+        !label.is_empty()
+            && label.len() <= 128
+            && label.trim() == label
+            && !label.chars().any(char::is_control)
+            && !label.contains('/')
+            && label != "."
+            && label != "..",
+        "INVALID_SPACE_LABEL: 1-128 bytes without surrounding spaces, control characters or /"
+    );
+    Ok(())
+}
 pub fn private_dir(path: &Path) -> Result<()> {
     if let Ok(m) = fs::symlink_metadata(path) {
         ensure!(

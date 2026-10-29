@@ -66,6 +66,9 @@ fn exec(config: &Config, home: &Path, cwd: &Path, argv: &[String]) -> Result<()>
     let mut command = claude::command(config, home);
     if argv.iter().any(|a| a == claude::YOLO_FLAG) {
         claude::allow_bypass(&mut command);
+        if config.claude_pretrust_folders {
+            claude::trust::pretrust_before_start(home, cwd);
+        }
     }
     command.args(&argv[1..]).current_dir(cwd);
     Err(command.exec()).context("could not launch Claude")

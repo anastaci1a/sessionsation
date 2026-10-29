@@ -93,6 +93,20 @@ restores the recorded permissions exactly, and headless delivery (`api send`
 `mode:"resume"|"new"`) is unchanged: Claude prints without bypass and Gemini uses
 `--approval-mode default`. A running session keeps its mode until it is restarted.
 
+### Claude folder trust (revision 20)
+
+Claude Code asks "trust this folder?" the first time it opens a directory. Before a
+yolo Claude start or resume (interactive, or hosted with `bypassPermissions`),
+Sessionsation pre-accepts it for the launch directory in the account's
+`CLAUDE_CONFIG_DIR/.claude.json` (`projects["<dir>"].hasTrustDialogAccepted`), so
+the new session does not stop at the dialog. Only that key is written; the rest of
+the file, its mode and owner are kept, a symlinked file is refused and
+`.credentials.json` is never read. Turn it off with:
+
+```sh
+sessionsation config set claude_pretrust_folders false
+```
+
 ## Accounts
 
 For a fresh private data root, `sessionsation setup` initializes its metadata
@@ -373,7 +387,7 @@ sessionsation api spaces --session SESSION-ID --expected-generation GENERATION -
 sessionsation api session add-to-herdr --session SESSION-ID --expected-generation GENERATION --herdr-session HERDR-SERVER (--space SPACE-ID | --new-space LABEL) [--name NAME]
 ```
 
-`--new-space LABEL` creates a Space with that label (refused with
+`--new-space LABEL` creates a Space with that label (1-128 bytes, spaces allowed, no `/` or surrounding whitespace; refused with
 `WORKSPACE_NAME_EXISTS` if the server already has one) and uses its own initial
 shell pane for the viewer, so no empty shell is left behind.
 

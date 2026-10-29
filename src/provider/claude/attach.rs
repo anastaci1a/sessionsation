@@ -125,7 +125,7 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
             );
         }
         if let Some(label) = r.new_space {
-            crate::paths::validate_name(label)?;
+            crate::paths::validate_space_label(label)?;
             ensure!(
                 !list.iter().any(|w| w["label"] == label),
                 "WORKSPACE_NAME_EXISTS"

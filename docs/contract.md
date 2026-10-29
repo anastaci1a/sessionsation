@@ -888,9 +888,10 @@ observes the saved result before generation resolution; changed input is
 `REQUEST_ID_CONFLICT`. Stale generation or missing destination is rejected before
 dispatch. Selecting the current Space completes without mutation.
 
-New Space (additive): `api move-space ... --new-space LABEL --request-id UUID`
+New Space (revision 20): `api move-space ... --new-space LABEL --request-id UUID`
 replaces `--space` (the two are mutually exclusive; one is required). The
-label passes `validate_name` and must not match any Space label in a fresh
+label passes the Space-label rule (`INVALID_SPACE_LABEL`: 1-128 bytes, no surrounding
+whitespace, control characters or `/`, not `.`/`..`; spaces inside are fine) and must not match any Space label in a fresh
 `workspace list` of the session's own HERDR instance (`WORKSPACE_NAME_EXISTS`,
 before any journal or host mutation). The worker issues one host request,
 `pane move PANE --new-workspace --label LABEL --no-focus`: HERDR creates the
@@ -1146,16 +1147,6 @@ pending or executing. Schemas: `ClaudeHeadlessRequest`, `ClaudeHeadlessReceipt`,
 
 Additive; negotiate `contract_revision >= 12`. `api capabilities` adds
 `session_identity`, `add_to_herdr` and `resume_placement` objects.
-`capabilities.new_space` ({version, resume, add_to_herdr, move_space}, booleans)
-advertises `--new-space LABEL` on `api resume`, `api session add-to-herdr` and
-`api move-space`. Each is exclusive with `--space`, validated with
-`validate_name` and refused with `WORKSPACE_NAME_EXISTS` when a Space of that
-label already exists on the session's HERDR server. Resume and add-to-herdr use
-the new Space's own initial shell pane for the session (nothing extra is created
-or closed); add-to-herdr names its first tab with the session name, and its result
-adds `new_space: bool`. Without any Space flag, `api resume` still opens an
-unnamed new Space. `capabilities.add_to_herdr.requires_one_of` is
-`["space","new_space"]` (`space` is no longer in `requires`).
 
 Native-id re-attachment: a live process is attached to exactly one catalog entry,
 the one whose conversation the process currently runs: for Claude the registry
@@ -1882,3 +1873,38 @@ move recovery and hosted Claude without a `permission_mode`. Explicit Codex opti
 and a hosted `permission_mode` win; Codex message recovery restores the recorded
 permissions; headless delivery keeps `approval_mode:"default"`, never `yolo`.
 See [CLI](cli.md#launch-permissions-revision-19).
+
+### New Space by label (revision 20)
+
+Additive; negotiate `contract_revision >= 20`. `capabilities.new_space` ({version, resume, add_to_herdr, move_space}, booleans)
+advertises `--new-space LABEL` on `api resume`, `api session add-to-herdr` and
+`api move-space`. Each is exclusive with `--space`, validated with
+the Space-label rule (`label_validation:"space_label"`) and refused with `WORKSPACE_NAME_EXISTS` when a Space of that
+label already exists on the session's HERDR server. Resume and add-to-herdr use
+the new Space's own initial shell pane for the session (nothing extra is created
+or closed); add-to-herdr names its first tab with the session name, and its result
+adds `new_space: bool`. Without any Space flag, `api resume` still opens an
+unnamed new Space. `capabilities.add_to_herdr.requires_one_of` is
+`["space","new_space"]` (`space` is no longer in `requires`).
+The `move-space` form is described under Space moves (`New Space (revision 20)`).
+`capabilities.new_space` carries `since_revision: 20`; older backends lack it and
+reject `--new-space`, so send it only when the capability advertises the operation.
+
+### Claude folder pre-trust (revision 20)
+
+Additive; negotiate `contract_revision >= 20` (`api capabilities.claude_folder_trust`:
+`setting:"claude_pretrust_folders"`, `built_in_default:true`,
+`applies_when:"launch_permissions_yolo"`, `applies_to:["interactive","hosted"]`).
+Before Sessionsation starts or resumes a Claude process in yolo mode (an interactive
+`--dangerously-skip-permissions` start, or a hosted worker whose effective
+permission mode is `bypassPermissions`), it pre-accepts Claude Code's folder-trust
+dialog for the launch directory in that account's `CLAUDE_CONFIG_DIR/.claude.json`:
+`projects["<directory>"].hasTrustDialogAccepted = true`, under the canonical
+directory and, when different, the recorded spelling. A directory Claude does not
+know yet gets Claude's own per-project defaults. Only that key changes: every other
+member keeps its bytes and order, the file is replaced atomically with its mode and
+owner (compare-and-swap against concurrent writes), a symlinked `.claude.json` is
+refused, and a missing or malformed file is left untouched. `.credentials.json` is
+never read. Failures are reported on stderr and never block the start. `default`
+launch permissions, headless delivery and `claude_pretrust_folders:false` change
+nothing.

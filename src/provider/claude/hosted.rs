@@ -581,6 +581,9 @@ pub async fn worker(paths: &Paths, c: &str) -> Result<()> {
     }
     if h.effective_permission_mode.as_deref() == Some("bypassPermissions") {
         claude::allow_bypass(&mut std_command);
+        if config.claude_pretrust_folders {
+            claude::trust::pretrust_before_start(&home, Path::new(&h.directory));
+        }
     }
     std::os::unix::process::CommandExt::process_group(&mut std_command, 0);
     let stderr = fs::File::create(dir(paths, c)?.join("provider-stderr.log"))

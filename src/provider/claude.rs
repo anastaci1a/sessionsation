@@ -17,6 +17,7 @@ pub mod attach;
 pub mod hosted;
 pub mod launch;
 pub mod peer;
+pub mod trust;
 
 use std::{
     fs,

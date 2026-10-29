@@ -35,6 +35,10 @@ pub struct Config {
     /// (launch, resume, restart, account switch, hosted and headless runs):
     /// `yolo` (default) or `default` (the provider's own prompts). Contract revision 19.
     pub launch_permissions: LaunchPermissions,
+    /// Before a yolo Claude start (interactive or hosted), pre-accept Claude Code's
+    /// folder trust for the launch directory in the account's `.claude.json`
+    /// (`projects[dir].hasTrustDialogAccepted`). Contract revision 20.
+    pub claude_pretrust_folders: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -57,6 +61,7 @@ impl Default for Config {
             receipt_retention_days: 14,
             receipt_unknown_horizon_days: 90,
             launch_permissions: LaunchPermissions::Yolo,
+            claude_pretrust_folders: true,
         }
     }
 }

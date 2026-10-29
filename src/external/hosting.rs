@@ -379,7 +379,7 @@ async fn launch_inner(
         }
         None => {
             if let Some(label) = placement.new_space {
-                validate_name(label)?;
+                crate::paths::validate_space_label(label)?;
                 let spaces = call(session, &["workspace", "list"])?;
                 ensure!(
                     !spaces["workspaces"]

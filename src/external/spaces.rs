@@ -264,7 +264,7 @@ fn check_destination(request: &Target, available: &Value) -> Result<()> {
         );
     }
     if let Some(label) = &request.new_space {
-        crate::paths::validate_name(label)?;
+        crate::paths::validate_space_label(label)?;
         fresh_label(available, label)?;
     }
     Ok(())

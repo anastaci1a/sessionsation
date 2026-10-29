@@ -229,7 +229,12 @@ with tempfile.TemporaryDirectory() as directory:
         if args == ["placements"]:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 19
+            assert value["result"]["contract_revision"] >= 20
+            # Revision 20: new Space by label; Claude folder pre-trust for yolo starts.
+            assert value["result"]["new_space"] == {**value["result"]["new_space"], "since_revision": 20, "resume": True, "add_to_herdr": True, "move_space": True}
+            assert value["result"]["claude_folder_trust"]["setting"] == "claude_pretrust_folders"
+            assert value["result"]["claude_folder_trust"]["built_in_default"] is True
+            assert value["result"]["claude_folder_trust"]["credentials_read"] is False
             assert value["result"]["launch_permissions"]["values"] == ["yolo", "default"]
             assert value["result"]["launch_permissions"]["built_in_default"] == "yolo"
             validate(value["result"]["conversation_archive"]["native"], "NativeConversationArchive")
