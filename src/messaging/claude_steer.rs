@@ -332,6 +332,7 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
     let wanted = request.delivery.as_deref().unwrap_or("auto");
     let mut typed = None;
     let (kind, epoch, peer) = if is_gemini {
+        ensure!(terminal::enabled(paths), "{}", terminal::DISABLED);
         typed = Some(gemini::admit(&request, &session, &account.home)?);
         ("terminal", None, None)
     } else if let Some(h) = hosted::accepting(paths, &c) {
@@ -358,7 +359,11 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
             observation.availability == "running",
             "SESSION_NOT_RUNNING: submit/queue/steer need a hosted or live Claude session; use mode resume for a stopped session"
         );
-        let attached = terminal::eligible(&observation);
+        let attached = if terminal::enabled(paths) {
+            terminal::eligible(&observation)
+        } else {
+            Err("TERMINAL_INPUT_DISABLED")
+        };
         let peer_on = claude::peer::enabled(&account.home);
         // Terminal input is preferred over a peer message. Queue (`later`) and
         // interrupts cannot be typed: with `auto` a queue uses the peer path
@@ -370,9 +375,13 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         };
         if use_terminal {
             let t = attached.map_err(|code| {
-                anyhow::anyhow!(
-                    "{code}: terminal input needs a running session attached to a verified HERDR pane"
-                )
+                if code == "TERMINAL_INPUT_DISABLED" {
+                    anyhow::anyhow!("{}", terminal::DISABLED)
+                } else {
+                    anyhow::anyhow!(
+                        "{code}: terminal input needs a running session attached to a verified HERDR pane"
+                    )
+                }
             })?;
             ensure!(
                 request.mode != "queue",
@@ -1312,18 +1321,14 @@ fn path_label(path: Option<&str>) -> Option<&'static str> {
     }
 }
 
-/// Whether a row's attachment is the verified HERDR pane of its running
-/// process (the observation's exact PID and start time).
-fn terminal_reason(value: &Value) -> Option<&'static str> {
-    let a = &value["attachment"];
-    let verified = a["host"] == "herdr"
-        && a["pid"].as_u64().is_some()
-        && a["pid"] == value["pid"]
-        && a["process_start"] == value["process_start"]
-        && a["target"]
-            .as_str()
-            .is_some_and(|t| crate::terminal::target(t).is_ok());
-    (!verified).then_some("TERMINAL_NOT_ATTACHED")
+/// Whether terminal input applies to a row: the operator switch is on and the
+/// attachment is the verified HERDR pane of its running process (see
+/// [`terminal::row_reason`]).
+fn terminal_reason(value: &Value, enabled: bool) -> Option<&'static str> {
+    if !enabled {
+        return Some("TERMINAL_INPUT_DISABLED");
+    }
+    terminal::row_reason(value)
 }
 
 /// Per-session submit/queue/steer support (and the hosted host summary) for a
@@ -1399,7 +1404,7 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
                 _ => Err(claude::peer::NO_ENDPOINT.into()),
             }
         };
-        let typed = terminal_reason(value);
+        let typed = terminal_reason(value, terminal::enabled(paths));
         terminal_status = (typed.is_none(), typed.map(str::to_owned));
         for m in &mut modes {
             if typed.is_none() && m.0 != "queue" {

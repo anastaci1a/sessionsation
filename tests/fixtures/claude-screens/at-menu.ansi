@@ -1,0 +1,18 @@
+
+
+
+
+
+
+
+
+  [0m[38;2;153;153;153m  * agentdm-impl (agent) – Implements and tests changes in the agent-dm Node service.[0m
+  [0m[38;2;153;153;153m  * claude (agent) – Catch-all for any task that doesn't fit a more specific age…[0m
+  [0m[38;2;153;153;153m  * claude-code-guide (agent) – Use this agent when the user asks questions ("Can Claude...…[0m
+  [0m[38;2;153;153;153m  * deployer (agent) – Deploys reviewed releases through each project's real deplo…[0m
+  [0m[38;2;153;153;153m  * Explore (agent) – Fast read-only search agent for locating code. Use it to fi…[0m
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+❯ look at @
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [0m[1m[38;5;2muser@host[0m[38;2;153;153;153m:[0m[1m[38;5;4m/tmp/ssterm-e2e[0m[38;2;153;153;153m | 5h: 61% left | wk: 72% left[0m
+  [0m[38;2;255;193;7m⏵⏵ auto mode on[0m[38;2;153;153;153m (shift+tab to cycle)[0m

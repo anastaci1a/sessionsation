@@ -890,7 +890,7 @@ fn claude_input_delivery() -> Value {
         "peer_message":{"semantics":claude_steer::PEER_SEMANTICS,"label":claude_steer::PEER_LABEL,"opt_in":"account live-steering --enable","setting":"crossSessionInbound","interrupt":false,
             "correlation":"transcript_anchor_by_message_id","reply_requires_anchor":true},
         "terminal_input":{"semantics":claude_steer::terminal::SEMANTICS,"since_revision":17,"label":claude_steer::terminal::LABEL,
-            "modes":["submit","steer"],"eligibility":"tracked running session whose attachment is a verified HERDR pane (attachment.host herdr, exact pid/start)",
+            "modes":["submit","steer"],"eligibility":"tracked running session whose attachment is a verified HERDR pane (attachment.host herdr, exact pid/start; a bg session through its exact claude attach client, the pane's only foreground process)","operator_switch":"config terminal_input_enabled (default true; off: TERMINAL_INPUT_DISABLED)",
             "preference":"before peer_message for submit and steer","recorded_as":"user record when idle; queued_command with origin human mid-turn",
             "steer":claude_steer::terminal_steer_semantics(),
             "keys":{"text":"pane send-text (no bracketed paste)","newline":"ctrl+j","clear":["ctrl+k","ctrl+u"],"submit":"enter",
@@ -1155,7 +1155,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
             if provider == ProviderId::Claude {
                 crate::messaging::claude_steer::apply_session_input(paths, &mut value, observed.get(&id).map(|(_, h)| h.as_path()));
             } else if provider == ProviderId::Gemini {
-                crate::messaging::claude_steer::gemini::apply_session_input(&mut value, observed.get(&id).map(|(_, h)| h.as_path()));
+                crate::messaging::claude_steer::gemini::apply_session_input(&mut value, observed.get(&id).map(|(_, h)| h.as_path()), crate::messaging::claude_steer::terminal::enabled(paths));
             }
             external::archiving::native::apply_session(paths, provider, &mut value, observed.get(&id).map(|(_, h)| h.as_path()), archives.get(&id));
             value["placement"] = placements["memberships"][id.as_str()].clone();
@@ -1361,6 +1361,7 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
             crate::messaging::claude_steer::gemini::apply_session_input(
                 &mut value,
                 observed.get(id).map(|(_, h)| h.as_path()),
+                crate::messaging::claude_steer::terminal::enabled(paths),
             );
         }
         external::archiving::native::apply_session(

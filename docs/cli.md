@@ -765,21 +765,34 @@ The worker's steps on the pane:
    It is sent in chunks of 32 characters, with ctrl+j (`chat:newline`) between
    lines, checked on screen, then submitted with one Enter. A leading `/`, `!`,
    `#` or `?` is typed as `\/`, `\!`, `\#` or `\?`.
-6. **Restore.** The draft is typed back the same way, not submitted, and
-   compared with the screen.
+6. **Restore.** Enter empties the input box, idle (a new turn starts) or busy
+   (the text is queued). The draft is then typed back the same way, not
+   submitted, and compared with the screen; typed while a turn runs it stays in
+   the box. If anything fails after the clear, the receipt says what the box
+   holds (`draft.left_in_input`, `left_chars`) and the draft stays in the
+   private journal.
 7. **Confirm.** The transcript must show the human record with exactly the typed
    text after the submit. Its uuid anchors the reply. Without it the receipt is
    `delivery_unknown` and is never re-sent.
 
 Receipts carry `delivery_semantics:"terminal_input"`, `correlation.input_uuid`
 and `terminal_input` (`escaped_prefix`, `view_switched`,
-`draft.{present,chars,restored,restore_error}`, `steps`). The draft text itself is
+`draft.{present,chars,restored,restore_error,left_in_input,left_chars}`, `steps`). The draft text itself is
 kept only in the private journal until its restore is verified. All refusal codes
 are listed in the [contract](contract.md#claude-terminal-input-revision-17).
 Typing interacts with the user's own typing in that pane: a key pressed during
 the few hundred milliseconds of a delivery can land between steps. The fake HERDR
-fixture checks the procedure. The screen grammar and key bindings come from the
-Claude Code 2.1.312 bundle and HERDR 0.9.5; other versions must be checked first.
+fixture checks the procedure on real Claude Code 2.1.312 screens
+(`tests/fixtures/claude-screens/`: idle, busy, drafts, menus, help, transcript,
+subagent view, agent list, permission and trust dialogs). The screen grammar and
+key bindings come from the Claude Code 2.1.312 bundle and HERDR 0.9.5; other
+versions must be checked first.
+
+A background (`bg`) session is typed into through the pane running its
+`claude attach <job>` client, when that exact client is the recorded attachment
+and the pane's only foreground process. The config key `terminal_input_enabled`
+(default `true`) is the operator's switch: `false` makes every Claude and Gemini
+row report `terminal_input` unavailable with `TERMINAL_INPUT_DISABLED`.
 
 ## Gemini CLI accounts and sessions
 

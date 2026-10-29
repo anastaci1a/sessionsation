@@ -1555,7 +1555,18 @@ another session, which Agent-DM labels a weak steer.
 Eligibility: a catalog session (launched or tracked by Sessionsation) that is
 running and not hosted, whose `attachment` is a verified HERDR pane
 (`attachment.host:"herdr"` with the exact PID and start time of the running Claude
-process). Otherwise terminal input is unavailable with `TERMINAL_NOT_ATTACHED`.
+process). A background session (`native.kind:"bg"`) qualifies through its
+`claude attach <job>` client instead: the attachment must be that exact client
+process (PID, start time and `attach <native.job_id>` argv), and at admission
+and before the first key HERDR must report it as the pane's only foreground
+process. Keys typed there reach the background session and land in its
+transcript. Otherwise terminal input is unavailable with `TERMINAL_NOT_ATTACHED`.
+The operator switch `terminal_input_enabled` in `DATA_ROOT/config.json`
+(default `true`) turns terminal input off for Claude and Gemini: rows report
+`terminal_input:{available:false,reason:"TERMINAL_INPUT_DISABLED"}`, requests
+naming `terminal_input` are refused with that code (an `auto` request uses
+another path when one applies), and an admitted request still unsent when the
+switch goes off ends `rejected` with it.
 Only `submit` and `steer` are typed. `queue` (`later`) cannot be typed
 (`TERMINAL_QUEUE_UNSUPPORTED`). `steering.interrupt` is refused
 (`TERMINAL_INTERRUPT_UNSUPPORTED`): typed input never sends Esc or Ctrl+C.
@@ -1590,17 +1601,22 @@ before anything is submitted:
    before the first destructive key and before Enter.
 2. `pane read --format ansi` must show the main prompt with no overlay. The
    detailed transcript view is left with ctrl+o and the shortcut help with `?` on
-   the empty prompt; the receipt then has `view_switched`. A subagent view
-   (coloured prompt pointer, `Message @name…`) is `TERMINAL_VIEW_NOT_MAIN`. No key
-   returns to the main view safely: Esc there stops a running subagent. Other
-   refusals: `TERMINAL_VIM_MODE`, `TERMINAL_SHELL_MODE`,
-   `TERMINAL_OVERLAY_UNIDENTIFIED` (menus, completions, pickers) and
-   `TERMINAL_VIEW_UNDETERMINED`.
+   the empty prompt; the receipt then has `view_switched`. The input box is the
+   last `❯` in column 0 directly under a plain rule, closed by the next rule. The
+   pointer's colour is not a marker: Claude Code draws it grey while a turn runs,
+   so idle and busy main prompts are read alike. A viewed agent (its name as a
+   pill on a coloured background in the top rule, a `Message @name…` placeholder,
+   or `◯ main` in the agent list; a background session's own name in that rule is
+   plain text) is `TERMINAL_VIEW_NOT_MAIN`. No key returns to the main view
+   safely: Esc there stops a running subagent. Other refusals:
+   `TERMINAL_VIM_MODE`, `TERMINAL_SHELL_MODE`, `TERMINAL_OVERLAY_UNIDENTIFIED`
+   (a command or `@` completion menu drawn above the box, a focused footer item
+   or agent list, pickers, dialogs) and `TERMINAL_VIEW_UNDETERMINED`.
 3. The draft in the input box must be reconstructable exactly. Paste or image
    placeholders, a row reaching the right edge (possible soft wrap), more than 12
    rows and dim text mixed with typed text are `TERMINAL_DRAFT_UNRECONSTRUCTABLE`.
-   A draft starting with `?`, `!` or `#` cannot be typed back
-   (`TERMINAL_DRAFT_UNRESTORABLE`). The draft is then journaled privately; it
+   A draft starting with `?`, `!`, `#` or `/`, or ending in an `@` token, cannot
+   be typed back as text (`TERMINAL_DRAFT_UNRESTORABLE`). The draft is then journaled privately; it
    never appears in receipts.
 4. The input is cleared with ctrl+k/ctrl+u pairs and verified empty
    (`TERMINAL_CLEAR_UNVERIFIED`, draft kept in the journal).
@@ -1609,9 +1625,15 @@ before anything is submitted:
    is withdrawn and the draft restored (`TERMINAL_TYPED_TEXT_MISMATCH`). Enter is
    journaled (`steps` gains `submit`) and sent once. A failed Enter is
    `delivery_unknown` (`TERMINAL_SUBMIT_UNCERTAIN`).
-6. The draft is typed back unsubmitted and verified with `pane read`
-   (`terminal_input.draft.restored`, `restore_error`). A failed restore is
-   reported, never retried.
+6. Enter empties the input box whether it starts a turn (idle) or queues the
+   text (busy). Once the box is seen empty the draft is typed back unsubmitted,
+   also while the turn runs (typed text stays in the box), and verified with
+   `pane read` (`terminal_input.draft.restored`, `restore_error`). Every exit
+   after the clear either restores the draft or reports what the box holds:
+   `draft.left_in_input` (`draft`, `empty`, `message`, `other`, `unknown`) and
+   `left_chars`; the draft then stays in the private journal. A HERDR failure
+   after the clear gets one best-effort restore onto a box seen empty (or still
+   holding the unsent message). A failed restore is reported, never retried.
 7. The transcript after the submit is searched for the human record carrying
    exactly the delivered text with a timestamp at or after the submit. Its `uuid`
    is `correlation.input_uuid` (`{kind:"transcript_record",input_uuid,record_type,
@@ -1624,11 +1646,13 @@ Other codes: `TERMINAL_HOST_UNAVAILABLE`, `TERMINAL_HOST_FAILED_BEFORE_SUBMIT`
 and `TERMINAL_WORKER_EXITED_BEFORE_SUBMIT`. In those cases a draft whose restore
 was not verified stays in the journal. Receipts add `terminal_input`
 (`ClaudeTerminalInput`): `label`, `target`, `escaped_prefix`, `text_normalized`,
-`view_switched`, `draft:{present,chars,restored,restore_error}` and `steps`.
+`view_switched`, `draft:{present,chars,restored,restore_error,left_in_input,left_chars}` and `steps`.
 Fixtures: `claude_steer_request_terminal`, `claude_steer_receipt_terminal`,
 `claude_steer_receipt_terminal_unconfirmed`,
 `claude_steer_receipt_terminal_refused`. The screen grammar and keys come from
-the Claude Code 2.1.312 bundle and HERDR 0.9.5; tests use fakes only (see
+the Claude Code 2.1.312 bundle and HERDR 0.9.5; the markers are checked
+against real 2.1.312 screens (`tests/fixtures/claude-screens/`, redacted), which
+the fake HERDR used by the tests replays (see
 [CLI](cli.md#claude-terminal-input-revision-17)).
 
 ### Gemini terminal input (revision 17)

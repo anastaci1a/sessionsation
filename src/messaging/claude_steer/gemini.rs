@@ -69,6 +69,7 @@ const PLACEHOLDERS: &[&str] = &[
 
 pub const REASONS: &[&str] = &[
     "TERMINAL_NOT_ATTACHED",
+    "TERMINAL_INPUT_DISABLED",
     "TERMINAL_INTERRUPT_UNSUPPORTED",
     "TERMINAL_PAYLOAD_UNSUPPORTED",
     "TERMINAL_TEXT_TOO_LONG",
@@ -480,6 +481,7 @@ pub(super) fn admit(
 
 /// Same catalog entry, live process and pane; the steering state re-read.
 fn recheck(paths: &Paths, r: &Record) -> Result<(Terminal, steering::Effective)> {
+    ensure!(terminal::enabled(paths), "{}", terminal::DISABLED);
     let account =
         crate::messaging::headless::usable_account(paths, ProviderId::Gemini, &r.account)?;
     let session = catalog::find(paths, &r.session_id)?;
@@ -1166,9 +1168,9 @@ pub fn steer_semantics() -> Value {
 }
 
 /// Per-session submit/queue/steer for a Gemini session row (typed input only).
-pub fn apply_session_input(value: &mut Value, home: Option<&Path>) {
+pub fn apply_session_input(value: &mut Value, home: Option<&Path>, terminal_enabled: bool) {
     let running = value["availability"] == "running";
-    let typed = super::terminal_reason(value);
+    let typed = super::terminal_reason(value, terminal_enabled);
     let steering = home.map(|home| {
         let pid = value["pid"].as_u64().map(|p| p as u32);
         let env = pid.and_then(claude::environ);

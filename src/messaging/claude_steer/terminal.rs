@@ -60,8 +60,17 @@ const MAX_TYPED_ROWS: usize = 60;
 pub(crate) const CONFIRM_SECONDS: u64 = 60;
 const MAX_SCAN: u64 = 16 * 1024 * 1024;
 
+pub const DISABLED: &str = "TERMINAL_INPUT_DISABLED: terminal input is turned off by the operator (config terminal_input_enabled)";
+
+/// The operator kill switch (`terminal_input_enabled`, default on). An
+/// unreadable configuration counts as off.
+pub fn enabled(paths: &Paths) -> bool {
+    crate::store::load_config(paths).is_ok_and(|c| c.terminal_input_enabled)
+}
+
 pub const REASONS: &[&str] = &[
     "TERMINAL_NOT_ATTACHED",
+    "TERMINAL_INPUT_DISABLED",
     "TERMINAL_QUEUE_UNSUPPORTED",
     "TERMINAL_INTERRUPT_UNSUPPORTED",
     "TERMINAL_PAYLOAD_UNSUPPORTED",
@@ -104,6 +113,12 @@ pub struct Terminal {
     pub draft_chars: Option<usize>,
     pub draft_restored: Option<bool>,
     pub restore_error: Option<String>,
+    /// What the input box held when the procedure ended after the clear:
+    /// `draft` (restored) | `empty` | `message` | `other` | `unknown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_in_input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_chars: Option<usize>,
     pub anchor_offset: Option<u64>,
     pub submitted_at_ms: Option<i64>,
     pub input_uuid: Option<String>,
@@ -164,6 +179,8 @@ pub(crate) struct Style {
     pub dim: bool,
     pub fg: bool,
     pub inverse: bool,
+    /// A background colour is set (SGR 40-47, 48, 100-107).
+    pub bg: bool,
     /// Foreground colour id (0 = default): SGR 30-37/90-97, 1000+n for
     /// 256-colour, 0x1000000|rgb for true colour.
     pub color: u32,
@@ -249,7 +266,12 @@ fn sgr(style: &mut Style, params: &str) {
                     i += 4;
                 }
             }
-            48 => i += if codes.get(i + 1) == Some(&5) { 2 } else { 4 },
+            40..=47 | 100..=107 => style.bg = true,
+            49 => style.bg = false,
+            48 => {
+                style.bg = true;
+                i += if codes.get(i + 1) == Some(&5) { 2 } else { 4 };
+            }
             _ => {}
         }
         i += 1;
@@ -269,6 +291,32 @@ fn is_rule(row: &[Cell]) -> bool {
     matches!(row.first().map(|c| c.ch), Some('─' | '╭' | '╰'))
         && row.iter().filter(|c| c.ch == '─').count() * 2 > row.len()
 }
+/// The top rule of a viewed agent's box carries the agent's name as a pill (a
+/// label on a coloured background). The main view's rule is plain, or (a
+/// named or attached background session) carries the session name as plain
+/// text on the default background.
+fn agent_pill(row: &[Cell]) -> bool {
+    row.iter().any(|c| c.style.bg && c.ch != '─')
+}
+fn indent_of(line: &str) -> (usize, &str) {
+    let rest = line.trim_start_matches([' ', '\u{a0}']);
+    (line.chars().count() - rest.chars().count(), rest)
+}
+/// A completion or command menu drawn directly above the input box (Claude
+/// Code 2.1.312): the selected entry is `  ❯ /model …`, the others `    /mobile …`
+/// or `    * agent …`. Other rows there (a spinner tip `  ⎿  …`, a
+/// right-aligned hint) are not menus.
+fn menu_row(line: &str) -> bool {
+    let (indent, rest) = indent_of(line);
+    (indent == 2 && rest.starts_with('❯'))
+        || (indent == 4 && rest.starts_with(['/', '*', '+', '@', '#', '!']))
+}
+/// An agent-list row under the footer (`  ● main`, `  ◯ general-purpose …`),
+/// shown while background agents exist; not an overlay by itself.
+fn agent_row(line: &str) -> bool {
+    let (indent, rest) = indent_of(line);
+    indent == 2 && rest.starts_with(['●', '◯'])
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum View {
@@ -283,6 +331,15 @@ pub(crate) enum View {
 /// Classify a screen. `strict` reads a user draft (any doubt refuses); not
 /// strict reads back text the worker typed (soft wraps allowed, dim ghost
 /// text ignored, compared without whitespace by the caller).
+///
+/// Markers (real Claude Code 2.1.312 screens under
+/// `tests/fixtures/claude-screens/`): the input box is the last `❯` in column 0
+/// directly under a rule, closed by the next rule. The pointer's colour is NOT
+/// a marker: it is grey while a turn runs and default when idle, in the main
+/// view and in a viewed agent alike. A viewed agent is told by its name as a
+/// pill (coloured background) in the top rule, a `Message @name…` placeholder
+/// or `◯ main` in the agent list. A background session's own name in that rule
+/// is plain text and stays the main view.
 pub(crate) fn classify(rows: &[Vec<Cell>], strict: bool) -> Result<View, &'static str> {
     let lines: Vec<String> = rows.iter().map(|r| row_text(r)).collect();
     if lines
@@ -291,11 +348,17 @@ pub(crate) fn classify(rows: &[Vec<Cell>], strict: bool) -> Result<View, &'stati
     {
         return Ok(View::Transcript);
     }
+    // Column 0 only: dialogs indent their `❯` (` ❯ 1. Yes`, `  ❯ /model`).
     let pointer = |l: &str| {
-        let t = l.trim_start_matches(' ');
-        l.len() - t.len() <= 2 && (t.starts_with("❯\u{a0}") || t.starts_with("❯ ") || t == "❯")
+        let mut c = l.chars();
+        c.next() == Some('❯') && matches!(c.next(), None | Some(' ' | '\u{a0}'))
     };
-    let Some(p) = lines.iter().rposition(|l| pointer(l)) else {
+    // The box: a pointer row right under a rule (the agent list under the
+    // footer marks its selected row with `❯` too).
+    let Some(p) = (1..lines.len())
+        .rev()
+        .find(|&i| pointer(&lines[i]) && is_rule(&rows[i - 1]))
+    else {
         let shell = lines.iter().any(|l| l.trim_start().starts_with("!\u{a0}"));
         return Err(if shell {
             "TERMINAL_SHELL_MODE"
@@ -303,9 +366,6 @@ pub(crate) fn classify(rows: &[Vec<Cell>], strict: bool) -> Result<View, &'stati
             "TERMINAL_VIEW_UNDETERMINED"
         });
     };
-    if p == 0 || !is_rule(&rows[p - 1]) {
-        return Err("TERMINAL_VIEW_UNDETERMINED");
-    }
     let limit = if strict {
         MAX_DRAFT_ROWS
     } else {
@@ -318,23 +378,46 @@ pub(crate) fn classify(rows: &[Vec<Cell>], strict: bool) -> Result<View, &'stati
             "TERMINAL_TYPED_TEXT_MISMATCH"
         });
     };
-    let col = rows[p].iter().position(|c| c.ch == '❯').unwrap_or(0);
-    if rows[p][col].style.fg {
-        // The main prompt's pointer is uncoloured; a viewed agent colours it.
+    if agent_pill(&rows[p - 1]) {
+        // A labelled pill in the top rule: the box of a viewed agent.
         return Err("TERMINAL_VIEW_NOT_MAIN");
     }
-    let indent = col + 2;
+    let indent = 2;
     let footer = &lines[end + 1..];
+    if footer.iter().any(|l| {
+        let (_, rest) = indent_of(l);
+        rest.trim_start_matches('❯')
+            .trim_start()
+            .starts_with("◯ main")
+    }) {
+        // The agent list marks main as not shown.
+        return Err("TERMINAL_VIEW_NOT_MAIN");
+    }
     let all_ui = || footer.iter().chain(std::iter::once(&lines[p]));
     if all_ui().any(|l| {
         l.contains("-- INSERT --") || l.contains("-- NORMAL --") || l.contains("-- VISUAL --")
     }) {
         return Err("TERMINAL_VIM_MODE");
     }
+    if p >= 2 && menu_row(&lines[p - 2]) {
+        return Err("TERMINAL_OVERLAY_UNIDENTIFIED");
+    }
+    if rows[end + 1..]
+        .iter()
+        .flatten()
+        .any(|c| c.style.inverse && c.ch != ' ')
+    {
+        // A highlighted footer item: keyboard focus left the input box.
+        return Err("TERMINAL_OVERLAY_UNIDENTIFIED");
+    }
     let help = footer.iter().any(|l| l.contains("/ for commands"))
         && footer.iter().any(|l| l.contains("@ for file paths"));
     if !help {
-        let suspicious = footer.iter().filter(|l| !l.trim().is_empty()).count() > 4
+        let suspicious = footer
+            .iter()
+            .filter(|l| !l.trim().is_empty() && !agent_row(l))
+            .count()
+            > 4
             || footer.iter().any(|l| {
                 let t = l.trim_start();
                 t.starts_with('/')
@@ -541,25 +624,70 @@ impl Host {
 // ---------------------------------------------------------------- admission
 
 /// The verified HERDR attachment of a running session, or why there is none.
+///
+/// The pane runs either the Claude process itself, or, for a background
+/// (`bg`) session, a `claude attach <job>` client of it: keys typed there
+/// reach the background session and land in its transcript. The client is
+/// accepted only when it is the exact recorded process (PID and start time)
+/// and HERDR reports it as the pane's only foreground process.
 pub fn eligible(o: &claude::Observation) -> Result<Terminal, &'static str> {
     let a = o.attachment.as_ref().ok_or("TERMINAL_NOT_ATTACHED")?;
-    if a.host != "herdr" || o.availability != "running" || Some(a.pid) != o.pid {
+    if a.host != "herdr" || o.availability != "running" {
         return Err("TERMINAL_NOT_ATTACHED");
     }
     crate::terminal::target(&a.target).map_err(|_| "TERMINAL_NOT_ATTACHED")?;
-    let socket = claude::environ(a.pid).and_then(|env| {
-        env.into_iter()
-            .find(|(k, _)| k == "HERDR_SOCKET_PATH")
-            .map(|(_, v)| PathBuf::from(v))
-    });
+    let socket = claude::environ(a.pid)
+        .and_then(|env| {
+            env.into_iter()
+                .find(|(k, _)| k == "HERDR_SOCKET_PATH")
+                .map(|(_, v)| PathBuf::from(v))
+        })
+        .filter(|s| s.is_absolute());
+    if Some(a.pid) != o.pid {
+        if !attach_client(o, a) {
+            return Err("TERMINAL_NOT_ATTACHED");
+        }
+        match crate::terminal::state_at(&a.target, socket.as_deref()) {
+            Ok((false, pid)) if pid == a.pid => {}
+            _ => return Err("TERMINAL_NOT_ATTACHED"),
+        }
+    }
     Ok(Terminal {
         target: a.target.clone(),
-        socket: socket.filter(|s| s.is_absolute()),
+        socket,
         pid: a.pid,
         process_start: a.process_start,
         transcript: o.transcript.clone(),
         ..Default::default()
     })
+}
+/// The attachment is a `claude attach` client of this running background session.
+fn attach_client(o: &claude::Observation, a: &crate::catalog::Attachment) -> bool {
+    o.native_kind.as_deref() == Some("bg")
+        && o.job_id
+            .as_deref()
+            .is_some_and(|job| claude::is_attach_client(a.pid, a.process_start, job))
+}
+/// Row-level availability (no HERDR call): `None` when terminal input applies.
+/// A background session's attach client is checked by its exact process; the
+/// pane itself is verified again at admission and before the first key.
+pub fn row_reason(value: &Value) -> Option<&'static str> {
+    let a = &value["attachment"];
+    let pid = a["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+    let start = a["process_start"].as_u64();
+    let target_ok = a["target"]
+        .as_str()
+        .is_some_and(|t| crate::terminal::target(t).is_ok());
+    let direct = a["pid"] == value["pid"] && a["process_start"] == value["process_start"];
+    let bg_client = || {
+        value["native"]["kind"] == "bg"
+            && value["native"]["job_id"]
+                .as_str()
+                .zip(pid.zip(start))
+                .is_some_and(|(job, (pid, start))| claude::is_attach_client(pid, start, job))
+    };
+    let verified = a["host"] == "herdr" && pid.is_some() && target_ok && (direct || bg_client());
+    (!verified).then_some("TERMINAL_NOT_ATTACHED")
 }
 pub fn prepare(request: &Request, mut t: Terminal) -> Result<Terminal> {
     let (text, escaped, normalized) = deliverable(&request.text)?;
@@ -601,6 +729,7 @@ pub(crate) fn reject(paths: &Paths, id: &str, code: &str) -> Result<()> {
 /// Recheck the target before touching the pane: same catalog entry and live
 /// process, still attached to the same HERDR pane, no hosted worker.
 fn recheck(paths: &Paths, r: &Record) -> Result<Terminal> {
+    ensure!(enabled(paths), "{DISABLED}");
     let account =
         crate::messaging::headless::usable_account(paths, ProviderId::Claude, &r.account)?;
     let session = catalog::find(paths, &r.session_id)?;
@@ -727,15 +856,16 @@ async fn deliver(paths: &Paths, id: &str, host: &Host, t: &Terminal) -> Result<(
         Ok(_) => return reject(paths, id, "TERMINAL_VIEW_UNDETERMINED"),
         Err(code) => return reject(paths, id, code),
     };
-    if draft.starts_with(['?', '!', '#']) || draft.contains('\t') {
-        // Typing it back would toggle help or a mode instead of the character.
+    if !restorable(&draft) {
+        // Typing it back would toggle help, a mode or a menu instead.
         return reject(paths, id, "TERMINAL_DRAFT_UNRESTORABLE");
     }
     // Re-check the agent just before the first destructive key.
     if matches!(host.agent_status(), Ok(Some(s)) if s == "blocked") {
         return reject(paths, id, "TERMINAL_AGENT_BLOCKED");
     }
-    // 3. Journal the draft, then clear.
+    // 3. Journal the draft, then clear. From here on every exit restores the
+    //    draft or reports exactly what the input box holds.
     step(paths, id, "clear", |r| {
         r.phase = "dispatching".into();
         r.dispatched_at = Some(crate::daemon::now());
@@ -744,21 +874,54 @@ async fn deliver(paths: &Paths, id: &str, host: &Host, t: &Terminal) -> Result<(
             t.draft_chars = Some(draft.chars().count());
         }
     })?;
+    let mut submitted = false;
+    let outcome = typed_input(paths, id, host, t, &draft, &mut submitted).await;
+    if let Err(e) = &outcome {
+        salvage(paths, id, host, &draft, &t.delivered_text, submitted, e).await;
+        if submitted {
+            change(paths, id, |r| {
+                if !is_terminal(r) && !r.facts.written {
+                    finish(r, "delivery_unknown", Some("TERMINAL_SUBMIT_UNCERTAIN"));
+                }
+                Ok(())
+            })?;
+        }
+    }
+    outcome
+}
+
+/// A draft that typing reproduces as text: not a help/shell/memory trigger,
+/// a command or a completion (`/`, a last token starting with `@`), no tab.
+pub(crate) fn restorable(draft: &str) -> bool {
+    let last = draft.split_whitespace().last().unwrap_or_default();
+    !draft.starts_with(['?', '!', '#', '/']) && !draft.contains('\t') && !last.starts_with('@')
+}
+
+/// Steps 3-6 after the draft is journaled. `submitted` is set once Enter went out.
+async fn typed_input(
+    paths: &Paths,
+    id: &str,
+    host: &Host,
+    t: &Terminal,
+    draft: &str,
+    submitted: &mut bool,
+) -> Result<()> {
     if !draft.is_empty() {
-        host.clear(&draft).await?;
+        host.clear(draft).await?;
         let v = host
             .until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
             .await?;
         if !matches!(&v, Ok(View::Main(d)) if d.is_empty()) {
-            // The input is in an unknown state: never type over it.
-            return change(paths, id, |r| {
-                if let Some(t) = r.terminal.as_mut() {
-                    t.draft_restored = Some(false);
-                    t.restore_error = Some("clear_unverified_draft_kept_in_journal".into());
-                }
-                finish(r, "rejected", Some("TERMINAL_CLEAR_UNVERIFIED"));
-                Ok(())
-            });
+            // Unknown input state: never type over it. What is there is reported.
+            left(
+                paths,
+                id,
+                "clear_unverified_draft_kept_in_journal",
+                &v,
+                draft,
+                "",
+            )?;
+            return reject(paths, id, "TERMINAL_CLEAR_UNVERIFIED");
         }
     }
     // 4. Type the message and check it on screen.
@@ -785,15 +948,16 @@ async fn deliver(paths: &Paths, id: &str, host: &Host, t: &Terminal) -> Result<(
             .until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
             .await?;
         if matches!(&cleared, Ok(View::Main(d)) if d.is_empty()) {
-            restore(paths, id, host, &draft).await?;
+            restore(paths, id, host, draft, &t.delivered_text).await?;
         } else {
-            change(paths, id, |r| {
-                if let Some(t) = r.terminal.as_mut() {
-                    t.draft_restored = Some(false);
-                    t.restore_error = Some("withdraw_unverified_draft_kept_in_journal".into());
-                }
-                Ok(())
-            })?;
+            left(
+                paths,
+                id,
+                "withdraw_unverified_draft_kept_in_journal",
+                &cleared,
+                draft,
+                &t.delivered_text,
+            )?;
         }
         return reject(paths, id, code);
     }
@@ -811,47 +975,144 @@ async fn deliver(paths: &Paths, id: &str, host: &Host, t: &Terminal) -> Result<(
         }
     })?;
     let sent = host.keys(&["enter"]);
+    *submitted = true;
+    // Whether a failed Enter landed is unknown: the caller first salvages the
+    // draft (only onto an input box seen empty), then ends the request
+    // `delivery_unknown` (TERMINAL_SUBMIT_UNCERTAIN).
+    sent?;
     change(paths, id, |r| {
-        if sent.is_ok() {
-            r.phase = "written".into();
-            r.facts.written = true;
-        } else {
-            finish(r, "delivery_unknown", Some("TERMINAL_SUBMIT_UNCERTAIN"));
-        }
+        r.phase = "written".into();
+        r.facts.written = true;
         Ok(())
     })?;
-    if sent.is_err() {
-        return Ok(());
-    }
-    // 6. Put the draft back, unsubmitted.
-    if !draft.is_empty() {
-        let empty = host
-            .until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
-            .await?;
-        if matches!(&empty, Ok(View::Main(d)) if d.is_empty()) {
-            restore(paths, id, host, &draft).await?;
-        } else {
-            change(paths, id, |r| {
-                if let Some(t) = r.terminal.as_mut() {
-                    t.draft_restored = Some(false);
-                    t.restore_error = Some("input_not_empty_after_submit".into());
-                }
-                Ok(())
-            })?;
-        }
-    } else {
-        change(paths, id, |r| {
+    // 6. Put the draft back, unsubmitted. Claude Code empties the input box on
+    //    Enter whether it starts a turn (idle) or queues the text (busy); text
+    //    typed while a turn runs stays in the box.
+    if draft.is_empty() {
+        return change(paths, id, |r| {
             if let Some(t) = r.terminal.as_mut() {
                 t.draft = None;
             }
             Ok(())
-        })?;
+        });
     }
-    Ok(())
+    let empty = host
+        .until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
+        .await?;
+    if matches!(&empty, Ok(View::Main(d)) if d.is_empty()) {
+        restore(paths, id, host, draft, &t.delivered_text).await
+    } else {
+        left(
+            paths,
+            id,
+            "input_not_empty_after_submit",
+            &empty,
+            draft,
+            &t.delivered_text,
+        )
+    }
+}
+
+/// What the input box holds when a restore could not be verified.
+fn left_in_input(
+    v: &Result<View, &'static str>,
+    draft: &str,
+    message: &str,
+) -> (&'static str, Option<usize>) {
+    match v {
+        Ok(View::Main(d)) if d.is_empty() => ("empty", Some(0)),
+        Ok(View::Main(d)) if d == draft => ("draft", Some(d.chars().count())),
+        Ok(View::Main(d)) if !message.is_empty() && squash(d) == squash(message) => {
+            ("message", Some(d.chars().count()))
+        }
+        Ok(View::Main(d)) => ("other", Some(d.chars().count())),
+        _ => ("unknown", None),
+    }
+}
+
+/// Record an unverified restore: the error, and what the input box holds.
+/// The draft stays in the private journal.
+fn left(
+    paths: &Paths,
+    id: &str,
+    error: &str,
+    v: &Result<View, &'static str>,
+    draft: &str,
+    message: &str,
+) -> Result<()> {
+    let (what, chars) = left_in_input(v, draft, message);
+    change(paths, id, |r| {
+        if let Some(t) = r.terminal.as_mut() {
+            t.draft_restored = Some(what == "draft");
+            if what == "draft" {
+                t.draft = None;
+            } else {
+                t.restore_error = Some(error.into());
+            }
+            t.left_in_input = Some(what.into());
+            t.left_chars = chars;
+        }
+        Ok(())
+    })
+}
+
+/// After a HERDR failure past the clear: one best-effort pass that puts the
+/// draft back when the input box is seen empty (or still holds the unsent
+/// message), else records what it holds. Never sends Enter.
+async fn salvage(
+    paths: &Paths,
+    id: &str,
+    host: &Host,
+    draft: &str,
+    message: &str,
+    submitted: bool,
+    error: &anyhow::Error,
+) {
+    let done = read(paths, id)
+        .ok()
+        .and_then(|r| r.terminal)
+        .is_some_and(|t| t.draft_restored.is_some());
+    if draft.is_empty() || done {
+        return;
+    }
+    let note = format!("host_failed:{}", reason(error));
+    let Ok(rows) = host.screen() else {
+        let _ = left(
+            paths,
+            id,
+            &note,
+            &Err("TERMINAL_HOST_UNAVAILABLE"),
+            draft,
+            message,
+        );
+        return;
+    };
+    let mut v = classify(&rows, false);
+    let unsent = !submitted && matches!(&v, Ok(View::Main(d)) if squash(d) == squash(message));
+    if unsent && host.clear(message).await.is_ok() {
+        v = host
+            .until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
+            .await
+            .unwrap_or(Err("TERMINAL_HOST_UNAVAILABLE"));
+    }
+    if matches!(&v, Ok(View::Main(d)) if d.is_empty()) {
+        if restore(paths, id, host, draft, message).await.is_err() {
+            let _ = left(
+                paths,
+                id,
+                &note,
+                &Err("TERMINAL_HOST_UNAVAILABLE"),
+                draft,
+                message,
+            );
+        }
+    } else {
+        let _ = left(paths, id, &note, &v, draft, message);
+    }
 }
 
 /// Type the draft back (no Enter) and verify it exactly; never retried.
-async fn restore(paths: &Paths, id: &str, host: &Host, draft: &str) -> Result<()> {
+async fn restore(paths: &Paths, id: &str, host: &Host, draft: &str, message: &str) -> Result<()> {
     if draft.is_empty() {
         return change(paths, id, |r| {
             if let Some(t) = r.terminal.as_mut() {
@@ -865,23 +1126,25 @@ async fn restore(paths: &Paths, id: &str, host: &Host, draft: &str) -> Result<()
     let typed = host.type_text(draft).await;
     let v = host
         .until(true, |v| matches!(v, Ok(View::Main(d)) if d == draft))
-        .await;
-    let ok = typed.is_ok() && matches!(&v, Ok(Ok(View::Main(d))) if d == draft);
-    change(paths, id, |r| {
-        if let Some(t) = r.terminal.as_mut() {
-            t.draft_restored = Some(ok);
-            if ok {
+        .await
+        .unwrap_or(Err("TERMINAL_HOST_UNAVAILABLE"));
+    if typed.is_ok() && matches!(&v, Ok(View::Main(d)) if d == draft) {
+        return change(paths, id, |r| {
+            if let Some(t) = r.terminal.as_mut() {
+                t.draft_restored = Some(true);
                 t.draft = None;
-            } else {
-                t.restore_error = Some(match (&typed, &v) {
-                    (Err(_), _) => "restore_keys_failed".into(),
-                    (_, Ok(Err(code))) => format!("restore_unverified:{code}"),
-                    _ => "restore_unverified".into(),
-                });
+                t.left_in_input = Some("draft".into());
+                t.left_chars = Some(draft.chars().count());
             }
-        }
-        Ok(())
-    })
+            Ok(())
+        });
+    }
+    let error = match (&typed, &v) {
+        (Err(_), _) => "restore_keys_failed".to_owned(),
+        (_, Err(code)) => format!("restore_unverified:{code}"),
+        _ => "restore_unverified".to_owned(),
+    };
+    left(paths, id, &error, &v, draft, message)
 }
 
 // ---------------------------------------------------------------- transcript
@@ -1160,7 +1423,7 @@ pub fn receipt_fields(r: &Record, v: &mut Value) {
     v["terminal_input"] = json!({"label":LABEL,"target":t.target,"escaped_prefix":t.escaped_prefix,
         "text_normalized":t.normalized,"view_switched":t.view_switched,
         "draft":{"present":t.draft_chars.map(|n| n > 0),"chars":t.draft_chars,"restored":t.draft_restored,
-            "restore_error":t.restore_error},
+            "restore_error":t.restore_error,"left_in_input":t.left_in_input,"left_chars":t.left_chars},
         "steps":t.steps});
 }
 
@@ -1260,11 +1523,6 @@ mod tests {
             (
                 vec!["❯\u{a0}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "  bb"],
                 "TERMINAL_DRAFT_UNRECONSTRUCTABLE",
-            ),
-            // A viewed subagent colours the pointer.
-            (
-                vec!["\u{1b}[38;5;5m❯\u{1b}[0m\u{a0}draft"],
-                "TERMINAL_VIEW_NOT_MAIN",
             ),
             (
                 vec!["❯\u{a0}\u{1b}[2mMessage @worker…\u{1b}[0m"],
@@ -1368,5 +1626,142 @@ mod tests {
         )
         .unwrap();
         assert_eq!(f, Found::default());
+    }
+
+    /// Real Claude Code 2.1.312 screens (`pane read --format ansi`, redacted).
+    fn real(name: &str) -> Vec<Vec<Cell>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/claude-screens")
+            .join(format!("{name}.ansi"));
+        cells(&fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}")))
+    }
+    #[test]
+    fn real_main_screens_are_read_exactly_idle_or_busy() {
+        for (name, draft) in [
+            ("idle-empty", ""),
+            ("idle-empty-after-turn", ""),
+            ("idle-draft-single", "half a thought about lint"),
+            (
+                "idle-draft-multi",
+                "half a thought about lint\nsecond line here\n  indented third",
+            ),
+            ("busy-empty", ""),
+            ("busy-draft-single", "a busy draft"),
+            ("busy-draft-multi", "a busy draft\nline two"),
+            // After a busy Enter: dim "Press up to edit queued messages".
+            ("busy-queued-placeholder", ""),
+            ("busy-draft-restored", "a busy draft\nline two"),
+            // Background agents listed under the footer, main shown.
+            ("busy-agents-footer", ""),
+            // A `claude attach` client of a background session: the session
+            // name labels the top rule as plain text (no pill).
+            ("bg-attach-idle", ""),
+        ] {
+            for strict in [true, false] {
+                assert_eq!(
+                    classify(&real(name), strict),
+                    Ok(View::Main(draft.into())),
+                    "{name} strict={strict}"
+                );
+            }
+        }
+        // The regression: a running turn draws the main pointer grey.
+        let busy = real("busy-draft-single");
+        let p = busy
+            .iter()
+            .rposition(|r| r.first().is_some_and(|c| c.ch == '❯'))
+            .unwrap();
+        assert!(busy[p][0].style.fg, "busy pointer is coloured");
+    }
+    #[test]
+    fn real_overlays_and_other_views_are_refused_or_left() {
+        assert_eq!(
+            classify(&real("transcript-view"), true),
+            Ok(View::Transcript)
+        );
+        assert_eq!(classify(&real("help"), true), Ok(View::Help));
+        for (name, code) in [
+            ("subagent-view", "TERMINAL_VIEW_NOT_MAIN"),
+            ("subagent-view-draft", "TERMINAL_VIEW_NOT_MAIN"),
+            ("slash-menu", "TERMINAL_OVERLAY_UNIDENTIFIED"),
+            ("at-menu", "TERMINAL_OVERLAY_UNIDENTIFIED"),
+            // Keyboard focus moved to the footer pill / agent list.
+            ("footer-pill-focused", "TERMINAL_OVERLAY_UNIDENTIFIED"),
+            ("agent-list-focused", "TERMINAL_OVERLAY_UNIDENTIFIED"),
+            ("permission", "TERMINAL_VIEW_UNDETERMINED"),
+            ("trust", "TERMINAL_VIEW_UNDETERMINED"),
+        ] {
+            for strict in [true, false] {
+                assert_eq!(
+                    classify(&real(name), strict),
+                    Err(code),
+                    "{name} strict={strict}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn drafts_that_typing_cannot_reproduce_are_refused() {
+        for ok in ["", "plain", "a\nb", "mail me@x.org please", "50% / 2"] {
+            assert!(restorable(ok), "{ok:?}");
+        }
+        for bad in ["/mo", "?", "!ls", "# note", "look at @", "see @src", "a\tb"] {
+            assert!(!restorable(bad), "{bad:?}");
+        }
+    }
+    #[test]
+    fn what_is_left_in_the_input_is_reported_exactly() {
+        let main = |s: &str| Ok(View::Main(s.into()));
+        assert_eq!(left_in_input(&main(""), "d", "m"), ("empty", Some(0)));
+        assert_eq!(left_in_input(&main("d"), "d", "m"), ("draft", Some(1)));
+        assert_eq!(
+            left_in_input(&main("a b"), "d", "a\nb"),
+            ("message", Some(3))
+        );
+        assert_eq!(left_in_input(&main("xy"), "d", "m"), ("other", Some(2)));
+        assert_eq!(
+            left_in_input(&Err("TERMINAL_VIEW_NOT_MAIN"), "d", "m"),
+            ("unknown", None)
+        );
+    }
+    #[test]
+    fn a_background_session_is_typed_into_only_through_its_exact_attach_client() {
+        // A process whose argv carries `attach <job>`, like `claude attach <job>`.
+        let mut client = std::process::Command::new("sh")
+            .args(["-c", "sleep 30; true", "attach", "job12345"])
+            .spawn()
+            .unwrap();
+        let pid = client.id();
+        // Until the forked child has exec'd, /proc shows the test binary.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fs::read(format!("/proc/{pid}/cmdline"))
+            .is_ok_and(|c| c.windows(6).any(|w| w == b"attach"))
+        {
+            assert!(Instant::now() < deadline, "attach client did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let start = claude::proc_start(pid).unwrap().1;
+        let row = |kind: &str, job: &str, host: &str, pid: u32, start: u64| {
+            json!({"pid":999_999,"process_start":1,"native":{"kind":kind,"job_id":job},
+                "attachment":{"host":host,"target":"herdr/default/w1:p1","pid":pid,"process_start":start}})
+        };
+        assert_eq!(
+            row_reason(&row("bg", "job12345", "herdr", pid, start)),
+            None
+        );
+        for bad in [
+            row("interactive", "job12345", "herdr", pid, start),
+            row("bg", "job99999", "herdr", pid, start),
+            row("bg", "job12345", "herdr", pid, start + 1),
+            row("bg", "job12345", "tmux", pid, start),
+        ] {
+            assert_eq!(row_reason(&bad), Some("TERMINAL_NOT_ATTACHED"), "{bad}");
+        }
+        // The pane runs the session's own process: exact PID and start.
+        let direct = json!({"pid":pid,"process_start":start,"native":{"kind":"interactive"},
+            "attachment":{"host":"herdr","target":"herdr/default/w1:p1","pid":pid,"process_start":start}});
+        assert_eq!(row_reason(&direct), None);
+        let _ = client.kill();
+        let _ = client.wait();
     }
 }

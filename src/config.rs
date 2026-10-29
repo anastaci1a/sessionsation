@@ -21,6 +21,10 @@ pub struct Config {
     pub claude_session_home: Option<std::path::PathBuf>,
     /// Gemini CLI executable used for every Gemini account.
     pub gemini_binary: String,
+    /// Operator kill switch for typed terminal input into HERDR panes (Claude
+    /// and Gemini). Off: rows report `terminal_input` unavailable with
+    /// `TERMINAL_INPUT_DISABLED` and no request types into a pane.
+    pub terminal_input_enabled: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -39,6 +43,7 @@ impl Default for Config {
             claude_binary: "claude".into(),
             claude_session_home: None,
             gemini_binary: "gemini".into(),
+            terminal_input_enabled: true,
         }
     }
 }

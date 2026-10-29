@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Fake HERDR (installed as `herdr`) with one pane that shows a fake Claude Code
-prompt, for terminal-input tests. No sockets, no real terminal, no model.
+"""Fake HERDR (installed as `herdr`) with one pane that replays REAL Claude Code
+2.1.312 screens (tests/fixtures/claude-screens/*.ansi, captured with
+`herdr pane read --format ansi`), for terminal-input tests. The input box of
+the matching screen is replaced by the current input, drawn the way Claude Code
+draws it (the pointer keeps the screen's own style: grey while a turn runs).
+No sockets, no real terminal, no model.
 
 State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
-  pane, pid           the pane and the Claude process HERDR reports in it
-  view                main | transcript | help | subagent | menu
+  pane, pid           the pane and the process HERDR reports in its foreground
+  screens             the fixture directory
+  view                main | transcript | help | subagent | menu | agents | blank
   input               the prompt text (the user's draft); the cursor is at its end
   status              idle | working | blocked (HERDR agent_status)
   vim                 show a vim-mode indicator
   transcript          the session jsonl Enter appends the human record to
   record              human (default) | none (Enter records nothing)
   drop_after_submit   ignore typing after Enter (a restore that fails)
+  garble_once         drop the last character of the next typed chunk
+  fail_enter          `send-keys enter` fails and submits nothing
+The HERDR agent status at each `send-text` goes to $FAKE_HERDR_DIR/typed-status.
 Every command is appended to $FAKE_HERDR_DIR/calls as a JSON argv; Esc,
 Ctrl+C, Ctrl+D and Ctrl+L are also logged to $FAKE_HERDR_DIR/forbidden.
 Typed text is only accepted without a bracketed-paste wrapper, like the
@@ -19,6 +27,7 @@ real `pane send-text`.
 import datetime
 import json
 import os
+import re
 import sys
 import uuid
 
@@ -33,8 +42,8 @@ state = json.load(open(state_file))
 state.setdefault("view", "main")
 state.setdefault("input", "")
 state.setdefault("status", "idle")
-WIDTH = 60
-RULE = "─" * WIDTH
+SGR = re.compile(r"\x1b\[[0-9;]*m")
+POINTER = re.compile("^((?:\x1b\\[[0-9;]*m)*❯[  ])")
 
 
 def save():
@@ -61,37 +70,59 @@ def append(record):
         f.write(json.dumps(record) + "\n")
 
 
+def screen(name):
+    with open(os.path.join(state["screens"], name + ".ansi"), encoding="utf-8") as f:
+        return [line.rstrip("\r") for line in f.read().split("\n")]
+
+
+def plain(line):
+    return SGR.sub("", line)
+
+
+def box(rows):
+    """(pointer row, closing rule row) of the screen's input box."""
+    for i in range(len(rows) - 1, 0, -1):
+        if plain(rows[i]).startswith("❯") and plain(rows[i - 1]).startswith("─"):
+            for j in range(i + 1, len(rows)):
+                if plain(rows[j]).startswith("─"):
+                    return i, j
+    raise SystemExit("fixture without an input box")
+
+
+def splice(rows, text):
+    """Draw `text` in the input box, keeping the pointer's real style."""
+    p, end = box(rows)
+    prefix = POINTER.match(rows[p]).group(1) + "\x1b[0m"
+    lines = text.split("\n")
+    drawn = [prefix + lines[0]] + ["  " + line for line in lines[1:]]
+    return rows[:p] + drawn + rows[end:]
+
+
 def render():
-    rows = ["● earlier output", ""]
-    if state["view"] == "blank":
-        return rows + ["  some other program"]
-    if state["view"] == "transcript":
-        rows.append("  Showing detailed transcript · ctrl+o to toggle")
-        return rows
-    pointer = "❯"
-    if state["view"] == "subagent":
-        pointer = "\x1b[38;5;5m❯\x1b[0m"
-    rows.append(RULE)
-    text = state["input"]
-    if text == "":
-        if state["view"] == "subagent":
-            rows.append(pointer + " \x1b[2mMessage @worker…\x1b[0m")
-        else:
-            rows.append(pointer + " \x1b[7mT\x1b[0m\x1b[2mry \"fix lint errors\"\x1b[0m")
+    view, text, status = state["view"], state["input"], state["status"]
+    if view == "blank":
+        return ["● earlier output", "", "  some other program"]
+    if view == "transcript":
+        return screen("transcript-view")
+    if view == "help":
+        return screen("help")
+    if view == "agents":
+        return screen("agent-list-focused")
+    if view == "menu":
+        rows = screen("slash-menu")
+        return rows if text == "/mo" else splice(rows, text)
+    if view == "subagent":
+        return screen("subagent-view") if text == "" else splice(screen("subagent-view-draft"), text)
+    if status == "blocked":
+        return screen("permission")
+    if status == "working":
+        if text == "":
+            return screen("busy-queued-placeholder" if state.get("queued") else "busy-empty")
+        rows = splice(screen("busy-empty"), text)
     else:
-        lines = text.split("\n")
-        for i, line in enumerate(lines):
-            cursor = "\x1b[7m \x1b[0m" if i == len(lines) - 1 else ""
-            rows.append((pointer + " " if i == 0 else "  ") + line + cursor)
-    rows.append(RULE)
-    if state["view"] == "help":
-        rows += ["  ! for shell mode        / for commands", "  @ for file paths        double tap esc to clear input"]
-    elif state["view"] == "menu":
-        rows += ["  /model      Set the AI model", "  /mcp        Manage MCP servers", "  /memory     Edit memory"]
-    elif state.get("vim"):
-        rows.append("  -- INSERT --")
-    else:
-        rows.append("  ? for shortcuts")
+        rows = screen("idle-empty") if text == "" else splice(screen("idle-empty"), text)
+    if state.get("vim"):
+        rows = rows + ["  -- INSERT --"]
     return rows
 
 
@@ -100,8 +131,10 @@ def type_text(text):
         fail("bracketed_paste_not_expected")
     if state.get("submitted") and state.get("drop_after_submit"):
         return
+    if state.pop("garble_once", False):
+        text = text[:-1]
     for ch in text:
-        if state["view"] == "transcript":
+        if state["view"] in ("transcript", "agents"):
             continue
         if ch == "?" and state["input"] == "" and state["view"] in ("main", "help"):
             state["view"] = "help" if state["view"] == "main" else "main"
@@ -131,6 +164,9 @@ def submit():
     if state.get("record", "human") == "none" or text == "":
         return
     if state["status"] == "working":
+        # Mid-turn: queued as the user's own input; the box shows the
+        # "Press up to edit queued messages" placeholder.
+        state["queued"] = True
         append({"type": "attachment", "uuid": str(uuid.uuid4()), "timestamp": stamp(),
                 "attachment": {"type": "queued_command", "prompt": text, "origin": {"kind": "human"}}})
     else:
@@ -139,7 +175,8 @@ def submit():
     append({"type": "assistant", "timestamp": stamp(),
             "message": {"role": "assistant", "content": [{"type": "text", "text": "terminal reply to: " + text}]}})
     state["status"] = "working"
-    state["working_polls"] = 2
+    # Long enough that the draft is typed back while the turn still runs.
+    state["working_polls"] = 6
 
 
 def keys(names):
@@ -148,8 +185,8 @@ def keys(names):
             with open(os.path.join(base, "forbidden"), "a") as f:
                 f.write(key + "\n")
             continue
-        if state["view"] == "transcript":
-            if key == "ctrl+o":
+        if state["view"] in ("transcript", "agents"):
+            if key == "ctrl+o" and state["view"] == "transcript":
                 state["view"] = "main"
             continue
         if key == "ctrl+o":
@@ -161,6 +198,9 @@ def keys(names):
         elif key == "ctrl+j":
             type_text("\n")
         elif key == "enter" and state["view"] in ("main", "subagent"):
+            if state.get("fail_enter"):
+                save()
+                fail("pane_write_failed")
             submit()
 
 
@@ -171,6 +211,7 @@ if cmd == "agent list":
         state["working_polls"] -= 1
         if state["working_polls"] == 0:
             state["status"] = "idle"
+            state.pop("queued", None)
         save()
     out({"result": {"agents": [{"agent": "claude", "agent_status": status, "pane_id": state["pane"]}],
                     "type": "agent_list"}})
@@ -180,10 +221,12 @@ elif cmd == "pane process-info":
 elif cmd == "pane read":
     if args[2] != state["pane"]:
         fail("pane_not_found")
-    sys.stdout.write("\r\n".join(render()) + "\r\n")
+    sys.stdout.write("\r\n".join(render()))
 elif cmd == "pane send-text":
     if args[2] != state["pane"]:
         fail("pane_not_found")
+    with open(os.path.join(base, "typed-status"), "a") as f:
+        f.write(state["status"] + "\n")
     type_text(" ".join(args[3:]))
     save()
 elif cmd == "pane send-keys":

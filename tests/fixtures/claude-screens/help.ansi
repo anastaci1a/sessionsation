@@ -1,0 +1,18 @@
+
+
+
+
+
+
+
+                                                                                         [0m[38;2;153;153;153mCtrl+Y to paste deleted text[0m
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+❯ 
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [0m[38;2;153;153;153m! for shell mode        double tap esc to clear input      ctrl + shift + _ to undo[0m
+  [0m[38;2;153;153;153m/ for commands[0m          [0m[38;2;153;153;153mshift + tab to auto-accept edits[0m   [0m[38;2;153;153;153mctrl + z to suspend[0m         
+  [0m[38;2;153;153;153m@ for file paths[0m        [0m[38;2;153;153;153mctrl + o for verbose output[0m        [0m[38;2;153;153;153mctrl + v to paste images[0m
+  [0m[38;2;153;153;153m/btw for side question  ctrl + t to toggle tasks           alt + p to switch model[0m
+                          [0m[38;2;153;153;153mbackslash (\) + return (⏎) for [0m    [0m[38;2;153;153;153mctrl + s to stash prompt[0m
+                          [0m[38;2;153;153;153mnewline[0m                            [0m[38;2;153;153;153mctrl + g to edit in $EDITOR[0m
+                                                             [0m[38;2;153;153;153m/keybindings to customize[0m

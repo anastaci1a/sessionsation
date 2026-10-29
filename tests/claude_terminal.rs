@@ -253,8 +253,9 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
         .join("projects")
         .join(f.project.to_str().unwrap().replace('/', "-"))
         .join(format!("{conversation}.jsonl"));
+    let screens = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/claude-screens");
     let base = json!({"pane":"w1:p1","pid":claude.0.id(),"view":"main","input":"","status":"idle",
-        "transcript":transcript});
+        "transcript":transcript,"screens":screens});
     let reset = |patch: Value| {
         let mut v = base.clone();
         for (k, x) in patch.as_object().unwrap() {
@@ -320,10 +321,18 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
     assert_eq!(r["correlation"]["record_type"], "user");
     assert_eq!(r["terminal_input"]["draft"]["restored"], true);
     assert_eq!(r["terminal_input"]["draft"]["chars"], draft.chars().count());
+    assert_eq!(r["terminal_input"]["draft"]["left_in_input"], "draft");
     assert_eq!(
         f.tui()["input"],
         draft,
         "draft back in the prompt, unsubmitted"
+    );
+    // The Enter started the turn: the draft was typed back on the real busy
+    // screen (grey pointer), which the rev 17 cutover refused as a subagent view.
+    assert_eq!(
+        read(&f.herdr.join("typed-status")).lines().last(),
+        Some("working"),
+        "restored while the turn runs"
     );
     assert!(
         !r.to_string().contains("half a thought"),
@@ -365,6 +374,36 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
     assert_eq!(r["correlation"]["record_type"], "queued_command");
     assert_eq!(r["facts"]["folded"], true);
     assert_eq!(r["terminal_input"]["draft"]["present"], false);
+    let queued = |text: &str| {
+        records(&transcript).into_iter().find(|x| {
+            x["attachment"]["type"] == "queued_command" && x["attachment"]["prompt"] == text
+        })
+    };
+    let q = queued("also run clippy.").unwrap();
+    assert_eq!(q["attachment"]["origin"]["kind"], "human");
+    assert_eq!(r["correlation"]["input_uuid"], q["uuid"]);
+
+    // 2b. Mid-turn with a draft in the box (busy screen, grey pointer): the
+    //     steer is queued and the draft typed back while the turn still runs.
+    let busy_draft = "keep this\nbusy draft";
+    reset(json!({"status":"working","working_polls":12,"input":busy_draft}));
+    let b = body("steer", &f.session(&id), "steer with a draft.");
+    f.send_ok(&b);
+    let r = f.settled(b["message_id"].as_str().unwrap());
+    assert_eq!(r["state"], "completed_with_reply", "{r}");
+    assert_eq!(r["correlation"]["record_type"], "queued_command");
+    let q = queued("steer with a draft.").unwrap();
+    assert_eq!(q["attachment"]["origin"]["kind"], "human");
+    assert_eq!(r["correlation"]["input_uuid"], q["uuid"]);
+    assert_eq!(r["terminal_input"]["draft"]["restored"], true, "{r}");
+    assert_eq!(f.tui()["input"], busy_draft);
+    assert!(
+        read(&f.herdr.join("typed-status"))
+            .lines()
+            .rev()
+            .take(2)
+            .all(|s| s == "working")
+    );
 
     // 3. A leading slash is escaped: plain text, not a command.
     reset(json!({}));
@@ -407,6 +446,8 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
             json!({"view":"menu","input":"/mo"}),
             "TERMINAL_OVERLAY_UNIDENTIFIED",
         ),
+        (json!({"view":"subagent"}), "TERMINAL_VIEW_NOT_MAIN"),
+        (json!({"view":"agents"}), "TERMINAL_OVERLAY_UNIDENTIFIED"),
         (json!({"view":"blank"}), "TERMINAL_VIEW_UNDETERMINED"),
         (json!({"vim":true,"input":"x"}), "TERMINAL_VIM_MODE"),
     ] {
@@ -434,6 +475,13 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
     reset(json!({"record":"none"}));
     let mut b = body("steer", &f.session(&id), "lost one.");
     b["timeout_seconds"] = json!(2);
+    let journal_draft = |m: &str| {
+        let j: Value = serde_json::from_str(&read(
+            &f.paths.root.join("claude-steer").join(format!("{m}.json")),
+        ))
+        .unwrap();
+        j["terminal"]["draft"].clone()
+    };
     let enters = |f: &Fixture| {
         f.writes()
             .iter()
@@ -457,7 +505,48 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
     let r = f.settled(b["message_id"].as_str().unwrap());
     assert_eq!(r["state"], "completed_with_reply", "{r}");
     assert_eq!(r["terminal_input"]["draft"]["restored"], false);
-    assert!(r["terminal_input"]["draft"]["restore_error"].is_string());
+    assert_eq!(
+        r["terminal_input"]["draft"]["restore_error"],
+        "restore_unverified"
+    );
+    // Exactly what the box holds is reported; the draft stays in the journal.
+    assert_eq!(r["terminal_input"]["draft"]["left_in_input"], "empty");
+    assert_eq!(r["terminal_input"]["draft"]["left_chars"], 0);
+    assert_eq!(journal_draft(b["message_id"].as_str().unwrap()), "my draft");
+
+    // 7b. The typed text does not match: withdrawn, the draft typed back, no Enter.
+    reset(json!({"input":"garbled draft","garble_once":true}));
+    let before = enters(&f);
+    let b = body("steer", &f.session(&id), "will be garbled.");
+    f.send_ok(&b);
+    let r = f.settled(b["message_id"].as_str().unwrap());
+    assert_eq!(r["state"], "rejected", "{r}");
+    assert_eq!(r["reason"], "TERMINAL_TYPED_TEXT_MISMATCH");
+    assert_eq!(r["terminal_input"]["draft"]["restored"], true);
+    assert_eq!(f.tui()["input"], "garbled draft");
+    assert_eq!(enters(&f), before);
+
+    // 7c. Enter itself fails after the clear: uncertain, and the box is
+    //     reported exactly (the unsent message), the draft kept privately.
+    reset(json!({"input":"enter draft","fail_enter":true}));
+    let b = body("steer", &f.session(&id), "enter fails.");
+    f.send_ok(&b);
+    let r = f.settled(b["message_id"].as_str().unwrap());
+    assert_eq!(r["state"], "delivery_unknown", "{r}");
+    assert_eq!(r["reason"], "TERMINAL_SUBMIT_UNCERTAIN");
+    assert_eq!(r["terminal_input"]["draft"]["restored"], false);
+    assert_eq!(r["terminal_input"]["draft"]["left_in_input"], "message");
+    assert!(
+        r["terminal_input"]["draft"]["restore_error"]
+            .as_str()
+            .unwrap()
+            .starts_with("host_failed")
+    );
+    assert_eq!(f.tui()["input"], "enter fails.");
+    assert_eq!(
+        journal_draft(b["message_id"].as_str().unwrap()),
+        "enter draft"
+    );
 
     // 8. With live steering on, typed input still wins for submit/steer; queue
     //    and an explicit peer_message use the peer path.
@@ -479,5 +568,28 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
     let mut p = body("steer", &s, "explicit peer.");
     p["delivery"] = json!("peer_message");
     assert_eq!(f.send_ok(&p)["delivery_semantics"], "peer_message");
+    // 9. The operator kill switch: rows report terminal input unavailable and
+    //    nothing is typed.
+    let mut config = sessionsation::store::load_config(&f.paths).unwrap();
+    config.terminal_input_enabled = false;
+    sessionsation::store::save_config(&f.paths, &config).unwrap();
+    let s = f.session(&id);
+    assert_eq!(s["input_delivery"]["terminal_input"]["available"], false);
+    assert_eq!(
+        s["input_delivery"]["terminal_input"]["reason"],
+        "TERMINAL_INPUT_DISABLED"
+    );
+    assert_eq!(s["input_delivery"]["semantics"], "peer_message");
+    let before = f.writes().len();
+    let mut t = body("steer", &s, "while disabled.");
+    t["delivery"] = json!("terminal_input");
+    assert!(f.send_err(&t).contains("TERMINAL_INPUT_DISABLED"));
+    assert_eq!(f.writes().len(), before);
+    config.terminal_input_enabled = true;
+    sessionsation::store::save_config(&f.paths, &config).unwrap();
+    assert_eq!(
+        f.session(&id)["input_delivery"]["terminal_input"]["available"],
+        true
+    );
     drop(claude);
 }

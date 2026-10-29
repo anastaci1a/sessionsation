@@ -1,0 +1,18 @@
+
+
+
+
+
+
+
+
+  [0m[38;2;177;185;249m❯ /[0m[1m[38;2;177;185;249mmo[0m[38;2;177;185;249mdel                            Set the AI [0m[1m[38;2;177;185;249mmo[0m[38;2;177;185;249mdel for Claude Code (currently Haiku 5.5)[0m
+  [0m[38;2;153;153;153m  /[0m[1mmo[0m[38;2;153;153;153mbile                           Show QR code to download the Claude [0m[1mmo[0m[38;2;153;153;153mbile app[0m
+  [0m[38;2;153;153;153m  /[0m[1mmo[0m[38;2;153;153;153mrning                          Render the user's [0m[1mmo[0m[38;2;153;153;153mrning brief as a styled HTML artifact, or set it up as a[0m
+                                      [0m[38;2;153;153;153mrecurring weekday task. Use only when the user explicitly asks to run, see, or…[0m
+  [0m[38;2;153;153;153m  /auto-[0m[1mmo[0m[38;2;153;153;153mde-setup                  Teach auto [0m[1mmo[0m[38;2;153;153;153mde about your environment, plus optional rule tweaks[0m
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+❯ /mo
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [0m[1m[38;5;2muser@host[0m[38;2;153;153;153m:[0m[1m[38;5;4m/tmp/ssterm-e2e[0m[38;2;153;153;153m | 5h: 61% left | wk: 72% left[0m
+  [0m[38;2;255;193;7m⏵⏵ auto mode on[0m[38;2;153;153;153m (shift+tab to cycle)[0m

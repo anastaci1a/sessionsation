@@ -5178,6 +5178,25 @@
                 "string",
                 "null"
               ]
+            },
+            "left_in_input": {
+              "description": "What the input box held when the procedure ended after the clear: draft (restored and verified), empty, message (the delivered text), other or unknown (screen unreadable). null when nothing was cleared. Anything but draft keeps the draft in the private journal.",
+              "enum": [
+                "draft",
+                "empty",
+                "message",
+                "other",
+                "unknown",
+                null
+              ]
+            },
+            "left_chars": {
+              "description": "Characters in the input box when left_in_input was recorded (null when unknown).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
             }
           }
         },
@@ -5231,6 +5250,7 @@
           "items": {
             "enum": [
               "TERMINAL_NOT_ATTACHED",
+              "TERMINAL_INPUT_DISABLED",
               "TERMINAL_QUEUE_UNSUPPORTED",
               "TERMINAL_INTERRUPT_UNSUPPORTED",
               "TERMINAL_PAYLOAD_UNSUPPORTED",

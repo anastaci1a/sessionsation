@@ -1015,6 +1015,20 @@ fn cmdline(pid: u32) -> Vec<String> {
 /// A recorded attachment that is a `claude attach` client of this background
 /// session (or sessionsation's own `claude-attach` step just before it execs
 /// that client). Exact PID/start identity; the client is not the agent process.
+/// The exact process (PID and start time) is a live `claude attach` client of
+/// the background session with this job id: the terminal a `bg` session is
+/// typed into. PID reuse is guarded by the start time.
+pub fn is_attach_client(pid: u32, process_start: u64, job_id: &str) -> bool {
+    if job_id.is_empty()
+        || proc_start(pid)
+            .is_none_or(|(state, start)| start != process_start || matches!(state, 'Z' | 'X'))
+    {
+        return false;
+    }
+    cmdline(pid)
+        .windows(2)
+        .any(|w| w[0] == "attach" && w[1] == job_id)
+}
 pub fn attach_client_observed(a: &catalog::Attachment, live: &Live) -> bool {
     if !live.attachable()
         || proc_start(a.pid)
