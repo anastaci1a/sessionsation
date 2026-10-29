@@ -328,6 +328,10 @@ pub fn command(config: &Config, home: &Path) -> std::process::Command {
     for name in STRIPPED_ENV {
         command.env_remove(name);
     }
+    // Claude binds its messaging socket under $XDG_RUNTIME_DIR/cc-socks; elogind deletes
+    // /run/user/<uid> when the last login session closes, unlinking the live socket.
+    // Unset, Claude uses /tmp/cc-socks/<pid>.sock, which it accepts and elogind never removes.
+    command.env_remove("XDG_RUNTIME_DIR");
     command
         .env("CLAUDE_CONFIG_DIR", home)
         .env("DISABLE_AUTOUPDATER", "1");
@@ -1434,6 +1438,7 @@ mod tests {
         assert!(envs.contains(&("CLAUDE_CONFIG_DIR".into(), Some("/tmp/account-home".into()))));
         assert!(envs.contains(&("DISABLE_AUTOUPDATER".into(), Some("1".into()))));
         assert!(envs.contains(&("HOME".into(), Some("/srv/claude-home".into()))));
+        assert!(envs.contains(&("XDG_RUNTIME_DIR".into(), None)));
         let inherited = command(&Config::default(), Path::new("/tmp/h"));
         assert!(!inherited.get_envs().any(|(k, _)| k == "HOME"));
     }

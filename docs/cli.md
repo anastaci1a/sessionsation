@@ -466,6 +466,20 @@ For read-only intermediate assistant updates from an exact tracked turn, use
 `api checkpoints < request.json`; see [public turn checkpoints](contract.md#public-turn-checkpoints-revision-7)
 for identity preconditions, cursors and the distinction from delivery receipts.
 
+### Claude messaging socket location
+
+Claude Code binds its cross-session messaging socket at
+`$XDG_RUNTIME_DIR/cc-socks/<pid>.sock`. elogind deletes `/run/user/<uid>` when the
+last login session closes, which unlinks the socket file while Claude keeps
+listening. Every Claude child sessionsation starts or resumes (interactive,
+hosted, headless, login/auth) therefore has `XDG_RUNTIME_DIR` removed from its
+environment, so Claude falls back to `/tmp/cc-socks/<pid>.sock` (short enough for
+`sun_path`, accepted by Claude's peer directory allowlist, never removed by
+elogind). Gemini children are unchanged. Sessions already running keep their old
+path; resume or restart them to rebind. When the registry names a socket whose
+file is gone, steering reports `PEER_SOCKET_UNLINKED` (noting if the process still
+listens) instead of `PEER_ENDPOINT_UNAVAILABLE`.
+
 ### Batch HERDR Space membership
 
 `sessionsation api placements` reads all known session placements in one batch.

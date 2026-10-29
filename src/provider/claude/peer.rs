@@ -22,6 +22,7 @@ pub const ACCEPT: &str = "accept";
 pub const PROTOCOL: u64 = 1;
 pub const DISABLED: &str = "LIVE_STEERING_DISABLED: inbound peer messages are not accepted by this Claude account; enable with `sessionsation account live-steering claude:<name> --enable`";
 pub const NO_ENDPOINT: &str = "PEER_ENDPOINT_UNAVAILABLE: the live Claude session publishes no usable messaging socket (peer protocol 1)";
+pub const SOCKET_UNLINKED: &str = "PEER_SOCKET_UNLINKED: the session's messaging socket file was removed (e.g. by elogind removing /run/user/<uid>); resume or restart the session to rebind";
 
 pub fn settings_file(home: &Path) -> PathBuf {
     home.join("settings.json")
@@ -129,6 +130,42 @@ pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// The distinct reason for a registry socket path whose file is gone. Read-only:
+/// notes whether the pid still holds a listening unix socket for that path.
+fn unlinked_reason(pid: u32, socket: &Path) -> String {
+    if still_listening(Path::new("/proc"), pid, socket) {
+        format!("{SOCKET_UNLINKED} (the process still listens on the unlinked socket)")
+    } else {
+        SOCKET_UNLINKED.to_string()
+    }
+}
+
+fn still_listening(proc: &Path, pid: u32, socket: &Path) -> bool {
+    let Ok(table) = fs::read_to_string(proc.join("net/unix")) else {
+        return false;
+    };
+    let want = socket.to_string_lossy();
+    let inodes: Vec<&str> = table
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            (f.len() >= 8 && f[7] == want).then_some(f[6])
+        })
+        .collect();
+    let Ok(fds) = fs::read_dir(proc.join(pid.to_string()).join("fd")) else {
+        return false;
+    };
+    fds.flatten().any(|e| {
+        fs::read_link(e.path()).is_ok_and(|t| {
+            t.to_string_lossy()
+                .strip_prefix("socket:[")
+                .and_then(|s| s.strip_suffix(']'))
+                .is_some_and(|i| inodes.contains(&i))
+        })
+    })
+}
+
 /// The verified messaging endpoint of one live session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Endpoint {
@@ -168,10 +205,13 @@ pub fn endpoint(home: &Path, live: &Live) -> Result<Endpoint> {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .context(NO_ENDPOINT)?;
-    ensure!(
-        fs::symlink_metadata(&socket).is_ok_and(|m| m.file_type().is_socket()),
-        "{NO_ENDPOINT}"
-    );
+    match fs::symlink_metadata(&socket) {
+        Ok(m) if m.file_type().is_socket() => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("{}", unlinked_reason(live.pid, &socket))
+        }
+        _ => bail!("{NO_ENDPOINT}"),
+    }
     Ok(Endpoint {
         pid: live.pid,
         process_start: live.process_start,
@@ -183,6 +223,21 @@ pub fn endpoint(home: &Path, live: &Live) -> Result<Endpoint> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unlinked_socket_has_a_distinct_reason() {
+        let d = tempfile::tempdir().unwrap();
+        let missing = d.path().join("cc-socks/1.sock");
+        let r = unlinked_reason(std::process::id(), &missing);
+        assert!(r.starts_with("PEER_SOCKET_UNLINKED"), "{r}");
+        assert!(!r.contains("still listens"));
+        let sock = d.path().join("l.sock");
+        let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        fs::remove_file(&sock).unwrap();
+        let r = unlinked_reason(std::process::id(), &sock);
+        assert!(r.starts_with("PEER_SOCKET_UNLINKED"), "{r}");
+        assert!(r.contains("still listens"), "{r}");
+    }
+
     #[test]
     fn toggle_preserves_other_keys_and_operator_values() {
         let d = tempfile::tempdir().unwrap();

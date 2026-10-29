@@ -1413,6 +1413,14 @@ mode `resume`), `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`,
 `INVALID_EXPIRY`. Message ids are shared with every other store; same id and
 payload return the original receipt, a change is `MESSAGE_ID_CONFLICT`.
 
+Revision 17 (unreleased) also adds the capability/admission reason
+`PEER_SOCKET_UNLINKED`: the live registry names a `messagingSocketPath` but the
+socket file is missing (typically elogind removed `/run/user/<uid>`); the reason text
+adds that the process still listens when `/proc/net/unix` and its fds show it.
+Resume or restart the session to rebind. `PEER_ENDPOINT_UNAVAILABLE` remains for
+genuinely absent or unusable endpoints. Every Claude child sessionsation launches
+now runs without `XDG_RUNTIME_DIR`, so its socket lives under `/tmp/cc-socks`.
+
 Receipt (`ClaudeSteerReceipt`, also from `api receipt`): `delivery_semantics`,
 `priority`, `state`, `reason`, `facts` (`written`, `accepted_native`,
 `input_recorded`, `input_consumed`, `reply_observed`, `reply_final`, `folded`,

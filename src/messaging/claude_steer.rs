@@ -1389,11 +1389,15 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
                     .ok()?
                     .into_iter()
                     .find(|l| l.pid == pid && l.session_id == c)?;
-                claude::peer::endpoint(home, &live).ok()
+                Some(claude::peer::endpoint(home, &live))
             });
-            endpoint
-                .map(|_| ())
-                .ok_or_else(|| claude::peer::NO_ENDPOINT.into())
+            match endpoint {
+                Some(Ok(_)) => Ok(()),
+                Some(Err(e)) if e.to_string().starts_with("PEER_SOCKET_UNLINKED") => {
+                    Err(e.to_string())
+                }
+                _ => Err(claude::peer::NO_ENDPOINT.into()),
+            }
         };
         let typed = terminal_reason(value);
         terminal_status = (typed.is_none(), typed.map(str::to_owned));
