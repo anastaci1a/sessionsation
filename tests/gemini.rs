@@ -1479,3 +1479,34 @@ async fn gemini_chats_archive_restore_and_delete_and_running_ones_are_refused() 
     assert!(!path.exists() && kept.exists());
     assert!(!all().iter().any(|s| s["id"] == id.as_str()));
 }
+
+#[path = "support/fake_launch_host.rs"]
+mod fake_launch_host;
+
+/// The UI path (`api launch start` -> HERDR pane -> `launch-run`) with no
+/// `launch_permissions` in the data-root config starts Gemini in yolo.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ui_launch_without_configured_permissions_starts_gemini_in_yolo() {
+    let f = fixture().await;
+    let config = f.paths.root.join("config.json");
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    saved.as_object_mut().unwrap().remove("launch_permissions");
+    std::fs::write(&config, saved.to_string()).unwrap();
+    f.add_logged_in("personal");
+    let home = f.home("personal");
+    let dir = f.paths.root.parent().unwrap().to_owned();
+    let _pane = fake_launch_host::launch(binary(), &f.paths.root, &dir, "gemini:personal", "ui");
+    wait_for("gemini launch", || home.join("fake-launch-new").exists());
+    let launch = read(&home.join("fake-launch-new"));
+    let native = launch
+        .lines()
+        .find_map(|l| l.strip_prefix("session="))
+        .unwrap()
+        .to_owned();
+    assert!(
+        launch.contains(&format!(
+            "args=--session-id {native} --approval-mode yolo\n"
+        )),
+        "{launch}"
+    );
+}

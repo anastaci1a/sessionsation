@@ -1367,6 +1367,28 @@ esac
     };
     assert_eq!(receipt["workspace_id"], "w1");
     assert_eq!(receipt["session_id"], id);
+    // No launch_permissions configured: the yolo default is verified at
+    // creation and persisted before the plain remote TUI attaches, so a reload
+    // cannot fall back to config.toml or folder-trust defaults.
+    let conversation = receipt["conversation_id"].as_str().unwrap();
+    {
+        let server = f.a.lock().unwrap();
+        let start = &server
+            .calls
+            .iter()
+            .find(|(m, _)| m == "thread/start")
+            .unwrap()
+            .1;
+        assert_eq!(start["approvalPolicy"], "never");
+        assert_eq!(start["permissions"], ":danger-full-access");
+        assert_eq!(
+            persisted(&server, conversation),
+            yolo_settings(conversation)
+        );
+    }
+    let home = f.paths.account("personal").unwrap();
+    wait_until(|| home.join("launch-args").exists());
+    assert_plain_remote_tui(&home, conversation);
     let session = sessionsation::catalog::list(&f.paths)
         .unwrap()
         .into_iter()

@@ -48,6 +48,29 @@ pub fn confirmed_quiescent(thread: &Value, allow_unloaded: bool) -> bool {
     }
 }
 
+/// `thread/settings/update` parameters that persist the verified permissions of a
+/// `thread/resume` result: its approval policy plus the active named profile, or
+/// the exact native sandbox policy when no profile is reported.
+fn settings_update(result: &Value, reviewer: Option<Value>) -> Result<Value> {
+    let id = result["thread"]["id"]
+        .as_str()
+        .context("Codex returned no conversation identity")?;
+    let mut update = json!({"threadId":id,"approvalPolicy":result["approvalPolicy"]});
+    if let Some(profile) = result["activePermissionProfile"]["id"].as_str() {
+        update["permissions"] = json!(profile);
+    } else {
+        ensure!(
+            result["sandbox"]["type"].is_string(),
+            "Codex returned no sandbox policy"
+        );
+        update["sandboxPolicy"] = result["sandbox"].clone();
+    }
+    if let Some(reviewer) = reviewer.filter(Value::is_string) {
+        update["approvalsReviewer"] = reviewer;
+    }
+    Ok(update)
+}
+
 fn verify_permissions(result: &Value, approval: Option<&str>, sandbox: Option<&str>) -> Result<()> {
     if let Some(expected) = approval {
         ensure!(
@@ -241,10 +264,23 @@ impl Control {
                 .remove("sandbox");
             params["permissions"] = json!(":danger-full-access");
         }
+        let reviewer = params.get("approvalsReviewer").cloned();
         let result = self
             .request_timeout(method, params, Duration::from_secs(120))
             .await?;
         verify_permissions(&result, approval.as_deref(), sandbox.as_deref())?;
+        // Resume overrides live only in the loaded thread until a turn records a
+        // turn context. The remote TUI cannot carry permission overrides, so if
+        // Codex unloads the thread before the TUI (or a queued message) loads it
+        // again, a zero-turn conversation would fall back to config.toml/trust
+        // defaults and an older one to its last recorded turn. Persist the
+        // verified choice as native thread settings so every later load keeps it.
+        if method == "thread/resume" && approval.is_some() && sandbox.is_some() {
+            let update = settings_update(&result, reviewer)?;
+            self.request_timeout("thread/settings/update", update, Duration::from_secs(120))
+                .await
+                .context("Codex could not save the conversation's permissions")?;
+        }
         Ok(result)
     }
 
@@ -365,6 +401,25 @@ mod tests {
             thread["status"]["activeFlags"] = json!(["waitingOnApproval"]);
             assert!(!confirmed_quiescent(&thread, false));
         }
+    }
+
+    #[test]
+    fn verified_permissions_persist_as_native_thread_settings() {
+        let full = json!({"thread":{"id":"t1"},"approvalPolicy":"never",
+            "sandbox":{"type":"dangerFullAccess"},"activePermissionProfile":{"id":":danger-full-access"}});
+        assert_eq!(
+            settings_update(&full, None).unwrap(),
+            json!({"threadId":"t1","approvalPolicy":"never","permissions":":danger-full-access"})
+        );
+        let restricted = json!({"thread":{"id":"t1"},"approvalPolicy":"on-request",
+            "sandbox":{"type":"workspaceWrite","networkAccess":false},"activePermissionProfile":null});
+        assert_eq!(
+            settings_update(&restricted, Some(json!("auto_review"))).unwrap(),
+            json!({"threadId":"t1","approvalPolicy":"on-request",
+                "sandboxPolicy":{"type":"workspaceWrite","networkAccess":false},
+                "approvalsReviewer":"auto_review"})
+        );
+        assert!(settings_update(&json!({"approvalPolicy":"never"}), None).is_err());
     }
 
     #[test]

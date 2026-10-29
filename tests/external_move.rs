@@ -93,6 +93,46 @@ struct Server {
     delayed_loaded: usize,
     paginate_loaded: bool,
 }
+/// The native thread settings persisted for `id` after its last verified
+/// `thread/resume`: what a later load (remote TUI or queued input) restores.
+fn persisted(server: &Server, id: &str) -> Value {
+    let resumed = server
+        .calls
+        .iter()
+        .rposition(|(m, p)| m == "thread/resume" && p["threadId"] == id)
+        .expect("no thread/resume");
+    let (_, params) = server.calls[resumed..]
+        .iter()
+        .rfind(|(m, p)| m == "thread/settings/update" && p["threadId"] == id)
+        .expect("verified permissions were not persisted after the last resume");
+    params.clone()
+}
+fn wait_until(ready: impl Fn() -> bool) {
+    let until = Instant::now() + Duration::from_secs(10);
+    while !ready() {
+        assert!(Instant::now() < until, "timed out");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+fn yolo_settings(id: &str) -> Value {
+    json!({"threadId":id,"approvalPolicy":"never","permissions":":danger-full-access"})
+}
+/// The fake TUI rejects permission flags with `--remote`, like Codex itself.
+fn assert_plain_remote_tui(home: &Path, id: &str) {
+    let args = fs::read_to_string(home.join("launch-args")).unwrap();
+    let args: Vec<_> = args.lines().collect();
+    assert_eq!(&args[..3], &["resume", id, "--remote"], "{args:?}");
+    for flag in [
+        "--ask-for-approval",
+        "--sandbox",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-a",
+        "-s",
+        "-c",
+    ] {
+        assert!(!args.contains(&flag), "{args:?}");
+    }
+}
 fn find_rollout(home: &Path, id: &str) -> Option<PathBuf> {
     fn walk(p: &Path, id: &str) -> Option<PathBuf> {
         for e in fs::read_dir(p).ok()?.flatten() {
@@ -283,6 +323,10 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                                     "activePermissionProfile":if profile.is_string() { json!({"id":profile}) } else { Value::Null }})
                             }
                         }
+                        // Native Codex records applied settings in the rollout so a later load
+                        // keeps them; the fixture keeps rollouts byte-stable and relies on
+                        // call capture instead.
+                        "thread/settings/update" if !s.threads.contains_key(id) => json!({"fixture_error":true}),
                         "turn/start" if s.reject_continuation => json!({"fixture_error":true}),
                         "turn/start" => {
                             let t = s.threads.get_mut(id).unwrap();
@@ -869,6 +913,11 @@ async fn busy_move_requires_consent_preserves_permissions_and_can_move_again() {
             .1["sandbox"],
         "workspace-write"
     );
+    // `default` persists the recorded permissions on the destination.
+    assert_eq!(
+        persisted(&f.b.lock().unwrap(), ID)["sandboxPolicy"]["type"],
+        "workspaceWrite"
+    );
     let list = f.invoke(&["sessions", "--all"]);
     assert_eq!(list["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(list["sessions"][0]["account"], "work");
@@ -886,6 +935,8 @@ async fn busy_move_requires_consent_preserves_permissions_and_can_move_again() {
     let j = f.invoke(&["move", "--pane", &pane, "--to", "personal"]);
     let idle_move = f.wait(j["id"].as_str().unwrap(), "complete").await;
     assert_eq!(idle_move["resume_after_move"], false);
+    // Without `--permissions` the switch applies and persists the yolo default.
+    assert_eq!(persisted(&f.a.lock().unwrap(), ID), yolo_settings(ID));
     assert!(
         !f.a.lock()
             .unwrap()
@@ -1900,8 +1951,13 @@ async fn direct_resume_preserves_saved_location_and_applies_launch_permissions()
         assert_eq!(params["approvalPolicy"], expected);
         if expected == "never" {
             assert_eq!(params["permissions"], ":danger-full-access");
+            assert_eq!(persisted(&server, ID), yolo_settings(ID));
         } else {
             assert_eq!(params["sandbox"], "workspace-write");
+            assert_eq!(
+                persisted(&server, ID),
+                json!({"threadId":ID,"approvalPolicy":expected,"sandboxPolicy":{"type":"workspaceWrite"}})
+            );
         }
         assert!(
             !server
@@ -1909,6 +1965,8 @@ async fn direct_resume_preserves_saved_location_and_applies_launch_permissions()
                 .iter()
                 .any(|(method, _)| method == "turn/start")
         );
+        drop(server);
+        assert_plain_remote_tui(&home, ID);
     }
 }
 
@@ -2795,6 +2853,9 @@ async fn restart_replaces_the_terminal_and_refreshes_an_unused_account_backend()
     let list = f.invoke(&["sessions"]);
     assert_eq!(list["sessions"][0]["thread_id"], ID);
     assert_eq!(list["sessions"][0]["account"], "personal");
+    // Restart applies the yolo default and persists it for the plain remote TUI.
+    assert_eq!(persisted(&f.a.lock().unwrap(), ID), yolo_settings(ID));
+    assert_plain_remote_tui(&f.paths.account("personal").unwrap(), ID);
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restarting_one_terminal_does_not_restart_a_backend_used_by_another() {

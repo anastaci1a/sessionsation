@@ -3007,3 +3007,31 @@ async fn delete_removes_only_its_own_empty_project_dir_and_redacts_the_manifest(
         "{manifest}"
     );
 }
+
+#[path = "support/fake_launch_host.rs"]
+mod fake_launch_host;
+
+/// The UI path (`api launch start` -> HERDR pane -> `launch-run`) with no
+/// `launch_permissions` in the data-root config starts Claude in yolo.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ui_launch_without_configured_permissions_starts_claude_in_yolo() {
+    let f = fixture().await;
+    let config = f.paths.root.join("config.json");
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    saved.as_object_mut().unwrap().remove("launch_permissions");
+    std::fs::write(&config, saved.to_string()).unwrap();
+    f.add_logged_in("personal");
+    let home = f.home("personal");
+    let dir = f.paths.root.parent().unwrap().to_owned();
+    let _pane = fake_launch_host::launch(binary(), &f.paths.root, &dir, "claude:personal", "ui");
+    wait_for("claude launch", || home.join("fake-launch-new").exists());
+    let launch = read(&home.join("fake-launch-new"));
+    assert!(
+        launch.contains("bypass=1\n") && launch.contains("is_sandbox=1\n"),
+        "{launch}"
+    );
+    assert!(
+        launch.contains(&format!("cwd={}", dir.join("ui").display())),
+        "{launch}"
+    );
+}

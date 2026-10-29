@@ -295,8 +295,14 @@ permissions at conversation creation, before saving history or attaching a termi
 Explicit `--sandbox`/`--ask-for-approval` or `--full-auto` options still take precedence.
 `run -- --yolo` is accepted as the short alias for
 `--dangerously-bypass-approvals-and-sandbox`. Remote Codex terminals inherit the
-verified server-side permissions; those flags are deliberately not passed to the
-remote terminal command. Resume and account transfer retain recorded permissions
+verified server-side permissions; Codex rejects permission flags on a remote
+resume, so they are never passed to the remote terminal command. Instead every
+verified `thread/resume` (new launch, resume, restart, account switch, saved-session
+open) is followed by `thread/settings/update` with the same approval policy and
+permission profile, which Codex records in the conversation. A conversation Codex
+unloads before its terminal or a queued message loads it again therefore keeps
+those permissions instead of falling back to `config.toml` or folder-trust
+defaults (which gave `on-request`/`read-only` in an untrusted directory). Resume and account transfer retain recorded permissions
 unless an explicit launch override is supplied.
 
 Detach a HERDR viewer with default **Ctrl+B, Q**. This leaves agents running.
