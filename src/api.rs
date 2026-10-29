@@ -569,6 +569,68 @@ fn account_ref(paths: &Paths, id: &str) -> Result<AccountRef> {
     verify_provider(paths, &account)?;
     Ok(account)
 }
+/// Whether an account row can be chosen for new work.
+fn account_selectable(a: &Value, removed: bool) -> bool {
+    !removed && a["deletion_id"].is_null() && a["enabled"] == true && a["auth_required"] == false
+}
+/// Apply the last observed Gemini authentication failure to an account row: a
+/// recorded failure marks it `auth_failed` and in need of a login; once cleared (a
+/// successful run or login, or newer credentials) a failure-only marking is lifted.
+fn project_gemini_auth_failure(paths: &Paths, name: &str, a: &mut Value) {
+    use crate::provider::gemini::auth_failure;
+    let failure = a["config_home"]
+        .as_str()
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| crate::provider::native::default_home(paths, ProviderId::Gemini, name).ok())
+        .and_then(|home| auth_failure::current(paths, name, &home));
+    let fields = auth_failure::fields(failure.as_ref());
+    for key in [
+        "auth_failed",
+        "auth_failure_reason",
+        "auth_failure_observed_at",
+    ] {
+        a[key] = fields[key].clone();
+    }
+    if failure.is_some() {
+        // Credentials exist but the provider rejected them: a login is needed.
+        a["auth_required"] = json!(true);
+        if a["auth_detail"].is_null() {
+            a["auth_detail"] = json!("AUTH_FAILED");
+        }
+    } else if a["auth_detail"] == "AUTH_FAILED" {
+        // The row was marked only for the failure, which no longer holds.
+        a["auth_required"] = json!(false);
+        a["auth_detail"] = Value::Null;
+    }
+}
+/// Refresh the cheap, local Gemini auth-failure projection of a cached state's
+/// accounts, so a failure recorded (or cleared) after the snapshot shows at once.
+fn refresh_cached_accounts(paths: &Paths, value: &mut Value) {
+    let Some(accounts) = value["accounts"].as_array_mut() else {
+        return;
+    };
+    let stale_seconds = crate::store::load_config(paths)
+        .map(|c| c.stale_seconds)
+        .ok();
+    for a in accounts {
+        if a["provider"] != "gemini" {
+            continue;
+        }
+        let Some(name) = a["name"].as_str().map(str::to_owned) else {
+            continue;
+        };
+        if crate::paths::validate_name(&name).is_err() {
+            continue;
+        }
+        project_gemini_auth_failure(paths, &name, a);
+        let removed = a["membership"] == "removed";
+        a["selectable"] = json!(account_selectable(a, removed));
+        if let Some(stale) = stale_seconds {
+            a["prefill"] = account_prefill(a, daemon::now(), stale);
+        }
+    }
+}
 pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value>> {
     accounts
         .into_iter()
@@ -589,36 +651,9 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
                 a["deletion"] = json!(crate::account_deletion::status(paths, id)?);
             }
             if provider == ProviderId::Gemini {
-                let failure = a["config_home"]
-                    .as_str()
-                    .filter(|h| !h.is_empty())
-                    .map(std::path::PathBuf::from)
-                    .or_else(|| crate::provider::native::default_home(paths, provider, name).ok())
-                    .and_then(|home| {
-                        crate::provider::gemini::auth_failure::current(paths, name, &home)
-                    });
-                let fields = crate::provider::gemini::auth_failure::fields(failure.as_ref());
-                for key in [
-                    "auth_failed",
-                    "auth_failure_reason",
-                    "auth_failure_observed_at",
-                ] {
-                    a[key] = fields[key].clone();
-                }
-                if failure.is_some() {
-                    // Credentials exist but the provider rejected them: a login is needed.
-                    a["auth_required"] = json!(true);
-                    if a["auth_detail"].is_null() {
-                        a["auth_detail"] = json!("AUTH_FAILED");
-                    }
-                }
+                project_gemini_auth_failure(paths, name, &mut a);
             }
-            a["selectable"] = json!(
-                !removed
-                    && a["deletion_id"].is_null()
-                    && a["enabled"] == true
-                    && a["auth_required"] == false
-            );
+            a["selectable"] = json!(account_selectable(&a, removed));
             a["prefill"] = account_prefill(
                 &a,
                 daemon::now(),
@@ -1131,6 +1166,7 @@ pub async fn state_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value>
     let observed_at = value["observed_at"].as_i64().unwrap_or(0);
     value["snapshot"] = json!({"observed_at":observed_at,"fresh":daemon::now() - observed_at <= SNAPSHOT_FRESH_SECONDS,"cached":true});
     value["capabilities"] = capabilities();
+    refresh_cached_accounts(paths, &mut value);
     Ok(value)
 }
 pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Value> {
@@ -1802,11 +1838,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 &s.account,
                 Some(&s.conversation_id),
                 (&session, &s.generation()),
-                external::hosting::Placement {
-                    space: space.as_deref(),
-                    label: Some(&s.name),
-                    strict: true,
-                },
+                resume_placement(space.as_deref(), &s),
             )
             .await?
         }
@@ -1836,11 +1868,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 &s.account,
                 Some(&s.conversation_id),
                 (&session, &s.generation()),
-                external::hosting::Placement {
-                    space: space.as_deref(),
-                    label: name.is_some().then_some(s.name.as_str()),
-                    strict: true,
-                },
+                resume_placement(space.as_deref(), &s),
             )
             .await?
         }
@@ -1920,6 +1948,20 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
 }
 
 /// Apply an optional Start Session name before launch (generation-checked).
+/// Where `api resume` opens a session: the new tab (in the given Space, or a new
+/// Space) carries the session's current name, already updated by `--name`. Live
+/// HERDR session names follow the tab label, so a tab left with the default label
+/// would rename the session.
+fn resume_placement<'a>(
+    space: Option<&'a str>,
+    s: &'a catalog::Session,
+) -> external::hosting::Placement<'a> {
+    external::hosting::Placement {
+        space,
+        label: Some(s.name.as_str()).filter(|n| !n.trim().is_empty()),
+        strict: true,
+    }
+}
 fn named(
     paths: &Paths,
     s: catalog::Session,
@@ -2095,6 +2137,33 @@ mod prefill_tests {
         assert!(!p.root.join("launches").exists());
     }
     #[test]
+    fn resume_into_a_space_keeps_the_session_name_as_the_tab_label() {
+        let s = catalog::Session {
+            id: "stable".into(),
+            name: "my-work".into(),
+            provider: "codex".into(),
+            account: "selected".into(),
+            conversation_id: "thread".into(),
+            revision: 1,
+            attachment: None,
+            directory: None,
+            previous_conversation_ids: vec![],
+        };
+        // Without --name the existing name labels the tab (live HERDR names follow the
+        // tab label), never the "sessionsation" default.
+        for space in [Some("w1"), None] {
+            let p = resume_placement(space, &s);
+            assert_eq!(p.space, space);
+            assert_eq!(p.label, Some("my-work"));
+            assert!(p.strict);
+        }
+        let unnamed = catalog::Session {
+            name: " ".into(),
+            ..s
+        };
+        assert_eq!(resume_placement(Some("w1"), &unnamed).label, None);
+    }
+    #[test]
     fn an_unobserved_attachment_is_not_an_inactive_history_source() {
         let s = catalog::Session {
             id: "stable".into(),
@@ -2251,6 +2320,44 @@ mod codex_reason_tests {
 mod gemini_auth_failure_tests {
     use super::*;
     use crate::provider::gemini::auth_failure;
+    #[test]
+    fn a_failure_recorded_after_the_cached_state_shows_at_once_and_clears() {
+        let t = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+        let (home, _) = crate::provider::gemini::create_home(&paths, "g1").unwrap();
+        std::fs::write(home.join(".gemini/oauth_creds.json"), b"{}").unwrap();
+        // A cached state written before the failing run.
+        let row = json!({"name":"g1","provider":"gemini","enabled":true,"auth_required":false,"deletion_id":null,"auth_detail":null});
+        let mut cached = json!({"accounts": project_accounts(&paths, vec![row]).unwrap()});
+        assert_eq!(cached["accounts"][0]["selectable"], true);
+        auth_failure::record(
+            &paths,
+            "g1",
+            &home,
+            auth_failure::tests::UNSUPPORTED_CLIENT_STDERR,
+        )
+        .unwrap();
+        refresh_cached_accounts(&paths, &mut cached);
+        let a = &cached["accounts"][0];
+        assert_eq!(a["auth_failed"], true);
+        assert_eq!(a["auth_required"], true);
+        assert_eq!(a["auth_detail"], "AUTH_FAILED");
+        assert_eq!(a["selectable"], false);
+        assert_eq!(a["prefill"]["eligible"], false);
+        // A later success clears it in the cached rows too.
+        auth_failure::clear(&paths, "g1");
+        refresh_cached_accounts(&paths, &mut cached);
+        let a = &cached["accounts"][0];
+        assert_eq!(a["auth_failed"], false);
+        assert_eq!(a["auth_required"], false);
+        assert!(a["auth_detail"].is_null());
+        assert_eq!(a["selectable"], true);
+        // A Gemini login problem other than the failure is kept.
+        let mut other = json!({"accounts":[{"name":"g1","provider":"gemini","enabled":true,"auth_required":true,"deletion_id":null,"auth_detail":"AUTH_REQUIRED","membership":"enrolled"}]});
+        refresh_cached_accounts(&paths, &mut other);
+        assert_eq!(other["accounts"][0]["auth_required"], true);
+        assert_eq!(other["accounts"][0]["selectable"], false);
+    }
     #[test]
     fn recorded_gemini_auth_failure_makes_the_account_unselectable_until_cleared() {
         let t = tempfile::tempdir().unwrap();

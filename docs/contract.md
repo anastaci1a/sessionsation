@@ -1474,16 +1474,27 @@ endpoint failures keep their own code (`PEER_SOCKET_UNLINKED`, ...), falling bac
 `LIVE_STEERING_DISABLED` message also names why terminal input is ineligible.
 
 Revision 18: Gemini authentication failures. Account rows add `auth_failed`,
-`auth_failure_reason` (`AUTH_CLIENT_UNSUPPORTED`, `AUTH_GRANT_INVALID`,
-`AUTH_UNAUTHENTICATED` or `AUTH_REAUTH_REQUIRED`, with fixed text) and
+`auth_failure_reason` (`AUTH_CLIENT_UNSUPPORTED`, `AUTH_TIER_INELIGIBLE`,
+`AUTH_GRANT_INVALID`, `AUTH_UNAUTHENTICATED`, `AUTH_PERMISSION_DENIED`,
+`AUTH_REAUTH_REQUIRED` or `AUTH_FAILED`, with fixed text) and
 `auth_failure_observed_at`. They come from the last recognizable failure in a headless
-Gemini run's stderr/JSON error or the `account login` terminal, stored in a
+Gemini run's stderr/JSON error (known messages such as Google's "client is no longer
+supported" tier rejection, or the CLI's fatal-authentication exit status 41; a network
+error never counts) or the `account login` terminal, stored in a
 sessionsation-owned file outside the account home (reason code, timestamp and the
 credential file's stat identity only; never raw output or credential content). While
 set, the row also reports `auth_required:true`, `selectable:false` (a login is needed
 although credential files exist) and `auth_detail:"AUTH_FAILED"`. A generic crash never
 sets it; a later successful headless run or successful login clears it, and a newer
 credential file supersedes it. Interactive Gemini launches are not observed.
+`api state --cached` re-reads this local record for Gemini rows, so a failure recorded
+or cleared after the snapshot shows at once. A headless Gemini delivery whose output
+is unparseable after the CLI failed while establishing its sign-in, with the
+conversation file unchanged, ends `rejected` (a definite refusal: nothing reached the
+model) with reason `<CODE>: <fixed text>; nothing was sent to the model`; any other
+unparseable outcome stays `delivery_unknown`. `api resume` (with or without
+`--space`) labels the new tab with the session's current name, so the resumed session
+keeps it.
 
 Receipt (`ClaudeSteerReceipt`, also from `api receipt`): `delivery_semantics`,
 `priority`, `state`, `reason`, `facts` (`written`, `accepted_native`,
