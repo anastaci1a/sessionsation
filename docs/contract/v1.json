@@ -179,6 +179,16 @@
             },
             "add_to_herdr": {
               "type": "boolean"
+            },
+            "archive": {
+              "type": "boolean"
+            },
+            "delete": {
+              "type": "boolean"
+            },
+            "restore": {
+              "type": "boolean",
+              "description": "Archived managed sessions (Codex, and since revision 17 Claude/Gemini)."
             }
           },
           "required": [
@@ -2193,10 +2203,31 @@
           "type": "string"
         },
         "provider": {
-          "const": "codex"
+          "enum": [
+            "codex",
+            "claude",
+            "gemini"
+          ],
+          "description": "Revision 17 adds claude and gemini (moved native files, compression none)."
         },
         "conversation_id": {
           "type": "string"
+        },
+        "previous_conversation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Revision 17, native providers: lineage conversations archived with this entry."
+        },
+        "compression": {
+          "enum": [
+            "gzip",
+            "none"
+          ]
+        },
+        "storage": {
+          "const": "moved_native_files"
         },
         "account_id": {
           "type": "string"
@@ -4923,6 +4954,85 @@
         },
         "interrupted_inputs_state": {
           "const": "interrupted"
+        }
+      }
+    },
+    "NativeConversationArchive": {
+      "description": "Revision 17: capabilities.conversation_archive.native. Claude and Gemini archive/restore/delete move the exact-id files of one catalog entry's conversations (current and previous_conversation_ids); credentials are never read or touched. Per-session availability is capabilities.archive|delete|restore with capability_reasons.",
+      "type": "object",
+      "required": [
+        "version",
+        "since_revision",
+        "providers",
+        "storage",
+        "compression",
+        "restore_target",
+        "scope",
+        "delete_removes_catalog_entry",
+        "delete_removes_merged_aliases",
+        "delete_staging",
+        "dead_registry_entries_deleted",
+        "credentials_touched",
+        "refusal_reasons"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "since_revision": {
+          "const": 17
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "claude",
+              "gemini"
+            ]
+          }
+        },
+        "storage": {
+          "const": "moved_native_files"
+        },
+        "compression": {
+          "const": "none"
+        },
+        "restore_target": {
+          "const": "original_account_home"
+        },
+        "scope": {
+          "const": "exact_conversation_ids_including_previous_conversation_ids"
+        },
+        "delete_removes_catalog_entry": {
+          "const": true
+        },
+        "delete_removes_merged_aliases": {
+          "const": true
+        },
+        "delete_staging": {
+          "const": "deletions"
+        },
+        "dead_registry_entries_deleted": {
+          "type": "boolean"
+        },
+        "credentials_touched": {
+          "const": false
+        },
+        "session_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "refusal_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "contains": {
+            "const": "SESSION_RUNNING"
+          }
         }
       }
     }

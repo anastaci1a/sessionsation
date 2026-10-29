@@ -49,6 +49,9 @@ pub const NATIVE_HOME_BOUND: &str = "native session is bound to its account conf
 pub const NO_INPUT_API: &str = "no supported native input API for a live Claude session";
 pub const LABEL_ONLY: &str =
     "label applied as --name on next launch/resume; live native title unchanged";
+/// Revision 17: per-session archive/delete of stopped native conversations.
+pub const NATIVE_ARCHIVE: &str = "stopped sessions: exact-id conversation files move to sessionsation-managed Archived Sessions and back on restore; refused while running or hosted (see each session's capability_reasons)";
+pub const NATIVE_DELETE: &str = "stopped or archived sessions: exact-id conversation files and the catalog entry are deleted; refused while running or hosted (see each session's capability_reasons)";
 const NO_LIFECYCLE: &str = "no verified Claude process lifecycle control; stop it in its terminal";
 
 /// Revision 16: per-session support (hosted or opted-in live sessions).
@@ -75,8 +78,14 @@ pub fn capabilities() -> ProviderCapabilities {
         account_switch: no(NATIVE_HOME_BOUND),
         relocate: no(NATIVE_HOME_BOUND),
         move_space: no("HERDR space moves are verified only for Codex"),
-        archive: no("Claude transcripts are owned by the account config home"),
-        delete_session: no("Claude transcripts are owned by the account config home"),
+        archive: Capability {
+            supported: true,
+            reason: Some(NATIVE_ARCHIVE),
+        },
+        delete_session: Capability {
+            supported: true,
+            reason: Some(NATIVE_DELETE),
+        },
         submit: input(),
         queue: input(),
         steer: input(),
@@ -765,6 +774,59 @@ fn verify_entry(pid: u32, v: &Value, home: &Path) -> Option<Live> {
                 && j.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
         }),
     })
+}
+
+/// Registry files `sessions/<pid>.json` naming one of `ids` whose process is
+/// gone (no such PID, a different start time, or a zombie). Only `pid`,
+/// `procStart` and `sessionId` are read; `*.key` files are never opened.
+pub fn dead_registry_entries(
+    home: &Path,
+    ids: &std::collections::BTreeSet<String>,
+) -> Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(home.join("sessions")) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = vec![];
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_suffix(".json"))
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let mut bytes = vec![];
+        if fs::File::open(entry.path())
+            .and_then(|f| f.take(64 * 1024).read_to_end(&mut bytes))
+            .is_err()
+        {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        if !v["sessionId"].as_str().is_some_and(|s| ids.contains(s)) {
+            continue;
+        }
+        let recorded = v["procStart"]
+            .as_str()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .or_else(|| v["procStart"].as_u64());
+        let alive = proc_start(pid).is_some_and(|(state, start)| {
+            !matches!(state, 'Z' | 'X') && recorded.is_none_or(|r| r == start)
+        });
+        if !alive {
+            out.push(entry.path());
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// Map a verified PID to a host. A launch-recorded attachment with the same

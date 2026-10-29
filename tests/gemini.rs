@@ -980,7 +980,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     assert_eq!(gemini["operations"]["headless_delivery"]["supported"], true);
     assert_eq!(gemini["headless_delivery"]["automatic_replay"], false);
     assert_eq!(gemini["headless_delivery"]["approval_mode"], "default");
-    assert_eq!(caps["contract_revision"], 16);
+    assert_eq!(caps["contract_revision"], 17);
     assert_eq!(
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
@@ -1391,4 +1391,91 @@ async fn cached_state_serves_the_last_snapshot_without_scanning_or_writing() {
     let refreshed = f.api(&["state"]);
     assert!(refreshed.to_string().contains(&late));
     assert!(f.api(&["state", "--cached"]).to_string().contains(&late));
+}
+
+/// Revision 17: Gemini chats archive, restore and delete like Claude transcripts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gemini_chats_archive_restore_and_delete_and_running_ones_are_refused() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let home = f.home("personal");
+    let (mine, other) = (
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    );
+    let path = chat(&home, &f.project, &mine);
+    let kept = chat(&home, &f.project, &other);
+    let body = read(&path);
+    let job = |command: &str, s: &Value| {
+        let request = uuid::Uuid::new_v4().to_string();
+        let id = s["id"].as_str().unwrap();
+        f.api(&[
+            command,
+            "--session",
+            id,
+            "--expected-generation",
+            s["generation"].as_str().unwrap(),
+            "--request-id",
+            &request,
+            "--confirm",
+            id,
+        ]);
+        let mut last = Value::Null;
+        wait_for(command, || {
+            last = f
+                .api(&["operations"])
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["id"] == request.as_str())
+                .cloned()
+                .unwrap_or(Value::Null);
+            matches!(last["phase"].as_str(), Some("complete" | "failed"))
+        });
+        assert_eq!(last["phase"], "complete", "{last}");
+    };
+    let all = || {
+        f.api(&["state", "--archive-filter", "all"])["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["provider"] == "gemini")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    // A running chat is refused.
+    let live = f.external(&home, "-r", &mine);
+    wait_for("running", || {
+        f.by_conversation(&mine)["availability"] == "running"
+    });
+    let s = f.by_conversation(&mine);
+    assert_eq!(s["capabilities"]["archive"], false);
+    let id = s["id"].as_str().unwrap().to_owned();
+    let e = f.api_error(&[
+        "archive",
+        "--session",
+        &id,
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+        "--request-id",
+        &uuid::Uuid::new_v4().to_string(),
+        "--confirm",
+        &id,
+    ]);
+    assert!(e.contains("SESSION_RUNNING"), "{e}");
+    drop(live);
+    wait_for("stopped", || {
+        f.by_conversation(&mine)["availability"] == "stopped"
+    });
+
+    job("archive", &f.by_conversation(&mine));
+    assert!(!path.exists() && kept.exists());
+    let archived = all().into_iter().find(|s| s["id"] == id.as_str()).unwrap();
+    assert_eq!(archived["availability"], "archived");
+    job("restore-session", &archived);
+    assert_eq!(read(&path), body);
+    job("delete-session", &f.by_conversation(&mine));
+    assert!(!path.exists() && kept.exists());
+    assert!(!all().iter().any(|s| s["id"] == id.as_str()));
 }

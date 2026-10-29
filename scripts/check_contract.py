@@ -83,6 +83,20 @@ for invalid in [{**fixtures["add_to_herdr_attached"], "starts_agent": True}, {**
         raise AssertionError("Add to HERDR must never start an agent or claim an unverified attachment")
 validate(fixtures["space_move_operation"], "SpaceMoveOperation")
 validate(fixtures["archived_session"], "ArchivedSession")
+validate(fixtures["archived_session_claude"], "ArchivedSession")
+validate(fixtures["native_conversation_archive"], "NativeConversationArchive")
+for invalid, definition in [
+    ({**fixtures["native_conversation_archive"], "credentials_touched": True}, "NativeConversationArchive"),
+    ({**fixtures["native_conversation_archive"], "delete_removes_catalog_entry": False}, "NativeConversationArchive"),
+    ({**fixtures["native_conversation_archive"], "refusal_reasons": ["SESSION_HOSTED"]}, "NativeConversationArchive"),
+    ({**fixtures["archived_session_claude"], "provider": "other"}, "ArchivedSession"),
+]:
+    try:
+        validate(invalid, definition)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("native archives must never touch credentials, keep deleted entries or omit the running refusal")
 validate(fixtures["conversation_operation"], "ConversationOperation")
 validate(fixtures["account_deletion"], "AccountDeletion")
 validate(fixtures["account_deletion_preview"], "AccountDeletionPreview")
@@ -167,7 +181,11 @@ with tempfile.TemporaryDirectory() as directory:
         if args == ["placements"]:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 16
+            assert value["result"]["contract_revision"] >= 17
+            validate(value["result"]["conversation_archive"]["native"], "NativeConversationArchive")
+            assert value["result"]["conversation_archive"]["providers"] == ["codex", "claude", "gemini"]
+            for p in value["result"]["providers"]:
+                assert p["operations"]["archive"]["supported"] is True and p["operations"]["delete_session"]["supported"] is True
             assert value["result"]["claude_input_delivery"]["automatic_replay"] is False
             assert value["result"]["claude_input_delivery"]["hosted"]["implicit_bypass"] is False
             assert value["result"]["claude_input_delivery"]["peer_message"]["reply_requires_anchor"] is True

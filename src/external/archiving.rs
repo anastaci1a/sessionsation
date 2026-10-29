@@ -3,6 +3,7 @@
 use super::*;
 use crate::catalog::Session;
 use sha2::{Digest, Sha256};
+pub mod native;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -184,7 +185,9 @@ fn all(paths: &Paths) -> Result<Vec<Archive>> {
 }
 /// Content-free authoritative archive facts, including restored/deleted manifests.
 pub fn metadata(paths: &Paths) -> Result<std::collections::BTreeMap<String, Value>> {
-    Ok(all(paths)?.into_iter().map(|a| (a.session.id, json!({"kind":"managed","state":a.state,"archived":!matches!(a.state.as_str(),"restored"|"deleted"),"archived_at":a.archived_at,"source":"managed_manifest"}))).collect())
+    let mut out: std::collections::BTreeMap<String, Value> = all(paths)?.into_iter().map(|a| (a.session.id, json!({"kind":"managed","state":a.state,"archived":!matches!(a.state.as_str(),"restored"|"deleted"),"archived_at":a.archived_at,"source":"managed_manifest"}))).collect();
+    out.extend(native::metadata(paths)?);
+    Ok(out)
 }
 pub fn hidden(paths: &Paths) -> Result<std::collections::BTreeSet<String>> {
     Ok(all(paths)?
@@ -234,7 +237,7 @@ pub(super) fn file_only_home(paths: &Paths, home: &Path) -> Result<bool> {
 pub fn list(paths: &Paths) -> Result<Value> {
     let catalog = crate::catalog::list(paths)?;
     let storage = root(paths)?;
-    Ok(json!(all(paths)?.into_iter().filter(|a|a.state!="restored"&&a.state!="deleted").map(|a| {
+    let mut items: Vec<Value> = all(paths)?.into_iter().filter(|a|a.state!="restored"&&a.state!="deleted").map(|a| {
         let session=catalog.iter().find(|s|s.id==a.session.id).unwrap_or(&a.session);
         let compressed_bytes = a.blobs.iter().try_fold(0_u64, |sum, b| {
             let metadata = fs::symlink_metadata(storage.join(&session.id).join("bundles").join(&a.bundle).join(&b.blob)).ok()?;
@@ -242,7 +245,9 @@ pub fn list(paths: &Paths) -> Result<Value> {
             sum.checked_add(metadata.len())
         });
         json!({"id":session.id,"name":session.name,"provider":session.provider,"conversation_id":session.conversation_id,"account_id":format!("codex:{}",session.account),"generation":session.generation(),"availability":"archived","state":a.state,"archived_at":a.archived_at,"conversation_created_at":a.facts["conversation_created_at"],"history_file_bytes":a.blobs.iter().map(|b|b.bytes).sum::<u64>(),"compressed_bytes":compressed_bytes,"capabilities":{"restore":true,"delete":true}})
-    }).collect::<Vec<_>>()))
+    }).collect();
+    items.extend(native::list(paths)?);
+    Ok(json!(items))
 }
 pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
     ensure!(t.confirm == t.session, "CONFIRMATION_REQUIRED");
@@ -259,9 +264,16 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         );
         return Ok(o.public());
     }
+    let native_target = crate::catalog::find(paths, &t.session)
+        .ok()
+        .filter(|s| crate::provider::native::of(&s.provider).is_some());
     let archived =
         optional(paths, &t.session)?.is_some_and(|a| a.state != "restored" && a.state != "deleted");
-    let (session, source) = if archived {
+    let (session, source) = if native_target.is_some() {
+        let s = crate::catalog::resolve(paths, &t.session, &t.expected_generation)?;
+        native::admit(paths, kind, &s)?;
+        (s, None)
+    } else if archived {
         ensure!(kind != Kind::Archive, "SESSION_ALREADY_ARCHIVED");
         (
             crate::catalog::resolve(paths, &t.session, &t.expected_generation)?,
@@ -273,7 +285,10 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         ensure!(i.inactive && i.move_id.is_none(), "SESSION_ACTIVE");
         (s, Some(i))
     };
-    ensure!(session.provider == "codex", "PROVIDER_UNSUPPORTED");
+    ensure!(
+        session.provider == "codex" || native_target.is_some(),
+        "PROVIDER_UNSUPPORTED"
+    );
     let _admission = crate::lifecycle::admit(paths, &session.conversation_id, Some(&t.request_id))?;
     crate::lifecycle::ensure_no_handoff(paths, &session.conversation_id, Some(&t.request_id))?;
     ensure!(
@@ -654,6 +669,9 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     o.worker_start = Some(process_info(std::process::id())?.start_time);
     op_save(paths, &o)?;
     let result = match o.kind {
+        _ if crate::provider::native::of(&o.session.provider).is_some() => {
+            native::run(paths, &mut o)
+        }
         Kind::Archive => archive(paths, &mut o).await,
         Kind::Restore => restore(paths, &mut o).await,
         Kind::Delete => delete(paths, &mut o).await,

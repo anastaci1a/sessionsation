@@ -797,7 +797,9 @@ bytes, excluding shared account databases). Creation is never inferred from mtim
 ## Conversation archives
 
 Capability `conversation_archive.version:1` advertises list/archive/restore/delete,
-`compression:"gzip"` and `storage:"sessionsation_data_root"`. `api archives`
+`compression:"gzip"` and `storage:"sessionsation_data_root"` for Codex. Claude and
+Gemini sessions use the same commands since
+[revision 17](#claude-and-gemini-archive-restore-and-delete-revision-17). `api archives`
 returns archived/prepared entries with stable `id`, fresh `generation`, provider
 conversation identity, original creation timestamp, original history bytes and
 `compressed_bytes` (null if stored files cannot be measured safely).
@@ -1473,3 +1475,47 @@ Live steering opt-in (`LiveSteering`): `api account live-steering claude:NAME
 `claude_steer_receipt_peer_unanchored`, `claude_steer_receipt_held`,
 `hosted_session`, `live_steering`, `launch_request_hosted`. Both paths are verified
 against fakes only; see [CLI](cli.md#hosted-claude-sessions-and-steering-revision-16).
+
+### Claude and Gemini archive, restore and delete (revision 17)
+
+Additive; negotiate `contract_revision >= 17`. Claude and Gemini provider entries
+now report `operations.archive` and `operations.delete_session` as
+`supported:true`, and their reasons name the per-session conditions.
+`conversation_archive` adds `providers:["codex","claude","gemini"]` and `native`
+(`NativeConversationArchive`): `version:1`, `since_revision:17`,
+`storage:"moved_native_files"`, `compression:"none"`,
+`restore_target:"original_account_home"`,
+`scope:"exact_conversation_ids_including_previous_conversation_ids"`,
+`delete_removes_catalog_entry:true`, `delete_removes_merged_aliases:true`,
+`delete_staging:"deletions"`, `dead_registry_entries_deleted:true`,
+`credentials_touched:false`, `session_capabilities` and `refusal_reasons`.
+
+The commands, request fields, operation records (`api operations`, kinds
+`archive_session|restore_session|delete_session`) and the no-replay rules are the
+[Codex ones](#conversation-archives). A merged id fails with `SESSION_MERGED`
+naming its survivor. Archive and delete act on the survivor's whole lineage, meaning its
+`conversation_id` and every `previous_conversation_ids` member. Native session rows carry
+`capabilities.archive|delete|restore`. Their `capability_reasons` are:
+
+- `archive`/`delete`: `SESSION_RUNNING` (a verified registry entry or process
+  names a lineage conversation), `SESSION_HOSTED` (a live Sessionsation-hosted
+  worker), `SESSION_STATE_UNKNOWN` (the live probe failed), `ACCOUNT_DELETED`, or
+  for `archive` only `HISTORY_UNAVAILABLE` (no transcript; delete still removes the
+  entry). Otherwise null. `restore` is false with `SESSION_NOT_ARCHIVED`.
+- Archived rows: `availability:"archived"`, `archived:true`, `archive.kind:"managed"`
+  (`storage:"moved_native_files"`), `resume_block_reason:"archived"`, and every
+  capability false except `restore` and `delete`.
+
+Admission and the worker both refuse with `SESSION_RUNNING`, `SESSION_HOSTED`,
+`SESSION_STATE_UNKNOWN`, `SESSION_ALREADY_ARCHIVED` or `SESSION_NOT_ARCHIVED` (Codex
+keeps `SESSION_ACTIVE`). The worker also refuses with `HISTORY_IN_USE` (open
+writer), `HISTORY_SYMLINK`, `HISTORY_CHANGED`, `RESTORE_CONFLICT` (an original path
+exists again) and `ACCOUNT_HOME_CHANGED`. Archive moves the files into Sessionsation
+storage, and Claude Code or Gemini CLI then neither lists nor resumes the conversation.
+Restore moves the identical files back to the same account-home paths. Delete is
+permanent: it removes the files, Claude `sessions/PID.json` entries of dead
+processes that name the conversation, the catalog entry and the merged aliases that resolved to it, so
+the id then fails with `SESSION_NOT_FOUND`. `api archives` lists native entries with
+`compressed_bytes:null`, `compression:"none"` and `previous_conversation_ids`.
+Fixtures: `archived_session_claude`, `native_conversation_archive`. File scope and
+storage are in the [CLI reference](cli.md#claude-and-gemini-archive-and-delete-revision-17).

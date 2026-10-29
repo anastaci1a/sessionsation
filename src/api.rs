@@ -28,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":16,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":17,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -823,7 +823,7 @@ fn gemini_provider() -> Value {
 }
 
 pub fn capabilities() -> Value {
-    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":16,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":17,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -848,6 +848,14 @@ pub fn capabilities() -> Value {
         provider["account_logout"] = json!(true);
     }
     value["state_cached"] = json!(true);
+    // Revision 17: Claude and Gemini archive/restore/delete (moved native files).
+    value["conversation_archive"]["providers"] = json!(["codex", "claude", "gemini"]);
+    value["conversation_archive"]["native"] = json!({"version":1,"since_revision":17,"providers":["claude","gemini"],
+        "storage":"moved_native_files","compression":"none","restore_target":"original_account_home",
+        "scope":"exact_conversation_ids_including_previous_conversation_ids","delete_removes_catalog_entry":true,
+        "delete_removes_merged_aliases":true,"delete_staging":"deletions","dead_registry_entries_deleted":true,
+        "credentials_touched":false,"session_capabilities":["archive","restore","delete"],
+        "refusal_reasons":["SESSION_RUNNING","SESSION_HOSTED","SESSION_STATE_UNKNOWN","ACCOUNT_DELETED","HISTORY_UNAVAILABLE","HISTORY_IN_USE","HISTORY_SYMLINK","SESSION_ALREADY_ARCHIVED","SESSION_NOT_ARCHIVED","RESTORE_CONFLICT","ACCOUNT_HOME_CHANGED"]});
     // Revision 15: steer replies are attributed after the steer's own input item.
     value["steering"]["reply_observation"] = json!({"since_revision":15,"command":"receipt","native_method":"thread/turns/list","items_view":"full","scope":"steered_turn_only","anchor":"user_message_client_id","window":"until_next_user_input_or_turn_end","max_pages":8,"max_text_bytes":65536,"final_only_when_turn_completed":true});
     value["account_reorder"] = json!(true);
@@ -1128,6 +1136,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
             if provider == ProviderId::Claude {
                 crate::messaging::claude_steer::apply_session_input(paths, &mut value, observed.get(&id).map(|(_, h)| h.as_path()));
             }
+            external::archiving::native::apply_session(paths, provider, &mut value, observed.get(&id).map(|(_, h)| h.as_path()), archives.get(&id));
             value["placement"] = placements["memberships"][id.as_str()].clone();
             return value;
         }
@@ -1328,6 +1337,13 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
                 observed.get(id).map(|(_, h)| h.as_path()),
             );
         }
+        external::archiving::native::apply_session(
+            paths,
+            provider,
+            &mut value,
+            observed.get(id).map(|(_, h)| h.as_path()),
+            external::archiving::metadata(paths)?.get(id),
+        );
         value["placement"] = placement;
         value["account_id"] = json!(account_id);
         value["original_host"] = Value::Null;

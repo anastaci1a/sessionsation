@@ -81,8 +81,14 @@ pub fn capabilities() -> ProviderCapabilities {
         account_switch: no(NATIVE_HOME_BOUND),
         relocate: no(NATIVE_HOME_BOUND),
         move_space: no("HERDR space moves are verified only for Codex"),
-        archive: no("Gemini chat files are owned by the account home"),
-        delete_session: no("Gemini chat files are owned by the account home"),
+        archive: Capability {
+            supported: true,
+            reason: Some(super::claude::NATIVE_ARCHIVE),
+        },
+        delete_session: Capability {
+            supported: true,
+            reason: Some(super::claude::NATIVE_DELETE),
+        },
         submit: no(NO_INPUT_API),
         queue: no(NO_INPUT_API),
         steer: no(NO_INPUT_API),
@@ -489,6 +495,17 @@ fn find_chat(home: &Path, session_id: &str) -> Option<Chat> {
                 .is_some_and(|n| n.ends_with(&suffix))
         })
         .find_map(|(slug, p)| chat(&slug, &p).filter(|c| c.session_id == session_id))
+}
+/// Every chat file whose header names this session (archive/delete scope).
+pub fn chat_paths(home: &Path, session_id: &str) -> Vec<PathBuf> {
+    if uuid::Uuid::parse_str(session_id).is_err() {
+        return vec![];
+    }
+    chat_files(home)
+        .into_iter()
+        .filter_map(|(slug, p)| chat(&slug, &p).filter(|c| c.session_id == session_id))
+        .map(|c| c.path)
+        .collect()
 }
 pub fn find_transcript(home: &Path, session_id: &str) -> Option<PathBuf> {
     find_chat(home, session_id).map(|c| c.path)

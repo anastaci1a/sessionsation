@@ -392,7 +392,8 @@ resume, unarchive or delete conversations.
 
 ## Saved and archived conversations
 
-Inactive Codex conversations have separate Archive and Delete actions. Archive
+Inactive Codex conversations have separate Archive and Delete actions (Claude and
+Gemini: [revision 17](#claude-and-gemini-archive-and-delete-revision-17)). Codex Archive
 exports verified gzip history to `DATA_ROOT/archived-sessions/SESSION-ID`, outside
 all credential homes, before removing native copies. Restore retains backend and
 provider conversation IDs and exposes saved history without starting an agent.
@@ -520,9 +521,10 @@ the HERDR tab. Detached or stopped sessions keep their catalog label (`name_sour
 "catalog"`). The native Claude title is never changed live; the label is applied as
 `--name` on the next launch/resume.
 
-Stop, restart, account switch, relocation, Space moves and archive/delete are
-unsupported for Claude and rejected with `UNSUPPORTED_PROVIDER_OPERATION`;
-capabilities give the reason. Submit/Queue/Steer work only for hosted sessions and
+Stop, restart, account switch, relocation and Space moves are unsupported for
+Claude and rejected with `UNSUPPORTED_PROVIDER_OPERATION`; capabilities give the
+reason. Archive, restore and delete work for stopped sessions (see
+[below](#claude-and-gemini-archive-and-delete-revision-17)). Submit/Queue/Steer work only for hosted sessions and
 for live sessions of accounts with live steering enabled (below).
 
 Headless delivery (Agent-DM) uses the existing `api send`/`api receipt` commands.
@@ -652,6 +654,52 @@ Both paths journal under `DATA_ROOT/claude-steer/` before writing, share the
 message-id namespace with every other store and never replay an uncertain send.
 Hosted and live steering are tested against fakes; the fake hosted provider models the priority and cut-turn behaviour observed live with Claude Code 2.1.312.
 
+### Claude and Gemini archive and delete (revision 17)
+
+Stopped Claude and Gemini sessions use the same `api archive`, `api
+restore-session`, `api delete-session` and `api operations` commands as Codex
+([saved and archived conversations](#saved-and-archived-conversations)). The provider
+owns its config home, so these jobs move only exact-id files of the selected
+catalog entry's conversations: its `conversation_id` and every
+`previous_conversation_ids` member of a continued-in lineage. Forked conversations
+(`forkedFrom`) are separate entries and are never included. The files are:
+
+- Claude: `projects/DIR/ID.jsonl`, the `projects/DIR/ID/` sidecar directory
+  (subagent transcripts, tool results), `file-history/ID/`, `session-env/ID/` and
+  `todos/ID-agent-*.json`.
+- Gemini: every `.gemini/tmp/SLUG/chats/session-*.jsonl` whose header names the id.
+
+Credentials (`.credentials.json`, `sessions/*.key`, OAuth files) are never read or
+touched. Symlinks anywhere in scope refuse the job (`HISTORY_SYMLINK`).
+
+- **Archive** records `DATA_ROOT/archived-sessions/SESSION-ID/native.json` (the
+  original path and SHA-256 tree digest of each file or directory). It then moves
+  the files into `native/OPERATION-ID/` in that directory. A rename is used, or
+  copy, verify and remove across file systems; nothing is compressed. Claude Code
+  and Gemini CLI then neither list nor resume the conversation. The entry
+  stays in the catalog with `availability:"archived"` (shown by `api state
+  --archive-filter archived|all` and `api archives`).
+- **Restore** moves the identical files back to the same paths of the same account
+  home. It refuses with `RESTORE_CONFLICT` if any of those paths exists again, and
+  with `ACCOUNT_HOME_CHANGED` or `ACCOUNT_DELETED` if the home moved or is gone. It
+  never starts an agent.
+- **Delete** (stopped or archived) first stages the files under
+  `DATA_ROOT/deletions/native-OPERATION-ID/`, with a `plan.json` journal naming
+  each original path. Claude `sessions/PID.json` registry entries that name a
+  lineage conversation are staged too, but only when their process is gone (PID
+  missing, other start time or zombie). Delete then removes the catalog entry and
+  every merged alias that resolved to it, in `catalog.json` and the `identity.json`
+  record. Finally it removes the staging directory. An interrupted delete leaves
+  the staged files and journal for review. Project directories are not touched.
+
+Every job is refused while the session runs: `SESSION_RUNNING` when a verified
+registry entry (PID and `procStart`) or Gemini process names a lineage conversation,
+and `SESSION_HOSTED` when a live Sessionsation-hosted worker owns one. It is also
+refused with `SESSION_STATE_UNKNOWN` when the live probe fails, and with
+`HISTORY_IN_USE` when a transcript is open for writing. The same codes appear in
+each row's `capability_reasons.archive|delete`. A merged id is refused with
+`SESSION_MERGED`; act on its survivor.
+
 ## Gemini CLI accounts and sessions
 
 Gemini CLI is the third provider. Each account is an isolated `GEMINI_CLI_HOME`
@@ -712,8 +760,9 @@ false); a verified HERDR attachment syncs tab names exactly as for Claude.
 Usage is **unsupported**: Gemini exposes quota only in its interactive `/stats
 model`. Accounts report `usage_state:"unsupported"`, `usage.short`/`weekly` null,
 and nothing is shown as 0%. Account limits cannot be set. Stop, restart, account
-switch, relocation, Space moves, archive/delete and Submit/Queue/Steer are
-unsupported. Add to HERDR is unsupported (`NO_NATIVE_ATTACH`; Gemini has no attach
+switch, relocation, Space moves and Submit/Queue/Steer are unsupported. Archive,
+restore and delete work as for Claude
+([revision 17](#claude-and-gemini-archive-and-delete-revision-17)). Add to HERDR is unsupported (`NO_NATIVE_ATTACH`; Gemini has no attach
 to a running process): stop it, then use Start Session.
 
 Headless delivery uses `api send` as for Claude, for **stopped** sessions

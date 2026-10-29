@@ -1931,5 +1931,42 @@
     "delivery": "next_tool_boundary_or_next_turn",
     "interrupt_option": "steering.interrupt",
     "interrupted_inputs_state": "interrupted"
+  },
+  "archived_session_claude": {
+    "id": "44444444-4444-4444-8444-444444444444",
+    "name": "project",
+    "provider": "claude",
+    "conversation_id": "55555555-5555-4555-8555-555555555555",
+    "previous_conversation_ids": ["66666666-6666-4666-8666-666666666666"],
+    "account_id": "claude:fixture",
+    "generation": "archive-generation",
+    "availability": "archived",
+    "state": "archived",
+    "archived_at": 1800000000,
+    "conversation_created_at": null,
+    "history_file_bytes": 2048,
+    "compressed_bytes": null,
+    "compression": "none",
+    "storage": "moved_native_files",
+    "capabilities": {
+      "restore": true,
+      "delete": true
+    }
+  },
+  "native_conversation_archive": {
+    "version": 1,
+    "since_revision": 17,
+    "providers": ["claude", "gemini"],
+    "storage": "moved_native_files",
+    "compression": "none",
+    "restore_target": "original_account_home",
+    "scope": "exact_conversation_ids_including_previous_conversation_ids",
+    "delete_removes_catalog_entry": true,
+    "delete_removes_merged_aliases": true,
+    "delete_staging": "deletions",
+    "dead_registry_entries_deleted": true,
+    "credentials_touched": false,
+    "session_capabilities": ["archive", "restore", "delete"],
+    "refusal_reasons": ["SESSION_RUNNING", "SESSION_HOSTED", "SESSION_STATE_UNKNOWN", "ACCOUNT_DELETED", "HISTORY_UNAVAILABLE", "HISTORY_IN_USE", "HISTORY_SYMLINK", "SESSION_ALREADY_ARCHIVED", "SESSION_NOT_ARCHIVED", "RESTORE_CONFLICT", "ACCOUNT_HOME_CHANGED"]
   }
 }

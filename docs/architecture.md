@@ -26,6 +26,11 @@ history proofs outside account homes. Durable workers retain operation locks and
 stale-generation checks; Restore installs a credential-free saved-history home.
 Native removal occurs only after the archive export verifies. Permanent session
 deletion uses the existing native deletion path and purges only conversation data.
+Claude and Gemini archives have no native server, so the same workers move the
+exact-id files of the entry's lineage between the account home and managed storage.
+The digest manifest is written first. Delete stages the files under `deletions/`
+before it removes the catalog entry and its aliases
+([CLI](cli.md#claude-and-gemini-archive-and-delete-revision-17)).
 
 Operation discovery reads journals through both their JSON entries and existing,
 stable worker-lock/log entries. Some filesystems can omit a JSON directory entry

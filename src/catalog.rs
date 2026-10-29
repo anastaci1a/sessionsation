@@ -692,6 +692,25 @@ pub(crate) fn invalidate(paths: &Paths, id: &str, generation: &str) -> Result<Se
         Ok(s.clone())
     })
 }
+/// Permanently remove a deleted conversation's entry and every merged id
+/// (alias) that resolves to it; the identity record drops them in the same
+/// transaction. Its identity (provider, account, conversation lineage) must be
+/// unchanged since `before` was read; attachment/directory observations may differ.
+pub(crate) fn remove(paths: &Paths, before: &Session) -> Result<Session> {
+    transaction(paths, |c| {
+        let current = live(c, &before.id)?;
+        ensure!(
+            current.provider == before.provider
+                && current.account == before.account
+                && current.conversation_id == before.conversation_id
+                && current.previous_conversation_ids == before.previous_conversation_ids,
+            "STALE_TARGET"
+        );
+        let removed = c.sessions.remove(&before.id).context("SESSION_NOT_FOUND")?;
+        c.aliases.retain(|_, target| *target != removed.id);
+        Ok(removed)
+    })
+}
 pub fn rename(paths: &Paths, id: &str, generation: &str, name: &str) -> Result<Session> {
     validate_name(name)?;
     transaction(paths, |c| {

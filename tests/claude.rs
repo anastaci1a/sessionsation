@@ -1230,7 +1230,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 16);
+    assert_eq!(caps["contract_revision"], 17);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1809,7 +1809,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 16);
+    assert_eq!(caps["contract_revision"], 17);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2464,4 +2464,390 @@ async fn account_order_is_persistent_shared_and_reorderable() {
             .collect::<Vec<_>>()
     };
     assert_eq!(events, ["mid"]);
+}
+
+// ------------------------------------------------- archive, restore, delete (revision 17)
+
+/// Admit a conversation job and wait for its terminal phase.
+fn conversation_job(f: &Fixture, command: &str, session: &Value) -> Value {
+    let request = uuid::Uuid::new_v4().to_string();
+    let id = session["id"].as_str().unwrap();
+    let op = f.api(&[
+        command,
+        "--session",
+        id,
+        "--expected-generation",
+        session["generation"].as_str().unwrap(),
+        "--request-id",
+        &request,
+        "--confirm",
+        id,
+    ]);
+    assert_eq!(op["id"], request.as_str());
+    let mut last = Value::Null;
+    wait_for(command, || {
+        last = f
+            .api(&["operations"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["id"] == request.as_str())
+            .cloned()
+            .unwrap_or(Value::Null);
+        matches!(last["phase"].as_str(), Some("complete" | "failed"))
+    });
+    assert_eq!(last["phase"], "complete", "{last}");
+    last
+}
+fn all_claude(f: &Fixture) -> Vec<Value> {
+    f.api(&["state", "--archive-filter", "all"])["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["provider"] == "claude")
+        .cloned()
+        .collect()
+}
+fn job_error(f: &Fixture, command: &str, session: &Value) -> String {
+    let id = session["id"].as_str().unwrap();
+    f.api_error(&[
+        command,
+        "--session",
+        id,
+        "--expected-generation",
+        session["generation"].as_str().unwrap(),
+        "--request-id",
+        &uuid::Uuid::new_v4().to_string(),
+        "--confirm",
+        id,
+    ])
+}
+fn tree(dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = vec![];
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<(PathBuf, String)>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else {
+                out.push((p.strip_prefix(base).unwrap().to_path_buf(), read(&p)));
+            }
+        }
+    }
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
+    let f = fixture().await;
+    assert!(
+        f.run(&["account", "add", "--platform", "claude", "personal"])
+            .status
+            .success()
+    );
+    let home = f.home("personal");
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+    let (mine, other) = (
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    );
+    let path = transcript(&home, &f.project, &mine);
+    transcript(&home, &f.project, &other);
+    let dir = path.parent().unwrap().to_path_buf();
+    for (p, body) in [
+        (dir.join(&mine).join("subagents/agent-a1.jsonl"), "sub"),
+        (dir.join(&mine).join("tool-results/t1.txt"), "tool"),
+        (
+            dir.join(&other).join("subagents/agent-b1.jsonl"),
+            "other sub",
+        ),
+        (home.join("file-history").join(&mine).join("v1"), "fh"),
+        (
+            home.join("file-history").join(&other).join("v1"),
+            "other fh",
+        ),
+        (home.join(format!("todos/{mine}-agent-{mine}.json")), "[]"),
+        (home.join(format!("todos/{other}-agent-{other}.json")), "[]"),
+        (home.join(".credentials.json"), "synthetic credential"),
+    ] {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    }
+    let before = tree(&home);
+    let s = by_conversation(&f, &mine);
+    assert_eq!(s["capabilities"]["archive"], true, "{s}");
+    assert_eq!(s["capabilities"]["delete"], true);
+    assert_eq!(s["capabilities"]["restore"], false);
+    let caps = f.api(&["capabilities"]);
+    assert_eq!(caps["contract_revision"], 17);
+    assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
+    let claude = caps["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "claude")
+        .unwrap()
+        .clone();
+    assert_eq!(claude["operations"]["archive"]["supported"], true);
+    assert_eq!(claude["operations"]["delete_session"]["supported"], true);
+    // Confirmation must name the exact session.
+    let wrong = f.api_error(&[
+        "archive",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+        "--request-id",
+        &uuid::Uuid::new_v4().to_string(),
+        "--confirm",
+        &mine,
+    ]);
+    assert!(wrong.contains("CONFIRMATION_REQUIRED"), "{wrong}");
+
+    // Archive moves exactly this conversation's files out of the account home.
+    conversation_job(&f, "archive", &s);
+    for p in [
+        path.clone(),
+        dir.join(&mine),
+        home.join("file-history").join(&mine),
+        home.join(format!("todos/{mine}-agent-{mine}.json")),
+    ] {
+        assert!(!p.exists(), "{} still in the account home", p.display());
+    }
+    let kept: Vec<_> = tree(&home);
+    assert!(
+        before
+            .iter()
+            .filter(|(p, _)| !p.to_string_lossy().contains(&mine))
+            .all(|e| kept.contains(e)),
+        "other sessions' files and credentials are unchanged"
+    );
+    assert!(
+        f.paths
+            .root
+            .join("archived-sessions")
+            .join(s["id"].as_str().unwrap())
+            .join("native.json")
+            .is_file()
+    );
+    assert!(
+        !f.claude_sessions().iter().any(|x| x["id"] == s["id"]),
+        "hidden from the default (active) state"
+    );
+    let archived = all_claude(&f)
+        .into_iter()
+        .find(|x| x["id"] == s["id"])
+        .unwrap();
+    assert_eq!(archived["availability"], "archived");
+    assert_eq!(archived["archived"], true);
+    assert_eq!(archived["archive"]["kind"], "managed");
+    assert_eq!(archived["capabilities"]["restore"], true);
+    assert_eq!(archived["capabilities"]["resume"], false);
+    assert_eq!(archived["capabilities"]["archive"], false);
+    assert_eq!(archived["resume_block_reason"], "archived");
+    let listed = f.api(&["archives"]);
+    let row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == s["id"])
+        .unwrap();
+    assert_eq!(row["provider"], "claude");
+    assert_eq!(row["account_id"], "claude:personal");
+    assert_eq!(row["generation"], archived["generation"]);
+    assert!(
+        job_error(&f, "archive", &archived).contains("SESSION_ALREADY_ARCHIVED"),
+        "archive is not repeated"
+    );
+    assert!(
+        f.api_error(&[
+            "launcher",
+            "resume",
+            "--session",
+            s["id"].as_str().unwrap(),
+            "--expected-generation",
+            archived["generation"].as_str().unwrap()
+        ])
+        .contains("SESSION_STALE"),
+        "an archived transcript cannot be resumed"
+    );
+
+    // Restore returns the identical files to their original paths.
+    conversation_job(&f, "restore-session", &archived);
+    assert_eq!(tree(&home), before);
+    let restored = by_conversation(&f, &mine);
+    assert_eq!(restored["id"], s["id"]);
+    assert_eq!(restored["availability"], "stopped");
+    assert_eq!(restored["capabilities"]["resume"], true);
+    assert_eq!(restored["capabilities"]["archive"], true);
+    assert!(
+        job_error(&f, "restore-session", &restored).contains("SESSION_NOT_ARCHIVED"),
+        "restore needs an archived session"
+    );
+
+    // Delete removes the files, dead registry entries and the catalog entry.
+    let dead = Command::new("true").spawn().unwrap();
+    let dead_pid = dead.id();
+    let mut dead = dead;
+    dead.wait().unwrap();
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    std::fs::write(
+        home.join(format!("sessions/{dead_pid}.json")),
+        json!({"pid":dead_pid,"sessionId":mine,"procStart":"1"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("sessions/1.json"),
+        json!({"pid":1,"sessionId":other,"procStart":"1"}).to_string(),
+    )
+    .unwrap();
+    let op = conversation_job(&f, "delete-session", &by_conversation(&f, &mine));
+    assert!(!path.exists() && !dir.join(&mine).exists());
+    assert!(!home.join("file-history").join(&mine).exists());
+    assert!(!home.join(format!("sessions/{dead_pid}.json")).exists());
+    assert!(
+        home.join("sessions/1.json").exists(),
+        "another session's entry"
+    );
+    assert!(
+        !f.paths
+            .root
+            .join("deletions")
+            .join(format!("native-{}", op["id"].as_str().unwrap()))
+            .exists(),
+        "staging is removed after completion"
+    );
+    assert_eq!(
+        read(&home.join(".credentials.json")),
+        "synthetic credential"
+    );
+    assert!(dir.join(format!("{other}.jsonl")).exists());
+    assert_eq!(
+        read(&dir.join(&other).join("subagents/agent-b1.jsonl")),
+        "other sub"
+    );
+    assert!(!all_claude(&f).iter().any(|x| x["id"] == s["id"]));
+    let gone = f.api_error(&[
+        "session",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        restored["generation"].as_str().unwrap(),
+    ]);
+    assert!(gone.contains("SESSION_NOT_FOUND"), "{gone}");
+    // Never re-registered from leftovers.
+    assert!(
+        !all_claude(&f)
+            .iter()
+            .any(|x| x["conversation_id"] == mine.as_str())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn running_sessions_are_refused_and_merged_lineages_move_together() {
+    let f = fixture().await;
+    assert!(
+        f.run(&["account", "add", "--platform", "claude", "personal"])
+            .status
+            .success()
+    );
+    let home = f.home("personal");
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+    let (a1, a2) = (
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    );
+    let p1 = transcript(&home, &f.project, &a1);
+    let p2 = transcript(&home, &f.project, &a2);
+    let dir = p1.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(dir.join(&a1).join("subagents")).unwrap();
+    std::fs::write(dir.join(&a1).join("subagents/agent-x.jsonl"), "x").unwrap();
+    let (e1, e2) = (by_conversation(&f, &a1), by_conversation(&f, &a2));
+    append(
+        &p1,
+        json!({"type":"continued-in","timestamp":"2026-10-28T00:00:00Z","sessionId":a1,"continuedInSessionId":a2}),
+    );
+    let survivor = by_conversation(&f, &a2);
+    assert_eq!(survivor["id"], e1["id"]);
+    assert_eq!(survivor["previous_conversation_ids"], json!([a1]));
+
+    // Live: a verified registry entry names the newest conversation.
+    let agent = Command::new("sleep")
+        .arg("600")
+        .env("CLAUDE_CONFIG_DIR", &home)
+        .spawn()
+        .unwrap();
+    let pid = agent.id();
+    wait_for("agent exec", || {
+        read(Path::new(&format!("/proc/{pid}/cmdline"))).starts_with("sleep")
+    });
+    registry(&home, pid, &a2, &f.project, "interactive", None);
+    let live = by_conversation(&f, &a2);
+    assert_eq!(live["availability"], "running");
+    for k in ["archive", "delete"] {
+        assert_eq!(live["capabilities"][k], false);
+        assert!(
+            live["capability_reasons"][k]
+                .as_str()
+                .unwrap()
+                .starts_with("SESSION_RUNNING"),
+            "{live}"
+        );
+    }
+    for command in ["archive", "delete-session"] {
+        let e = job_error(&f, command, &live);
+        assert!(e.contains("SESSION_RUNNING"), "{e}");
+    }
+    assert!(p1.exists() && p2.exists(), "nothing moved while running");
+    kill(agent);
+
+    // The merged id is refused with its survivor; the survivor moves its whole lineage.
+    let stopped = by_conversation(&f, &a2);
+    assert_eq!(stopped["availability"], "stopped");
+    let merged = job_error(&f, "archive", &e2);
+    assert!(
+        merged.contains("SESSION_MERGED") && merged.contains(e1["id"].as_str().unwrap()),
+        "{merged}"
+    );
+    conversation_job(&f, "archive", &stopped);
+    assert!(!p1.exists() && !p2.exists() && !dir.join(&a1).exists());
+    assert_eq!(
+        all_claude(&f)
+            .iter()
+            .filter(|x| x["id"] == e1["id"] || x["id"] == e2["id"])
+            .count(),
+        1,
+        "the old conversation is not re-registered while archived"
+    );
+    let archived = all_claude(&f)
+        .into_iter()
+        .find(|x| x["id"] == e1["id"])
+        .unwrap();
+    conversation_job(&f, "restore-session", &archived);
+    assert!(p1.exists() && p2.exists());
+    assert_eq!(read(&dir.join(&a1).join("subagents/agent-x.jsonl")), "x");
+    let back = by_conversation(&f, &a2);
+    assert_eq!(back["id"], e1["id"]);
+    assert_eq!(back["previous_conversation_ids"], json!([a1]));
+
+    conversation_job(&f, "delete-session", &back);
+    assert!(!p1.exists() && !p2.exists() && !dir.join(&a1).exists());
+    assert!(all_claude(&f).is_empty());
+    // The merged alias goes with its survivor, also from the identity record.
+    let identity = read(&f.paths.root.join("session-catalog/identity.json"));
+    assert!(!identity.contains(e2["id"].as_str().unwrap()), "{identity}");
+    let e = f.api_error(&[
+        "session",
+        "--session",
+        e2["id"].as_str().unwrap(),
+        "--expected-generation",
+        e2["generation"].as_str().unwrap(),
+    ]);
+    assert!(e.contains("SESSION_NOT_FOUND"), "{e}");
 }
