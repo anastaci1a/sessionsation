@@ -377,9 +377,7 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
             "peer_message" => false,
             _ => attached.is_ok() && !(request.mode == "queue" && peer_on),
         };
-        // Auto with no usable path: the terminal ineligibility is the actionable reason.
-        let auto_terminal_blocked = wanted == "auto" && !peer_on && attached.is_err();
-        if use_terminal || auto_terminal_blocked {
+        if use_terminal {
             let t = attached.map_err(terminal_unavailable)?;
             ensure!(
                 request.mode != "queue",
@@ -396,7 +394,18 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
                 !interrupt,
                 "PEER_INTERRUPT_UNSUPPORTED: peer messages cannot interrupt a live session; omit steering.interrupt"
             );
-            ensure!(peer_on, "{}", claude::peer::DISABLED);
+            if !peer_on {
+                // Neither path works: keep the leading code (live steering is the toggle that
+                // can enable a peer message) and name why terminal input is ineligible too.
+                match (wanted, &attached) {
+                    ("auto", Err(code)) => bail!(
+                        "{}; terminal input is also unavailable: {}",
+                        claude::peer::DISABLED,
+                        terminal_unavailable(code)
+                    ),
+                    _ => bail!("{}", claude::peer::DISABLED),
+                }
+            }
             let live = claude::live_sessions(&account.home)?
                 .into_iter()
                 .find(|l| l.session_id == c)
@@ -1359,17 +1368,6 @@ fn peer_endpoint_reason(error: &anyhow::Error) -> String {
     let detail: String = text.chars().take(200).collect();
     format!("PEER_ENDPOINT_UNAVAILABLE: {detail}")
 }
-/// Row reason when neither path works: a disabled peer must not hide the terminal blocker.
-fn row_blocked_reason(
-    typed: Option<&str>,
-    terminal_available: bool,
-    peer: &Result<(), String>,
-) -> Option<String> {
-    match (typed, peer) {
-        (Some(t), Err(p)) if p.starts_with("LIVE_STEERING_DISABLED") => Some(t.to_owned()),
-        _ => queue_blocked_reason(terminal_available, peer),
-    }
-}
 /// A hosted worker has no terminal and stops through the hosted API, not a process kill.
 fn apply_hosted_reasons(value: &mut Value, hosted: bool) {
     if !hosted {
@@ -1467,7 +1465,7 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
             } else if peer.is_ok() {
                 m.1 = Some(PEER_SEMANTICS);
             } else {
-                m.2 = row_blocked_reason(typed, typed.is_none(), &peer);
+                m.2 = queue_blocked_reason(typed.is_none(), &peer);
             }
         }
     }
@@ -1520,7 +1518,7 @@ mod tests {
         assert_eq!(queue_blocked_reason(true, &Ok(())), None);
     }
     #[test]
-    fn peer_failures_keep_their_own_code_and_terminal_blocker_wins() {
+    fn peer_failures_keep_their_own_code_and_ok() {
         let e = anyhow::anyhow!(claude::peer::SOCKET_UNLINKED);
         assert!(peer_endpoint_reason(&e).starts_with("PEER_SOCKET_UNLINKED"));
         let e = anyhow::anyhow!("PERMISSION_DENIED");
@@ -1529,22 +1527,6 @@ mod tests {
         assert_eq!(
             peer_endpoint_reason(&e),
             "PEER_ENDPOINT_UNAVAILABLE: socket is stale"
-        );
-        let off: Result<(), String> = Err(claude::peer::DISABLED.into());
-        assert_eq!(
-            row_blocked_reason(Some("NOT_IN_HERDR"), false, &off).as_deref(),
-            Some("NOT_IN_HERDR")
-        );
-        assert!(
-            row_blocked_reason(None, true, &off)
-                .unwrap()
-                .starts_with("TERMINAL_QUEUE_UNSUPPORTED")
-        );
-        let unlinked: Result<(), String> = Err(claude::peer::SOCKET_UNLINKED.into());
-        assert!(
-            row_blocked_reason(Some("NOT_IN_HERDR"), false, &unlinked)
-                .unwrap()
-                .starts_with("PEER_SOCKET_UNLINKED")
         );
         assert_eq!(
             terminal_unavailable("TERMINAL_INPUT_DISABLED").to_string(),

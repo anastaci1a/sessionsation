@@ -1836,6 +1836,13 @@ mod launch_tests {
             .spawn()
             .unwrap();
         let pid = child.id();
+        // The child may still be mid-exec; wait until its argv is visible.
+        for _ in 0..200 {
+            if cmdline(pid).iter().any(|a| a == id) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
         let (_, process_start) = proc_start(pid).unwrap();
         let a = catalog::Attachment {
             host: "herdr".into(),

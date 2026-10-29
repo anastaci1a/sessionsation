@@ -826,6 +826,10 @@ async fn peer_messages_need_opt_in_and_claim_replies_only_with_transcript_proof(
     let err = f.send_err(&body("steer", &s, "x"));
     assert!(err.contains("LIVE_STEERING_DISABLED"), "{err}");
     assert!(
+        err.contains("TERMINAL_NOT_ATTACHED"),
+        "the ineligible terminal path is named too: {err}"
+    );
+    assert!(
         !home.join("fake-peer-frames.jsonl").exists(),
         "nothing sent"
     );
