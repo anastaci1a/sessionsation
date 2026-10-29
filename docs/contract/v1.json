@@ -1715,6 +1715,10 @@
               ]
             }
           }
+        },
+        "permissions": {
+          "description": "Revision 19: launch permissions for this start; omitted uses the launch_permissions setting (built-in default yolo).",
+          "$ref": "#/$defs/LaunchPermissions"
         }
       },
       "if": {
@@ -1943,8 +1947,19 @@
               "type": "boolean"
             }
           }
+        },
+        "permissions": {
+          "description": "Revision 19: launch permissions for this start; omitted uses the launch_permissions setting (built-in default yolo).",
+          "$ref": "#/$defs/LaunchPermissions"
         }
       }
+    },
+    "LaunchPermissions": {
+      "description": "Revision 19: yolo = Codex approval never + sandbox danger-full-access, Claude --dangerously-skip-permissions, Gemini --approval-mode yolo; default = the provider's own configuration (Codex resumes keep recorded permissions).",
+      "enum": [
+        "yolo",
+        "default"
+      ]
     },
     "ResumeReceipt": {
       "type": "object",

@@ -279,6 +279,9 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
         &project,
         "--name",
         "hosted-one",
+        // Explicit: without it the launch_permissions default (yolo) bypasses.
+        "--permissions",
+        "default",
     ]);
     assert_eq!(started["state"], "running", "{started}");
     assert_eq!(started["permission_mode"], "account");
@@ -641,6 +644,10 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
     assert!(
         args.windows(2)
             .any(|w| w[0] == "--permission-mode" && w[1] == "plan")
+    );
+    assert_eq!(
+        launch["is_sandbox"], "",
+        "only bypassing starts opt in to IS_SANDBOX"
     );
     assert!(
         f.api_error(&[

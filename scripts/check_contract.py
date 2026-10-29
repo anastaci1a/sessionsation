@@ -201,6 +201,15 @@ for fixture, definition in [("launch_request", "LaunchRequest"), ("resume_reques
             pass
         else:
             raise AssertionError("Session names longer than 30 must be rejected")
+    # Revision 19: optional launch permissions, yolo or default only.
+    for permissions in ["yolo", "default"]:
+        validate({**fixtures[fixture], "permissions": permissions}, definition)
+    try:
+        validate({**fixtures[fixture], "permissions": "ask"}, definition)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Unknown launch permissions must be rejected")
 validate(fixtures["resume_receipt"], "ResumeReceipt")
 validate(fixtures["error"])
 validate(fixtures["capabilities"])
@@ -219,7 +228,9 @@ with tempfile.TemporaryDirectory() as directory:
         if args == ["placements"]:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 18
+            assert value["result"]["contract_revision"] >= 19
+            assert value["result"]["launch_permissions"]["values"] == ["yolo", "default"]
+            assert value["result"]["launch_permissions"]["built_in_default"] == "yolo"
             validate(value["result"]["conversation_archive"]["native"], "NativeConversationArchive")
             assert value["result"]["conversation_archive"]["providers"] == ["codex", "claude", "gemini"]
             for p in value["result"]["providers"]:

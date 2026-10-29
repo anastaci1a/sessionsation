@@ -320,8 +320,18 @@ pub fn render(v: &Value) -> Option<String> {
 
 // -------------------------------------------------------------------- start
 
-fn resolve_mode(requested: Option<&str>, home: &Path) -> Result<(String, Option<String>)> {
-    let requested = requested.unwrap_or("account");
+/// An explicit mode wins. Without one, the launch permissions decide: `yolo`
+/// bypasses (as an explicit request would); `default` keeps the account's mode.
+fn resolve_mode(
+    requested: Option<&str>,
+    home: &Path,
+    launch: crate::config::LaunchPermissions,
+) -> Result<(String, Option<String>)> {
+    let requested = requested.unwrap_or(if launch.is_yolo() {
+        "bypassPermissions"
+    } else {
+        "account"
+    });
     ensure!(
         PERMISSION_MODES.contains(&requested),
         "INVALID_PERMISSION_MODE: one of {}",
@@ -386,8 +396,12 @@ fn account(paths: &Paths, name: &str) -> Result<Enrolled> {
 /// Admit and start a hosted worker; waits briefly for the provider to run.
 pub async fn start(paths: &Paths, s: Start) -> Result<Host> {
     let enrolled = account(paths, &s.account)?;
-    let (mode, effective) = resolve_mode(s.permission_mode.as_deref(), &enrolled.home)?;
     let config = crate::store::load_config(paths)?;
+    let (mode, effective) = resolve_mode(
+        s.permission_mode.as_deref(),
+        &enrolled.home,
+        config.effective_launch_permissions(),
+    )?;
     claude::prelaunch_gate(&config, &enrolled.home).await?;
     let (session, directory, origin, _lock) = match &s.session {
         Some((id, generation)) => {
@@ -564,6 +578,9 @@ pub async fn worker(paths: &Paths, c: &str) -> Result<()> {
         "CLAUDE_CODE_MESSAGING_TOKEN",
     ] {
         std_command.env_remove(name);
+    }
+    if h.effective_permission_mode.as_deref() == Some("bypassPermissions") {
+        claude::allow_bypass(&mut std_command);
     }
     std::os::unix::process::CommandExt::process_group(&mut std_command, 0);
     let stderr = fs::File::create(dir(paths, c)?.join("provider-stderr.log"))
@@ -1394,6 +1411,7 @@ pub async fn take_over(paths: &Paths, id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::LaunchPermissions;
     fn host(origin: &str, mode: Option<&str>) -> Host {
         Host {
             schema_version: 1,
@@ -1446,7 +1464,7 @@ mod tests {
         );
         let d = tempfile::tempdir().unwrap();
         assert_eq!(
-            resolve_mode(None, d.path()).unwrap(),
+            resolve_mode(None, d.path(), LaunchPermissions::Default).unwrap(),
             ("account".into(), None)
         );
         fs::write(
@@ -1455,18 +1473,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            resolve_mode(None, d.path()).unwrap(),
+            resolve_mode(None, d.path(), LaunchPermissions::Default).unwrap(),
             ("account".into(), Some("default".into())),
             "an account bypass default is never inherited silently"
         );
         assert_eq!(
-            resolve_mode(Some("bypassPermissions"), d.path())
-                .unwrap()
-                .1
-                .as_deref(),
+            resolve_mode(
+                Some("bypassPermissions"),
+                d.path(),
+                LaunchPermissions::Default
+            )
+            .unwrap()
+            .1
+            .as_deref(),
             Some("bypassPermissions")
         );
-        assert!(resolve_mode(Some("yolo"), d.path()).is_err());
+        assert!(resolve_mode(Some("yolo"), d.path(), LaunchPermissions::Default).is_err());
+        // The operator's launch default (yolo) bypasses unless a mode is named.
+        assert_eq!(
+            resolve_mode(None, d.path(), LaunchPermissions::Yolo).unwrap(),
+            ("bypassPermissions".into(), Some("bypassPermissions".into()))
+        );
+        assert_eq!(
+            resolve_mode(Some("plan"), d.path(), LaunchPermissions::Yolo).unwrap(),
+            ("plan".into(), Some("plan".into()))
+        );
+        assert_eq!(
+            resolve_mode(Some("account"), d.path(), LaunchPermissions::Yolo).unwrap(),
+            ("account".into(), Some("default".into()))
+        );
     }
     #[test]
     fn rendering_shows_prompts_and_replies_but_not_lifecycle_noise() {

@@ -85,13 +85,14 @@ for arg in "$@"; do
     exit 0
   fi
 done
-session='' name='' mode=''
+session='' name='' mode='' bypass=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --session-id) session=$2; mode=new; shift 2 ;;
     --resume) session=$2; mode=resume; shift 2 ;;
     --name) name=$2; shift 2 ;;
     --settings) shift 2 ;;
+    --dangerously-skip-permissions) bypass=1; shift ;;
     *) shift ;;
   esac
 done
@@ -107,6 +108,7 @@ fi
 {
   printf 'mode=%s\nsession=%s\nname=%s\ncwd=%s\n' "$mode" "$session" "$name" "$PWD"
   printf 'api_key=%s\nauth_token=%s\nbase_url=%s\n' "${ANTHROPIC_API_KEY:+present}" "${ANTHROPIC_AUTH_TOKEN:+present}" "${ANTHROPIC_BASE_URL:+present}"
+  printf 'bypass=%s\nis_sandbox=%s\n' "$bypass" "${IS_SANDBOX:-}"
   printf 'autoupdater=%s\nconfig_dir=%s\n' "$DISABLE_AUTOUPDATER" "$CLAUDE_CONFIG_DIR"
 } > "$home/fake-launch-$mode"
 printf '{"pid":%s,"sessionId":"%s","cwd":"%s","startedAt":%s,"procStart":"%s","version":"2.1.312","kind":"interactive","name":"%s","nameSource":"flag","status":"busy","updatedAt":%s}\n' \

@@ -773,7 +773,16 @@ async fn busy_move_requires_consent_preserves_permissions_and_can_move_again() {
     assert_eq!(list["sessions"][0]["activity"], "busy");
     assert_eq!(list["sessions"][0]["selectable"], true);
     assert_eq!(list["sessions"][0]["display_account"], "personal");
-    let j = f.invoke(&["move", "--pane", &pane, "--to", "work"]);
+    // `default` keeps the recorded permissions; the job carries the choice to its worker.
+    let j = f.invoke(&[
+        "move",
+        "--pane",
+        &pane,
+        "--to",
+        "work",
+        "--permissions",
+        "default",
+    ]);
     let id = j["id"].as_str().unwrap();
     let again = f.invoke(&["move", "--pane", &pane, "--to", "work"]);
     assert_eq!(again["id"], id);
@@ -1824,8 +1833,15 @@ async fn final_stop_rechecks_queued_input_and_recovery_handles_rejected_archive(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn direct_resume_preserves_saved_location_and_permission_mode() {
-    for approval in ["untrusted", "never"] {
+async fn direct_resume_preserves_saved_location_and_applies_launch_permissions() {
+    // (recorded approval, explicit --permissions, expected approval). Without a
+    // flag the launch_permissions setting (yolo by default) grants full access;
+    // `default` keeps the conversation's recorded permissions.
+    for (approval, permissions, expected) in [
+        ("untrusted", Some("default"), "untrusted"),
+        ("never", Some("default"), "never"),
+        ("untrusted", None, "never"),
+    ] {
         let f = Fixture::new().await;
         let home = f.paths.account("personal").unwrap();
         let old_cwd = f.tmp.path().join("old-project");
@@ -1859,9 +1875,12 @@ async fn direct_resume_preserves_saved_location_and_permission_mode() {
                 "-c",
                 f.tmp.path().to_str().unwrap(),
                 &format!(
-                    "exec {} --data-dir {} run --account personal --thread {ID}",
+                    "exec {} --data-dir {} run --account personal --thread {ID}{}",
                     binary(),
-                    f.paths.root.display()
+                    f.paths.root.display(),
+                    permissions
+                        .map(|p| format!(" --permissions {p}"))
+                        .unwrap_or_default()
                 ),
             ],
         );
@@ -1878,8 +1897,8 @@ async fn direct_resume_preserves_saved_location_and_permission_mode() {
             .unwrap()
             .1;
         assert_eq!(params["cwd"], json!(new_cwd));
-        assert_eq!(params["approvalPolicy"], approval);
-        if approval == "never" {
+        assert_eq!(params["approvalPolicy"], expected);
+        if expected == "never" {
             assert_eq!(params["permissions"], ":danger-full-access");
         } else {
             assert_eq!(params["sandbox"], "workspace-write");
@@ -2248,6 +2267,8 @@ async fn failed_relocation_restart_rolls_back_folder_before_recovery() {
         "--to",
         target.to_str().unwrap(),
         "--move-files",
+        "--permissions",
+        "default",
     ]);
     f.wait(j["id"].as_str().unwrap(), "recovered").await;
     assert!(project.join("file").exists() && !target.exists());

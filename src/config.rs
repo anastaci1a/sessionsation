@@ -31,6 +31,10 @@ pub struct Config {
     /// Days after which an unfinished or uncertain receipt is recorded as
     /// `expired` (`outcome_unknown_at_retention_horizon`) and retired.
     pub receipt_unknown_horizon_days: u32,
+    /// Permission mode for every new provider process Sessionsation starts
+    /// (launch, resume, restart, account switch, hosted and headless runs):
+    /// `yolo` (default) or `default` (the provider's own prompts). Contract revision 19.
+    pub launch_permissions: LaunchPermissions,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -52,6 +56,7 @@ impl Default for Config {
             terminal_input_enabled: true,
             receipt_retention_days: 14,
             receipt_unknown_horizon_days: 90,
+            launch_permissions: LaunchPermissions::Yolo,
         }
     }
 }
@@ -117,5 +122,72 @@ impl Config {
             "claude_session_home must be absolute"
         );
         Ok(())
+    }
+}
+
+/// Permission mode for a newly started provider process.
+/// - `yolo`: Codex approval `never` + sandbox `danger-full-access`; Claude
+///   `--dangerously-skip-permissions`; Gemini `--approval-mode yolo`.
+/// - `default`: no override; the provider's own configuration and prompts
+///   (Codex resumes keep the conversation's recorded permissions).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchPermissions {
+    #[default]
+    Yolo,
+    Default,
+}
+impl LaunchPermissions {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Yolo => "yolo",
+            Self::Default => "default",
+        }
+    }
+    pub fn is_yolo(self) -> bool {
+        self == Self::Yolo
+    }
+}
+
+static LAUNCH_OVERRIDE: std::sync::OnceLock<LaunchPermissions> = std::sync::OnceLock::new();
+
+/// Record this process's explicit per-launch choice (`--permissions`, or the
+/// `permissions` field of an admitted launch/resume request). First call wins.
+pub fn override_launch_permissions(mode: LaunchPermissions) {
+    let _ = LAUNCH_OVERRIDE.set(mode);
+}
+/// The explicit per-launch choice of this process, if any.
+pub fn launch_permissions_override() -> Option<LaunchPermissions> {
+    LAUNCH_OVERRIDE.get().copied()
+}
+impl Config {
+    /// The mode for a provider process started now: explicit override, then config.
+    pub fn effective_launch_permissions(&self) -> LaunchPermissions {
+        launch_permissions_override().unwrap_or(self.launch_permissions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn launch_permissions_default_to_yolo_and_parse_both_modes() {
+        assert_eq!(
+            Config::default().launch_permissions,
+            LaunchPermissions::Yolo
+        );
+        let legacy: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.launch_permissions, LaunchPermissions::Yolo);
+        let chosen: Config =
+            serde_json::from_value(serde_json::json!({"launch_permissions":"default"})).unwrap();
+        assert_eq!(chosen.launch_permissions, LaunchPermissions::Default);
+        assert!(
+            serde_json::from_value::<Config>(serde_json::json!({"launch_permissions":"ask"}))
+                .is_err()
+        );
+        assert_eq!(
+            serde_json::to_value(Config::default()).unwrap()["launch_permissions"],
+            "yolo"
+        );
     }
 }

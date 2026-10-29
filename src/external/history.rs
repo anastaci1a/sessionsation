@@ -278,6 +278,7 @@ pub(super) async fn prepare_children(
     target: &mut Control,
     destinations: &std::collections::BTreeMap<String, PathBuf>,
 ) -> Result<()> {
+    let mode = crate::store::load_config(paths)?.effective_launch_permissions();
     for check in job.history_checks.clone() {
         if check.thread_id == job.source.thread_id {
             continue;
@@ -287,13 +288,12 @@ pub(super) async fn prepare_children(
             .context("copied child history is missing")?;
         job.prepared_threads.push(check.thread_id.clone());
         save_job(paths, job)?;
-        let (approval, sandbox) = recorded_permissions(rollout)
-            .unwrap_or_else(|| ("never".into(), "danger-full-access".into()));
-        if let Err(error) = target
-            .resume_with_permissions(
-                json!({"threadId":check.thread_id,"path":rollout,"excludeTurns":true,"approvalPolicy":approval,"sandbox":sandbox}),
-            )
-            .await {
+        let mut params = json!({"threadId":check.thread_id,"path":rollout,"excludeTurns":true});
+        set_permissions(
+            &mut params,
+            start_permissions(mode, recorded_permissions(rollout)),
+        );
+        if let Err(error) = target.resume_with_permissions(params).await {
             if error.to_string().starts_with("Codex rejected") {
                 job.prepared_threads.retain(|id| id != &check.thread_id);
                 save_job(paths, job)?;

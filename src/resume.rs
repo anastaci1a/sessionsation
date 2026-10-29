@@ -37,6 +37,10 @@ pub struct Request {
     /// Explicit consent for an interrupted saved turn, never other risks.
     #[serde(default)]
     pub confirm_unfinished: bool,
+    /// Revision 19: launch permissions for this start (`yolo` | `default`);
+    /// omitted uses the `launch_permissions` setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<crate::config::LaunchPermissions>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Receipt {
@@ -332,6 +336,9 @@ fn validate_resume_history(source: &external::Instance, r: &Request) -> Result<(
 }
 async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     let r = &receipt.request;
+    if let Some(mode) = r.permissions {
+        crate::config::override_launch_permissions(mode);
+    }
     let id = &r.request_id;
     let (_, source) = validate(paths, r).await?;
     ensure!(
@@ -464,6 +471,9 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
         r.phase = "starting_provider".into();
         Ok(())
     })?;
+    if let Some(mode) = r.request.permissions {
+        crate::config::override_launch_permissions(mode);
+    }
     let result = external::run_account_resume_requested(
         paths,
         &codex_account(&r.request)?,

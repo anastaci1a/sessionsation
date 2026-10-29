@@ -63,6 +63,36 @@ part of installing this CLI. Stable IDs live under `session-catalog/`; retain th
 catalog and original receipts with the root. An unrelated default Codex home or
 unmanaged terminal is not automatically adopted.
 
+### Launch permissions (revision 19)
+
+Every provider process Sessionsation starts for a session (Start Session /
+`api launch`, `run`, `resume`, `api resume`, `api resume-launch`, Codex restart,
+account switch, move recovery, saved-session open and hosted Claude) uses one
+permission mode, the `launch_permissions` setting:
+
+| Mode | Codex | Claude Code | Gemini CLI |
+|---|---|---|---|
+| `yolo` (default) | `thread/start`/`thread/resume` with approval `never` and the `:danger-full-access` profile | `--dangerously-skip-permissions`, `IS_SANDBOX=1` and the flag setting `skipDangerousModePermissionPrompt` | `--approval-mode yolo` |
+| `default` | no override for new threads; resumes keep the conversation's recorded approval/sandbox | no flag | no flag |
+
+```sh
+sessionsation config set launch_permissions default   # or yolo
+sessionsation --permissions default run --account claude:personal
+sessionsation run --account personal --permissions yolo
+```
+
+`--permissions yolo|default` is accepted by every command and overrides the
+setting for the processes that command starts, including a HERDR pane it
+launches or a move job it queues. `api launch start` and `api resume-launch start`
+requests take the same choice as `"permissions":"yolo"|"default"`; omitted, the
+setting applies. Explicit Codex options after `--` (`-a`, `-s`,
+`--dangerously-bypass-approvals-and-sandbox`, `--full-auto`) and a hosted Claude
+`permission_mode` still win. Claude refuses permission bypass as root unless
+`IS_SANDBOX=1`, which is set only for bypassing starts. Codex message recovery
+restores the recorded permissions exactly, and headless delivery (`api send`
+`mode:"resume"|"new"`) is unchanged: Claude prints without bypass and Gemini uses
+`--approval-mode default`. A running session keeps its mode until it is restarted.
+
 ## Accounts
 
 For a fresh private data root, `sessionsation setup` initializes its metadata
@@ -601,9 +631,12 @@ sessionsation api hosted respond --session ID --request-id R --allow|--deny [--m
 at launch: `account` (default) passes no flag, so the account's normal mode applies,
 except that an account default of `bypassPermissions` is replaced by `default`;
 `default`, `acceptEdits`, `plan` and `bypassPermissions` are passed explicitly.
-Tool permission prompts arrive as `can_use_tool` requests and stay pending (in
-`api hosted status`, the session row's `hosted.pending_permissions` and the viewer)
-until answered with `api hosted respond`; nothing is auto-approved.
+Without a `permission_mode`, the [launch permissions](#launch-permissions-revision-19)
+decide: `yolo` (the default) starts the worker as `bypassPermissions`, and `default`
+behaves as `account`. Otherwise tool permission prompts arrive as `can_use_tool`
+requests and stay pending (in `api hosted status`, the session row's
+`hosted.pending_permissions` and the viewer) until answered with
+`api hosted respond`; nothing is auto-approved.
 
 The worker is the only writer: its lock (`DATA_ROOT/claude-hosted/UUID/worker.lock`)
 blocks interactive resume, headless delivery and a second host. Detached from the

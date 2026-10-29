@@ -63,6 +63,10 @@ pub struct Request {
     /// Revision 16, Claude only: start a Sessionsation-hosted session whose pane shows the viewer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hosted: Option<Hosted>,
+    /// Revision 19: launch permissions for this start (`yolo` | `default`);
+    /// omitted uses the `launch_permissions` setting. A hosted `permission_mode` wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<crate::config::LaunchPermissions>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -560,6 +564,9 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
         r.phase = "starting_provider".into();
         Ok(())
     })?;
+    if let Some(mode) = receipt.request.permissions {
+        crate::config::override_launch_permissions(mode);
+    }
     let result = match AccountRef::parse(&receipt.request.account_id) {
         Err(error) => Err(error),
         Ok(AccountRef {

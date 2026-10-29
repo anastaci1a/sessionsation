@@ -6,7 +6,7 @@
 use super::{Capability, ProviderCapabilities, ProviderId, no, yes};
 use crate::{
     catalog,
-    config::Config,
+    config::{Config, LaunchPermissions},
     model::State,
     paths::{Paths, atomic_write, private_dir, validate_name},
 };
@@ -423,15 +423,39 @@ pub async fn prelaunch_gate(config: &Config, home: &Path) -> Result<()> {
 
 /// Settings merged at launch: route the statusline through the usage recorder,
 /// which then chains to the account's own statusline command.
-pub fn launch_settings(executable: &Path) -> String {
-    json!({"statusLine":{"type":"command","command":format!(
+/// With `yolo`, the flag-level `skipDangerousModePermissionPrompt` accepts the
+/// one-time bypass dialog so a new account never stops at it.
+pub fn launch_settings(executable: &Path, mode: LaunchPermissions) -> String {
+    let mut settings = json!({"statusLine":{"type":"command","command":format!(
         "{} {HOOK_MARKER}",
         crate::terminal::shell_quote(&executable.to_string_lossy())
-    )}})
-    .to_string()
+    )}});
+    if mode.is_yolo() {
+        settings["skipDangerousModePermissionPrompt"] = json!(true);
+    }
+    settings.to_string()
 }
-pub fn new_argv(config: &Config, session_id: &str, name: &str, settings: &str) -> Vec<String> {
-    [
+/// Claude's bypass flag for a `yolo` start.
+pub const YOLO_FLAG: &str = "--dangerously-skip-permissions";
+/// Claude refuses permission bypass as root unless it is told it runs in a
+/// deliberate sandbox (`IS_SANDBOX=1`); set it only for bypassing starts.
+pub fn allow_bypass(command: &mut std::process::Command) {
+    command.env("IS_SANDBOX", "1");
+}
+fn with_permissions(mut argv: Vec<String>, mode: LaunchPermissions) -> Vec<String> {
+    if mode.is_yolo() {
+        argv.push(YOLO_FLAG.into());
+    }
+    argv
+}
+pub fn new_argv(
+    config: &Config,
+    session_id: &str,
+    name: &str,
+    settings: &str,
+    mode: LaunchPermissions,
+) -> Vec<String> {
+    let argv = [
         config.claude_binary.as_str(),
         "--session-id",
         session_id,
@@ -441,10 +465,17 @@ pub fn new_argv(config: &Config, session_id: &str, name: &str, settings: &str) -
         settings,
     ]
     .map(str::to_owned)
-    .to_vec()
+    .to_vec();
+    with_permissions(argv, mode)
 }
-pub fn resume_argv(config: &Config, session_id: &str, name: &str, settings: &str) -> Vec<String> {
-    [
+pub fn resume_argv(
+    config: &Config,
+    session_id: &str,
+    name: &str,
+    settings: &str,
+    mode: LaunchPermissions,
+) -> Vec<String> {
+    let argv = [
         config.claude_binary.as_str(),
         "--resume",
         session_id,
@@ -454,7 +485,8 @@ pub fn resume_argv(config: &Config, session_id: &str, name: &str, settings: &str
         settings,
     ]
     .map(str::to_owned)
-    .to_vec()
+    .to_vec();
+    with_permissions(argv, mode)
 }
 pub fn login_argv(config: &Config) -> Vec<String> {
     vec![
@@ -1737,7 +1769,12 @@ mod tests {
     #[test]
     fn launch_plans_set_native_identity_name_and_settings() {
         let config = Config::default();
-        let settings = launch_settings(Path::new("/opt/session sation"));
+        let settings =
+            launch_settings(Path::new("/opt/session sation"), LaunchPermissions::Default);
+        assert!(
+            serde_json::from_str::<Value>(&settings).unwrap()["skipDangerousModePermissionPrompt"]
+                .is_null()
+        );
         let v: Value = serde_json::from_str(&settings).unwrap();
         assert!(
             v["statusLine"]["command"]
@@ -1753,7 +1790,7 @@ mod tests {
         );
         let id = "11111111-1111-4111-8111-111111111111";
         assert_eq!(
-            new_argv(&config, id, "label", &settings),
+            new_argv(&config, id, "label", &settings, LaunchPermissions::Default),
             [
                 "claude",
                 "--session-id",
@@ -1764,7 +1801,22 @@ mod tests {
                 settings.as_str()
             ]
         );
-        assert_eq!(resume_argv(&config, id, "label", &settings)[1], "--resume");
+        assert_eq!(
+            resume_argv(&config, id, "label", &settings, LaunchPermissions::Default)[1],
+            "--resume"
+        );
+        // yolo: Claude's bypass flag plus the flag-level dialog acceptance.
+        let yolo = launch_settings(Path::new("/x"), LaunchPermissions::Yolo);
+        assert_eq!(
+            serde_json::from_str::<Value>(&yolo).unwrap()["skipDangerousModePermissionPrompt"],
+            true
+        );
+        for argv in [
+            new_argv(&config, id, "label", &yolo, LaunchPermissions::Yolo),
+            resume_argv(&config, id, "label", &yolo, LaunchPermissions::Yolo),
+        ] {
+            assert_eq!(argv.last().unwrap(), "--dangerously-skip-permissions");
+        }
     }
 
     fn sleeper() -> (std::process::Child, u64) {

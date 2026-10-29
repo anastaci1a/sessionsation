@@ -422,6 +422,11 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
         launch.contains("api_key=\n") && launch.contains("base_url=\n"),
         "{launch}"
     );
+    // Launch permissions default to yolo: bypass flag plus the root sandbox opt-in.
+    assert!(
+        launch.contains("bypass=1\n") && launch.contains("is_sandbox=1\n"),
+        "{launch}"
+    );
     assert!(launch.contains("autoupdater=1"), "{launch}");
     assert!(
         launch.contains(&format!("config_dir={}", home.display())),
@@ -577,8 +582,16 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
         &generation,
     ]);
     assert_eq!(plan["cwd"], json!(f.project));
+    // An explicit `--permissions default` resume starts Claude without bypass.
     let child = f
-        .command(&["resume", &id, "--expected-generation", &generation])
+        .command(&[
+            "resume",
+            &id,
+            "--expected-generation",
+            &generation,
+            "--permissions",
+            "default",
+        ])
         .current_dir("/")
         .spawn()
         .unwrap();
@@ -587,6 +600,10 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
     });
     let resume = read(&home.join("fake-launch-resume"));
     assert!(resume.contains(&format!("session={native}")), "{resume}");
+    assert!(
+        resume.contains("bypass=\n") && resume.contains("is_sandbox=\n"),
+        "{resume}"
+    );
     assert!(resume.contains("name=relabeled"), "{resume}");
     assert!(
         resume.contains(&format!("cwd={}", f.project.display())),
@@ -1230,8 +1247,11 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 18);
+    assert_eq!(caps["contract_revision"], 19);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
+    assert_eq!(caps["launch_permissions"]["since_revision"], 19);
+    assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
+    assert_eq!(caps["launch_permissions"]["request_field"], "permissions");
     assert_eq!(
         caps["receipt_retention"]["retired_error"],
         "RECEIPT_RETIRED"
@@ -1814,7 +1834,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 18);
+    assert_eq!(caps["contract_revision"], 19);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2588,7 +2608,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 18);
+    assert_eq!(caps["contract_revision"], 19);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()

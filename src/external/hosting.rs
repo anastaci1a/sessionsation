@@ -415,12 +415,15 @@ async fn launch_inner(
         exe.to_string_lossy().into_owned(),
         "--data-dir".into(),
         paths.root.to_string_lossy().into_owned(),
-        "run".into(),
-        "--account".into(),
-        account.into(),
     ];
+    // The pane's process starts the provider: carry an explicit choice there.
+    if let Some(mode) = crate::config::launch_permissions_override() {
+        args.extend(["--permissions".into(), mode.as_str().into()]);
+    }
+    let prefix = args.len();
+    args.extend(["run".into(), "--account".into(), account.into()]);
     if let Some((id, generation)) = expected {
-        args.truncate(3);
+        args.truncate(prefix);
         args.extend([
             "resume".into(),
             id.into(),

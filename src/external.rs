@@ -1,6 +1,7 @@
 //! Account-aware Codex lifecycle, independent of terminal placement.
 pub(crate) use crate::terminal::{shell_quote, tmux};
 use crate::{
+    config::LaunchPermissions,
     daemon,
     paths::{Paths, atomic_write, private_dir, validate_name},
 };
@@ -482,6 +483,9 @@ pub struct Job {
     pub history_checks: Vec<history::HistoryCheck>,
     #[serde(default)]
     pub prepared_threads: Vec<String>,
+    /// Explicit launch permissions of the queuing command; None uses the setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<LaunchPermissions>,
 }
 fn default_job_kind() -> String {
     "account".into()
@@ -1370,7 +1374,11 @@ async fn run_account_thread_inner(
     };
     // Choose permissions before allocating the native thread: a loaded thread
     // can retain its creation profile despite later remote TUI/resume options.
-    let mut params = json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"danger-full-access"});
+    // Launch permissions (config `launch_permissions` or an explicit
+    // `--permissions`) apply to every start; explicit Codex options below win.
+    let mode = config.effective_launch_permissions();
+    let mut params = json!({"cwd":cwd});
+    set_permissions(&mut params, start_permissions(mode, None));
     if let Some(id) = requested {
         let saved = control.thread_for_state(id).await?;
         ensure!(
@@ -1390,11 +1398,12 @@ async fn run_account_thread_inner(
             .as_deref()
             .and_then(recorded_permissions);
         if recovery.is_some() {
+            // Message recovery restores the conversation exactly as it was.
             ensure!(recorded.is_some(), "RECOVERY_PERMISSIONS_MISSING");
+            set_permissions(&mut params, recorded);
+        } else {
+            set_permissions(&mut params, start_permissions(mode, recorded));
         }
-        let permissions = recorded.unwrap_or_else(|| ("never".into(), "danger-full-access".into()));
-        params["approvalPolicy"] = json!(permissions.0);
-        params["sandbox"] = json!(permissions.1);
     }
     if requested.is_none() {
         params["historyMode"] = json!("legacy");
@@ -1987,6 +1996,7 @@ fn enqueue_with_id(
         termination_threads: Vec::new(),
         history_checks: Vec::new(),
         prepared_threads: Vec::new(),
+        permissions: crate::config::launch_permissions_override(),
     };
     save_job(paths, &job)?;
     if records_stop {
@@ -2531,6 +2541,39 @@ fn recorded_permissions(rollout: &Path) -> Option<(String, String)> {
     latest
 }
 
+/// Codex full access: approval `never` and sandbox `danger-full-access`.
+fn yolo_permissions() -> (String, String) {
+    ("never".into(), "danger-full-access".into())
+}
+/// Codex approval/sandbox for a process start with launch permissions `mode`:
+/// `yolo` grants full access; `default` keeps `saved` (a conversation's recorded
+/// or original permissions), and None leaves Codex's own configuration in charge.
+pub(crate) fn start_permissions(
+    mode: LaunchPermissions,
+    saved: Option<(String, String)>,
+) -> Option<(String, String)> {
+    match mode {
+        LaunchPermissions::Yolo => Some(yolo_permissions()),
+        LaunchPermissions::Default => saved,
+    }
+}
+/// Write (or, for None, omit) `approvalPolicy`/`sandbox` in thread/start or
+/// thread/resume parameters.
+pub(crate) fn set_permissions(params: &mut Value, permissions: Option<(String, String)>) {
+    match permissions {
+        Some((approval, sandbox)) => {
+            params["approvalPolicy"] = json!(approval);
+            params["sandbox"] = json!(sandbox);
+        }
+        None => {
+            if let Some(object) = params.as_object_mut() {
+                object.remove("approvalPolicy");
+                object.remove("sandbox");
+            }
+        }
+    }
+}
+
 fn launch_permissions(options: &[String]) -> Option<(String, String)> {
     if options
         .iter()
@@ -2602,17 +2645,18 @@ fn resume_shell(
     options: &[String],
     thread: &str,
     rollout: &Path,
+    mode: LaunchPermissions,
 ) -> String {
-    let (approval, sandbox) = recorded_permissions(rollout)
-        .or_else(|| launch_permissions(options))
-        .unwrap_or_else(|| ("never".into(), "danger-full-access".into()));
+    let saved = recorded_permissions(rollout).or_else(|| launch_permissions(options));
     let mut options = without_permission_options(options);
-    options.extend([
-        "--ask-for-approval".into(),
-        approval,
-        "--sandbox".into(),
-        sandbox,
-    ]);
+    if let Some((approval, sandbox)) = start_permissions(mode, saved) {
+        options.extend([
+            "--ask-for-approval".into(),
+            approval,
+            "--sandbox".into(),
+            sandbox,
+        ]);
+    }
     let options = options
         .iter()
         .map(|s| shell_quote(s))
@@ -2922,6 +2966,26 @@ mod tests {
     use crate::model::{Account, State};
 
     #[test]
+    fn codex_start_permissions_follow_the_launch_mode() {
+        let saved = Some(("on-request".to_owned(), "workspace-write".to_owned()));
+        assert_eq!(
+            start_permissions(LaunchPermissions::Yolo, saved.clone()),
+            Some(("never".into(), "danger-full-access".into()))
+        );
+        assert_eq!(
+            start_permissions(LaunchPermissions::Default, saved.clone()),
+            saved
+        );
+        assert_eq!(start_permissions(LaunchPermissions::Default, None), None);
+        let mut params = json!({"cwd":"/","approvalPolicy":"never","sandbox":"danger-full-access"});
+        set_permissions(&mut params, None);
+        assert_eq!(params, json!({"cwd":"/"}));
+        set_permissions(&mut params, saved);
+        assert_eq!(params["approvalPolicy"], "on-request");
+        assert_eq!(params["sandbox"], "workspace-write");
+    }
+
+    #[test]
     fn moved_session_uses_latest_recorded_permissions() {
         let tmp = tempfile::tempdir().unwrap();
         let rollout = tmp.path().join("rollout.jsonl");
@@ -2939,16 +3003,27 @@ mod tests {
             ],
             "thread",
             &rollout,
+            LaunchPermissions::Default,
         );
         assert!(
             command.contains("'--ask-for-approval' 'on-request' '--sandbox' 'workspace-write'")
         );
         assert!(command.contains("'--model' 'test-model'"));
         assert!(!command.contains("'--dangerously-bypass-approvals-and-sandbox'"));
+        // Launch permissions `yolo` (the default) grant full access on restart/move.
+        let yolo = resume_shell(
+            tmp.path(),
+            "codex",
+            &[],
+            "thread",
+            &rollout,
+            LaunchPermissions::Yolo,
+        );
+        assert!(yolo.contains("'--ask-for-approval' 'never' '--sandbox' 'danger-full-access'"));
     }
 
     #[test]
-    fn moved_session_uses_explicit_flags_then_yolo_fallback() {
+    fn moved_session_uses_explicit_flags_then_launch_permissions() {
         let tmp = tempfile::tempdir().unwrap();
         let rollout = tmp.path().join("rollout.jsonl");
         fs::write(&rollout, "{\"type\":\"session_meta\",\"payload\":{}}\n").unwrap();
@@ -2963,10 +3038,28 @@ mod tests {
             ],
             "thread",
             &rollout,
+            LaunchPermissions::Default,
         );
         assert!(known.contains("'--ask-for-approval' 'on-request' '--sandbox' 'read-only'"));
-        let unknown = resume_shell(tmp.path(), "codex", &[], "thread", &rollout);
+        let unknown = resume_shell(
+            tmp.path(),
+            "codex",
+            &[],
+            "thread",
+            &rollout,
+            LaunchPermissions::Yolo,
+        );
         assert!(unknown.contains("'--ask-for-approval' 'never' '--sandbox' 'danger-full-access'"));
+        // `default` with nothing recorded leaves Codex's own configuration in charge.
+        let provider = resume_shell(
+            tmp.path(),
+            "codex",
+            &[],
+            "thread",
+            &rollout,
+            LaunchPermissions::Default,
+        );
+        assert!(!provider.contains("--ask-for-approval") && !provider.contains("--sandbox"));
     }
 
     #[test]
@@ -3129,6 +3222,7 @@ mod tests {
             termination_threads: Vec::new(),
             history_checks: Vec::new(),
             prepared_threads: Vec::new(),
+            permissions: None,
         };
         prior.source.pane = "%29".into();
         let mut live = latest.clone();

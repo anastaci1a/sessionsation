@@ -152,8 +152,9 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
     } else {
         None
     };
-    let (approval, sandbox) = recorded_permissions(&source.rollout)
-        .unwrap_or_else(|| ("never".into(), "danger-full-access".into()));
+    let config = crate::store::load_config(paths)?;
+    let mode = config.effective_launch_permissions();
+    let permissions = start_permissions(mode, recorded_permissions(&source.rollout));
     if let Some(control) = control.as_mut() {
         let thread = control.thread_for_state(&source.thread_id).await?;
         ensure!(
@@ -170,7 +171,9 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
                     .context("restored history path missing")?,
             );
         }
-        control.resume_with_permissions(json!({"threadId":source.thread_id,"cwd":source.cwd,"approvalPolicy":approval,"sandbox":sandbox,"excludeTurns":true})).await?;
+        let mut params = json!({"threadId":source.thread_id,"cwd":source.cwd,"excludeTurns":true});
+        set_permissions(&mut params, permissions);
+        control.resume_with_permissions(params).await?;
     } else {
         ensure!(
             !source.archived,
@@ -181,7 +184,6 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
             "another process owns this conversation; wait before opening it"
         );
     }
-    let config = crate::store::load_config(paths)?;
     let command = if control.is_some() {
         super::movement::remote_resume_shell(
             &source.home,
@@ -196,6 +198,7 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
             &source.resume_options,
             &source.thread_id,
             &source.rollout,
+            mode,
         )
     };
     // Keep startup diagnostics, while a normal /exit still removes the pane.

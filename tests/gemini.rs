@@ -519,7 +519,9 @@ async fn sessions_launch_track_live_identity_rename_resume_and_go_stale() {
         .to_owned();
     uuid::Uuid::parse_str(&native).unwrap();
     assert!(
-        launch.contains(&format!("args=--session-id {native}")),
+        launch.contains(&format!(
+            "args=--session-id {native} --approval-mode yolo\n"
+        )),
         "{launch}"
     );
     wait_for("live gemini session", || {
@@ -978,7 +980,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     assert_eq!(gemini["operations"]["headless_delivery"]["supported"], true);
     assert_eq!(gemini["headless_delivery"]["automatic_replay"], false);
     assert_eq!(gemini["headless_delivery"]["approval_mode"], "default");
-    assert_eq!(caps["contract_revision"], 18);
+    assert_eq!(caps["contract_revision"], 19);
     assert_eq!(
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false

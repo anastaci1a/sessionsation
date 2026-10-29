@@ -64,6 +64,9 @@ pub fn resume_directory(session: &catalog::Session, observation: &Observation) -
 
 fn exec(config: &Config, home: &Path, cwd: &Path, argv: &[String]) -> Result<()> {
     let mut command = claude::command(config, home);
+    if argv.iter().any(|a| a == claude::YOLO_FLAG) {
+        claude::allow_bypass(&mut command);
+    }
     command.args(&argv[1..]).current_dir(cwd);
     Err(command.exec()).context("could not launch Claude")
 }
@@ -97,8 +100,9 @@ pub async fn exec_new(
             attachment,
         )?,
     };
-    let settings = claude::launch_settings(&std::env::current_exe()?);
-    let argv = claude::new_argv(&config, &id, &session.name, &settings);
+    let mode = config.effective_launch_permissions();
+    let settings = claude::launch_settings(&std::env::current_exe()?, mode);
+    let argv = claude::new_argv(&config, &id, &session.name, &settings, mode);
     exec(&config, &account.home, &cwd, &argv)
 }
 
@@ -123,7 +127,14 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
     claude::prelaunch_gate(&config, &account.home).await?;
     let attachment = crate::external::current_attachment(paths)?;
     let current = catalog::move_attachment(paths, &session, attachment)?;
-    let settings = claude::launch_settings(&std::env::current_exe()?);
-    let argv = claude::resume_argv(&config, &current.conversation_id, &current.name, &settings);
+    let mode = config.effective_launch_permissions();
+    let settings = claude::launch_settings(&std::env::current_exe()?, mode);
+    let argv = claude::resume_argv(
+        &config,
+        &current.conversation_id,
+        &current.name,
+        &settings,
+        mode,
+    );
     exec(&config, &account.home, Path::new(&directory), &argv)
 }

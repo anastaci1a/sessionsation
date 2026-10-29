@@ -27,6 +27,13 @@ struct Cli {
         help = "Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation"
     )]
     data_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        help = "Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting"
+    )]
+    permissions: Option<sessionsation::config::LaunchPermissions>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -538,6 +545,9 @@ async fn main() {
     }
 }
 async fn run(cli: Cli) -> Result<()> {
+    if let Some(mode) = cli.permissions {
+        sessionsation::config::override_launch_permissions(mode);
+    }
     // Offline simulation deliberately avoids creating a daemon or accessing user state.
     if let Commands::Simulate { scenario } = &cli.command {
         return simulate(scenario);

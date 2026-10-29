@@ -4,7 +4,7 @@
 use super::super::claude::{Enrolled, Observation};
 use crate::{
     catalog,
-    config::Config,
+    config::{Config, LaunchPermissions},
     paths::Paths,
     provider::{ProviderId, gemini},
 };
@@ -48,15 +48,27 @@ pub fn ensure_resumable(session: &catalog::Session, observation: &Observation) -
     Ok(())
 }
 
-pub fn new_argv(config: &Config, session_id: &str) -> Vec<String> {
-    [config.gemini_binary.as_str(), "--session-id", session_id]
-        .map(str::to_owned)
-        .to_vec()
+/// Gemini approval flags for a start: `yolo` auto-approves every tool call;
+/// `default` passes nothing (the account's own settings decide).
+pub fn approval_args(mode: LaunchPermissions) -> Vec<String> {
+    match mode {
+        LaunchPermissions::Yolo => vec!["--approval-mode".into(), "yolo".into()],
+        LaunchPermissions::Default => vec![],
+    }
 }
-pub fn resume_argv(config: &Config, session_id: &str) -> Vec<String> {
-    [config.gemini_binary.as_str(), "-r", session_id]
+pub fn new_argv(config: &Config, session_id: &str, mode: LaunchPermissions) -> Vec<String> {
+    let mut argv: Vec<String> = [config.gemini_binary.as_str(), "--session-id", session_id]
         .map(str::to_owned)
-        .to_vec()
+        .to_vec();
+    argv.extend(approval_args(mode));
+    argv
+}
+pub fn resume_argv(config: &Config, session_id: &str, mode: LaunchPermissions) -> Vec<String> {
+    let mut argv: Vec<String> = [config.gemini_binary.as_str(), "-r", session_id]
+        .map(str::to_owned)
+        .to_vec();
+    argv.extend(approval_args(mode));
+    argv
 }
 
 fn exec(config: &Config, home: &Path, cwd: &Path, argv: &[String]) -> Result<()> {
@@ -98,7 +110,12 @@ pub async fn exec_new(
             )?;
         }
     }
-    exec(&config, &account.home, &cwd, &new_argv(&config, &id))
+    exec(
+        &config,
+        &account.home,
+        &cwd,
+        &new_argv(&config, &id, config.effective_launch_permissions()),
+    )
 }
 
 /// Resume a stopped Gemini session in its recorded directory, in this terminal.
@@ -126,6 +143,36 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
         &config,
         &account.home,
         Path::new(&directory),
-        &resume_argv(&config, &current.conversation_id),
+        &resume_argv(
+            &config,
+            &current.conversation_id,
+            config.effective_launch_permissions(),
+        ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn yolo_starts_pass_the_yolo_approval_mode_and_default_passes_none() {
+        let config = Config::default();
+        let id = "11111111-1111-4111-8111-111111111111";
+        assert_eq!(
+            new_argv(&config, id, LaunchPermissions::Yolo),
+            ["gemini", "--session-id", id, "--approval-mode", "yolo"]
+        );
+        assert_eq!(
+            resume_argv(&config, id, LaunchPermissions::Yolo),
+            ["gemini", "-r", id, "--approval-mode", "yolo"]
+        );
+        assert_eq!(
+            new_argv(&config, id, LaunchPermissions::Default),
+            ["gemini", "--session-id", id]
+        );
+        assert_eq!(
+            resume_argv(&config, id, LaunchPermissions::Default),
+            ["gemini", "-r", id]
+        );
+    }
 }

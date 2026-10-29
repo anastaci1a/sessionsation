@@ -745,9 +745,12 @@ pub(super) async fn launch_target(
     root_target: &Path,
     mut target: Option<&mut Control>,
 ) -> Result<()> {
-    let (approval, sandbox) = recorded_permissions(&job.source.rollout)
-        .or_else(|| launch_permissions(&job.source.resume_options))
-        .unwrap_or_else(|| ("never".into(), "danger-full-access".into()));
+    let mode = crate::store::load_config(paths)?.effective_launch_permissions();
+    let permissions = start_permissions(
+        mode,
+        recorded_permissions(&job.source.rollout)
+            .or_else(|| launch_permissions(&job.source.resume_options)),
+    );
     let cwd = job
         .relocation
         .as_ref()
@@ -761,7 +764,8 @@ pub(super) async fn launch_target(
     if let Some(target) = target.as_mut() {
         job.target_loaded = true;
         save_job(paths, job)?;
-        let mut params = json!({"threadId":job.source.thread_id,"approvalPolicy":approval,"sandbox":sandbox,"cwd":cwd,"excludeTurns":true});
+        let mut params = json!({"threadId":job.source.thread_id,"cwd":cwd,"excludeTurns":true});
+        set_permissions(&mut params, permissions);
         // Native resume reconstructs the destination's index from the unchanged
         // rollout. Same-home actions use their existing native identity/index.
         if job.relocation.is_none() {
@@ -804,6 +808,7 @@ pub(super) async fn launch_target(
             &job.source.resume_options,
             &job.source.thread_id,
             root_target,
+            mode,
         )
     };
     let command = format!("{command} -C {}", shell_quote(&cwd));
@@ -1028,6 +1033,9 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     lock.try_lock_exclusive()
         .context("this move already has a worker")?;
     let mut job: Job = serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?;
+    if let Some(mode) = job.permissions {
+        crate::config::override_launch_permissions(mode);
+    }
     ensure!(
         job.phase == "queued",
         "this job has already started; inspect it or use recover instead of replaying its effects"
@@ -1276,12 +1284,21 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
         )?;
         return Ok(job);
     }
+    let mode = crate::store::load_config(paths)?.effective_launch_permissions();
     let command = if job.source.shared_server {
-        let (approval, sandbox) = recorded_permissions(&job.source.rollout)
-            .or_else(|| launch_permissions(&job.source.resume_options))
-            .unwrap_or_else(|| ("never".into(), "danger-full-access".into()));
-        Control::connect(&job.source.home).await?
-            .resume_with_permissions(json!({"threadId":job.source.thread_id,"cwd":job.source.cwd,"approvalPolicy":approval,"sandbox":sandbox,"excludeTurns":true}))
+        let mut params =
+            json!({"threadId":job.source.thread_id,"cwd":job.source.cwd,"excludeTurns":true});
+        set_permissions(
+            &mut params,
+            start_permissions(
+                mode,
+                recorded_permissions(&job.source.rollout)
+                    .or_else(|| launch_permissions(&job.source.resume_options)),
+            ),
+        );
+        Control::connect(&job.source.home)
+            .await?
+            .resume_with_permissions(params)
             .await?;
         remote_resume_shell(
             &job.source.home,
@@ -1296,6 +1313,7 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
             &job.source.resume_options,
             &job.source.thread_id,
             &job.source.rollout,
+            mode,
         )
     };
     hosting::relaunch(paths, &job.source.pane, &job.source.cwd, &command)?;

@@ -1833,3 +1833,26 @@ the same or different content: `api send` and `api receipt` return
 `receipt_retired`). Clients must keep their own copy of a reply they need beyond
 the retention window. Both settings are `sessionsation config set` keys
 (1..=3650 days; the horizon must not be shorter than the retention).
+
+### Launch permissions (revision 19)
+
+Additive; negotiate `contract_revision >= 19` (`api capabilities.launch_permissions`:
+`values` `["yolo","default"]`, `built_in_default:"yolo"`, `setting:"launch_permissions"`,
+`request_field:"permissions"`, `requests:["launch","resume-launch"]`,
+`cli_option:"--permissions"`). `LaunchRequest` and `ResumeRequest` accept an optional
+`permissions` (`LaunchPermissions`: `yolo` | `default`); omitted, the operator's
+`launch_permissions` setting applies (default `yolo`). Requests without the field are
+unchanged in shape; older backends reject it as an unknown field, so send it only
+after negotiating the revision.
+
+`yolo` starts Codex threads with approval `never` and the `:danger-full-access`
+profile (verified on the `thread/start`/`thread/resume` result), Claude Code with
+`--dangerously-skip-permissions` (plus `IS_SANDBOX=1`, which Claude requires as root,
+and the flag setting `skipDangerousModePermissionPrompt`) and Gemini CLI with
+`--approval-mode yolo`. `default` passes no override; Codex resumes, restarts and
+account switches then keep the conversation's recorded permissions. It applies to
+new launches, resume launches, Codex restart and account switch, saved-session open,
+move recovery and hosted Claude without a `permission_mode`. Explicit Codex options
+and a hosted `permission_mode` win; Codex message recovery restores the recorded
+permissions; headless delivery keeps `approval_mode:"default"`, never `yolo`.
+See [CLI](cli.md#launch-permissions-revision-19).

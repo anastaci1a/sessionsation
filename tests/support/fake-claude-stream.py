@@ -58,6 +58,7 @@ with open(os.path.join(home, "fake-stream-launch.json"), "w") as f:
             "args": args,
             "mode": mode,
             "session": session,
+            "is_sandbox": os.environ.get("IS_SANDBOX", ""),
             "cwd": cwd,
             "pid": os.getpid(),
             "api_key": "present" if os.environ.get("ANTHROPIC_API_KEY") else "",
