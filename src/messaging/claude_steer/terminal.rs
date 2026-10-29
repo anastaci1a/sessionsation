@@ -86,6 +86,7 @@ pub const REASONS: &[&str] = &[
     "TERMINAL_DRAFT_UNRECONSTRUCTABLE",
     "TERMINAL_DRAFT_UNRESTORABLE",
     "TERMINAL_CLEAR_UNVERIFIED",
+    "TERMINAL_DRAFT_CHANGED",
     "TERMINAL_TYPED_TEXT_MISMATCH",
     "TERMINAL_HOST_FAILED_BEFORE_SUBMIT",
     "TERMINAL_WORKER_EXITED_BEFORE_SUBMIT",
@@ -864,6 +865,13 @@ async fn deliver(paths: &Paths, id: &str, host: &Host, t: &Terminal) -> Result<(
     if matches!(host.agent_status(), Ok(Some(s)) if s == "blocked") {
         return reject(paths, id, "TERMINAL_AGENT_BLOCKED");
     }
+    // Re-read the draft right before the first clearing key: text typed since
+    // the first read would be destroyed by ctrl+k/ctrl+u. Nothing was sent yet.
+    match host.screen() {
+        Ok(rows) if draft_unchanged(&rows, &draft) => {}
+        Ok(_) => return reject(paths, id, "TERMINAL_DRAFT_CHANGED"),
+        Err(_) => return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE"),
+    }
     // 3. Journal the draft, then clear. From here on every exit restores the
     //    draft or reports exactly what the input box holds.
     step(paths, id, "clear", |r| {
@@ -888,6 +896,11 @@ async fn deliver(paths: &Paths, id: &str, host: &Host, t: &Terminal) -> Result<(
         }
     }
     outcome
+}
+
+/// Whether the screen still shows the main prompt holding exactly `draft`.
+pub(crate) fn draft_unchanged(rows: &[Vec<Cell>], draft: &str) -> bool {
+    matches!(classify(rows, true), Ok(View::Main(d)) if d == draft)
 }
 
 /// A draft that typing reproduces as text: not a help/shell/memory trigger,
@@ -1486,6 +1499,16 @@ mod tests {
             assert!(deliverable(bad).is_err(), "{bad}");
         }
         assert!(deliverable(&"x".repeat(MAX_TEXT + 1)).is_err());
+    }
+    #[test]
+    fn a_draft_typed_after_the_first_read_is_detected_before_clearing() {
+        let before = screen(&["❯\u{a0}half a thought\u{1b}[7m \u{1b}[0m"], &[]);
+        assert!(draft_unchanged(&before, "half a thought"));
+        let after = screen(&["❯\u{a0}half a thought, more\u{1b}[7m \u{1b}[0m"], &[]);
+        assert!(!draft_unchanged(&after, "half a thought"));
+        let empty = screen(&["❯\u{a0}\u{1b}[7m \u{1b}[0m"], &[]);
+        assert!(!draft_unchanged(&empty, "half a thought"));
+        assert!(REASONS.contains(&"TERMINAL_DRAFT_CHANGED"));
     }
     #[test]
     fn the_main_prompt_draft_is_read_exactly_or_refused() {

@@ -1706,6 +1706,14 @@ before anything is submitted:
    (`TERMINAL_INPUT_UNCONFIRMED`). The turn ends at the next real input, or when
    HERDR reports the agent working and then idle. Nothing is re-sent automatically.
 
+Revision 18: step 3's draft is read once more immediately before the first
+ctrl+k/ctrl+u. If the input box no longer holds exactly that draft (the user typed
+in between), the request is rejected with `TERMINAL_DRAFT_CHANGED` and no key or
+text is sent. Deleting a session also removes the now-empty Claude project
+directory of its own conversation (never a non-empty or unrelated one), and the
+deleted-session manifest keeps ids only (no name, directory, pane or home path);
+a completed Codex delete removes its session-catalog entry and recovery journal.
+
 Other codes: `TERMINAL_HOST_UNAVAILABLE`, `TERMINAL_HOST_FAILED_BEFORE_SUBMIT`
 and `TERMINAL_WORKER_EXITED_BEFORE_SUBMIT`. In those cases a draft whose restore
 was not verified stays in the journal. Receipts add `terminal_input`
