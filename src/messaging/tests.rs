@@ -1002,3 +1002,49 @@ async fn ordinary_public_send_requires_explicit_recovery_for_terminal_turns() {
         }
     }
 }
+
+#[tokio::test]
+async fn approval_blocked_public_send_is_a_definite_refusal_never_dispatched_on_resend() {
+    for mode in [PublicMode::Submit, PublicMode::Queue] {
+        let (_dir, paths, input, _) = fixture();
+        let mut a = attachment_fixture(&paths, &input);
+        bind(&paths, &mut a);
+        let id = a.id.clone();
+        let server = scripted_server(&a.endpoint(), move |r| match r["method"]
+            .as_str()
+            .unwrap()
+        {
+            "thread/read" => Some(
+                json!({"thread":{"id":id,"status":{"type":"active","activeFlags":["waitingOnApproval"]}}}),
+            ),
+            "thread/turns/list" => Some(json!({"data":[{"id":"t","status":"inProgress"}]})),
+            method => panic!("An approval-blocked session must not receive input: {method}"),
+        })
+        .await;
+        let instance:external::Instance=serde_json::from_value(json!({"pane":"%1","tmux_session":"fixture","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
+        let session = crate::catalog::reconcile(&paths, &[instance])
+            .unwrap()
+            .remove(0);
+        let request = PublicRequest {
+            steering: None,
+            api_version: 1,
+            message_id: input.message_id,
+            session_id: session.id.clone(),
+            expected_generation: session.generation(),
+            mode: mode.clone(),
+            recovery: None,
+            text: "must not be queued".into(),
+            expires_at: crate::daemon::now() + 120,
+        };
+        let result = send_public(&paths, request.clone()).await.unwrap();
+        assert_eq!(result["state"], "rejected", "{result}");
+        assert_eq!(result["reason"], "approval_or_user_input_required");
+        assert_eq!(result["facts"]["accepted_native"], false);
+        // A resend is a lookup of the definite refusal, never a later dispatch.
+        assert_eq!(
+            send_public(&paths, request).await.unwrap()["state"],
+            "rejected"
+        );
+        server.abort();
+    }
+}

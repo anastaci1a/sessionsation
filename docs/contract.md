@@ -311,7 +311,11 @@ A repeated identical ID/request returns or reconciles the original receipt. Chan
 payload, mode, target, generation or expiry gives `MESSAGE_ID_CONFLICT`. Requests
 remain bound to the original conversation/runtime even after rename or transfer.
 An uncertain write is journaled before socket I/O and is never resent. Receipt and
-idempotency storage is bounded at 10,000 and never silently evicts replay protection.
+idempotency storage is bounded at 10,000 and never silently evicts replay protection
+(retired ids keep a tombstone; see [receipt retention](#receipt-retention-revision-18)).
+Revision 18: a Submit or Queue to a session that waits on an approval or user input
+is a definite refusal, `rejected` with reason `approval_or_user_input_required`,
+before any native write; a resend returns that refusal and never dispatches.
 Expiry is an unsent submission deadline, not cancellation of accepted native work.
 
 ### HERDR-owned session names (revision 6)

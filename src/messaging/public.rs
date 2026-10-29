@@ -215,7 +215,10 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
             if receipt.state == "pending_local"
                 && matches!(
                     error.0,
-                    "target_busy" | "generation_mismatch" | "explicit_resume_required"
+                    "target_busy"
+                        | "generation_mismatch"
+                        | "explicit_resume_required"
+                        | "approval_or_user_input_required"
                 )
             {
                 receipt.state = "rejected".into();
