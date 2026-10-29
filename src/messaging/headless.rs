@@ -767,6 +767,151 @@ fn observe_gemini_auth(
         .map(|(_, classified)| classified)
 }
 
+/// Bound for one API-key validation run (clients wait about 20 s in total).
+pub const GEMINI_VALIDATION_SECONDS: u64 = 15;
+const GEMINI_VALIDATION_PROMPT: &str = "Reply with the single word OK.";
+
+/// One tiny headless Gemini run (`gemini -p "" -o json`, prompt on stdin) that
+/// checks an `api_key` account's stored key. It runs in a throwaway Gemini home
+/// under the data root, so no chat is recorded in (or discovered from) the
+/// account; the key reaches the child only through the environment. The result
+/// is classified and recorded against the account exactly like a headless
+/// delivery: `valid` (clean run; clears a recorded failure), `auth_failed` (a
+/// recognizable authentication failure, recorded) or `inconclusive` (timeout,
+/// crash, quota or network). Raw output is never returned or stored.
+pub async fn validate_gemini_key(
+    paths: &Paths,
+    config: &crate::config::Config,
+    account: &str,
+    home: &Path,
+) -> Value {
+    use crate::provider::gemini::{self, auth_mode};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let verdict = |state: &str, code: Option<&str>, reason: Option<&str>| json!({"state":state,"code":code,"reason":reason,"timeout_seconds":GEMINI_VALIDATION_SECONDS});
+    let Some(key) = auth_mode::read_key(home) else {
+        return verdict(
+            "inconclusive",
+            Some("API_KEY_MISSING"),
+            Some("no API key is stored"),
+        );
+    };
+    let run_home = paths
+        .root
+        .join("provider-state")
+        .join("gemini-validate")
+        .join(uuid::Uuid::new_v4().to_string());
+    let prepared = private_dir(&run_home)
+        .and_then(|_| gemini::seed_settings(&run_home))
+        .and_then(|_| auth_mode::set_mode(&run_home, auth_mode::Mode::ApiKey));
+    if prepared.is_err() {
+        let _ = fs::remove_dir_all(&run_home);
+        return verdict(
+            "inconclusive",
+            Some("VALIDATION_NOT_STARTED"),
+            Some("the validation home could not be prepared"),
+        );
+    }
+    let mut std_command = gemini::command(config, &run_home);
+    std_command
+        .env("GEMINI_API_KEY", key.expose())
+        .env(auth_mode::WRAPPER_ENV, key.expose())
+        .env("GEMINI_CLI_TRUST_WORKSPACE", "true")
+        .args([
+            "-p",
+            "",
+            "-o",
+            "json",
+            "--approval-mode",
+            GEMINI_APPROVAL_MODE,
+        ])
+        .current_dir(&run_home);
+    drop(key);
+    std::os::unix::process::CommandExt::process_group(&mut std_command, 0);
+    let mut command = tokio::process::Command::from(std_command);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let outcome = match command.spawn() {
+        Err(_) => Err("PROVIDER_COULD_NOT_START"),
+        Ok(mut child) => {
+            let pid = child.id();
+            let mut stdin = child.stdin.take();
+            let mut stdout = child.stdout.take();
+            let mut stderr = child.stderr.take();
+            let run = async move {
+                if let Some(mut input) = stdin.take() {
+                    let _ = input.write_all(GEMINI_VALIDATION_PROMPT.as_bytes()).await;
+                    let _ = input.shutdown().await;
+                }
+                let (mut out, mut err) = (vec![], vec![]);
+                let out_read = async {
+                    if let Some(o) = stdout.as_mut() {
+                        let _ = o.take(MAX_OUTPUT_BYTES).read_to_end(&mut out).await;
+                        let _ = tokio::io::copy(o, &mut tokio::io::sink()).await;
+                    }
+                };
+                let err_read = async {
+                    if let Some(e) = stderr.as_mut() {
+                        let _ = e
+                            .take(gemini::auth_failure::SCAN_BYTES as u64)
+                            .read_to_end(&mut err)
+                            .await;
+                        let _ = tokio::io::copy(e, &mut tokio::io::sink()).await;
+                    }
+                };
+                tokio::join!(out_read, err_read);
+                (out, err, child.wait().await)
+            };
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(GEMINI_VALIDATION_SECONDS),
+                run,
+            )
+            .await
+            {
+                Ok(v) => Ok(v),
+                Err(_) => {
+                    if let Some(pid) = pid {
+                        unsafe {
+                            libc::kill(-(pid as i32), libc::SIGKILL);
+                        }
+                    }
+                    Err("VALIDATION_TIMEOUT")
+                }
+            }
+        }
+    };
+    let _ = fs::remove_dir_all(&run_home);
+    let (stdout, stderr, status) = match outcome {
+        Ok(v) => v,
+        Err(code) => {
+            return verdict(
+                "inconclusive",
+                Some(code),
+                Some("the validation run did not finish; the key is stored but unverified"),
+            );
+        }
+    };
+    let exit = status.ok().and_then(|s| s.code());
+    if let Some(c) = observe_gemini_auth(paths, account, home, &stdout, &stderr, exit) {
+        return verdict("auth_failed", Some(c.code), Some(c.reason));
+    }
+    let clean =
+        exit == Some(0) && parse_gemini(&stdout, exit).is_some_and(|r| r["is_error"] == false);
+    if clean {
+        verdict("valid", None, None)
+    } else {
+        verdict(
+            "inconclusive",
+            Some("VALIDATION_INCONCLUSIVE"),
+            Some(
+                "Gemini did not answer and reported no recognizable authentication failure (for example quota, network or a crash); the key is stored but unverified",
+            ),
+        )
+    }
+}
+
 /// (size, modification time) of the conversation's native file, if any.
 fn transcript_stamp(
     provider: ProviderId,

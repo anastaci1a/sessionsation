@@ -42,7 +42,13 @@ fn file(paths: &Paths, name: &str) -> Result<PathBuf> {
         .join(format!("{name}.json")))
 }
 
+/// Identity of the account's current credential: the API key file in `api_key`
+/// mode, otherwise `oauth_creds.json`. A new key or login supersedes a failure.
 fn stamp(home: &Path) -> Option<(i64, u64)> {
+    use super::auth_mode;
+    if auth_mode::mode(home) == auth_mode::Mode::ApiKey {
+        return auth_mode::key_stamp(home);
+    }
     let m = fs::symlink_metadata(home.join(".gemini/oauth_creds.json")).ok()?;
     let secs = m
         .modified()
@@ -100,7 +106,25 @@ pub fn classify_output(text: &str, exit: Option<i32>) -> Option<Classified> {
             at_sign_in: at_sign_in || setup,
         })
     };
-    if has("unsupported_client")
+    if has("api_key_invalid")
+        || has("api key not valid")
+        || has("api key expired")
+        || has("api_key_expired")
+    {
+        // Gemini API (AI Studio key): `400 INVALID_ARGUMENT`, reason API_KEY_INVALID.
+        found(
+            "AUTH_API_KEY_INVALID",
+            "AUTH_API_KEY_INVALID: the Gemini API rejected this API key (not valid or expired); store a new key",
+            false,
+        )
+    } else if has("must specify the gemini_api_key") {
+        // AuthType gemini-api-key selected without a key in the environment.
+        found(
+            "AUTH_API_KEY_MISSING",
+            "AUTH_API_KEY_MISSING: Gemini started in API-key mode without a key (none stored, or the host gemini wrapper removed it); store a key or update the wrapper",
+            true,
+        )
+    } else if has("unsupported_client")
         || has("client is no longer supported")
         || has("client no longer supported")
         || (has("no longer supported") && has("client"))
@@ -262,6 +286,14 @@ pub(crate) mod tests {
             ),
             ("request failed with status 401", "AUTH_UNAUTHENTICATED"),
             ("Please re-authenticate with /auth", "AUTH_REAUTH_REQUIRED"),
+            (
+                r#"[API Error: {"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}]"#,
+                "AUTH_API_KEY_INVALID",
+            ),
+            (
+                "When using Gemini API, you must specify the GEMINI_API_KEY environment variable.",
+                "AUTH_API_KEY_MISSING",
+            ),
         ] {
             assert_eq!(classify(text).unwrap().0, code, "{text}");
         }

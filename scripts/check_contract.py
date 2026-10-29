@@ -229,7 +229,13 @@ with tempfile.TemporaryDirectory() as directory:
         if args == ["placements"]:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 20
+            assert value["result"]["contract_revision"] >= 21
+            # Revision 21: per-account Gemini authentication modes.
+            gemini = next(p for p in value["result"]["providers"] if p["id"] == "gemini")
+            assert [m["id"] for m in gemini["auth_modes"]] == ["google_personal", "google_workspace", "api_key"]
+            assert gemini["auth_modes"][0]["available"] is False and gemini["auth_modes"][0]["reason"]
+            assert gemini["auth_command"]["since_revision"] == 21
+            assert gemini["auth_command"]["key_input"] == "stdin_json"
             # Revision 20: new Space by label; Claude folder pre-trust for yolo starts.
             assert value["result"]["new_space"] == {**value["result"]["new_space"], "since_revision": 20, "resume": True, "add_to_herdr": True, "move_space": True}
             assert value["result"]["claude_folder_trust"]["setting"] == "claude_pretrust_folders"

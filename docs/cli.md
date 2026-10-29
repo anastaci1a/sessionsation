@@ -874,7 +874,8 @@ home, `GEMINI_CLI_NO_RELAUNCH=1` (the recorded PID is the real process),
 `GOOGLE_CLOUD_LOCATION`, `GOOGLE_CLOUD_ACCESS_TOKEN`,
 `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_GEMINI_BASE_URL`,
 `GOOGLE_VERTEX_BASE_URL`, `CLOUD_SHELL`, `GEMINI_CLI_USE_COMPUTE_ADC` and
-`GEMINI_MODEL` are removed. `HOME/.gemini/settings.json` is seeded on enrollment
+`GEMINI_MODEL` are removed (an `api_key` account then gets its own key; see
+[authentication modes](#gemini-authentication-modes-revision-21)). `HOME/.gemini/settings.json` is seeded on enrollment
 and before every launch without clobbering other keys: auto-update and its notice
 off, usage statistics off, automatic session deletion off, and the Login-with-Google
 auth type when none is selected.
@@ -889,8 +890,8 @@ also returned by `api account add gemini:NAME`) runs interactive `gemini` with
 pastes the code. Refresh (`api account refresh gemini:NAME`) re-checks the files.
 Add, display-name rename, removal/restore and deletion follow the Claude semantics;
 deletion preserves the chat files, `projects.json` and prompt history in the
-preserved-conversations vault and deletes the home with its credentials, settings
-and trust files.
+preserved-conversations vault and deletes the home with its credentials, settings,
+API key and trust files.
 
 ```sh
 sessionsation account add --platform gemini me
@@ -933,6 +934,44 @@ output is `delivery_unknown` and never replayed. Live sessions are refused
 (`SESSION_ALREADY_RUNNING`). Login, the NO_BROWSER flow, headless `-r -p` JSON and
 the process command-line shape are verified only against a fake and the installed
 CLI's source until a real login exists.
+
+### Gemini authentication modes (revision 21)
+
+Each Gemini account has an authentication mode, stored as the account's own
+`security.auth.selectedType` in `HOME/.gemini/settings.json` (Gemini CLI 0.66.0
+prefers that setting over every environment variable):
+
+- `google` (`oauth-personal`, the default): Login with Google. Google ended Gemini
+  CLI login for personal accounts (all tiers) on 2026-06-18, so it works only for
+  Workspace/enterprise accounts; a personal login fails with
+  `AUTH_CLIENT_UNSUPPORTED`.
+- `api_key` (`gemini-api-key`): a Gemini API key from aistudio.google.com/apikey.
+- Vertex AI is not supported yet (`UNSUPPORTED_AUTH_MODE`).
+
+```sh
+sessionsation account auth gemini:me                                  # mode, key present? (never the key)
+sessionsation account auth gemini:me --mode api-key --key-stdin < key  # store + validate
+sessionsation account auth gemini:me --mode google                    # then: account login gemini:me
+```
+
+The key is read from stdin only (no argument accepts it; surrounding whitespace is
+trimmed; 1-512 visible ASCII characters, `INVALID_API_KEY_FORMAT` otherwise). It is
+written atomically to `HOME/secrets/gemini-api-key` (0600 in a 0700 directory); a
+symlinked directory or file is refused (`UNSAFE_SECRET_PATH`) and a key file that is
+not owner-only is ignored. It reaches only that account's Gemini children, through
+the environment: `GEMINI_API_KEY` and `SESSIONSATION_GEMINI_API_KEY` (the host
+`gemini` wrapper strips ambient keys and turns only this dedicated variable back
+into `GEMINI_API_KEY`). It never appears in argv, state, receipts, logs, errors or
+JSON output. Setting a key (or switching to `api-key` with a stored key) runs one
+headless validation (`gemini -p "" -o json`, at most 15 s) in a throwaway Gemini
+home under `DATA_ROOT/provider-state/gemini-validate/`, so no chat is recorded in
+the account. The result is `validation.state`: `valid` (clears a recorded failure),
+`auth_failed` (recorded like any headless auth failure, for example
+`AUTH_API_KEY_INVALID`) or `inconclusive` (timeout, quota, network; the key stays
+stored). In `api_key` mode the account is logged in when the key file is present;
+`account login` is refused (`AUTH_MODE_API_KEY`) and `account logout` deletes the
+key. `--mode google` keeps a stored key unused and returns the login plan. Running
+sessions keep the mode they started with.
 
 ### Gemini terminal input (revision 17)
 

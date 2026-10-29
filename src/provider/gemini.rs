@@ -28,6 +28,7 @@ use std::{
     path::{Path, PathBuf},
 };
 pub mod auth_failure;
+pub mod auth_mode;
 pub mod launch;
 pub mod steering;
 
@@ -191,6 +192,37 @@ fn set_path(root: &mut Value, keys: &[&str], value: Value, overwrite: bool) -> R
 /// and an operator's own auth selection are preserved. An unreadable or
 /// non-object settings file is an error and is left unchanged.
 pub fn seed_settings(home: &Path) -> Result<()> {
+    update_settings(
+        home,
+        &[
+            (&["general", "enableAutoUpdate"][..], json!(false), true),
+            (
+                &["general", "enableAutoUpdateNotification"][..],
+                json!(false),
+                true,
+            ),
+            (
+                &["privacy", "usageStatisticsEnabled"][..],
+                json!(false),
+                true,
+            ),
+            (
+                &["general", "sessionRetention", "enabled"][..],
+                json!(false),
+                true,
+            ),
+            (
+                &["security", "auth", "selectedType"][..],
+                json!(AUTH_TYPE),
+                false,
+            ),
+        ],
+    )?;
+    Ok(())
+}
+/// Write `(path, value, overwrite)` entries into `<home>/.gemini/settings.json`,
+/// preserving every other key. Returns whether the file changed.
+pub(crate) fn update_settings(home: &Path, entries: &[(&[&str], Value, bool)]) -> Result<bool> {
     let dir = home.join(".gemini");
     private_dir(&dir)?;
     let path = dir.join("settings.json");
@@ -213,51 +245,34 @@ pub fn seed_settings(home: &Path) -> Result<()> {
         Err(e) => return Err(e.into()),
     };
     let mut changed = false;
-    for (keys, value, overwrite) in [
-        (&["general", "enableAutoUpdate"][..], json!(false), true),
-        (
-            &["general", "enableAutoUpdateNotification"][..],
-            json!(false),
-            true,
-        ),
-        (
-            &["privacy", "usageStatisticsEnabled"][..],
-            json!(false),
-            true,
-        ),
-        (
-            &["general", "sessionRetention", "enabled"][..],
-            json!(false),
-            true,
-        ),
-        (
-            &["security", "auth", "selectedType"][..],
-            json!(AUTH_TYPE),
-            false,
-        ),
-    ] {
-        changed |= set_path(&mut root, keys, value, overwrite)?;
+    for (keys, value, overwrite) in entries {
+        changed |= set_path(&mut root, keys, value.clone(), *overwrite)?;
     }
     if changed || fs::symlink_metadata(&path).is_err() {
         atomic_write(&path, &serde_json::to_vec_pretty(&root)?)?;
     }
-    Ok(())
+    Ok(changed)
 }
 
 // --------------------------------------------------------------- environment
 
 /// The single builder for every Gemini child process: binary, isolated home,
 /// no self-relaunch, file-based credential storage, stripped backend/billing
-/// overrides. Callers add anything else (for example headless trust).
+/// overrides, and an `api_key` account's own stored key (environment only, never
+/// argv). Callers add anything else (for example headless trust).
 pub fn command(config: &Config, home: &Path) -> std::process::Command {
     let mut command = std::process::Command::new(&config.gemini_binary);
     for name in STRIPPED_ENV {
         command.env_remove(name);
     }
+    command.env_remove(auth_mode::WRAPPER_ENV);
     command
         .env("GEMINI_CLI_HOME", home)
         .env("GEMINI_CLI_NO_RELAUNCH", "1")
         .env("GEMINI_FORCE_FILE_STORAGE", "true");
+    for (name, key) in auth_mode::child_env(home) {
+        command.env(name, key.expose());
+    }
     command
 }
 
@@ -266,6 +281,7 @@ pub fn command(config: &Config, home: &Path) -> std::process::Command {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuthStatus {
     pub logged_in: bool,
+    pub mode: auth_mode::Mode,
 }
 impl AuthStatus {
     pub fn problem(&self) -> Option<&'static str> {
@@ -274,20 +290,31 @@ impl AuthStatus {
     pub fn gate(&self) -> Result<()> {
         match self.problem() {
             None => Ok(()),
+            Some(_) if self.mode == auth_mode::Mode::ApiKey => bail!(
+                "AUTH_REQUIRED: this Gemini account uses an API key but none is stored; run `sessionsation account auth gemini:<name> --mode api-key --key-stdin`"
+            ),
             Some(_) => bail!(
                 "AUTH_REQUIRED: this Gemini account is not logged in; run `sessionsation account login gemini:<name>`"
             ),
         }
     }
     pub fn mode(&self) -> Value {
-        json!({"logged_in":self.logged_in,"auth_method":self.logged_in.then_some(AUTH_TYPE),
-            "api_provider":null,"subscription_type":null})
+        json!({"logged_in":self.logged_in,"auth_method":self.logged_in.then_some(self.mode.selected_type()),
+            "auth_mode":self.mode.as_str(),"api_provider":null,"subscription_type":null})
     }
 }
-/// File-based authentication presence. The credential file is only stat'ed
-/// (never opened); `google_accounts.json` holds a display email, not a secret,
-/// and only whether an account is active is used.
+/// File-based authentication presence. In `api_key` mode: a safe key file is
+/// stored (stat only). Otherwise the credential file is only stat'ed (never
+/// opened); `google_accounts.json` holds a display email, not a secret, and only
+/// whether an account is active is used.
 pub fn auth_status(home: &Path) -> AuthStatus {
+    let mode = auth_mode::mode(home);
+    if mode == auth_mode::Mode::ApiKey {
+        return AuthStatus {
+            logged_in: auth_mode::key_present(home),
+            mode,
+        };
+    }
     let gemini = home.join(".gemini");
     let credentials = fs::symlink_metadata(gemini.join("oauth_creds.json"))
         .is_ok_and(|m| m.file_type().is_file() && m.len() > 0);
@@ -301,6 +328,7 @@ pub fn auth_status(home: &Path) -> AuthStatus {
     .is_some();
     AuthStatus {
         logged_in: credentials && active,
+        mode,
     }
 }
 /// Gemini CLI 0.66.0 has no logout command. Its `/auth signout` (`/logout`)
@@ -312,7 +340,12 @@ pub fn auth_status(home: &Path) -> AuthStatus {
 /// reproduced; the signed-in email in `old` is preserved exactly as Gemini does.
 /// The CLI's `security.auth.selectedType` reset is intentionally not applied:
 /// the managed `settings.json` keeps Login with Google selected for the next login.
+/// An `api_key` account's logout removes its stored key instead (the mode is kept).
 pub fn logout(home: &Path) -> Result<()> {
+    if auth_mode::mode(home) == auth_mode::Mode::ApiKey {
+        auth_mode::remove_key(home)?;
+        return Ok(());
+    }
     let dir = home.join(".gemini");
     match fs::remove_file(dir.join("oauth_creds.json")) {
         Ok(()) => {}
@@ -875,6 +908,49 @@ mod tests {
                 .get_envs()
                 .any(|(k, v)| k == "NO_BROWSER" && v.is_some_and(|v| v == "true"))
         );
+    }
+
+    #[test]
+    fn api_key_accounts_get_their_key_by_environment_only_and_google_accounts_never() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path();
+        let config = Config {
+            gemini_binary: "/opt/gemini".into(),
+            ..Default::default()
+        };
+        let env = |c: &std::process::Command, name: &str| {
+            c.get_envs()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        seed_settings(home).unwrap();
+        auth_mode::store_key(home, &auth_mode::ApiKey::new("AIzaFAKE-env").unwrap()).unwrap();
+        let c = command(&config, home);
+        assert_eq!(
+            env(&c, "GEMINI_API_KEY"),
+            Some(None),
+            "google mode strips it"
+        );
+        assert_eq!(env(&c, auth_mode::WRAPPER_ENV), Some(None));
+        assert_eq!(auth_status(home).mode, auth_mode::Mode::Google);
+        auth_mode::set_mode(home, auth_mode::Mode::ApiKey).unwrap();
+        let c = command(&config, home);
+        assert_eq!(env(&c, "GEMINI_API_KEY"), Some(Some("AIzaFAKE-env".into())));
+        assert_eq!(
+            env(&c, auth_mode::WRAPPER_ENV),
+            Some(Some("AIzaFAKE-env".into()))
+        );
+        assert!(c.get_args().all(|a| a != "AIzaFAKE-env"));
+        let s = auth_status(home);
+        assert!(s.logged_in && s.gate().is_ok());
+        assert_eq!(s.mode()["auth_method"], "gemini-api-key");
+        assert_eq!(s.mode()["auth_mode"], "api_key");
+        assert!(!auth_report(home).to_string().contains("AIzaFAKE"));
+        logout(home).unwrap();
+        let s = auth_status(home);
+        assert!(!s.logged_in);
+        assert!(s.gate().unwrap_err().to_string().contains("--mode api-key"));
+        assert_eq!(env(&command(&config, home), "GEMINI_API_KEY"), Some(None));
     }
 
     #[test]

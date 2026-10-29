@@ -672,7 +672,7 @@ fixtures include reconnect errors, acceptance after expiry and projection recove
 
 ## Account operations
 
-`api account list|add|login|managed-home|enable|disable|usage|limits|remove|restore|delete|deletions` are documented in
+`api account list|add|login|auth|managed-home|enable|disable|usage|limits|remove|restore|delete|deletions` are documented in
 [the CLI guide](cli.md). Removal is local membership removal, not provider deletion,
 credential purging or disabling the original switcher enrollment. The separately
 confirmed `delete` operation deletes local credentials/data while preserving
@@ -1908,3 +1908,41 @@ refused, and a missing or malformed file is left untouched. `.credentials.json` 
 never read. Failures are reported on stderr and never block the start. `default`
 launch permissions, headless delivery and `claude_pretrust_folders:false` change
 nothing.
+
+### Gemini authentication modes (revision 21)
+
+Additive; negotiate `contract_revision >= 21`. The Gemini entry of
+`api capabilities.providers` adds:
+
+- `auth_modes`: the ordered client choices
+  `[{id,mode,label,available,reason,...}]`: `google_personal` (`mode:"google"`,
+  `available:false`, `reason` set: Google ended Gemini CLI login for personal
+  accounts on 2026-06-18), `google_workspace` (`mode:"google"`, available) and
+  `api_key` (`mode:"api_key"`, available, `input:"stdin_json"`, `field:"api_key"`).
+  Clients show unavailable entries disabled with their `reason` and never hard-code
+  availability; a later revision can re-enable an entry.
+- `auth_command`: `{since_revision:21,command:"account auth",modes:["google","api_key"],
+  key_input:"stdin_json",validation_timeout_seconds:15,unsupported_modes:["vertex"]}`.
+
+`api account auth gemini:NAME` returns `{account_id,provider,auth_mode,api_key_present,
+auth_required,auth_failed,auth_failure_reason,auth_failure_observed_at,changed,
+running_sessions,applies_to}` (plus `login_required` in `google` mode).
+`--mode google` selects Login with Google and adds `login` (the `api account login`
+plan). `--mode api-key --key-stdin` reads exactly `{"api_key":"..."}` from stdin
+(at most 32 KiB, unknown fields refused), stores the key in the account's
+`secrets/gemini-api-key` (0600, atomic, no symlinks), selects `gemini-api-key` and
+adds `validation:{state,code,reason,timeout_seconds}` with `state`
+`valid|auth_failed|inconclusive` from one headless run in a throwaway home. The key
+is never part of any result, error, receipt, state or log. Errors:
+`INVALID_REQUEST`, `INVALID_API_KEY_FORMAT`, `API_KEY_REQUIRED` (api-key without a
+stored or supplied key), `UNSUPPORTED_AUTH_MODE` (`vertex`), `UNSAFE_SECRET_PATH`,
+`UNSUPPORTED_PROVIDER_OPERATION` (not Gemini). `api account login` keeps its plan;
+the plan's `account login` refuses an `api_key` account with `AUTH_MODE_API_KEY`.
+
+Account rows add `auth_mode` (`google|api_key`, null for other providers) and
+`api_key_present` (stat only; null for other providers). `auth_failed` and
+`auth_failure_reason` (revision 18) also cover API keys: `AUTH_API_KEY_INVALID`
+(the Gemini API rejected the key) and `AUTH_API_KEY_MISSING` (API-key mode without a
+key in the child environment). A failure recorded for a key is superseded by a newly
+stored key; `AUTH_CLIENT_UNSUPPORTED` remains the classification for a retired
+personal Google login.

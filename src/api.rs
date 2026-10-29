@@ -28,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":20,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":21,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -478,6 +478,16 @@ pub enum AccountCommand {
     Logout {
         id: String,
     },
+    /// Gemini: show or set the authentication mode. `--mode google` selects Login with
+    /// Google (Workspace) and returns the login plan; `--mode api-key --key-stdin`
+    /// reads `{"api_key":"..."}` from stdin, stores it privately and validates it.
+    Auth {
+        id: String,
+        #[arg(long, value_name = "google|api-key")]
+        mode: Option<String>,
+        #[arg(long, requires = "mode")]
+        key_stdin: bool,
+    },
     /// Move an account to a 0-based position in the shared account order.
     Reorder {
         id: String,
@@ -588,13 +598,16 @@ fn account_selectable(a: &Value, removed: bool) -> bool {
 /// recorded failure marks it `auth_failed` and in need of a login; once cleared (a
 /// successful run or login, or newer credentials) a failure-only marking is lifted.
 fn project_gemini_auth_failure(paths: &Paths, name: &str, a: &mut Value) {
-    use crate::provider::gemini::auth_failure;
-    let failure = a["config_home"]
+    use crate::provider::gemini::{auth_failure, auth_mode};
+    let home = a["config_home"]
         .as_str()
         .filter(|h| !h.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| crate::provider::native::default_home(paths, ProviderId::Gemini, name).ok())
-        .and_then(|home| auth_failure::current(paths, name, &home));
+        .or_else(|| crate::provider::native::default_home(paths, ProviderId::Gemini, name).ok());
+    // Mode and key presence only (stat); the key itself is never read here.
+    a["auth_mode"] = json!(home.as_deref().map(|h| auth_mode::mode(h).as_str()));
+    a["api_key_present"] = json!(home.as_deref().map(auth_mode::key_present));
+    let failure = home.and_then(|home| auth_failure::current(paths, name, &home));
     let fields = auth_failure::fields(failure.as_ref());
     for key in [
         "auth_failed",
@@ -663,6 +676,9 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             }
             if provider == ProviderId::Gemini {
                 project_gemini_auth_failure(paths, name, &mut a);
+            } else {
+                a["auth_mode"] = Value::Null;
+                a["api_key_present"] = Value::Null;
             }
             a["selectable"] = json!(account_selectable(&a, removed));
             a["prefill"] = account_prefill(
@@ -673,6 +689,111 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             Ok(a)
         })
         .collect()
+}
+
+/// Show or set a Gemini account's authentication mode (`api account auth` and
+/// `account auth`). Setting `api_key` with a key stores it (0600, atomic) and runs
+/// one headless validation; `google` returns the login plan. The key is never
+/// part of the result or of any error.
+pub async fn gemini_auth(
+    paths: &Paths,
+    account: &AccountRef,
+    mode: Option<&str>,
+    key: Option<crate::provider::gemini::auth_mode::ApiKey>,
+) -> Result<Value> {
+    use crate::provider::gemini::{self, auth_failure, auth_mode};
+    ensure!(
+        account.provider == ProviderId::Gemini,
+        "UNSUPPORTED_PROVIDER_OPERATION: authentication modes are a Gemini account setting"
+    );
+    let mode = mode.map(auth_mode::Mode::parse).transpose()?;
+    ensure!(
+        key.is_none() || mode == Some(auth_mode::Mode::ApiKey),
+        "INVALID_ARGUMENT: --key-stdin is only valid with --mode api-key"
+    );
+    let enrolled = gemini::account(paths, &account.name)?;
+    let home = enrolled.home.clone();
+    let mut changed = false;
+    let mut validation = Value::Null;
+    if let Some(mode) = mode {
+        crate::accounts::ensure_available(paths, &account.name)?;
+        ensure!(
+            home.is_dir(),
+            "ACCOUNT_HOME_UNAVAILABLE: the Gemini home does not exist"
+        );
+        if let Some(key) = &key {
+            auth_mode::store_key(&home, key)?;
+            changed = true;
+        }
+        ensure!(
+            mode != auth_mode::Mode::ApiKey || auth_mode::key_present(&home),
+            "API_KEY_REQUIRED: no API key is stored for {}; pass one with --key-stdin",
+            account.id()
+        );
+        changed |= auth_mode::set_mode(&home, mode)?;
+        if changed {
+            // A new key or mode starts with a clean slate; validation records afresh.
+            auth_failure::clear(paths, &account.name);
+        }
+        if mode == auth_mode::Mode::ApiKey && changed {
+            let config = crate::store::load_config(paths)?;
+            validation = crate::messaging::headless::validate_gemini_key(
+                paths,
+                &config,
+                &account.name,
+                &home,
+            )
+            .await;
+        }
+    }
+    // Let the supervisor observe the new state (auth_required) at once.
+    daemon::ensure_started(paths).await?;
+    let refreshed = daemon::call(
+        paths,
+        "account/refresh",
+        json!({"name":account.name,"provider":account.provider}),
+    )
+    .await?;
+    let current = auth_mode::mode(&home);
+    let failure = auth_failure::current(paths, &account.name, &home);
+    let running = gemini::live_sessions(&home).map(|l| l.len()).unwrap_or(0);
+    let mut value = json!({"account_id":account.id(),"provider":account.provider,
+        "auth_mode":current.as_str(),"api_key_present":auth_mode::key_present(&home),
+        "auth_required":refreshed["auth_required"].as_bool().unwrap_or(true) || failure.is_some(),
+        "changed":changed,"running_sessions":running,
+        "applies_to":"sessions_started_after_the_change"});
+    let fields = auth_failure::fields(failure.as_ref());
+    for key in [
+        "auth_failed",
+        "auth_failure_reason",
+        "auth_failure_observed_at",
+    ] {
+        value[key] = fields[key].clone();
+    }
+    if mode == Some(auth_mode::Mode::ApiKey) {
+        value["validation"] = validation;
+    }
+    if current == auth_mode::Mode::Google {
+        value["login_required"] = json!(!gemini::auth_status(&home).logged_in);
+        if mode.is_some() {
+            value["login"] = login_plan(paths, account)?["login"].clone();
+        }
+    }
+    Ok(value)
+}
+
+/// The ordered Gemini authentication choices for clients (`auth_modes`). Personal
+/// "Login with Google" stays listed but unavailable: Google ended Gemini CLI
+/// login for personal accounts (all tiers) on 2026-06-18; the same OAuth flow
+/// still serves Workspace accounts.
+pub fn gemini_auth_modes() -> Value {
+    json!([
+        {"id":"google_personal","mode":"google","label":"Google login","available":false,
+         "reason":"retired by Google for personal accounts — use Antigravity, API key or Workspace"},
+        {"id":"google_workspace","mode":"google","label":"Google Workspace login","available":true,"reason":null},
+        {"id":"api_key","mode":"api_key","label":"API key","available":true,"reason":null,
+         "input":"stdin_json","field":"api_key"}
+    ])
 }
 
 /// Exec plan for an interactive provider login; no URL or credential passes
@@ -868,6 +989,38 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             )
             .await
         }
+        AccountCommand::Auth {
+            id,
+            mode,
+            key_stdin,
+        } => {
+            let account = account_ref(paths, &id)?;
+            let key = if key_stdin {
+                let mut bytes = vec![];
+                std::io::stdin().take(32769).read_to_end(&mut bytes)?;
+                ensure!(
+                    bytes.len() <= 32768,
+                    "INVALID_REQUEST: the stdin request is too large"
+                );
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct KeyRequest {
+                    api_key: String,
+                }
+                // Never echo serde's message: it can quote the input.
+                let request: KeyRequest = serde_json::from_slice(&bytes).map_err(|_| {
+                    anyhow::anyhow!(
+                        "INVALID_REQUEST: stdin must be the JSON object {{\"api_key\":\"...\"}}"
+                    )
+                })?;
+                Some(crate::provider::gemini::auth_mode::ApiKey::new(
+                    &request.api_key,
+                )?)
+            } else {
+                None
+            };
+            gemini_auth(paths, &account, mode.as_deref(), key).await
+        }
         AccountCommand::Login { id } if native::is_native(AccountRef::parse(&id)?.provider) => {
             let account = account_ref(paths, &id)?;
             native::account(paths, account.provider, &account.name)?;
@@ -905,11 +1058,12 @@ fn gemini_provider() -> Value {
         "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
         "headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false,"approval_mode":crate::messaging::headless::GEMINI_APPROVAL_MODE},
         "force_interrupt":false,"steer":true,"input_delivery":crate::messaging::claude_steer::gemini::input_delivery(),"cross_provider_conversion":false,
+        "auth_modes":gemini_auth_modes(),"auth_command":{"since_revision":21,"command":"account auth","modes":["google","api_key"],"key_input":"stdin_json","validation_timeout_seconds":crate::messaging::headless::GEMINI_VALIDATION_SECONDS,"unsupported_modes":["vertex"]},
         "operations":crate::provider::capabilities(ProviderId::Gemini)})
 }
 
 pub fn capabilities() -> Value {
-    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":20,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":21,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",

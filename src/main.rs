@@ -430,6 +430,23 @@ enum AccountCommand {
         /// NAME or PROVIDER:NAME.
         name: String,
     },
+    /// Gemini: show or set the authentication mode. `--mode google` selects Login with
+    /// Google (Workspace accounts; then run `account login`). `--mode api-key --key-stdin`
+    /// reads a Gemini API key (aistudio.google.com/apikey) from stdin only, stores it in
+    /// GEMINI_CLI_HOME/secrets/gemini-api-key (0600) and runs one headless validation.
+    /// Without --mode, shows the mode and whether a key is stored (never the key).
+    #[command(
+        after_help = "Examples:\n  sessionsation account auth gemini:me\n  sessionsation account auth gemini:me --mode api-key --key-stdin < keyfile\n  sessionsation account auth gemini:me --mode google"
+    )]
+    Auth {
+        /// NAME or gemini:NAME.
+        name: String,
+        #[arg(long, value_name = "google|api-key")]
+        mode: Option<String>,
+        /// Read the API key from stdin (never pass it as an argument).
+        #[arg(long, requires = "mode")]
+        key_stdin: bool,
+    },
     /// Move an account to a 0-based position in the shared account order (list and UI).
     Reorder {
         /// NAME or PROVIDER:NAME.
@@ -656,6 +673,36 @@ async fn run(cli: Cli) -> Result<()> {
             )
             .await?;
             print_json(&value)?;
+        }
+        Commands::Account {
+            command:
+                AccountCommand::Auth {
+                    name,
+                    mode,
+                    key_stdin,
+                },
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            let key = if key_stdin {
+                use std::io::Read;
+                let mut text = String::new();
+                std::io::stdin()
+                    .take(4097)
+                    .read_to_string(&mut text)
+                    .map_err(|_| anyhow::anyhow!("INVALID_API_KEY_FORMAT: stdin is not text"))?;
+                anyhow::ensure!(
+                    text.len() <= 4096,
+                    "INVALID_API_KEY_FORMAT: stdin is too large"
+                );
+                Some(sessionsation::provider::gemini::auth_mode::ApiKey::new(
+                    &text,
+                )?)
+            } else {
+                None
+            };
+            print_json(
+                &sessionsation::api::gemini_auth(&paths, &account, mode.as_deref(), key).await?,
+            )?;
         }
         Commands::Account {
             command: AccountCommand::Logout { name },
@@ -1012,6 +1059,7 @@ async fn run(cli: Cli) -> Result<()> {
                 | AccountCommand::List { .. }
                 | AccountCommand::Rename { .. }
                 | AccountCommand::Logout { .. }
+                | AccountCommand::Auth { .. }
                 | AccountCommand::Reorder { .. }
                 | AccountCommand::LiveSteering { .. }
                 | AccountCommand::Show { .. }
@@ -1428,6 +1476,11 @@ fn exec_login(
     use std::os::unix::process::CommandExt;
     match provider {
         ProviderId::Gemini => {
+            use provider::gemini::auth_mode;
+            anyhow::ensure!(
+                auth_mode::mode(home) != auth_mode::Mode::ApiKey,
+                "AUTH_MODE_API_KEY: gemini:{name} uses an API key, which needs no login; store a key with `sessionsation account auth gemini:{name} --mode api-key --key-stdin`, or switch to Google login with `--mode google` first"
+            );
             let mut command = provider::gemini::login_command(config, home);
             command.current_dir(provider::gemini::login_directory(home));
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {

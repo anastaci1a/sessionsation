@@ -345,6 +345,14 @@
         "auth_failure_observed_at": {
           "type": ["integer", "null"],
           "description": "Revision 18: Unix seconds of the failure."
+        },
+        "auth_mode": {
+          "enum": ["google", "api_key", null],
+          "description": "Revision 21: Gemini authentication mode (the account's security.auth.selectedType); null for other providers."
+        },
+        "api_key_present": {
+          "type": ["boolean", "null"],
+          "description": "Revision 21: Gemini only. Whether a private API key file is stored (stat only; the key is never exposed); null for other providers."
         }
       },
       "required": [

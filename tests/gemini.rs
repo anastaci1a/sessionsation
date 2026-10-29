@@ -980,7 +980,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     assert_eq!(gemini["operations"]["headless_delivery"]["supported"], true);
     assert_eq!(gemini["headless_delivery"]["automatic_replay"], false);
     assert_eq!(gemini["headless_delivery"]["approval_mode"], "default");
-    assert_eq!(caps["contract_revision"], 20);
+    assert_eq!(caps["contract_revision"], 21);
     assert_eq!(
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
@@ -1508,5 +1508,298 @@ async fn ui_launch_without_configured_permissions_starts_gemini_in_yolo() {
             "args=--session-id {native} --approval-mode yolo\n"
         )),
         "{launch}"
+    );
+}
+
+/// Run with `input` on stdin and return (status ok, stdout, stderr).
+fn with_stdin(f: &Fixture, args: &[&str], input: &str) -> (bool, String, String) {
+    use std::io::Write;
+    let mut child = f
+        .command(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+/// Every file under `dir` (recursively) except `skip`, as lossy text.
+fn every_file_text(dir: &Path, skip: &Path, out: &mut Vec<(PathBuf, String)>) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        let Ok(t) = e.file_type() else { continue };
+        if t.is_dir() {
+            every_file_text(&p, skip, out);
+        } else if t.is_file() && p != skip {
+            let bytes = std::fs::read(&p).unwrap_or_default();
+            out.push((p, String::from_utf8_lossy(&bytes).into_owned()));
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_key_mode_stores_the_key_privately_injects_it_by_env_validates_and_never_echoes_it() {
+    use sha2::{Digest, Sha256};
+    let f = fixture().await;
+    f.add_logged_in("keyed");
+    let home = f.home("keyed");
+    let id = "gemini:keyed";
+    let caps = f.api(&["capabilities"]);
+    let gemini = caps["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "gemini")
+        .unwrap()
+        .clone();
+    let modes: Vec<_> = gemini["auth_modes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (m["id"].as_str().unwrap(), m["available"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        modes,
+        [
+            ("google_personal", false),
+            ("google_workspace", true),
+            ("api_key", true)
+        ]
+    );
+    assert!(
+        gemini["auth_modes"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("retired")
+    );
+
+    let status = f.api(&["account", "auth", id]);
+    assert_eq!(
+        (
+            status["auth_mode"].as_str(),
+            status["api_key_present"].as_bool()
+        ),
+        (Some("google"), Some(false))
+    );
+    // A key is never accepted as an argument, and api-key mode needs a stored key.
+    assert!(
+        !f.run(&["account", "auth", id, "--key", "AIzaARGV"])
+            .status
+            .success()
+    );
+    assert!(
+        f.api_error(&["account", "auth", id, "--mode", "api-key"])
+            .contains("API_KEY_REQUIRED")
+    );
+    assert!(
+        f.api_error(&["account", "auth", id, "--mode", "vertex"])
+            .contains("UNSUPPORTED_AUTH_MODE")
+    );
+
+    // 1. An invalid key through the human CLI: stored, validated once, auth_failed.
+    let bad = "AIzaBAD-fixture-secret-0001";
+    let (ok, out, err) = with_stdin(
+        &f,
+        &["account", "auth", id, "--mode", "api-key", "--key-stdin"],
+        &format!("{bad}\n"),
+    );
+    assert!(ok, "{err}");
+    assert!(!out.contains(bad) && !err.contains(bad), "{out}{err}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["auth_mode"], "api_key");
+    assert_eq!(v["api_key_present"], true);
+    assert_eq!(v["validation"]["state"], "auth_failed", "{v}");
+    assert_eq!(v["validation"]["code"], "AUTH_API_KEY_INVALID");
+    assert_eq!(v["auth_failed"], true);
+    assert_eq!(v["auth_required"], true);
+    assert!(
+        v["auth_failure_reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("AUTH_API_KEY_INVALID:")
+    );
+    let key_file = home.join("secrets/gemini-api-key");
+    assert_eq!(read(&key_file), bad);
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        (mode(&home.join("secrets")), mode(&key_file)),
+        (0o700, 0o600)
+    );
+    let settings: Value = serde_json::from_str(&read(&home.join(".gemini/settings.json"))).unwrap();
+    assert_eq!(
+        settings["security"]["auth"]["selectedType"],
+        "gemini-api-key"
+    );
+    // The validation child got the key only through the environment, in API-key mode,
+    // in a throwaway home that is removed afterwards.
+    let report = read(&f.paths.root.join("provider-state/fake-validate-report"));
+    assert!(
+        report.contains("selected_type=gemini-api-key\n"),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!("key_sha256={:x}\n", Sha256::digest(bad))),
+        "{report}"
+    );
+    assert!(
+        report.contains("api_key=present\nwrapper_key=present\n"),
+        "{report}"
+    );
+    assert!(
+        report.contains("trust=true\n")
+            && report.contains("args=-p  -o json --approval-mode default\n"),
+        "{report}"
+    );
+    assert!(!report.contains(bad));
+    assert_eq!(
+        std::fs::read_dir(f.paths.root.join("provider-state/gemini-validate"))
+            .unwrap()
+            .count(),
+        0
+    );
+    let row = f.api(&["account", "list", "--platform", "gemini"])[0].clone();
+    assert_eq!(
+        (
+            row["auth_mode"].as_str(),
+            row["api_key_present"].as_bool(),
+            row["auth_failed"].as_bool(),
+            row["selectable"].as_bool()
+        ),
+        (Some("api_key"), Some(true), Some(true), Some(false)),
+        "{row}"
+    );
+    // An interactive login does not apply to an API-key account.
+    let login = f.run(&["account", "login", id]);
+    assert!(!login.status.success());
+    assert!(String::from_utf8_lossy(&login.stderr).contains("AUTH_MODE_API_KEY"));
+
+    // 2. A valid key through the public API (JSON on stdin) replaces it and clears the failure.
+    let good = "AIzaVALID-fixture-secret-0002";
+    let (ok, out, err) = with_stdin(
+        &f,
+        &[
+            "api",
+            "account",
+            "auth",
+            id,
+            "--mode",
+            "api-key",
+            "--key-stdin",
+        ],
+        &json!({"api_key": good}).to_string(),
+    );
+    assert!(ok, "{err}");
+    assert!(!out.contains(good) && !err.contains(good));
+    let v: Value = serde_json::from_str::<Value>(&out).unwrap()["result"].clone();
+    assert_eq!(v["validation"]["state"], "valid", "{v}");
+    assert_eq!(
+        (v["auth_failed"].as_bool(), v["auth_required"].as_bool()),
+        (Some(false), Some(false)),
+        "{v}"
+    );
+    assert_eq!(read(&key_file), good);
+    // Malformed input never quotes the key back.
+    let (ok, out, err) = with_stdin(
+        &f,
+        &[
+            "api",
+            "account",
+            "auth",
+            id,
+            "--mode",
+            "api-key",
+            "--key-stdin",
+        ],
+        &format!("{{\"api_key\":\"{good}\",\"extra\":1}}"),
+    );
+    assert!(!ok && !out.contains(good) && !err.contains(good), "{err}");
+    let (ok, _, err) = with_stdin(
+        &f,
+        &[
+            "api",
+            "account",
+            "auth",
+            id,
+            "--mode",
+            "api-key",
+            "--key-stdin",
+        ],
+        &json!({"api_key": format!("{good} with space")}).to_string(),
+    );
+    assert!(
+        !ok && err.contains("INVALID_API_KEY_FORMAT") && !err.contains(good),
+        "{err}"
+    );
+    assert_eq!(read(&key_file), good, "a refused key leaves the stored one");
+
+    // 3. Headless delivery of this account receives the stored key (env only, never argv);
+    // an ambient key in the caller's environment is still stripped.
+    let (session, _native) = f.stopped_session("keyed");
+    let message = uuid::Uuid::new_v4().to_string();
+    f.send_ok(&resume_body(&message, &f.session(&session), "hello"));
+    let settled = f.settled(&message);
+    assert_eq!(settled["state"], "completed_with_reply", "{settled}");
+    let launch = read(&home.join("fake-print-resume"));
+    assert!(
+        launch.contains("api_key=present\nwrapper_key=present\n"),
+        "{launch}"
+    );
+    assert!(!launch.contains(good) && !launch.contains("key-must-not-reach-gemini"));
+
+    // Nothing under the data root other than the key file holds either key.
+    let mut files = vec![];
+    every_file_text(&f.paths.root, &key_file, &mut files);
+    for (path, text) in &files {
+        assert!(
+            !text.contains(good) && !text.contains(bad),
+            "key leaked into {}",
+            path.display()
+        );
+    }
+
+    // 4. Back to Google login: the key stays stored but unused; the login plan is returned.
+    let v = f.api(&["account", "auth", id, "--mode", "google"]);
+    assert_eq!(v["auth_mode"], "google");
+    assert_eq!(v["changed"], true);
+    assert_eq!(v["login"]["action"], "exec");
+    assert_eq!(v["api_key_present"], true);
+    let settings: Value = serde_json::from_str(&read(&home.join(".gemini/settings.json"))).unwrap();
+    assert_eq!(
+        settings["security"]["auth"]["selectedType"],
+        "oauth-personal"
+    );
+    let message = uuid::Uuid::new_v4().to_string();
+    f.send_ok(&resume_body(&message, &f.session(&session), "again"));
+    assert_eq!(f.settled(&message)["state"], "completed_with_reply");
+    let launch = read(&home.join("fake-print-resume"));
+    assert!(
+        launch.contains("api_key=\nwrapper_key=\n"),
+        "google mode passes no key: {launch}"
+    );
+
+    // 5. Logout of an API-key account removes the key.
+    f.api(&["account", "auth", id, "--mode", "api-key"]);
+    let out = f.api(&["account", "logout", id]);
+    assert_eq!(out["auth_required"], true);
+    assert!(!key_file.exists());
+    let status = f.api(&["account", "auth", id]);
+    assert_eq!(
+        (
+            status["auth_mode"].as_str(),
+            status["api_key_present"].as_bool(),
+            status["auth_required"].as_bool()
+        ),
+        (Some("api_key"), Some(false), Some(true))
     );
 }

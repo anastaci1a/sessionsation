@@ -17,8 +17,8 @@ case "$1" in
 esac
 
 env_report() {
-  printf 'api_key=%s\ngoogle_key=%s\nvertex=%s\nproject=%s\nbase_url=%s\nmodel=%s\n' \
-    "${GEMINI_API_KEY:+present}" "${GOOGLE_API_KEY:+present}" "${GOOGLE_GENAI_USE_VERTEXAI:+present}" \
+  printf 'api_key=%s\nwrapper_key=%s\ngoogle_key=%s\nvertex=%s\nproject=%s\nbase_url=%s\nmodel=%s\n' \
+    "${GEMINI_API_KEY:+present}" "${SESSIONSATION_GEMINI_API_KEY:+present}" "${GOOGLE_API_KEY:+present}" "${GOOGLE_GENAI_USE_VERTEXAI:+present}" \
     "${GOOGLE_CLOUD_PROJECT:+present}" "${GOOGLE_GEMINI_BASE_URL:+present}" "${GEMINI_MODEL:+present}"
   printf 'home=%s\nno_relaunch=%s\nfile_storage=%s\ntrust=%s\nno_browser=%s\ncwd=%s\n' \
     "$GEMINI_CLI_HOME" "$GEMINI_CLI_NO_RELAUNCH" "$GEMINI_FORCE_FILE_STORAGE" \
@@ -65,6 +65,34 @@ if [ -z "$session" ] && [ -z "$headless" ]; then
   printf '{"active":"fixture@example.invalid","old":[]}\n' > "$state/google_accounts.json"
   printf '%s\n' 'Fake login complete.'
   exit 0
+fi
+
+# API-key validation (`-p "" -o json`, no session) in a throwaway home
+# (<root>/provider-state/gemini-validate/<id>): reports the auth type it was given
+# and a hash of the key (never the key) to <root>/provider-state/fake-validate-report.
+# A key starting with AIzaVALID answers; any other key gets the real Gemini API
+# rejection, which echoes the key so tests can prove raw output is never kept.
+if [ -z "$session" ] && [ -n "$headless" ]; then
+  [ "$format" = json ] || exit 42
+  cat > /dev/null
+  selected=$(sed -n 's/.*"selectedType": *"\([^"]*\)".*/\1/p' "$state/settings.json" 2>/dev/null | head -n 1)
+  {
+    printf 'selected_type=%s\nkey_sha256=%s\nargs=%s\n' "$selected" \
+      "$(printf '%s' "$GEMINI_API_KEY" | sha256sum | cut -d' ' -f1)" "$args"
+    env_report
+  } > "$(dirname "$home")/../fake-validate-report"
+  case "$GEMINI_API_KEY" in
+    AIzaVALID*)
+      printf '{"session_id":"fixture","response":"OK","stats":{}}\n'
+      exit 0 ;;
+    '')
+      printf 'When using Gemini API, you must specify the GEMINI_API_KEY environment variable.\n' >&2
+      exit 41 ;;
+    *)
+      printf '[API Error: {"error":{"code":400,"message":"API key not valid. Please pass a valid API key. (key %s)","status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}]\n' "$GEMINI_API_KEY" >&2
+      printf '{"session_id":"fixture","error":{"type":"Error","message":"API key not valid (key %s)","code":1}}\n' "$GEMINI_API_KEY"
+      exit 1 ;;
+  esac
 fi
 [ -n "$session" ] || exit 42
 
