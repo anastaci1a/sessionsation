@@ -520,9 +520,10 @@ the HERDR tab. Detached or stopped sessions keep their catalog label (`name_sour
 "catalog"`). The native Claude title is never changed live; the label is applied as
 `--name` on the next launch/resume.
 
-Stop, restart, account switch, relocation, Space moves, archive/delete and
-Submit/Queue/Steer are unsupported for Claude and rejected with
-`UNSUPPORTED_PROVIDER_OPERATION`; capabilities give the reason.
+Stop, restart, account switch, relocation, Space moves and archive/delete are
+unsupported for Claude and rejected with `UNSUPPORTED_PROVIDER_OPERATION`;
+capabilities give the reason. Submit/Queue/Steer work only for hosted sessions and
+for live sessions of accounts with live steering enabled (below).
 
 Headless delivery (Agent-DM) uses the existing `api send`/`api receipt` commands.
 `mode:"resume"` continues a **stopped** session (`session_id` +
@@ -549,6 +550,87 @@ with the same input and passes its output through. Recorder errors never break t
 statusline. Rate limits appear only for subscription accounts after the first API
 response; missing windows stay `null`, and readings older than 30 minutes or past
 their reset are stale. No model request is made to obtain usage.
+
+### Hosted Claude sessions and steering (revision 16)
+
+A **hosted** session is run by Sessionsation instead of a terminal: a detached
+worker starts `claude -p --input-format stream-json --output-format stream-json
+--verbose --replay-user-messages --permission-prompt-tool stdio` with
+`--session-id UUID` (new) or `--resume UUID` (a stopped conversation) under the
+account environment. The terminal (or HERDR pane) shows a viewer of the worker's
+normalized event log instead of the TUI.
+
+```sh
+sessionsation run --account claude:personal --hosted [--permission-mode plan]
+sessionsation run --account claude:personal --hosted --thread CONVERSATION-UUID
+sessionsation view SESSION-ID [--once]        # live log; t + Enter takes over, q quits
+sessionsation take-over SESSION-ID            # stop the worker, then claude --resume here
+sessionsation api launcher new --account claude:personal --hosted
+sessionsation api launcher resume --session ID --expected-generation G --hosted
+sessionsation api hosted start --account claude:personal --directory /abs/dir [--name N]
+sessionsation api hosted start --session ID --expected-generation G
+sessionsation api hosted status|events --session ID
+sessionsation api hosted stop --session ID --expected-generation G [--interrupt] [--timeout-seconds N]
+sessionsation api hosted respond --session ID --request-id R --allow|--deny [--message TEXT]
+```
+
+`api launch start` accepts an optional `"hosted":{"permission_mode":...}` for
+`claude:` accounts; the new pane then runs the viewer. The permission mode is fixed
+at launch: `account` (default) passes no flag, so the account's normal mode applies,
+except that an account default of `bypassPermissions` is replaced by `default`;
+`default`, `acceptEdits`, `plan` and `bypassPermissions` are passed explicitly.
+Tool permission prompts arrive as `can_use_tool` requests and stay pending (in
+`api hosted status`, the session row's `hosted.pending_permissions` and the viewer)
+until answered with `api hosted respond`; nothing is auto-approved.
+
+The worker is the only writer: its lock (`DATA_ROOT/claude-hosted/UUID/worker.lock`)
+blocks interactive resume, headless delivery and a second host. Detached from the
+supervisor, it survives supervisor restarts and is re-adopted by the next read. A
+worker that dies is marked `stopped` (`WORKER_LOST`); while its provider still
+drains (no stdin writer, it exits at end of input) the host is `stopping` and still
+blocks other writers; `api hosted stop` terminates such an orphan. Closing the
+viewer does not stop the worker. **Take over** stops the worker cleanly (stdin
+closed after queued work; terminated after the timeout) and only then execs the
+interactive `claude --resume UUID` in the same terminal.
+
+`api send` modes `submit`, `queue` and `steer` on a hosted session write one
+stream-json user frame with `uuid` = `message_id` and priority `next`, `later` or
+`now`; `"steering":{"version":1,"interrupt":true}` (steer only) first interrupts the
+running turn. Receipts (`delivery_semantics:"hosted_stream_json"`) follow the
+`command_lifecycle` events of that uuid and finish on the `result` whose
+`user_message_uuids` names it; the reply is the assistant text streamed between
+`started` and that result. A steer folded into a running turn has
+`facts.folded:true` and, like the turn's other inputs, `shared_with_turn:true`.
+
+**Live steering** reaches a normal interactive session through Claude Code's
+cross-session messaging. It is per-account opt-in:
+
+```sh
+sessionsation account live-steering claude:personal --enable   # crossSessionInbound: accept
+sessionsation account live-steering claude:personal --disable  # removes it again
+sessionsation api account live-steering claude:personal        # show
+```
+
+The toggle edits only that key of the account's `settings.json` (other keys kept,
+atomic replace, file mode kept; a symlinked file is refused; an operator's own
+`hold`/`refuse` is never removed) and records `account.live_steering_enabled|disabled`.
+Then `api send` on a running, non-hosted session of that account uses the session's
+messaging socket from its registry entry: a detached worker listens on
+`RUNTIME/peer/MESSAGE-ID.sock`, sends the frame (`from` = that socket, `session_id`
+= the verified registry session), requests an idle notice and records
+`peer_message_status` frames. Claude shows the text as a message **from another
+Claude session**, which the model may only partially follow; receipts say so
+(`delivery_semantics:"peer_message"`, `peer_message.label`). The reply is read from
+the transcript after the record carrying the message id, up to the next input;
+without that anchor the receipt never claims an answer. `held` (waiting for the
+session's approval), `refused`, `expired` and dropped messages are reported as such;
+peer messages cannot interrupt. Without the opt-in, submit/queue/steer are refused
+with `LIVE_STEERING_DISABLED`; session rows carry `capabilities.submit|queue|steer`,
+`capability_reasons` and `input_delivery.semantics`.
+
+Both paths journal under `DATA_ROOT/claude-steer/` before writing, share the
+message-id namespace with every other store and never replay an uncertain send.
+Hosted and live steering are verified only against fakes so far.
 
 ## Gemini CLI accounts and sessions
 

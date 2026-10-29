@@ -546,6 +546,26 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             if changed { store.save(&state,now(),"account.logged_out",name)?; }
                             Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"logged_out":true,"auth_required":true,"method":crate::logout::method(provider)}))
                         }
+                        "account/live-steering" => {
+                            let account = named(&state,params)?;
+                            let provider = account.provider;
+                            ensure!(provider == ProviderId::Claude, "UNSUPPORTED_PROVIDER_OPERATION: live steering uses Claude Code peer messaging");
+                            ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
+                            let name = account.name.clone();
+                            let home = crate::provider::account_home(&paths,account)?;
+                            let (changed, previous) = match params["enable"].as_bool() {
+                                Some(enable) => {
+                                    let t = crate::provider::claude::peer::set(&home, enable)?;
+                                    if t.changed { store.save(&state,now(),if enable {"account.live_steering_enabled"} else {"account.live_steering_disabled"},&name)?; }
+                                    (t.changed, t.previous)
+                                }
+                                None => (false, crate::provider::claude::peer::inbound(&home)),
+                            };
+                            let value = crate::provider::claude::peer::inbound(&home);
+                            Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"live_steering":value.as_deref()==Some(crate::provider::claude::peer::ACCEPT),
+                                "setting":crate::provider::claude::peer::SETTING,"value":value,"previous":previous,"changed":changed,
+                                "settings_file":crate::provider::claude::peer::settings_file(&home)}))
+                        }
                         "account/reorder" => {
                             let name = params["name"].as_str().context("missing account name")?;
                             let account = named(&state,params)?;

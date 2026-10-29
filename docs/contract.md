@@ -1069,8 +1069,9 @@ Headless delivery (`api send`, Claude sessions/accounts only):
 ```
 
 `recovery`/`steering` must be absent or null; `timeout_seconds` is optional. Submit,
-Queue and Steer addressed to a Claude session fail with
-`UNSUPPORTED_PROVIDER_OPERATION` and the reason. Admission refuses (nothing is
+Queue and Steer addressed to a Claude session failed with
+`UNSUPPORTED_PROVIDER_OPERATION` until revision 16 (see
+[Claude steering](#claude-steering-hosted-sessions-and-live-peer-messages-revision-16)). Admission refuses (nothing is
 journaled) on `STALE_TARGET`, `SESSION_ALREADY_RUNNING`, `SESSION_STALE`,
 `SESSION_OPERATION_IN_PROGRESS`, `SAVED_DIRECTORY_UNAVAILABLE`, `ACCOUNT_REMOVED`,
 `ACCOUNT_DELETED`, `ACCOUNT_UNAVAILABLE`, `AUTH_REQUIRED`, `WRONG_AUTH_MODE`,
@@ -1360,3 +1361,94 @@ no anchor and are still correlated by `clientId` without the anchor checks. Fixt
 `receipt_steer_progress`, `receipt_steer_reply`, `receipt_steer_interrupted`,
 `receipt_steer_not_consumed`. The account switcher's pause steer now also sends a
 `clientUserMessageId`.
+
+### Claude steering, hosted sessions and live peer messages (revision 16)
+
+Additive; negotiate `contract_revision >= 16` and `capabilities.claude_input_delivery`
+(`version:1`; the Claude provider entry repeats it as `input_delivery` and now
+reports `submit`, `queue` and `steer` true with `operations.*.reason` naming the
+conditions). Gate each send on the session row: `capabilities.submit|queue|steer`
+are true only for a **hosted** session whose worker is running, or a **live**
+interactive session of an account with live steering enabled and a verified
+messaging socket; otherwise false with `capability_reasons` (`SESSION_NOT_RUNNING`,
+`LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`,
+`SESSION_OPERATION_IN_PROGRESS`). Rows add `input_delivery`
+(`{semantics:"hosted_stream_json"|"peer_message"|null, interrupt, label}`) and
+`hosted` (the `HostedSession` object or null); a hosted session reports
+`availability:"running"` and `resume:false`. Gemini is unchanged.
+
+Request (`ClaudeSteerRequest`): the ordinary `api send` fields with
+`mode:"submit"|"queue"|"steer"`, optional `timeout_seconds` (peer reply wait,
+default 600, max 3600) and, for steer only, `"steering":{"version":1,"interrupt":bool}`
+(a Codex `expected_turn_id` target is `INVALID_REQUEST`). Priorities: submit `next`,
+queue `later`, steer `now`. There is no idle preflight: the provider orders inputs.
+Admission refuses without journaling on `STALE_TARGET`, `SESSION_NOT_RUNNING` (use
+mode `resume`), `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`,
+`PEER_INTERRUPT_UNSUPPORTED`, `SESSION_OPERATION_IN_PROGRESS`, account/auth errors and
+`INVALID_EXPIRY`. Message ids are shared with every other store; same id and
+payload return the original receipt, a change is `MESSAGE_ID_CONFLICT`.
+
+Receipt (`ClaudeSteerReceipt`, also from `api receipt`): `delivery_semantics`,
+`priority`, `state`, `reason`, `facts` (`written`, `accepted_native`,
+`input_recorded`, `input_consumed`, `reply_observed`, `reply_final`, `folded`,
+`shared_with_turn`, `interrupt_requested`, `lifecycle[]`, `held`, `peer_status[]`,
+`idle_notice`), `correlation`, `reply` (`{text,text_truncated,final,shared_with_turn}`
+plus the hosted `result` fields `is_error,subtype,num_turns,duration_ms,usage`),
+`execution` (`phase` admitted/dispatching/written/complete, `host_epoch`,
+`automatic_replay:false`) and `observation`. States: `pending_local`, `held`,
+`native_accepted`, `execution_started`, `completed_with_reply`,
+`completed_without_reply`, `failed`, `cancelled`, `refused`, `rejected`, `expired`,
+`delivery_unknown`. Terminal states are never regressed.
+
+- **Hosted** (`hosted_stream_json`). The record is journaled, then the worker
+  marks it `dispatching` before writing the stdin frame (`uuid` = `message_id`);
+  a request the worker never claimed becomes `rejected` (`HOST_UNREACHABLE_NOT_SENT`,
+  `HOST_STOPPED_BEFORE_DELIVERY`). `command_lifecycle` `queued` → `native_accepted`,
+  `started` → `execution_started`; `cancelled`/`discarded` → `cancelled`,
+  `refused` → `refused`. The `result` whose `user_message_uuids` contains the id
+  (all started inputs when absent) is terminal: `completed_with_reply` /
+  `completed_without_reply`, or `failed` (`TURN_INTERRUPTED` after a requested
+  interrupt, else `PROVIDER_REPORTED_ERROR`); another reported `session_id` is
+  `delivery_unknown` (`SESSION_ID_MISMATCH`). `correlation` is
+  `{kind:"command_uuid",command_uuid,lifecycle,user_message_uuids}`. A provider or
+  worker exit makes in-flight messages `failed` (`*_DURING_TURN`, turn started) or
+  `delivery_unknown` (`PROVIDER_EXITED…`, `HOST_WORKER_EXITED`, `STDIN_WRITE_FAILED`).
+- **Peer message** (`peer_message`, with `peer_message:{label,status}`). Status
+  frames: `held` → `held`, `delivered` → `native_accepted`, `denied`/`refused`/`dropped`
+  → `refused` (`PEER_MESSAGE_*`), `expired` → `expired`. `correlation` is
+  `{kind:"transcript_anchor",message_id,anchor_found,anchor_offset,turn_ended,notify_msg_id}`.
+  The reply is the assistant text after the transcript record that carries the
+  message id, until the next input; it is final after that input or the idle
+  notice. Without the anchor, `reply` stays null and `observation.error_code` is
+  `peer_anchor_not_found`: delivered is never reported as answered. A connection
+  that never opened is `rejected` (`PEER_SOCKET_UNREACHABLE`); a failed write is
+  `delivery_unknown`.
+
+`api cancel` cancels only a request still `admitted`; afterwards it returns
+`STEERING_CANCELLATION_UNSUPPORTED` (interrupt a hosted turn with `api hosted stop
+--interrupt` or a new steer with `interrupt:true`).
+
+Hosted sessions (`HostedSession`): `api hosted start` (`--account claude:N
+--directory DIR [--name]` or `--session ID --expected-generation G`,
+`--permission-mode account|default|acceptEdits|plan|bypassPermissions`), `status`,
+`events`, `stop` and `respond`; `api launch start` accepts `"hosted":{"permission_mode"}`
+for `claude:` accounts and `api launcher new|resume ... --hosted` return a
+`run --hosted` plan. Fields: `state` (`starting|running|stopping|stopped|failed`),
+`reason` (`STOPPED`, `WORKER_LOST`, `WORKER_LOST_PROVIDER_DRAINING`,
+`PROVIDER_EXITED[_CODE]`, …), `permission_mode`, `effective_permission_mode` (never
+`bypassPermissions` for `account`), `epoch`, `busy`, `worker`, `provider_process`,
+`pending_permissions[]` (`request_id`, `tool_name`, `input`, `input_preview`,
+`requested_at`), `viewer_argv` and `take_over_argv`. A worker, or a provider it
+started that is still running, blocks interactive/headless resume and a second
+host (`SESSION_ALREADY_RUNNING`). Account removal lists live hosts as
+`hosted_session` activity.
+
+Live steering opt-in (`LiveSteering`): `api account live-steering claude:NAME
+[--enable|--disable]` returns `{account_id,provider,live_steering,setting:
+"crossSessionInbound",value,previous,changed,settings_file}`; events
+`account.live_steering_enabled|disabled` are recorded only on change. Fixtures:
+`claude_steer_request`, `claude_steer_receipt_hosted`,
+`claude_steer_receipt_interrupted`, `claude_steer_receipt_peer`,
+`claude_steer_receipt_peer_unanchored`, `claude_steer_receipt_held`,
+`hosted_session`, `live_steering`, `launch_request_hosted`. Both paths are verified
+against fakes only; see [CLI](cli.md#hosted-claude-sessions-and-steering-revision-16).

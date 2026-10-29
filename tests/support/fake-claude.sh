@@ -45,6 +45,12 @@ case "$1" in
     esac
     exit 2 ;;
 esac
+# Hosted stream-json mode is emulated by the Python fake next to this script.
+for arg in "$@"; do
+  if [ "$arg" = --input-format ]; then
+    exec python3 "$(dirname "$0")/fake-claude-stream.py" "$@"
+  fi
+done
 # Headless print mode (`-p --output-format json`): the message arrives on stdin.
 # Controls in the account home: fake-print-sleep (seconds), fake-print-session
 # (session id to report instead of the requested one), fake-print-error.

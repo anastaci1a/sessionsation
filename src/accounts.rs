@@ -217,6 +217,11 @@ pub(crate) fn native_activity(
     let headless = crate::messaging::headless::active_for_account(paths, name)?
         .into_iter()
         .map(|id| json!({"id":id,"phase":"headless_delivery"}))
+        .chain(
+            crate::provider::claude::hosted::live_for_account(paths, name)
+                .into_iter()
+                .map(|id| json!({"id":id,"phase":"hosted_session"})),
+        )
         .collect();
     Ok((live, processes, headless))
 }

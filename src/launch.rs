@@ -60,6 +60,15 @@ pub struct Request {
     pub host: Host,
     pub space: Space,
     pub directory: Directory,
+    /// Revision 16, Claude only: start a Sessionsation-hosted session whose pane shows the viewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted: Option<Hosted>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hosted {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Receipt {
@@ -118,6 +127,18 @@ fn shape(r: &Request) -> Result<()> {
     crate::paths::validate_name(&r.host.session)?;
     AccountRef::parse(&r.account_id)?;
     ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
+    if let Some(h) = &r.hosted {
+        ensure!(
+            AccountRef::parse(&r.account_id)?.provider == ProviderId::Claude,
+            "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
+        );
+        ensure!(
+            h.permission_mode
+                .as_deref()
+                .is_none_or(|m| crate::provider::claude::hosted::PERMISSION_MODES.contains(&m)),
+            "INVALID_PERMISSION_MODE"
+        );
+    }
     if let Space::New { label } = &r.space {
         validate_name(label)?;
     }
@@ -548,6 +569,23 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
         Ok(AccountRef {
             provider: ProviderId::Claude,
             name,
+        }) if receipt.request.hosted.is_some() => {
+            crate::provider::claude::hosted::run_in_terminal(
+                paths,
+                &name,
+                None,
+                receipt
+                    .request
+                    .hosted
+                    .as_ref()
+                    .and_then(|h| h.permission_mode.clone()),
+                Some(id),
+            )
+            .await
+        }
+        Ok(AccountRef {
+            provider: ProviderId::Claude,
+            name,
         }) => crate::provider::claude::launch::exec_new(paths, &name, None, Some(id)).await,
         Ok(AccountRef {
             provider: ProviderId::Gemini,
@@ -722,6 +760,35 @@ mod tests {
             assert!(validate_session_name(&name).is_err());
             validate_name(&name).unwrap();
         }
+    }
+    #[test]
+    fn hosted_launches_are_claude_only_with_a_known_permission_mode() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/contract/fixtures.json")).unwrap();
+        let mut r: Request = serde_json::from_value(fixtures["launch_request"].clone()).unwrap();
+        assert!(r.hosted.is_none(), "older requests stay valid");
+        r.account_id = "claude:personal".into();
+        r.hosted = Some(Hosted {
+            permission_mode: Some("plan".into()),
+        });
+        shape(&r).unwrap();
+        r.hosted = Some(Hosted {
+            permission_mode: Some("yolo".into()),
+        });
+        assert!(shape(&r).is_err());
+        r.hosted = Some(Hosted {
+            permission_mode: None,
+        });
+        r.account_id = "codex:work".into();
+        assert!(
+            shape(&r)
+                .unwrap_err()
+                .to_string()
+                .contains("UNSUPPORTED_PROVIDER_OPERATION")
+        );
+        let mut v = fixtures["launch_request"].clone();
+        v["hosted"] = serde_json::json!({"permission_mode":"plan","extra":1});
+        assert!(serde_json::from_value::<Request>(v).is_err());
     }
     #[test]
     fn request_id_and_name_cannot_be_paths() {

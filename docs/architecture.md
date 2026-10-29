@@ -103,6 +103,19 @@ checked against Claude's [CLI reference](https://code.claude.com/docs/en/cli-ref
 [authentication guidance](https://code.claude.com/docs/en/authentication) and
 [environment variables](https://code.claude.com/docs/en/env-vars).
 
+Claude input delivery (revision 16) has two paths, chosen per session.
+`provider/claude/hosted.rs` owns hosted sessions: one detached worker per
+conversation holds `worker.lock`, owns the stdin of `claude -p` in stream-json
+mode, answers permission prompts only from the operator, appends a normalized
+`events.jsonl` for the viewer and serves a private control socket under the
+runtime directory. The worker, not the supervisor, supervises the provider, so a
+supervisor restart re-adopts it; a lost worker is reconciled to stopped and its
+in-flight deliveries to uncertain. `provider/claude/peer.rs` reads a live
+session's messaging endpoint from its registry entry and edits only the
+`crossSessionInbound` opt-in. `messaging/claude_steer.rs` owns admission, the
+durable records in `DATA_ROOT/claude-steer/`, the per-message peer worker and
+listener socket, transcript anchoring and the receipts of both paths.
+
 Gemini sessions are likewise bound to their `GEMINI_CLI_HOME`. Gemini has no auth
 status, live registry, rename or usage interface, so authentication is file
 presence, liveness is /proc command line plus start time, labels are

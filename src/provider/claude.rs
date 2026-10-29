@@ -14,7 +14,9 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use serde_json::{Value, json};
 pub mod attach;
+pub mod hosted;
 pub mod launch;
+pub mod peer;
 
 use std::{
     fs,
@@ -49,6 +51,14 @@ pub const LABEL_ONLY: &str =
     "label applied as --name on next launch/resume; live native title unchanged";
 const NO_LIFECYCLE: &str = "no verified Claude process lifecycle control; stop it in its terminal";
 
+/// Revision 16: per-session support (hosted or opted-in live sessions).
+pub const INPUT_DELIVERY: &str = "hosted sessions (stream-json worker) and live sessions of accounts with live steering enabled (peer message); see each session's capabilities";
+fn input() -> Capability {
+    Capability {
+        supported: true,
+        reason: Some(INPUT_DELIVERY),
+    }
+}
 pub fn capabilities() -> ProviderCapabilities {
     ProviderCapabilities {
         enrollment: yes(),
@@ -67,9 +77,9 @@ pub fn capabilities() -> ProviderCapabilities {
         move_space: no("HERDR space moves are verified only for Codex"),
         archive: no("Claude transcripts are owned by the account config home"),
         delete_session: no("Claude transcripts are owned by the account config home"),
-        submit: no(NO_INPUT_API),
-        queue: no(NO_INPUT_API),
-        steer: no(NO_INPUT_API),
+        submit: input(),
+        queue: input(),
+        steer: input(),
         account_removal: yes(),
         account_deletion: Capability {
             supported: true,
@@ -932,8 +942,10 @@ pub fn launch_observed(session: &catalog::Session) -> bool {
         .split(|b| *b == 0)
         .map(|a| String::from_utf8_lossy(a).into_owned())
         .collect();
+    // `view <conversation>` is the viewer of a Sessionsation-hosted session.
     args.windows(2).any(|w| {
-        matches!(w[0].as_str(), "--session-id" | "--resume") && w[1] == session.conversation_id
+        matches!(w[0].as_str(), "--session-id" | "--resume" | "view")
+            && w[1] == session.conversation_id
     })
 }
 

@@ -102,6 +102,31 @@ for invalid, definition in [
         pass
     else:
         raise AssertionError("Claude headless delivery must not claim unsupported modes, replay or uncorrelated success")
+validate(fixtures["claude_steer_request"], "ClaudeSteerRequest")
+for name in ["claude_steer_receipt_hosted", "claude_steer_receipt_interrupted", "claude_steer_receipt_peer", "claude_steer_receipt_peer_unanchored", "claude_steer_receipt_held"]:
+    validate(fixtures[name], "ClaudeSteerReceipt")
+validate(fixtures["hosted_session"], "HostedSession")
+validate(fixtures["live_steering"], "LiveSteering")
+validate(fixtures["launch_request_hosted"], "LaunchRequest")
+hosted, peer, unanchored = fixtures["claude_steer_receipt_hosted"], fixtures["claude_steer_receipt_peer"], fixtures["claude_steer_receipt_peer_unanchored"]
+for invalid, definition in [
+    ({**fixtures["claude_steer_request"], "mode": "queue"}, "ClaudeSteerRequest"),
+    ({**fixtures["claude_steer_request"], "steering": {"version": 1, "expected_turn_id": "turn"}}, "ClaudeSteerRequest"),
+    ({**hosted, "execution": {**hosted["execution"], "automatic_replay": True}}, "ClaudeSteerReceipt"),
+    ({**hosted, "correlation": None}, "ClaudeSteerReceipt"),
+    ({**hosted, "reply": {**hosted["reply"], "final": False}}, "ClaudeSteerReceipt"),
+    ({**unanchored, "reply": peer["reply"]}, "ClaudeSteerReceipt"),
+    ({**unanchored, "state": "completed_with_reply"}, "ClaudeSteerReceipt"),
+    ({**peer, "peer_message": None}, "ClaudeSteerReceipt"),
+    ({**fixtures["hosted_session"], "effective_permission_mode": "bypassPermissions"}, "HostedSession"),
+    ({**fixtures["launch_request_hosted"], "account_id": "codex:fixture"}, "LaunchRequest"),
+]:
+    try:
+        validate(invalid, definition)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Claude steering must not replay, claim unanchored peer replies or bypass permissions implicitly")
 validate(fixtures["account_refresh"], "AccountRefresh")
 validate(fixtures["account_rename"], "AccountRename")
 validate(fixtures["claude_login_plan"], "AccountLoginPlan")
@@ -137,7 +162,10 @@ with tempfile.TemporaryDirectory() as directory:
         if args == ["placements"]:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
-            assert value["result"]["contract_revision"] >= 13
+            assert value["result"]["contract_revision"] >= 16
+            assert value["result"]["claude_input_delivery"]["automatic_replay"] is False
+            assert value["result"]["claude_input_delivery"]["hosted"]["implicit_bypass"] is False
+            assert value["result"]["claude_input_delivery"]["peer_message"]["reply_requires_anchor"] is True
             claude = [p for p in value["result"]["providers"] if p["id"] == "claude"][0]
             assert claude["account_removal"] is True and claude["account_deletion"] is True
             assert claude["headless_delivery"]["automatic_replay"] is False

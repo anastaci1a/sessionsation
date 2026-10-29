@@ -353,7 +353,9 @@ async fn enrollment_requires_a_platform_and_names_are_global_across_providers() 
         .unwrap()
         .clone();
     assert_eq!(claude["implemented"], true);
-    assert_eq!(claude["operations"]["submit"]["supported"], false);
+    // Revision 16: supported per session (hosted, or live with live steering enabled).
+    assert_eq!(claude["operations"]["submit"]["supported"], true);
+    assert_eq!(claude["input_delivery"]["hosted"]["implicit_bypass"], false);
     assert_eq!(caps["providers"][0]["steer"], true);
 }
 
@@ -452,6 +454,12 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
     assert_eq!(s["directory"], json!(f.project));
     assert_eq!(s["capabilities"]["resume"], false);
     assert_eq!(s["capabilities"]["submit"], false);
+    assert!(
+        s["capability_reasons"]["steer"]
+            .as_str()
+            .unwrap()
+            .starts_with("LIVE_STEERING_DISABLED")
+    );
     assert!(
         s["capability_reasons"]["switch_account"]
             .as_str()
@@ -1159,13 +1167,12 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     kill(live);
     assert!(err.contains("SESSION_ALREADY_RUNNING"), "{err}");
 
-    // Live input modes stay unsupported with an explicit reason.
+    // Submit to a stopped session is refused with a reason (revision 16: hosted or live only).
     let mut submit = resume_body(&uuid::Uuid::new_v4().to_string(), &f.session(&id), "x");
     submit["mode"] = json!("submit");
     let err = f.send_err(&submit);
     assert!(
-        err.contains("UNSUPPORTED_PROVIDER_OPERATION")
-            && err.contains("no supported native input API"),
+        !err.contains("UNSUPPORTED_PROVIDER_OPERATION") && err.contains("SESSION_NOT_RUNNING"),
         "{err}"
     );
 
@@ -1223,7 +1230,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 15);
+    assert_eq!(caps["contract_revision"], 16);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1802,7 +1809,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 15);
+    assert_eq!(caps["contract_revision"], 16);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"

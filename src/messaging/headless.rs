@@ -188,6 +188,7 @@ pub fn active_for_account(paths: &Paths, account: &str) -> Result<Vec<String>> {
 }
 /// Refuse interactive resume while a headless delivery may run this conversation.
 pub fn ensure_idle(paths: &Paths, conversation: &str) -> Result<()> {
+    crate::provider::claude::hosted::ensure_not_hosted(paths, conversation)?;
     for r in all(paths)? {
         ensure!(
             r.conversation_id != conversation || !active(paths, &r)?,
@@ -229,7 +230,11 @@ pub fn receipt(paths: &Paths, id: &str, cancelling: bool) -> Result<Value> {
 }
 
 /// The enrolled, selectable account behind a headless request.
-fn usable_account(paths: &Paths, provider: ProviderId, name: &str) -> Result<claude::Enrolled> {
+pub(crate) fn usable_account(
+    paths: &Paths,
+    provider: ProviderId,
+    name: &str,
+) -> Result<claude::Enrolled> {
     let account = native::account(paths, provider, name)?;
     crate::accounts::ensure_available(paths, name)?;
     let state = crate::store::load_state_snapshot(paths)?;
@@ -243,7 +248,7 @@ fn usable_account(paths: &Paths, provider: ProviderId, name: &str) -> Result<cla
     );
     Ok(account)
 }
-fn usable_directory(directory: &str) -> Result<()> {
+pub(crate) fn usable_directory(directory: &str) -> Result<()> {
     let p = Path::new(directory);
     ensure!(
         p.is_absolute() && p.is_dir(),
@@ -315,8 +320,12 @@ fn shape(request: &Request) -> Result<u64> {
 }
 
 /// Codex delivery stores share the message-id namespace.
-fn ensure_unused_elsewhere(paths: &Paths, id: &str) -> Result<()> {
+pub(crate) fn ensure_unused_elsewhere(paths: &Paths, id: &str) -> Result<()> {
     ensure!(!super::recovery::exists(paths, id), "MESSAGE_ID_CONFLICT");
+    ensure!(
+        !super::claude_steer::exists(paths, id),
+        "MESSAGE_ID_CONFLICT"
+    );
     let ledger = super::Ledger::open(paths).map_err(anyhow::Error::from)?;
     super::public::initialize(&ledger).map_err(anyhow::Error::from)?;
     ensure!(
@@ -728,6 +737,9 @@ pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
     if v["mode"] == "new" {
         return send(paths, headless(v)?).await;
     }
+    if super::claude_steer::exists(paths, id) {
+        return super::claude_steer::send(paths, v).await;
+    }
     if exists(paths, id) {
         let request = headless(v).map_err(|_| anyhow::anyhow!("MESSAGE_ID_CONFLICT"))?;
         return send(paths, request).await;
@@ -739,6 +751,9 @@ pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
     if let Some(provider) = native_target {
         match v["mode"].as_str() {
             Some("resume") => return send(paths, headless(v)?).await,
+            Some("submit" | "queue" | "steer") if provider == ProviderId::Claude => {
+                return super::claude_steer::send(paths, v).await;
+            }
             Some(mode @ ("submit" | "queue" | "steer")) => return Err(unsupported(provider, mode)),
             _ => bail!("INVALID_REQUEST"),
         }

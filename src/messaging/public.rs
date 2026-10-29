@@ -252,6 +252,9 @@ fn reconcile_recovered_stop(
 }
 
 pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow::Result<Value> {
+    if super::claude_steer::exists(paths, id) {
+        return super::claude_steer::receipt(paths, id, cancelling).await;
+    }
     if super::headless::exists(paths, id) {
         return super::headless::receipt(paths, id, cancelling);
     }

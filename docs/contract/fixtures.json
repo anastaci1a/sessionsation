@@ -1412,5 +1412,444 @@
     "acknowledged_turn_id": "turn-active",
     "acceptance_only": false,
     "reply_correlation": "after_steer_item"
+  },
+  "claude_steer_request": {
+    "api_version": 1,
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "mode": "steer",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "expected_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "text": "Please also cover the error path.",
+    "expires_at": 1793234730,
+    "steering": {
+      "version": 1,
+      "interrupt": false
+    }
+  },
+  "claude_steer_receipt_hosted": {
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "accepted_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "provider": "claude",
+    "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "mode": "steer",
+    "priority": "now",
+    "delivery_semantics": "hosted_stream_json",
+    "state": "completed_with_reply",
+    "reason": null,
+    "facts": {
+      "accepted_local": true,
+      "written": true,
+      "accepted_native": true,
+      "input_recorded": true,
+      "input_consumed": true,
+      "reply_observed": true,
+      "reply_final": true,
+      "folded": true,
+      "shared_with_turn": true,
+      "interrupt_requested": false,
+      "lifecycle": [
+        "queued",
+        "started",
+        "completed"
+      ],
+      "held": false,
+      "peer_status": null,
+      "idle_notice": false
+    },
+    "correlation": {
+      "kind": "command_uuid",
+      "command_uuid": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+      "lifecycle": [
+        "queued",
+        "started",
+        "completed"
+      ],
+      "user_message_uuids": [
+        "7d4c2a52-2c5d-4c1e-9d55-4b3c3b5e9a10",
+        "0aea28e9-f0f8-4bfd-bf50-3280c620def2"
+      ]
+    },
+    "reply": {
+      "text": "Covered the error path as well.",
+      "text_truncated": false,
+      "final": true,
+      "shared_with_turn": true,
+      "is_error": false,
+      "subtype": "success",
+      "num_turns": 1,
+      "duration_ms": 5120,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 4
+      }
+    },
+    "execution": {
+      "phase": "complete",
+      "created_at": 1793234130,
+      "dispatched_at": 1793234130,
+      "started_at": 1793234131,
+      "finished_at": 1793234136,
+      "host_epoch": 1,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "cached",
+      "checked_at": 1793234140,
+      "evidence_observed_at": 1793234136,
+      "error_code": null
+    }
+  },
+  "claude_steer_receipt_interrupted": {
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "accepted_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "provider": "claude",
+    "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "mode": "submit",
+    "priority": "next",
+    "delivery_semantics": "hosted_stream_json",
+    "state": "failed",
+    "reason": "TURN_INTERRUPTED",
+    "facts": {
+      "accepted_local": true,
+      "written": true,
+      "accepted_native": true,
+      "input_recorded": true,
+      "input_consumed": true,
+      "reply_observed": true,
+      "reply_final": false,
+      "folded": false,
+      "shared_with_turn": false,
+      "interrupt_requested": false,
+      "lifecycle": [
+        "queued",
+        "started",
+        "completed"
+      ],
+      "held": false,
+      "peer_status": null,
+      "idle_notice": false
+    },
+    "correlation": {
+      "kind": "command_uuid",
+      "command_uuid": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+      "lifecycle": [
+        "queued",
+        "started",
+        "completed"
+      ],
+      "user_message_uuids": [
+        "7d4c2a52-2c5d-4c1e-9d55-4b3c3b5e9a10",
+        "0aea28e9-f0f8-4bfd-bf50-3280c620def2"
+      ]
+    },
+    "reply": {
+      "text": "Starting on the refactor",
+      "text_truncated": false,
+      "final": false,
+      "shared_with_turn": false,
+      "is_error": true,
+      "subtype": "error_during_execution",
+      "num_turns": 1,
+      "duration_ms": 5120,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 4
+      }
+    },
+    "execution": {
+      "phase": "complete",
+      "created_at": 1793234130,
+      "dispatched_at": 1793234130,
+      "started_at": 1793234131,
+      "finished_at": 1793234136,
+      "host_epoch": 1,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "cached",
+      "checked_at": 1793234140,
+      "evidence_observed_at": 1793234136,
+      "error_code": null
+    }
+  },
+  "claude_steer_receipt_peer": {
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "accepted_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "provider": "claude",
+    "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "mode": "steer",
+    "priority": "now",
+    "delivery_semantics": "peer_message",
+    "state": "completed_with_reply",
+    "reason": null,
+    "facts": {
+      "accepted_local": true,
+      "written": true,
+      "accepted_native": true,
+      "input_recorded": true,
+      "input_consumed": true,
+      "reply_observed": true,
+      "reply_final": true,
+      "folded": false,
+      "shared_with_turn": false,
+      "interrupt_requested": false,
+      "lifecycle": [],
+      "held": false,
+      "peer_status": [
+        {
+          "status": "delivered",
+          "at": 1793234131
+        }
+      ],
+      "idle_notice": true
+    },
+    "correlation": {
+      "kind": "transcript_anchor",
+      "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+      "anchor_found": true,
+      "anchor_offset": 800,
+      "turn_ended": false,
+      "notify_msg_id": "5d0fb570-52ec-40ae-bca1-84c4a43d02a5"
+    },
+    "reply": {
+      "text": "Status: tests pass, two TODOs remain.",
+      "text_truncated": false,
+      "final": true,
+      "shared_with_turn": false
+    },
+    "execution": {
+      "phase": "complete",
+      "created_at": 1793234130,
+      "dispatched_at": 1793234130,
+      "started_at": 1793234132,
+      "finished_at": 1793234140,
+      "host_epoch": null,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "cached",
+      "checked_at": 1793234141,
+      "evidence_observed_at": 1793234140,
+      "error_code": null
+    },
+    "peer_message": {
+      "label": "Delivered as a Claude Code peer message: the session sees it as a message from another Claude session and may only partially comply",
+      "status": "delivered"
+    }
+  },
+  "claude_steer_receipt_peer_unanchored": {
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "accepted_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "provider": "claude",
+    "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "mode": "steer",
+    "priority": "now",
+    "delivery_semantics": "peer_message",
+    "state": "native_accepted",
+    "reason": null,
+    "facts": {
+      "accepted_local": true,
+      "written": true,
+      "accepted_native": true,
+      "input_recorded": false,
+      "input_consumed": "unknown",
+      "reply_observed": false,
+      "reply_final": false,
+      "folded": false,
+      "shared_with_turn": false,
+      "interrupt_requested": false,
+      "lifecycle": [],
+      "held": false,
+      "peer_status": [
+        {
+          "status": "delivered",
+          "at": 1793234131
+        }
+      ],
+      "idle_notice": true
+    },
+    "correlation": {
+      "kind": "transcript_anchor",
+      "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+      "anchor_found": false,
+      "anchor_offset": 800,
+      "turn_ended": false,
+      "notify_msg_id": "5d0fb570-52ec-40ae-bca1-84c4a43d02a5"
+    },
+    "reply": null,
+    "execution": {
+      "phase": "written",
+      "created_at": 1793234130,
+      "dispatched_at": 1793234130,
+      "started_at": null,
+      "finished_at": null,
+      "host_epoch": null,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "unavailable",
+      "checked_at": 1793234141,
+      "evidence_observed_at": null,
+      "error_code": "peer_anchor_not_found"
+    },
+    "peer_message": {
+      "label": "Delivered as a Claude Code peer message: the session sees it as a message from another Claude session and may only partially comply",
+      "status": "delivered"
+    }
+  },
+  "claude_steer_receipt_held": {
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "accepted_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "provider": "claude",
+    "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "mode": "queue",
+    "priority": "later",
+    "delivery_semantics": "peer_message",
+    "state": "held",
+    "reason": null,
+    "facts": {
+      "accepted_local": true,
+      "written": true,
+      "accepted_native": false,
+      "input_recorded": false,
+      "input_consumed": "unknown",
+      "reply_observed": false,
+      "reply_final": false,
+      "folded": false,
+      "shared_with_turn": false,
+      "interrupt_requested": false,
+      "lifecycle": [],
+      "held": true,
+      "peer_status": [
+        {
+          "status": "held",
+          "at": 1793234131
+        }
+      ],
+      "idle_notice": false
+    },
+    "correlation": {
+      "kind": "transcript_anchor",
+      "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+      "anchor_found": false,
+      "anchor_offset": 800,
+      "turn_ended": false,
+      "notify_msg_id": "5d0fb570-52ec-40ae-bca1-84c4a43d02a5"
+    },
+    "reply": null,
+    "execution": {
+      "phase": "written",
+      "created_at": 1793234130,
+      "dispatched_at": 1793234130,
+      "started_at": null,
+      "finished_at": null,
+      "host_epoch": null,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "observed",
+      "checked_at": 1793234141,
+      "evidence_observed_at": 1793234131,
+      "error_code": null
+    },
+    "peer_message": {
+      "label": "Delivered as a Claude Code peer message: the session sees it as a message from another Claude session and may only partially comply",
+      "status": "held"
+    }
+  },
+  "hosted_session": {
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "delivery_semantics": "hosted_stream_json",
+    "state": "running",
+    "reason": null,
+    "origin": "new",
+    "directory": "/home/user/project",
+    "permission_mode": "account",
+    "effective_permission_mode": null,
+    "epoch": 1,
+    "busy": true,
+    "worker": {
+      "pid": 4242,
+      "alive": true
+    },
+    "provider_process": {
+      "pid": 4243,
+      "alive": true
+    },
+    "pending_permissions": [
+      {
+        "request_id": "c8c6b1d4-34a1-4c38-9a8e-0d1f1e7b2a11",
+        "tool_name": "Bash",
+        "input": {
+          "command": "ls"
+        },
+        "input_preview": "{\"command\":\"ls\"}",
+        "requested_at": 1793234133
+      }
+    ],
+    "viewer_argv": [
+      "/usr/local/bin/sessionsation",
+      "--data-dir",
+      "/home/user/.local/share/sessionsation",
+      "view",
+      "493b99e3-11d8-4c18-88ff-a0adb9b732dc"
+    ],
+    "take_over_argv": [
+      "/usr/local/bin/sessionsation",
+      "--data-dir",
+      "/home/user/.local/share/sessionsation",
+      "take-over",
+      "4a2aeded-e670-4097-8ce9-556aab3389b2"
+    ],
+    "created_at": 1793234120,
+    "started_at": 1793234121,
+    "stopped_at": null,
+    "updated_at": 1793234133
+  },
+  "live_steering": {
+    "account_id": "claude:work",
+    "provider": "claude",
+    "live_steering": true,
+    "setting": "crossSessionInbound",
+    "value": "accept",
+    "previous": null,
+    "changed": true,
+    "settings_file": "/home/user/.local/share/sessionsation/claude-accounts/work/settings.json"
+  },
+  "launch_request_hosted": {
+    "version": 1,
+    "request_id": "11111111-2222-4333-8444-555555555555",
+    "account_id": "claude:work",
+    "name": "Example",
+    "host": {
+      "session": "fixture",
+      "socket": "/tmp/fixture/herdr.sock"
+    },
+    "space": {
+      "kind": "existing",
+      "id": "w1"
+    },
+    "directory": {
+      "path": "/tmp/projects/Example",
+      "create": [
+        "/tmp/projects/Example"
+      ],
+      "confirmed_existing": false
+    },
+    "hosted": {
+      "permission_mode": "account"
+    }
   }
 }

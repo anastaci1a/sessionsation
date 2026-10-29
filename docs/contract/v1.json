@@ -1575,7 +1575,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^codex:[A-Za-z0-9_-]+$"
+          "pattern": "^(codex|claude|gemini):[A-Za-z0-9_-]+$"
         },
         "name": {
           "type": "string",
@@ -1660,6 +1660,34 @@
             "confirmed_existing": {
               "type": "boolean"
             }
+          }
+        },
+        "hosted": {
+          "description": "Revision 16, Claude accounts only: start a Sessionsation-hosted (stream-json) session whose pane shows the viewer.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "permission_mode": {
+              "enum": [
+                "account",
+                "default",
+                "acceptEdits",
+                "plan",
+                "bypassPermissions"
+              ]
+            }
+          }
+        }
+      },
+      "if": {
+        "required": [
+          "hosted"
+        ]
+      },
+      "then": {
+        "properties": {
+          "account_id": {
+            "pattern": "^claude:"
           }
         }
       }
@@ -4208,6 +4236,584 @@
         }
       },
       "additionalProperties": true
+    },
+    "ClaudeSteerRequest": {
+      "description": "Revision 16: api send mode submit|queue|steer addressed to a Claude session (hosted worker or opted-in live session).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "api_version",
+        "message_id",
+        "mode",
+        "session_id",
+        "expected_generation",
+        "text",
+        "expires_at"
+      ],
+      "properties": {
+        "api_version": {
+          "const": 1
+        },
+        "message_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mode": {
+          "enum": [
+            "submit",
+            "queue",
+            "steer"
+          ]
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "expires_at": {
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "recovery": {
+          "type": "null"
+        },
+        "steering": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "version"
+              ],
+              "properties": {
+                "version": {
+                  "const": 1
+                },
+                "interrupt": {
+                  "type": "boolean"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "if": {
+        "required": [
+          "steering"
+        ],
+        "properties": {
+          "steering": {
+            "type": "object"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "mode": {
+            "const": "steer"
+          }
+        }
+      }
+    },
+    "ClaudeSteerReceipt": {
+      "description": "Revision 16: durable receipt of a Claude submit/queue/steer. hosted_stream_json correlates by command uuid; peer_message only by a transcript anchor.",
+      "type": "object",
+      "required": [
+        "message_id",
+        "session_id",
+        "accepted_generation",
+        "provider",
+        "provider_conversation_id",
+        "account_id",
+        "mode",
+        "priority",
+        "delivery_semantics",
+        "state",
+        "reason",
+        "facts",
+        "correlation",
+        "reply",
+        "execution",
+        "observation"
+      ],
+      "properties": {
+        "message_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "accepted_generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "provider": {
+          "const": "claude"
+        },
+        "provider_conversation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^claude:"
+        },
+        "mode": {
+          "enum": [
+            "submit",
+            "queue",
+            "steer"
+          ]
+        },
+        "priority": {
+          "enum": [
+            "now",
+            "next",
+            "later"
+          ]
+        },
+        "delivery_semantics": {
+          "enum": [
+            "hosted_stream_json",
+            "peer_message"
+          ]
+        },
+        "state": {
+          "enum": [
+            "pending_local",
+            "held",
+            "native_accepted",
+            "execution_started",
+            "completed_with_reply",
+            "completed_without_reply",
+            "failed",
+            "cancelled",
+            "refused",
+            "rejected",
+            "expired",
+            "delivery_unknown"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "facts": {
+          "type": "object",
+          "required": [
+            "accepted_local",
+            "written",
+            "accepted_native",
+            "input_recorded",
+            "input_consumed",
+            "reply_observed",
+            "reply_final",
+            "folded",
+            "shared_with_turn",
+            "interrupt_requested",
+            "lifecycle",
+            "held",
+            "peer_status",
+            "idle_notice"
+          ],
+          "properties": {
+            "input_consumed": {
+              "enum": [
+                true,
+                false,
+                "unknown"
+              ]
+            }
+          }
+        },
+        "correlation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "command_uuid",
+                "lifecycle"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "command_uuid"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "message_id",
+                "anchor_found",
+                "anchor_offset",
+                "turn_ended"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "transcript_anchor"
+                }
+              }
+            }
+          ]
+        },
+        "reply": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "text",
+                "text_truncated",
+                "final",
+                "shared_with_turn"
+              ],
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "final": {
+                  "type": "boolean"
+                }
+              }
+            }
+          ]
+        },
+        "execution": {
+          "type": "object",
+          "required": [
+            "phase",
+            "automatic_replay"
+          ],
+          "properties": {
+            "automatic_replay": {
+              "const": false
+            },
+            "phase": {
+              "enum": [
+                "admitted",
+                "dispatching",
+                "written",
+                "complete"
+              ]
+            }
+          }
+        },
+        "observation": {
+          "type": "object",
+          "required": [
+            "state",
+            "checked_at",
+            "error_code"
+          ]
+        },
+        "peer_message": {
+          "type": "object",
+          "required": [
+            "label",
+            "status"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "completed_with_reply"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reply": {
+                "type": "object",
+                "properties": {
+                  "final": {
+                    "const": true
+                  }
+                }
+              },
+              "facts": {
+                "properties": {
+                  "reply_observed": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "delivery_semantics": {
+                "const": "peer_message"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "peer_message"
+            ],
+            "properties": {
+              "facts": {
+                "properties": {
+                  "lifecycle": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "delivery_semantics": {
+                "const": "peer_message"
+              },
+              "reply": {
+                "type": "object"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "correlation": {
+                "type": "object",
+                "required": [
+                  "anchor_found"
+                ],
+                "properties": {
+                  "anchor_found": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "delivery_semantics": {
+                "const": "hosted_stream_json"
+              },
+              "reply": {
+                "type": "object"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "correlation": {
+                "type": "object",
+                "required": [
+                  "command_uuid"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "HostedSession": {
+      "description": "Revision 16: api hosted start|status|stop result.",
+      "type": "object",
+      "required": [
+        "session_id",
+        "conversation_id",
+        "account_id",
+        "delivery_semantics",
+        "state",
+        "reason",
+        "permission_mode",
+        "effective_permission_mode",
+        "epoch",
+        "busy",
+        "worker",
+        "provider_process",
+        "pending_permissions",
+        "viewer_argv",
+        "take_over_argv"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^claude:"
+        },
+        "delivery_semantics": {
+          "const": "hosted_stream_json"
+        },
+        "state": {
+          "enum": [
+            "starting",
+            "running",
+            "stopping",
+            "stopped",
+            "failed"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "origin": {
+          "enum": [
+            "new",
+            "resume"
+          ]
+        },
+        "permission_mode": {
+          "enum": [
+            "account",
+            "default",
+            "acceptEdits",
+            "plan",
+            "bypassPermissions"
+          ]
+        },
+        "effective_permission_mode": {
+          "enum": [
+            null,
+            "default",
+            "acceptEdits",
+            "plan",
+            "bypassPermissions"
+          ]
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "busy": {
+          "type": "boolean"
+        },
+        "pending_permissions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "request_id",
+              "tool_name",
+              "input_preview",
+              "requested_at"
+            ]
+          }
+        },
+        "viewer_argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "take_over_argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "permission_mode": {
+            "const": "account"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effective_permission_mode": {
+            "not": {
+              "const": "bypassPermissions"
+            }
+          }
+        }
+      }
+    },
+    "LiveSteering": {
+      "description": "Revision 16: api account live-steering claude:NAME [--enable|--disable].",
+      "type": "object",
+      "required": [
+        "account_id",
+        "provider",
+        "live_steering",
+        "setting",
+        "value",
+        "previous",
+        "changed",
+        "settings_file"
+      ],
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "pattern": "^claude:"
+        },
+        "provider": {
+          "const": "claude"
+        },
+        "live_steering": {
+          "type": "boolean"
+        },
+        "setting": {
+          "const": "crossSessionInbound"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "previous": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "changed": {
+          "type": "boolean"
+        },
+        "settings_file": {
+          "type": "string",
+          "pattern": "^/"
+        }
+      }
     }
   }
 }

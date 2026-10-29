@@ -28,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":15,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":16,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -219,6 +219,11 @@ pub enum Command {
     Recover {
         operation: String,
     },
+    /// Sessionsation-hosted Claude sessions (stream-json worker, viewer, permission prompts).
+    Hosted {
+        #[command(subcommand)]
+        command: crate::provider::claude::hosted::Command,
+    },
     /// Read a versioned Submit/Queue/Resume/explicit Steer request from stdin.
     Send,
     Receipt {
@@ -261,12 +266,23 @@ pub enum Launcher {
     New {
         #[arg(long)]
         account: String,
+        /// Claude: a Sessionsation-hosted (stream-json) session; the pane shows its viewer.
+        #[arg(long)]
+        hosted: bool,
+        /// With --hosted: account (default) | default | acceptEdits | plan | bypassPermissions.
+        #[arg(long, requires = "hosted")]
+        permission_mode: Option<String>,
     },
     Resume {
         #[arg(long)]
         session: String,
         #[arg(long)]
         expected_generation: String,
+        /// Claude: host the stopped conversation (stream-json) with a viewer instead of the TUI.
+        #[arg(long)]
+        hosted: bool,
+        #[arg(long, requires = "hosted")]
+        permission_mode: Option<String>,
     },
     Shell,
 }
@@ -314,6 +330,15 @@ pub async fn resume_current(paths: &Paths, id: &str, generation: &str) -> Result
     .await
 }
 
+fn hosted_flags(argv: &mut Vec<String>, hosted: bool, permission_mode: Option<String>) {
+    if hosted {
+        argv.push("--hosted".into());
+        if let Some(mode) = permission_mode {
+            argv.extend(["--permission-mode".into(), mode]);
+        }
+    }
+}
+
 async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
     let mut argv = vec![
         std::env::current_exe()?.to_string_lossy().into_owned(),
@@ -322,8 +347,16 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
     ];
     let mut cwd = None;
     match command {
-        Launcher::New { account } => {
+        Launcher::New {
+            account,
+            hosted,
+            permission_mode,
+        } => {
             let account = account_ref(paths, &account)?;
+            ensure!(
+                !hosted || account.provider == ProviderId::Claude,
+                "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
+            );
             let name = account.name.as_str();
             crate::accounts::ensure_available(paths, name)?;
             let status = daemon::call(paths, "status", json!({})).await?;
@@ -342,10 +375,13 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
                 _ => account.id(),
             };
             argv.extend(["run".into(), "--account".into(), target]);
+            hosted_flags(&mut argv, hosted, permission_mode);
         }
         Launcher::Resume {
             session,
             expected_generation,
+            hosted,
+            permission_mode,
         } if catalog::resolve(paths, &session, &expected_generation)
             .is_ok_and(|s| native::of(&s.provider).is_some()) =>
         {
@@ -353,17 +389,38 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
             native::ensure_resumable(&s, &observation)?;
             crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
             cwd = Some(native::resume_directory(&s, &observation)?);
-            argv.extend([
-                "resume".into(),
-                session,
-                "--expected-generation".into(),
-                expected_generation,
-            ]);
+            if hosted {
+                ensure!(
+                    s.provider == ProviderId::Claude.as_str(),
+                    "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
+                );
+                argv.extend([
+                    "run".into(),
+                    "--account".into(),
+                    format!("claude:{}", s.account),
+                    "--thread".into(),
+                    s.conversation_id.clone(),
+                ]);
+                hosted_flags(&mut argv, true, permission_mode);
+            } else {
+                argv.extend([
+                    "resume".into(),
+                    session,
+                    "--expected-generation".into(),
+                    expected_generation,
+                ]);
+            }
         }
         Launcher::Resume {
             session,
             expected_generation,
+            hosted,
+            ..
         } => {
+            ensure!(
+                !hosted,
+                "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
+            );
             let (_, source) = selected(paths, &session, &expected_generation).await?;
             ensure!(source.inactive, "SESSION_ALREADY_RUNNING");
             cwd = Some(source.cwd);
@@ -421,6 +478,14 @@ pub enum AccountCommand {
     /// Claude: switch an adopted account to its managed home (no files are moved).
     ManagedHome {
         id: String,
+    },
+    /// Claude: show, enable or disable live steering (peer messages) for this account.
+    LiveSteering {
+        id: String,
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
     },
     Enable {
         id: String,
@@ -692,6 +757,20 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             )
             .await
         }
+        AccountCommand::LiveSteering {
+            id,
+            enable,
+            disable,
+        } => {
+            let account = account_ref(paths, &id)?;
+            daemon::ensure_started(paths).await?;
+            daemon::call(
+                paths,
+                "account/live-steering",
+                json!({"name":account.name,"provider":account.provider,"enable":if enable {Some(true)} else if disable {Some(false)} else {None}}),
+            )
+            .await
+        }
         AccountCommand::Reorder { id, position } => {
             let account = account_ref(paths, &id)?;
             crate::accounts::ensure_available(paths, &account.name)?;
@@ -744,7 +823,7 @@ fn gemini_provider() -> Value {
 }
 
 pub fn capabilities() -> Value {
-    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":15,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":16,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -775,7 +854,31 @@ pub fn capabilities() -> Value {
     value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","gemini_process_source":"cmdline_session_id_argument","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
     value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session","space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
+    if let Some(claude) = value["providers"]
+        .as_array_mut()
+        .and_then(|p| p.iter_mut().find(|p| p["id"] == "claude"))
+    {
+        for k in ["submit", "queue", "steer"] {
+            claude[k] = json!(true);
+        }
+        claude["input_delivery"] = claude_input_delivery();
+    }
+    value["claude_input_delivery"] = claude_input_delivery();
     value
+}
+
+/// Revision 16: Claude submit/queue/steer (hosted stream-json or live peer messages).
+fn claude_input_delivery() -> Value {
+    use crate::{messaging::claude_steer, provider::claude::hosted};
+    json!({"version":1,"since_revision":16,"modes":["submit","queue","steer"],"priority":{"submit":"next","queue":"later","steer":"now"},
+        "session_capability":"capabilities.submit|queue|steer with capability_reasons and input_delivery.semantics",
+        "hosted":{"semantics":hosted::SEMANTICS,"command":"hosted","launch":["launch start hosted","launcher new --hosted","launcher resume --hosted","run --hosted"],
+            "permission_modes":hosted::PERMISSION_MODES,"default_permission_mode":"account","implicit_bypass":false,"permission_prompts":"pending_until_answered",
+            "interrupt":"steering.interrupt","correlation":"command_lifecycle_and_result_user_message_uuids","viewer":"view","take_over":"take-over"},
+        "peer_message":{"semantics":claude_steer::PEER_SEMANTICS,"label":claude_steer::PEER_LABEL,"opt_in":"account live-steering --enable","setting":"crossSessionInbound","interrupt":false,
+            "correlation":"transcript_anchor_by_message_id","reply_requires_anchor":true},
+        "states":["pending_local","held","native_accepted","execution_started","completed_with_reply","completed_without_reply","failed","cancelled","refused","rejected","expired","delivery_unknown"],
+        "timeout_seconds":{"default":claude_steer::DEFAULT_TIMEOUT_SECONDS,"max":3600},"automatic_replay":false,"cancellation":"before_delivery_only"})
 }
 
 fn public_session(s: catalog::Session) -> Value {
@@ -1020,6 +1123,9 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                     .entry((provider, s.account.clone()))
                     .or_insert_with(|| native::deleted(paths, provider, &s.account).unwrap_or(false));
             let mut value = native_public(provider, s, observed.get(&id).map(|(o, _)| o), deleted);
+            if provider == ProviderId::Claude {
+                crate::messaging::claude_steer::apply_session_input(paths, &mut value, observed.get(&id).map(|(_, h)| h.as_path()));
+            }
             value["placement"] = placements["memberships"][id.as_str()].clone();
             return value;
         }
@@ -1213,6 +1319,13 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
         let deleted = !observed.contains_key(id)
             && native::deleted(paths, provider, &session.account).unwrap_or(false);
         let mut value = native_public(provider, session, observed.get(id).map(|(o, _)| o), deleted);
+        if provider == ProviderId::Claude {
+            crate::messaging::claude_steer::apply_session_input(
+                paths,
+                &mut value,
+                observed.get(id).map(|(_, h)| h.as_path()),
+            );
+        }
         value["placement"] = placement;
         value["account_id"] = json!(account_id);
         value["original_host"] = Value::Null;
@@ -1352,6 +1465,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         Command::Launch { command } => crate::launch::api(paths, command).await?,
         Command::Account { command } => account(paths, command).await?,
         Command::Launcher { command } => launcher(paths, command).await?,
+        Command::Hosted { command } => crate::provider::claude::hosted::api(paths, command).await?,
         Command::Observe {
             session,
             expected_generation,

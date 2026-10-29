@@ -60,6 +60,20 @@ enum Commands {
     MessageRecoveryRun { message_id: String },
     #[command(hide = true)]
     ClaudeDeliveryWorker { message_id: String },
+    #[command(hide = true)]
+    ClaudeHostWorker { conversation_id: String },
+    #[command(hide = true)]
+    ClaudePeerWorker { message_id: String },
+    /// Render a Sessionsation-hosted Claude session live (t + Enter takes it over).
+    View {
+        /// Catalog session id or hosted conversation id.
+        session: String,
+        /// Print the current log and exit.
+        #[arg(long)]
+        once: bool,
+    },
+    /// Stop a hosted Claude worker cleanly, then resume the conversation interactively here.
+    TakeOver { session: String },
     /// Provider integration hooks (invoked by provider processes, not people).
     #[command(hide = true)]
     ProviderHook {
@@ -333,6 +347,12 @@ enum Commands {
         thread: Option<String>,
         #[arg(long)]
         session: Option<String>,
+        /// Claude: run a Sessionsation-hosted (stream-json) session and show its viewer here.
+        #[arg(long)]
+        hosted: bool,
+        /// With --hosted: account (default) | default | acceptEdits | plan | bypassPermissions.
+        #[arg(long, requires = "hosted")]
+        permission_mode: Option<String>,
         #[arg(last = true)]
         codex_options: Vec<String>,
     },
@@ -419,6 +439,17 @@ enum AccountCommand {
         display_name: Option<String>,
         #[arg(long)]
         clear: bool,
+    },
+    /// Claude: let live sessions of this account accept Sessionsation steering as peer
+    /// messages (sets `crossSessionInbound: accept` in its settings.json), or stop.
+    /// Without a flag, shows the current setting.
+    LiveSteering {
+        /// NAME or claude:NAME.
+        name: String,
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
     },
     /// Claude: switch an adopted account to its managed home <root>/claude-accounts/NAME.
     /// The directory must already exist (0700, yours, no symlink) and hold the same login;
@@ -525,6 +556,18 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::ClaudeDeliveryWorker { message_id } => {
             sessionsation::messaging::headless::worker(&paths, &message_id).await?
         }
+        Commands::ClaudeHostWorker { conversation_id } => {
+            sessionsation::provider::claude::hosted::worker(&paths, &conversation_id).await?
+        }
+        Commands::ClaudePeerWorker { message_id } => {
+            sessionsation::messaging::claude_steer::peer_worker(&paths, &message_id).await?
+        }
+        Commands::View { session, once } => {
+            sessionsation::provider::claude::hosted::view(&paths, &session, once).await?
+        }
+        Commands::TakeOver { session } => {
+            sessionsation::provider::claude::hosted::take_over(&paths, &session).await?
+        }
         Commands::AccountDeleteWorker { request_id } => {
             sessionsation::account_deletion::worker(&paths, &request_id).await?
         }
@@ -570,6 +613,24 @@ async fn run(cli: Cli) -> Result<()> {
                 &paths,
                 "account/reorder",
                 json!({"name":account.name,"provider":account.provider,"position":position}),
+            )
+            .await?;
+            print_json(&value)?;
+        }
+        Commands::Account {
+            command:
+                AccountCommand::LiveSteering {
+                    name,
+                    enable,
+                    disable,
+                },
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            daemon::ensure_started(&paths).await?;
+            let value = daemon::call(
+                &paths,
+                "account/live-steering",
+                json!({"name":account.name,"provider":account.provider,"enable":if enable {Some(true)} else if disable {Some(false)} else {None}}),
             )
             .await?;
             print_json(&value)?;
@@ -924,6 +985,7 @@ async fn run(cli: Cli) -> Result<()> {
                 | AccountCommand::Rename { .. }
                 | AccountCommand::Logout { .. }
                 | AccountCommand::Reorder { .. }
+                | AccountCommand::LiveSteering { .. }
                 | AccountCommand::Show { .. }
                 | AccountCommand::History { .. } => {
                     unreachable!("handled above")
@@ -1207,6 +1269,8 @@ async fn run(cli: Cli) -> Result<()> {
             account,
             thread,
             session,
+            hosted,
+            permission_mode,
             codex_options,
         } => {
             if let Some(account) = account {
@@ -1215,6 +1279,26 @@ async fn run(cli: Cli) -> Result<()> {
                     "--session is reserved for managed launching"
                 );
                 let account = resolve_account(&paths, &account)?;
+                if hosted {
+                    anyhow::ensure!(
+                        account.provider == ProviderId::Claude,
+                        "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
+                    );
+                    anyhow::ensure!(
+                        matches!(host, Host::Inline)
+                            && herdr_session.is_none()
+                            && codex_options.is_empty(),
+                        "INVALID_ARGUMENT: --hosted runs its viewer in this terminal (inline host, no provider options)"
+                    );
+                    return sessionsation::provider::claude::hosted::run_in_terminal(
+                        &paths,
+                        &account.name,
+                        thread.as_deref(),
+                        permission_mode,
+                        None,
+                    )
+                    .await;
+                }
                 if provider::native::is_native(account.provider) && matches!(host, Host::Inline) {
                     anyhow::ensure!(
                         herdr_session.is_none(),
