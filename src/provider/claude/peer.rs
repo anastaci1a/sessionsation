@@ -28,7 +28,7 @@ pub fn settings_file(home: &Path) -> PathBuf {
     home.join("settings.json")
 }
 
-fn read_settings(home: &Path) -> Result<Option<Map<String, Value>>> {
+pub(crate) fn read_settings(home: &Path) -> Result<Option<Map<String, Value>>> {
     let path = settings_file(home);
     let bytes = match fs::read(&path) {
         Ok(b) => b,

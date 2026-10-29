@@ -14,6 +14,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use serde_json::{Value, json};
 pub mod attach;
+pub mod bypass;
 pub mod hosted;
 pub mod launch;
 pub mod peer;

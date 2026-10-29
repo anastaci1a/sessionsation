@@ -1264,7 +1264,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 21);
+    assert_eq!(caps["contract_revision"], 22);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1851,7 +1851,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 21);
+    assert_eq!(caps["contract_revision"], 22);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2708,7 +2708,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 21);
+    assert_eq!(caps["contract_revision"], 22);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()
@@ -3134,4 +3134,58 @@ async fn ui_launch_without_configured_permissions_starts_claude_in_yolo() {
         launch.contains(&format!("cwd={}", dir.join("ui").display())),
         "{launch}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bypass_warning_defaults_to_skip_and_toggles_one_key() {
+    let f = fixture().await;
+    let add = f.run(&[
+        "account",
+        "add",
+        "--platform",
+        "claude",
+        "--no-login",
+        "personal",
+    ]);
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let home = f.home("personal");
+    // New managed account: default skip, written to settings.json.
+    let settings: Value = serde_json::from_str(&read(&home.join("settings.json"))).unwrap();
+    assert_eq!(settings, json!({"skipDangerousModePermissionPrompt":true}));
+    let shown = f.api(&["account", "bypass-warning", "claude:personal"]);
+    assert_eq!(shown["bypass_warning"], "skip");
+    assert_eq!(shown["changed"], false);
+    let list = f.api(&["account", "list", "--platform", "claude"]);
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "personal")
+        .unwrap();
+    assert_eq!(row["bypass_warning"], "skip");
+    assert_eq!(row["bypass_warning_value"], true);
+
+    // Show: explicit false, other keys preserved.
+    std::fs::write(
+        home.join("settings.json"),
+        r#"{"theme":"dark","skipDangerousModePermissionPrompt":true}"#,
+    )
+    .unwrap();
+    let out = f.api(&["account", "bypass-warning", "claude:personal", "--show"]);
+    assert_eq!(out["changed"], true);
+    assert_eq!(out["bypass_warning"], "show");
+    let settings: Value = serde_json::from_str(&read(&home.join("settings.json"))).unwrap();
+    assert_eq!(
+        settings,
+        json!({"theme":"dark","skipDangerousModePermissionPrompt":false})
+    );
+    let again = f.api(&["account", "bypass-warning", "claude:personal", "--show"]);
+    assert_eq!(again["changed"], false);
+    let out = f.api(&["account", "bypass-warning", "claude:personal", "--skip"]);
+    assert_eq!(out["bypass_warning"], "skip");
+    assert_eq!(out["previous"], false);
 }

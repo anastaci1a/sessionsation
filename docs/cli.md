@@ -1061,3 +1061,22 @@ sessionsation applies exactly those two effects. The command is refused with
 fails clearly for unknown (`ACCOUNT_NOT_FOUND`, including deleted), removed
 (`ACCOUNT_REMOVED`) and mismatched-provider accounts. Repeating it on an
 already-logged-out account succeeds.
+
+## Claude bypass-permissions warning (revision 22)
+
+Claude Code warns when it starts in bypass-permissions (YOLO) mode. Each Claude
+account controls that warning through `skipDangerousModePermissionPrompt` in its
+`settings.json`:
+
+```sh
+sessionsation account bypass-warning claude:personal --skip   # no warning (true)
+sessionsation account bypass-warning claude:personal --show   # warn again (false)
+sessionsation api account bypass-warning claude:personal      # show
+```
+
+Only that key is edited (other keys kept, atomic replace, file mode kept; a symlinked
+file is refused) and `account.bypass_warning_skipped|shown` is recorded on change.
+Applies to sessions started afterwards. Claude accounts that Sessionsation creates
+(`account add`, or `account login` of a managed home without a `settings.json`)
+default to skip; existing and adopted accounts keep what they have. `account list`
+rows carry `bypass_warning` (`skip|show`). Credentials are never read.

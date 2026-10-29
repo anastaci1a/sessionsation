@@ -1958,3 +1958,24 @@ Account rows add `auth_mode` (`google|api_key`, null for other providers) and
 key in the child environment). A failure recorded for a key is superseded by a newly
 stored key; `AUTH_CLIENT_UNSUPPORTED` remains the classification for a retired
 personal Google login.
+
+### Claude bypass-permissions warning (revision 22)
+
+Additive; negotiate `contract_revision >= 22` (`api capabilities.claude_bypass_warning`:
+`setting:"skipDangerousModePermissionPrompt"`, `values:["skip","show"]`,
+`new_accounts_default:"skip"`). `api account bypass-warning claude:NAME
+[--skip|--show]` (CLI `account bypass-warning`) returns `{account_id,provider,
+bypass_warning:"skip"|"show",setting,value,previous,changed,settings_file,
+applies_to:"sessions_started_after_the_change"}`; without a flag it only reads.
+`--skip` writes `skipDangerousModePermissionPrompt:true` and `--show` writes an
+explicit `false` in the account's `CLAUDE_CONFIG_DIR/settings.json`. Only that key
+changes: other keys are preserved, the file is replaced atomically with its mode
+kept, a symlinked file is refused (`SETTINGS_IS_SYMLINK`) and `.credentials.json`
+is never read. Events `account.bypass_warning_skipped|shown` are recorded only on
+change. A new Claude account created by Sessionsation (`account add` into a new
+managed home, or `account login` of a managed home with no `settings.json`)
+defaults to skip when the key is absent; adopted and existing homes are not
+touched. Claude account rows add `bypass_warning` (`skip` when the stored value is
+`true`, else `show`), `bypass_warning_value` (the raw boolean or `null`) and
+`bypass_warning_setting`. Codex and Gemini rows lack the fields; the command
+fails with `UNSUPPORTED_PROVIDER_OPERATION` for them.

@@ -28,7 +28,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":21,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":22,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -519,6 +519,14 @@ pub enum AccountCommand {
         #[arg(long)]
         disable: bool,
     },
+    /// Claude: show, skip or show-again the bypass-permissions (YOLO) startup warning.
+    BypassWarning {
+        id: String,
+        #[arg(long, conflicts_with = "show")]
+        skip: bool,
+        #[arg(long)]
+        show: bool,
+    },
     Enable {
         id: String,
     },
@@ -679,6 +687,25 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             } else {
                 a["auth_mode"] = Value::Null;
                 a["api_key_present"] = Value::Null;
+            }
+            if provider == ProviderId::Claude {
+                if let Some(home) = a["config_home"]
+                    .as_str()
+                    .filter(|h| !h.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| {
+                        crate::provider::native::default_home(paths, ProviderId::Claude, name).ok()
+                    })
+                {
+                    let row = crate::provider::claude::bypass::row(&home);
+                    for key in [
+                        "bypass_warning",
+                        "bypass_warning_value",
+                        "bypass_warning_setting",
+                    ] {
+                        a[key] = row[key].clone();
+                    }
+                }
             }
             a["selectable"] = json!(account_selectable(&a, removed));
             a["prefill"] = account_prefill(
@@ -978,6 +1005,16 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             )
             .await
         }
+        AccountCommand::BypassWarning { id, skip, show } => {
+            let account = account_ref(paths, &id)?;
+            daemon::ensure_started(paths).await?;
+            daemon::call(
+                paths,
+                "account/bypass-warning",
+                json!({"name":account.name,"provider":account.provider,"skip":if skip {Some(true)} else if show {Some(false)} else {None}}),
+            )
+            .await
+        }
         AccountCommand::Reorder { id, position } => {
             let account = account_ref(paths, &id)?;
             crate::accounts::ensure_available(paths, &account.name)?;
@@ -1063,7 +1100,7 @@ fn gemini_provider() -> Value {
 }
 
 pub fn capabilities() -> Value {
-    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":21,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":22,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -1105,6 +1142,8 @@ pub fn capabilities() -> Value {
     value["launch_permissions"] = json!({"since_revision":19,"values":["yolo","default"],"built_in_default":crate::config::Config::default().launch_permissions.as_str(),"setting":"launch_permissions","request_field":"permissions","requests":["launch","resume-launch"],"cli_option":"--permissions","codex":{"yolo":{"approval_policy":"never","sandbox":"danger-full-access"}},"claude":{"yolo":"--dangerously-skip-permissions"},"gemini":{"yolo":"--approval-mode yolo"},"applies_to":["new","resume","restart","account_switch","hosted"],"headless_delivery":"unchanged"});
     // Revision 20: folder trust pre-accepted for yolo Claude starts.
     value["claude_folder_trust"] = json!({"since_revision":20,"setting":"claude_pretrust_folders","built_in_default":crate::config::Config::default().claude_pretrust_folders,"applies_when":"launch_permissions_yolo","applies_to":["interactive","hosted"],"config_file":"CLAUDE_CONFIG_DIR/.claude.json","key":"projects.<directory>.hasTrustDialogAccepted","other_content":"preserved","symlink":"refused","credentials_read":false});
+    // Revision 21: per-account Claude bypass-permissions warning.
+    value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     value["account_reorder"] = json!(true);
     value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","gemini_process_source":"cmdline_session_id_argument","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
     value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session"],"requires_one_of":["space","new_space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});

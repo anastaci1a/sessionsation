@@ -488,6 +488,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 let adopted = config_dir.map(|dir| crate::provider::claude::validate_adopt(&paths,&state,&dir)).transpose()?;
                                 // The managed home is the normal layout; an operator-populated one is registered as is.
                                 let (home, existing) = match &adopted { Some(dir) => (dir.clone(), true), None => crate::provider::claude::create_home(&paths,name)? };
+                                if adopted.is_none() && !existing { if let Err(e) = crate::provider::claude::bypass::default_new(&home) { eprintln!("bypass-warning default not set: {e}"); } }
                                 let auth = crate::provider::claude::auth_report(&config,&home).await;
                                 let mut account = Account::with_provider(ProviderId::Claude,name.into(),String::new());
                                 account.config_home = adopted; account.auth_required = !auth["problem"].is_null();
@@ -585,6 +586,27 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"live_steering":value.as_deref()==Some(crate::provider::claude::peer::ACCEPT),
                                 "setting":crate::provider::claude::peer::SETTING,"value":value,"previous":previous,"changed":changed,
                                 "settings_file":crate::provider::claude::peer::settings_file(&home)}))
+                        }
+                        "account/bypass-warning" => {
+                            let account = named(&state,params)?;
+                            let provider = account.provider;
+                            ensure!(provider == ProviderId::Claude, "UNSUPPORTED_PROVIDER_OPERATION: the bypass warning setting is Claude Code's skipDangerousModePermissionPrompt");
+                            ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
+                            let name = account.name.clone();
+                            let home = crate::provider::account_home(&paths,account)?;
+                            use crate::provider::claude::bypass;
+                            let (changed, previous) = match params["skip"].as_bool() {
+                                Some(skip) => {
+                                    let t = bypass::set(&home, skip)?;
+                                    if t.changed { store.save(&state,now(),if skip {"account.bypass_warning_skipped"} else {"account.bypass_warning_shown"},&name)?; }
+                                    (t.changed, t.previous)
+                                }
+                                None => (false, bypass::skip(&home)),
+                            };
+                            let value = bypass::skip(&home);
+                            Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"bypass_warning":if value==Some(true) {"skip"} else {"show"},
+                                "setting":bypass::SETTING,"value":value,"previous":previous,"changed":changed,
+                                "settings_file":crate::provider::claude::peer::settings_file(&home),"applies_to":"sessions_started_after_the_change"}))
                         }
                         "account/reorder" => {
                             let name = params["name"].as_str().context("missing account name")?;

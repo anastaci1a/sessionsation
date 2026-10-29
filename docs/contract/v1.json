@@ -353,6 +353,19 @@
         "api_key_present": {
           "type": ["boolean", "null"],
           "description": "Revision 21: Gemini only. Whether a private API key file is stored (stat only; the key is never exposed); null for other providers."
+        },
+        "bypass_warning": {
+          "type": "string",
+          "enum": ["skip", "show"],
+          "description": "Revision 22: Claude only. Whether Claude Code skips its bypass-permissions (YOLO) startup warning (settings.json skipDangerousModePermissionPrompt is true: skip; absent or false: show)."
+        },
+        "bypass_warning_value": {
+          "type": ["boolean", "null"],
+          "description": "Revision 22: Claude only. The raw stored boolean; null when the key is absent."
+        },
+        "bypass_warning_setting": {
+          "type": "string",
+          "description": "Revision 22: Claude only. The settings.json key."
         }
       },
       "required": [

@@ -481,6 +481,17 @@ enum AccountCommand {
         #[arg(long)]
         disable: bool,
     },
+    /// Claude: skip or show Claude Code's bypass-permissions (YOLO) startup warning
+    /// (sets `skipDangerousModePermissionPrompt` in the account's settings.json).
+    /// Without a flag, shows the current setting.
+    BypassWarning {
+        /// claude:NAME.
+        name: String,
+        #[arg(long, conflicts_with = "show")]
+        skip: bool,
+        #[arg(long)]
+        show: bool,
+    },
     /// Claude: switch an adopted account to its managed home <root>/claude-accounts/NAME.
     /// The directory must already exist (0700, yours, no symlink) and hold the same login;
     /// nothing is copied. Refused while Claude is running on either home.
@@ -705,6 +716,19 @@ async fn run(cli: Cli) -> Result<()> {
             )?;
         }
         Commands::Account {
+            command: AccountCommand::BypassWarning { name, skip, show },
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            daemon::ensure_started(&paths).await?;
+            let value = daemon::call(
+                &paths,
+                "account/bypass-warning",
+                json!({"name":account.name,"provider":account.provider,"skip":if skip {Some(true)} else if show {Some(false)} else {None}}),
+            )
+            .await?;
+            print_json(&value)?;
+        }
+        Commands::Account {
             command: AccountCommand::Logout { name },
         } => {
             let account = resolve_account(&paths, &name)?;
@@ -911,6 +935,13 @@ async fn run(cli: Cli) -> Result<()> {
             // isolated environment. Credentials never pass through us.
             let resolved = resolve_account(&paths, &name)?;
             let account = provider::native::account(&paths, resolved.provider, &resolved.name)?;
+            if resolved.provider == ProviderId::Claude
+                && account.home == provider::claude::default_home(&paths, &resolved.name)?
+                && !provider::claude::peer::settings_file(&account.home).exists()
+            {
+                // A brand-new managed home: the new-account default (skip).
+                let _ = provider::claude::bypass::default_new(&account.home);
+            }
             let config = store::load_config(&paths)?;
             return exec_login(
                 &paths,
@@ -1062,6 +1093,7 @@ async fn run(cli: Cli) -> Result<()> {
                 | AccountCommand::Auth { .. }
                 | AccountCommand::Reorder { .. }
                 | AccountCommand::LiveSteering { .. }
+                | AccountCommand::BypassWarning { .. }
                 | AccountCommand::Show { .. }
                 | AccountCommand::History { .. } => {
                     unreachable!("handled above")
