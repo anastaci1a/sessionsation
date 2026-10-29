@@ -138,6 +138,11 @@ pub async fn list(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
     crate::catalog::resolve(paths, id, generation)?;
     Ok(result)
 }
+/// `tab rename` arguments restoring the session label on the tab created by a move.
+fn relabel_args(tab: Option<&str>, name: &str) -> Option<Vec<String>> {
+    let tab = tab?;
+    (!name.is_empty()).then(|| vec!["tab".into(), "rename".into(), tab.into(), name.into()])
+}
 fn finish(paths: &Paths, op: &mut Operation, current: Value) -> Result<()> {
     ensure!(
         current["terminal_id"] == op.terminal_id && current["workspace_id"] == op.request.space,
@@ -162,6 +167,12 @@ fn finish(paths: &Paths, op: &mut Operation, current: Value) -> Result<()> {
     } else {
         None
     };
+    // HERDR names the new tab by number; keep the session label (presentation only,
+    // so a failed rename never fails the verified move).
+    if let Some(args) = relabel_args(current["tab_id"].as_str(), &op.session.name) {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = host(op, &args);
+    }
     // Write the verified result before changing discovery, allowing read-only recovery.
     op.pane = Some(current);
     save(
@@ -662,6 +673,15 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+    #[test]
+    fn move_restores_session_label_on_the_new_tab() {
+        assert_eq!(
+            relabel_args(Some("w2:t2"), "My session").unwrap(),
+            ["tab", "rename", "w2:t2", "My session"]
+        );
+        assert!(relabel_args(None, "My session").is_none());
+        assert!(relabel_args(Some("w2:t2"), "").is_none());
     }
     #[test]
     fn pre_dispatch_crash_releases_only_its_reservation_without_host_rpc() {
