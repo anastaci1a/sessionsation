@@ -177,7 +177,21 @@ fn write_all_fd(fd: i32, mut data: &[u8]) {
 
 /// Run `command` on a pty until it exits or `ready()` turns true. Returns Ok
 /// when `ready()` is true at the end; the CLI is stopped once it first is.
-pub fn supervise(mut command: std::process::Command, ready: impl Fn() -> bool) -> Result<()> {
+pub fn supervise(command: std::process::Command, ready: impl Fn() -> bool) -> Result<()> {
+    let (ok, _) = supervise_capture(command, ready)?;
+    if ok {
+        Ok(())
+    } else {
+        bail!("Login did not complete: the CLI exited before sign-in finished")
+    }
+}
+
+/// As `supervise`, also returning whether the login completed and the last terminal
+/// output (bounded, control sequences stripped) so a caller can recognize a failure.
+pub fn supervise_capture(
+    mut command: std::process::Command,
+    ready: impl Fn() -> bool,
+) -> Result<(bool, String)> {
     let (mut rows, mut cols) = winsize(0);
     let (mut master, mut slave) = (0, 0);
     let ws = libc::winsize {
@@ -304,12 +318,11 @@ pub fn supervise(mut command: std::process::Command, ready: impl Fn() -> bool) -
     let _ = out.write_all(b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[<u\x1b[r\x1b[?25h\x1b[0m\x1b[2J\x1b[H");
     let _ = out.flush();
     drop(raw);
-    if ready() {
+    let ok = ready();
+    if ok {
         println!("Login complete.");
-        Ok(())
-    } else {
-        bail!("Login did not complete: the CLI exited before sign-in finished")
     }
+    Ok((ok, strip_ansi(&scan)))
 }
 
 #[cfg(test)]

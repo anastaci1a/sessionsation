@@ -491,7 +491,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     r.started_at = Some(crate::daemon::now());
     save(paths, &mut r)?;
     let config = crate::store::load_config(paths)?;
-    let outcome = execute(&config, &home, &r).await;
+    let outcome = execute(paths, &config, &home, &r).await;
     match outcome {
         Outcome::NotStarted(reason) => finish(paths, &mut r, "rejected", Some(reason)),
         Outcome::Unknown(reason) => finish(paths, &mut r, "delivery_unknown", Some(reason)),
@@ -607,7 +607,12 @@ pub fn print_args(provider: ProviderId, mode: Mode, conversation: &str) -> Vec<S
     args.into_iter().map(str::to_owned).collect()
 }
 
-async fn execute(config: &crate::config::Config, home: &Path, r: &Record) -> Outcome {
+async fn execute(
+    paths: &Paths,
+    config: &crate::config::Config,
+    home: &Path,
+    r: &Record,
+) -> Outcome {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut std_command = native::command(r.provider, config, home);
     if r.provider == ProviderId::Gemini {
@@ -622,7 +627,11 @@ async fn execute(config: &crate::config::Config, home: &Path, r: &Record) -> Out
         .current_dir(&r.directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(if r.provider == ProviderId::Gemini {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .kill_on_drop(true);
     let mut child = match command.spawn() {
         Ok(c) => c,
@@ -632,20 +641,37 @@ async fn execute(config: &crate::config::Config, home: &Path, r: &Record) -> Out
     let text = r.request.text.clone();
     let mut stdin = child.stdin.take();
     let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
     let run = async move {
         if let Some(mut input) = stdin.take() {
             let _ = input.write_all(text.as_bytes()).await;
             let _ = input.shutdown().await;
         }
         let mut bytes = vec![];
-        if let Some(out) = stdout.as_mut() {
-            let _ = out.take(MAX_OUTPUT_BYTES + 1).read_to_end(&mut bytes).await;
-        }
+        let mut errors = vec![];
+        // Read both pipes together so a chatty stderr cannot stall stdout. Stderr (Gemini
+        // only) is bounded and used solely to recognize an authentication failure.
+        let out_read = async {
+            if let Some(out) = stdout.as_mut() {
+                let _ = out.take(MAX_OUTPUT_BYTES + 1).read_to_end(&mut bytes).await;
+            }
+        };
+        let err_read = async {
+            if let Some(err) = stderr.as_mut() {
+                let _ = err
+                    .take(crate::provider::gemini::auth_failure::SCAN_BYTES as u64)
+                    .read_to_end(&mut errors)
+                    .await;
+                // Keep draining so a chatty child is never blocked on a full pipe.
+                let _ = tokio::io::copy(err, &mut tokio::io::sink()).await;
+            }
+        };
+        tokio::join!(out_read, err_read);
         let status = child.wait().await;
-        (bytes, status)
+        (bytes, errors, status)
     };
     let limit = std::time::Duration::from_secs(r.timeout_seconds);
-    let (bytes, status) = match tokio::time::timeout(limit, run).await {
+    let (bytes, errors, status) = match tokio::time::timeout(limit, run).await {
         Ok(v) => v,
         Err(_) => {
             // Timeouts are not quiescence: stop the whole process group and
@@ -662,6 +688,9 @@ async fn execute(config: &crate::config::Config, home: &Path, r: &Record) -> Out
         return Outcome::Unknown("OUTPUT_TOO_LARGE".into());
     }
     let exit = status.ok().and_then(|s| s.code());
+    if r.provider == ProviderId::Gemini {
+        observe_gemini_auth(paths, &r.account, home, &bytes, &errors, exit);
+    }
     let Some(result) = parse(r.provider, &bytes, exit) else {
         return Outcome::Unknown(format!(
             "UNPARSEABLE_OUTPUT (exit {})",
@@ -682,6 +711,37 @@ async fn execute(config: &crate::config::Config, home: &Path, r: &Record) -> Out
         "subtype":result["subtype"],"session_id":session_id,"num_turns":result["num_turns"],"usage":result["usage"],
         "duration_ms":result["duration_ms"]});
     Outcome::Reply { reply, session_id }
+}
+
+/// Record or clear the account's last observed Gemini authentication failure from one
+/// finished headless run. Only stderr of a failed run and a reported JSON `error` are
+/// inspected (never the reply text), so a model answer mentioning an auth term cannot
+/// mark the account failed; a clean successful run clears a recorded failure.
+fn observe_gemini_auth(
+    paths: &Paths,
+    account: &str,
+    home: &Path,
+    stdout: &[u8],
+    stderr: &[u8],
+    exit: Option<i32>,
+) {
+    use crate::provider::gemini::auth_failure as failure;
+    let reported = serde_json::from_slice::<Value>(stdout)
+        .ok()
+        .and_then(|v| v.get("error").filter(|e| !e.is_null()).cloned());
+    if reported.is_none() && exit == Some(0) {
+        failure::clear(paths, account);
+        return;
+    }
+    let mut text = String::new();
+    if let Some(error) = &reported {
+        text.push_str(&error.to_string());
+        text.push('\n');
+    }
+    if exit != Some(0) {
+        text.push_str(&String::from_utf8_lossy(stderr));
+    }
+    let _ = failure::record(paths, account, home, &text);
 }
 
 /// Gemini `-o json`: `{session_id, response, stats, error?}`, normalised to the
@@ -913,5 +973,41 @@ mod tests {
             project(&paths, read(&paths, &id).unwrap()).unwrap().state,
             "rejected"
         );
+    }
+}
+
+#[cfg(test)]
+mod gemini_auth_tests {
+    use super::*;
+    use crate::provider::gemini::auth_failure as failure;
+    #[test]
+    fn headless_gemini_runs_record_only_recognizable_auth_failures_and_clear_on_success() {
+        let t = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+        let home = paths.root.join("gemini-accounts/g1");
+        std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        std::fs::write(home.join(".gemini/oauth_creds.json"), b"{}").unwrap();
+        let cur = || failure::current(&paths, "g1", &home);
+        // Generic crash: nothing recorded.
+        observe_gemini_auth(&paths, "g1", &home, b"", b"Segmentation fault", Some(139));
+        assert!(cur().is_none());
+        // Auth rejection on stderr of a failed run.
+        observe_gemini_auth(&paths, "g1", &home, b"", b"Error: invalid_grant", Some(41));
+        assert_eq!(cur().unwrap().code, "AUTH_GRANT_INVALID");
+        // Another crash neither clears nor replaces it.
+        observe_gemini_auth(&paths, "g1", &home, b"", b"ECONNRESET", Some(1));
+        assert!(cur().is_some());
+        // A reply that merely mentions an auth term does not count as a failure and,
+        // being a clean success, clears the record.
+        let ok = br#"{"session_id":"s","response":"UNAUTHENTICATED means 401","stats":{}}"#;
+        observe_gemini_auth(&paths, "g1", &home, ok, b"", Some(0));
+        assert!(cur().is_none());
+        // A JSON-reported error is classified from the error object.
+        let bad = br#"{"session_id":"s","error":{"type":"Error","message":"client no longer supported"}}"#;
+        observe_gemini_auth(&paths, "g1", &home, bad, b"", Some(1));
+        assert_eq!(cur().unwrap().code, "AUTH_CLIENT_UNSUPPORTED");
+        // stderr of a successful run is never inspected.
+        observe_gemini_auth(&paths, "g1", &home, ok, b"invalid_grant noise", Some(0));
+        assert!(cur().is_none());
     }
 }

@@ -27,6 +27,7 @@ use std::{
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
 };
+pub mod auth_failure;
 pub mod launch;
 pub mod steering;
 
@@ -135,6 +136,8 @@ pub fn home(paths: &Paths, name: &str) -> Result<PathBuf> {
 /// user and not a symlink. Settings are seeded either way. Returns (home, existed).
 pub fn create_home(paths: &Paths, name: &str) -> Result<(PathBuf, bool)> {
     use std::os::unix::fs::MetadataExt;
+    // A new account never inherits an earlier same-named account's recorded failure.
+    let fresh = !home(paths, name).is_ok_and(|h| h.exists());
     private_dir(&paths.root.join("gemini-accounts"))?;
     let home = home(paths, name)?;
     let existed = match fs::symlink_metadata(&home) {
@@ -154,6 +157,9 @@ pub fn create_home(paths: &Paths, name: &str) -> Result<(PathBuf, bool)> {
         }
         Err(e) => return Err(e.into()),
     };
+    if fresh {
+        auth_failure::clear(paths, name);
+    }
     seed_settings(&home)?;
     Ok((home, existed))
 }

@@ -573,7 +573,11 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
     accounts
         .into_iter()
         .map(|mut a| {
-            let name = a["name"].as_str().context("INVALID_SUPERVISOR_RESPONSE")?;
+            let name = &a["name"]
+                .as_str()
+                .context("INVALID_SUPERVISOR_RESPONSE")?
+                .to_owned();
+            let name = name.as_str();
             // A pre-provider supervisor could only report Codex accounts.
             let provider = ProviderId::parse(a["provider"].as_str().unwrap_or("codex"))?;
             let removed = crate::accounts::removed(paths, name)?;
@@ -583,6 +587,31 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             a["membership"] = json!(if removed { "removed" } else { "enrolled" });
             if let Some(id) = a["deletion_id"].as_str() {
                 a["deletion"] = json!(crate::account_deletion::status(paths, id)?);
+            }
+            if provider == ProviderId::Gemini {
+                let failure = a["config_home"]
+                    .as_str()
+                    .filter(|h| !h.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| crate::provider::native::default_home(paths, provider, name).ok())
+                    .and_then(|home| {
+                        crate::provider::gemini::auth_failure::current(paths, name, &home)
+                    });
+                let fields = crate::provider::gemini::auth_failure::fields(failure.as_ref());
+                for key in [
+                    "auth_failed",
+                    "auth_failure_reason",
+                    "auth_failure_observed_at",
+                ] {
+                    a[key] = fields[key].clone();
+                }
+                if failure.is_some() {
+                    // Credentials exist but the provider rejected them: a login is needed.
+                    a["auth_required"] = json!(true);
+                    if a["auth_detail"].is_null() {
+                        a["auth_detail"] = json!("AUTH_FAILED");
+                    }
+                }
             }
             a["selectable"] = json!(
                 !removed
@@ -2215,5 +2244,46 @@ mod codex_reason_tests {
         let mut v = row(json!({"stop":true}));
         fill_codex_reasons(&mut v, &ctx(true, true, true, true, false));
         assert!(v["capability_reasons"]["stop"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod gemini_auth_failure_tests {
+    use super::*;
+    use crate::provider::gemini::auth_failure;
+    #[test]
+    fn recorded_gemini_auth_failure_makes_the_account_unselectable_until_cleared() {
+        let t = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+        let (home, _) = crate::provider::gemini::create_home(&paths, "g1").unwrap();
+        std::fs::write(home.join(".gemini/oauth_creds.json"), b"{}").unwrap();
+        let row = || json!({"name":"g1","provider":"gemini","enabled":true,"auth_required":false,"deletion_id":null,"auth_detail":null});
+        let project = || project_accounts(&paths, vec![row()]).unwrap().remove(0);
+        let a = project();
+        assert_eq!(a["auth_failed"], false);
+        assert_eq!(a["selectable"], true);
+        // A generic crash does not mark the account failed.
+        auth_failure::record(&paths, "g1", &home, "panic: segmentation fault").unwrap();
+        assert_eq!(project()["auth_failed"], false);
+        auth_failure::record(&paths, "g1", &home, "Error: client no longer supported").unwrap();
+        let a = project();
+        assert_eq!(a["auth_failed"], true);
+        assert!(
+            a["auth_failure_reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("AUTH_CLIENT_UNSUPPORTED")
+        );
+        assert!(a["auth_failure_observed_at"].as_i64().is_some());
+        assert_eq!(a["auth_required"], true);
+        assert_eq!(a["selectable"], false);
+        assert_eq!(a["prefill"]["eligible"], false);
+        // Claude rows are untouched.
+        let c = project_accounts(&paths, vec![json!({"name":"g1","provider":"claude","enabled":true,"auth_required":false,"deletion_id":null})]).unwrap().remove(0);
+        assert!(c.get("auth_failed").is_none());
+        auth_failure::clear(&paths, "g1");
+        let a = project();
+        assert_eq!(a["auth_failed"], false);
+        assert_eq!(a["selectable"], true);
     }
 }

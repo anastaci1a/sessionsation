@@ -603,7 +603,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             let name = account.name.clone();
                             let home = crate::provider::account_home(&paths,account)?;
-                            let (problem, mode) = crate::provider::native::probe(provider,&config,&home).await;
+                            let (problem, mode) = crate::provider::native::probe(&paths,&name,provider,&config,&home).await;
                             last_poll.insert(name.clone(), now());
                             let a = state.accounts.get_mut(&name).context("unknown account")?;
                             if a.auth_required != problem.is_some() || a.auth_detail != problem {
@@ -753,9 +753,9 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         last_poll.insert(a.name.clone(),now());
                         let Ok(home) = crate::provider::account_home(&paths,a) else {continue};
                         pending.insert(a.name.clone());
-                        let (name, config, tx, provider) = (a.name.clone(), config.clone(), claude_tx.clone(), a.provider);
+                        let (name, config, tx, provider, owned) = (a.name.clone(), config.clone(), claude_tx.clone(), a.provider, paths.clone());
                         tokio::spawn(async move {
-                            let problem = crate::provider::native::probe(provider,&config,&home).await.0;
+                            let problem = crate::provider::native::probe(&owned,&name,provider,&config,&home).await.0;
                             let _ = tx.send(ClaudePoll{name,problem}).await;
                         });
                         continue;

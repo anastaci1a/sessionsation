@@ -1457,6 +1457,34 @@ Resume or restart the session to rebind. `PEER_ENDPOINT_UNAVAILABLE` remains for
 genuinely absent or unusable endpoints. Every Claude child sessionsation launches
 now runs without `XDG_RUNTIME_DIR`, so its socket lives under `/tmp/cc-socks`.
 
+Revision 18: reason honesty. A second operation on a session that already has a queued
+or running one fails with `SESSION_OPERATION_IN_PROGRESS` (retryable; the message still
+names the queued job id) instead of `OPERATION_FAILED`. Every false Codex capability
+now has a `capability_reasons` code: `SESSION_NOT_RUNNING`, `AMBIGUOUS_SESSION`,
+`ACCOUNT_UNKNOWN`, `NOT_IN_HERDR`, `SESSION_ALREADY_RUNNING`,
+`SESSION_RUNNING_STOP_FIRST`, `HISTORY_UNAVAILABLE`, `SESSION_ARCHIVED`,
+`UNSUPPORTED_PROVIDER_OPERATION`, `SESSION_OPERATION_IN_PROGRESS` (a pending move).
+Hosted Claude rows give `stop` and `restart` the reason `HOSTED_SESSION` (stop with
+`api hosted stop`) and `add_to_herdr` a hosted-specific `HOSTED_SESSION` reason, not the
+interactive-terminal ones. A launched Claude process that has not yet registered or
+written a transcript (for example on its trust prompt) reports `availability:"running"`
+with the discovery warning `NO_CONVERSATION_YET`; no conversation is invented. Peer
+endpoint failures keep their own code (`PEER_SOCKET_UNLINKED`, ...), falling back to
+`PEER_ENDPOINT_UNAVAILABLE` with the message; when `api send` (delivery auto) finds neither path usable, the
+`LIVE_STEERING_DISABLED` message also names why terminal input is ineligible.
+
+Revision 18: Gemini authentication failures. Account rows add `auth_failed`,
+`auth_failure_reason` (`AUTH_CLIENT_UNSUPPORTED`, `AUTH_GRANT_INVALID`,
+`AUTH_UNAUTHENTICATED` or `AUTH_REAUTH_REQUIRED`, with fixed text) and
+`auth_failure_observed_at`. They come from the last recognizable failure in a headless
+Gemini run's stderr/JSON error or the `account login` terminal, stored in a
+sessionsation-owned file outside the account home (reason code, timestamp and the
+credential file's stat identity only; never raw output or credential content). While
+set, the row also reports `auth_required:true`, `selectable:false` (a login is needed
+although credential files exist) and `auth_detail:"AUTH_FAILED"`. A generic crash never
+sets it; a later successful headless run or successful login clears it, and a newer
+credential file supersedes it. Interactive Gemini launches are not observed.
+
 Receipt (`ClaudeSteerReceipt`, also from `api receipt`): `delivery_semantics`,
 `priority`, `state`, `reason`, `facts` (`written`, `accepted_native`,
 `input_recorded`, `input_consumed`, `reply_observed`, `reply_final`, `folded`,

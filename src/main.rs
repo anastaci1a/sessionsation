@@ -855,7 +855,13 @@ async fn run(cli: Cli) -> Result<()> {
             let resolved = resolve_account(&paths, &name)?;
             let account = provider::native::account(&paths, resolved.provider, &resolved.name)?;
             let config = store::load_config(&paths)?;
-            return exec_login(&config, resolved.provider, &account.home);
+            return exec_login(
+                &paths,
+                &resolved.name,
+                &config,
+                resolved.provider,
+                &account.home,
+            );
         }
         Commands::Account {
             command:
@@ -913,7 +919,7 @@ async fn run(cli: Cli) -> Result<()> {
                 );
                 let account = provider::native::account(&paths, platform, &name)?;
                 let config = store::load_config(&paths)?;
-                return exec_login(&config, platform, &account.home);
+                return exec_login(&paths, &name, &config, platform, &account.home);
             }
         }
         Commands::Account {
@@ -1402,7 +1408,13 @@ async fn run(cli: Cli) -> Result<()> {
 /// An unknown bare name stays on the Codex path, whose launcher reports it.
 /// Exec the official interactive login for a native provider in this terminal.
 /// Returns only on failure to start it.
-fn exec_login(config: &Config, provider: ProviderId, home: &std::path::Path) -> Result<()> {
+fn exec_login(
+    paths: &Paths,
+    name: &str,
+    config: &Config,
+    provider: ProviderId,
+    home: &std::path::Path,
+) -> Result<()> {
     use std::os::unix::process::CommandExt;
     match provider {
         ProviderId::Gemini => {
@@ -1413,9 +1425,18 @@ fn exec_login(config: &Config, provider: ProviderId, home: &std::path::Path) -> 
                 // end the login as soon as the credentials exist.
                 let home = home.to_path_buf();
                 let before = provider::gemini::credentials_stamp(&home);
-                return sessionsation::login::supervise(command, move || {
-                    provider::gemini::login_completed(&home, before)
-                });
+                let (ok, output) = sessionsation::login::supervise_capture(command, {
+                    let home = home.clone();
+                    move || provider::gemini::login_completed(&home, before)
+                })?;
+                // Clear a recorded failure on success; record a recognizable one (for
+                // example Google rejecting the client) when the login did not complete.
+                if ok {
+                    provider::gemini::auth_failure::clear(paths, name);
+                    return Ok(());
+                }
+                let _ = provider::gemini::auth_failure::record(paths, name, &home, &output);
+                anyhow::bail!("Login did not complete: the CLI exited before sign-in finished");
             }
             Err(anyhow::Error::new(command.exec()).context("could not start gemini login"))
         }
