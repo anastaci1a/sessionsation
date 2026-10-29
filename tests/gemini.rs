@@ -539,6 +539,8 @@ async fn sessions_launch_track_live_identity_rename_resume_and_go_stale() {
     assert_eq!(s["account_id"], "gemini:personal");
     assert_eq!(s["pid"], child.id());
     assert_eq!(s["directory"], json!(f.project));
+    let started = s["active_since"].as_i64().expect("gemini process start");
+    assert!((now() - 60..=now() + 1).contains(&started), "{started}");
     assert_eq!(s["capabilities"]["resume"], false);
     assert_eq!(s["capabilities"]["submit"], false);
     assert_eq!(s["capabilities"]["add_to_herdr"], false);
@@ -585,6 +587,7 @@ async fn sessions_launch_track_live_identity_rename_resume_and_go_stale() {
 
     let s = f.session(&id);
     assert_eq!(s["availability"], "stopped");
+    assert!(s["active_since"].is_null(), "{s}");
     assert_eq!(s["capabilities"]["resume"], true);
     assert!(s["pid"].is_null());
     let away = f.project.with_extension("away");

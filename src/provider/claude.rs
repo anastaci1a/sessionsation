@@ -657,11 +657,45 @@ pub struct Live {
     /// Registry `jobId` of a background session: the handle `claude attach` takes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
+    /// Registry `startedAt` (Unix milliseconds), unverified until compared with /proc.
+    #[serde(skip)]
+    pub registry_started_ms: Option<u64>,
+    /// The process was started as a pre-started `claude bg-spare`; its own start
+    /// (and registry `startedAt`) predates the session it later serves.
+    #[serde(skip)]
+    pub spare: bool,
 }
 impl Live {
     /// A background-daemon session that `claude attach <job>` can open.
     pub fn attachable(&self) -> bool {
         self.kind.as_deref() == Some("bg") && self.job_id.is_some()
+    }
+}
+/// Unix seconds of a process start given /proc start ticks (boot clock based).
+pub fn process_started_at(ticks: u64) -> Option<i64> {
+    let (uptime, hz) = crate::api::boot_clock()?;
+    crate::api::attachment_started_at(crate::daemon::now(), uptime, ticks, hz)
+}
+/// When a Claude registry entry's session became active. Never the start of a
+/// pre-started `bg-spare`: such a process only hosts the session, so its own
+/// start and registry `startedAt` are not the session's; the verified attach
+/// client (exact PID and /proc start) is then the only honest source, else None.
+/// Otherwise registry `startedAt` counts when it is not before the verified
+/// process start and not in the future, else the verified process start itself.
+fn active_since(l: &Live, attachment: Option<&catalog::Attachment>) -> Option<i64> {
+    if l.spare {
+        let a = attachment.filter(|a| a.pid != l.pid)?;
+        let (state, start) = proc_start(a.pid)?;
+        if start != a.process_start || matches!(state, 'Z' | 'X') {
+            return None;
+        }
+        return process_started_at(start);
+    }
+    let floor = process_started_at(l.process_start);
+    let registry = l.registry_started_ms.map(|ms| (ms / 1000) as i64);
+    match (registry, floor) {
+        (Some(r), Some(f)) if r >= f - 1 && r <= crate::daemon::now() + 1 => Some(r),
+        (_, f) => f,
     }
 }
 /// (state, starttime) from /proc/<pid>/stat field 22.
@@ -773,6 +807,8 @@ fn verify_entry(pid: u32, v: &Value, home: &Path) -> Option<Live> {
                 && j.len() <= 64
                 && j.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
         }),
+        registry_started_ms: v["startedAt"].as_u64(),
+        spare: cmdline(pid).iter().any(|a| a == "--bg-spare"),
     })
 }
 
@@ -881,6 +917,8 @@ pub struct Observation {
     /// `forkedFrom.sessionId` of the copied leading records (a branch/fork; the
     /// parent conversation remains separate).
     pub forked_from: Option<String>,
+    /// Unix seconds the live session became active; None without an honest source.
+    pub active_since: Option<i64>,
 }
 /// Live registry entries of one home, probed once and shared by observations.
 pub type LiveProbe = std::result::Result<Vec<Live>, String>;
@@ -924,6 +962,7 @@ pub fn observe_in(
         native_kind: None,
         job_id: None,
         attachment_switched: false,
+        active_since: None,
     };
     match live {
         Err(e) => o.detail = Some(format!("PROBE_FAILED: {e}")),
@@ -948,6 +987,7 @@ pub fn observe_in(
                     o.job_id = l.job_id.clone();
                     o.pid = Some(l.pid);
                     o.process_start = Some(l.process_start);
+                    o.active_since = active_since(l, o.attachment.as_ref());
                     if l.cwd.is_some() {
                         o.directory = l.cwd.clone();
                     }
@@ -1689,5 +1729,61 @@ mod tests {
             ]
         );
         assert_eq!(resume_argv(&config, id, "label", &settings)[1], "--resume");
+    }
+
+    fn sleeper() -> (std::process::Child, u64) {
+        let child = std::process::Command::new("sleep")
+            .arg("600")
+            .spawn()
+            .unwrap();
+        let start = proc_start(child.id()).unwrap().1;
+        (child, start)
+    }
+    fn live(pid: u32, process_start: u64, ms: Option<u64>, spare: bool) -> Live {
+        Live {
+            pid,
+            process_start,
+            session_id: "s".into(),
+            cwd: None,
+            status: None,
+            name: None,
+            kind: Some("bg".into()),
+            job_id: Some("job".into()),
+            registry_started_ms: ms,
+            spare,
+        }
+    }
+    #[test]
+    fn active_since_never_uses_a_spare_start_and_requires_a_verified_attach_client() {
+        let (mut spare, spare_start) = sleeper();
+        let (mut client, client_start) = sleeper();
+        let l = live(spare.id(), spare_start, Some(1_000), true);
+        let attach = |pid: u32, process_start: u64| catalog::Attachment {
+            host: "herdr".into(),
+            target: "herdr/s/w:p".into(),
+            pid,
+            process_start,
+        };
+        // No attachment, the spare itself, or a stale client identity: unknown.
+        assert_eq!(active_since(&l, None), None);
+        assert_eq!(
+            active_since(&l, Some(&attach(spare.id(), spare_start))),
+            None
+        );
+        assert_eq!(
+            active_since(&l, Some(&attach(client.id(), client_start + 1))),
+            None
+        );
+        // The verified client's own start, not the spare's registry time.
+        let got = active_since(&l, Some(&attach(client.id(), client_start)));
+        assert_eq!(got, process_started_at(client_start));
+        assert!(got.is_some());
+        // A non-spare ignores an implausible (pre-process) registry time.
+        let plain = live(client.id(), client_start, Some(1_000), false);
+        assert_eq!(active_since(&plain, None), process_started_at(client_start));
+        spare.kill().unwrap();
+        client.kill().unwrap();
+        spare.wait().unwrap();
+        client.wait().unwrap();
     }
 }

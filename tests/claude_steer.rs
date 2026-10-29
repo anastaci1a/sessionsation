@@ -308,6 +308,8 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
     let s = f.session(&id);
     assert_eq!(s["availability"], "running", "{s}");
     assert_eq!(s["hosted"]["state"], "running");
+    assert_eq!(s["active_since"], s["hosted"]["started_at"], "{s}");
+    assert!(s["active_since"].is_i64(), "{s}");
     assert_eq!(s["capabilities"]["steer"], true);
     assert_eq!(s["capabilities"]["resume"], false);
     assert_eq!(s["input_delivery"]["semantics"], "hosted_stream_json");

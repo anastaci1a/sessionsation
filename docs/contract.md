@@ -786,6 +786,19 @@ conversations have no live attachment time. Normal provider exit (including Code
 `/exit`) clears runtime attachment on discovery while retaining stable identity,
 conversation files, names and resume availability.
 
+Revision 17 (unreleased) populates `active_since` for running Claude and Gemini
+sessions from the first honest source, never a guess, and leaves it null otherwise
+(`last_accessed` stays null for them). Claude: the live registry
+`sessions/<pid>.json` `startedAt`, accepted only when the registry process is
+verified against /proc (PID plus start ticks) and `startedAt` is neither before that
+process start nor in the future, else the verified /proc process start. A session
+whose process is a pre-started `claude bg-spare` (the row `pid`/`process_start` may be
+the spare) never uses the spare's start or its `startedAt`: only the exact, verified
+HERDR `claude attach` client start counts, otherwise null. A Sessionsation-hosted
+session without a registry time uses the hosted worker's recorded `started_at`.
+Gemini: the verified /proc start of the session process. Stopped, archived, unverified
+or unobserved sessions are null.
+
 Account removal previews scan metadata with four bounded readers and deterministic
 ordering. Their revision and fresh-confirmation checks still include the same
 stored-file metadata; no cached or partial inventory grants consent.

@@ -2851,3 +2851,90 @@ async fn running_sessions_are_refused_and_merged_lineages_move_together() {
     ]);
     assert!(e.contains("SESSION_NOT_FOUND"), "{e}");
 }
+
+fn set_registry_field(home: &Path, pid: u32, key: &str, value: Value) {
+    let file = home.join("sessions").join(format!("{pid}.json"));
+    let mut entry: Value = serde_json::from_str(&read(&file)).unwrap();
+    if value.is_null() {
+        entry.as_object_mut().unwrap().remove(key);
+    } else {
+        entry[key] = value;
+    }
+    std::fs::write(file, entry.to_string()).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_since_comes_from_the_registry_never_a_bg_spare_and_is_null_when_unknown() {
+    let f = fixture().await;
+    assert!(
+        f.run(&["account", "add", "--platform", "claude", "personal"])
+            .status
+            .success()
+    );
+    let home = f.home("personal");
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+    let spawn = |args: &[&str]| {
+        let p = Process(
+            Command::new(args[0])
+                .args(&args[1..])
+                .env("CLAUDE_CONFIG_DIR", &home)
+                .spawn()
+                .unwrap(),
+        );
+        let pid = p.0.id();
+        wait_for("process exec", || {
+            std::fs::read(format!("/proc/{pid}/cmdline"))
+                .is_ok_and(|c| c.starts_with(args[0].as_bytes()))
+        });
+        p
+    };
+    let id = || uuid::Uuid::new_v4().to_string();
+    let (live, no_start, bogus, spare, stopped) = (id(), id(), id(), id(), id());
+    for c in [&live, &no_start, &bogus, &spare, &stopped] {
+        transcript(&home, &f.project, c);
+    }
+    let started = now() - 3600;
+    // Registry startedAt (milliseconds) after the process start and not in the
+    // future is believed; the process is made two seconds older first.
+    let a = spawn(&["sleep", "600"]);
+    std::thread::sleep(Duration::from_millis(2100));
+    let registry_second = now();
+    registry(&home, a.0.id(), &live, &f.project, "interactive", None);
+    set_registry_field(
+        &home,
+        a.0.id(),
+        "startedAt",
+        json!(registry_second * 1000 + 250),
+    );
+    // No startedAt: the verified /proc process start is the honest source.
+    let b = spawn(&["sleep", "601"]);
+    registry(&home, b.0.id(), &no_start, &f.project, "interactive", None);
+    // A startedAt long before the process even existed is not believed.
+    let c = spawn(&["sleep", "602"]);
+    registry(&home, c.0.id(), &bogus, &f.project, "interactive", None);
+    set_registry_field(&home, c.0.id(), "startedAt", json!(started * 1000));
+    // A pre-started bg-spare: its own start and startedAt are not the session's.
+    let d = spawn(&["sh", "-c", "sleep 603; :", "x", "--bg-spare"]);
+    registry(&home, d.0.id(), &spare, &f.project, "bg", Some(&spare[..8]));
+    set_registry_field(&home, d.0.id(), "startedAt", json!(started * 1000));
+
+    let at = |conversation: &str| by_conversation(&f, conversation)["active_since"].clone();
+    let n = now();
+    assert_eq!(at(&live), registry_second, "registry startedAt");
+    for process_only in [&no_start, &bogus] {
+        let v = at(process_only).as_i64().expect("process start");
+        assert!((n - 30..=n + 1).contains(&v), "{v} vs {n}");
+        assert_ne!(v, started);
+    }
+    let row = by_conversation(&f, &spare);
+    assert_eq!(row["availability"], "running", "{row}");
+    assert!(
+        row["active_since"].is_null(),
+        "a bg-spare start is never the session start: {row}"
+    );
+    let row = by_conversation(&f, &stopped);
+    assert_eq!(row["availability"], "stopped");
+    assert!(row["active_since"].is_null(), "{row}");
+}

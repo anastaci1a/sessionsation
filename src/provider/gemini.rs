@@ -619,6 +619,8 @@ pub fn live_sessions_in(snapshot: &ProcessSnapshot, home: &Path) -> Result<Vec<L
             name: None,
             kind: None,
             job_id: None,
+            registry_started_ms: None,
+            spare: false,
         });
     }
     result.sort_by_key(|l| l.pid);
@@ -675,6 +677,7 @@ fn observation(
         job_id: None,
         attachment_switched: false,
         forked_from: None,
+        active_since: None,
     };
     match live {
         Err(e) => o.detail = Some(format!("PROBE_FAILED: {e}")),
@@ -684,6 +687,7 @@ fn observation(
                 o.attachment = super::claude::host_attachment(l, recorded);
                 o.pid = Some(l.pid);
                 o.process_start = Some(l.process_start);
+                o.active_since = super::claude::process_started_at(l.process_start);
                 if l.cwd.is_some() {
                     o.directory = l.cwd.clone();
                 }

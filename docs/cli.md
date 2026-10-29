@@ -307,6 +307,12 @@ BACKEND-ID --expected-generation GENERATION`; see the authoritative
 [readiness and receipt contract](contract.md#passive-readiness). Aggregate state/watch
 remains attachment discovery, not proof of idle activity.
 
+Running Claude and Gemini rows carry `active_since` (Unix seconds; revision 17, unreleased)
+for the popup's live elapsed counter. It is the verified registry or /proc process
+start, or the hosted worker start, and is never the start of a pre-started `claude
+bg-spare` process (then only the verified HERDR attach client start, else null). It
+is null when no honest source exists; see [the contract](contract.md).
+
 Popup clients resume a saved session into a new HERDR tab using `api resume-launch
 validate` and `api resume-launch start` with a versioned JSON request on stdin.
 An optional `directory` plan chooses a different working directory without moving project files; omitted plans retain the saved location.

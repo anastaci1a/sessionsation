@@ -215,6 +215,21 @@
           "minimum": 0,
           "description": "Bytes in the observed saved rollout, excluding shared account databases."
         },
+        "active_since": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Unix seconds the live session became active (revision 17 for Claude and Gemini): the verified provider process or attachment start, never conversation age and never a pre-started bg-spare process; null when saved or when no honest source exists."
+        },
+        "last_accessed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Unix seconds of the last observed access when known (Codex); null for Claude and Gemini, which expose no access source."
+        },
         "resume_block_reason": {
           "type": [
             "string",

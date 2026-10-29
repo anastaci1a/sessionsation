@@ -973,7 +973,11 @@ fn native_public(
     );
     value["activity"] = Value::Null;
     value["last_accessed"] = Value::Null;
-    value["active_since"] = Value::Null;
+    value["active_since"] = json!(
+        observed
+            .filter(|o| o.availability == "running")
+            .and_then(|o| o.active_since)
+    );
     value["archive"] = json!({"kind":"none","archived":false,"state":"active","archived_at":null,"source":"provider_unsupported"});
     value["archived"] = json!(false);
     value["resume_block_reason"] = json!(match availability {
@@ -1021,14 +1025,14 @@ pub(crate) fn source_matches(s: &catalog::Session, i: &external::Instance) -> bo
         })
 }
 
-fn attachment_started_at(now: i64, uptime: f64, ticks: u64, hz: i64) -> Option<i64> {
+pub(crate) fn attachment_started_at(now: i64, uptime: f64, ticks: u64, hz: i64) -> Option<i64> {
     if hz <= 0 || ticks == 0 || !uptime.is_finite() {
         return None;
     }
     let age = uptime - ticks as f64 / hz as f64;
     (age >= 0. && age <= now as f64).then(|| now - age.floor() as i64)
 }
-fn boot_clock() -> Option<(f64, i64)> {
+pub(crate) fn boot_clock() -> Option<(f64, i64)> {
     let mut time = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,

@@ -1313,6 +1313,10 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
         let mut summary = hosted::public(paths, h);
         summary["pending_permission_count"] = json!(h.pending_permissions.len());
         value["hosted"] = summary;
+        if accepting && value["active_since"].is_null() {
+            // Worker-recorded start of a live (worker_alive) hosted session.
+            value["active_since"] = json!(h.started_at);
+        }
         if !matches!(h.state.as_str(), "stopped" | "failed") {
             value["availability"] = json!("running");
             value["resume_block_reason"] = json!("already_running");
