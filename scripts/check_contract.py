@@ -146,6 +146,23 @@ for invalid, definition in [
         pass
     else:
         raise AssertionError("Claude steering must not replay, claim unanchored peer replies or bypass permissions implicitly")
+validate(fixtures["claude_steer_request_terminal"], "ClaudeSteerRequest")
+for name in ["claude_steer_receipt_terminal", "claude_steer_receipt_terminal_unconfirmed", "claude_steer_receipt_terminal_refused"]:
+    validate(fixtures[name], "ClaudeSteerReceipt")
+terminal = fixtures["claude_steer_receipt_terminal"]
+for invalid, definition in [
+    ({**fixtures["claude_steer_request_terminal"], "delivery": "tmux"}, "ClaudeSteerRequest"),
+    ({**terminal, "correlation": {**terminal["correlation"], "input_uuid": None}}, "ClaudeSteerReceipt"),
+    ({**terminal, "terminal_input": None}, "ClaudeSteerReceipt"),
+    ({**terminal, "terminal_input": {**terminal["terminal_input"], "draft": {**terminal["terminal_input"]["draft"], "text": "user draft"}}}, "ClaudeSteerReceipt"),
+    ({**fixtures["claude_steer_receipt_terminal_unconfirmed"], "state": "completed_with_reply"}, "ClaudeSteerReceipt"),
+]:
+    try:
+        validate(invalid, definition)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Terminal input must anchor replies to the typed human record and never expose the draft")
 validate(fixtures["account_refresh"], "AccountRefresh")
 validate(fixtures["account_rename"], "AccountRename")
 validate(fixtures["claude_login_plan"], "AccountLoginPlan")
@@ -192,6 +209,8 @@ with tempfile.TemporaryDirectory() as directory:
             validate(value["result"]["claude_input_delivery"]["steer"], "ClaudeSteerSemantics")
             assert value["result"]["claude_input_delivery"]["priority"]["steer"] == "next"
             assert "interrupted" in value["result"]["claude_input_delivery"]["states"]
+            validate(value["result"]["claude_input_delivery"]["terminal_input"], "ClaudeTerminalInputDelivery")
+            assert value["result"]["claude_input_delivery"]["preference"][:2] == ["hosted_stream_json", "terminal_input"]
             claude = [p for p in value["result"]["providers"] if p["id"] == "claude"][0]
             assert claude["account_removal"] is True and claude["account_deletion"] is True
             assert claude["headless_delivery"]["automatic_replay"] is False

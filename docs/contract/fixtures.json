@@ -1840,6 +1840,223 @@
       "status": "held"
     }
   },
+  "claude_steer_request_terminal": {
+    "api_version": 1,
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "mode": "steer",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "expected_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "text": "Please also cover the error path.",
+    "expires_at": 1793234730,
+    "delivery": "terminal_input"
+  },
+  "claude_steer_receipt_terminal": {
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "accepted_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "provider": "claude",
+    "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "mode": "steer",
+    "priority": "next",
+    "delivery_semantics": "terminal_input",
+    "state": "completed_with_reply",
+    "reason": null,
+    "facts": {
+      "accepted_local": true,
+      "written": true,
+      "accepted_native": true,
+      "input_recorded": true,
+      "input_consumed": true,
+      "reply_observed": true,
+      "reply_final": true,
+      "folded": true,
+      "shared_with_turn": true,
+      "interrupt_requested": false,
+      "lifecycle": [],
+      "held": false,
+      "peer_status": null,
+      "idle_notice": false
+    },
+    "correlation": {
+      "kind": "transcript_record",
+      "input_uuid": "8d5c7a43-2f7e-4c0e-9a0d-7e3f2b1c6a55",
+      "record_type": "queued_command",
+      "anchor_offset": 800,
+      "turn_ended": true
+    },
+    "reply": {
+      "text": "Status: tests pass, two TODOs remain.",
+      "text_truncated": false,
+      "final": true,
+      "shared_with_turn": true
+    },
+    "execution": {
+      "phase": "complete",
+      "created_at": 1793234130,
+      "dispatched_at": 1793234130,
+      "started_at": 1793234132,
+      "finished_at": 1793234140,
+      "host_epoch": null,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "cached",
+      "checked_at": 1793234141,
+      "evidence_observed_at": 1793234140,
+      "error_code": null
+    },
+    "terminal_input": {
+      "label": "Typed into the session's HERDR terminal as the user's own input: Claude records it as a human message (queued mid-turn, or a new turn when idle)",
+      "target": "herdr/default/w1:p1",
+      "escaped_prefix": false,
+      "text_normalized": false,
+      "view_switched": null,
+      "draft": {
+        "present": true,
+        "chars": 26,
+        "restored": true,
+        "restore_error": null
+      },
+      "steps": [
+        "clear",
+        "type",
+        "submit",
+        "restore"
+      ]
+    }
+  },
+  "claude_steer_receipt_terminal_unconfirmed": {
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "accepted_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "provider": "claude",
+    "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "mode": "steer",
+    "priority": "next",
+    "delivery_semantics": "terminal_input",
+    "state": "delivery_unknown",
+    "reason": "TERMINAL_INPUT_UNCONFIRMED",
+    "facts": {
+      "accepted_local": true,
+      "written": true,
+      "accepted_native": false,
+      "input_recorded": false,
+      "input_consumed": "unknown",
+      "reply_observed": false,
+      "reply_final": false,
+      "folded": false,
+      "shared_with_turn": false,
+      "interrupt_requested": false,
+      "lifecycle": [],
+      "held": false,
+      "peer_status": null,
+      "idle_notice": false
+    },
+    "correlation": {
+      "kind": "transcript_record",
+      "input_uuid": null,
+      "record_type": null,
+      "anchor_offset": 800,
+      "turn_ended": false
+    },
+    "reply": null,
+    "execution": {
+      "phase": "complete",
+      "created_at": 1793234130,
+      "dispatched_at": 1793234130,
+      "started_at": null,
+      "finished_at": 1793234140,
+      "host_epoch": null,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "cached",
+      "checked_at": 1793234141,
+      "evidence_observed_at": 1793234140,
+      "error_code": null
+    },
+    "terminal_input": {
+      "label": "Typed into the session's HERDR terminal as the user's own input: Claude records it as a human message (queued mid-turn, or a new turn when idle)",
+      "target": "herdr/default/w1:p1",
+      "escaped_prefix": false,
+      "text_normalized": false,
+      "view_switched": null,
+      "draft": {
+        "present": true,
+        "chars": 26,
+        "restored": true,
+        "restore_error": null
+      },
+      "steps": [
+        "clear",
+        "type",
+        "submit",
+        "restore"
+      ]
+    }
+  },
+  "claude_steer_receipt_terminal_refused": {
+    "message_id": "0aea28e9-f0f8-4bfd-bf50-3280c620def2",
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "accepted_generation": "9643d09d5dd121d92daeab82ded07261b38ab88779f30e763a673df68759c815",
+    "provider": "claude",
+    "provider_conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "mode": "steer",
+    "priority": "next",
+    "delivery_semantics": "terminal_input",
+    "state": "rejected",
+    "reason": "TERMINAL_DRAFT_UNRECONSTRUCTABLE",
+    "facts": {
+      "accepted_local": true,
+      "written": false,
+      "accepted_native": false,
+      "input_recorded": false,
+      "input_consumed": "unknown",
+      "reply_observed": false,
+      "reply_final": false,
+      "folded": false,
+      "shared_with_turn": false,
+      "interrupt_requested": false,
+      "lifecycle": [],
+      "held": false,
+      "peer_status": null,
+      "idle_notice": false
+    },
+    "correlation": null,
+    "reply": null,
+    "execution": {
+      "phase": "complete",
+      "created_at": 1793234130,
+      "dispatched_at": null,
+      "started_at": null,
+      "finished_at": 1793234140,
+      "host_epoch": null,
+      "automatic_replay": false
+    },
+    "observation": {
+      "state": "cached",
+      "checked_at": 1793234141,
+      "evidence_observed_at": 1793234140,
+      "error_code": null
+    },
+    "terminal_input": {
+      "label": "Typed into the session's HERDR terminal as the user's own input: Claude records it as a human message (queued mid-turn, or a new turn when idle)",
+      "target": "herdr/default/w1:p1",
+      "escaped_prefix": false,
+      "text_normalized": false,
+      "view_switched": null,
+      "draft": {
+        "present": null,
+        "chars": null,
+        "restored": null,
+        "restore_error": null
+      },
+      "steps": []
+    }
+  },
   "hosted_session": {
     "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
     "conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",

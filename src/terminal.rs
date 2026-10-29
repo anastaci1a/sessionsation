@@ -55,6 +55,12 @@ pub(crate) fn call(session: &str, args: &[&str]) -> Result<Value> {
     call_at(session, args, None)
 }
 pub(crate) fn call_at(session: &str, args: &[&str], socket: Option<&Path>) -> Result<Value> {
+    let stdout = raw_at(session, args, socket)?;
+    decode_reply(args, &stdout)
+}
+/// One HERDR command; its raw stdout (`pane read` and `send-*` print no JSON).
+/// HERDR errors (JSON on either stream) become `HostRejection`s.
+pub(crate) fn raw_at(session: &str, args: &[&str], socket: Option<&Path>) -> Result<Vec<u8>> {
     validate_name(session)?;
     let mut command = Command::new("herdr");
     if let Some(socket) = socket {
@@ -81,7 +87,7 @@ pub(crate) fn call_at(session: &str, args: &[&str], socket: Option<&Path>) -> Re
         "HERDR request failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    decode_reply(args, &output.stdout)
+    Ok(output.stdout)
 }
 
 fn decode_reply(args: &[&str], stdout: &[u8]) -> Result<Value> {

@@ -1,6 +1,7 @@
-//! Submit, Queue and Steer for Claude sessions (contract revision 16).
+//! Submit, Queue and Steer for Claude sessions (contract revisions 16 and 17).
 //!
-//! Two delivery paths, chosen by the target session:
+//! Three delivery paths, chosen by the target session (hosted first, then
+//! terminal input, then peer message; `delivery` in the request narrows it):
 //! - **hosted** (`delivery_semantics:"hosted_stream_json"`): the session is run
 //!   by a Sessionsation worker (`provider::claude::hosted`). The message is a
 //!   stream-json stdin frame carrying `uuid` = message id and a priority
@@ -21,8 +22,11 @@
 //!   another session, which the model may only partially follow. The reply is
 //!   read from the session transcript after the injected record (found by the
 //!   message id), never claimed without that anchor.
+//! - **terminal input** (`delivery_semantics:"terminal_input"`, revision 17):
+//!   a tracked interactive session with a verified HERDR pane attachment. The
+//!   text is typed into the pane as the user's own input; see [`terminal`].
 //!
-//! Both paths journal before any write, keep durable receipts in
+//! All paths journal before any write, keep durable receipts in
 //! `DATA_ROOT/claude-steer/`, share the message-id namespace with the other
 //! stores, and never replay an uncertain send.
 use crate::{
@@ -40,6 +44,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+
+pub mod terminal;
 
 pub const PEER_SEMANTICS: &str = "peer_message";
 pub const PEER_LABEL: &str = "Delivered as a Claude Code peer message: the session sees it as a message from another Claude session and may only partially comply";
@@ -70,6 +76,10 @@ pub struct Request {
     pub steering: Option<Steering>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
+    /// Delivery path: `auto` (default; terminal_input before peer_message),
+    /// `terminal_input`, `peer_message` or `hosted_stream_json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     /// Codex recovery intents do not apply; accepted only as absent/null.
     #[serde(default, skip_serializing)]
     pub recovery: Option<Value>,
@@ -109,7 +119,7 @@ pub struct Peer {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
     pub schema_version: u32,
-    /// hosted | peer
+    /// hosted | peer | terminal
     pub kind: String,
     pub request: Request,
     pub session_id: String,
@@ -127,6 +137,9 @@ pub struct Record {
     pub reply_truncated: bool,
     pub result: Option<Value>,
     pub peer: Option<Peer>,
+    /// Terminal-input delivery state (kind `terminal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<terminal::Terminal>,
     pub observation_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -251,6 +264,13 @@ fn shape(r: &Request) -> Result<()> {
         ensure!(r.mode == "steer", "STEERING_ONLY_VALID_WITH_STEER");
     }
     ensure!(
+        matches!(
+            r.delivery.as_deref(),
+            None | Some("auto" | "hosted_stream_json" | "terminal_input" | "peer_message")
+        ),
+        "INVALID_REQUEST: delivery must be auto, hosted_stream_json, terminal_input or peer_message"
+    );
+    ensure!(
         (1..=3600).contains(&r.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS)),
         "INVALID_TIMEOUT: timeout_seconds must be 1..=3600"
     );
@@ -296,7 +316,13 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
     crate::lifecycle::ensure_available(paths, &session.conversation_id, None)?;
     let c = session.conversation_id.clone();
     let interrupt = request.steering.as_ref().is_some_and(|s| s.interrupt);
+    let wanted = request.delivery.as_deref().unwrap_or("auto");
+    let mut typed = None;
     let (kind, epoch, peer) = if let Some(h) = hosted::accepting(paths, &c) {
+        ensure!(
+            matches!(wanted, "auto" | "hosted_stream_json"),
+            "DELIVERY_UNAVAILABLE: this session is hosted; use delivery hosted_stream_json or auto"
+        );
         ensure!(
             h.session_id == session.id,
             "STALE_TARGET: the hosted worker serves another catalog entry"
@@ -307,40 +333,68 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
             !hosted::live(paths, &c),
             "SESSION_OPERATION_IN_PROGRESS: the hosted worker of this session is starting or stopping"
         );
+        ensure!(
+            wanted != "hosted_stream_json",
+            "DELIVERY_UNAVAILABLE: this session is not hosted"
+        );
         let observation = claude::observe(&account.home, &c, session.attachment.as_ref());
         ensure!(
             observation.availability == "running",
             "SESSION_NOT_RUNNING: submit/queue/steer need a hosted or live Claude session; use mode resume for a stopped session"
         );
-        ensure!(
-            !interrupt,
-            "PEER_INTERRUPT_UNSUPPORTED: peer messages cannot interrupt a live session; omit steering.interrupt"
-        );
-        ensure!(
-            claude::peer::enabled(&account.home),
-            "{}",
-            claude::peer::DISABLED
-        );
-        let live = claude::live_sessions(&account.home)?
-            .into_iter()
-            .find(|l| l.session_id == c)
-            .context("SESSION_NOT_RUNNING")?;
-        let endpoint = claude::peer::endpoint(&account.home, &live)?;
-        let transcript = claude::find_transcript(&account.home, &c);
-        (
-            "peer",
-            None,
-            Some(Peer {
-                pid: endpoint.pid,
-                process_start: endpoint.process_start,
-                socket: endpoint.socket,
-                anchor_offset: None,
-                transcript,
-                notify_msg_id: uuid::Uuid::new_v4().to_string(),
-                anchor_found: false,
-                turn_ended: false,
-            }),
-        )
+        let attached = terminal::eligible(&observation);
+        let peer_on = claude::peer::enabled(&account.home);
+        // Terminal input is preferred over a peer message. Queue (`later`) and
+        // interrupts cannot be typed: with `auto` a queue uses the peer path
+        // when it is enabled.
+        let use_terminal = match wanted {
+            "terminal_input" => true,
+            "peer_message" => false,
+            _ => attached.is_ok() && !(request.mode == "queue" && peer_on),
+        };
+        if use_terminal {
+            let t = attached.map_err(|code| {
+                anyhow::anyhow!(
+                    "{code}: terminal input needs a running session attached to a verified HERDR pane"
+                )
+            })?;
+            ensure!(
+                request.mode != "queue",
+                "TERMINAL_QUEUE_UNSUPPORTED: typed input runs at the next tool boundary or as the next turn; queue needs a peer message (account live-steering --enable)"
+            );
+            ensure!(
+                !interrupt,
+                "TERMINAL_INTERRUPT_UNSUPPORTED: terminal input never sends Esc or Ctrl+C; omit steering.interrupt"
+            );
+            typed = Some(terminal::prepare(&request, t)?);
+            ("terminal", None, None)
+        } else {
+            ensure!(
+                !interrupt,
+                "PEER_INTERRUPT_UNSUPPORTED: peer messages cannot interrupt a live session; omit steering.interrupt"
+            );
+            ensure!(peer_on, "{}", claude::peer::DISABLED);
+            let live = claude::live_sessions(&account.home)?
+                .into_iter()
+                .find(|l| l.session_id == c)
+                .context("SESSION_NOT_RUNNING")?;
+            let endpoint = claude::peer::endpoint(&account.home, &live)?;
+            let transcript = claude::find_transcript(&account.home, &c);
+            (
+                "peer",
+                None,
+                Some(Peer {
+                    pid: endpoint.pid,
+                    process_start: endpoint.process_start,
+                    socket: endpoint.socket,
+                    anchor_offset: None,
+                    transcript,
+                    notify_msg_id: uuid::Uuid::new_v4().to_string(),
+                    anchor_found: false,
+                    turn_ended: false,
+                }),
+            )
+        }
     };
     let mut record = Record {
         schema_version: 1,
@@ -362,6 +416,7 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         reply_truncated: false,
         result: None,
         peer,
+        terminal: typed,
         observation_error: None,
         created_at: now,
         updated_at: now,
@@ -392,7 +447,12 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         ))
         .arg("--data-dir")
         .arg(&paths.root)
-        .args(["claude-peer-worker", &id])
+        .arg(if kind == "terminal" {
+            "claude-terminal-worker"
+        } else {
+            "claude-peer-worker"
+        })
+        .arg(&id)
         .spawn();
         if spawned.is_err() {
             abandon_unsent(paths, &id, "WORKER_COULD_NOT_START_NO_PROVIDER_ACTION")?;
@@ -1060,12 +1120,26 @@ fn reconcile(paths: &Paths, id: &str) -> Result<Record> {
         }
         _ => {
             let stopped = crate::background::worker_stopped(&worker_lock(paths, id)?)?;
-            if r.facts.written {
+            let typed = r.kind == "terminal";
+            if r.facts.written && typed {
+                terminal::observe(paths, id, false)?;
+                if stopped {
+                    terminal::unconfirmed_after_exit(paths, id)?;
+                }
+            } else if r.facts.written {
                 peer_observe(paths, id)?;
             } else if stopped && age > ADMITTED_GRACE_SECONDS {
                 change(paths, id, |r| {
+                    // Enter is journaled (`submit`) before it is sent.
+                    let submitting = r
+                        .terminal
+                        .as_ref()
+                        .is_some_and(|t| t.steps.iter().any(|s| s == "submit"));
                     match r.phase.as_str() {
                         "admitted" => finish(r, "rejected", Some("WORKER_EXITED_BEFORE_DELIVERY")),
+                        "dispatching" if typed && !submitting => {
+                            finish(r, "rejected", Some("TERMINAL_WORKER_EXITED_BEFORE_SUBMIT"))
+                        }
                         "dispatching" => {
                             finish(r, "delivery_unknown", Some("WORKER_EXITED_DURING_DELIVERY"))
                         }
@@ -1077,6 +1151,14 @@ fn reconcile(paths: &Paths, id: &str) -> Result<Record> {
         }
     }
     read(paths, id)
+}
+
+fn semantics_of(r: &Record) -> &'static str {
+    match r.kind.as_str() {
+        "peer" => PEER_SEMANTICS,
+        "terminal" => terminal::SEMANTICS,
+        _ => hosted::SEMANTICS,
+    }
 }
 
 pub fn receipt_value(r: &Record) -> Value {
@@ -1136,7 +1218,7 @@ pub fn receipt_value(r: &Record) -> Value {
     let mut v = json!({"message_id":r.request.message_id,"session_id":r.session_id,"accepted_generation":r.accepted_generation,
         "provider":"claude","provider_conversation_id":r.conversation_id,"account_id":format!("claude:{}",r.account),
         "mode":r.request.mode,"priority":r.priority,
-        "delivery_semantics":if peer {PEER_SEMANTICS} else {hosted::SEMANTICS},
+        "delivery_semantics":semantics_of(r),
         "state":r.state,"reason":r.reason,
         "facts":{"accepted_local":true,"written":r.facts.written,"accepted_native":accepted,"input_recorded":r.facts.input_recorded,
             "input_consumed":consumed,"reply_observed":reply_observed,"reply_final":reply_observed && completed,
@@ -1151,6 +1233,9 @@ pub fn receipt_value(r: &Record) -> Value {
             "error_code":r.observation_error}});
     if peer {
         v["peer_message"] = json!({"label":PEER_LABEL,"status":r.facts.peer_status.last().map(|s| s["status"].clone())});
+    }
+    if r.kind == "terminal" {
+        terminal::receipt_fields(r, &mut v);
     }
     v
 }
@@ -1176,7 +1261,7 @@ pub async fn receipt(paths: &Paths, id: &str, cancelling: bool) -> Result<Value>
 
 // ------------------------------------------------------- session capability
 
-/// What a Claude steer does to a running turn (both paths send priority
+/// What a Claude steer does to a running turn (all paths deliver at priority
 /// `next`): it never interrupts; Claude Code folds it into the running turn
 /// at the turn's next tool round, or runs it as the next turn when the turn
 /// ends without one. `steering.interrupt:true` (hosted only) cancels the
@@ -1185,9 +1270,37 @@ pub fn steer_semantics() -> Value {
     json!({"priority":"next","interrupts":false,"delivery":"next_tool_boundary_or_next_turn",
         "interrupt_option":"steering.interrupt","interrupted_inputs_state":"interrupted"})
 }
+/// Typed input: Claude Code queues text submitted mid-turn as a human message
+/// read at the next tool round (`queued_command`), or starts a turn when idle.
+pub fn terminal_steer_semantics() -> Value {
+    json!({"priority":"next","interrupts":false,"delivery":"next_tool_boundary_or_next_turn",
+        "interrupt_option":null,"interrupted_inputs_state":"interrupted"})
+}
+fn path_label(path: Option<&str>) -> Option<&'static str> {
+    match path {
+        Some(PEER_SEMANTICS) => Some(PEER_LABEL),
+        Some(terminal::SEMANTICS) => Some(terminal::LABEL),
+        _ => None,
+    }
+}
+
+/// Whether a row's attachment is the verified HERDR pane of its running
+/// process (the observation's exact PID and start time).
+fn terminal_reason(value: &Value) -> Option<&'static str> {
+    let a = &value["attachment"];
+    let verified = a["host"] == "herdr"
+        && a["pid"].as_u64().is_some()
+        && a["pid"] == value["pid"]
+        && a["process_start"] == value["process_start"]
+        && a["target"]
+            .as_str()
+            .is_some_and(|t| crate::terminal::target(t).is_ok());
+    (!verified).then_some("TERMINAL_NOT_ATTACHED")
+}
 
 /// Per-session submit/queue/steer support (and the hosted host summary) for a
 /// Claude session row. Hosted sessions also report `availability:"running"`.
+/// Path choice: hosted, else terminal input (submit/steer), else peer message.
 pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>) {
     let Some(c) = value["conversation_id"].as_str().map(str::to_owned) else {
         return;
@@ -1209,42 +1322,86 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
         value["hosted"] = Value::Null;
     }
     let running = value["availability"] == "running";
-    let (supported, path, reason): (bool, Option<&str>, Option<String>) = if accepting {
-        (true, Some(hosted::SEMANTICS), None)
-    } else if host
+    let busy_host = host
         .as_ref()
-        .is_some_and(|h| !matches!(h.state.as_str(), "stopped" | "failed"))
-    {
-        (
-            false,
-            None,
-            Some("SESSION_OPERATION_IN_PROGRESS: the hosted worker is starting or stopping".into()),
-        )
-    } else if !running {
-        (false, None, Some("SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session, or start it hosted".into()))
-    } else if !home.is_some_and(claude::peer::enabled) {
-        (false, None, Some(claude::peer::DISABLED.into()))
-    } else {
-        let endpoint = home.and_then(|home| {
-            let pid = value["pid"].as_u64()? as u32;
-            let live = claude::live_sessions(home)
-                .ok()?
-                .into_iter()
-                .find(|l| l.pid == pid && l.session_id == c)?;
-            claude::peer::endpoint(home, &live).ok()
-        });
-        match endpoint {
-            Some(_) => (true, Some(PEER_SEMANTICS), None),
-            None => (false, None, Some(claude::peer::NO_ENDPOINT.into())),
+        .is_some_and(|h| !matches!(h.state.as_str(), "stopped" | "failed"));
+    // (mode -> path or refusal reason)
+    let mut modes: [(&str, Option<&str>, Option<String>); 3] = [
+        ("submit", None, None),
+        ("queue", None, None),
+        ("steer", None, None),
+    ];
+    let mut terminal_status: (bool, Option<String>) = (false, None);
+    if accepting {
+        for m in &mut modes {
+            m.1 = Some(hosted::SEMANTICS);
         }
-    };
-    for k in ["submit", "queue", "steer"] {
-        value["capabilities"][k] = json!(supported);
-        value["capability_reasons"][k] = json!(reason);
+        terminal_status.1 = Some("SESSION_HOSTED".into());
+    } else if busy_host || !running {
+        let reason = if busy_host {
+            "SESSION_OPERATION_IN_PROGRESS: the hosted worker is starting or stopping"
+        } else {
+            "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session, or start it hosted"
+        };
+        for m in &mut modes {
+            m.2 = Some(reason.into());
+        }
+        terminal_status.1 = Some(reason.split(':').next().unwrap_or(reason).into());
+    } else {
+        let peer: Result<(), String> = if !home.is_some_and(claude::peer::enabled) {
+            Err(claude::peer::DISABLED.into())
+        } else {
+            let endpoint = home.and_then(|home| {
+                let pid = value["pid"].as_u64()? as u32;
+                let live = claude::live_sessions(home)
+                    .ok()?
+                    .into_iter()
+                    .find(|l| l.pid == pid && l.session_id == c)?;
+                claude::peer::endpoint(home, &live).ok()
+            });
+            endpoint
+                .map(|_| ())
+                .ok_or_else(|| claude::peer::NO_ENDPOINT.into())
+        };
+        let typed = terminal_reason(value);
+        terminal_status = (typed.is_none(), typed.map(str::to_owned));
+        for m in &mut modes {
+            if typed.is_none() && m.0 != "queue" {
+                m.1 = Some(terminal::SEMANTICS);
+            } else if peer.is_ok() {
+                m.1 = Some(PEER_SEMANTICS);
+            } else if typed.is_none() {
+                m.2 = Some("TERMINAL_QUEUE_UNSUPPORTED: typed input cannot wait for a later turn; enable live steering for peer queue".into());
+            } else {
+                m.2 = peer.clone().err();
+            }
+        }
     }
+    for (k, path, reason) in &modes {
+        value["capabilities"][*k] = json!(path.is_some());
+        value["capability_reasons"][*k] = json!(reason);
+    }
+    // The primary path is the one submit and steer use.
+    let path = modes[0].1;
+    let mut available: Vec<&str> = vec![];
+    if accepting {
+        available.push(hosted::SEMANTICS);
+    }
+    if terminal_status.0 {
+        available.push(terminal::SEMANTICS);
+    }
+    if modes.iter().any(|m| m.1 == Some(PEER_SEMANTICS))
+        || (terminal_status.0 && modes[1].1.is_some())
+    {
+        available.push(PEER_SEMANTICS);
+    }
+    available.dedup();
     value["input_delivery"] = json!({"semantics":path,"interrupt":accepting,
-        "label":if path == Some(PEER_SEMANTICS) {Some(PEER_LABEL)} else {None},
-        "steer":path.map(|_| steer_semantics())});
+        "label":path_label(path),
+        "steer":path.map(|p| if p == terminal::SEMANTICS {terminal_steer_semantics()} else {steer_semantics()}),
+        "modes":{"submit":modes[0].1,"queue":modes[1].1,"steer":modes[2].1},
+        "available":available,
+        "terminal_input":{"available":terminal_status.0,"reason":terminal_status.1}});
 }
 
 #[cfg(test)]

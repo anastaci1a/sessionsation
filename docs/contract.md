@@ -1519,3 +1519,93 @@ the id then fails with `SESSION_NOT_FOUND`. `api archives` lists native entries 
 `compressed_bytes:null`, `compression:"none"` and `previous_conversation_ids`.
 Fixtures: `archived_session_claude`, `native_conversation_archive`. File scope and
 storage are in the [CLI reference](cli.md#claude-and-gemini-archive-and-delete-revision-17).
+
+### Claude terminal input (revision 17)
+
+Additive in revision 17. `capabilities.claude_input_delivery` adds `terminal_input`
+(`ClaudeTerminalInputDelivery`), `preference:["hosted_stream_json","terminal_input","peer_message"]`
+and `delivery_request`. A third delivery path, `delivery_semantics:"terminal_input"`,
+types the text into the session's HERDR pane as the user's own keystrokes. Claude
+Code records it as a human turn: a `user` record when idle, or a `queued_command`
+attachment with `origin.kind:"human"` mid-turn, read at the next tool round like
+a `next` input. The peer path is unchanged; its text arrives as a message from
+another session, which Agent-DM labels a weak steer.
+
+Eligibility: a catalog session (launched or tracked by Sessionsation) that is
+running and not hosted, whose `attachment` is a verified HERDR pane
+(`attachment.host:"herdr"` with the exact PID and start time of the running Claude
+process). Otherwise terminal input is unavailable with `TERMINAL_NOT_ATTACHED`.
+Only `submit` and `steer` are typed. `queue` (`later`) cannot be typed
+(`TERMINAL_QUEUE_UNSUPPORTED`). `steering.interrupt` is refused
+(`TERMINAL_INTERRUPT_UNSUPPORTED`): typed input never sends Esc or Ctrl+C.
+
+Path choice. Requests take an optional `delivery`: `auto` (default),
+`hosted_stream_json`, `terminal_input` or `peer_message`. With `auto`, a running
+hosted worker wins. Otherwise submit and steer use `terminal_input` when the row is
+attached and `peer_message` otherwise, and queue uses `peer_message`. A named path
+that does not apply is refused (`DELIVERY_UNAVAILABLE`, `TERMINAL_NOT_ATTACHED`,
+`LIVE_STEERING_DISABLED`, ...), never silently replaced. Session rows extend
+`input_delivery` with `modes` (`{submit,queue,steer}` → path or null),
+`available` (every applicable path, in preference order) and
+`terminal_input:{available,reason}`. `semantics`, `label` and `steer` describe
+the submit/steer path. A terminal row's `steer` has `interrupt_option:null`, and
+`capability_reasons.queue` is `TERMINAL_QUEUE_UNSUPPORTED` without live steering.
+
+The text must be typeable verbatim, or admission refuses it without journaling.
+Tabs and control characters are `TERMINAL_PAYLOAD_UNSUPPORTED`. So are a trailing
+backslash (Enter would become a newline) and a last token starting with `@` or `/`
+(Enter would accept a completion). The limit is 4096 bytes after trimming
+(`TERMINAL_TEXT_TOO_LONG`). CRLF becomes LF and surrounding whitespace is trimmed
+(`text_normalized`). A leading `/`, `!`, `#` or `?` gets a backslash
+(`escaped_prefix`), so command, shell, memory and help triggers stay plain text.
+The receipt correlates on that delivered text.
+
+Delivery is journaled under `DATA_ROOT/claude-steer/` before every write, one
+request per pane at a time. Procedure, with codes ending the request `rejected`
+before anything is submitted:
+
+1. `herdr agent list` must show a Claude agent on the pane (`TERMINAL_AGENT_UNKNOWN`)
+   that is not `blocked` (`TERMINAL_AGENT_BLOCKED`). The agent is checked again
+   before the first destructive key and before Enter.
+2. `pane read --format ansi` must show the main prompt with no overlay. The
+   detailed transcript view is left with ctrl+o and the shortcut help with `?` on
+   the empty prompt; the receipt then has `view_switched`. A subagent view
+   (coloured prompt pointer, `Message @name…`) is `TERMINAL_VIEW_NOT_MAIN`. No key
+   returns to the main view safely: Esc there stops a running subagent. Other
+   refusals: `TERMINAL_VIM_MODE`, `TERMINAL_SHELL_MODE`,
+   `TERMINAL_OVERLAY_UNIDENTIFIED` (menus, completions, pickers) and
+   `TERMINAL_VIEW_UNDETERMINED`.
+3. The draft in the input box must be reconstructable exactly. Paste or image
+   placeholders, a row reaching the right edge (possible soft wrap), more than 12
+   rows and dim text mixed with typed text are `TERMINAL_DRAFT_UNRECONSTRUCTABLE`.
+   A draft starting with `?`, `!` or `#` cannot be typed back
+   (`TERMINAL_DRAFT_UNRESTORABLE`). The draft is then journaled privately; it
+   never appears in receipts.
+4. The input is cleared with ctrl+k/ctrl+u pairs and verified empty
+   (`TERMINAL_CLEAR_UNVERIFIED`, draft kept in the journal).
+5. The text is typed with `pane send-text` (no bracketed paste) in small chunks,
+   with ctrl+j between lines, and checked on screen. On a mismatch or a block it
+   is withdrawn and the draft restored (`TERMINAL_TYPED_TEXT_MISMATCH`). Enter is
+   journaled (`steps` gains `submit`) and sent once. A failed Enter is
+   `delivery_unknown` (`TERMINAL_SUBMIT_UNCERTAIN`).
+6. The draft is typed back unsubmitted and verified with `pane read`
+   (`terminal_input.draft.restored`, `restore_error`). A failed restore is
+   reported, never retried.
+7. The transcript after the submit is searched for the human record carrying
+   exactly the delivered text with a timestamp at or after the submit. Its `uuid`
+   is `correlation.input_uuid` (`{kind:"transcript_record",input_uuid,record_type,
+   anchor_offset,turn_ended}`), and only it anchors `reply`. Without it within
+   60 seconds (or `timeout_seconds` if shorter) the receipt is `delivery_unknown`
+   (`TERMINAL_INPUT_UNCONFIRMED`). The turn ends at the next real input, or when
+   HERDR reports the agent working and then idle. Nothing is re-sent automatically.
+
+Other codes: `TERMINAL_HOST_UNAVAILABLE`, `TERMINAL_HOST_FAILED_BEFORE_SUBMIT`
+and `TERMINAL_WORKER_EXITED_BEFORE_SUBMIT`. In those cases a draft whose restore
+was not verified stays in the journal. Receipts add `terminal_input`
+(`ClaudeTerminalInput`): `label`, `target`, `escaped_prefix`, `text_normalized`,
+`view_switched`, `draft:{present,chars,restored,restore_error}` and `steps`.
+Fixtures: `claude_steer_request_terminal`, `claude_steer_receipt_terminal`,
+`claude_steer_receipt_terminal_unconfirmed`,
+`claude_steer_receipt_terminal_refused`. The screen grammar and keys come from
+the Claude Code 2.1.312 bundle and HERDR 0.9.5; tests use fakes only (see
+[CLI](cli.md#claude-terminal-input-revision-17)).

@@ -4269,7 +4269,7 @@
       "additionalProperties": true
     },
     "ClaudeSteerRequest": {
-      "description": "Revision 16: api send mode submit|queue|steer addressed to a Claude session (hosted worker or opted-in live session).",
+      "description": "Revision 16: api send mode submit|queue|steer addressed to a Claude session (hosted worker or opted-in live session). Revision 17 adds delivery: auto (default: hosted, else terminal_input for submit/steer on a verified HERDR pane, else peer_message), or one path explicitly.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -4341,6 +4341,15 @@
               }
             }
           ]
+        },
+        "delivery": {
+          "enum": [
+            "auto",
+            "hosted_stream_json",
+            "terminal_input",
+            "peer_message"
+          ],
+          "description": "Revision 17. A path that does not apply is refused (DELIVERY_UNAVAILABLE, TERMINAL_NOT_ATTACHED, LIVE_STEERING_DISABLED, ...)."
         }
       },
       "if": {
@@ -4362,7 +4371,7 @@
       }
     },
     "ClaudeSteerReceipt": {
-      "description": "Revision 16: durable receipt of a Claude submit/queue/steer. hosted_stream_json correlates by command uuid and needs both the turn's result and the input's terminal command_lifecycle: completed_* only after 'completed'; an input whose consuming turn was cut ('cancelled' after 'started', even after a success result) ends interrupted with a non-final reply. peer_message correlates only by a transcript anchor.",
+      "description": "Revision 16: durable receipt of a Claude submit/queue/steer. hosted_stream_json correlates by command uuid and needs both the turn's result and the input's terminal command_lifecycle: completed_* only after 'completed'; an input whose consuming turn was cut ('cancelled' after 'started', even after a success result) ends interrupted with a non-final reply. peer_message correlates only by a transcript anchor. Revision 17 terminal_input (typed into the session's HERDR pane as the user's own input) correlates only by the human transcript record (user, or queued_command with origin human) that carries exactly the typed text after the submit; without it a submit is delivery_unknown (TERMINAL_INPUT_UNCONFIRMED) and is never re-sent.",
       "type": "object",
       "required": [
         "message_id",
@@ -4424,7 +4433,8 @@
         "delivery_semantics": {
           "enum": [
             "hosted_stream_json",
-            "peer_message"
+            "peer_message",
+            "terminal_input"
           ]
         },
         "state": {
@@ -4510,6 +4520,34 @@
                   "const": "transcript_anchor"
                 }
               }
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "input_uuid",
+                "record_type",
+                "anchor_offset",
+                "turn_ended"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "transcript_record"
+                },
+                "input_uuid": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "record_type": {
+                  "enum": [
+                    "user",
+                    "queued_command",
+                    null
+                  ]
+                }
+              }
             }
           ]
         },
@@ -4571,6 +4609,9 @@
             "label",
             "status"
           ]
+        },
+        "terminal_input": {
+          "$ref": "#/$defs/ClaudeTerminalInput"
         }
       },
       "allOf": [
@@ -4753,6 +4794,56 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "delivery_semantics": {
+                "const": "terminal_input"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "terminal_input"
+            ],
+            "properties": {
+              "facts": {
+                "properties": {
+                  "lifecycle": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "delivery_semantics": {
+                "const": "terminal_input"
+              },
+              "reply": {
+                "type": "object"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "correlation": {
+                "type": "object",
+                "required": [
+                  "input_uuid"
+                ],
+                "properties": {
+                  "input_uuid": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -4929,7 +5020,7 @@
       }
     },
     "ClaudeSteerSemantics": {
-      "description": "Revision 16: what a Claude steer does to a running turn (claude_input_delivery.steer and the session row's input_delivery.steer, null when the session takes no input). A steer never interrupts: Claude Code folds a priority-next input into the running turn at its next tool round, or runs it as the next turn when the turn ends without one. steering.interrupt:true (hosted only) cancels the running turn first; that turn's inputs end interrupted.",
+      "description": "Revision 16: what a Claude steer does to a running turn (claude_input_delivery.steer and the session row's input_delivery.steer, null when the session takes no input). A steer never interrupts: Claude Code folds a priority-next input into the running turn at its next tool round, or runs it as the next turn when the turn ends without one. steering.interrupt:true (hosted only) cancels the running turn first; that turn's inputs end interrupted. Revision 17: terminal_input rows report interrupt_option null (typed input never sends Esc or Ctrl+C).",
       "type": "object",
       "required": [
         "priority",
@@ -4950,10 +5041,161 @@
           "const": "next_tool_boundary_or_next_turn"
         },
         "interrupt_option": {
-          "const": "steering.interrupt"
+          "enum": [
+            "steering.interrupt",
+            null
+          ]
         },
         "interrupted_inputs_state": {
           "const": "interrupted"
+        }
+      }
+    },
+    "ClaudeTerminalInput": {
+      "description": "Revision 17: terminal_input part of a ClaudeSteerReceipt. The user's draft text is never included; only whether it existed, its length and whether its restore was verified on screen.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "target",
+        "escaped_prefix",
+        "text_normalized",
+        "view_switched",
+        "draft",
+        "steps"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string",
+          "pattern": "^herdr/"
+        },
+        "escaped_prefix": {
+          "type": "boolean",
+          "description": "A leading / ! # or ? was typed as \\\\/ \\\\! \\\\# \\\\? so it stays plain text."
+        },
+        "text_normalized": {
+          "type": "boolean",
+          "description": "CRLF or surrounding whitespace was removed before typing."
+        },
+        "view_switched": {
+          "enum": [
+            "transcript",
+            "help",
+            null
+          ]
+        },
+        "draft": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "present",
+            "chars",
+            "restored",
+            "restore_error"
+          ],
+          "properties": {
+            "present": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "chars": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "restored": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "restore_error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "leave_transcript",
+              "leave_help",
+              "clear",
+              "type",
+              "withdraw",
+              "submit",
+              "restore"
+            ]
+          }
+        }
+      }
+    },
+    "ClaudeTerminalInputDelivery": {
+      "description": "Revision 17: capabilities.claude_input_delivery.terminal_input.",
+      "type": "object",
+      "required": [
+        "semantics",
+        "since_revision",
+        "modes",
+        "eligibility",
+        "preference",
+        "keys",
+        "refusal_reasons",
+        "automatic_replay"
+      ],
+      "properties": {
+        "semantics": {
+          "const": "terminal_input"
+        },
+        "since_revision": {
+          "const": 17
+        },
+        "modes": {
+          "const": [
+            "submit",
+            "steer"
+          ]
+        },
+        "automatic_replay": {
+          "const": false
+        },
+        "refusal_reasons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "TERMINAL_NOT_ATTACHED",
+              "TERMINAL_QUEUE_UNSUPPORTED",
+              "TERMINAL_INTERRUPT_UNSUPPORTED",
+              "TERMINAL_PAYLOAD_UNSUPPORTED",
+              "TERMINAL_TEXT_TOO_LONG",
+              "TERMINAL_HOST_UNAVAILABLE",
+              "TERMINAL_AGENT_UNKNOWN",
+              "TERMINAL_AGENT_BLOCKED",
+              "TERMINAL_VIEW_NOT_MAIN",
+              "TERMINAL_VIEW_UNDETERMINED",
+              "TERMINAL_OVERLAY_UNIDENTIFIED",
+              "TERMINAL_VIM_MODE",
+              "TERMINAL_SHELL_MODE",
+              "TERMINAL_DRAFT_UNRECONSTRUCTABLE",
+              "TERMINAL_DRAFT_UNRESTORABLE",
+              "TERMINAL_CLEAR_UNVERIFIED",
+              "TERMINAL_TYPED_TEXT_MISMATCH",
+              "TERMINAL_HOST_FAILED_BEFORE_SUBMIT",
+              "TERMINAL_WORKER_EXITED_BEFORE_SUBMIT",
+              "TERMINAL_SUBMIT_UNCERTAIN",
+              "TERMINAL_INPUT_UNCONFIRMED"
+            ]
+          }
         }
       }
     },

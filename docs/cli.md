@@ -647,7 +647,8 @@ without that anchor the receipt never claims an answer. `held` (waiting for the
 session's approval), `refused`, `expired` and dropped messages are reported as such;
 peer messages use the same priorities (a steer is `next`: read between tool
 calls, or a new turn when idle) and cannot interrupt. Without the opt-in, submit/queue/steer are refused
-with `LIVE_STEERING_DISABLED`; session rows carry `capabilities.submit|queue|steer`,
+with `LIVE_STEERING_DISABLED`, unless the session runs in a verified HERDR pane, where
+submit and steer use [terminal input](#claude-terminal-input-revision-17); session rows carry `capabilities.submit|queue|steer`,
 `capability_reasons` and `input_delivery.semantics`.
 
 Both paths journal under `DATA_ROOT/claude-steer/` before writing, share the
@@ -699,6 +700,66 @@ refused with `SESSION_STATE_UNKNOWN` when the live probe fails, and with
 `HISTORY_IN_USE` when a transcript is open for writing. The same codes appear in
 each row's `capability_reasons.archive|delete`. A merged id is refused with
 `SESSION_MERGED`; act on its survivor.
+
+### Claude terminal input (revision 17)
+
+A tracked Claude session running in a HERDR pane (its row has
+`attachment.host:"herdr"` and `input_delivery.terminal_input.available:true`)
+takes `submit` and `steer` as **typed input**. Sessionsation types the text into
+the pane as if the user had typed it, so Claude Code records a real human turn:
+a `user` record when idle, or a queued human message (`queued_command`,
+`origin.kind:"human"`) read at the next tool round when a turn is running. This
+is the strongest steer available for a session Sessionsation does not host. The
+peer path (`peer_message`) arrives as a message from another session. With
+`delivery` unset or `auto`, terminal input is preferred over a peer message.
+Queue still uses the peer path, and `"delivery":"peer_message"` forces it.
+
+```sh
+printf '%s' '{"api_version":1,"message_id":"…","mode":"steer","session_id":"…",
+  "expected_generation":"…","text":"Also cover the error path.","expires_at":…}' |
+  sessionsation api send
+```
+
+The worker's steps on the pane:
+
+1. **Agent state.** `herdr agent list` must report the Claude agent idle or
+   working, not `blocked` at an approval or question.
+2. **View.** The screen must show the main prompt with no menu or overlay. The
+   detailed transcript view is left with ctrl+o (`app:toggleTranscript`, a
+   global toggle) and the shortcut help with `?` typed on the empty prompt. A
+   subagent view, vim mode, shell mode or anything unidentified is refused before
+   any key: Esc is never sent, because it interrupts a running turn
+   (`chat:cancel`) or stops a viewed subagent.
+3. **Draft.** The text already in the input box is read from the screen. It must
+   be exact: no `[Pasted text #N]` or `[Image #N]` placeholder, no row reaching
+   the right edge, at most 12 rows. Otherwise the request is refused and nothing
+   is touched. Trailing spaces at the end of a draft line are not visible on
+   screen and are not preserved.
+4. **Clear.** ctrl+k and ctrl+u pairs: each removes the rest of a row, or the
+   newline next to the cursor. They are not bound to anything else in the chat
+   input. ctrl+l is not used: in Claude Code 2.1.312 `chat:clearInput` (ctrl+l)
+   only redraws the screen. Ctrl+C (arms exit on an empty prompt), Ctrl+D (exit)
+   and Esc are never sent.
+5. **Type and submit.** `herdr pane send-text` writes the bytes without a
+   bracketed-paste wrapper, so the text appears as typed, not as a pasted block.
+   It is sent in chunks of 32 characters, with ctrl+j (`chat:newline`) between
+   lines, checked on screen, then submitted with one Enter. A leading `/`, `!`,
+   `#` or `?` is typed as `\/`, `\!`, `\#` or `\?`.
+6. **Restore.** The draft is typed back the same way, not submitted, and
+   compared with the screen.
+7. **Confirm.** The transcript must show the human record with exactly the typed
+   text after the submit. Its uuid anchors the reply. Without it the receipt is
+   `delivery_unknown` and is never re-sent.
+
+Receipts carry `delivery_semantics:"terminal_input"`, `correlation.input_uuid`
+and `terminal_input` (`escaped_prefix`, `view_switched`,
+`draft.{present,chars,restored,restore_error}`, `steps`). The draft text itself is
+kept only in the private journal until its restore is verified. All refusal codes
+are listed in the [contract](contract.md#claude-terminal-input-revision-17).
+Typing interacts with the user's own typing in that pane: a key pressed during
+the few hundred milliseconds of a delivery can land between steps. The fake HERDR
+fixture checks the procedure. The screen grammar and key bindings come from the
+Claude Code 2.1.312 bundle and HERDR 0.9.5; other versions must be checked first.
 
 ## Gemini CLI accounts and sessions
 

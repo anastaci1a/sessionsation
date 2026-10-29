@@ -64,6 +64,8 @@ enum Commands {
     ClaudeHostWorker { conversation_id: String },
     #[command(hide = true)]
     ClaudePeerWorker { message_id: String },
+    #[command(hide = true)]
+    ClaudeTerminalWorker { message_id: String },
     /// Render a Sessionsation-hosted Claude session live (t + Enter takes it over).
     View {
         /// Catalog session id or hosted conversation id.
@@ -561,6 +563,9 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::ClaudePeerWorker { message_id } => {
             sessionsation::messaging::claude_steer::peer_worker(&paths, &message_id).await?
+        }
+        Commands::ClaudeTerminalWorker { message_id } => {
+            sessionsation::messaging::claude_steer::terminal::worker(&paths, &message_id).await?
         }
         Commands::View { session, once } => {
             sessionsation::provider::claude::hosted::view(&paths, &session, once).await?
