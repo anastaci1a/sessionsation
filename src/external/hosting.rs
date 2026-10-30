@@ -647,6 +647,15 @@ mod discovery_tests {
             .env("HERDR_SOCKET_PATH", &socket)
             .spawn()
             .unwrap();
+        // Wait until the child has exec'd; before that /proc/<pid>/environ is still
+        // the forked parent's environment, which lacks HERDR_SOCKET_PATH.
+        for _ in 0..1000 {
+            if process_socket(child.id()).is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(process_socket(child.id()), Some(socket.clone()));
         let pane = "herdr/named/w1:p1";
         bind(
             &paths,

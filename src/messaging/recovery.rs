@@ -948,7 +948,8 @@ mod tests {
             match r["method"].as_str().unwrap() {
                 "thread/read" => Some(json!({"thread":{"id":id,"status":{"type":"idle"}}})),
                 "thread/turns/list" => {
-                    std::thread::sleep(std::time::Duration::from_millis(3250));
+                    // Must exceed the generic 3s per-call budget but stay well inside the 5s shared preflight budget; 3.1s maximises that margin.
+                    std::thread::sleep(std::time::Duration::from_millis(3100));
                     Some(json!({"data":[{"id":"previous","status":"interrupted"}]}))
                 }
                 "thread/queue/list" => Some(json!({"data":[],"nextCursor":null})),
