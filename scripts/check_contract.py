@@ -282,13 +282,17 @@ with tempfile.TemporaryDirectory() as directory:
             assert value["result"]["launch_permissions"]["values"] == ["yolo", "default"]
             assert value["result"]["launch_permissions"]["built_in_default"] == "yolo"
             validate(value["result"]["conversation_archive"]["native"], "NativeConversationArchive")
-            assert value["result"]["conversation_archive"]["providers"] == ["codex", "claude", "gemini"]
+            assert value["result"]["conversation_archive"]["providers"] == ["codex", "claude", "gemini", "antigravity"]
+            # Revision 25: Antigravity folder trust, stop, archive and delete.
+            assert value["result"]["contract_revision"] >= 25
+            assert value["result"]["antigravity_folder_trust"]["setting"] == "antigravity_pretrust_folders"
+            assert value["result"]["antigravity_folder_trust"]["credentials_read"] is False
+            assert value["result"]["antigravity_lifecycle"]["stop"]["sigkill"] is False
             for p in value["result"]["providers"]:
-                # Revision 24: Antigravity declares archive/delete unsupported (agy owns deletion).
-                supported = p["id"] != "antigravity"
-                assert p["operations"]["archive"]["supported"] is supported and p["operations"]["delete_session"]["supported"] is supported
+                # Revision 25: every provider, Antigravity included, supports archive and delete.
+                assert p["operations"]["archive"]["supported"] is True and p["operations"]["delete_session"]["supported"] is True
             agy = [p for p in value["result"]["providers"] if p["id"] == "antigravity"][0]
-            assert value["result"]["contract_revision"] >= 24 and agy["account_logout"] is False
+            assert value["result"]["contract_revision"] >= 24 and agy["account_logout"] is False and agy["stop"] is True
             assert agy["input_delivery"]["herdr_agent"] == "agy" and agy["input_delivery"]["automatic_replay"] is False
             assert "esc" in agy["input_delivery"]["keys"]["never"] and "ctrl+c" in agy["input_delivery"]["keys"]["never"]
             assert value["result"]["antigravity_input_delivery"]["since_revision"] == 24
@@ -323,7 +327,7 @@ with tempfile.TemporaryDirectory() as directory:
             validate(value["result"], "ExecutableVersion")
             assert value["result"]["contract_version"] == "1." + str(value["result"]["contract_revision"]) + ".0"
             validate({**value["result"], "contract_revision":99}, "ExecutableVersion")
-    for ok in ["1", "1.24", "1.99.0"]:
+    for ok in ["1", "1.25", "1.99.0"]:
         assert json.loads(subprocess.check_output(command + ["--api-version", ok, "version"], text=True))["ok"] is True
     invalid = subprocess.run(command + ["checkpoints"], input=json.dumps({**fixtures["checkpoint_request"], "version":99}), capture_output=True, text=True)
     assert invalid.returncode == 1

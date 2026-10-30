@@ -51,6 +51,9 @@ pub fn ensure_resumable(session: &catalog::Session, observation: &Observation) -
 }
 
 fn exec(config: &Config, home: &Path, cwd: &Path, argv: &[String]) -> Result<()> {
+    if config.antigravity_pretrust_folders && argv.iter().any(|a| a == antigravity::YOLO_FLAG) {
+        antigravity::trust::pretrust_before_start(home, cwd);
+    }
     let mut command = antigravity::command(config, home);
     command.args(&argv[1..]).current_dir(cwd);
     Err(command.exec()).context("could not launch Antigravity CLI")

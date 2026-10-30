@@ -1103,8 +1103,9 @@ no prompt (`agy --input-format stream-json --output-format stream-json
 records the catalog entry with the id from its `init` event, then execs `agy
 --conversation UUID`. Resume runs the same command in the recorded directory.
 `launch_permissions` `yolo` adds `--dangerously-skip-permissions`; `default` adds
-nothing. agy asks once per folder whether to trust it; that dialog is answered in
-the terminal.
+nothing. agy asks once per folder whether to trust it; before a yolo start or
+resume Sessionsation answers that for the launch directory (see
+[folder trust](#antigravity-folder-trust-revision-25)).
 
 Discovery reads agy's index `conversation_summaries.db` read-only (id, workspace
 URI, step count, modification time); conversations with at least one step are
@@ -1144,12 +1145,63 @@ anchored on the first explicit `USER_INPUT` step in
 the text, and carries `antigravity_input` (`queue_mode`, `key`, `expected`,
 `screen_evidence` `queued|sending`, `outcome` `submitted|queued|sent_immediately`).
 
-Archive, restore and delete of conversations are unsupported: agy deletes
-conversations only from its own `/resume` picker (F4), and Sessionsation does not
-edit agy's index. Stop, restart, account switch, relocation, Space moves, Add to
-HERDR and pending questions are unsupported. Account deletion preserves
+Stop, archive, restore and delete are supported since revision 25 (below).
+Restart, account switch, relocation, Space moves, Add to HERDR and pending questions
+are unsupported. Account deletion preserves
 `conversations`, `brain`, `annotations`, `implicit`, the index and `history.jsonl`
 in the preserved-conversations vault and deletes the home with the token.
+
+### Antigravity folder trust (revision 25)
+
+agy 1.4.10 shows "Do you trust the contents of this project?" the first time it
+opens a directory, and records the answer by appending the exact directory to
+`trustedWorkspaces` in `HOME/.gemini/antigravity-cli/settings.json` (verified by
+accepting the dialog and diffing the file; a subdirectory of a trusted directory
+asks again). Before a yolo `new` or `resume` Sessionsation appends that one array
+element for the launch directory (canonical and, when different, as recorded). Only
+`trustedWorkspaces` changes: every other member keeps its bytes and order, the file
+is replaced atomically with its mode and owner (compare-and-swap against concurrent
+writes), a symlinked `settings.json` is refused, an unparsable one is left alone,
+and the OAuth token file is never read. Failures are reported on stderr and never
+block the start. `default` launch permissions do nothing. Turn it off with:
+
+```sh
+sessionsation config set antigravity_pretrust_folders false
+```
+
+### Antigravity stop, archive, restore and delete (revision 25)
+
+**Stop** (`api stop`) is available while a verified interactive agy process runs the
+conversation. It sends SIGTERM to that exact process, opened as a pidfd and
+re-verified first (pid, start time, `agy` command line, account home, and that it
+holds this conversation), then waits up to 20 s. Verified on agy 1.4.10: SIGTERM
+runs agy's normal exit path (it prints the `Resume with ... agy --conversation=ID`
+line, checkpoints and removes the conversation `-wal`/`-shm` files, and the
+database passes `integrity_check`); the conversation resumes afterwards. SIGKILL is
+never sent: a process that has not exited in time is reported as `STOP_TIMEOUT` and
+left running. A typed `/exit` (agy also accepts `/quit`) exists but is not used: during a turn Enter
+queues typed text per the `queuedMessages` setting, so it is not a reliable exit. `SESSION_NOT_RUNNING` is
+returned for stopped sessions.
+
+**Archive, restore and delete** use the same jobs as Claude and Gemini
+([revision 17](#claude-and-gemini-archive-and-delete-revision-17)) for stopped
+sessions. One agy conversation is exactly this set (verified by diffing the account
+state before and after creating a throwaway conversation and deleting it with agy's
+own `/resume` picker, F4): `conversations/ID.db` (plus `-wal`/`-shm` when present),
+`brain/ID/`, `annotations/ID.pbtxt`, the row of `conversation_summaries.db` and the
+entry in `jetbox_summaries_proto.pb`; the picker also leaves the empty
+`presence/ID.lock`, which is moved or deleted with the rest. Archive moves the files
+into `archived-sessions` and saves then removes the index row (the whole row,
+including its blob, is restored on Restore); Delete stages and removes them and also
+drops the cache entry. The index is edited only through the SQLite library, in one
+`BEGIN IMMEDIATE` transaction per row, after a `VACUUM INTO` backup (kept in the
+archive bundle, or in the delete staging directory until the job ends). Matching is
+by exact conversation id. They are refused while any agy process, interactive or
+headless, holds the conversation (`SESSION_RUNNING`). Not touched, as with agy's own
+delete: `history.jsonl` (prompt history; its first line per conversation carries no
+id), `implicit/*.pb` (not keyed by conversation) and the OAuth token. A symlink in
+the set refuses the job (`HISTORY_SYMLINK`). Restart is unsupported
+(`stop`, then `resume`).
 
 ## Account log out
 

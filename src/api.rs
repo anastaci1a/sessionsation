@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 24;
+pub const CONTRACT_MINOR: u32 = 25;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.24.0";
+pub const CONTRACT_VERSION: &str = "1.25.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1146,7 +1146,7 @@ fn gemini_provider() -> Value {
 /// The Antigravity provider entry of `api capabilities` (revision 24).
 fn antigravity_provider() -> Value {
     json!({"id":"antigravity","implemented":true,"since_revision":24,"enrollment":true,"adopt_config_dir":false,"login":"interactive_exec","usage":false,"usage_state":"unsupported","usage_source":crate::provider::antigravity::USAGE_SOURCE,
-        "new":true,"resume":true,"rename":true,"native_rename":false,"stop":false,
+        "new":true,"resume":true,"rename":true,"native_rename":false,"stop":true,
         "account_switch":false,"restart":false,"submit":true,"queue":true,
         "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
         "headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false,"approval":"agy default (never --dangerously-skip-permissions)","print_timeout":true,"new_conversation":"empty conversation created first, without a prompt"},
@@ -1183,8 +1183,9 @@ pub fn capabilities() -> Value {
     value["contract_version"] = json!(CONTRACT_VERSION);
     value["state_cached"] = json!(true);
     // Revision 17: Claude and Gemini archive/restore/delete (moved native files).
-    value["conversation_archive"]["providers"] = json!(["codex", "claude", "gemini"]);
-    value["conversation_archive"]["native"] = json!({"version":1,"since_revision":17,"providers":["claude","gemini"],
+    value["conversation_archive"]["providers"] =
+        json!(["codex", "claude", "gemini", "antigravity"]);
+    value["conversation_archive"]["native"] = json!({"version":1,"since_revision":17,"providers":["claude","gemini","antigravity"],
         "storage":"moved_native_files","compression":"none","restore_target":"original_account_home",
         "scope":"exact_conversation_ids_including_previous_conversation_ids","delete_removes_catalog_entry":true,
         "delete_removes_merged_aliases":true,"delete_staging":"deletions","dead_registry_entries_deleted":true,
@@ -1199,6 +1200,11 @@ pub fn capabilities() -> Value {
     value["launch_permissions"] = json!({"since_revision":19,"values":["yolo","default"],"built_in_default":crate::config::Config::default().launch_permissions.as_str(),"setting":"launch_permissions","request_field":"permissions","requests":["launch","resume-launch"],"cli_option":"--permissions","codex":{"yolo":{"approval_policy":"never","sandbox":"danger-full-access"}},"claude":{"yolo":"--dangerously-skip-permissions"},"gemini":{"yolo":"--approval-mode yolo"},"antigravity":{"yolo":"--dangerously-skip-permissions"},"applies_to":["new","resume","restart","account_switch","hosted"],"headless_delivery":"unchanged"});
     // Revision 20: folder trust pre-accepted for yolo Claude starts.
     value["claude_folder_trust"] = json!({"since_revision":20,"setting":"claude_pretrust_folders","built_in_default":crate::config::Config::default().claude_pretrust_folders,"applies_when":"launch_permissions_yolo","applies_to":["interactive","hosted"],"config_file":"CLAUDE_CONFIG_DIR/.claude.json","key":"projects.<directory>.hasTrustDialogAccepted","other_content":"preserved","symlink":"refused","credentials_read":false});
+    // Revision 25: folder trust pre-accepted for yolo Antigravity starts.
+    value["antigravity_folder_trust"] = json!({"since_revision":25,"setting":"antigravity_pretrust_folders","built_in_default":crate::config::Config::default().antigravity_pretrust_folders,"applies_when":"launch_permissions_yolo","applies_to":["interactive"],"config_file":"AGY_ACCOUNT_HOME/.gemini/antigravity-cli/settings.json","key":"trustedWorkspaces","match":"exact_directory","other_content":"preserved","symlink":"refused","credentials_read":false});
+    // Revision 25: Antigravity stop, archive, restore and delete.
+    value["antigravity_lifecycle"] = json!({"since_revision":25,"stop":{"method":"sigterm_exact_process","verified_by":["pid","process_start","command_line","account_home","conversation"],"wait_seconds":crate::provider::antigravity::STOP_SECONDS,"sigkill":false,"flushes_state":true,"errors":["SESSION_NOT_RUNNING","SESSION_STATE_UNVERIFIED","AMBIGUOUS_SESSION","STOP_TIMEOUT","STOP_UNAVAILABLE","STOP_FAILED"]},
+        "archive":{"files":["conversations/<id>.db","conversations/<id>.db-wal","conversations/<id>.db-shm","brain/<id>/","annotations/<id>.pbtxt","presence/<id>.lock"],"index_row":"conversation_summaries.db row saved then removed in one SQLite transaction after a backup","delete_also_removes":["jetbox_summaries_proto.pb entry"],"unchanged":["history.jsonl","implicit/"],"match":"exact_conversation_id","refused_while":"a verified agy process (interactive or headless) holds the conversation"}});
     // Revision 21: per-account Claude bypass-permissions warning.
     value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     value["account_reorder"] = json!(true);
@@ -1347,7 +1353,7 @@ fn native_public(
         value["history_preserved"] = json!(true);
     }
     value["capabilities"] = json!({"rename":true,"native_rename":false,"resume":resumable,
-        "focus":running && attached,"switch_account":false,"restart":false,"stop":false,"move_space":false,
+        "focus":running && attached,"switch_account":false,"restart":false,"stop":provider == ProviderId::Antigravity && running && observed.is_some_and(|o| o.pid.is_some()),"move_space":false,
         "change_directory":false,"move_project":false,"archive":false,"delete":false,
         "submit":false,"queue":false,"steer":false,"add_to_herdr":add_to_herdr});
     let resume_reason = if account_deleted {
@@ -1359,6 +1365,18 @@ fn native_public(
         "restart":caps.restart.reason,"stop":caps.stop.reason,"move_space":caps.move_space.reason,
         "change_directory":caps.relocate.reason,"move_project":caps.relocate.reason,"archive":caps.archive.reason,
         "delete":caps.delete_session.reason,"submit":caps.submit.reason,"queue":caps.queue.reason,"steer":caps.steer.reason,"add_to_herdr":add_reason});
+    if provider == ProviderId::Antigravity {
+        // Stop is available exactly while a verified agy process runs the conversation.
+        value["capability_reasons"]["stop"] = if value["capabilities"]["stop"] == true {
+            Value::Null
+        } else {
+            json!(if running {
+                "SESSION_STATE_UNVERIFIED: no verified Antigravity process"
+            } else {
+                "SESSION_NOT_RUNNING"
+            })
+        };
+    }
     value
 }
 
@@ -2143,6 +2161,14 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         Command::Stop {
             session,
             expected_generation,
+        } if catalog::resolve(paths, &session, &expected_generation)
+            .is_ok_and(|s| s.provider == ProviderId::Antigravity.as_str()) =>
+        {
+            stop_antigravity(paths, &session, &expected_generation).await?
+        }
+        Command::Stop {
+            session,
+            expected_generation,
         } => {
             let (_, source) = selected(paths, &session, &expected_generation).await?;
             ensure!(!source.inactive, "SESSION_NOT_RUNNING");
@@ -2320,6 +2346,31 @@ fn named(
         }
         _ => Ok(s),
     }
+}
+
+/// Stop one running Antigravity session: SIGTERM to its exact verified agy
+/// process (see `provider::antigravity::stop`). Synchronous: the result is
+/// final, with `phase:"complete"` only after the process exited.
+async fn stop_antigravity(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
+    let (s, observation) = native_selected(paths, id, generation)?;
+    ensure!(observation.availability == "running", "SESSION_NOT_RUNNING");
+    let account = native::account(paths, ProviderId::Antigravity, &s.account)?;
+    let _lock = crate::external::conversation_lock(paths, &s.conversation_id)?;
+    let (home, conversation) = (account.home.clone(), s.conversation_id.clone());
+    let stopped = tokio::task::spawn_blocking(move || {
+        crate::provider::antigravity::stop(
+            &home,
+            &conversation,
+            std::time::Duration::from_secs(crate::provider::antigravity::STOP_SECONDS),
+        )
+    })
+    .await??;
+    Ok(
+        json!({"id":uuid::Uuid::new_v4().to_string(),"source_session_id":s.id,"kind":"terminate","phase":"complete",
+        "detail":"Antigravity received SIGTERM, flushed its conversation and exited; the session is saved and can be resumed.",
+        "provider":"antigravity","signal":"SIGTERM","pid":stopped.pid,"process_start":stopped.process_start,
+        "provider_conversation_id":stopped.conversation_id,"source_account_id":format!("antigravity:{}",s.account)}),
+    )
 }
 
 fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
@@ -2745,7 +2796,7 @@ mod contract_semver_tests {
     use super::*;
     #[test]
     fn api_version_negotiation_accepts_the_same_major_only() {
-        for ok in ["1", "1.0", "1.24", "1.99.7", "1.24.0"] {
+        for ok in ["1", "1.0", "1.25", "1.99.7", "1.25.0"] {
             assert_eq!(parse_api_version(ok), Ok(1), "{ok}");
         }
         for bad in ["0", "2", "2.0.0", "", "1.", "1.x", "1.2.3.4", "-1", "01x"] {

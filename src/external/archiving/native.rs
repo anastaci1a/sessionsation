@@ -1,4 +1,4 @@
-//! Archive, restore and delete for native-provider (Claude, Gemini) sessions.
+//! Archive, restore and delete for native-provider (Claude, Gemini, Antigravity) sessions.
 //!
 //! The provider owns its config home, so these jobs move only exact-id files of
 //! one catalog entry's conversations (its current conversation and every
@@ -18,7 +18,7 @@
 //! `<root>/deletions/native-<op>/` with a `plan.json` journal, removes the
 //! catalog entry and its merged aliases, then removes the staged files.
 use super::*;
-use crate::provider::{ProviderId, claude, gemini, native};
+use crate::provider::{ProviderId, antigravity, claude, gemini, native};
 use std::collections::BTreeSet;
 use std::os::unix::fs::DirBuilderExt;
 
@@ -152,6 +152,16 @@ fn activity(
                 l.session_id
             )));
         }
+        if provider == ProviderId::Antigravity {
+            // Headless (-p) runs are not live sessions but still hold the conversation.
+            for id in ids {
+                if let Some(pid) = antigravity::conversation_in_use(home, id) {
+                    return Ok(Some(format!(
+                        "SESSION_RUNNING: Antigravity process {pid} runs conversation {id}; end it first"
+                    )));
+                }
+            }
+        }
     }
     Ok(None)
 }
@@ -175,18 +185,6 @@ pub fn apply_session(
     home: Option<&Path>,
     archive: Option<&Value>,
 ) {
-    if provider == ProviderId::Antigravity {
-        // agy deletes conversations only from its own picker: never moved here.
-        let reason = format!(
-            "UNSUPPORTED_PROVIDER_OPERATION: {}",
-            crate::provider::antigravity::NO_ARCHIVE
-        );
-        for k in ["archive", "delete", "restore"] {
-            value["capabilities"][k] = json!(false);
-            value["capability_reasons"][k] = json!(reason);
-        }
-        return;
-    }
     if let Some(a) = archive.filter(|a| a["archived"] == true) {
         value["archive"] = a.clone();
         value["archived"] = json!(true);
@@ -268,11 +266,6 @@ pub fn apply_session(
 /// Admission checks before a job is journaled (rechecked by the worker).
 pub(super) fn admit(paths: &Paths, kind: Kind, s: &Session) -> Result<()> {
     let provider = native::of(&s.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
-    ensure!(
-        provider != ProviderId::Antigravity,
-        "UNSUPPORTED_PROVIDER_OPERATION: {}",
-        crate::provider::antigravity::NO_ARCHIVE
-    );
     let archived = load(paths, &s.id)?.is_some_and(|m| archived_state(&m.state));
     match kind {
         Kind::Archive => ensure!(!archived, "SESSION_ALREADY_ARCHIVED"),
@@ -413,6 +406,11 @@ fn collect(provider: ProviderId, home: &Path, ids: &[String]) -> Result<Vec<Path
                     add(p)?;
                 }
             }
+            ProviderId::Antigravity => {
+                for p in antigravity::conversation_files(home, id) {
+                    add(p)?;
+                }
+            }
             _ => {
                 if let Ok(dirs) = fs::read_dir(home.join("projects")) {
                     for d in dirs.flatten() {
@@ -467,11 +465,6 @@ fn bundle_dir(paths: &Paths, m: &Manifest) -> Result<PathBuf> {
 
 pub(super) fn run(paths: &Paths, o: &mut Operation) -> Result<()> {
     let provider = native::of(&o.session.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
-    ensure!(
-        provider != ProviderId::Antigravity,
-        "UNSUPPORTED_PROVIDER_OPERATION: {}",
-        crate::provider::antigravity::NO_ARCHIVE
-    );
     let _account = crate::accounts::operation_lock(paths, &o.session.account)?;
     match o.kind {
         Kind::Archive => archive(paths, provider, o),
@@ -532,6 +525,9 @@ fn archive(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
         "Moving the conversation's files into sessionsation-managed Archived Sessions.",
     )?;
     ensure_quiet(paths, provider, Some(&home), &ids)?;
+    if provider == ProviderId::Antigravity {
+        detach_agy_rows(&home, &dir, &ids)?;
+    }
     for e in &m.entries {
         not_open(&e.original)?;
         move_entry(&e.original, &dir.join(&e.stored), &e.digest)?;
@@ -594,6 +590,9 @@ fn restore(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
         if fs::symlink_metadata(&stored).is_ok() {
             move_entry(&stored, &e.original, &e.digest)?;
         }
+    }
+    if provider == ProviderId::Antigravity {
+        reattach_agy_rows(&home, &dir, &m.conversation_ids)?;
     }
     let _ = fs::remove_dir(&dir);
     m.state = "restored".into();
@@ -678,6 +677,18 @@ fn delete(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()> 
         "deleting_history",
         "Staging this conversation's files for deletion; project files and credentials are unchanged.",
     )?;
+    if let Some(home) = home
+        .as_deref()
+        .filter(|_| provider == ProviderId::Antigravity)
+    {
+        let backup = staging.join("index-backup.db");
+        antigravity::index::backup(home, &backup)?;
+        for id in &ids {
+            antigravity::index::delete_row(home, id)?;
+            // agy's own picker delete also drops the conversation from its summary cache.
+            antigravity::index::remove_cached_summary(home, id)?;
+        }
+    }
     for ((current, _), st) in sources.iter().zip(&staged) {
         let digest = tree_digest(current)?.1;
         move_entry(current, &staging.join("files").join(&st.staged), &digest)?;
@@ -714,6 +725,36 @@ fn delete(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()> 
         "complete",
         "Conversation, its sidecar files and its catalog entry deleted. Project files, account credentials and upstream accounts are unchanged.",
     )
+}
+
+/// agy lists conversations from its `conversation_summaries.db`. Before the
+/// files move, back the index up and save then remove the row of each exact id
+/// (one SQLite transaction each), so agy never lists a conversation whose files
+/// are gone.
+fn detach_agy_rows(home: &Path, dir: &Path, ids: &[String]) -> Result<()> {
+    antigravity::index::backup(home, &dir.join(AGY_BACKUP))?;
+    for id in ids {
+        if antigravity::index::save_row(home, id, &dir.join(agy_row_file(id)))? {
+            antigravity::index::delete_row(home, id)?;
+        }
+    }
+    Ok(())
+}
+/// Restore the saved rows after the files are back, then drop the helper files.
+fn reattach_agy_rows(home: &Path, dir: &Path, ids: &[String]) -> Result<()> {
+    for id in ids {
+        let saved = dir.join(agy_row_file(id));
+        if saved.is_file() {
+            antigravity::index::restore_row(home, id, &saved)?;
+            fs::remove_file(&saved)?;
+        }
+    }
+    let _ = fs::remove_file(dir.join(AGY_BACKUP));
+    Ok(())
+}
+const AGY_BACKUP: &str = "index-backup.db";
+fn agy_row_file(id: &str) -> String {
+    format!("index-row-{id}.db")
 }
 
 /// What a deleted manifest keeps: the ids that stop a replayed or stale

@@ -41,6 +41,9 @@ pub struct Config {
     /// folder trust for the launch directory in the account's `.claude.json`
     /// (`projects[dir].hasTrustDialogAccepted`). Contract revision 20.
     pub claude_pretrust_folders: bool,
+    /// Before a yolo Antigravity start, pre-accept agy's folder trust for the launch
+    /// directory (`trustedWorkspaces` in the account's `settings.json`). Contract revision 25.
+    pub antigravity_pretrust_folders: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -65,6 +68,7 @@ impl Default for Config {
             receipt_unknown_horizon_days: 90,
             launch_permissions: LaunchPermissions::Yolo,
             claude_pretrust_folders: true,
+            antigravity_pretrust_folders: true,
         }
     }
 }

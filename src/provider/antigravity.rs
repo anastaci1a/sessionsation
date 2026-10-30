@@ -34,7 +34,9 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+pub mod index;
 pub mod launch;
+pub mod trust;
 
 /// Ambient variables that would switch agy's auth, billing, endpoint or model.
 /// The same list the host wrapper clears, plus `XDG_RUNTIME_DIR` (agy's peer
@@ -74,10 +76,12 @@ pub const NO_INPUT_API: &str = "no supported native input API for a live Antigra
 pub const INPUT_DELIVERY: &str = "live sessions in a verified HERDR pane take typed input (terminal_input): Enter or alt+m by the session's queuedMessages setting; see each session's capabilities";
 pub const LABEL_ONLY: &str =
     "label is a Sessionsation catalog label; Antigravity CLI renames only inside its own /rename";
-pub const NO_ARCHIVE: &str = "Antigravity CLI deletes conversations only from its own /resume picker (F4); Sessionsation does not edit agy's conversation index";
+pub const ARCHIVE: &str = "stopped sessions: the conversation's exact-id agy files (conversations/<id>.db, brain/<id>/, annotations/<id>.pbtxt, presence/<id>.lock) move to sessionsation-managed Archived Sessions and its conversation_summaries.db row is saved and removed in one SQLite transaction after a backup; restore puts both back; refused while running or hosted";
+pub const DELETE: &str = "stopped or archived sessions: the same exact-id files and index row are staged and removed, and the catalog entry is deleted; agy's prompt history (history.jsonl) is unchanged, as with agy's own picker delete";
+pub const STOP: &str = "running sessions: SIGTERM to the exact verified agy process (pid, start time, command line, home and conversation re-checked through a pidfd); agy exits like /exit and flushes its database; never SIGKILL, a process that does not exit is reported";
 pub const NO_LOGOUT: &str = "UNSUPPORTED_PROVIDER_OPERATION: Antigravity CLI signs out only with /logout inside agy; run agy in the account (account login antigravity:NAME) and use /logout there";
-const NO_LIFECYCLE: &str =
-    "no verified Antigravity process lifecycle control; stop it in its terminal";
+const NO_RESTART: &str =
+    "restart is not supported for Antigravity CLI: stop the session, then resume it";
 /// Bound for the empty run that creates a new conversation (no prompt is sent).
 pub const ALLOCATE_SECONDS: u64 = 30;
 
@@ -104,13 +108,22 @@ pub fn capabilities() -> ProviderCapabilities {
         resume: yes(),
         rename: yes(),
         native_rename: no(LABEL_ONLY),
-        stop: no(NO_LIFECYCLE),
-        restart: no(NO_LIFECYCLE),
+        stop: Capability {
+            supported: true,
+            reason: Some(STOP),
+        },
+        restart: no(NO_RESTART),
         account_switch: no(NATIVE_HOME_BOUND),
         relocate: no(NATIVE_HOME_BOUND),
         move_space: no("HERDR space moves are verified only for Codex"),
-        archive: no(NO_ARCHIVE),
-        delete_session: no(NO_ARCHIVE),
+        archive: Capability {
+            supported: true,
+            reason: Some(ARCHIVE),
+        },
+        delete_session: Capability {
+            supported: true,
+            reason: Some(DELETE),
+        },
         submit: input(),
         queue: input(),
         steer: input(),
@@ -537,6 +550,125 @@ pub(crate) fn env_in_use(homes: &[&Path]) -> bool {
         arguments(pid).is_some_and(|a| is_agy_arguments(&a))
             && proc_start(pid).is_some_and(|(s, _)| !matches!(s, 'Z' | 'X'))
             && homes.iter().any(|h| home_matches(pid, h))
+    })
+}
+/// Every file agy keeps for exactly one conversation id (those that exist):
+/// the conversation database and its WAL/shm sidecars, the `brain/<id>/`
+/// transcript tree, the annotations file and the presence lock. agy's own
+/// picker delete removes the first three groups and the index row; the empty
+/// presence lock is also moved so that nothing named by the id is left behind.
+pub fn conversation_files(home: &Path, id: &str) -> Vec<PathBuf> {
+    let state = state_dir(home);
+    let db = format!("{id}.db");
+    vec![
+        state.join("conversations").join(&db),
+        state.join("conversations").join(format!("{db}-wal")),
+        state.join("conversations").join(format!("{db}-shm")),
+        state.join("brain").join(id),
+        state.join("annotations").join(format!("{id}.pbtxt")),
+        state.join("presence").join(format!("{id}.lock")),
+    ]
+}
+/// The pid of any agy process (interactive or headless) of this home that
+/// holds the conversation open or was started on it.
+pub fn conversation_in_use(home: &Path, id: &str) -> Option<u32> {
+    pids().into_iter().find(|pid| {
+        arguments(*pid).is_some_and(|args| {
+            is_agy_arguments(&args)
+                && proc_start(*pid).is_some_and(|(s, _)| !matches!(s, 'Z' | 'X'))
+                && home_matches(*pid, home)
+                && (open_conversation(*pid, home).as_deref() == Some(id)
+                    || conversation_argument(&args).as_deref() == Some(id))
+        })
+    })
+}
+
+/// What a stop did.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Stopped {
+    pub pid: u32,
+    pub process_start: u64,
+    pub conversation_id: String,
+}
+/// Seconds agy gets to exit after SIGTERM before the stop reports a timeout.
+pub const STOP_SECONDS: u64 = 20;
+
+fn exited(pid: u32, start: u64) -> bool {
+    proc_start(pid).is_none_or(|(state, s)| s != start || matches!(state, 'Z' | 'X'))
+}
+/// Gracefully stop the one verified interactive agy process that runs
+/// `conversation` in `home`: SIGTERM, delivered through a pidfd opened before
+/// the identity is re-verified (exact pid, start time, agy command line, home
+/// and conversation), then a bounded wait. agy handles SIGTERM like /exit: it
+/// flushes and checkpoints its conversation database and prints its resume
+/// line. Never SIGKILL: a process that does not exit in time is reported, not
+/// killed.
+pub fn stop(home: &Path, conversation: &str, wait: Duration) -> Result<Stopped> {
+    uuid::Uuid::parse_str(conversation)?;
+    let live: Vec<Live> = live_sessions(home)?
+        .into_iter()
+        .filter(|l| l.session_id == conversation)
+        .collect();
+    let target = match live.as_slice() {
+        [] => bail!("SESSION_NOT_RUNNING: no Antigravity process runs this conversation"),
+        [one] => one,
+        _ => bail!("AMBIGUOUS_SESSION: several Antigravity processes run this conversation"),
+    };
+    let (pid, start) = (target.pid, target.process_start);
+    // A pidfd names this process object even if the pid number is reused.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0) };
+    ensure!(
+        fd >= 0,
+        "STOP_UNAVAILABLE: could not open a stable handle on process {pid}"
+    );
+    let fd = fd as libc::c_int;
+    let verified = (|| {
+        if exited(pid, start) {
+            return false;
+        }
+        let Some(args) = arguments(pid) else {
+            return false;
+        };
+        is_agy_arguments(&args)
+            && !is_print(&args)
+            && home_matches(pid, home)
+            && (open_conversation(pid, home).as_deref() == Some(conversation)
+                || conversation_argument(&args).as_deref() == Some(conversation))
+    })();
+    if !verified {
+        unsafe { libc::close(fd) };
+        bail!(
+            "SESSION_STATE_UNVERIFIED: the Antigravity process changed before it could be stopped; nothing was signalled"
+        );
+    }
+    let sent = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd,
+            libc::SIGTERM,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    unsafe { libc::close(fd) };
+    ensure!(
+        sent == 0,
+        "STOP_FAILED: could not signal process {pid}: {}",
+        std::io::Error::last_os_error()
+    );
+    let deadline = std::time::Instant::now() + wait;
+    while !exited(pid, start) {
+        ensure!(
+            std::time::Instant::now() < deadline,
+            "STOP_TIMEOUT: Antigravity process {pid} did not exit within {}s of SIGTERM; it was not killed",
+            wait.as_secs()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(Stopped {
+        pid,
+        process_start: start,
+        conversation_id: conversation.to_owned(),
     })
 }
 /// True when the exact recorded process runs agy for this conversation

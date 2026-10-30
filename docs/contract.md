@@ -14,10 +14,10 @@ checked alongside the CLI regression tests. See [CLI setup](cli.md) and
 ## Contract versioning (semver)
 
 The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
-`contract_version` (a string such as `"1.24.0"`) by `api version` and
+`contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
-compatibility and always equals the MINOR part: revisions 1-24 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.24.0`.
+compatibility and always equals the MINOR part: revisions 1-25 were all additive,
+so revision N maps to contract `1.N.0` and the current contract is `1.25.0`.
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -2133,3 +2133,36 @@ Adds `contract_version: "1.24.0"` to `api version` and `api capabilities` (addit
 `contract_revision` is unchanged and equals the MINOR part) and lets
 `--api-version` take `MAJOR[.MINOR[.PATCH]]`, accepted whenever MAJOR is 1. See
 [Contract versioning](#contract-versioning-semver). No behavior changed.
+
+### Antigravity folder trust, stop, archive and delete (1.25.0, revision 25)
+
+Additive MINOR; negotiate `contract_version` `1.25` or later, or the capabilities
+below. Clients that gate on semver need no change.
+
+- `api capabilities.antigravity_folder_trust`: `setting:"antigravity_pretrust_folders"`
+  (`built_in_default:true`), `applies_when:"launch_permissions_yolo"`,
+  `config_file:"AGY_ACCOUNT_HOME/.gemini/antigravity-cli/settings.json"`,
+  `key:"trustedWorkspaces"`, `match:"exact_directory"`, `credentials_read:false`.
+  Before a yolo interactive start or resume Sessionsation appends the launch
+  directory to that array (other content preserved, atomic replace, symlink
+  refused); `launch_permissions:default` and `antigravity_pretrust_folders:false`
+  change nothing.
+- `api capabilities.antigravity_lifecycle` documents the three operations below.
+  The Antigravity provider entry reports `stop:true`, and `operations.stop`,
+  `operations.archive` and `operations.delete_session` are supported with reasons
+  (`restart` stays unsupported). `conversation_archive.providers` and
+  `conversation_archive.native.providers` gain `"antigravity"`.
+- `api stop --session ID --expected-generation G` on a running Antigravity session
+  (`capabilities.stop:true`, otherwise `capability_reasons.stop`, for example
+  `SESSION_NOT_RUNNING`) sends SIGTERM to the exact verified agy process and returns
+  after it exited: `{id,source_session_id,kind:"terminate",phase:"complete",provider,
+  signal:"SIGTERM",pid,process_start,provider_conversation_id,detail}`. Errors:
+  `SESSION_NOT_RUNNING`, `SESSION_STATE_UNVERIFIED`, `AMBIGUOUS_SESSION`,
+  `STOP_TIMEOUT` (not killed), `STOP_UNAVAILABLE`, `STOP_FAILED`. SIGKILL is never used.
+- Antigravity sessions now report `capabilities.archive|delete|restore` like Claude
+  and Gemini; `api archive`, `restore-session` and `delete-session` accept them. The
+  exact-id file set, the index-row handling and the refusals are in
+  [CLI](cli.md#antigravity-stop-archive-restore-and-delete-revision-25).
+
+The revision 24 statement that Antigravity archive, restore, delete and stop are
+unsupported no longer applies.

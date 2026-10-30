@@ -38,7 +38,7 @@ pub enum Outcome {
 }
 
 /// A JSON object kept as ordered members with raw (unparsed) values.
-struct Members(Vec<(String, Box<RawValue>)>);
+pub(crate) struct Members(pub(crate) Vec<(String, Box<RawValue>)>);
 impl<'de> Deserialize<'de> for Members {
     fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         struct V;
@@ -62,10 +62,10 @@ impl<'de> Deserialize<'de> for Members {
     }
 }
 impl Members {
-    fn parse(text: &str) -> Option<Self> {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
         serde_json::from_str(text).ok()
     }
-    fn get(&self, key: &str) -> Option<&RawValue> {
+    pub(crate) fn get(&self, key: &str) -> Option<&RawValue> {
         self.0
             .iter()
             .rev()
@@ -73,7 +73,7 @@ impl Members {
             .map(|(_, v)| &**v)
     }
     /// Replace every member named `key` (keeping its position), or append it.
-    fn set(&mut self, key: &str, value: Box<RawValue>) {
+    pub(crate) fn set(&mut self, key: &str, value: Box<RawValue>) {
         let mut found = false;
         for (k, v) in &mut self.0 {
             if k == key {
@@ -87,7 +87,7 @@ impl Members {
     }
     /// `JSON.stringify(_, null, 2)` layout at `depth`, so untouched members,
     /// which carry their own nested indentation, keep their original bytes.
-    fn render(&self, depth: usize) -> String {
+    pub(crate) fn render(&self, depth: usize) -> String {
         if self.0.is_empty() {
             return "{}".into();
         }
@@ -108,7 +108,7 @@ impl Members {
     }
 }
 
-fn raw(text: String) -> Box<RawValue> {
+pub(crate) fn raw(text: String) -> Box<RawValue> {
     RawValue::from_string(text).expect("valid JSON")
 }
 

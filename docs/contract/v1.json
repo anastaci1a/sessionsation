@@ -5637,7 +5637,8 @@
           "items": {
             "enum": [
               "claude",
-              "gemini"
+              "gemini",
+              "antigravity"
             ]
           }
         },
