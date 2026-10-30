@@ -15,6 +15,34 @@ use std::{
 };
 
 pub const VERSION: u32 = 1;
+/// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
+pub const CONTRACT_MAJOR: u32 = VERSION;
+pub const CONTRACT_MINOR: u32 = 24;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.24.0";
+
+/// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
+pub fn parse_api_version(text: &str) -> Result<u32, String> {
+    let parts: Vec<&str> = text.split('.').collect();
+    if parts.len() > 3
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(format!(
+            "invalid API version {text:?}; expected MAJOR[.MINOR[.PATCH]]"
+        ));
+    }
+    let major: u32 = parts[0]
+        .parse()
+        .map_err(|_| format!("invalid API version {text:?}"))?;
+    if major != CONTRACT_MAJOR {
+        return Err(format!(
+            "unsupported API major version {major}; this build serves contract major {CONTRACT_MAJOR} ({CONTRACT_VERSION})"
+        ));
+    }
+    Ok(major)
+}
 
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
 pub enum ArchiveFilter {
@@ -28,7 +56,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":24,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":CONTRACT_MINOR,"contract_version":CONTRACT_VERSION,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -1127,7 +1155,7 @@ fn antigravity_provider() -> Value {
 }
 
 pub fn capabilities() -> Value {
-    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":24,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
+    let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":CONTRACT_MINOR,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
@@ -1152,6 +1180,7 @@ pub fn capabilities() -> Value {
     for provider in value["providers"].as_array_mut().into_iter().flatten() {
         provider["account_logout"] = json!(provider["id"] != "antigravity");
     }
+    value["contract_version"] = json!(CONTRACT_VERSION);
     value["state_cached"] = json!(true);
     // Revision 17: Claude and Gemini archive/restore/delete (moved native files).
     value["conversation_archive"]["providers"] = json!(["codex", "claude", "gemini"]);
@@ -2708,5 +2737,32 @@ mod gemini_auth_failure_tests {
         let a = project();
         assert_eq!(a["auth_failed"], false);
         assert_eq!(a["selectable"], true);
+    }
+}
+
+#[cfg(test)]
+mod contract_semver_tests {
+    use super::*;
+    #[test]
+    fn api_version_negotiation_accepts_the_same_major_only() {
+        for ok in ["1", "1.0", "1.24", "1.99.7", "1.24.0"] {
+            assert_eq!(parse_api_version(ok), Ok(1), "{ok}");
+        }
+        for bad in ["0", "2", "2.0.0", "", "1.", "1.x", "1.2.3.4", "-1", "01x"] {
+            assert!(parse_api_version(bad).is_err(), "{bad}");
+        }
+    }
+    #[test]
+    fn contract_version_matches_revision_and_parts() {
+        assert_eq!(
+            CONTRACT_VERSION,
+            format!("{CONTRACT_MAJOR}.{CONTRACT_MINOR}.{CONTRACT_PATCH}")
+        );
+        let v = version().unwrap();
+        assert_eq!(v["contract_version"], CONTRACT_VERSION);
+        assert_eq!(v["contract_revision"], CONTRACT_MINOR);
+        let c = capabilities();
+        assert_eq!(c["contract_version"], CONTRACT_VERSION);
+        assert_eq!(c["contract_revision"], CONTRACT_MINOR);
     }
 }

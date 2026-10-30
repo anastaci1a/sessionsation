@@ -11,6 +11,65 @@ accounts and message requests/receipts. [Examples](contract/fixtures.json) are
 checked alongside the CLI regression tests. See [CLI setup](cli.md) and
 [verification evidence and limits](operations.md).
 
+## Contract versioning (semver)
+
+The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
+`contract_version` (a string such as `"1.24.0"`) by `api version` and
+`api capabilities`. The integer `contract_revision` is retained for backward
+compatibility and always equals the MINOR part: revisions 1-24 were all additive,
+so revision N maps to contract `1.N.0` and the current contract is `1.24.0`.
+A build that predates `contract_version` is read as `1.<contract_revision>.0`.
+`api_version` stays the integer MAJOR (`1`), and the package version is independent.
+Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
+prefer `api capabilities` fields over version numbers for individual features.
+
+`api --api-version X` accepts `MAJOR`, `MAJOR.MINOR` or `MAJOR.MINOR.PATCH` and
+serves any client that requests the same MAJOR (currently 1); another MAJOR is
+refused with exit 2 and an `INVALID_ARGUMENT` envelope.
+
+### What each part means
+
+- MAJOR: breaking changes only. Removing or renaming a command, field or
+  enum value; changing a field's type, meaning or units; tightening request
+  validation; changing error codes, exit codes or receipt semantics; changing
+  safety behavior (replay, delivery, ownership). A MAJOR bump needs a new schema
+  file and a reviewed client migration.
+- MINOR: additive. New fields, commands, capabilities, enum values, error codes
+  and providers. Existing clients keep working unchanged. Reset PATCH to 0.
+- PATCH: fixes with no contract change (no schema, field, command or enum change,
+  only corrected behavior within the documented contract). Docs-only edits do not bump.
+
+### Client rules for additive data
+
+Clients must treat unknown data as forward-compatible and never misuse it:
+
+- Ignore unknown result fields. (Request objects still reject unknown fields.)
+- Unknown providers: show them generically (the provider's own `id`/platform text
+  and a neutral icon); offer only operations and delivery modes the provider's
+  `api capabilities` entry declares. Never assume Codex/Claude behavior for them.
+- Unknown enum values (states, reasons, error codes, availability): display
+  generically and take the conservative path (no mutation, no replay, no
+  readiness inferred). They are never mapped to a known value.
+- Gate on capabilities or on `contract_version` (same MAJOR, MINOR at least the
+  minimum needed), not on exact equality, and not on package version.
+- A different MAJOR must be refused with a clear reason, not partially used.
+
+### Release checklist
+
+1. Classify the change as MAJOR, MINOR or PATCH using the rules above.
+2. Update `CONTRACT_MAJOR`/`CONTRACT_MINOR`/`CONTRACT_PATCH`/`CONTRACT_VERSION` in
+   `src/api.rs` together (`contract_revision` follows MINOR; a unit test enforces this).
+3. MINOR: add a `since_revision` marker and a section in this document;
+   update `docs/contract/v1.json` and `fixtures.json` for new shapes, keeping
+   them additive. MAJOR: add a new `contract/vN.json` and migration notes.
+4. Update tests (the `contract_version`/`contract_revision` assertions in
+   `tests/*.rs`) and `scripts/check_contract.py`.
+5. Run `scripts/check.sh` (fmt, clippy, tests, docs, contract) and review.
+6. Release and publish the new package; the `current` symlink moves it live.
+   Clients that follow `current` and gate on semver need no change for MINOR or
+   PATCH releases. A MAJOR release needs client releases first or in the same
+   cutover.
+
 ## Transport and errors
 
 - Success: exit 0, one compact UTF-8 JSON object on stdout with
@@ -26,8 +85,10 @@ checked alongside the CLI regression tests. See [CLI setup](cli.md) and
 ## Identity and snapshots
 
 `api version` identifies the actual executable path, SHA-256, package/API versions
-and contract revision, without contacting a provider or a supervisor. Version text
-alone is insufficient for a reviewed pin; compare artifact hash and capabilities.
+and contract version (`contract_version`, with `contract_revision` = its MINOR),
+without contacting a provider or a supervisor. Clients that follow the `current`
+release negotiate by semver and capabilities (see Contract versioning) and log the
+SHA-256 for audit; exact hash pins remain an option for clients that want one.
 `api capabilities` publishes provider-specific operations and unsupported reasons.
 `attachment_lookup.version:1` advertises
 `api attachment --session ID --expected-generation GENERATION`: a read-only,
@@ -2065,3 +2126,10 @@ false (`UNSUPPORTED_PROVIDER_OPERATION`) and `pending_questions_unsupported_reas
 terminal-input receipts carry `provider:"antigravity"`; terminal receipts add
 `antigravity_input` `{label,queue_mode,queue_mode_source,busy_at_submit,key,expected,
 screen_evidence,outcome,caveat}`. Behaviour and limits: [CLI](cli.md#antigravity-cli-accounts-and-sessions-revision-24).
+
+### Semantic contract version (1.24.0)
+
+Adds `contract_version: "1.24.0"` to `api version` and `api capabilities` (additive;
+`contract_revision` is unchanged and equals the MINOR part) and lets
+`--api-version` take `MAJOR[.MINOR[.PATCH]]`, accepted whenever MAJOR is 1. See
+[Contract versioning](#contract-versioning-semver). No behavior changed.

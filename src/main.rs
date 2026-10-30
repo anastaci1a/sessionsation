@@ -95,7 +95,7 @@ enum Commands {
     },
     /// Versioned machine-readable backend contract (JSON/NDJSON).
     Api {
-        #[arg(long, default_value_t=1, value_parser=clap::value_parser!(u32).range(1..=1))]
+        #[arg(long, default_value = "1", value_parser=sessionsation::api::parse_api_version)]
         api_version: u32,
         #[command(subcommand)]
         command: sessionsation::api::Command,

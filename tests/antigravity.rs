@@ -265,6 +265,7 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
     );
     let caps = f.api(&["capabilities"]);
     assert_eq!(caps["contract_revision"], 24);
+    assert_eq!(caps["contract_version"], "1.24.0");
     let p = caps["providers"]
         .as_array()
         .unwrap()
@@ -422,4 +423,25 @@ async fn a_live_agy_process_holding_the_conversation_is_running_and_refuses_resu
     wait_for("stopped", || {
         f.by_conversation(&native)["availability"] == "stopped"
     });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_version_reports_semver_and_negotiates_by_major() {
+    let f = fixture().await;
+    let v = f.api(&["version"]);
+    assert_eq!(v["contract_version"], "1.24.0");
+    assert_eq!(v["contract_revision"], 24);
+    for ok in ["1", "1.24", "1.99.0"] {
+        assert_eq!(
+            f.api(&["--api-version", ok, "version"])["contract_version"],
+            "1.24.0"
+        );
+    }
+    for bad in ["2", "2.0.0", "0.24"] {
+        let err = f.api_error(&["--api-version", bad, "version"]);
+        assert!(
+            err.contains("unsupported API major version"),
+            "{bad}: {err}"
+        );
+    }
 }

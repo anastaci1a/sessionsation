@@ -257,6 +257,7 @@ with tempfile.TemporaryDirectory() as directory:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
             assert value["result"]["contract_revision"] >= 23
+            assert value["result"]["contract_version"] == "1." + str(value["result"]["contract_revision"]) + ".0"
             # Revision 23: pending questions.
             questions = value["result"]["questions"]
             assert questions["since_revision"] == 23 and questions["replay"] == "never"
@@ -320,14 +321,17 @@ with tempfile.TemporaryDirectory() as directory:
             assert value["result"]["providers"][0]["steer"] is True
         if args == ["version"]:
             validate(value["result"], "ExecutableVersion")
+            assert value["result"]["contract_version"] == "1." + str(value["result"]["contract_revision"]) + ".0"
             validate({**value["result"], "contract_revision":99}, "ExecutableVersion")
+    for ok in ["1", "1.24", "1.99.0"]:
+        assert json.loads(subprocess.check_output(command + ["--api-version", ok, "version"], text=True))["ok"] is True
     invalid = subprocess.run(command + ["checkpoints"], input=json.dumps({**fixtures["checkpoint_request"], "version":99}), capture_output=True, text=True)
     assert invalid.returncode == 1
     assert json.loads(invalid.stderr)["error"]["code"] == "INVALID_REQUEST"
     batch=json.loads(subprocess.check_output(command + ["observations"], input=json.dumps({"api_version":1,"sessions":[],"policy":"cached_only"}), text=True))
     validate(batch)
     assert batch["result"]["results"] == []
-    for args in [["--api-version", "99", "capabilities"], ["rename", "--session", "missing", "--expected-generation", "stale", "--name", "x"], ["answer", "--session", "missing", "--expected-generation", "stale", "--request-id", "r", "--answers", "{}"]]:
+    for args in [["--api-version", "99", "capabilities"], ["--api-version", "2.0.0", "capabilities"], ["rename", "--session", "missing", "--expected-generation", "stale", "--name", "x"], ["answer", "--session", "missing", "--expected-generation", "stale", "--request-id", "r", "--answers", "{}"]]:
         result = subprocess.run(command + args, capture_output=True, text=True)
         assert result.returncode in (1, 2)
         assert not result.stdout
