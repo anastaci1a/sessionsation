@@ -288,6 +288,23 @@ pub async fn serve(paths: Paths) -> Result<()> {
     crate::autostart::reconcile(&mut state);
     store.save(&state, now(), "automatic_reconciled", "")?;
     let mut config = load_config(&paths)?;
+    // Keep every enrolled Codex account's app-server on a deliberately selected
+    // release; a running updater exits at its next check (no restart needed).
+    for (name, account) in &state.accounts {
+        if account.provider != ProviderId::Codex || account.deletion_id.is_some() {
+            continue;
+        }
+        let pinned = paths.account(name).and_then(|home| {
+            if home.is_dir() {
+                crate::provider::codex::pin_daemon_release(&home)
+            } else {
+                Ok(false)
+            }
+        });
+        if let Err(e) = pinned {
+            eprintln!("codex daemon release not pinned for {name}: {e:#}");
+        }
+    }
     let version = compatibility::version(&config.codex_binary)
         .await
         .unwrap_or_else(|_| "unavailable".into());
@@ -722,6 +739,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 ensure!(!crate::external::host_instances(&paths)?.iter().any(|i|i.home==home), "another Codex terminal is using the account backend");
                             }
                             if let Some(helper) = helpers.remove(name) { helper.stop_idle().await?; }
+                            if let Err(e) = crate::provider::codex::pin_daemon_release(&home) { eprintln!("codex daemon release not pinned for {name}: {e:#}"); }
                             if restarting || !shared_ready {
                                 let result = tokio::time::timeout(Duration::from_secs(15), tokio::process::Command::new(&config.codex_binary)
                                     .args(["app-server","daemon",if restarting {"restart"} else {"start"}])

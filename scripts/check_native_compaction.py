@@ -5,7 +5,7 @@ Only a separately supplied Codex binary is mounted; no credentials or live roots
 import json, pathlib, subprocess, tempfile, threading, queue, time, http.server, os, sys
 manual = False
 # Exact native profiles this fixture has verified.
-VERIFIED = ('0.164.0', '0.165.0')
+VERIFIED = ('0.164.0', '0.165.0', '0.166.0')
 requests = []
 gate = threading.Event()
 compact = threading.Event()

@@ -17,7 +17,8 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-25 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.25.0`.
+so revision N maps to contract `1.N.0` and the current contract is `1.25.1`
+(a PATCH, see [Codex 0.166.0 native profile](#codex-01660-native-profile-1251)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -445,7 +446,7 @@ a failed preflight produces a terminal rejected receipt. Cancellation can cancel
 only provably unsent local intent; accepted/uncertain steering cannot be cancelled
 through this API (`STEERING_CANCELLATION_UNSUPPORTED`).
 
-Native 0.164.0 and 0.165.0 distinguish automatic compaction within a regular turn from a
+Native 0.164.0, 0.165.0 and 0.166.0 distinguish automatic compaction within a regular turn from a
 dedicated compact turn. Automatic compaction retains accepted Steer input until
 model continuation; it does not interrupt the compaction request. No extra local
 queue or automatic retry is added. Dedicated compact/review turns reject injection
@@ -497,7 +498,7 @@ does not authorize sending.
 API v1 contract revision 3 adds `api send` with `mode:"resume"`. Negotiate
 `message_recovery` from `api capabilities`; the older provider `resume` flag
 refers to saved-session launching and does not imply this message mode. Codex's
-verified native protocol profiles are **0.163.0, 0.164.0 and 0.165.0**. Claude recovery is unsupported.
+verified native protocol profiles are **0.163.0, 0.164.0, 0.165.0 and 0.166.0**. Claude recovery is unsupported.
 This is caller-requested continuation of the same conversation, never conversion,
 new-conversation creation, steering, forced interruption or automatic restart.
 Revision 4 adds `message_recovery.exact_item_idle_start` and separate native start
@@ -2166,3 +2167,12 @@ below. Clients that gate on semver need no change.
 
 The revision 24 statement that Antigravity archive, restore, delete and stop are
 unsupported no longer applies.
+
+### Codex 0.166.0 native profile (1.25.1)
+
+PATCH: no schema, field, command or enum change. `native_protocol.supported_versions`
+and `steering.compaction_verified_profiles` gain `"0.166.0"` after the generated-schema
+diff and offline fixture recorded in [operations](operations.md#profile-01660).
+Version gating is unchanged: any other `initialize.userAgent` version (including a
+later 0.166.x or 0.167.0) still fails closed with `unsupported_native_version`, and
+observations keep reporting `native_protocol.version` and `supported:false` for it.

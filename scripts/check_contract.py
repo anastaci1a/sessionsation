@@ -257,7 +257,7 @@ with tempfile.TemporaryDirectory() as directory:
             validate(value["result"], "Placements")
         if args == ["capabilities"]:
             assert value["result"]["contract_revision"] >= 23
-            assert value["result"]["contract_version"] == "1." + str(value["result"]["contract_revision"]) + ".0"
+            assert value["result"]["contract_version"].startswith("1." + str(value["result"]["contract_revision"]) + ".")
             # Revision 23: pending questions.
             questions = value["result"]["questions"]
             assert questions["since_revision"] == 23 and questions["replay"] == "never"
@@ -325,7 +325,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert value["result"]["providers"][0]["steer"] is True
         if args == ["version"]:
             validate(value["result"], "ExecutableVersion")
-            assert value["result"]["contract_version"] == "1." + str(value["result"]["contract_revision"]) + ".0"
+            assert value["result"]["contract_version"].startswith("1." + str(value["result"]["contract_revision"]) + ".")
             validate({**value["result"], "contract_revision":99}, "ExecutableVersion")
     for ok in ["1", "1.25", "1.99.0"]:
         assert json.loads(subprocess.check_output(command + ["--api-version", ok, "version"], text=True))["ok"] is True

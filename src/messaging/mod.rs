@@ -34,7 +34,7 @@ pub use transport::NativeReadFailure;
 use transport::Transport;
 
 /// Exact upstream profiles inspected for queue, cancellation and summary semantics.
-pub const NATIVE_PROFILES: &[&str] = &["0.163.0", "0.164.0", "0.165.0"];
+pub const NATIVE_PROFILES: &[&str] = &["0.163.0", "0.164.0", "0.165.0", "0.166.0"];
 pub const VERSION: &str = "1.2.1";
 type Result<T> = std::result::Result<T, Fault>;
 #[derive(Debug, Clone, Copy)]

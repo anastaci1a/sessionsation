@@ -158,6 +158,58 @@ operator-approved live steer:
 The queue service and handler source bodies were not re-read for 0.165.0; the
 queue request/response schemas are identical.
 
+### Profile 0.166.0
+
+The managed daemons auto-updated to 0.166.0 while the terminal CLI stayed on
+0.165.0, so every delivery mode reported `unsupported_native_version`. 0.166.0 was
+added through the same exact-version gate (contract 1.25.1), without provider calls:
+
+- `app-server generate-json-schema --experimental` of the exact 0.165.0 and 0.166.0
+  daemon executables was diffed per definition and per method. No client request,
+  server request or notification method was removed or renamed. Every type
+  Sessionsation reads keeps its shape apart from additive optional fields:
+  `ThreadItem` gains flat `startedAtMs`/`completedAtMs` (so turns, items and item
+  notifications carry them), `imageGeneration` gains `generationId`,
+  `AdditionalContextEntry` (in `turn/start`/`turn/steer` params, unused here) gains
+  `name`, `ThreadUsage` gains `nativeUsageUsdMicros`, and `CodexErrorInfo` gains
+  `policyCapacityUnavailable`. `thread/start`, `thread/resume`, `thread/turns/list`
+  params, `thread/queue/*`, `turn/steer` (`{turnId}` response),
+  `thread/settings/update`, `item/tool/requestUserInput`, `serverRequest/resolved`
+  and the permission-profile types are unchanged. New and unused:
+  `accountSession/list`, `accountSession/switch`, `account/gcp/setup`.
+  `ReviewDelivery` dropped `detached` (Sessionsation never starts reviews).
+- Upstream `rust-v0.165.0...rust-v0.166.0`: the queue handler only swaps its
+  provider check (`check_thread_model_provider_for_input`); `TurnItemsView` summary
+  selection is unchanged; `initialize` no longer replays config warnings (unused).
+  Thread-history projection was refactored to carry item timings. Item ids and
+  order are not schema-visible, so check the first live steer after deploy with
+  `receipt` (steer reply correlation) before relying on it.
+- `scripts/check_native_compaction.py` (both modes) passed against 0.166.0 in a
+  network-disabled container, with results identical to 0.165.0.
+
+### Codex daemon release pinning
+
+Codex's managed daemon runs a `codex app-server daemon pid-update-loop` per
+CODEX_HOME. Unless `<CODEX_HOME>/app-server-daemon/settings.json` has
+`{"updater":{"autoUpdateEnabled":false}}`, it fetches the standalone installer
+hourly, installs the latest release under `packages/app-server-daemon/releases`,
+repoints `current` and moves the daemon to it. That can leave the native protocol
+outside the verified profiles above.
+
+Sessionsation now writes that flag (preserving every other key, mode 0600) for
+each enrolled Codex account when its supervisor starts and before every
+`account prepare`/`restart-server`. Codex re-reads the flag before each scheduled
+check, so a running `pid-update-loop` exits by itself within one interval
+(default 60 minutes), and `daemon start`/`restart` also stop it. The running
+app-server is not restarted and keeps its selected release. An unreadable
+settings file is left untouched and logged (Codex also skips scheduled updates
+while it cannot parse it).
+
+To update deliberately: generate and diff the schemas of the new release as
+above, add and verify its profile, deploy that Sessionsation, then run
+`CODEX_HOME=<account home> codex app-server daemon update` for each account while
+it is idle (the update may interrupt running work).
+
 The checkpoint native-boundary fixture uses the exact supported native executable
 against synthetic legacy history in a disposable home, with no credentials or
 model calls. It proves the real -32601 item-list gate, then checkpoint/continuation
@@ -173,7 +225,7 @@ This fixture is distinct from the synthetic active-turn HERDR/tmux cases. It doe
 not send input to, resume, or interrupt an installed working session.
 
 Compaction/Steer can be verified without provider access using Python 3 and an
-explicit Codex 0.164.0 or 0.165.0 executable:
+explicit Codex 0.164.0, 0.165.0 or 0.166.0 executable:
 
 ```sh
 python3 scripts/check_native_compaction.py /absolute/path/to/codex

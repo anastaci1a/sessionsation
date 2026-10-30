@@ -369,7 +369,17 @@ async fn supported_queue_busy_idle_interleaving_and_no_private_leakage() {
 }
 #[tokio::test]
 async fn unsupported_versions_and_missing_endpoint_do_not_launch() {
-    for version in ["0.162.1", "0.166.0", "0.163.01", "0.164.0-preview"] {
+    // Unknown future releases (minor and patch bumps) fail closed at the
+    // handshake, before any thread method, until a profile is verified.
+    for version in [
+        "0.162.1",
+        "0.167.0",
+        "0.166.1",
+        "1.0.0",
+        "0.163.01",
+        "0.164.0-preview",
+        "0.166.0-alpha.1",
+    ] {
         let (_dir, paths, input, _) = fixture();
         let a = attachment_fixture(&paths, &input);
         let fake = server(&a.endpoint(), version, false, false, true).await;
@@ -381,8 +391,9 @@ async fn unsupported_versions_and_missing_endpoint_do_not_launch() {
         assert_eq!(profile.as_deref(), Some(version));
         assert_eq!(fake.methods.lock().unwrap().as_slice(), ["initialize"]);
     }
-    // Every exact profile, including 0.165.0 (generated-schema diff and live
-    // steer evidence in docs/operations.md), passes the same handshake gate.
+    // Every exact profile, including 0.165.0 and 0.166.0 (generated-schema diffs
+    // in docs/operations.md), passes the same handshake gate.
+    assert!(NATIVE_PROFILES.contains(&"0.166.0"));
     for version in NATIVE_PROFILES {
         let (_dir, paths, input, _) = fixture();
         let a = attachment_fixture(&paths, &input);
@@ -864,7 +875,7 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
         let fake = server(
             &a.endpoint(),
             if mode == PublicMode::Queue {
-                "0.166.0"
+                "0.167.0"
             } else {
                 "0.163.0"
             },
@@ -904,7 +915,7 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
                 .unwrap();
             assert_eq!(
                 status["observation"]["native_protocol"]["version"],
-                "0.166.0"
+                "0.167.0"
             );
             assert_eq!(status["observation"]["native_protocol"]["supported"], false);
             assert_eq!(
@@ -922,7 +933,7 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
             );
             // Same endpoint and request after a compatible backend becomes available.
             // No duplicate ID, payload change, or implicit replay on observation.
-            *fake.version.lock().unwrap() = "0.165.0".into();
+            *fake.version.lock().unwrap() = "0.166.0".into();
         }
         let first = send_public(&paths, request.clone()).await.unwrap();
         assert_eq!(first["session_id"], session.id);

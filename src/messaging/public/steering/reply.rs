@@ -549,6 +549,36 @@ mod tests {
         )
     }
     #[test]
+    fn profile_0_166_flat_item_timings_and_new_fields_project_unchanged() {
+        // 0.166.0 adds optional flat `startedAtMs`/`completedAtMs` to every
+        // ThreadItem and `generationId` to imageGeneration (generated schema diff);
+        // the identifiers steer attribution reads are unchanged.
+        let page: Page = serde_json::from_value(json!({"data":[{"id":"turn-1","status":"completed","itemsView":"full","startedAt":1,"completedAt":2,"durationMs":1000,"items":[
+            {"type":"userMessage","id":"u0","clientId":null,"content":[{"type":"text","text":"start"}],"startedAtMs":1793305461849_i64,"completedAtMs":null},
+            {"type":"imageGeneration","id":"ig0","status":"completed","revisedPrompt":null,"result":"","generationId":"gen-1","startedAtMs":null,"completedAtMs":null},
+            {"type":"userMessage","id":"u1","clientId":ME,"content":[{"type":"text","text":"steer"}],"startedAtMs":1793305461900_i64,"completedAtMs":1793305461900_i64},
+            {"type":"agentMessage","id":"msg_a","text":"done","phase":"final_answer","memoryCitation":null,"startedAtMs":1793305462000_i64,"completedAtMs":1793305463000_i64}
+        ]}],"nextCursor":null})).unwrap();
+        let t = page.data.into_iter().next().unwrap();
+        let items = project(t.items).unwrap();
+        let anchor = SteerAnchor {
+            turn_id: "turn-1".into(),
+            user_items_before: 1,
+            items_before: 2,
+            last_agent_item_id: None,
+        };
+        let o = run(
+            "completed",
+            items,
+            &receipt("native_accepted", Some(anchor)),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(o.state, "completed_with_reply");
+        assert_eq!(o.steer.unwrap().input_item_id.as_deref(), Some("u1"));
+        assert_eq!(o.reply.unwrap().item_id, "msg_a");
+    }
+    #[test]
     fn live_shape_single_steer_reply_is_shared_with_turn_tail() {
         // Live 0.165: [user(initial), user(steer clientId), agent(final_answer)];
         // the agent item streaming at steer time was discarded natively.
