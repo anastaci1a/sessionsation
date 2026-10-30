@@ -60,6 +60,11 @@ pub struct Receipt {
     pub tab_id: Option<String>,
     pub pane_id: Option<String>,
     pub operation_id: Option<String>,
+    /// Set by `api abandon-operation`: the phase the operator abandoned it from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abandoned_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abandoned_at: Option<i64>,
     /// Immutable admission time; absent for legacy receipts whose creation is unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
@@ -238,7 +243,10 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         !records(paths)?
             .iter()
             .any(|prior| prior.request.session_id == r.session_id
-                && !matches!(prior.phase.as_str(), "running" | "failed" | "recovered")),
+                && !matches!(
+                    prior.phase.as_str(),
+                    "running" | "failed" | "recovered" | "abandoned"
+                )),
         "RESUME_IN_PROGRESS"
     );
     let selected = catalog::resolve(paths, &r.session_id, &r.expected_generation)?;
@@ -265,6 +273,8 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         tab_id: None,
         pane_id: None,
         operation_id: None,
+        abandoned_from: None,
+        abandoned_at: None,
         created_at: Some(daemon::now()),
         updated_at: daemon::now(),
     };
@@ -506,6 +516,80 @@ pub(crate) fn attached(paths: &Paths, id: &str, session: &catalog::Session) -> R
     })?;
     Ok(())
 }
+/// Operator-only: end an uncertain or stuck resume-launch so its session
+/// reservation is released. Terminal, sends nothing, never replays. Refused while
+/// the target session's process is live (or cannot be shown to be gone).
+pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
+    ensure!(id == confirm, "CONFIRMATION_MISMATCH");
+    let r = read(paths, id)?;
+    ensure!(
+        !matches!(
+            r.phase.as_str(),
+            "running" | "failed" | "recovered" | "abandoned"
+        ),
+        "OPERATION_ALREADY_TERMINAL"
+    );
+    ensure!(
+        crate::background::worker_stopped(&file(paths, id)?.with_extension("worker.lock"))?,
+        "OPERATION_WORKER_ACTIVE"
+    );
+    if let Some(job_id) = &r.operation_id
+        && external::jobs(paths)?.into_iter().any(|j| {
+            j.id == *job_id
+                && !matches!(
+                    j.phase.as_str(),
+                    "complete" | "failed" | "cancelled" | "recovered"
+                )
+        })
+    {
+        anyhow::bail!("OPERATION_STILL_ACTIVE");
+    }
+    ensure!(
+        r.phase == "uncertain" || daemon::now() - r.updated_at > 10,
+        "OPERATION_NOT_STUCK"
+    );
+    // The operation can affect only its own conversation. A session that is gone
+    // or has since been bound to another conversation is unaffected.
+    let session = catalog::list(paths)?
+        .into_iter()
+        .find(|s| s.id == r.request.session_id && s.conversation_id == r.conversation_id);
+    if let Some(s) = session {
+        if let Some(a) = &s.attachment {
+            ensure!(
+                external::attachment_definitely_gone(a.pid, a.process_start),
+                "SESSION_PROCESS_LIVE"
+            );
+        }
+        let live = external::live_sessions(paths)
+            .await
+            .context("SESSION_STATE_UNVERIFIED")?;
+        ensure!(
+            !live
+                .iter()
+                .any(|i| !i.inactive && i.thread_id == r.conversation_id),
+            "SESSION_PROCESS_LIVE"
+        );
+    }
+    let done = change(paths, id, |r| {
+        ensure!(
+            !matches!(
+                r.phase.as_str(),
+                "running" | "failed" | "recovered" | "abandoned"
+            ),
+            "OPERATION_ALREADY_TERMINAL"
+        );
+        r.abandoned_from = Some(r.phase.clone());
+        r.abandoned_at = Some(daemon::now());
+        r.detail = Some(format!(
+            "Abandoned by operator from phase {} ({}); nothing was sent or replayed and the session reservation was released.",
+            r.phase,
+            r.detail.as_deref().unwrap_or("no detail")
+        ));
+        r.phase = "abandoned".into();
+        Ok(())
+    })?;
+    Ok(json!(done))
+}
 pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
     let r = read(paths, id)?;
     if r.operation_id.is_none()
@@ -523,7 +607,10 @@ pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
     }
     // A completed launch receipt is historical admission evidence. A later stop
     // or generation must not rewrite it as uncertainty or change Space ordering.
-    if matches!(r.phase.as_str(), "running" | "failed" | "recovered") {
+    if matches!(
+        r.phase.as_str(),
+        "running" | "failed" | "recovered" | "abandoned"
+    ) {
         return Ok(r);
     }
     if let Some(job_id) = &r.operation_id {
@@ -594,6 +681,139 @@ pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn receipt_for(
+        paths: &Paths,
+        session: &str,
+        conversation: &str,
+        phase: &str,
+        age: i64,
+    ) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = daemon::now();
+        let r: Receipt = serde_json::from_value(json!({
+            "version":1,
+            "request":{"version":1,"request_id":id,"session_id":session,"expected_generation":"g",
+                "account_id":"codex:fixture","name":"Name","host":{"session":"fixture","socket":"/tmp/socket"},
+                "space":{"kind":"existing","id":"w1"}},
+            "directory":"/tmp","previous_name":"Name","conversation_id":conversation,"generation":"g",
+            "phase":phase,"detail":"RESUME_ACK_UNCERTAIN","workspace_id":null,"tab_id":null,
+            "pane_id":null,"operation_id":null,"created_at":now - age,"updated_at":now - age
+        }))
+        .unwrap();
+        private_dir(&paths.root.join("resumptions")).unwrap();
+        fs::write(file(paths, &id).unwrap(), serde_json::to_vec(&r).unwrap()).unwrap();
+        id
+    }
+    #[tokio::test]
+    async fn abandon_releases_uncertain_reservation_without_sending_anything() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        let id = receipt_for(&p, &session, "conv-1", "uncertain", 0);
+        assert!(
+            crate::lifecycle::pending(&p, "conv-1", None)
+                .unwrap()
+                .is_some()
+        );
+        let e = |r: Result<Value>| r.unwrap_err().to_string();
+        assert_eq!(e(abandon(&p, &id, "other").await), "CONFIRMATION_MISMATCH");
+        let done = abandon(&p, &id, &id).await.unwrap();
+        assert_eq!(done["phase"], "abandoned");
+        assert_eq!(done["abandoned_from"], "uncertain");
+        assert!(
+            done["detail"]
+                .as_str()
+                .unwrap()
+                .contains("nothing was sent")
+        );
+        assert!(
+            crate::lifecycle::pending(&p, "conv-1", None)
+                .unwrap()
+                .is_none()
+        );
+        // Terminal and never revived by status().
+        assert_eq!(status(&p, &id).await.unwrap().phase, "abandoned");
+        assert_eq!(e(abandon(&p, &id, &id).await), "OPERATION_ALREADY_TERMINAL");
+    }
+    #[tokio::test]
+    async fn abandon_refuses_fresh_in_flight_operations_and_active_workers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        let fresh = receipt_for(&p, &session, "conv-2", "dispatching", 0);
+        assert_eq!(
+            abandon(&p, &fresh, &fresh).await.unwrap_err().to_string(),
+            "OPERATION_NOT_STUCK"
+        );
+        let stuck = receipt_for(&p, &session, "conv-2", "dispatching", 60);
+        let lock = lock_file(&file(&p, &stuck).unwrap().with_extension("worker.lock")).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        assert_eq!(
+            abandon(&p, &stuck, &stuck).await.unwrap_err().to_string(),
+            "OPERATION_WORKER_ACTIVE"
+        );
+        drop(lock);
+        assert_eq!(
+            abandon(&p, &stuck, &stuck).await.unwrap()["abandoned_from"],
+            "dispatching"
+        );
+    }
+    #[tokio::test]
+    async fn abandon_refuses_while_the_session_process_is_live() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        let stat = fs::read_to_string("/proc/self/stat").unwrap();
+        let start: u64 = stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let live = catalog::record_launch(
+            &p,
+            "fixture",
+            "conv-3",
+            "live",
+            Some(catalog::Attachment {
+                host: "h".into(),
+                target: "t".into(),
+                pid: std::process::id(),
+                process_start: start,
+            }),
+        )
+        .unwrap();
+        let id = receipt_for(&p, &live.id, "conv-3", "uncertain", 0);
+        assert_eq!(
+            abandon(&p, &id, &id).await.unwrap_err().to_string(),
+            "SESSION_PROCESS_LIVE"
+        );
+        assert_eq!(read(&p, &id).unwrap().phase, "uncertain");
+        // A different recorded process start time means that process is gone.
+        catalog::record_launch(
+            &p,
+            "fixture",
+            "conv-3",
+            "live",
+            Some(catalog::Attachment {
+                host: "h".into(),
+                target: "t".into(),
+                pid: std::process::id(),
+                process_start: start + 1,
+            }),
+        )
+        .unwrap();
+        // With the attachment gone the live scan still runs and finds no provider.
+        let r = abandon(&p, &id, &id).await;
+        assert!(
+            r.is_ok()
+                || r.unwrap_err()
+                    .to_string()
+                    .contains("SESSION_STATE_UNVERIFIED")
+        );
+    }
     #[test]
     fn unfinished_consent_never_bypasses_other_history_gates() {
         let mut source: external::Instance = serde_json::from_value(json!({

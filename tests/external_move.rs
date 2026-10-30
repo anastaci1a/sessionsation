@@ -423,6 +423,40 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
         });
     }
 }
+/// A scratch directory on a filesystem with atomic no-clobber rename
+/// (`renameat2(RENAME_NOREPLACE)`). FUSE/shfs array mounts return EINVAL for it,
+/// which changes relocation from rename to copy; fixtures that exercise the
+/// same-filesystem path must not depend on where TMPDIR happens to point.
+fn rename_capable_tempdir() -> tempfile::TempDir {
+    use std::os::unix::ffi::OsStrExt;
+    let supports = |dir: &Path| -> bool {
+        let Ok(probe) = tempfile::tempdir_in(dir) else {
+            return false;
+        };
+        let (from, to) = (probe.path().join("a"), probe.path().join("b"));
+        if fs::create_dir(&from).is_err() {
+            return false;
+        }
+        let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                c(&from).as_ptr(),
+                libc::AT_FDCWD,
+                c(&to).as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        rc == 0
+    };
+    for base in [std::env::temp_dir(), PathBuf::from("/dev/shm")] {
+        if supports(&base) {
+            return tempfile::tempdir_in(base).unwrap();
+        }
+    }
+    tempfile::tempdir().unwrap()
+}
 struct Fixture {
     tmp: tempfile::TempDir,
     paths: Paths,
@@ -455,7 +489,7 @@ impl Fixture {
         }
     }
     async fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = rename_capable_tempdir();
         let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
         let socket = tmp.path().join("tmux").to_str().unwrap().into();
         let c = tmp.path().join("ui.c");
@@ -2352,7 +2386,15 @@ async fn cross_filesystem_move_preserves_symlinks_and_retains_source_backup() {
     let f = Fixture::new().await;
     let project = f.tmp.path().join("project");
     fs::create_dir(&project).unwrap();
-    let destination = tempfile::tempdir_in("/dev/shm").unwrap();
+    // Any other filesystem: /dev/shm, unless the fixture itself lives there.
+    let destination = {
+        let shm = tempfile::tempdir_in("/dev/shm").unwrap();
+        if fs::metadata(shm.path()).unwrap().dev() != fs::metadata(&project).unwrap().dev() {
+            shm
+        } else {
+            tempfile::tempdir().unwrap()
+        }
+    };
     assert_ne!(
         fs::metadata(&project).unwrap().dev(),
         fs::metadata(destination.path()).unwrap().dev(),

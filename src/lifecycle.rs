@@ -47,7 +47,9 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
                 && id != own
                 && !matches!(
                     r["phase"].as_str(),
-                    Some("running" | "complete" | "failed" | "cancelled" | "recovered")
+                    Some(
+                        "running" | "complete" | "failed" | "cancelled" | "recovered" | "abandoned"
+                    )
                 )
             {
                 return Ok(Some(id.context("INVALID_OPERATION_ID")?.into()));

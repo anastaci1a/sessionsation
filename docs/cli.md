@@ -1263,3 +1263,25 @@ only that key, replaces the file atomically with its mode kept, and refuses a
 symlinked `settings.json`. Sessionsation's statusline hook still forwards to the
 account's own `statusLine`, so usage recording keeps working. Advertised as
 `api capabilities.claude_default_statusline`.
+
+### Abandoning an uncertain resume-launch (contract 1.28.0)
+
+A resume-launch whose acknowledgment was lost ends in `uncertain`
+(`RESUME_ACK_UNCERTAIN`) and is deliberately never replayed, which keeps the saved
+session reserved (`RESUME_IN_PROGRESS`, lifecycle admission) and `api recover` does
+not apply to it. The operator can release it explicitly:
+
+```sh
+sessionsation api abandon-operation --operation REQUEST-ID --confirm REQUEST-ID
+```
+
+The receipt moves to the terminal phase `abandoned` (`abandoned_from`,
+`abandoned_at`, and a `detail` stating that nothing was sent). It sends, resumes and
+replays nothing; it only releases the reservation. Accepted for `uncertain`, or for a
+non-terminal receipt older than 10 seconds whose worker has exited. Refused with
+`CONFIRMATION_MISMATCH`, `OPERATION_ALREADY_TERMINAL`, `OPERATION_WORKER_ACTIVE`,
+`OPERATION_STILL_ACTIVE` (a transfer job is still running; use `cancel-operation`),
+`OPERATION_NOT_STUCK`, `SESSION_PROCESS_LIVE` (the session's recorded process, or any
+live process for its conversation, exists) or `SESSION_STATE_UNVERIFIED`. A session
+that was deleted or now belongs to another conversation is unaffected, so only the
+receipt changes.
