@@ -6,6 +6,7 @@
 //! provider-qualified (`<provider>:<name>`). A bare name is accepted only where
 //! a human addresses an existing account (it is unambiguous because names are
 //! global); a qualified identifier must match the enrolled provider.
+pub mod activity;
 pub mod antigravity;
 pub mod claude;
 pub mod codex;

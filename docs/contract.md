@@ -16,9 +16,9 @@ checked alongside the CLI regression tests. See [CLI setup](cli.md) and
 The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
-compatibility and always equals the MINOR part: revisions 1-25 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.25.1`
-(a PATCH, see [Codex 0.166.0 native profile](#codex-01660-native-profile-1251)).
+compatibility and always equals the MINOR part: revisions 1-26 were all additive,
+so revision N maps to contract `1.N.0` and the current contract is `1.26.0`
+(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -860,7 +860,7 @@ conversation files, names and resume availability.
 
 Revision 17 (unreleased) populates `active_since` for running Claude and Gemini
 sessions from the first honest source, never a guess, and leaves it null otherwise
-(`last_accessed` stays null for them). Claude: the live registry
+(`last_accessed` stays null for them until 1.26.0). Claude: the live registry
 `sessions/<pid>.json` `startedAt`, accepted only when the registry process is
 verified against /proc (PID plus start ticks) and `startedAt` is neither before that
 process start nor in the future, else the verified /proc process start. A session
@@ -2176,3 +2176,18 @@ diff and offline fixture recorded in [operations](operations.md#profile-01660).
 Version gating is unchanged: any other `initialize.userAgent` version (including a
 later 0.166.x or 0.167.0) still fails closed with `unsupported_native_version`, and
 observations keep reporting `native_protocol.version` and `supported:false` for it.
+
+### Native `last_accessed` (1.26.0)
+
+MINOR, additive: Claude, Gemini and Antigravity session snapshots and details now
+populate `last_accessed` (previously always null for them), in Unix milliseconds,
+the same unit Codex rows use, so the popup can sort inactive sessions by last
+opened. The value is the time of the conversation's most recent activity, never the
+time of the call: Claude and Gemini use the timestamp (`timestamp`, else
+`lastUpdated`) of the last record in the transcript jsonl, read from a bounded
+tail and cached per file (path, mtime, length), falling back to the file mtime when
+no record carries one. Claude follows the entry's current conversation (continued-in
+and parked-job lineage is already resolved onto the entry). Antigravity uses the mtime
+of the brain `transcript.jsonl`, else of the conversation db; no database is opened.
+A missing or unreadable source, a deleted account or an archived entry gives null.
+Unlike Codex it is not an open/attach time. Existing fields are unchanged.

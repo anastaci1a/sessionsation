@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 25;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.25.1";
+pub const CONTRACT_MINOR: u32 = 26;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.26.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1329,7 +1329,11 @@ fn native_public(
             .collect::<Vec<_>>()
     );
     value["activity"] = Value::Null;
-    value["last_accessed"] = Value::Null;
+    value["last_accessed"] = json!(
+        observed
+            .and_then(|o| o.transcript.as_deref())
+            .and_then(|t| crate::provider::activity::last_accessed(provider, t))
+    );
     value["active_since"] = json!(
         observed
             .filter(|o| o.availability == "running")

@@ -1264,7 +1264,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 25);
+    assert_eq!(caps["contract_revision"], 26);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1851,7 +1851,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 25);
+    assert_eq!(caps["contract_revision"], 26);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2713,7 +2713,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 25);
+    assert_eq!(caps["contract_revision"], 26);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()
@@ -3193,4 +3193,47 @@ async fn bypass_warning_defaults_to_skip_and_toggles_one_key() {
     let out = f.api(&["account", "bypass-warning", "claude:personal", "--skip"]);
     assert_eq!(out["bypass_warning"], "skip");
     assert_eq!(out["previous"], false);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_last_accessed_is_the_last_transcript_record_and_null_without_a_source() {
+    let f = fixture().await;
+    assert!(
+        f.run(&["account", "add", "--platform", "claude", "personal"])
+            .status
+            .success()
+    );
+    let home = f.home("personal");
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+    let id = uuid::Uuid::new_v4().to_string();
+    let path = transcript(&home, &f.project, &id);
+    // Creation time is 2026-01-01; the last record decides.
+    append(
+        &path,
+        json!({"type":"assistant","timestamp":"2026-10-29T10:05:00.000Z","message":{"content":"x"}}),
+    );
+    append(&path, json!({"type":"file-history-snapshot"}));
+    let s = by_conversation(&f, &id);
+    assert_eq!(s["last_accessed"], 1_793_268_300_000_i64, "{s}");
+    assert_eq!(s["conversation_created_at"], "2026-01-01T00:00:00.000Z");
+    // A later record moves it; the cache is keyed on the file's stamp.
+    append(
+        &path,
+        json!({"type":"user","timestamp":"2026-10-29T11:00:00.000Z"}),
+    );
+    assert_eq!(
+        by_conversation(&f, &id)["last_accessed"],
+        1_793_271_600_000_i64
+    );
+    // No source: a catalog entry whose transcript is gone reports null.
+    std::fs::remove_file(&path).unwrap();
+    if let Some(s) = f
+        .claude_sessions()
+        .into_iter()
+        .find(|s| s["conversation_id"] == id.as_str())
+    {
+        assert!(s["last_accessed"].is_null(), "{s}");
+    }
 }

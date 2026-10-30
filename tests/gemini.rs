@@ -980,7 +980,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     assert_eq!(gemini["operations"]["headless_delivery"]["supported"], true);
     assert_eq!(gemini["headless_delivery"]["automatic_replay"], false);
     assert_eq!(gemini["headless_delivery"]["approval_mode"], "default");
-    assert_eq!(caps["contract_revision"], 25);
+    assert_eq!(caps["contract_revision"], 26);
     assert_eq!(
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
@@ -1802,4 +1802,35 @@ async fn api_key_mode_stores_the_key_privately_injects_it_by_env_validates_and_n
         ),
         (Some("api_key"), Some(false), Some(true))
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gemini_last_accessed_is_the_last_chat_record_and_null_without_a_source() {
+    let f = fixture().await;
+    f.add_logged_in("work");
+    let (_, native) = f.stopped_session("work");
+    let path = find_chat(&f.home("work"), &native);
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"gemini","timestamp":"2026-10-29T10:05:00.000Z","content":"x"})
+        )
+        .unwrap();
+    }
+    let s = f.by_conversation(&native);
+    assert_eq!(s["last_accessed"], 1_793_268_300_000_i64, "{s}");
+    std::fs::remove_file(&path).unwrap();
+    if let Some(s) = f
+        .gemini_sessions()
+        .into_iter()
+        .find(|s| s["conversation_id"] == native.as_str())
+    {
+        assert!(s["last_accessed"].is_null(), "{s}");
+    }
 }
