@@ -7,10 +7,14 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
-pub fn account(status: &Value, name: &str) -> Result<Value> {
+pub fn account(status: &Value, provider: &str, name: &str) -> Result<Value> {
     let account = status["accounts"]
         .as_array()
-        .and_then(|accounts| accounts.iter().find(|a| a["name"] == name))
+        .and_then(|accounts| {
+            accounts.iter().find(|a| {
+                a["name"] == name && a["provider"].as_str().unwrap_or("codex") == provider
+            })
+        })
         .context("unknown account")?;
     let remaining = |window: &str| {
         account["usage"][window]["used_percent"]
@@ -88,7 +92,10 @@ pub async fn session(paths: &Paths, key: &str) -> Result<Value> {
         .as_str()
         .or_else(|| session["account"].as_str())
         .unwrap_or_default();
-    let account = status.as_ref().and_then(|s| account(s, name).ok());
+    let provider = session["provider"].as_str().unwrap_or("codex");
+    let account = status
+        .as_ref()
+        .and_then(|s| account(s, provider, name).ok());
     let thread = session["thread_id"].as_str().unwrap_or_default();
     Ok(
         json!({"schema_version":1,"observed_at":snapshot["observed_at"],"session":session,
@@ -148,11 +155,11 @@ mod tests {
     #[test]
     fn account_remaining_preserves_freshness_and_unknown_windows() {
         let s = json!({"observed_at":123,"accounts":[{"name":"work","usage_fresh":false,"usage":{"weekly":{"used_percent":42},"short":null}}]});
-        let v = account(&s, "work").unwrap();
+        let v = account(&s, "codex", "work").unwrap();
         assert_eq!(v["remaining_percent"]["weekly"], 58.0);
         assert!(v["remaining_percent"]["short"].is_null());
         assert_eq!(v["account"]["usage_fresh"], false);
-        assert!(account(&s, "missing").is_err());
+        assert!(account(&s, "codex", "missing").is_err());
     }
     #[test]
     fn history_ranges_match_ui_and_reject_unbounded_requests() {

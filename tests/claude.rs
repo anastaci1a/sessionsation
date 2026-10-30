@@ -147,7 +147,7 @@ fn read(path: &Path) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn enrollment_requires_a_platform_and_names_are_global_across_providers() {
+async fn enrollment_requires_a_platform_and_names_are_unique_per_provider() {
     let f = fixture().await;
     // --platform is required and invalid values list the choices; no Codex default.
     let missing = f.run(&["account", "add", "work"]);
@@ -183,20 +183,24 @@ async fn enrollment_requires_a_platform_and_names_are_global_across_providers() 
         "{}",
         String::from_utf8_lossy(&add.stderr)
     );
-    // Collision across providers names the existing owner.
+    // Names are unique per provider: another provider may reuse a name, the
+    // same provider may not, and the error names the existing owner.
+    let other = f.run(&["account", "add", "--platform", "codex", "personal"]);
+    assert!(
+        other.status.success(),
+        "{}",
+        String::from_utf8_lossy(&other.stderr)
+    );
+    assert!(f.paths.root.join("accounts/codex/personal").exists());
     let clash = f.run(&["account", "add", "--platform", "codex", "personal"]);
     let text = String::from_utf8_lossy(&clash.stderr);
     assert!(!clash.status.success());
     assert!(
-        text.contains("ACCOUNT_NAME_EXISTS") && text.contains("claude:personal"),
+        text.contains("ACCOUNT_NAME_EXISTS") && text.contains("codex:personal"),
         "{text}"
     );
-    assert!(!f.paths.root.join("accounts/codex/personal").exists());
-    let text = f.api_error(&["account", "add", "claude:work"]);
-    assert!(
-        text.contains("ACCOUNT_PROVIDER_MISMATCH") || text.contains("ACCOUNT_NAME_EXISTS"),
-        "{text}"
-    );
+    let text = f.api_error(&["account", "add", "codex:work"]);
+    assert!(text.contains("ACCOUNT_NAME_EXISTS"), "{text}");
     // API ids must be qualified and must match the enrolled provider.
     assert!(
         f.api_error(&["account", "add", "other"])
@@ -210,7 +214,7 @@ async fn enrollment_requires_a_platform_and_names_are_global_across_providers() 
     let preview = f.api(&["account", "remove", "claude:personal"]);
     assert_eq!(preview["account_id"], "claude:personal");
     assert!(
-        f.api_error(&["account", "remove", "codex:personal"])
+        f.api_error(&["account", "remove", "gemini:personal"])
             .contains("ACCOUNT_PROVIDER_MISMATCH")
     );
     assert!(
@@ -1279,7 +1283,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 29);
+    assert_eq!(caps["contract_revision"], 30);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1608,13 +1612,20 @@ async fn display_names_rename_any_provider_without_changing_identity() {
     assert!(f.paths.root.join("accounts/codex/work").is_dir());
     assert_eq!(row("claude:personal")["display_name"], "Home-Max");
     assert!(f.home("personal").is_dir());
-    // Collisions with any name or display name, and invalid names.
-    for (target, display) in [
-        ("claude:personal", "Office"),
-        ("claude:personal", "work"),
-        ("codex:work", "personal"),
-    ] {
-        let err = f.api_error(&["account", "rename", target, "--display-name", display]);
+    // Display names collide with a name or display name of the same provider only.
+    assert!(
+        f.run(&["account", "add", "--platform", "codex", "second"])
+            .status
+            .success()
+    );
+    for display in ["Office", "work"] {
+        let err = f.api_error(&[
+            "account",
+            "rename",
+            "codex:second",
+            "--display-name",
+            display,
+        ]);
         assert!(err.contains("ACCOUNT_DISPLAY_NAME_EXISTS"), "{err}");
     }
     assert!(
@@ -1867,7 +1878,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 29);
+    assert_eq!(caps["contract_revision"], 30);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2604,7 +2615,7 @@ async fn account_order_is_persistent_shared_and_reorderable() {
     );
     assert!(
         f.api_error(&["account", "reorder", "claude:ghost", "--position", "0"])
-            .contains("unknown account")
+            .contains("ACCOUNT_NOT_FOUND")
     );
     let caps = f.api(&["capabilities"]);
     assert_eq!(caps["account_reorder"], true);
@@ -2739,7 +2750,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 29);
+    assert_eq!(caps["contract_revision"], 30);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()

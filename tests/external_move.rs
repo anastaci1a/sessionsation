@@ -3545,7 +3545,14 @@ async fn account_removal_requires_fresh_confirmation_and_retains_recoverable_dat
     );
     assert!(store::load_state_snapshot(&f.paths).unwrap().accounts["personal"].enabled);
     f.invoke(&["api", "account", "restore", "codex:personal"]);
-    assert!(sessionsation::accounts::ensure_available(&f.paths, "personal").is_ok());
+    assert!(
+        sessionsation::accounts::ensure_available(
+            &f.paths,
+            sessionsation::provider::ProviderId::Codex,
+            "personal"
+        )
+        .is_ok()
+    );
     let pane = f.live(ID, false);
     let preview = f.invoke(&["api", "account", "remove", "codex:personal"]);
     assert_eq!(preview["result"]["can_remove"], false);

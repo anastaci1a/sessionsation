@@ -799,7 +799,7 @@ async fn run(cli: Cli) -> Result<()> {
             command: AccountCommand::Logout { name },
         } => {
             let account = resolve_account(&paths, &name)?;
-            sessionsation::accounts::ensure_available(&paths, &account.name)?;
+            sessionsation::accounts::ensure_available(&paths, account.provider, &account.name)?;
             daemon::ensure_started(&paths).await?;
             let value = daemon::call(
                 &paths,
@@ -819,7 +819,11 @@ async fn run(cli: Cli) -> Result<()> {
         } => {
             let account = resolve_account(&paths, &name)?;
             let status = daemon::call(&paths, "status", json!({})).await?;
-            print_json(&sessionsation::cli_views::account(&status, &account.name)?)?;
+            print_json(&sessionsation::cli_views::account(
+                &status,
+                account.provider.as_str(),
+                &account.name,
+            )?)?;
         }
         Commands::Account {
             command:
@@ -1178,7 +1182,7 @@ async fn run(cli: Cli) -> Result<()> {
                 config_dir.is_none(),
                 "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
             );
-            sessionsation::accounts::ensure_available(&paths, &name.name)?;
+            sessionsation::accounts::ensure_available(&paths, name.provider, &name.name)?;
             let value = daemon::call(
                 &paths,
                 method,
@@ -1652,7 +1656,7 @@ fn resolve_account(paths: &Paths, id: &str) -> Result<AccountRef> {
         None
     };
     if let Some(state) = &state
-        && state.accounts.contains_key(&name)
+        && !state.accounts_named(&name).is_empty()
     {
         return provider::resolve(
             state

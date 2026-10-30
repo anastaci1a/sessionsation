@@ -232,6 +232,16 @@ pub fn record_output(
 }
 
 /// Forget a recorded failure (a later successful run or login).
+/// Move the recorded failure with its account (backend rename); best effort.
+pub fn rename(paths: &Paths, old: &str, new: &str) {
+    if let (Ok(from), Ok(to)) = (file(paths, old), file(paths, new))
+        && from.is_file()
+        && !to.exists()
+    {
+        let _ = fs::rename(from, to);
+    }
+}
+
 pub fn clear(paths: &Paths, name: &str) {
     if let Ok(path) = file(paths, name) {
         let _ = fs::remove_file(path);

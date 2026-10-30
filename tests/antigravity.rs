@@ -213,12 +213,11 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
         std::fs::metadata(&home).unwrap().permissions().mode() & 0o777,
         0o700
     );
-    // Names stay global across providers.
-    let taken = f.api_error(&["account", "add", "gemini:fresh"]);
-    assert!(
-        taken.contains("ACCOUNT_NAME_EXISTS") || taken.contains("ACCOUNT_PROVIDER_MISMATCH"),
-        "{taken}"
-    );
+    // Names are unique per provider: the same name is free under another provider
+    // but not twice under this one.
+    let taken = f.api_error(&["account", "add", "antigravity:fresh"]);
+    assert!(taken.contains("ACCOUNT_NAME_EXISTS"), "{taken}");
+    f.api(&["account", "add", "gemini:fresh"]);
     // Unauthenticated use never reaches agy (no OAuth wait).
     let refused = f.send_err(&new_body(
         &uuid::Uuid::new_v4().to_string(),
@@ -264,8 +263,8 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
         false
     );
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 29);
-    assert_eq!(caps["contract_version"], "1.29.0");
+    assert_eq!(caps["contract_revision"], 30);
+    assert_eq!(caps["contract_version"], "1.30.0");
     let p = caps["providers"]
         .as_array()
         .unwrap()
@@ -433,12 +432,12 @@ async fn a_live_agy_process_holding_the_conversation_is_running_and_refuses_resu
 async fn api_version_reports_semver_and_negotiates_by_major() {
     let f = fixture().await;
     let v = f.api(&["version"]);
-    assert_eq!(v["contract_version"], "1.29.0");
-    assert_eq!(v["contract_revision"], 29);
+    assert_eq!(v["contract_version"], "1.30.0");
+    assert_eq!(v["contract_revision"], 30);
     for ok in ["1", "1.25", "1.26", "1.99.0"] {
         assert_eq!(
             f.api(&["--api-version", ok, "version"])["contract_version"],
-            "1.29.0"
+            "1.30.0"
         );
     }
     for bad in ["2", "2.0.0", "0.24"] {

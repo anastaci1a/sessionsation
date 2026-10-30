@@ -213,7 +213,7 @@ pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow
     Ok(project(
         &session,
         native,
-        crate::accounts::removed(paths, &session.account)?,
+        crate::accounts::removed_session(paths, &session.provider, &session.account)?,
         crate::daemon::now(),
     ))
 }

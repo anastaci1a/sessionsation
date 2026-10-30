@@ -127,12 +127,13 @@ sessionsation account logout claude:personal   # sign out; log in again with acc
 sessionsation account reorder claude:personal --position 0   # shared with the UI
 ```
 
-Account names are **unique across providers**: `work` can be `codex:work` or
-`claude:work` or `gemini:work`, never two of them. Adding a taken name fails with `ACCOUNT_NAME_EXISTS`
-naming the existing owner. Public IDs are always `<provider>:<name>`. Human
-commands also accept a bare name for an existing account (unambiguous because names
-are global); a qualified ID whose provider differs from the enrolled one fails with
-`ACCOUNT_PROVIDER_MISMATCH`. Missing or unknown `--platform` is an argument error.
+Account names are **unique per provider** (contract 1.30.0): `codex:work` and
+`claude:work` may coexist, but `work` cannot be enrolled twice under one provider. Adding a
+taken name fails with `ACCOUNT_NAME_EXISTS` naming the existing owner. Public IDs are always
+`<provider>:<name>`. Human commands also accept a bare name for an existing account while it
+is unambiguous; a bare name enrolled under several providers fails with `ACCOUNT_AMBIGUOUS`
+(use `PROVIDER:NAME`); a qualified ID whose provider is not enrolled while another provider
+holds the name fails with `ACCOUNT_PROVIDER_MISMATCH`. Missing or unknown `--platform` is an argument error.
 
 The machine API takes qualified IDs only (a bare name is `ACCOUNT_PROVIDER_REQUIRED`):
 
@@ -196,11 +197,50 @@ rename PROVIDER:NAME --display-name X|--clear`) apply to every provider and chan
 only the `display_name` shown in account JSON and the human `NAME` column (`display
 (name)`). The stable name, `<provider>:<name>` id and home directory (a live
 `CODEX_HOME` or `CLAUDE_CONFIG_DIR`) never change. Display names use the account-name
-characters, at most 30, and are unique across every account's name and display name
-(`ACCOUNT_DISPLAY_NAME_EXISTS`; a new account name equal to a display name is
+characters, at most 30, and are unique among the name and display name of every account of
+the same provider (`ACCOUNT_DISPLAY_NAME_EXISTS`; a new account name equal to a display name is
 `ACCOUNT_NAME_EXISTS`). An empty value or `--clear` resets it. The change is written
 by the supervisor (event `account.renamed`). Human commands accept an unambiguous
 display name wherever they accept an account name.
+
+### Account folder name versus display name (contract 1.30.0)
+
+Every account row separates the **display name** (`display_name`, `null` when it equals the
+name) from the **folder/backend name** (`folder_name`, equal to `name`: the id
+`<provider>:<name>` and the home `accounts/<platform>/<name>`). `name_mismatch` is true when a
+display name differs from the folder name. `running_sessions` counts the sessions of that
+account using its home now (`null` when it could not be observed); `generation` is an opaque
+fingerprint of the account's identity facts; `backend_rename` is
+`{available, reason, update_backend, update_backend_target}` (`reason` is the error code that a
+backend rename would return now, for example `ACCOUNT_SESSIONS_RUNNING`).
+
+```sh
+# Rename only: display name, allowed while sessions run
+sessionsation api account rename codex:personal --display-name Office [--expected-generation G]
+# Rename & update backend: id, folder, display name
+sessionsation api account rename-backend codex:personal NEW --expected-generation G [--request-id UUID]
+# Update backend: rename folder/id to match the existing display name
+sessionsation api account rename-backend codex:personal --expected-generation G
+```
+
+The result of `rename-backend` is `{account_id, previous_account_id, name, folder_name,
+display_name, name_mismatch, generation, home, operation, changed}`; clients must switch to the
+new `account_id`. It is refused while any session or provider process of the account runs or
+launches (`ACCOUNT_SESSIONS_RUNNING`), when the new name exists for that provider
+(`ACCOUNT_NAME_EXISTS`, exact-case comparison like account creation, also against display
+names), when it equals the current name (`ACCOUNT_NAME_UNCHANGED`), when its folder exists
+(`ACCOUNT_HOME_EXISTS`), for an adopted config directory (`ACCOUNT_HOME_ADOPTED`: rename the
+display name only), for removed or deleting accounts (`ACCOUNT_REMOVED`,
+`ACCOUNT_DELETION_IN_PROGRESS`), while a poll runs (`ACCOUNT_POLL_IN_PROGRESS`), while another
+rename of the account is unfinished (`ACCOUNT_RENAME_UNRESOLVED`), and when the generation is
+stale (`STALE_TARGET`). The home moves to `accounts/<platform>/<new>` even from a deferred
+legacy path. The registry, session catalog entries (their generations change), automatic
+switching policies, Gemini auth-failure state and usage history move with it; old receipts,
+digests and message journals keep the old id. The operation is journaled in
+`operations/account-renames/` (`api operations` lists it with `kind:"account_rename"`), is never
+replayed, and an interrupted run is reconciled from evidence at supervisor start or by
+`api recover OPERATION`; what cannot be decided stays `uncertain` until `api abandon-operation
+--operation ID --confirm ID` (terminal, changes no account data).
 Historical usage uses `api account usage codex:example --start UNIX --end UNIX
 --step 1800`.
 

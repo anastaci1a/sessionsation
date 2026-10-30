@@ -398,7 +398,7 @@ async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
         .strip_prefix("codex:")
         .context("UNSUPPORTED_PROVIDER_OPERATION")?
         .to_owned();
-    let _account = accounts::operation_lock(paths, &name)?;
+    let _account = accounts::operation_lock(paths, ProviderId::Codex, &name)?;
     let jobs = paths.root.join(crate::layout::HANDOFF_JOBS);
     private_dir(&jobs)?;
     let queue = lock_file(&jobs.join("queue.lock"))?;
@@ -692,7 +692,7 @@ async fn perform_native(paths: &Paths, r: &mut Record, provider: ProviderId) -> 
         .strip_prefix(&format!("{provider}:"))
         .context("UNSUPPORTED_PROVIDER_OPERATION")?
         .to_owned();
-    let _account = accounts::operation_lock(paths, &name)?;
+    let _account = accounts::operation_lock(paths, provider, &name)?;
     let finish = |paths: &Paths, name: &str, id: &str| {
         let (paths, name, id) = (paths.clone(), name.to_owned(), id.to_owned());
         async move {

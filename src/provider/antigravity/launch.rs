@@ -17,7 +17,7 @@ pub use crate::provider::claude::launch::resume_directory;
 
 fn context(paths: &Paths, name: &str) -> Result<(Enrolled, Config)> {
     let account = antigravity::account(paths, name)?;
-    crate::accounts::ensure_available(paths, name)?;
+    crate::accounts::ensure_available(paths, ProviderId::Antigravity, name)?;
     ensure!(account.enabled, "ACCOUNT_UNAVAILABLE: account is disabled");
     ensure!(
         account.home.is_dir(),

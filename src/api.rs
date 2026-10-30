@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 29;
+pub const CONTRACT_MINOR: u32 = 30;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.29.0";
+pub const CONTRACT_VERSION: &str = "1.30.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -417,7 +417,7 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
                 "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
             );
             let name = account.name.as_str();
-            crate::accounts::ensure_available(paths, name)?;
+            crate::accounts::ensure_available(paths, account.provider, name)?;
             let status = daemon::call(paths, "status", json!({})).await?;
             ensure!(
                 status["accounts"]
@@ -546,13 +546,31 @@ pub enum AccountCommand {
     Refresh {
         id: String,
     },
-    /// Change only the display name (id, name and home never change).
+    /// "Rename only": change just the display name (id, folder and home never change;
+    /// allowed while sessions run).
     Rename {
         id: String,
         #[arg(long, conflicts_with = "clear")]
         display_name: Option<String>,
         #[arg(long)]
         clear: bool,
+        /// The row's `generation`; refuses with STALE_TARGET when the account changed.
+        #[arg(long)]
+        expected_generation: Option<String>,
+    },
+    /// "Rename & update backend": rename the display name, the account folder and
+    /// the account id (`codex:old` -> `codex:NEW`). Without NEW_NAME the backend is
+    /// renamed to match the existing display name ("Update backend"). Refused while
+    /// any session of the account runs; journaled, never replayed.
+    RenameBackend {
+        id: String,
+        new_name: Option<String>,
+        /// The row's `generation` (required).
+        #[arg(long)]
+        expected_generation: String,
+        /// Idempotency/operation id (a UUID); generated when omitted.
+        #[arg(long)]
+        request_id: Option<String>,
     },
     /// Claude: switch an adopted account to its managed home (no files are moved).
     ManagedHome {
@@ -620,30 +638,24 @@ pub enum AccountCommand {
         weekly_used: Option<f64>,
     },
 }
-/// Reject a qualified id whose name is enrolled under another provider. The
-/// supervisor repeats this check for the operations it owns.
-fn verify_provider(paths: &Paths, account: &AccountRef) -> Result<()> {
-    if !paths.root.join(crate::layout::REGISTRY_DB).exists() {
-        return Ok(());
-    }
-    let Ok(state) = store::load_state_snapshot(paths) else {
-        return Ok(());
-    };
-    if let Some(existing) = state.accounts.get(&account.name) {
-        ensure!(
-            existing.provider == account.provider,
+/// Parse a qualified id and, for an operation on an existing account, name the
+/// provider that does hold the name when this one does not. Names are unique per
+/// provider, so enrolling (`account add`) skips this check.
+fn account_ref(paths: &Paths, id: &str) -> Result<AccountRef> {
+    let account = AccountRef::parse(id)?;
+    if paths.root.join(crate::layout::REGISTRY_DB).exists()
+        && let Ok(state) = store::load_state_snapshot(paths)
+        && state.account(account.provider, &account.name).is_none()
+        && let Some(other) = state.accounts_named(&account.name).first()
+    {
+        bail!(
             "ACCOUNT_PROVIDER_MISMATCH: {} is enrolled as {}:{}, not {}",
             account.name,
-            existing.provider,
+            other.provider,
             account.name,
             account.id()
         );
     }
-    Ok(())
-}
-fn account_ref(paths: &Paths, id: &str) -> Result<AccountRef> {
-    let account = AccountRef::parse(id)?;
-    verify_provider(paths, &account)?;
     Ok(account)
 }
 /// Whether an account row can be chosen for new work.
@@ -712,6 +724,12 @@ fn refresh_cached_accounts(paths: &Paths, value: &mut Value) {
     }
 }
 pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value>> {
+    // One process-table scan serves every Codex row.
+    let codex_instances = accounts
+        .iter()
+        .any(|a| a["provider"].as_str().unwrap_or("codex") == "codex")
+        .then(|| external::host_instances(paths).ok())
+        .flatten();
     accounts
         .into_iter()
         .map(|mut a| {
@@ -722,7 +740,7 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             let name = name.as_str();
             // A pre-provider supervisor could only report Codex accounts.
             let provider = ProviderId::parse(a["provider"].as_str().unwrap_or("codex"))?;
-            let removed = crate::accounts::removed(paths, name)?;
+            let removed = crate::accounts::removed(paths, provider, name)?;
             a["id"] = json!(format!("{provider}:{name}"));
             a["provider"] = json!(provider);
             a["provider_capabilities"] = json!(crate::provider::capabilities(provider));
@@ -739,6 +757,14 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             a["home_deferred"] =
                 json!(a["config_home"].as_str().is_none_or(str::is_empty) && home != target);
             a["home"] = json!(home);
+            project_rename_state(
+                paths,
+                provider,
+                name,
+                &home,
+                codex_instances.as_deref(),
+                &mut a,
+            );
             if let Some(id) = a["deletion_id"].as_str() {
                 a["deletion"] = json!(crate::account_deletion::status(paths, id)?);
             }
@@ -778,6 +804,56 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
         .collect()
 }
 
+/// Contract 1.30.0 account-name fields: `folder_name` (the backend name that
+/// names the folder and the id), `name_mismatch`, `running_sessions` and
+/// `backend_rename` (whether "Rename & update backend" can run now, and why not).
+fn project_rename_state(
+    paths: &Paths,
+    provider: ProviderId,
+    name: &str,
+    home: &std::path::Path,
+    codex_instances: Option<&[external::Instance]>,
+    a: &mut Value,
+) {
+    let mismatch = a["display_name"].as_str().is_some_and(|d| d != name);
+    a["folder_name"] = json!(name);
+    a["name_mismatch"] = json!(mismatch);
+    if a["generation"].is_null() {
+        a["generation"] = json!(crate::account_rename::generation(
+            provider.as_str(),
+            name,
+            a["display_name"].as_str(),
+            a["config_home"].as_str().filter(|h| !h.is_empty()),
+        ));
+    }
+    let running = if provider == ProviderId::Codex {
+        codex_instances.map(|all| all.iter().filter(|i| i.home == home).count())
+    } else if home.exists() {
+        native::live_sessions(provider, home).ok().map(|l| l.len())
+    } else {
+        Some(0)
+    };
+    a["running_sessions"] = json!(running);
+    let reason = if !a["deletion_id"].is_null() {
+        Some("ACCOUNT_DELETION_IN_PROGRESS")
+    } else if a["membership"] == "removed" {
+        Some("ACCOUNT_REMOVED")
+    } else if a["config_home"].as_str().is_some_and(|h| !h.is_empty()) {
+        Some("ACCOUNT_HOME_ADOPTED")
+    } else if crate::account_rename::unresolved_for(paths, provider, name)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        Some("ACCOUNT_RENAME_UNRESOLVED")
+    } else if running != Some(0) {
+        Some("ACCOUNT_SESSIONS_RUNNING")
+    } else {
+        None
+    };
+    a["backend_rename"] = json!({"available":reason.is_none(),"reason":reason,
+        "update_backend":mismatch,"update_backend_target":a["display_name"]});
+}
 /// Show or set a Gemini account's authentication mode (`api account auth` and
 /// `account auth`). Setting `api_key` with a key stores it (0600, atomic) and runs
 /// one headless validation; `google` returns the login plan. The key is never
@@ -803,7 +879,7 @@ pub async fn gemini_auth(
     let mut changed = false;
     let mut validation = Value::Null;
     if let Some(mode) = mode {
-        crate::accounts::ensure_available(paths, &account.name)?;
+        crate::accounts::ensure_available(paths, account.provider, &account.name)?;
         ensure!(
             home.is_dir(),
             "ACCOUNT_HOME_UNAVAILABLE: the Gemini home does not exist"
@@ -928,7 +1004,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
         } => {
             let account = account_ref(paths, &id)?;
             let name = account.name.as_str();
-            crate::accounts::ensure_available(paths, name)?;
+            crate::accounts::ensure_available(paths, account.provider, name)?;
             if let (Some(short), Some(weekly)) = (short_used, weekly_used) {
                 ensure!(
                     !matches!(
@@ -956,7 +1032,13 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 let status = daemon::call(paths, "status", json!({})).await?;
                 let a = status["accounts"]
                     .as_array()
-                    .and_then(|items| items.iter().find(|a| a["name"] == name))
+                    .and_then(|items| {
+                        items.iter().find(|a| {
+                            a["name"] == name
+                                && a["provider"].as_str().unwrap_or("codex")
+                                    == account.provider.as_str()
+                        })
+                    })
                     .context("ACCOUNT_NOT_FOUND")?;
                 Ok(
                     json!({"account_id":id,"limits":a["switch_thresholds"],"saved":false,
@@ -1015,13 +1097,13 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             .await
         }
         AccountCommand::Add { id, config_dir } => {
-            let account = account_ref(paths, &id)?;
+            let account = AccountRef::parse(&id)?;
             crate::paths::validate_new_account_name(&account.name)?;
             ensure!(
                 config_dir.is_none() || account.provider == ProviderId::Claude,
                 "INVALID_ARGUMENT: --config-dir is only supported for claude accounts"
             );
-            crate::accounts::ensure_available(paths, &account.name)?;
+            crate::accounts::ensure_available(paths, account.provider, &account.name)?;
             daemon::ensure_started(paths).await?;
             let mut params = json!({"name":account.name,"provider":account.provider});
             if let Some(dir) = config_dir {
@@ -1040,6 +1122,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             id,
             display_name,
             clear,
+            expected_generation,
         } => {
             let account = account_ref(paths, &id)?;
             ensure!(
@@ -1050,7 +1133,24 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             daemon::call(
                 paths,
                 "account/rename",
-                json!({"name":account.name,"provider":account.provider,"display_name":if clear {None} else {display_name}}),
+                json!({"name":account.name,"provider":account.provider,"display_name":if clear {None} else {display_name},"expected_generation":expected_generation}),
+            )
+            .await
+        }
+        AccountCommand::RenameBackend {
+            id,
+            new_name,
+            expected_generation,
+            request_id,
+        } => {
+            let account = account_ref(paths, &id)?;
+            daemon::ensure_started(paths).await?;
+            let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            daemon::call(
+                paths,
+                "account/rename-backend",
+                json!({"name":account.name,"provider":account.provider,"new_name":new_name,
+                    "expected_generation":expected_generation,"request_id":request_id}),
             )
             .await
         }
@@ -1080,7 +1180,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
         }
         AccountCommand::Reorder { id, position } => {
             let account = account_ref(paths, &id)?;
-            crate::accounts::ensure_available(paths, &account.name)?;
+            crate::accounts::ensure_available(paths, account.provider, &account.name)?;
             daemon::ensure_started(paths).await?;
             daemon::call(
                 paths,
@@ -1137,7 +1237,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 _ => unreachable!(),
             };
             let account = account_ref(paths, &id)?;
-            crate::accounts::ensure_available(paths, &account.name)?;
+            crate::accounts::ensure_available(paths, account.provider, &account.name)?;
             daemon::ensure_started(paths).await?;
             daemon::call(
                 paths,
@@ -1229,6 +1329,15 @@ pub fn capabilities() -> Value {
     // 1.27.0: default statusLine for new managed Claude homes.
     value["data_layout"] = json!({"since_contract":"1.29.0","version":crate::layout::VERSION,"directories":[crate::layout::REGISTRY,crate::layout::SESSIONS,crate::layout::OPERATIONS,crate::layout::MESSAGING,crate::layout::CACHE,crate::layout::LOGS,crate::layout::ACCOUNTS],"account_home":"accounts/<platform>/<name>","account_fields":{"home":"the account home in use (adopted, managed, or a deferred legacy path)","home_deferred":"true while the layout migration left an in-use home at its legacy path"},"commands":["layout status","layout migrate --backup DIR [--dry-run]","layout rollback [--dry-run]"],"legacy_root":"LAYOUT_MIGRATION_REQUIRED","interrupted":"LAYOUT_MIGRATION_IN_PROGRESS"});
     value["retention"] = crate::retention::describe();
+    // 1.30.0: per-provider account names, display/backend names and the backend rename.
+    value["account_names"] = json!({"since_contract":"1.30.0","unique_across_providers":false,"unique_per_provider":true,"id_format":"<provider>:<name>","ambiguous_bare_name_error":"ACCOUNT_AMBIGUOUS",
+        "row_fields":["folder_name","display_name","name_mismatch","running_sessions","generation","backend_rename"],
+        "rename_only":{"command":"account rename","args":["id","--display-name|--clear","--expected-generation?"],"allowed_while_sessions_run":true,"changes":["display_name"]},
+        "rename_backend":{"command":"account rename-backend","args":["id","new_name?","--expected-generation","--request-id?"],"update_backend_without_new_name":true,
+            "refused_while_sessions_run":true,"journal":"operations/account-renames","phases":["admitted","moving_home","home_moved","registry_updated","complete","failed","uncertain","abandoned"],
+            "replays":false,"recover":"recover","abandon":"abandon-operation","changes":["id","folder","registry","sessions","gemini_auth_failure","usage_history"],
+            "unchanged":["receipts","digests","message_journals","operation_history"],"adopted_home":"ACCOUNT_HOME_ADOPTED",
+            "errors":["ACCOUNT_SESSIONS_RUNNING","ACCOUNT_NAME_EXISTS","ACCOUNT_NAME_UNCHANGED","ACCOUNT_HOME_EXISTS","ACCOUNT_HOME_ADOPTED","ACCOUNT_REMOVED","ACCOUNT_RENAME_UNRESOLVED","ACCOUNT_DELETION_IN_PROGRESS","ACCOUNT_POLL_IN_PROGRESS","ACCOUNT_BUSY","STALE_TARGET","ACCOUNT_AMBIGUOUS","ACCOUNT_HOME_MOVE_FAILED","INVALID_ARGUMENT"]}});
     value["claude_default_statusline"] = json!({"since_contract":"1.27.0","setting":"claude_default_statusline_command","built_in_default":crate::config::Config::default().claude_default_statusline_command,"empty":"disabled","config_file":"CLAUDE_CONFIG_DIR/settings.json","key":"statusLine","value":{"type":"command","command":"<setting>"},"applies_to":"new_managed_homes_only","existing_key":"kept","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.28.0: operator abandon of uncertain/stuck resume-launch operations.
     value["abandon_operation"] = json!({"since_contract":"1.28.0","command":"abandon-operation","requires":["operation","confirm"],"applies_to":"resume_launch","phases":["uncertain","stuck"],"terminal_phase":"abandoned","replays":false,"sends":false,"refused_while_session_process_live":true});
@@ -2232,7 +2341,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             external::hosting::launch_placed(
                 paths,
                 &herdr_session,
-                &s.account,
+                &format!("{}:{}", s.provider, s.account),
                 Some(&s.conversation_id),
                 (&session, &s.generation()),
                 resume_placement(space.as_deref(), new_space.as_deref(), &s),
@@ -2299,6 +2408,11 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     .into_iter()
                     .map(|r| json!(r)),
             );
+            ops.extend(
+                crate::account_rename::list(paths)?
+                    .iter()
+                    .map(crate::account_rename::public),
+            );
             ops.extend(external::archiving::operations(paths)?);
             ops.extend(external::spaces::operations(paths)?);
             json!(ops)
@@ -2313,7 +2427,11 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             json!({"id":id,"response_recorded":true})
         }
         Command::AbandonOperation { operation, confirm } => {
-            crate::resume::abandon(paths, &operation, &confirm).await?
+            if crate::account_rename::exists(paths, &operation) {
+                crate::account_rename::abandon(paths, &operation, &confirm)?
+            } else {
+                crate::resume::abandon(paths, &operation, &confirm).await?
+            }
         }
         Command::CancelOperation { operation: id } => {
             managed_operation(paths, &id)?;
@@ -2322,6 +2440,15 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         }
         Command::Recover { operation: id } if external::spaces::exists(paths, &id) => {
             external::spaces::recover(paths, &id)?
+        }
+        Command::Recover { operation: id } if crate::account_rename::exists(paths, &id) => {
+            daemon::ensure_started(paths).await?;
+            daemon::call(
+                paths,
+                "account/rename-backend/recover",
+                json!({"request_id":id}),
+            )
+            .await?
         }
         Command::Recover { operation: id }
             if crate::account_deletion::status(paths, &id).is_ok() =>

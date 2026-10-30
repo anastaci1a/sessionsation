@@ -281,7 +281,7 @@ pub fn exec_attach(paths: &Paths, id: &str, generation: &str) -> Result<()> {
         "UNSUPPORTED_PROVIDER_OPERATION"
     );
     let account = claude::account(paths, &session.account)?;
-    crate::accounts::ensure_available(paths, &session.account)?;
+    crate::accounts::ensure_available(paths, ProviderId::Claude, &session.account)?;
     ensure!(account.enabled, "ACCOUNT_UNAVAILABLE: account is disabled");
     let config = crate::store::load_config(paths)?;
     let o = observe(

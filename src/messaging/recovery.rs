@@ -214,7 +214,7 @@ async fn plan_inner(paths: &Paths, r: PlanRequest, own: Option<&str>) -> anyhow:
     Ok(json!(plan))
 }
 async fn validate_owner(paths: &Paths, account: &str) -> anyhow::Result<()> {
-    crate::accounts::ensure_available(paths, account)?;
+    crate::accounts::ensure_available(paths, crate::provider::ProviderId::Codex, account)?;
     let status = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         crate::daemon::call(paths, "status", json!({})),
@@ -229,9 +229,12 @@ async fn validate_owner(paths: &Paths, account: &str) -> anyhow::Result<()> {
         "RECOVERY_SUPERVISOR_UPGRADE_REQUIRED_COORDINATE_ALL_ROOT_WRITERS"
     );
     ensure!(
-        status["accounts"].as_array().is_some_and(|aa| aa
-            .iter()
-            .any(|a| a["name"] == account && a["enabled"] == true && a["auth_required"] == false)),
+        status["accounts"]
+            .as_array()
+            .is_some_and(|aa| aa.iter().any(|a| a["name"] == account
+                && a["provider"].as_str().unwrap_or("codex") == "codex"
+                && a["enabled"] == true
+                && a["auth_required"] == false)),
         "RECOVERY_ACCOUNT_NOT_READY_ENABLE_OR_LOGIN_FIRST"
     );
     Ok(())

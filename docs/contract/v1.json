@@ -385,6 +385,33 @@
         "home_deferred": {
           "type": "boolean",
           "description": "1.29.0: true while the layout migration left this in-use managed home at its legacy path; it moves once idle."
+        },
+        "folder_name": {
+          "type": "string",
+          "description": "1.30.0: the backend name that names the account folder and the id (equal to name)."
+        },
+        "name_mismatch": {
+          "type": "boolean",
+          "description": "1.30.0: true when a display name differs from the folder name."
+        },
+        "running_sessions": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "1.30.0: sessions of this account using its home now; null when not observable."
+        },
+        "generation": {
+          "type": "string",
+          "description": "1.30.0: opaque fingerprint of the account identity facts; pass back as expected_generation."
+        },
+        "backend_rename": {
+          "type": "object",
+          "description": "1.30.0: whether Rename & update backend can run now. reason is the error code it would return.",
+          "properties": {
+            "available": {"type": "boolean"},
+            "reason": {"type": ["string", "null"]},
+            "update_backend": {"type": "boolean"},
+            "update_backend_target": {"type": ["string", "null"]}
+          }
         }
       },
       "required": [

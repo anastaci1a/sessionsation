@@ -25,15 +25,17 @@ fn marker_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<std::pa
 fn marker(paths: &Paths, name: &str) -> Result<std::path::PathBuf> {
     marker_for(paths, ProviderId::Codex, name)
 }
-/// Names are unique across providers, so a removal marker of either provider
-/// hides the one enrolled account with this name.
-pub fn removed(paths: &Paths, name: &str) -> Result<bool> {
-    for provider in ProviderId::ALL {
-        if removed_for(paths, provider, name)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+/// Whether this provider's account has been unregistered locally (membership removal).
+pub fn removed(paths: &Paths, provider: ProviderId, name: &str) -> Result<bool> {
+    removed_for(paths, provider, name)
+}
+/// [`removed`] for a catalog record's provider string (Codex when unrecognised).
+pub fn removed_session(paths: &Paths, provider: &str, name: &str) -> Result<bool> {
+    removed(
+        paths,
+        ProviderId::parse(provider).unwrap_or(ProviderId::Codex),
+        name,
+    )
 }
 fn removed_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<bool> {
     let path = marker_for(paths, provider, name)?;
@@ -49,32 +51,36 @@ fn removed_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<bool> 
         Err(e) => Err(e.into()),
     }
 }
-pub fn ensure_available(paths: &Paths, name: &str) -> Result<()> {
+pub fn ensure_available(paths: &Paths, provider: ProviderId, name: &str) -> Result<()> {
     ensure!(
-        !removed(paths, name)?,
+        !removed(paths, provider, name)?,
         "ACCOUNT_REMOVED: restore the local membership before using this account"
+    );
+    ensure!(
+        crate::account_rename::unresolved_for(paths, provider, name)?.is_none(),
+        "ACCOUNT_RENAME_UNRESOLVED: an account rename has not finished; recover or abandon it first"
     );
     Ok(())
 }
-pub fn operation_lock(paths: &Paths, name: &str) -> Result<fs::File> {
+pub fn operation_lock(paths: &Paths, provider: ProviderId, name: &str) -> Result<fs::File> {
     validate_name(name)?;
     let dir = paths
         .root
         .join(crate::layout::ACCOUNT_CATALOG)
         .join("locks");
     private_dir(&dir)?;
-    let lock = lock_file(&dir.join(format!("codex-{name}.lock")))?;
+    let lock = lock_file(&dir.join(format!("{provider}-{name}.lock")))?;
     lock.try_lock_exclusive().context("ACCOUNT_BUSY")?;
     Ok(lock)
 }
-pub fn launch_lock(paths: &Paths, name: &str) -> Result<fs::File> {
+pub fn launch_lock(paths: &Paths, provider: ProviderId, name: &str) -> Result<fs::File> {
     validate_name(name)?;
     let dir = paths
         .root
         .join(crate::layout::ACCOUNT_CATALOG)
         .join("locks");
     private_dir(&dir)?;
-    let lock = lock_file(&dir.join(format!("codex-{name}.lock")))?;
+    let lock = lock_file(&dir.join(format!("{provider}-{name}.lock")))?;
     FileExt::try_lock_shared(&lock).context("ACCOUNT_BUSY")?;
     Ok(lock)
 }
@@ -127,7 +133,10 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
     let status = daemon::call(paths, "status", json!({})).await?;
     let account = status["accounts"]
         .as_array()
-        .and_then(|a| a.iter().find(|a| a["name"] == name))
+        .and_then(|a| {
+            a.iter()
+                .find(|a| a["name"] == name && a["provider"].as_str().unwrap_or("codex") == "codex")
+        })
         .context("ACCOUNT_NOT_FOUND")?;
     let home = paths.account(name)?;
     if let Ok(metadata) = fs::symlink_metadata(&home) {
@@ -181,7 +190,7 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
         "stored":stored.iter().filter(|f| f["path"].as_str().is_some_and(|p| !p.starts_with("app-server-control/") && !p.starts_with("logs/") && p!=".switcher-lease")).collect::<Vec<_>>(),"active":active,"loaded":loaded,"operations":operations,"affected":affected});
     let revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&fingerprint)?));
     Ok(
-        json!({"account_id":format!("codex:{name}"),"removed":removed(paths,name)?,"revision":revision,
+        json!({"account_id":format!("codex:{name}"),"removed":removed(paths,ProviderId::Codex,name)?,"revision":revision,
         "affected_sessions":affected,"active_sessions":active,"loaded_conversations":loaded,"pending_operations":operations,
         "can_remove":active.is_empty() && loaded.is_empty() && operations.is_empty(),
         "stored_data":{"home":home,"files":stored.len(),"bytes":stored.iter().filter_map(|f|f["bytes"].as_u64()).sum::<u64>(),
@@ -220,13 +229,17 @@ pub(crate) fn native_activity(
         vec![]
     };
     let processes = home.exists() && native::env_in_use(provider, &config, home);
-    let headless = crate::messaging::headless::active_for_account(paths, name)?
+    let headless = crate::messaging::headless::active_for_account(paths, provider, name)?
         .into_iter()
         .map(|id| json!({"id":id,"phase":"headless_delivery"}))
         .chain(
-            crate::provider::claude::hosted::live_for_account(paths, name)
-                .into_iter()
-                .map(|id| json!({"id":id,"phase":"hosted_session"})),
+            if provider == ProviderId::Claude {
+                crate::provider::claude::hosted::live_for_account(paths, name)
+            } else {
+                Vec::new()
+            }
+            .into_iter()
+            .map(|id| json!({"id":id,"phase":"hosted_session"})),
         )
         .collect();
     Ok((live, processes, headless))
@@ -287,7 +300,7 @@ pub async fn remove(
         confirm == format!("{provider}:{name}"),
         "CONFIRMATION_REQUIRED"
     );
-    let _account = operation_lock(paths, name)?;
+    let _account = operation_lock(paths, provider, name)?;
     let jobs = paths.root.join(crate::layout::HANDOFF_JOBS);
     private_dir(&jobs)?;
     let queue = lock_file(&jobs.join("queue.lock"))?;
@@ -309,7 +322,7 @@ pub async fn remove(
 }
 
 pub fn restore(paths: &Paths, provider: ProviderId, name: &str) -> Result<Value> {
-    let _account = operation_lock(paths, name)?;
+    let _account = operation_lock(paths, provider, name)?;
     let file = marker_for(paths, provider, name)?;
     ensure!(removed_for(paths, provider, name)?, "ACCOUNT_NOT_REMOVED");
     fs::remove_file(&file)?;
@@ -354,17 +367,17 @@ mod tests {
     fn concurrent_launches_share_membership_but_exclude_removal() {
         let d = tempfile::tempdir().unwrap();
         let p = Paths::new(Some(d.path().join("state"))).unwrap();
-        let a = launch_lock(&p, "test").unwrap();
-        let b = launch_lock(&p, "test").unwrap();
-        assert!(operation_lock(&p, "test").is_err());
+        let a = launch_lock(&p, ProviderId::Codex, "test").unwrap();
+        let b = launch_lock(&p, ProviderId::Codex, "test").unwrap();
+        assert!(operation_lock(&p, ProviderId::Codex, "test").is_err());
         FileExt::unlock(&a).unwrap();
         FileExt::unlock(&b).unwrap();
         drop(a);
         drop(b);
-        let removal = operation_lock(&p, "test").unwrap();
-        assert!(launch_lock(&p, "test").is_err());
+        let removal = operation_lock(&p, ProviderId::Codex, "test").unwrap();
+        assert!(launch_lock(&p, ProviderId::Codex, "test").is_err());
         drop(removal);
-        assert!(launch_lock(&p, "test").is_ok());
+        assert!(launch_lock(&p, ProviderId::Codex, "test").is_ok());
     }
     #[test]
     fn removal_membership_never_erases_or_disables_provider_data() {
@@ -375,9 +388,9 @@ mod tests {
         fs::write(home.join("history.jsonl"), b"recoverable fixture").unwrap();
         let file = marker(&p, "test").unwrap();
         atomic_write(&file, b"{}").unwrap();
-        assert!(ensure_available(&p, "test").is_err());
+        assert!(ensure_available(&p, ProviderId::Codex, "test").is_err());
         restore(&p, ProviderId::Codex, "test").unwrap();
-        assert!(ensure_available(&p, "test").is_ok());
+        assert!(ensure_available(&p, ProviderId::Codex, "test").is_ok());
         assert_eq!(
             fs::read(home.join("history.jsonl")).unwrap(),
             b"recoverable fixture"

@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.29.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.30.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -1102,7 +1102,7 @@ be negotiated by capability rather than exact build equality.
 Additive. `capabilities.providers[]` reports `claude` with `implemented:true`, the
 existing flat booleans and an `operations` object (`{supported, reason}` per
 operation; Codex has the same object). `capabilities.account_names` states that
-names are unique across providers. Account snapshots add `provider`,
+names are unique per provider since 1.30.0 (see [Account names](#per-provider-account-names-and-backend-rename-1300)). Account snapshots add `provider`,
 `provider_capabilities`, `config_home` (adopted Claude homes), `auth_detail`
 (`AUTH_REQUIRED`/`WRONG_AUTH_MODE`, never identity), `usage_state`
 (`fresh|partial|stale|missing|no_windows|error`) and `usage.source`/`usage.semantics`
@@ -2227,3 +2227,20 @@ directories, the account fields and the `layout` commands) and `retention`
 shapes of existing commands are unchanged; clients that read data-root files
 directly must use the new paths (see
 [Data-root layout](operations.md#data-root-layout-contract-1290)).
+
+### Per-provider account names and backend rename (1.30.0)
+
+MINOR, additive. Account names are unique **per provider** (`codex:work` and `claude:work`
+coexist); `capabilities.account_names.unique_across_providers` becomes `false`. A bare name that
+exists under several providers fails with `ACCOUNT_AMBIGUOUS` (unambiguous bare names keep
+working); `ACCOUNT_NAME_EXISTS` now names the same-provider owner only. Account rows gain
+`folder_name`, `name_mismatch`, `running_sessions`, `generation` and `backend_rename`
+(`capabilities.account_names` lists them). New command `api account rename-backend ID [NEW_NAME]
+--expected-generation G [--request-id UUID]` ("Rename & update backend"; without `NEW_NAME` it
+renames the folder and id to match the display name); `api account rename` gains
+`--expected-generation`. New operation kind `account_rename` in `api operations`, resolved with
+`api recover` or `api abandon-operation`. New error codes: `ACCOUNT_AMBIGUOUS`,
+`ACCOUNT_SESSIONS_RUNNING`, `ACCOUNT_NAME_UNCHANGED`, `ACCOUNT_HOME_EXISTS`, `ACCOUNT_HOME_ADOPTED`,
+`ACCOUNT_HOME_MOVE_FAILED`, `ACCOUNT_RENAME_UNRESOLVED`. A backend rename changes the account id:
+clients must re-read accounts and sessions (session generations change) and treat old
+receipts and digests as historical. See [cli](cli.md#account-folder-name-versus-display-name-contract-1300).

@@ -711,6 +711,24 @@ pub(crate) fn remove(paths: &Paths, before: &Session) -> Result<Session> {
         Ok(removed)
     })
 }
+/// Point every session of `provider:old` at `new` (account backend rename).
+/// Idempotent; returns how many entries changed. Each changed entry gets a new
+/// revision, so its generation changes and clients refresh.
+pub fn reassign_account(paths: &Paths, provider: &str, old: &str, new: &str) -> Result<usize> {
+    transaction(paths, |c| {
+        let mut changed = 0;
+        for s in c
+            .sessions
+            .values_mut()
+            .filter(|s| s.provider == provider && s.account == old)
+        {
+            s.account = new.into();
+            s.revision += 1;
+            changed += 1;
+        }
+        Ok(changed)
+    })
+}
 pub fn rename(paths: &Paths, id: &str, generation: &str, name: &str) -> Result<Session> {
     validate_name(name)?;
     transaction(paths, |c| {

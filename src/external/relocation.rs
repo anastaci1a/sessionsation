@@ -205,6 +205,7 @@ pub async fn queue_public(
         status["accounts"]
             .as_array()
             .is_some_and(|accounts| accounts.iter().any(|a| a["name"] == account
+                && a["provider"].as_str().unwrap_or("codex") == "codex"
                 && a["enabled"] == true
                 && a["auth_required"] == false)),
         "ACCOUNT_UNAVAILABLE"

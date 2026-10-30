@@ -1132,7 +1132,8 @@ fn display_account_for_home(
     }
     let identity = crate::identity::read_identity(home).ok()?;
     let mut matches = state?.accounts.values().filter(|candidate| {
-        !candidate.identity.is_empty()
+        candidate.provider == crate::provider::ProviderId::Codex
+            && !candidate.identity.is_empty()
             && candidate.identity == identity
             && paths
                 .account(&candidate.name)
@@ -1163,7 +1164,7 @@ pub async fn run_account(paths: &Paths, account: &str, options: &[String]) -> Re
     run_account_thread(paths, account, None, options).await
 }
 pub async fn account_control(paths: &Paths, account: &str) -> Result<crate::control::Control> {
-    crate::accounts::ensure_available(paths, account)?;
+    crate::accounts::ensure_available(paths, crate::provider::ProviderId::Codex, account)?;
     for _ in 0..50 {
         match daemon::call(paths, "account/prepare", json!({"name":account})).await {
             Ok(_) => return crate::control::Control::connect(&paths.account(account)?).await,
@@ -1302,16 +1303,19 @@ async fn run_account_thread_inner(
         .transpose()?;
     let options = material.as_ref().map_or(options, |(_, o)| o.as_slice());
     validate_name(account)?;
-    let _account_operation = crate::accounts::launch_lock(paths, account)?;
-    crate::accounts::ensure_available(paths, account)?;
+    let _account_operation =
+        crate::accounts::launch_lock(paths, crate::provider::ProviderId::Codex, account)?;
+    crate::accounts::ensure_available(paths, crate::provider::ProviderId::Codex, account)?;
     if recovery.is_none() {
         daemon::ensure_started(paths).await?;
     }
     let status = daemon::call(paths, "status", json!({})).await?;
     ensure!(
-        status["accounts"].as_array().is_some_and(|a| a
-            .iter()
-            .any(|a| a["name"] == account && a["enabled"] == true)),
+        status["accounts"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|a| a["name"] == account
+                && a["provider"].as_str().unwrap_or("codex") == "codex"
+                && a["enabled"] == true)),
         "account is not enrolled or is disabled"
     );
     let home = paths.account(account)?;
@@ -1724,7 +1728,11 @@ pub async fn queue_move(
     let status = daemon::call(paths, "status", json!({})).await?;
     let account = status["accounts"]
         .as_array()
-        .and_then(|a| a.iter().find(|a| a["name"] == target))
+        .and_then(|a| {
+            a.iter().find(|a| {
+                a["name"] == target && a["provider"].as_str().unwrap_or("codex") == "codex"
+            })
+        })
         .context("unknown destination account")?;
     let _ = account;
     enqueue(paths, source, target, options, None, "account")
@@ -1894,7 +1902,7 @@ fn enqueue_with_id(
         )?)
     };
     if !matches!(kind, "terminate" | "pause") {
-        crate::accounts::ensure_available(paths, target)?;
+        crate::accounts::ensure_available(paths, crate::provider::ProviderId::Codex, target)?;
     }
     if let Some((id, generation)) = policy.expected {
         let selected = crate::catalog::resolve(paths, id, generation)?;
@@ -2070,6 +2078,10 @@ fn process_info(pid: u32) -> Result<ProcessInfo> {
         parent: fields[1].parse()?,
         start_time: fields[19].parse()?,
     })
+}
+#[cfg(test)]
+pub(crate) fn process_start_time(pid: u32) -> Result<u64> {
+    Ok(process_info(pid)?.start_time)
 }
 pub(crate) fn attachment_definitely_gone(pid: u32, start: u64) -> bool {
     match process_info(pid) {
@@ -2355,6 +2367,7 @@ pub async fn queue_snapshot(
             status["accounts"]
                 .as_array()
                 .is_some_and(|accounts| accounts.iter().any(|a| a["name"] == target
+                    && a["provider"].as_str().unwrap_or("codex") == "codex"
                     && a["enabled"] == true
                     && a["auth_required"] == false)),
             "ACCOUNT_UNAVAILABLE"

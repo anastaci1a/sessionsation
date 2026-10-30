@@ -65,7 +65,7 @@ async fn one(paths: &Paths, t: Target, policy: &Policy) -> anyhow::Result<Value>
                 "stale"
             });
             let stop = external::messaging_stop_intent(paths, &s.conversation_id)?;
-            let removed = crate::accounts::removed(paths, &s.account)?;
+            let removed = crate::accounts::removed_session(paths, &s.provider, &s.account)?;
             let enabled = modes::queue::sending_enabled(paths)?;
             let pending = crate::lifecycle::pending(paths, &s.conversation_id, None)?.is_some();
             let reason = if pending {

@@ -402,7 +402,11 @@ fn bundle(paths: &Paths, a: &Archive) -> Result<PathBuf> {
 }
 async fn archive(paths: &Paths, o: &mut Operation) -> Result<()> {
     let source = o.source.clone().context("MISSING_SOURCE")?;
-    let _account = crate::accounts::operation_lock(paths, &source.account)?;
+    let _account = crate::accounts::operation_lock(
+        paths,
+        crate::provider::ProviderId::Codex,
+        &source.account,
+    )?;
     crate::catalog::resolve(paths, &o.session.id, &o.expected_generation)?;
     phase(
         paths,
@@ -624,7 +628,11 @@ async fn delete(paths: &Paths, o: &mut Operation) -> Result<()> {
         .clone()
         .or_else(|| prior.as_ref().map(|a| a.source.clone()))
         .context("MISSING_SOURCE")?;
-    let _account = crate::accounts::operation_lock(paths, &source.account)?;
+    let _account = crate::accounts::operation_lock(
+        paths,
+        crate::provider::ProviderId::Codex,
+        &source.account,
+    )?;
     crate::catalog::resolve(paths, &o.session.id, &o.expected_generation)?;
     phase(
         paths,

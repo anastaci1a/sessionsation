@@ -1,11 +1,11 @@
 //! Provider boundary. Everything that differs between coding-agent providers is
 //! dispatched from here; callers never compare provider strings themselves.
 //!
-//! Account names are globally unique across providers: `work` can be enrolled
-//! as `codex:work`, `claude:work`, `gemini:work` or `antigravity:work`, never two of them. Public identifiers are always
+//! Account names are unique per provider: `work` can be enrolled once per provider
+//! (`codex:work` and `claude:work` coexist). Public identifiers are always
 //! provider-qualified (`<provider>:<name>`). A bare name is accepted only where
-//! a human addresses an existing account (it is unambiguous because names are
-//! global); a qualified identifier must match the enrolled provider.
+//! a human addresses an existing account and only while it is unambiguous
+//! (`ACCOUNT_AMBIGUOUS` otherwise); a qualified identifier must match the enrolled provider.
 pub mod activity;
 pub mod antigravity;
 pub mod claude;
@@ -128,29 +128,50 @@ impl AccountRef {
 }
 
 /// Resolve a (possibly bare) reference against enrolled `(name, provider)` pairs.
+/// Names are unique per provider only: a bare name enrolled under several
+/// providers is ambiguous and must be qualified.
 pub fn resolve<'a>(
     enrolled: impl IntoIterator<Item = (&'a str, ProviderId)>,
     id: &str,
 ) -> Result<AccountRef> {
     let (wanted, name) = AccountRef::parse_lookup(id)?;
-    let Some((_, provider)) = enrolled.into_iter().find(|(n, _)| *n == name) else {
-        bail!("ACCOUNT_NOT_FOUND: no enrolled account named {name}");
-    };
-    if let Some(wanted) = wanted
-        && wanted != provider
-    {
-        bail!(
-            "ACCOUNT_PROVIDER_MISMATCH: {name} is enrolled as {provider}:{name}, not {wanted}:{name}"
-        );
+    let providers: Vec<ProviderId> = enrolled
+        .into_iter()
+        .filter(|(n, _)| *n == name)
+        .map(|(_, p)| p)
+        .collect();
+    match (wanted, providers.as_slice()) {
+        (_, []) => bail!("ACCOUNT_NOT_FOUND: no enrolled account named {name}"),
+        (Some(wanted), have) => {
+            if !have.contains(&wanted) {
+                bail!(
+                    "ACCOUNT_PROVIDER_MISMATCH: {name} is enrolled as {}:{name}, not {wanted}:{name}",
+                    have[0]
+                );
+            }
+            Ok(AccountRef {
+                provider: wanted,
+                name,
+            })
+        }
+        (None, [provider]) => Ok(AccountRef {
+            provider: *provider,
+            name,
+        }),
+        (None, many) => bail!(
+            "ACCOUNT_AMBIGUOUS: '{name}' exists as {}; use <provider>:<name>",
+            many.iter()
+                .map(|p| format!("{p}:{name}"))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ),
     }
-    Ok(AccountRef { provider, name })
 }
 
-/// Names are global across providers; report the existing owner precisely.
+/// Names are unique per provider; report the existing owner precisely.
 pub fn collision(existing: &Account) -> anyhow::Error {
     anyhow::anyhow!(
-        "ACCOUNT_NAME_EXISTS: account name '{}' already exists as {}:{}; names are unique across providers (use account login to reauthenticate)",
-        existing.name,
+        "ACCOUNT_NAME_EXISTS: {}:{} already exists; names are unique per provider (use account login to reauthenticate)",
         existing.provider,
         existing.name
     )
@@ -259,6 +280,13 @@ mod tests {
         );
         assert_eq!(
             resolve(enrolled, "claude:home").unwrap().provider,
+            ProviderId::Claude
+        );
+        let both = [("work", ProviderId::Codex), ("work", ProviderId::Claude)];
+        let ambiguous = resolve(both, "work").unwrap_err().to_string();
+        assert!(ambiguous.starts_with("ACCOUNT_AMBIGUOUS"), "{ambiguous}");
+        assert_eq!(
+            resolve(both, "claude:work").unwrap().provider,
             ProviderId::Claude
         );
         let mismatch = resolve(enrolled, "claude:work").unwrap_err().to_string();

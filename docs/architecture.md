@@ -98,7 +98,7 @@ Account records carry `provider` and, for adopted Claude homes, `config_home`.
 Registries written before providers could enroll only Codex, so the named
 migration `store::migrate_legacy_codex_provider` sets missing providers to Codex
 once and records one `account.provider_migrated_legacy_codex` event per account;
-it never infers a provider from a name. Account names are global across providers.
+it never infers a provider from a name. Account names are unique per provider; the registry key is the bare name for Codex and `<provider>:<name>` for the other providers (migrated once, event `account.key_migrated_per_provider`).
 
 Claude sessions are bound to their account config home: no account switch,
 history conversion or credential sharing exists. The supervisor only probes

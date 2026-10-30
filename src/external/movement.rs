@@ -242,7 +242,11 @@ async fn prepare_destination(paths: &Paths, job: &mut Job) -> Result<Control> {
         let status = daemon::call(paths, "status", json!({})).await?;
         let account = status["accounts"]
             .as_array()
-            .and_then(|a| a.iter().find(|a| a["name"] == job.target))
+            .and_then(|a| {
+                a.iter().find(|a| {
+                    a["name"] == job.target && a["provider"].as_str().unwrap_or("codex") == "codex"
+                })
+            })
             .context("destination account was removed")?;
         if account["enabled"] != true || account["auth_required"] == true {
             phase(

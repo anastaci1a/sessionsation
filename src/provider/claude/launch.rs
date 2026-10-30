@@ -13,7 +13,7 @@ use std::{os::unix::process::CommandExt, path::Path};
 
 fn context(paths: &Paths, name: &str) -> Result<(Enrolled, Config)> {
     let account = claude::account(paths, name)?;
-    crate::accounts::ensure_available(paths, name)?;
+    crate::accounts::ensure_available(paths, ProviderId::Claude, name)?;
     ensure!(account.enabled, "ACCOUNT_UNAVAILABLE: account is disabled");
     ensure!(
         account.home.is_dir(),

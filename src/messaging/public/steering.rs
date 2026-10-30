@@ -117,7 +117,7 @@ pub async fn target(paths: &Paths, id: &str, generation: &str) -> anyhow::Result
     anyhow::ensure!(s.provider == "codex", "UNSUPPORTED_PROVIDER_OPERATION");
     anyhow::ensure!(
         !matches!(s.account.as_str(), "external" | "unknown")
-            && !crate::accounts::removed(paths, &s.account)?,
+            && !crate::accounts::removed_session(paths, &s.provider, &s.account)?,
         "ACCOUNT_UNAVAILABLE"
     );
     let a = readiness::recorded(paths, &s)?.ok_or(Fault("no_live_attachment"))?;
@@ -189,7 +189,7 @@ pub(super) async fn deliver(
         crate::catalog::resolve(paths, &b.request.session_id, &b.request.expected_generation)?;
     anyhow::ensure!(
         !matches!(session.account.as_str(), "external" | "unknown")
-            && !crate::accounts::removed(paths, &session.account)?,
+            && !crate::accounts::removed_session(paths, &session.provider, &session.account)?,
         "ACCOUNT_UNAVAILABLE"
     );
     let a = attachment(paths, &b.native.session_id)?;

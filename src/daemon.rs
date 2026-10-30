@@ -112,20 +112,26 @@ pub fn parse_usage(value: &Value, at: i64) -> Result<Usage> {
 /// The account named by `params.name`, verifying `params.provider` when given.
 fn named<'a>(state: &'a State, params: &Value) -> Result<&'a Account> {
     let name = params["name"].as_str().context("missing account name")?;
-    let account = state.accounts.get(name).context("unknown account")?;
-    if let Some(provider) = params["provider"].as_str() {
-        let provider = ProviderId::parse(provider)?;
-        ensure!(
-            provider == account.provider,
-            "ACCOUNT_PROVIDER_MISMATCH: {name} is enrolled as {}:{name}, not {provider}:{name}",
-            account.provider
-        );
-    }
-    Ok(account)
+    let provider = params["provider"]
+        .as_str()
+        .map(ProviderId::parse)
+        .transpose()?;
+    state.resolve_account(name, provider)
+}
+/// The registry key of the account a request names.
+fn key_of(state: &State, params: &Value) -> Result<String> {
+    Ok(named(state, params)?.key())
 }
 /// Supervisor operations that own a Codex app-server/home.
 fn codex_named<'a>(state: &'a State, params: &Value) -> Result<&'a Account> {
-    let account = named(state, params)?;
+    // Codex-only methods predate providers: an absent provider means Codex.
+    let name = params["name"].as_str().context("missing account name")?;
+    let provider = params["provider"]
+        .as_str()
+        .map(ProviderId::parse)
+        .transpose()?
+        .unwrap_or(ProviderId::Codex);
+    let account = state.resolve_account(name, Some(provider))?;
     ensure!(
         account.provider == ProviderId::Codex,
         "UNSUPPORTED_PROVIDER_OPERATION: {} accounts do not support this operation",
@@ -227,14 +233,15 @@ pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> V
     let accounts: Vec<_> = state.ordered().into_iter().map(|a| {
         let (usage, fresh, usage_state) = account_usage(paths, a, config, at);
         json!({
-        "name":a.name,"order":a.order,"display_name":a.display_name,"provider":a.provider,"config_home":a.config_home,
+        "name":a.name,"folder_name":a.name,"name_mismatch":a.display_name.is_some(),"generation":crate::account_rename::account_generation(a),
+        "order":a.order,"display_name":a.display_name,"provider":a.provider,"config_home":a.config_home,
         "enabled":a.enabled,"auth_required":a.auth_required,"auth_detail":a.auth_detail,"deletion_id":a.deletion_id,
         "switch_thresholds":a.switch_thresholds,
         "usage":usage,"usage_fresh":fresh,"usage_state":usage_state,
         "credit_fresh":a.provider == ProviderId::Codex && a.usage.credits.is_some() && a.usage.observed_fresh(at,config.stale_seconds),
         "monitoring_pause_reason":(a.provider == ProviderId::Codex).then(||monitoring_pause_reason(paths,&a.name)).flatten(),
         "eligible":a.provider == ProviderId::Codex && crate::scheduler::eligible(a,config,at),
-        "assigned_sessions":state.sessions.values().filter(|s|s.account.as_ref()==Some(&a.name)).count()
+        "assigned_sessions":state.sessions.values().filter(|s|a.provider == ProviderId::Codex && s.account.as_ref()==Some(&a.name)).count()
     })}).collect();
     let sessions: Vec<_> = state.sessions.values().map(|s|json!({"id":s.id,"thread_id":s.root_thread,"cwd":s.cwd,"account":s.account,"phase":s.phase,"reason":s.reason,"tmux_pane":s.tmux_pane,"manual_pause":s.manual_pause,"resume_work":s.resume_work})).collect();
     json!({"schema_version":1,"daemon":{"running":true,"package_version":env!("CARGO_PKG_VERSION"),"api_version":1,"lifecycle_reservations":["message-recoveries","space-moves"]},"codex_version":version,
@@ -286,6 +293,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
         store.save(&state, now(), "account.order_migrated", "")?;
     }
     crate::autostart::reconcile(&mut state);
+    crate::account_rename::reconcile_all(&paths, &mut state, &mut store);
     store.save(&state, now(), "automatic_reconciled", "")?;
     let mut config = load_config(&paths)?;
     // Data-root retention (logs, cache, operations history, receipts): first
@@ -396,7 +404,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                     match method {
                         "status" => Ok(status(&paths,&state,&config,&version)),
                         "account/history" => {
-                            let name = params["name"].as_str().context("missing account name")?; named(&state,params)?;
+                            let key = key_of(&state,params)?; let name = key.as_str();
                             let account = state.accounts.get(name).context("unknown account")?;
                             let start = params["start"].as_i64().context("missing range start")?;
                             let end = params["end"].as_i64().context("missing range end")?;
@@ -414,7 +422,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             Ok(value)
                         }
                         "account/thresholds" => {
-                            let name = params["name"].as_str().context("missing account name")?; named(&state,params)?;
+                            let key = key_of(&state,params)?; let name = key.as_str();
                             let account = state.accounts.get_mut(name).context("unknown account")?;
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             let mut thresholds = account.switch_thresholds.clone();
@@ -438,19 +446,19 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             ensure!(new.codex_binary == config.codex_binary || helpers.is_empty(), "restart supervisor before changing an active Codex binary");
                             save_config(&paths,&new)?; config = new; Ok(json!({"saved":true}))
                         }
-                        "account/delete/prepare" if crate::provider::native::is_native(named(&state,params)?.provider) => {
+                        "account/delete/prepare" if matches!(params["provider"].as_str(),Some("claude"|"gemini"|"antigravity")) => {
                             let provider=named(&state,params)?.provider;
                             let name=params["name"].as_str().context("missing account name")?;
                             let id=params["request_id"].as_str().context("missing deletion request")?;
                             uuid::Uuid::parse_str(id)?;
                             let record=crate::account_deletion::status(&paths,id)?;
                             ensure!(record.account_id==format!("{provider}:{name}"),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
-                            let account=state.accounts.get(name).context("ACCOUNT_NOT_FOUND")?;
+                            let account=state.account(provider,name).context("ACCOUNT_NOT_FOUND")?;
                             ensure!(account.deletion_id.as_deref().is_none_or(|current|current==id),"ACCOUNT_DELETION_IN_PROGRESS");
                             ensure!(account.config_home==record.external_home,"ACCOUNT_DELETION_IDENTITY_MISMATCH");
                             let home=crate::provider::account_home(&paths,account)?;
                             crate::account_deletion::native_idle(&paths,provider,name,&home)?;
-                            let account=state.accounts.get_mut(name).unwrap();account.deletion_id=Some(id.into());account.enabled=false;
+                            let account=state.account_mut(provider,name).unwrap();account.deletion_id=Some(id.into());account.enabled=false;
                             store.save(&state,now(),"account_deletion_reserved",name)?;
                             Ok(json!({"reserved":true}))
                         }
@@ -467,10 +475,11 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                     ensure!(!crate::provider::native::default_home(&paths,provider,name)?.exists(),"ACCOUNT_DATA_STILL_PRESENT");
                                 }
                             }
-                            if let Some(account)=state.accounts.get(name){
-                                ensure!(account.provider==provider&&account.deletion_id.as_deref()==Some(id),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
+                            if let Some(account)=state.account(provider,name){
+                                ensure!(account.deletion_id.as_deref()==Some(id),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
                             }
-                            state.accounts.remove(name);last_poll.remove(name);pending.remove(name);
+                            let key=crate::model::account_key(provider,name);
+                            state.accounts.remove(&key);last_poll.remove(&key);pending.remove(&key);
                             store.save(&state,now(),"account_deleted",name)?;
                             Ok(json!({"deleted":true}))
                         }
@@ -508,8 +517,9 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             crate::paths::validate_new_account_name(name)?;
                             // Older clients predate providers and could only enroll Codex.
                             let provider = params["provider"].as_str().map(ProviderId::parse).transpose()?.unwrap_or(ProviderId::Codex);
-                            if let Some(existing) = state.accounts.get(name) { return Err(crate::provider::collision(existing)); }
-                            if let Some(owner) = state.accounts.values().find(|a| a.display_name.as_deref() == Some(name)) { bail!("ACCOUNT_NAME_EXISTS: '{name}' is the display name of {}:{}; names and display names are unique across all accounts", owner.provider, owner.name); }
+                            if let Some(existing) = state.account(provider,name) { return Err(crate::provider::collision(existing)); }
+                            if let Some(owner) = state.accounts.values().find(|a| a.provider == provider && a.display_name.as_deref() == Some(name)) { bail!("ACCOUNT_NAME_EXISTS: '{name}' is the display name of {}:{}; names and display names are unique per provider", owner.provider, owner.name); }
+                            let key = crate::model::account_key(provider,name);
                             let config_dir = params["config_dir"].as_str().map(std::path::PathBuf::from);
                             if provider == ProviderId::Gemini {
                                 ensure!(config_dir.is_none(), "INVALID_ARGUMENT: --config-dir is only supported for claude accounts");
@@ -518,7 +528,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 let mut account = Account::with_provider(ProviderId::Gemini,name.into(),String::new());
                                 account.auth_required = !auth["problem"].is_null();
                                 account.auth_detail = auth["problem"].as_str().map(str::to_owned);
-                                state.accounts.insert(name.into(),account); last_poll.remove(name);
+                                state.insert_account(account); last_poll.remove(&key);
                                 store.save(&state,now(),"account_added",name)?;
                                 return Ok(json!({"name":name,"provider":"gemini","account_id":format!("gemini:{name}"),"home":home,"adopted":false,"existing_home":existing,"auth":auth,
                                     "login":{"action":"exec","interactive":true,"command":["sessionsation","account","login",format!("gemini:{name}")]}}));
@@ -530,7 +540,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 let mut account = Account::with_provider(ProviderId::Antigravity,name.into(),String::new());
                                 account.auth_required = !auth["problem"].is_null();
                                 account.auth_detail = auth["problem"].as_str().map(str::to_owned);
-                                state.accounts.insert(name.into(),account); last_poll.remove(name);
+                                state.insert_account(account); last_poll.remove(&key);
                                 store.save(&state,now(),"account_added",name)?;
                                 return Ok(json!({"name":name,"provider":"antigravity","account_id":format!("antigravity:{name}"),"home":home,"adopted":false,"existing_home":existing,"auth":auth,
                                     "login":{"action":"exec","interactive":true,"command":["sessionsation","account","login",format!("antigravity:{name}")]}}));
@@ -545,7 +555,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 let mut account = Account::with_provider(ProviderId::Claude,name.into(),String::new());
                                 account.config_home = adopted; account.auth_required = !auth["problem"].is_null();
                                 account.auth_detail = auth["problem"].as_str().map(str::to_owned);
-                                state.accounts.insert(name.into(),account); last_poll.remove(name);
+                                state.insert_account(account); last_poll.remove(&key);
                                 store.save(&state,now(),"account_added",name)?;
                                 return Ok(json!({"name":name,"provider":"claude","account_id":format!("claude:{name}"),"home":home,"adopted":params["config_dir"].is_string(),"existing_home":existing,"auth":auth,
                                     "login":{"action":"exec","interactive":true,"command":["sessionsation","account","login",format!("claude:{name}")]}}));
@@ -557,7 +567,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             match login {
                                 Ok(login) => {
                                     let mut account = Account::new(name.into(),String::new()); account.auth_required = true;
-                                    state.accounts.insert(name.into(),account); helpers.insert(name.into(),rpc);
+                                    state.insert_account(account); helpers.insert(key.clone(),rpc);
                                     store.save(&state,now(),"account_added",name)?;
                                     Ok(json!({"name":name,"login":login}))
                                 },
@@ -577,29 +587,25 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         }
                         "account/logout" => {
                             let name = params["name"].as_str().context("missing account name")?;
-                            let account = state.accounts.get(name).with_context(|| format!("ACCOUNT_NOT_FOUND: no enrolled account named {name} (a deleted account has no login to clear)"))?;
-                            let provider = account.provider;
-                            if let Some(wanted) = params["provider"].as_str() {
-                                let wanted = ProviderId::parse(wanted)?;
-                                ensure!(wanted == provider, "ACCOUNT_PROVIDER_MISMATCH: {name} is enrolled as {provider}:{name}, not {wanted}:{name}");
-                            }
+                            let account = named(&state,params)?;
+                            let provider = account.provider; let key = account.key();
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
-                            ensure!(!pending.contains(name), "ACCOUNT_POLL_IN_PROGRESS: account poll is in progress; retry shortly");
+                            ensure!(!pending.contains(&key), "ACCOUNT_POLL_IN_PROGRESS: account poll is in progress; retry shortly");
                             let home = crate::provider::account_home(&paths,account)?;
                             let was_required = account.auth_required;
                             ensure!(provider != ProviderId::Antigravity, "{}", crate::provider::antigravity::NO_LOGOUT);
                             crate::logout::ensure_idle(&paths,provider,name,&home).await?;
                             match provider {
-                                ProviderId::Codex => crate::logout::codex(&config,&home,helpers.get(name)).await?,
+                                ProviderId::Codex => crate::logout::codex(&config,&home,helpers.get(&key)).await?,
                                 ProviderId::Claude => crate::logout::claude(&config,&home).await?,
                                 ProviderId::Gemini => crate::logout::gemini(&home)?,
                                 ProviderId::Antigravity => bail!("{}", crate::provider::antigravity::NO_LOGOUT),
                             }
                             let detail = crate::provider::native::is_native(provider).then(|| "AUTH_REQUIRED".to_owned());
-                            let a = state.accounts.get_mut(name).context("unknown account")?;
+                            let a = state.accounts.get_mut(&key).context("unknown account")?;
                             let changed = !was_required || a.auth_detail != detail;
                             a.auth_required = true; a.auth_detail = detail;
-                            last_poll.insert(name.to_owned(), now());
+                            last_poll.insert(key.clone(), now());
                             if changed { store.save(&state,now(),"account.logged_out",name)?; }
                             Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"logged_out":true,"auth_required":true,"method":crate::logout::method(provider)}))
                         }
@@ -665,11 +671,11 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         "account/reorder" => {
                             let name = params["name"].as_str().context("missing account name")?;
                             let account = named(&state,params)?;
-                            let provider = account.provider;
+                            let provider = account.provider; let key = account.key();
                             let position = params["position"].as_u64().context("INVALID_ARGUMENT: position must be a non-negative integer")? as usize;
                             let total = state.accounts.len();
                             ensure!(position < total, "INVALID_POSITION: position must be between 0 and {}", total - 1);
-                            let changed = state.reorder(name, position);
+                            let changed = state.reorder(&key, position);
                             if changed { store.save(&state,now(),"account.reordered",name)?; }
                             let order: Vec<String> = state.ordered().iter().map(|a| format!("{}:{}", a.provider, a.name)).collect();
                             Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"position":position,"changed":changed,"order":order}))
@@ -682,8 +688,9 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             let name = account.name.clone();
                             let home = crate::provider::account_home(&paths,account)?;
                             let (problem, mode) = crate::provider::native::probe(&paths,&name,provider,&config,&home).await;
-                            last_poll.insert(name.clone(), now());
-                            let a = state.accounts.get_mut(&name).context("unknown account")?;
+                            let key = crate::model::account_key(provider,&name);
+                            last_poll.insert(key.clone(), now());
+                            let a = state.accounts.get_mut(&key).context("unknown account")?;
                             if a.auth_required != problem.is_some() || a.auth_detail != problem {
                                 a.auth_required = problem.is_some(); a.auth_detail = problem.clone();
                                 store.save(&state,now(),"account_observed",&name)?;
@@ -693,19 +700,58 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         "account/rename" => {
                             let account = named(&state,params)?;
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
-                            let name = account.name.clone();
+                            let (name, provider) = (account.name.clone(), account.provider);
+                            if let Some(expected) = params["expected_generation"].as_str() {
+                                ensure!(crate::account_rename::account_generation(account) == expected, "STALE_TARGET: the account changed since it was read; refresh the account list");
+                            }
                             let next = params["display_name"].as_str().map(str::trim).filter(|d| !d.is_empty() && *d != name).map(str::to_owned);
                             if let Some(display) = &next {
                                 validate_display_name(display)?;
-                                if let Some(owner) = state.accounts.values().find(|a| a.name != name && (a.name == *display || a.display_name.as_deref() == Some(display))) {
-                                    bail!("ACCOUNT_DISPLAY_NAME_EXISTS: '{display}' is already used by {}:{}; names and display names are unique across all accounts", owner.provider, owner.name);
+                                if let Some(owner) = state.accounts.values().find(|a| a.provider == provider && a.name != name && (a.name == *display || a.display_name.as_deref() == Some(display))) {
+                                    bail!("ACCOUNT_DISPLAY_NAME_EXISTS: '{display}' is already used by {}:{}; names and display names are unique per provider", owner.provider, owner.name);
                                 }
                             }
-                            let a = state.accounts.get_mut(&name).context("unknown account")?;
+                            let a = state.account_mut(provider,&name).context("unknown account")?;
                             let changed = a.display_name != next;
-                            if changed { a.display_name = next.clone(); store.save(&state,now(),"account.renamed",&name)?; }
-                            let provider = state.accounts[&name].provider;
-                            Ok(json!({"account_id":format!("{provider}:{name}"),"name":name,"display_name":next,"changed":changed}))
+                            if changed { a.display_name = next.clone(); store.save(&state,now(),"account.renamed",&format!("{provider}:{name}"))?; }
+                            let a = state.account(provider,&name).context("unknown account")?;
+                            Ok(json!({"account_id":format!("{provider}:{name}"),"name":name,"folder_name":name,"display_name":next,"name_mismatch":a.display_name.is_some(),
+                                "generation":crate::account_rename::account_generation(a),"changed":changed}))
+                        }
+                        "account/rename-backend" => {
+                            let account = named(&state,params)?.clone();
+                            let (provider, key) = (account.provider, account.key());
+                            let request_id = params["request_id"].as_str().context("INVALID_ARGUMENT: request_id is required")?;
+                            uuid::Uuid::parse_str(request_id).context("INVALID_ARGUMENT: request_id must be a UUID")?;
+                            if crate::account_rename::exists(&paths,request_id) {
+                                // Never replayed: report the recorded operation.
+                                let record = crate::account_rename::read(&paths,request_id)?;
+                                return Ok(json!({"already_recorded":true,"operation":crate::account_rename::public(&record)}));
+                            }
+                            let expected = params["expected_generation"].as_str().context("INVALID_ARGUMENT: expected_generation is required")?;
+                            // A native auth probe in flight is harmless (its result is dropped once the
+                            // key is gone); a Codex helper still holds the home.
+                            ensure!(provider != ProviderId::Codex || !pending.contains(&key), "ACCOUNT_POLL_IN_PROGRESS: account poll is in progress; retry shortly");
+                            let plan = crate::account_rename::plan(&paths,&state,provider,&account.name,params["new_name"].as_str(),expected)?;
+                            let _old_lock = crate::accounts::operation_lock(&paths,provider,&plan.old_name)?;
+                            let _new_lock = crate::accounts::operation_lock(&paths,provider,&plan.new_name)?;
+                            crate::account_rename::ensure_idle(&paths,&plan).await?;
+                            if provider == ProviderId::Codex {
+                                if let Some(helper) = helpers.remove(&key) { helper.stop_idle().await?; }
+                                crate::account_rename::stop_codex_server(&config,&plan.old_home).await?;
+                            }
+                            last_poll.remove(&key);
+                            let (previous_id, new_name) = (format!("{provider}:{}",plan.old_name), plan.new_name.clone());
+                            let operation = crate::account_rename::execute(&paths,&mut state,&mut store,plan,request_id,&|_| Ok(()))?;
+                            let a = state.account(provider,&new_name).context("unknown account")?;
+                            Ok(json!({"account_id":format!("{provider}:{new_name}"),"previous_account_id":previous_id,"name":new_name,"folder_name":new_name,
+                                "display_name":a.display_name,"name_mismatch":a.display_name.is_some(),"generation":crate::account_rename::account_generation(a),
+                                "home":crate::layout::account_home(&paths.root,provider,&new_name),"operation":operation,"changed":true}))
+                        }
+                        "account/rename-backend/recover" => {
+                            let id = params["request_id"].as_str().context("INVALID_ARGUMENT: request_id is required")?;
+                            let operation = crate::account_rename::reconcile(&paths,&mut state,&mut store,id,&|_| Ok(()))?;
+                            Ok(json!({"operation":operation}))
                         }
                         "account/managed-home" => {
                             let name = params["name"].as_str().context("missing account name")?;
@@ -718,12 +764,12 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             let Some(previous) = previous else {
                                 return Ok(json!({"account_id":format!("claude:{name}"),"provider":"claude","home":home,"relocated":false,"already_managed":true,"note":"ALREADY_MANAGED"}));
                             };
-                            state.accounts.get_mut(name).unwrap().config_home = None;
+                            state.account_mut(ProviderId::Claude,name).unwrap().config_home = None;
                             store.save(&state,now(),"account.claude_home_relocated",name)?;
                             Ok(json!({"account_id":format!("claude:{name}"),"provider":"claude","home":home,"previous_home":previous,"relocated":true,"already_managed":false}))
                         }
                         "account/enable" | "account/disable" => {
-                            let name = params["name"].as_str().context("missing account name")?; named(&state,params)?;
+                            let key = key_of(&state,params)?; let name = key.as_str();
                             let account=state.accounts.get_mut(name).context("unknown account")?;ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");account.enabled = method == "account/enable";
                             store.save(&state,now(),"account_enabled_changed",name)?; Ok(json!({"saved":true}))
                         }
@@ -791,7 +837,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
             }
             Some(result) = polls.recv() => {
                 pending.remove(&result.name);
-                let duplicate = result.identity.as_ref().is_some_and(|identity|state.accounts.values().any(|a|a.name != result.name && &a.identity == identity));
+                let duplicate = result.identity.as_ref().is_some_and(|identity|state.accounts.values().any(|a|a.key() != result.name && &a.identity == identity));
                 if let Some(a) = state.accounts.get_mut(&result.name) {
                     if duplicate || result.identity.as_ref().is_some_and(|id|!a.identity.is_empty() && id != &a.identity) {
                         a.auth_required = true; a.enabled = false;
@@ -823,19 +869,20 @@ pub async fn serve(paths: Paths) -> Result<()> {
             }
             _ = interval.tick() => {
                 for a in state.accounts.values() {
-                    if !a.enabled || pending.contains(&a.name) { continue; }
+                    let akey = a.key();
+                    if !a.enabled || pending.contains(&akey) { continue; }
                     if crate::provider::native::is_native(a.provider) {
                         // Auth status only: Claude usage comes from its statusline and
                         // Gemini has none; never a model request or a Codex worker.
                         let cadence = if a.auth_required {CLAUDE_AUTH_REQUIRED_POLL_SECONDS} else {config.idle_poll_seconds as i64};
-                        if now() - last_poll.get(&a.name).copied().unwrap_or(0) < cadence {continue;}
-                        last_poll.insert(a.name.clone(),now());
+                        if now() - last_poll.get(&akey).copied().unwrap_or(0) < cadence {continue;}
+                        last_poll.insert(akey.clone(),now());
                         let Ok(home) = crate::provider::account_home(&paths,a) else {continue};
-                        pending.insert(a.name.clone());
-                        let (name, config, tx, provider, owned) = (a.name.clone(), config.clone(), claude_tx.clone(), a.provider, paths.clone());
+                        pending.insert(akey.clone());
+                        let (name, key, config, tx, provider, owned) = (a.name.clone(), akey.clone(), config.clone(), claude_tx.clone(), a.provider, paths.clone());
                         tokio::spawn(async move {
                             let problem = crate::provider::native::probe(&owned,&name,provider,&config,&home).await.0;
-                            let _ = tx.send(ClaudePoll{name,problem}).await;
+                            let _ = tx.send(ClaudePoll{name:key,problem}).await;
                         });
                         continue;
                     }

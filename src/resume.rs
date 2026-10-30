@@ -188,12 +188,15 @@ async fn validate(paths: &Paths, r: &Request) -> Result<(catalog::Session, exter
     );
     let target = codex_account(r)?;
     let target = target.as_str();
-    crate::accounts::ensure_available(paths, target)?;
+    crate::accounts::ensure_available(paths, crate::provider::ProviderId::Codex, target)?;
     let state = daemon::call(paths, "status", json!({})).await?;
     ensure!(
-        state["accounts"].as_array().is_some_and(|aa| aa
-            .iter()
-            .any(|a| a["name"] == target && a["enabled"] == true && a["auth_required"] == false)),
+        state["accounts"]
+            .as_array()
+            .is_some_and(|aa| aa.iter().any(|a| a["name"] == target
+                && a["provider"].as_str().unwrap_or("codex") == "codex"
+                && a["enabled"] == true
+                && a["auth_required"] == false)),
         "ACCOUNT_UNAVAILABLE"
     );
     let spaces = launch::host_call(&r.host, &["workspace", "list"]).await?;

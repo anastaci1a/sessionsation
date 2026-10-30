@@ -102,11 +102,71 @@ pub struct Account {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<u32>,
 }
+/// The registry key of an account. Names are unique per provider only, so the
+/// key is the bare name for Codex (the original, unambiguous enrollment kind;
+/// every Codex-only subsystem keeps addressing accounts by bare name) and
+/// `<provider>:<name>` for every other provider.
+pub fn account_key(provider: crate::provider::ProviderId, name: &str) -> String {
+    if provider == crate::provider::ProviderId::Codex {
+        name.to_owned()
+    } else {
+        format!("{provider}:{name}")
+    }
+}
 impl State {
+    pub fn account(&self, provider: crate::provider::ProviderId, name: &str) -> Option<&Account> {
+        self.accounts.get(&account_key(provider, name))
+    }
+    pub fn account_mut(
+        &mut self,
+        provider: crate::provider::ProviderId,
+        name: &str,
+    ) -> Option<&mut Account> {
+        self.accounts.get_mut(&account_key(provider, name))
+    }
+    pub fn insert_account(&mut self, account: Account) {
+        self.accounts.insert(account.key(), account);
+    }
+    /// Every enrolled account with this bare name (at most one per provider).
+    pub fn accounts_named(&self, name: &str) -> Vec<&Account> {
+        self.accounts.values().filter(|a| a.name == name).collect()
+    }
+    /// Resolve a possibly bare name to one account. A bare name that exists under
+    /// several providers is ambiguous and must be qualified.
+    pub fn resolve_account(
+        &self,
+        name: &str,
+        provider: Option<crate::provider::ProviderId>,
+    ) -> anyhow::Result<&Account> {
+        if let Some(provider) = provider {
+            if let Some(a) = self.account(provider, name) {
+                return Ok(a);
+            }
+            if let [other] = self.accounts_named(name).as_slice() {
+                anyhow::bail!(
+                    "ACCOUNT_PROVIDER_MISMATCH: {name} is enrolled as {}:{name}, not {provider}:{name}",
+                    other.provider
+                );
+            }
+            anyhow::bail!("ACCOUNT_NOT_FOUND: no enrolled account named {provider}:{name}");
+        }
+        let all = self.accounts_named(name);
+        match all.as_slice() {
+            [one] => Ok(one),
+            [] => anyhow::bail!("ACCOUNT_NOT_FOUND: no enrolled account named {name}"),
+            many => anyhow::bail!(
+                "ACCOUNT_AMBIGUOUS: '{name}' exists as {}; use <provider>:<name>",
+                many.iter()
+                    .map(|a| format!("{}:{}", a.provider, a.name))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ),
+        }
+    }
     /// Accounts in persistent order (then name).
     pub fn ordered(&self) -> Vec<&Account> {
         let mut all: Vec<_> = self.accounts.values().collect();
-        all.sort_by(|a, b| (a.order, &a.name).cmp(&(b.order, &b.name)));
+        all.sort_by_key(|a| (a.order, a.key()));
         all
     }
     /// Idempotent: accounts without an order are appended in alphabetical
@@ -127,14 +187,14 @@ impl State {
             .enumerate()
         {
             a.order = Some(next + offset as u32);
-            changed.push(a.name.clone());
+            changed.push(a.key());
         }
         changed
     }
     /// Move one account to a 0-based position and renumber densely.
     pub fn reorder(&mut self, name: &str, position: usize) -> bool {
         self.normalize_order();
-        let mut names: Vec<String> = self.ordered().iter().map(|a| a.name.clone()).collect();
+        let mut names: Vec<String> = self.ordered().iter().map(|a| a.key()).collect();
         let Some(current) = names.iter().position(|n| n == name) else {
             return false;
         };
@@ -147,6 +207,10 @@ impl State {
     }
 }
 impl Account {
+    /// The registry key (see [`account_key`]).
+    pub fn key(&self) -> String {
+        account_key(self.provider, &self.name)
+    }
     /// A Codex account (the original enrollment kind).
     pub fn new(name: String, identity: String) -> Self {
         Self::with_provider(crate::provider::ProviderId::Codex, name, identity)
@@ -305,5 +369,94 @@ mod order_tests {
         assert!(!state.reorder("0new", 0));
         assert!(state.reorder("0new", 99));
         assert_eq!(names(&state), ["a", "b", "c", "0new"]);
+    }
+}
+
+#[cfg(test)]
+mod per_provider_name_tests {
+    use super::*;
+    use crate::provider::ProviderId;
+
+    fn state() -> State {
+        let mut s = State::default();
+        s.insert_account(Account::new("work".into(), String::new()));
+        s.insert_account(Account::with_provider(
+            ProviderId::Claude,
+            "work".into(),
+            String::new(),
+        ));
+        s.insert_account(Account::with_provider(
+            ProviderId::Gemini,
+            "solo".into(),
+            String::new(),
+        ));
+        s
+    }
+    #[test]
+    fn the_same_name_coexists_under_two_providers() {
+        let s = state();
+        assert_eq!(s.accounts.len(), 3);
+        assert!(s.accounts.contains_key("work"), "Codex keeps its bare key");
+        assert!(s.accounts.contains_key("claude:work"));
+        assert_eq!(
+            s.account(ProviderId::Codex, "work").unwrap().provider,
+            ProviderId::Codex
+        );
+        assert_eq!(
+            s.account(ProviderId::Claude, "work").unwrap().provider,
+            ProviderId::Claude
+        );
+        assert!(s.account(ProviderId::Gemini, "work").is_none());
+    }
+    #[test]
+    fn bare_names_resolve_only_while_unambiguous() {
+        let s = state();
+        assert_eq!(
+            s.resolve_account("solo", None).unwrap().provider,
+            ProviderId::Gemini
+        );
+        let e = s.resolve_account("work", None).unwrap_err().to_string();
+        assert!(e.starts_with("ACCOUNT_AMBIGUOUS"), "{e}");
+        assert!(e.contains("codex:work") && e.contains("claude:work"), "{e}");
+        assert_eq!(
+            s.resolve_account("work", Some(ProviderId::Claude))
+                .unwrap()
+                .provider,
+            ProviderId::Claude
+        );
+        let e = s
+            .resolve_account("solo", Some(ProviderId::Codex))
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("ACCOUNT_PROVIDER_MISMATCH"), "{e}");
+        let e = s.resolve_account("nobody", None).unwrap_err().to_string();
+        assert!(e.starts_with("ACCOUNT_NOT_FOUND"), "{e}");
+    }
+    #[test]
+    fn ordering_and_reordering_use_unique_keys() {
+        let mut s = state();
+        assert_eq!(s.normalize_order().len(), 3);
+        let before: Vec<_> = s.ordered().iter().map(|a| a.key()).collect();
+        assert!(s.reorder("claude:work", 2));
+        assert_eq!(s.ordered()[2].key(), "claude:work");
+        assert_eq!(s.ordered().len(), before.len());
+    }
+    #[test]
+    fn legacy_registries_are_rekeyed_once_per_provider() {
+        let mut value = serde_json::json!({"accounts":{
+            "work":{"name":"work","provider":"codex"},
+            "home":{"name":"home","provider":"claude"},
+            "g":{"name":"g","provider":"gemini"}}});
+        let mut moved = crate::store::migrate_account_keys(&mut value);
+        moved.sort();
+        assert_eq!(moved, ["claude:home", "gemini:g"]);
+        let keys: Vec<_> = value["accounts"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(keys, ["claude:home", "gemini:g", "work"]);
+        assert!(crate::store::migrate_account_keys(&mut value).is_empty());
     }
 }

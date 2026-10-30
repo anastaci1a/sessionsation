@@ -177,10 +177,14 @@ fn active(paths: &Paths, r: &Record) -> Result<bool> {
     ))
 }
 /// Unfinished headless deliveries of one account (blocks removal/deletion).
-pub fn active_for_account(paths: &Paths, account: &str) -> Result<Vec<String>> {
+pub fn active_for_account(
+    paths: &Paths,
+    provider: ProviderId,
+    account: &str,
+) -> Result<Vec<String>> {
     let mut ids = vec![];
     for r in all(paths)? {
-        if r.account == account && active(paths, &r)? {
+        if r.provider == provider && r.account == account && active(paths, &r)? {
             ids.push(r.request.message_id.clone());
         }
     }
@@ -236,9 +240,9 @@ pub(crate) fn usable_account(
     name: &str,
 ) -> Result<claude::Enrolled> {
     let account = native::account(paths, provider, name)?;
-    crate::accounts::ensure_available(paths, name)?;
+    crate::accounts::ensure_available(paths, provider, name)?;
     let state = crate::store::load_state_snapshot(paths)?;
-    let record = state.accounts.get(name).context("ACCOUNT_NOT_FOUND")?;
+    let record = state.account(provider, name).context("ACCOUNT_NOT_FOUND")?;
     ensure!(record.deletion_id.is_none(), "ACCOUNT_DELETION_IN_PROGRESS");
     ensure!(account.enabled, "ACCOUNT_UNAVAILABLE: account is disabled");
     ensure!(
@@ -1279,7 +1283,11 @@ mod tests {
         let v = receipt_value(&p);
         assert!(!v.to_string().contains("private"));
         assert_eq!(v["facts"]["reply_observed"], false);
-        assert!(active_for_account(&paths, "a").unwrap().is_empty());
+        assert!(
+            active_for_account(&paths, ProviderId::Claude, "a")
+                .unwrap()
+                .is_empty()
+        );
         r.phase = "admitted".into();
         r.state = "pending_local".into();
         r.updated_at = 0;

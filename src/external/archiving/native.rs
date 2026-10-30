@@ -465,7 +465,7 @@ fn bundle_dir(paths: &Paths, m: &Manifest) -> Result<PathBuf> {
 
 pub(super) fn run(paths: &Paths, o: &mut Operation) -> Result<()> {
     let provider = native::of(&o.session.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
-    let _account = crate::accounts::operation_lock(paths, &o.session.account)?;
+    let _account = crate::accounts::operation_lock(paths, provider, &o.session.account)?;
     match o.kind {
         Kind::Archive => archive(paths, provider, o),
         Kind::Restore => restore(paths, provider, o),

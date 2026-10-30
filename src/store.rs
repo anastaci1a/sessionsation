@@ -43,8 +43,9 @@ impl Store {
             Err(e) => return Err(e.into()),
         };
         let migrated = migrate_legacy_codex_provider(&mut value);
+        let rekeyed = migrate_account_keys(&mut value);
         let state: State = serde_json::from_value(value)?;
-        if !migrated.is_empty() {
+        if !migrated.is_empty() || !rekeyed.is_empty() {
             let tx = self.db.unchecked_transaction()?;
             tx.execute(
                 "UPDATE state SET json=?1 WHERE id=1",
@@ -55,6 +56,12 @@ impl Store {
                 tx.execute(
                     "INSERT INTO events(at,kind,entity) VALUES(?1,?2,?3)",
                     params![now, LEGACY_CODEX_PROVIDER_EVENT, name],
+                )?;
+            }
+            for name in &rekeyed {
+                tx.execute(
+                    "INSERT INTO events(at,kind,entity) VALUES(?1,?2,?3)",
+                    params![now, ACCOUNT_KEY_EVENT, name],
                 )?;
             }
             tx.commit()?;
@@ -85,6 +92,7 @@ pub fn load_state_snapshot(paths: &Paths) -> Result<State> {
     let json: String = db.query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))?;
     let mut value: Value = serde_json::from_str(&json)?;
     migrate_legacy_codex_provider(&mut value);
+    migrate_account_keys(&mut value);
     Ok(serde_json::from_value(value)?)
 }
 
@@ -129,4 +137,38 @@ pub fn save_config(paths: &Paths, config: &Config) -> Result<()> {
         &paths.root.join("config.json"),
         &serde_json::to_vec_pretty(config)?,
     )
+}
+
+pub const ACCOUNT_KEY_EVENT: &str = "account.key_migrated_per_provider";
+/// Account names are unique per provider (contract 1.30.0): a non-Codex record
+/// is keyed `<provider>:<name>` so it can coexist with a Codex account of the
+/// same name. Registries written before that keyed every record by bare name.
+/// Returns the migrated record names; idempotent.
+pub fn migrate_account_keys(state: &mut Value) -> Vec<String> {
+    let mut migrated = vec![];
+    if let Some(accounts) = state.get_mut("accounts").and_then(Value::as_object_mut) {
+        let moves: Vec<(String, String)> = accounts
+            .iter()
+            .filter_map(|(key, record)| {
+                let provider = record.get("provider")?.as_str()?;
+                let name = record.get("name")?.as_str()?;
+                let want = if provider == "codex" {
+                    name.to_owned()
+                } else {
+                    format!("{provider}:{name}")
+                };
+                (want != *key).then(|| (key.clone(), want))
+            })
+            .collect();
+        for (old, new) in moves {
+            if accounts.contains_key(&new) {
+                continue;
+            }
+            if let Some(record) = accounts.remove(&old) {
+                accounts.insert(new.clone(), record);
+                migrated.push(new);
+            }
+        }
+    }
+    migrated
 }

@@ -329,6 +329,13 @@ async fn launch_inner(
     expected: Option<(&str, &str)>,
     placement: Placement<'_>,
 ) -> Result<Value> {
+    // `account` is a bare Codex name or a qualified `<provider>:<name>` (names are
+    // unique per provider only).
+    let account_arg = account;
+    let (provider, account) = match account.split_once(':') {
+        Some((provider, name)) => (crate::provider::ProviderId::parse(provider)?, name),
+        None => (crate::provider::ProviderId::Codex, account),
+    };
     validate_name(account)?;
     validate_name(session)?;
     if let Some(id) = thread {
@@ -339,6 +346,7 @@ async fn launch_inner(
         status["accounts"]
             .as_array()
             .is_some_and(|accounts| accounts.iter().any(|a| a["name"] == account
+                && a["provider"].as_str().unwrap_or("codex") == provider.as_str()
                 && a["enabled"] == true
                 && a["auth_required"] == false)),
         "ACCOUNT_UNAVAILABLE"
@@ -440,7 +448,7 @@ async fn launch_inner(
         args.extend(["--permissions".into(), mode.as_str().into()]);
     }
     let prefix = args.len();
-    args.extend(["run".into(), "--account".into(), account.into()]);
+    args.extend(["run".into(), "--account".into(), account_arg.into()]);
     if let Some((id, generation)) = expected {
         args.truncate(prefix);
         args.extend([
@@ -477,6 +485,7 @@ async fn launch_inner(
         // catalog before exec; require that PID to run the expected session.
         if let Some(s) = crate::catalog::list(paths)?.into_iter().find(|s| {
             crate::provider::native::of(&s.provider).is_some()
+                && s.provider == provider.as_str()
                 && s.account == account
                 && s.attachment.as_ref().is_some_and(|a| a.target == key)
                 && crate::provider::native::launch_observed(s)

@@ -451,10 +451,12 @@ async fn add_returns_the_login_plan_refresh_observes_login_and_unauthenticated_u
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("account login gemini:quiet"));
     assert!(!f.home("quiet").join("fake-login-env").exists());
-    // Names are global across providers.
-    let clash = f.run(&["account", "add", "--platform", "claude", "fresh"]);
+    // Names are unique per provider only.
+    let other = f.run(&["account", "add", "--platform", "claude", "fresh"]);
+    assert!(other.status.success());
+    let clash = f.run(&["account", "add", "--platform", "gemini", "fresh"]);
     assert!(!clash.status.success());
-    assert!(String::from_utf8_lossy(&clash.stderr).contains("fresh"));
+    assert!(String::from_utf8_lossy(&clash.stderr).contains("gemini:fresh"));
     // Codex refresh stays unsupported.
     assert!(
         f.run(&["account", "add", "--platform", "codex", "cx"])
@@ -980,7 +982,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     assert_eq!(gemini["operations"]["headless_delivery"]["supported"], true);
     assert_eq!(gemini["headless_delivery"]["automatic_replay"], false);
     assert_eq!(gemini["headless_delivery"]["approval_mode"], "default");
-    assert_eq!(caps["contract_revision"], 29);
+    assert_eq!(caps["contract_revision"], 30);
     assert_eq!(
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
