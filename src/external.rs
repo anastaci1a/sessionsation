@@ -855,7 +855,7 @@ pub(crate) fn home_has_processes(home: &Path, clients_only: bool) -> Result<bool
             continue;
         }
         if process_info(pid).is_ok_and(|i| !matches!(i.state, 'Z' | 'X'))
-            && process_home(pid).is_ok_and(|h| h == home)
+            && process_home(pid).is_ok_and(|h| crate::layout::same_home(&h, home))
         {
             return Ok(true);
         }
@@ -886,7 +886,7 @@ fn inventory_complete(
             {
                 if binding.pid == instance.pid
                     && binding.start_time == instance.start_time
-                    && binding.home == instance.home
+                    && crate::layout::same_home(&binding.home, &instance.home)
                 {
                     instance.thread_id = binding.thread.clone();
                     if let Some(path) = rollout_by_thread(&instance.home, &binding.thread)? {
@@ -930,9 +930,13 @@ fn inventory_complete(
         }
     }
     for job in jobs(paths)? {
-        homes.insert(job.source.home);
+        homes.insert(crate::layout::resolve_path(&job.source.home));
     }
-    homes.extend(archiving::source_homes(paths)?);
+    homes.extend(
+        archiving::source_homes(paths)?
+            .into_iter()
+            .map(|h| crate::layout::resolve_path(&h)),
+    );
     for (_, home) in crate::layout::codex_homes(&paths.root) {
         homes.insert(fs::canonicalize(home)?);
     }
@@ -1100,6 +1104,9 @@ fn inventory_complete(
 fn preserved_homes(paths: &Paths) -> Result<Vec<(String, PathBuf)>> {
     let mut homes = crate::account_deletion::preserved_homes(paths)?;
     homes.extend(archiving::restored_homes(paths)?);
+    for (_, home) in &mut homes {
+        *home = crate::layout::resolve_path(home);
+    }
     Ok(homes)
 }
 fn account_for_home(paths: &Paths, home: &Path) -> String {
@@ -1762,7 +1769,7 @@ pub async fn retry(paths: &Paths, id: &str) -> Result<Job> {
     {
         recover(paths, id).await?;
     }
-    let source = discover(paths).await?.into_iter().find(|s| s.thread_id == job.source.thread_id && s.home == job.source.home).context("The original session is no longer in its original home. Open Sessions to choose its current copy.")?;
+    let source = discover(paths).await?.into_iter().find(|s| s.thread_id == job.source.thread_id && crate::layout::same_home(&s.home, &job.source.home)).context("The original session is no longer in its original home. Open Sessions to choose its current copy.")?;
     let pane = (!source.inactive).then_some(source.pane.as_str());
     let thread = source.inactive.then_some(source.thread_id.as_str());
     let options = MoveOptions::default();

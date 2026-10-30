@@ -169,6 +169,12 @@ sessionsation layout status                       # deferred homes and why
   `state_5.sqlite` rollout paths, control socket paths) keep resolving. The
   tests bind a Codex control socket, move the home and connect through the old
   path, and read a recorded SQLite path through it.
+- Stored absolute home paths follow a moved home (contract 1.31.0): the `owner` of
+  `registry/conversations/*.json` and the `home` of `registry/managed-panes` and
+  `registry/herdr-panes` bindings are rewritten from the legacy path to the new one
+  (`home_refs_rewritten`); backend rename does the same. A later run repairs records
+  an earlier run left behind. Journals and receipts are never rewritten; owner and
+  home comparisons also resolve symlinks, so a legacy spelling still matches.
 - Run `layout migrate --backup NEW-DIR` again at any time (for example after
   a reboot, before the supervisor starts) to move deferred homes that are now
   idle; a run with nothing to do needs no backup and changes nothing.

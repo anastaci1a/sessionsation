@@ -563,10 +563,26 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
     }
 }
 
+/// A history path Codex reports for the destination, resolved. Codex may report
+/// the legacy (symlink) spelling of the destination home, so both sides are
+/// compared by resolved path.
+fn reported_history_path(reported: &str, target_home: &Path) -> Result<PathBuf> {
+    let file = crate::layout::resolve_path(Path::new(reported));
+    let home = crate::layout::resolve_path(target_home);
+    ensure!(
+        file.starts_with(home.join("sessions")) || file.starts_with(home.join("archived_sessions")),
+        "Codex reported a history path outside the destination home"
+    );
+    Ok(file)
+}
 fn target_path(source: &Path, home: &Path, target_home: &Path) -> Result<PathBuf> {
-    let relative = source
-        .strip_prefix(home)
-        .context("history outside source account")?;
+    let relative: PathBuf = match source.strip_prefix(home) {
+        Ok(relative) => relative.to_path_buf(),
+        Err(_) => crate::layout::resolve_path(source)
+            .strip_prefix(crate::layout::resolve_path(home))
+            .context("history outside source account")?
+            .to_path_buf(),
+    };
     if relative.starts_with("sessions") {
         return Ok(target_home.join(relative));
     }
@@ -671,12 +687,7 @@ async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
                 "the destination already has this conversation open; close that copy before retrying"
             );
             if let Some(path) = thread["path"].as_str() {
-                target_file = PathBuf::from(path);
-                ensure!(
-                    target_file.starts_with(target_home.join("sessions"))
-                        || target_file.starts_with(target_home.join("archived_sessions")),
-                    "Codex reported a history path outside the destination home"
-                );
+                target_file = reported_history_path(path, &target_home)?;
             }
         }
         if target_file.exists() && !fs::read(file)?.starts_with(&fs::read(&target_file)?) {
@@ -714,20 +725,22 @@ async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
                 "The destination conversation was reopened. Its history is unchanged; recovery will restore the source when safe."
             );
         }
-        if destination.starts_with(target_home.join("archived_sessions")) {
+        if crate::layout::resolve_path(&destination)
+            .starts_with(crate::layout::resolve_path(&target_home).join("archived_sessions"))
+        {
             // A previous visit left a native archived identity. Restore that
             // identity first, then replace its canonical rollout; a newly chosen
             // filename is rejected by Codex as a stale path for paginated history.
             target
                 .request("thread/unarchive", json!({"threadId":id}))
                 .await?;
-            destination = PathBuf::from(
+            destination = crate::layout::resolve_path(Path::new(
                 target.thread(id, false).await?["path"]
                     .as_str()
                     .context("destination history path missing")?,
-            );
+            ));
             ensure!(
-                destination.starts_with(target_home.join("sessions")),
+                destination.starts_with(crate::layout::resolve_path(&target_home).join("sessions")),
                 "restored history path is outside destination sessions"
             );
         }
@@ -980,7 +993,7 @@ pub(super) async fn stop_source(
                     b.pid == info.pid
                         && b.start_time == info.start_time
                         && b.thread == job.source.thread_id
-                        && b.home == job.source.home
+                        && crate::layout::same_home(&b.home, &job.source.home)
                 });
             // Handoffs retain their panes for respawn. An explicit session end
             // must release that pane/name, including after a previous move.
@@ -1379,7 +1392,7 @@ async fn confirm_runtime(paths: &Paths, pane: &str, home: &Path, thread: &str) -
                 "destination Codex exited during startup; source history is available for recovery"
             );
         }
-        if process_home(pid).is_ok_and(|actual| actual == home)
+        if process_home(pid).is_ok_and(|actual| crate::layout::same_home(&actual, home))
             && resumed_thread(pid)?.as_deref() == Some(thread)
         {
             verified_pid = Some(pid);
@@ -1420,5 +1433,44 @@ mod continuation_tests {
         );
         page["data"][0]["itemsView"] = json!("full");
         assert_eq!(continuation_observation(&page, "job", "turn"), None);
+    }
+}
+
+#[cfg(test)]
+mod legacy_path_tests {
+    use super::*;
+
+    /// Codex's `state_5.sqlite` keeps rollout paths under the legacy home path,
+    /// which `layout migrate` left as a symlink to the new home.
+    #[test]
+    fn reported_history_path_accepts_the_legacy_symlink_spelling() {
+        let d = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(d.path()).unwrap();
+        let new = root.join("accounts/codex/personal");
+        fs::create_dir_all(new.join("sessions/2026/10/29")).unwrap();
+        fs::create_dir_all(root.join("accounts")).unwrap();
+        std::os::unix::fs::symlink("codex/personal", root.join("accounts/personal")).unwrap();
+        let rollout = "sessions/2026/10/29/rollout-x.jsonl";
+        fs::write(new.join(rollout), "").unwrap();
+        let legacy = root.join("accounts/personal").join(rollout);
+        // Existing and not-yet-existing files, legacy and canonical spellings.
+        for reported in [
+            legacy.clone(),
+            new.join(rollout),
+            new.join("sessions/a/new.jsonl"),
+        ] {
+            let got = reported_history_path(reported.to_str().unwrap(), &new).unwrap();
+            assert!(got.starts_with(&new), "{got:?}");
+        }
+        assert!(
+            reported_history_path(legacy.to_str().unwrap(), &root.join("accounts/codex/work"))
+                .is_err()
+        );
+        let outside = root.join("accounts/personal/auth.json");
+        assert!(reported_history_path(outside.to_str().unwrap(), &new).is_err());
+        // The source side of a transfer may also be spelled through the symlink.
+        let source = root.join("accounts/personal").join(rollout);
+        let target = target_path(&source, &new, &root.join("accounts/codex/work")).unwrap();
+        assert_eq!(target, root.join("accounts/codex/work").join(rollout));
     }
 }

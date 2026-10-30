@@ -160,7 +160,8 @@ async fn plan_inner(paths: &Paths, r: PlanRequest, own: Option<&str>) -> anyhow:
     crate::lifecycle::ensure_available(paths, &s.conversation_id, own)?;
     crate::lifecycle::ensure_no_handoff(paths, &s.conversation_id, own)?;
     ensure!(
-        source.account == s.account && source.home == paths.account(&s.account)?,
+        source.account == s.account
+            && crate::layout::same_home(&source.home, &paths.account(&s.account)?),
         "RECOVERY_ACCOUNT_POLICY_AMBIGUOUS"
     );
     ensure!(!source.archived, "RECOVERY_RESTORE_ARCHIVE_FIRST");

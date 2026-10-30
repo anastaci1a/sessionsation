@@ -336,6 +336,8 @@ fn rekey(state: &mut State, r: &Record) -> Result<()> {
 
 /// Idempotent updates of the other backend-owned references.
 fn update_references(paths: &Paths, store: &mut Store, r: &Record) -> Result<()> {
+    // Stored owner and pane-binding homes follow the moved folder.
+    crate::layout::rewrite_home_refs(&paths.root, &[(r.old_home.clone(), r.new_home.clone())])?;
     crate::catalog::reassign_account(paths, r.provider.as_str(), &r.old_name, &r.new_name)?;
     if r.provider == ProviderId::Gemini {
         crate::provider::gemini::auth_failure::rename(paths, &r.old_name, &r.new_name);

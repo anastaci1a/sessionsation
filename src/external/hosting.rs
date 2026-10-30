@@ -182,7 +182,7 @@ fn instances_with_state(
         };
         if pid != b.pid
             || info.start_time != b.start_time
-            || process_home(pid).ok().as_ref() != Some(&b.home)
+            || !process_home(pid).is_ok_and(|actual| crate::layout::same_home(&actual, &b.home))
             || resumed_thread(pid)?.as_deref() != Some(&b.thread)
         {
             continue;
@@ -216,7 +216,7 @@ fn instances_with_state(
                 .into(),
             thread_id: b.thread,
             rollout,
-            home: b.home,
+            home: process_home(pid)?,
             binary: launch.binary,
             resume_options: launch.options,
         });
@@ -712,6 +712,63 @@ mod discovery_tests {
             Some(socket),
             "retained socket is available for safe relaunch after process exit"
         );
+    }
+    /// A binding recorded before `layout migrate` names the legacy home; the
+    /// live process now reports the new home (the legacy path is a symlink).
+    /// The session must stay discoverable, with the canonical home.
+    #[test]
+    fn legacy_binding_home_still_matches_the_live_process_after_migration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(tmp.path()).unwrap();
+        let paths = Paths::new(Some(root.join("state"))).unwrap();
+        let new = root.join("state/accounts/codex/gate1");
+        let thread = "22222222-2222-4222-8222-222222222222";
+        let rollout = new.join(format!(
+            "sessions/2026/10/29/rollout-2026-10-29T09-20-33-{thread}.jsonl"
+        ));
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        fs::write(
+            &rollout,
+            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{thread}\"}}}}\n"),
+        )
+        .unwrap();
+        let legacy = root.join("state/accounts/gate1");
+        std::os::unix::fs::symlink("codex/gate1", &legacy).unwrap();
+        let script = root.join("codex");
+        fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        let mut child = Command::new("sh")
+            .arg(&script)
+            .args(["resume", thread])
+            .env("CODEX_HOME", &new)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        for _ in 0..1000 {
+            if process_home(pid).is_ok_and(|h| h == new)
+                && resumed_thread(pid).ok().flatten().is_some()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let pane = "herdr/named/w1:p1";
+        bind(
+            &paths,
+            pane,
+            Binding {
+                pid,
+                start_time: process_info(pid).unwrap().start_time,
+                home: legacy,
+                thread: thread.into(),
+            },
+        )
+        .unwrap();
+        let found = instances_with_state(&paths, |_, _| Ok((false, pid))).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].home, new);
+        assert_eq!(found[0].thread_id, thread);
     }
     #[test]
     fn live_pid_still_requires_current_host_confirmation() {

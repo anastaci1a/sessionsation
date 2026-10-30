@@ -426,7 +426,9 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     })?;
     let account = codex_account(r)?;
     let account = account.as_str();
-    if account != source.account || paths.account(account)? != source.home {
+    if account != source.account
+        || !crate::layout::same_home(&paths.account(account)?, &source.home)
+    {
         // Bind the transfer's durable job ID before enqueue; a lost acknowledgment
         // is reconciled by identity, never by starting another transfer.
         change(paths, id, |r| {

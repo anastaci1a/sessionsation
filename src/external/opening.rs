@@ -225,7 +225,7 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
             !dead,
             "Codex exited during startup; its error is retained in tmux and its history is unchanged"
         );
-        if process_home(pid).is_ok_and(|h| h == source.home)
+        if process_home(pid).is_ok_and(|h| crate::layout::same_home(&h, &source.home))
             && resumed_thread(pid)?.as_deref() == Some(&source.thread_id)
         {
             bind_pane(paths, &source.pane, pid, &source.home, &source.thread_id)?;

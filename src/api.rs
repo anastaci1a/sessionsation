@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 30;
+pub const CONTRACT_MINOR: u32 = 31;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.30.0";
+pub const CONTRACT_VERSION: &str = "1.31.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -365,7 +365,30 @@ fn native_selected(
     Ok((s, observation))
 }
 
-pub async fn resume_current(paths: &Paths, id: &str, generation: &str) -> Result<()> {
+/// The human `resume` gate: only the unfinished-history warning can be confirmed.
+fn ensure_resumable_in_terminal(
+    block_reason: Option<&str>,
+    confirm_unfinished: bool,
+) -> Result<()> {
+    match block_reason {
+        None => Ok(()),
+        Some("unfinished") => {
+            ensure!(
+                confirm_unfinished,
+                "UNFINISHED_HISTORY_CONFIRMATION_REQUIRED"
+            );
+            Ok(())
+        }
+        Some(_) => anyhow::bail!("SESSION_STATE_UNVERIFIED"),
+    }
+}
+
+pub async fn resume_current(
+    paths: &Paths,
+    id: &str,
+    generation: &str,
+    confirm_unfinished: bool,
+) -> Result<()> {
     if catalog::resolve(paths, id, generation).is_ok_and(|s| native::of(&s.provider).is_some()) {
         return native::exec_resume_session(paths, id, generation).await;
     }
@@ -374,7 +397,7 @@ pub async fn resume_current(paths: &Paths, id: &str, generation: &str) -> Result
         source.inactive && s.attachment.is_none(),
         "SESSION_ALREADY_RUNNING"
     );
-    ensure!(source.block_reason.is_none(), "SESSION_STATE_UNVERIFIED");
+    ensure_resumable_in_terminal(source.block_reason.as_deref(), confirm_unfinished)?;
     ensure!(
         !matches!(s.account.as_str(), "external" | "unknown"),
         "ACCOUNT_UNAVAILABLE"
@@ -2984,5 +3007,25 @@ mod contract_semver_tests {
         let c = capabilities();
         assert_eq!(c["contract_version"], CONTRACT_VERSION);
         assert_eq!(c["contract_revision"], CONTRACT_MINOR);
+    }
+}
+
+#[cfg(test)]
+mod terminal_resume_gate_tests {
+    use super::ensure_resumable_in_terminal as gate;
+
+    #[test]
+    fn unfinished_history_needs_explicit_confirmation_and_nothing_else_passes() {
+        assert!(gate(None, false).is_ok());
+        let e = gate(Some("unfinished"), false).unwrap_err().to_string();
+        assert!(
+            e.contains("UNFINISHED_HISTORY_CONFIRMATION_REQUIRED"),
+            "{e}"
+        );
+        assert!(gate(Some("unfinished"), true).is_ok());
+        for reason in ["busy", "unknown", "diverged", "moving", "future"] {
+            let e = gate(Some(reason), true).unwrap_err().to_string();
+            assert!(e.contains("SESSION_STATE_UNVERIFIED"), "{e}");
+        }
     }
 }

@@ -6,7 +6,9 @@
 //!   every supervisor build holds) and `layout.lock` for its whole run.
 //! - Takes a metadata backup first (`--backup DIR`; account homes are moved by
 //!   rename only and are never copied, so credentials never leave the root).
-//! - Moves only by `rename(2)` inside the root; nothing is rewritten or merged.
+//! - Moves only by `rename(2)` inside the root; nothing is merged. The only
+//!   rewrite is of stored home paths (conversation owners, pane bindings) that
+//!   name a moved home; journals and receipts are never rewritten.
 //!   A destination that already exists is a conflict and stops the run before
 //!   any change.
 //! - An account home that any process uses (environment, command line, working
@@ -532,13 +534,28 @@ pub fn migrate(root: &Path, options: &Options) -> Result<Value> {
         record.compat_links.push(l);
         moved_homes.push(json!({"provider":provider.as_str(),"name":name,"to":rel(root, target)}));
     }
+    // Stored absolute home paths (conversation owners, pane bindings) follow
+    // every home moved so far, including by an earlier run.
+    let home_moves: Vec<(PathBuf, PathBuf)> = record
+        .moved
+        .iter()
+        .filter(|(l, n)| {
+            Path::new(n).starts_with(ACCOUNTS)
+                && (Path::new(l).starts_with(ACCOUNTS)
+                    || LEGACY_HOME_PARENTS
+                        .iter()
+                        .any(|(_, parent)| Path::new(l).starts_with(parent)))
+        })
+        .map(|(l, n)| (root.join(l), root.join(n)))
+        .collect();
+    let rewritten = super::rewrite_home_refs(root, &home_moves)?;
     record.deferred = deferred;
     record.version = VERSION;
     record.state = State::Complete;
     if fresh {
         record.migrated_at = Some(now());
     }
-    record.history.push(json!({"at":now(),"action":if fresh {"migrate"} else {"resume"},"stores":plan.stores.len(),"homes_moved":moved_homes.len(),"deferred":record.deferred.len()}));
+    record.history.push(json!({"at":now(),"action":if fresh {"migrate"} else {"resume"},"stores":plan.stores.len(),"homes_moved":moved_homes.len(),"deferred":record.deferred.len(),"home_refs_rewritten":rewritten}));
     write_record(root, &record)?;
     super::admit(root)?;
     verify(root)?;
@@ -547,6 +564,7 @@ pub fn migrate(root: &Path, options: &Options) -> Result<Value> {
         "state": record.state,
         "stores_moved": plan.stores.len(),
         "homes_moved": moved_homes,
+        "home_refs_rewritten": rewritten,
         "deferred": record.deferred,
         "compat_links": record.compat_links,
         "backup": record.backup,

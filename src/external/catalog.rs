@@ -146,7 +146,7 @@ pub(super) fn decorate(paths: &Paths, items: &mut Vec<Instance>) -> Result<()> {
                 || record
                     .owner
                     .as_ref()
-                    .is_none_or(|home| home == &source.home))
+                    .is_none_or(|home| crate::layout::same_home(home, &source.home)))
     });
     Ok(())
 }
@@ -157,7 +157,7 @@ pub(super) fn current_copy(paths: &Paths, source: &Instance) -> Result<bool> {
             || record
                 .owner
                 .as_ref()
-                .is_none_or(|home| home == &source.home)))
+                .is_none_or(|home| crate::layout::same_home(home, &source.home))))
 }
 pub async fn selected(paths: &Paths, key: &str) -> Result<Instance> {
     let items = if key.starts_with("archive:") {
@@ -262,7 +262,11 @@ pub(super) async fn moved(paths: &Paths, job: &Job, target_home: &Path) -> Resul
 
 pub(super) fn messaging_owner(paths: &Paths, id: &str, home: &Path) -> Result<bool> {
     let record = read(paths, id)?;
-    Ok(!record.deleted && !record.deleting && record.owner.is_none_or(|owner| owner == home))
+    Ok(!record.deleted
+        && !record.deleting
+        && record
+            .owner
+            .is_none_or(|owner| crate::layout::same_home(&owner, home)))
 }
 
 /// Inventory only switcher's own naming/ownership metadata; no history scan.
@@ -364,5 +368,67 @@ mod stop_tests {
         assert!(clear_stop_intent(&paths, &id, None).is_err());
         clear_stop_intent(&paths, &id, Some("new-stop")).unwrap();
         assert!(stop_intent(&paths, &id).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod legacy_home_tests {
+    use super::*;
+
+    fn legacy_and_new(root: &Path) -> (PathBuf, PathBuf) {
+        let new = root.join("accounts/codex/gate1");
+        fs::create_dir_all(&new).unwrap();
+        std::os::unix::fs::symlink("codex/gate1", root.join("accounts/gate1")).unwrap();
+        (root.join("accounts/gate1"), new)
+    }
+
+    /// A conversation whose owner still names the legacy path (a symlink after
+    /// `layout migrate`) is owned by the migrated home, and the other way round.
+    #[test]
+    fn owner_matches_across_legacy_symlink_and_new_home() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(d.path().join("state"))).unwrap();
+        let (legacy, new) = legacy_and_new(&paths.root);
+        let thread = uuid::Uuid::new_v4().to_string();
+        update(&paths, &thread, |r| r.owner = Some(legacy.clone())).unwrap();
+        assert!(messaging_owner(&paths, &thread, &new).unwrap());
+        assert!(messaging_owner(&paths, &thread, &legacy).unwrap());
+        update(&paths, &thread, |r| r.owner = Some(new.clone())).unwrap();
+        assert!(messaging_owner(&paths, &thread, &legacy).unwrap());
+        update(&paths, &thread, |r| {
+            r.owner = Some(paths.root.join("accounts/codex/other"))
+        })
+        .unwrap();
+        assert!(!messaging_owner(&paths, &thread, &new).unwrap());
+    }
+
+    /// The reported bug: a binding recorded with the new home, an owner record
+    /// left at the legacy path; the recorded binding must still be returned.
+    #[test]
+    fn recorded_bindings_survive_a_stale_legacy_owner() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(d.path().join("state"))).unwrap();
+        let (legacy, new) = legacy_and_new(&paths.root);
+        let thread = uuid::Uuid::new_v4().to_string();
+        update(&paths, &thread, |r| r.owner = Some(legacy.clone())).unwrap();
+        let pid = std::process::id();
+        let start = process_info(pid).unwrap().start_time;
+        private_dir(&paths.root.join(crate::layout::MANAGED_PANES)).unwrap();
+        atomic_write(
+            &paths.root.join(crate::layout::MANAGED_PANES).join("7.json"),
+            &serde_json::to_vec(&Binding {
+                pid,
+                start_time: start,
+                home: new.clone(),
+                thread: thread.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let found = messaging_recorded_bindings_for_test(&paths);
+        assert_eq!(found, vec![(thread, new, pid, start)]);
+    }
+    fn messaging_recorded_bindings_for_test(paths: &Paths) -> Vec<(String, PathBuf, u32, u64)> {
+        super::super::messaging_recorded_bindings(paths).unwrap()
     }
 }

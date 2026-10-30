@@ -619,3 +619,85 @@ fn a_new_root_is_created_in_layout_version_two() {
     assert!(fs::symlink_metadata(paths.root.join("archived-sessions")).is_err());
     assert!(fs::symlink_metadata(paths.root.join("registry.db")).is_err());
 }
+
+/// `layout migrate` rewrites the stored owner and pane-binding homes of the
+/// homes it moves (never journals), and a re-run repairs a stale record.
+#[test]
+fn migrate_rewrites_stored_home_paths_but_not_journals() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("root");
+    let _db = legacy_root(&root);
+    let root = fs::canonicalize(&root).unwrap();
+    let r = root.display().to_string();
+    let thread = "33333333-3333-4333-8333-333333333333";
+    let other = "44444444-4444-4444-8444-444444444444";
+    let owner = |home: &str| format!(r#"{{"name":"n","owner":"{r}/{home}","deleted":false}}"#);
+    write(
+        &root.join(format!("conversations/{thread}.json")),
+        &owner("accounts/gate1"),
+    );
+    write(
+        &root.join(format!("conversations/{other}.json")),
+        &owner("elsewhere/home"),
+    );
+    write(
+        &root.join("managed-panes/7.json"),
+        &format!(
+            r#"{{"pid":1,"start_time":2,"home":"{r}/claude-accounts/claude-main","thread":"{thread}"}}"#
+        ),
+    );
+    write(
+        &root.join("herdr-panes/abc.json"),
+        &format!(
+            r#"{{"target":"herdr/x/w1:p1","socket":null,"binding":{{"pid":1,"start_time":2,"home":"{r}/antigravity-accounts/ana","thread":"{thread}"}}}}"#
+        ),
+    );
+    let journal = root.join("launches/l1.json");
+    let journal_before = fs::read(&journal).unwrap();
+    let out = migrate::migrate(
+        &root,
+        &migrate::Options {
+            backup: Some(t.path().join("backup")),
+            dry_run: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(out["home_refs_rewritten"], 3, "{out}");
+    let read = |p: PathBuf| -> serde_json::Value {
+        serde_json::from_slice(&fs::read(p).unwrap()).unwrap()
+    };
+    let conv = |id: &str| read(root.join(layout::CONVERSATIONS).join(format!("{id}.json")));
+    assert_eq!(conv(thread)["owner"], format!("{r}/accounts/codex/gate1"));
+    assert_eq!(conv(thread)["name"], "n");
+    assert_eq!(conv(other)["owner"], format!("{r}/elsewhere/home"));
+    assert_eq!(
+        read(root.join(layout::MANAGED_PANES).join("7.json"))["home"],
+        format!("{r}/accounts/claude/claude-main")
+    );
+    assert_eq!(
+        read(root.join(layout::HERDR_PANES).join("abc.json"))["binding"]["home"],
+        format!("{r}/accounts/antigravity/ana")
+    );
+    // The migration moves `launches/` into `operations/launches/`.
+    assert_eq!(
+        fs::read(root.join(layout::LAUNCHES).join("l1.json")).unwrap(),
+        journal_before,
+        "journals are never rewritten"
+    );
+    // The legacy spelling still resolves, and a stale record is repaired by a re-run.
+    assert!(layout::same_home(
+        &root.join("accounts/gate1"),
+        &root.join("accounts/codex/gate1")
+    ));
+    write(
+        &root
+            .join(layout::CONVERSATIONS)
+            .join(format!("{thread}.json")),
+        &owner("accounts/gate1"),
+    );
+    let again = migrate::migrate(&root, &migrate::Options::default()).unwrap();
+    assert_eq!(again["home_refs_rewritten"], 1, "{again}");
+    assert_eq!(conv(thread)["owner"], format!("{r}/accounts/codex/gate1"));
+    let third = migrate::migrate(&root, &migrate::Options::default()).unwrap();
+    assert_eq!(third["home_refs_rewritten"], 0);
+}

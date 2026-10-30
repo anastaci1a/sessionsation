@@ -125,7 +125,7 @@ fn verify_source(source: &Instance) -> Result<()> {
     ensure!(
         process.start_time == source.start_time
             && !matches!(process.state, 'Z' | 'X')
-            && process_home(source.pid)? == source.home
+            && crate::layout::same_home(&process_home(source.pid)?, &source.home)
             && resumed_thread(source.pid)?.as_deref() == Some(&source.thread_id),
         "STALE_TARGET"
     );

@@ -1325,3 +1325,11 @@ non-terminal receipt older than 10 seconds whose worker has exited. Refused with
 live process for its conversation, exists) or `SESSION_STATE_UNVERIFIED`. A session
 that was deleted or now belongs to another conversation is unaffected, so only the
 receipt changes.
+
+### Resuming a saved Codex session with unfinished history
+
+`sessionsation resume SESSION-ID --expected-generation GENERATION --confirm-unfinished`
+(contract 1.31.0) acknowledges only the `unfinished_history` warning, like
+`api resume-launch --confirm-unfinished`. Without the flag such a session fails with
+`UNFINISHED_HISTORY_CONFIRMATION_REQUIRED`; any other block reason still fails with
+`SESSION_STATE_UNVERIFIED`.

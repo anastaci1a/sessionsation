@@ -234,11 +234,67 @@ pub fn codex_homes(root: &Path) -> Vec<(String, PathBuf)> {
 /// Whether two home paths name the same directory: equal as given, or equal
 /// after resolving symlinks (a legacy compatibility path and its target).
 pub fn same_home(a: &Path, b: &Path) -> bool {
-    a == b
-        || matches!(
-            (fs::canonicalize(a), fs::canonicalize(b)),
-            (Ok(x), Ok(y)) if x == y
-        )
+    a == b || resolve_path(a) == resolve_path(b)
+}
+
+/// Resolve symlinks of the longest existing ancestor and re-append the rest,
+/// so a path under a legacy compatibility symlink equals its canonical form
+/// even when the final components do not exist yet.
+pub fn resolve_path(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut cur = path;
+    loop {
+        if let Ok(real) = fs::canonicalize(cur) {
+            return rest.iter().rev().fold(real, |p, c| p.join(c));
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                cur = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// Rewrite stored absolute home paths after homes moved (`from` to `to`).
+/// Only exact home matches change: `conversations/*.json` `owner`,
+/// `managed-panes/*.json` `home` and `herdr-panes/*.json` `binding.home`.
+/// Journals and receipts are never rewritten. Idempotent; returns the number
+/// of records changed.
+pub fn rewrite_home_refs(root: &Path, moves: &[(PathBuf, PathBuf)]) -> Result<usize> {
+    let mut changed = 0;
+    for (dir, field) in [
+        (CONVERSATIONS, "/owner"),
+        (MANAGED_PANES, "/home"),
+        (HERDR_PANES, "/binding/home"),
+    ] {
+        let Ok(entries) = fs::read_dir(root.join(dir)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "json")
+                || !entry.file_type().is_ok_and(|t| t.is_file())
+            {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else { continue };
+            let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            let target = value
+                .pointer(field)
+                .and_then(|v| v.as_str())
+                .and_then(|s| moves.iter().find(|(from, _)| from.as_os_str() == s));
+            if let Some((_, to)) = target {
+                *value.pointer_mut(field).expect("checked") = serde_json::json!(to);
+                crate::paths::atomic_write(&path, &serde_json::to_vec(&value)?)?;
+                changed += 1;
+            }
+        }
+    }
+    Ok(changed)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

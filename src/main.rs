@@ -384,6 +384,9 @@ enum Commands {
         session: String,
         #[arg(long)]
         expected_generation: String,
+        /// Acknowledge only the unfinished-history warning of a saved Codex session.
+        #[arg(long)]
+        confirm_unfinished: bool,
     },
     /// Open a plain interactive shell; never re-enter the terminal launcher.
     Shell,
@@ -1557,7 +1560,16 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Resume {
             session,
             expected_generation,
-        } => sessionsation::api::resume_current(&paths, &session, &expected_generation).await?,
+            confirm_unfinished,
+        } => {
+            sessionsation::api::resume_current(
+                &paths,
+                &session,
+                &expected_generation,
+                confirm_unfinished,
+            )
+            .await?
+        }
         Commands::Shell => {
             use std::os::unix::process::CommandExt;
             let shell =

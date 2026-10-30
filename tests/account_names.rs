@@ -421,6 +421,16 @@ async fn a_home_at_a_deferred_legacy_path_moves_to_the_layout_2_path() {
         f.paths.root.join("gemini-accounts/old"),
     )
     .unwrap();
+    let thread = "55555555-5555-4555-8555-555555555555";
+    let conversations = f.paths.root.join(sessionsation::layout::CONVERSATIONS);
+    std::fs::create_dir_all(&conversations).unwrap();
+    let record = conversations.join(format!("{thread}.json"));
+    let legacy_home = f.paths.root.join("gemini-accounts/old");
+    std::fs::write(
+        &record,
+        serde_json::to_vec(&json!({"owner":legacy_home})).unwrap(),
+    )
+    .unwrap();
     let row = f.row("gemini:old").unwrap();
     assert_eq!(row["home_deferred"], true);
     let g = row["generation"].as_str().unwrap().to_owned();
@@ -436,6 +446,10 @@ async fn a_home_at_a_deferred_legacy_path_moves_to_the_layout_2_path() {
     assert!(f.home("gemini", "new").is_dir());
     assert!(!f.paths.root.join("gemini-accounts/old").exists());
     assert_eq!(f.row("gemini:new").unwrap()["home_deferred"], false);
+    // The conversation owner followed the renamed home.
+    let owner: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    assert_eq!(owner["owner"], json!(f.home("gemini", "new")));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

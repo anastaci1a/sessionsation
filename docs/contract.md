@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.30.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.31.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2244,3 +2244,18 @@ renames the folder and id to match the display name); `api account rename` gains
 `ACCOUNT_HOME_MOVE_FAILED`, `ACCOUNT_RENAME_UNRESOLVED`. A backend rename changes the account id:
 clients must re-read accounts and sessions (session generations change) and treat old
 receipts and digests as historical. See [cli](cli.md#account-folder-name-versus-display-name-contract-1300).
+
+### Home-path robustness and `resume --confirm-unfinished` (1.31.0)
+
+MINOR, additive. `sessionsation resume SESSION --expected-generation G` gains
+`--confirm-unfinished`, matching `api resume-launch`'s `confirm_unfinished`: it acknowledges only
+the `unfinished_history` warning of a saved Codex session (without it the command fails with
+`UNFINISHED_HISTORY_CONFIRMATION_REQUIRED`; every other block reason still fails with
+`SESSION_STATE_UNVERIFIED`). Behavior fixes, no request or result shape changes: owner and
+binding home paths recorded before a home moved (`layout migrate`, backend rename) are compared
+by resolved path, so conversation owners, pane bindings and Codex history paths that use a
+legacy compatibility symlink no longer hide live attachments (`ATTACHMENT_UNOBSERVED`,
+`SESSION_UNAVAILABLE`) or fail a same-account resume. `layout migrate` and backend rename now
+also rewrite the stored `owner` (conversations) and `home` (managed-panes, herdr-panes
+bindings) of the moved home; `layout migrate` reports `home_refs_rewritten`. Journals and
+receipts are never rewritten.
