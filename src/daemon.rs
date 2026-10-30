@@ -524,6 +524,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 // The managed home is the normal layout; an operator-populated one is registered as is.
                                 let (home, existing) = match &adopted { Some(dir) => (dir.clone(), true), None => crate::provider::claude::create_home(&paths,name)? };
                                 if adopted.is_none() && !existing { if let Err(e) = crate::provider::claude::bypass::default_new(&home) { eprintln!("bypass-warning default not set: {e}"); } }
+                                if adopted.is_none() && !existing { if let Err(e) = crate::provider::claude::statusline_seed::default_new(&home,&config.claude_default_statusline_command) { eprintln!("statusLine default not set: {e}"); } }
                                 let auth = crate::provider::claude::auth_report(&config,&home).await;
                                 let mut account = Account::with_provider(ProviderId::Claude,name.into(),String::new());
                                 account.config_home = adopted; account.auth_required = !auth["problem"].is_null();

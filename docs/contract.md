@@ -16,8 +16,8 @@ checked alongside the CLI regression tests. See [CLI setup](cli.md) and
 The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
-compatibility and always equals the MINOR part: revisions 1-26 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.26.0`
+compatibility and always equals the MINOR part: revisions 1-27 were all additive,
+so revision N maps to contract `1.N.0` and the current contract is `1.27.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2191,3 +2191,11 @@ and parked-job lineage is already resolved onto the entry). Antigravity uses the
 of the brain `transcript.jsonl`, else of the conversation db; no database is opened.
 A missing or unreadable source, a deleted account or an archived entry gives null.
 Unlike Codex it is not an open/attach time. Existing fields are unchanged.
+
+### Claude default statusline (1.27.0)
+
+MINOR, additive: new config key `claude_default_statusline_command` and
+`api capabilities.claude_default_statusline`. A new managed Claude account home gets
+`statusLine` seeded in its `settings.json` (see
+[Claude default statusline](cli.md#claude-default-statusline-contract-1270)).
+Existing fields, adopted homes and existing homes are unchanged.

@@ -1,6 +1,9 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
+/// Built-in default for `claude_default_statusline_command`.
+pub const DEFAULT_STATUSLINE_COMMAND: &str = "bash /mnt/user/appdata/claude/statusline-command.sh";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -44,6 +47,9 @@ pub struct Config {
     /// Before a yolo Antigravity start, pre-accept agy's folder trust for the launch
     /// directory (`trustedWorkspaces` in the account's `settings.json`). Contract revision 25.
     pub antigravity_pretrust_folders: bool,
+    /// Command seeded as `statusLine` in the settings.json of a NEW managed Claude
+    /// account home (never adopted or existing). Empty disables seeding. Contract 1.27.0.
+    pub claude_default_statusline_command: String,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -69,6 +75,7 @@ impl Default for Config {
             launch_permissions: LaunchPermissions::Yolo,
             claude_pretrust_folders: true,
             antigravity_pretrust_folders: true,
+            claude_default_statusline_command: DEFAULT_STATUSLINE_COMMAND.into(),
         }
     }
 }

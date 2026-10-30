@@ -940,14 +940,18 @@ async fn run(cli: Cli) -> Result<()> {
             // isolated environment. Credentials never pass through us.
             let resolved = resolve_account(&paths, &name)?;
             let account = provider::native::account(&paths, resolved.provider, &resolved.name)?;
+            let config = store::load_config(&paths)?;
             if resolved.provider == ProviderId::Claude
                 && account.home == provider::claude::default_home(&paths, &resolved.name)?
                 && !provider::claude::peer::settings_file(&account.home).exists()
             {
-                // A brand-new managed home: the new-account default (skip).
+                // A brand-new managed home: the new-account defaults (skip, statusLine).
                 let _ = provider::claude::bypass::default_new(&account.home);
+                let _ = provider::claude::statusline_seed::default_new(
+                    &account.home,
+                    &config.claude_default_statusline_command,
+                );
             }
-            let config = store::load_config(&paths)?;
             return exec_login(
                 &paths,
                 &resolved.name,

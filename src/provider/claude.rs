@@ -18,6 +18,7 @@ pub mod bypass;
 pub mod hosted;
 pub mod launch;
 pub mod peer;
+pub mod statusline_seed;
 pub mod trust;
 
 use std::{

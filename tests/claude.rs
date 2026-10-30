@@ -1264,7 +1264,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 26);
+    assert_eq!(caps["contract_revision"], 27);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1851,7 +1851,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 26);
+    assert_eq!(caps["contract_revision"], 27);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2713,7 +2713,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 26);
+    assert_eq!(caps["contract_revision"], 27);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()
@@ -3160,7 +3160,8 @@ async fn bypass_warning_defaults_to_skip_and_toggles_one_key() {
     let home = f.home("personal");
     // New managed account: default skip, written to settings.json.
     let settings: Value = serde_json::from_str(&read(&home.join("settings.json"))).unwrap();
-    assert_eq!(settings, json!({"skipDangerousModePermissionPrompt":true}));
+    assert_eq!(settings["skipDangerousModePermissionPrompt"], true);
+    assert_eq!(settings["statusLine"]["type"], "command");
     let shown = f.api(&["account", "bypass-warning", "claude:personal"]);
     assert_eq!(shown["bypass_warning"], "skip");
     assert_eq!(shown["changed"], false);
@@ -3236,4 +3237,65 @@ async fn claude_last_accessed_is_the_last_transcript_record_and_null_without_a_s
     {
         assert!(s["last_accessed"].is_null(), "{s}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_managed_home_gets_default_statusline_but_adopted_and_existing_do_not() {
+    let f = fixture().await;
+    let add = |args: &[&str]| {
+        let mut a = vec!["account", "add", "--platform", "claude", "--no-login"];
+        a.extend_from_slice(args);
+        let out = f.run(&a);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let expected =
+        json!({"type":"command","command":"bash /mnt/user/appdata/claude/statusline-command.sh"});
+    // New managed home: seeded next to the bypass default.
+    add(&["fresh"]);
+    let settings: Value =
+        serde_json::from_str(&read(&f.home("fresh").join("settings.json"))).unwrap();
+    assert_eq!(settings["statusLine"], expected);
+    assert_eq!(settings["skipDangerousModePermissionPrompt"], true);
+    // Adopted directory: untouched.
+    let adopted = f._tmp.path().join("adopted-claude");
+    std::fs::create_dir(&adopted).unwrap();
+    add(&["--config-dir", adopted.to_str().unwrap(), "adopted"]);
+    assert!(!adopted.join("settings.json").exists());
+    // Existing operator-populated managed home: untouched.
+    let existing = f.home("existing");
+    std::fs::create_dir_all(&existing).unwrap();
+    std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o700)).unwrap();
+    add(&["existing"]);
+    assert!(!existing.join("settings.json").exists());
+    // Empty value disables seeding.
+    let set = f.run(&["config", "set", "claude_default_statusline_command", ""]);
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    add(&["plain"]);
+    let settings: Value =
+        serde_json::from_str(&read(&f.home("plain").join("settings.json"))).unwrap();
+    assert!(settings.get("statusLine").is_none(), "{settings}");
+    assert_eq!(settings["skipDangerousModePermissionPrompt"], true);
+    // A custom command is used verbatim.
+    let set = f.run(&[
+        "config",
+        "set",
+        "claude_default_statusline_command",
+        "bash /x/y.sh",
+    ]);
+    assert!(set.status.success());
+    add(&["custom"]);
+    let settings: Value =
+        serde_json::from_str(&read(&f.home("custom").join("settings.json"))).unwrap();
+    assert_eq!(
+        settings["statusLine"],
+        json!({"type":"command","command":"bash /x/y.sh"})
+    );
 }

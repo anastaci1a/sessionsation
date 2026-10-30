@@ -1239,3 +1239,27 @@ Applies to sessions started afterwards. Claude accounts that Sessionsation creat
 (`account add`, or `account login` of a managed home without a `settings.json`)
 default to skip; existing and adopted accounts keep what they have. `account list`
 rows carry `bypass_warning` (`skip|show`). Credentials are never read.
+
+### Claude default statusline (contract 1.27.0)
+
+When Sessionsation creates a NEW managed Claude account home (`account add
+--platform claude NAME`, or `account login` into a managed home that has no
+`settings.json`), it seeds `statusLine` in that account's `settings.json`:
+
+```json
+{"statusLine":{"type":"command","command":"bash /mnt/user/appdata/claude/statusline-command.sh"}}
+```
+
+The command comes from the config key `claude_default_statusline_command`
+(default is the string above). An empty value disables seeding:
+
+```sh
+sessionsation config set claude_default_statusline_command ""
+```
+
+Like the bypass-warning default it only touches new managed homes, never adopted
+(`--config-dir`) or existing ones, never overwrites an existing `statusLine`, edits
+only that key, replaces the file atomically with its mode kept, and refuses a
+symlinked `settings.json`. Sessionsation's statusline hook still forwards to the
+account's own `statusLine`, so usage recording keeps working. Advertised as
+`api capabilities.claude_default_statusline`.
