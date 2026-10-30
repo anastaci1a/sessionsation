@@ -93,7 +93,8 @@ fn legacy_accounts_are_migrated_to_codex_once_with_an_event() {
         account.as_object_mut().unwrap().remove("provider");
         legacy["accounts"][name] = account;
     }
-    let db = rusqlite::Connection::open(paths.root.join("registry.db")).unwrap();
+    let db =
+        rusqlite::Connection::open(paths.root.join(sessionsation::layout::REGISTRY_DB)).unwrap();
     db.execute("INSERT INTO state VALUES(1,?1)", [legacy.to_string()])
         .unwrap();
     let events = |db: &rusqlite::Connection| -> i64 {

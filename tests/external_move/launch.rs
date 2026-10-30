@@ -181,7 +181,11 @@ async fn installed_herdr_space_move_preserves_process_and_recovers_without_repla
         assert!(Instant::now() < until, "{v}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    let receipt_path = f.paths.root.join(format!("launches/{id}.json"));
+    let receipt_path = f
+        .paths
+        .root
+        .join(sessionsation::layout::LAUNCHES)
+        .join(format!("{id}.json"));
     let receipt_bytes = fs::read(&receipt_path).unwrap();
     let pane = receipt["pane_id"].as_str().unwrap();
     let terminal = host.call(&["pane", "get", pane])["pane"]["terminal_id"].clone();
@@ -268,7 +272,8 @@ async fn installed_herdr_space_move_preserves_process_and_recovers_without_repla
     assert!(
         !f.paths
             .root
-            .join(format!("space-moves/{move_id}.json"))
+            .join(sessionsation::layout::SPACE_MOVES)
+            .join(format!("{move_id}.json"))
             .exists()
     );
     // Keep the host reply pending after its effect. The API caller must exit
@@ -840,7 +845,7 @@ async fn installed_herdr_new_tab_handoff_retains_exact_account_and_shell() {
         assert!(
             !f.paths
                 .root
-                .join("resumptions")
+                .join(sessionsation::layout::RESUMPTIONS)
                 .join(format!("{request_id}.json"))
                 .exists()
         );
@@ -1176,7 +1181,7 @@ async fn installed_herdr_resumes_preserved_paginated_archive_after_account_delet
     let lock = sessionsation::paths::lock_file(
         &f.paths
             .root
-            .join("account-deletions")
+            .join(sessionsation::layout::ACCOUNT_DELETIONS)
             .join(format!("{deletion}.worker.lock")),
     )
     .unwrap();
@@ -1398,7 +1403,11 @@ esac
     assert_eq!(session.account, "personal");
     // A worker timeout can precede provider exec. Reconcile evidence only using
     // the original request, without repeating native or terminal dispatch.
-    let receipt_path = f.paths.root.join("launches").join(format!("{id}.json"));
+    let receipt_path = f
+        .paths
+        .root
+        .join(sessionsation::layout::LAUNCHES)
+        .join(format!("{id}.json"));
     let mut late: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
     late["phase"] = json!("uncertain");
     fs::write(&receipt_path, late.to_string()).unwrap();
@@ -1625,7 +1634,11 @@ async fn installed_herdr_recovers_idle_error_history_writer_without_external_hel
 
 async fn wait_space_move(f: &Fixture, id: &str, phase: &str) -> Value {
     let until = Instant::now() + Duration::from_secs(20);
-    let path = f.paths.root.join(format!("space-moves/{id}.json"));
+    let path = f
+        .paths
+        .root
+        .join(sessionsation::layout::SPACE_MOVES)
+        .join(format!("{id}.json"));
     loop {
         let op: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         let lock = fs::OpenOptions::new()
@@ -1750,7 +1763,8 @@ async fn installed_herdr_space_move_creates_new_space_without_stray_shell_or_rep
     assert!(
         !f.paths
             .root
-            .join(format!("space-moves/{taken}.json"))
+            .join(sessionsation::layout::SPACE_MOVES)
+            .join(format!("{taken}.json"))
             .exists()
     );
     let started = foreign_api(&f, &args);

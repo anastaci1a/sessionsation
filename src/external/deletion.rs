@@ -29,7 +29,7 @@ impl Plan {
 }
 pub(super) fn pending(paths: &Paths) -> Result<Vec<Instance>> {
     let mut items = Vec::new();
-    let Ok(entries) = fs::read_dir(paths.root.join("deletions")) else {
+    let Ok(entries) = fs::read_dir(paths.root.join(crate::layout::DELETIONS)) else {
         return Ok(items);
     };
     for entry in entries {
@@ -89,7 +89,7 @@ fn purge_input_history(home: &Path, ids: &BTreeSet<String>) -> Result<()> {
 }
 fn journal(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id)?;
-    let dir = paths.root.join("deletions");
+    let dir = paths.root.join(crate::layout::DELETIONS);
     private_dir(&dir)?;
     Ok(dir.join(format!("{id}.json")))
 }
@@ -107,13 +107,8 @@ fn homes(paths: &Paths, source: &Instance) -> Result<BTreeSet<PathBuf>> {
     for job in jobs(paths)? {
         homes.insert(job.source.home);
     }
-    if let Ok(entries) = fs::read_dir(paths.root.join("accounts")) {
-        for entry in entries {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                homes.insert(fs::canonicalize(entry.path())?);
-            }
-        }
+    for (_, home) in crate::layout::codex_homes(&paths.root) {
+        homes.insert(fs::canonicalize(home)?);
     }
     homes.extend(super::preserved_homes(paths)?.into_iter().map(|(_, h)| h));
     Ok(homes)
@@ -136,7 +131,7 @@ fn scan(paths: &Paths, source: &Instance) -> Result<(BTreeSet<String>, Vec<Copy>
         }
     }
     let mut backups = Vec::new();
-    collect_rollouts(&paths.root.join("move-backups"), &mut backups)?;
+    collect_rollouts(&paths.root.join(crate::layout::MOVE_BACKUPS), &mut backups)?;
     candidates.extend(backups.into_iter().map(|p| (None, p)));
     let candidates: Vec<_> = candidates
         .into_iter()

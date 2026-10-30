@@ -138,7 +138,10 @@ fn stamp(path: &Path) -> Option<String> {
 }
 impl ScanCache {
     pub(crate) fn load(paths: &Paths) -> Self {
-        let file = paths.root.join("session-catalog/rollout-scan.json");
+        let file = paths
+            .root
+            .join(crate::layout::SESSION_CATALOG)
+            .join("rollout-scan.json");
         let entries = fs::read(&file)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())

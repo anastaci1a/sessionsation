@@ -357,6 +357,13 @@ struct Ledger {
     paths: Paths,
     _lock: fs::File,
 }
+/// Unthrottled receipt-retention pass (part of the data-root retention sweep);
+/// returns the number of retired message ids.
+pub fn run_receipt_retention(paths: &Paths, now: i64) -> anyhow::Result<usize> {
+    let mut ledger = Ledger::open_waiting(paths, std::time::Duration::from_secs(5))?;
+    let policy = retention::Policy::load(paths);
+    Ok(retention::run(&mut ledger, now, policy)?)
+}
 impl Ledger {
     fn open(paths: &Paths) -> Result<Self> {
         let dir = paths.root.join("messaging");

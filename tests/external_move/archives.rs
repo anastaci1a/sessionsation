@@ -115,7 +115,7 @@ async fn public_archive_restore_and_delete_preserve_identity_and_other_data() {
     let dir = f
         .paths
         .root
-        .join("archived-sessions")
+        .join(sessionsation::layout::ARCHIVED_SESSIONS)
         .join(s["id"].as_str().unwrap());
     let compressed = dir.join("bundles").join(rid).join("0.jsonl.gz");
     assert_eq!(&fs::read(&compressed).unwrap()[..2], &[31, 139]);
@@ -304,7 +304,7 @@ async fn public_archive_exports_paginated_proofs_and_rejects_changed_compressed_
     let dir = f
         .paths
         .root
-        .join("archived-sessions")
+        .join(sessionsation::layout::ARCHIVED_SESSIONS)
         .join(s["id"].as_str().unwrap());
     let bundle = dir.join("bundles").join(rid);
     let proof: Value =
@@ -351,7 +351,7 @@ async fn public_restore_rejects_loaded_threads_and_never_replays_failed_requests
     let storage = f
         .paths
         .root
-        .join("archived-sessions")
+        .join(sessionsation::layout::ARCHIVED_SESSIONS)
         .join(source["id"].as_str().unwrap());
     assert!(!storage.join("home").exists());
     assert!(

@@ -72,10 +72,13 @@ pub struct Receipt {
 }
 fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id).context("INVALID_REQUEST_ID")?;
-    Ok(paths.root.join("resumptions").join(format!("{id}.json")))
+    Ok(paths
+        .root
+        .join(crate::layout::RESUMPTIONS)
+        .join(format!("{id}.json")))
 }
 fn lock(paths: &Paths) -> Result<fs::File> {
-    let dir = paths.root.join("resumptions");
+    let dir = paths.root.join(crate::layout::RESUMPTIONS);
     private_dir(&dir)?;
     let f = lock_file(&dir.join("admission.lock"))?;
     f.lock_exclusive()?;
@@ -105,7 +108,7 @@ fn change(
     Ok(r)
 }
 fn records(paths: &Paths) -> Result<Vec<Receipt>> {
-    let dir = paths.root.join("resumptions");
+    let dir = paths.root.join(crate::layout::RESUMPTIONS);
     let mut records = vec![];
     if dir.is_dir() {
         for e in crate::paths::journal_paths(&dir)? {
@@ -700,7 +703,7 @@ mod tests {
             "pane_id":null,"operation_id":null,"created_at":now - age,"updated_at":now - age
         }))
         .unwrap();
-        private_dir(&paths.root.join("resumptions")).unwrap();
+        private_dir(&paths.root.join(crate::layout::RESUMPTIONS)).unwrap();
         fs::write(file(paths, &id).unwrap(), serde_json::to_vec(&r).unwrap()).unwrap();
         id
     }

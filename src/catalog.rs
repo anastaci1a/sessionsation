@@ -144,7 +144,7 @@ fn healing_transaction<T>(
     paths: &Paths,
     change: impl FnOnce(&mut Catalog, &Healed) -> Result<T>,
 ) -> Result<T> {
-    let dir = paths.root.join("session-catalog");
+    let dir = paths.root.join(crate::layout::SESSION_CATALOG);
     private_dir(&dir)?;
     let lock = lock_file(&dir.join("catalog.lock"))?;
     lock.lock_exclusive()?;
@@ -1271,7 +1271,10 @@ mod stable_identity_tests {
     /// write: both fields are dropped, and its discovery registers the continued
     /// (old) conversations again under fresh ids and suffixed names.
     fn old_release_rewrite(p: &Paths, reregister: &[&str]) -> Vec<String> {
-        let file = p.root.join("session-catalog/catalog.json");
+        let file = p
+            .root
+            .join(crate::layout::SESSION_CATALOG)
+            .join("catalog.json");
         let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
         v.as_object_mut().unwrap().remove("aliases");
         for s in v["sessions"].as_object_mut().unwrap().values_mut() {
@@ -1365,7 +1368,10 @@ mod stable_identity_tests {
         }
         // Restart: a fresh handle reads the same identity; an unchanged catalog is
         // not rewritten and an explicit repair has nothing left to restore.
-        let file = p.root.join("session-catalog/catalog.json");
+        let file = p
+            .root
+            .join(crate::layout::SESSION_CATALOG)
+            .join("catalog.json");
         let bytes = fs::read(&file).unwrap();
         let reloaded = Paths::new(Some(p.root.clone())).unwrap();
         assert_eq!(repair_identity(&reloaded).unwrap(), Healed::default());

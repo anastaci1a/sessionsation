@@ -377,6 +377,14 @@
         "bypass_warning_setting": {
           "type": "string",
           "description": "Revision 22: Claude only. The settings.json key."
+        },
+        "home": {
+          "type": ["string", "null"],
+          "description": "1.29.0: the account home in use: an adopted Claude config home, the managed accounts/<platform>/<name>, or its legacy path while the data-root layout migration deferred that home (in use)."
+        },
+        "home_deferred": {
+          "type": "boolean",
+          "description": "1.29.0: true while the layout migration left this in-use managed home at its legacy path; it moves once idle."
         }
       },
       "required": [

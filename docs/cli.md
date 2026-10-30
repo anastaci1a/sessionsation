@@ -172,7 +172,7 @@ reported reset timestamps are in account snapshots; do not invent missing window
 
 `sessionsation account managed-home NAME` (API: `api account managed-home claude:NAME`)
 switches a Claude account adopted with `--config-dir` to the managed home
-`<root>/claude-accounts/NAME` without changing its id, name or catalog sessions. The
+`<root>/accounts/claude/NAME` without changing its id, name or catalog sessions. The
 operator must first copy the config directory there (0700, owned by you, not a
 symlink); sessionsation never creates, copies or moves files. It fails closed with
 `UNSUPPORTED_PROVIDER_OPERATION` (Codex), `ACCOUNT_HOME_UNAVAILABLE` or
@@ -252,7 +252,7 @@ The first command is a fast intent preview: no account file scanning. Confirmati
 admits a durable background operation. Only then does the CLI check active/loaded
 sessions and pending work, reserve the account through its sole owner, preserve
 saved/archived rollouts and native history metadata in private
-`preserved-conversations/REQUEST-ID/home`, and delete the remaining account files
+`sessions/preserved/REQUEST-ID/home`, and delete the remaining account files
 and credentials. Active processes block deletion; it never stops agents to proceed.
 The upstream provider account is unchanged. Preserved histories remain discoverable
 with their stable session IDs; resume requires an explicit enrolled destination
@@ -260,7 +260,7 @@ account. Claude deletion (`api account delete claude:NAME`) uses the same
 commands, journal and recovery. It refuses while a verified live Claude session, a
 Claude process with that `CLAUDE_CONFIG_DIR` or an unfinished headless delivery uses
 the account. For a managed home it moves `projects/`, `history.jsonl`,
-`file-history/` and `todos/` to `preserved-conversations/REQUEST-ID/home`, then
+`file-history/` and `todos/` to `sessions/preserved/REQUEST-ID/home`, then
 deletes the managed home including credentials (`home_disposition:"deleted"`). For
 an adopted `--config-dir` home it never modifies or deletes the directory: only the
 account record is removed and the receipt reports `home_disposition:"left_in_place"`
@@ -460,7 +460,7 @@ resume, unarchive or delete conversations.
 
 Inactive Codex conversations have separate Archive and Delete actions (Claude and
 Gemini: [revision 17](#claude-and-gemini-archive-and-delete-revision-17)). Codex Archive
-exports verified gzip history to `DATA_ROOT/archived-sessions/SESSION-ID`, outside
+exports verified gzip history to `DATA_ROOT/sessions/archived/SESSION-ID`, outside
 all credential homes, before removing native copies. Restore retains backend and
 provider conversation IDs and exposes saved history without starting an agent.
 It rejects live/loaded conversations, stale generations and changed compressed
@@ -573,7 +573,7 @@ for last-known/stopped behavior and capability negotiation.
 ## Claude Code accounts and sessions
 
 Each Claude account is an isolated `CLAUDE_CONFIG_DIR`. The normal layout is the
-managed home `DATA_ROOT/claude-accounts/NAME` (mode 0700), created by `account
+managed home `DATA_ROOT/accounts/claude/NAME` (mode 0700), created by `account
 add --platform claude NAME`. If an operator has already placed a home there (for
 example a copied existing config), `account add` registers it as is: it must be a
 0700 directory owned by the user and not a symlink, and it is never wiped,
@@ -638,7 +638,7 @@ catalog entry with a pre-assigned id and runs `claude -p --session-id UUID
 --output-format json`. The message is written to stdin, not argv. Verified live
 sessions (`SESSION_ALREADY_RUNNING`), missing transcripts (`SESSION_STALE`) and auth
 problems are refused before anything is journaled. The request is journaled under
-`DATA_ROOT/claude-deliveries/` before a detached worker starts Claude once, bounded
+`DATA_ROOT/messaging/claude-deliveries/` before a detached worker starts Claude once, bounded
 by `timeout_seconds` (default 600, max 3600). The receipt's `reply` holds the parsed
 result text, `is_error`, `session_id`, `num_turns` and `usage`. A different reported
 session id, a timeout, unparseable output or a worker that exits mid-run is
@@ -690,7 +690,7 @@ requests and stay pending (in `api hosted status`, the session row's
 `hosted.pending_permissions` and the viewer) until answered with
 `api hosted respond`; nothing is auto-approved.
 
-The worker is the only writer: its lock (`DATA_ROOT/claude-hosted/UUID/worker.lock`)
+The worker is the only writer: its lock (`DATA_ROOT/sessions/hosted/UUID/worker.lock`)
 blocks interactive resume, headless delivery and a second host. Detached from the
 supervisor, it survives supervisor restarts and is re-adopted by the next read. A
 worker that dies is marked `stopped` (`WORKER_LOST`); while its provider still
@@ -756,7 +756,7 @@ with `LIVE_STEERING_DISABLED`, unless the session runs in a verified HERDR pane,
 submit and steer use [terminal input](#claude-terminal-input-revision-17); session rows carry `capabilities.submit|queue|steer`,
 `capability_reasons` and `input_delivery.semantics`.
 
-Both paths journal under `DATA_ROOT/claude-steer/` before writing, share the
+Both paths journal under `DATA_ROOT/messaging/claude-steer/` before writing, share the
 message-id namespace with every other store and never replay an uncertain send.
 Hosted and live steering are tested against fakes; the fake hosted provider models the priority and cut-turn behaviour observed live with Claude Code 2.1.312.
 
@@ -778,7 +778,7 @@ catalog entry's conversations: its `conversation_id` and every
 Credentials (`.credentials.json`, `sessions/*.key`, OAuth files) are never read or
 touched. Symlinks anywhere in scope refuse the job (`HISTORY_SYMLINK`).
 
-- **Archive** records `DATA_ROOT/archived-sessions/SESSION-ID/native.json` (the
+- **Archive** records `DATA_ROOT/sessions/archived/SESSION-ID/native.json` (the
   original path and SHA-256 tree digest of each file or directory). It then moves
   the files into `native/OPERATION-ID/` in that directory. A rename is used, or
   copy, verify and remove across file systems; nothing is compressed. Claude Code
@@ -790,7 +790,7 @@ touched. Symlinks anywhere in scope refuse the job (`HISTORY_SYMLINK`).
   with `ACCOUNT_HOME_CHANGED` or `ACCOUNT_DELETED` if the home moved or is gone. It
   never starts an agent.
 - **Delete** (stopped or archived) first stages the files under
-  `DATA_ROOT/deletions/native-OPERATION-ID/`, with a `plan.json` journal naming
+  `DATA_ROOT/operations/deletions/native-OPERATION-ID/`, with a `plan.json` journal naming
   each original path. Claude `sessions/PID.json` registry entries that name a
   lineage conversation are staged too, but only when their process is gone (PID
   missing, other start time or zombie). Delete then removes the catalog entry and
@@ -882,7 +882,7 @@ row report `terminal_input` unavailable with `TERMINAL_INPUT_DISABLED`.
 ## Gemini CLI accounts and sessions
 
 Gemini CLI is the third provider. Each account is an isolated `GEMINI_CLI_HOME`
-at the managed home `DATA_ROOT/gemini-accounts/NAME` (mode 0700); everything
+at the managed home `DATA_ROOT/accounts/gemini/NAME` (mode 0700); everything
 Gemini keeps for it lives in `HOME/.gemini/`. Adopting an existing directory is
 not supported. An operator-placed home is registered as is under the same rules as
 Claude (`UNSAFE_ACCOUNT_HOME` otherwise). The config key `gemini_binary` (default
@@ -986,7 +986,7 @@ the environment: `GEMINI_API_KEY` and `SESSIONSATION_GEMINI_API_KEY` (the host
 into `GEMINI_API_KEY`). It never appears in argv, state, receipts, logs, errors or
 JSON output. Setting a key (or switching to `api-key` with a stored key) runs one
 headless validation (`gemini -p "" -o json`, at most 15 s) in a throwaway Gemini
-home under `DATA_ROOT/provider-state/gemini-validate/`, so no chat is recorded in
+home under `DATA_ROOT/registry/provider-state/gemini-validate/`, so no chat is recorded in
 the account. The result is `validation.state`: `valid` (clears a recorded failure),
 `auth_failed` (recorded like any headless auth failure, for example
 `AUTH_API_KEY_INVALID`) or `inconclusive` (timeout, quota, network; the key stays
@@ -1070,7 +1070,7 @@ are not yet verified against a live pane. Tests use a fake HERDR pane only.
 
 Google Antigravity CLI (`agy`, verified with 1.4.10) is the fourth provider. Each
 account is an isolated `HOME` at the managed home
-`DATA_ROOT/antigravity-accounts/NAME` (mode 0700); agy keeps its state in
+`DATA_ROOT/accounts/antigravity/NAME` (mode 0700); agy keeps its state in
 `HOME/.gemini/antigravity-cli/` (plus `.gemini/config` and `.config/antigravity`).
 The config key `antigravity_binary` (default `agy`, the host wrapper) selects the
 executable. Every agy child gets `AGY_ACCOUNT_HOME` and `HOME` set to the account
@@ -1191,7 +1191,7 @@ own `/resume` picker, F4): `conversations/ID.db` (plus `-wal`/`-shm` when presen
 `brain/ID/`, `annotations/ID.pbtxt`, the row of `conversation_summaries.db` and the
 entry in `jetbox_summaries_proto.pb`; the picker also leaves the empty
 `presence/ID.lock`, which is moved or deleted with the rest. Archive moves the files
-into `archived-sessions` and saves then removes the index row (the whole row,
+into `sessions/archived` and saves then removes the index row (the whole row,
 including its blob, is restored on Restore); Delete stages and removes them and also
 drops the cache entry. The index is edited only through the SQLite library, in one
 `BEGIN IMMEDIATE` transaction per row, after a `VACUUM INTO` backup (kept in the

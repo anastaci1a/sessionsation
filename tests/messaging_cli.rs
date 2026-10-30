@@ -92,7 +92,7 @@ fn shared_contract_cli_offline_round_trip_and_structured_errors() {
     let (_, tail) = call(&root, &["events", "--cursor", cursor], None);
     assert_eq!(tail["result"]["events"], json!([]));
     assert!(!events.to_string().contains(input["text"].as_str().unwrap()));
-    assert!(!root.join("registry.db").exists());
+    assert!(!root.join(sessionsation::layout::REGISTRY_DB).exists());
     assert!(!root.join("config.json").exists());
     assert!(!root.join("accounts").exists());
 }
@@ -112,7 +112,7 @@ async fn correlated_reply_survives_real_cli_process_retries_and_restarts() {
     let root = tmp.path().join("state");
     let home = tmp.path().join("fake-home");
     fs::create_dir_all(home.join("app-server-control")).unwrap();
-    fs::create_dir_all(root.join("managed-panes")).unwrap();
+    fs::create_dir_all(root.join(sessionsation::layout::MANAGED_PANES)).unwrap();
     let fixtures: Value =
         serde_json::from_str(include_str!("../docs/messaging/v1.2.1/fixtures.json")).unwrap();
     let mut input = fixtures["enqueue"].clone();
@@ -129,7 +129,8 @@ async fn correlated_reply_survives_real_cli_process_retries_and_restarts() {
         .parse()
         .unwrap();
     fs::write(
-        root.join("managed-panes/1.json"),
+        root.join(sessionsation::layout::MANAGED_PANES)
+            .join("1.json"),
         json!({"pid":pid,"start_time":start,"home":home,"thread":input["session_id"]}).to_string(),
     )
     .unwrap();
@@ -181,9 +182,9 @@ async fn correlated_reply_survives_real_cli_process_retries_and_restarts() {
         ],
         None,
     );
-    fs::create_dir_all(root.join("conversations")).unwrap();
+    fs::create_dir_all(root.join(sessionsation::layout::CONVERSATIONS)).unwrap();
     fs::write(
-        root.join("conversations")
+        root.join(sessionsation::layout::CONVERSATIONS)
             .join(format!("{}.json", input["session_id"].as_str().unwrap())),
         json!({"name":"研究 café"}).to_string(),
     )
@@ -259,7 +260,7 @@ async fn modes_discover_two_managed_targets_without_registration_and_fail_closed
     use tokio_tungstenite::tungstenite::Message;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
-    fs::create_dir_all(root.join("managed-panes")).unwrap();
+    fs::create_dir_all(root.join(sessionsation::layout::MANAGED_PANES)).unwrap();
     let pid = std::process::id();
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
     let start: u64 = stat
@@ -282,7 +283,8 @@ async fn modes_discover_two_managed_targets_without_registration_and_fail_closed
         let home = tmp.path().join(format!("home-{i}"));
         fs::create_dir_all(home.join("app-server-control")).unwrap();
         fs::write(
-            root.join(format!("managed-panes/{i}.json")),
+            root.join(sessionsation::layout::MANAGED_PANES)
+                .join(format!("{i}.json")),
             json!({"pid":pid,"start_time":start,"home":home,"thread":id}).to_string(),
         )
         .unwrap();
@@ -406,7 +408,9 @@ async fn modes_discover_two_managed_targets_without_registration_and_fail_closed
     assert_eq!(mismatched["result"]["reason"], "correlation_changed");
     mismatch.store(false, std::sync::atomic::Ordering::SeqCst);
     let (_, old) = call(&root, &["modes", "target", "--session", ids[0]], None);
-    let binding = root.join("managed-panes/0.json");
+    let binding = root
+        .join(sessionsation::layout::MANAGED_PANES)
+        .join("0.json");
     let original = fs::read(&binding).unwrap();
     let mut moved: Value = serde_json::from_slice(&original).unwrap();
     moved["home"] = json!(tmp.path().join("home-1"));
@@ -420,10 +424,19 @@ async fn modes_discover_two_managed_targets_without_registration_and_fail_closed
     request["expected_generation"] = old["result"]["generation"].clone();
     let (_, swapped) = call(&root, &["modes", "request"], Some(&request));
     assert_eq!(swapped["error"]["code"], "generation_mismatch");
-    fs::write(root.join("managed-panes/duplicate.json"), &original).unwrap();
+    fs::write(
+        root.join(sessionsation::layout::MANAGED_PANES)
+            .join("duplicate.json"),
+        &original,
+    )
+    .unwrap();
     let (_, ambiguous) = call(&root, &["modes", "target", "--session", ids[0]], None);
     assert_eq!(ambiguous["error"]["code"], "ambiguous_session");
-    fs::remove_file(root.join("managed-panes/duplicate.json")).unwrap();
+    fs::remove_file(
+        root.join(sessionsation::layout::MANAGED_PANES)
+            .join("duplicate.json"),
+    )
+    .unwrap();
     fs::write(&binding, original).unwrap();
     fs::set_permissions(
         tmp.path().join("home-0/app-server-control"),
@@ -454,7 +467,7 @@ async fn native_modes_queue_roundtrip_fifo_lost_ack_retry_cancel_and_emergency_g
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
     let home = tmp.path().join("home");
-    fs::create_dir_all(root.join("managed-panes")).unwrap();
+    fs::create_dir_all(root.join(sessionsation::layout::MANAGED_PANES)).unwrap();
     fs::create_dir_all(home.join("app-server-control")).unwrap();
     let pid = std::process::id();
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
@@ -469,7 +482,8 @@ async fn native_modes_queue_roundtrip_fifo_lost_ack_retry_cancel_and_emergency_g
         .unwrap();
     let session = "22222222-2222-4222-8222-222222222222";
     fs::write(
-        root.join("managed-panes/1.json"),
+        root.join(sessionsation::layout::MANAGED_PANES)
+            .join("1.json"),
         json!({"pid":pid,"start_time":start,"home":home,"thread":session}).to_string(),
     )
     .unwrap();
@@ -652,7 +666,7 @@ async fn busy_submit_native_guard_uncertainty_and_restart_never_resend_or_claim_
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
     let home = tmp.path().join("home");
-    fs::create_dir_all(root.join("managed-panes")).unwrap();
+    fs::create_dir_all(root.join(sessionsation::layout::MANAGED_PANES)).unwrap();
     fs::create_dir_all(home.join("app-server-control")).unwrap();
     let pid = std::process::id();
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
@@ -667,7 +681,8 @@ async fn busy_submit_native_guard_uncertainty_and_restart_never_resend_or_claim_
         .unwrap();
     let session = "22222222-2222-4222-8222-222222222222";
     fs::write(
-        root.join("managed-panes/1.json"),
+        root.join(sessionsation::layout::MANAGED_PANES)
+            .join("1.json"),
         json!({"pid":pid,"start_time":start,"home":home,"thread":session}).to_string(),
     )
     .unwrap();
@@ -848,7 +863,7 @@ async fn stock_submit_resume_and_read_only_states_survive_cli_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
     let home = tmp.path().join("fixture-home");
-    fs::create_dir_all(root.join("managed-panes")).unwrap();
+    fs::create_dir_all(root.join(sessionsation::layout::MANAGED_PANES)).unwrap();
     fs::create_dir_all(home.join("app-server-control")).unwrap();
     let id = "11111111-1111-4111-8111-111111111111";
     let pid = std::process::id();
@@ -863,7 +878,8 @@ async fn stock_submit_resume_and_read_only_states_survive_cli_restart() {
         .parse()
         .unwrap();
     fs::write(
-        root.join("managed-panes/1.json"),
+        root.join(sessionsation::layout::MANAGED_PANES)
+            .join("1.json"),
         json!({"thread":id,"home":home,"pid":pid,"start_time":start}).to_string(),
     )
     .unwrap();
@@ -978,10 +994,11 @@ async fn stock_submit_resume_and_read_only_states_survive_cli_restart() {
         );
     }
     // A recorded manual stop is a revisioned intent, never a recipient permit.
-    std::fs::create_dir_all(root.join("conversations")).unwrap();
+    std::fs::create_dir_all(root.join(sessionsation::layout::CONVERSATIONS)).unwrap();
     let stop = "66666666-6666-4666-8666-666666666666";
     std::fs::write(
-        root.join(format!("conversations/{id}.json")),
+        root.join(sessionsation::layout::CONVERSATIONS)
+            .join(format!("{id}.json")),
         json!({"owner":home,"stop_intent":stop}).to_string(),
     )
     .unwrap();
@@ -1037,11 +1054,12 @@ async fn stock_submit_resume_and_read_only_states_survive_cli_restart() {
 fn saved_owner_inventory_and_explicit_stop_are_not_a_recipient_registry() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    std::fs::create_dir_all(root.join("conversations")).unwrap();
+    std::fs::create_dir_all(root.join(sessionsation::layout::CONVERSATIONS)).unwrap();
     for i in 1..=3 {
         let id = format!("00000000-0000-4000-8000-{i:012}");
         std::fs::write(
-            root.join(format!("conversations/{id}.json")),
+            root.join(sessionsation::layout::CONVERSATIONS)
+                .join(format!("{id}.json")),
             json!({"owner":root.join("fixture-home"),"name":"同じ名前","deleted":i==3}).to_string(),
         )
         .unwrap();

@@ -19,7 +19,8 @@ impl Store {
         let lock = lock_file(&paths.root.join("daemon.lock"))?;
         lock.try_lock_exclusive()
             .context("another supervisor owns this data directory")?;
-        let db = Connection::open(paths.root.join("registry.db"))?;
+        crate::paths::private_dir(&paths.root.join(crate::layout::REGISTRY))?;
+        let db = Connection::open(paths.root.join(crate::layout::REGISTRY_DB))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
             INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM schema_version);
@@ -78,7 +79,7 @@ impl Store {
 /// supervisor, as the single writer, persists the migration).
 pub fn load_state_snapshot(paths: &Paths) -> Result<State> {
     let db = Connection::open_with_flags(
-        paths.root.join("registry.db"),
+        paths.root.join(crate::layout::REGISTRY_DB),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let json: String = db.query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))?;

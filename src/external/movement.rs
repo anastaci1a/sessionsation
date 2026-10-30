@@ -20,7 +20,7 @@ pub(super) fn phase(
 fn cancelled(paths: &Paths, job: &Job) -> bool {
     paths
         .root
-        .join("handoff-jobs")
+        .join(crate::layout::HANDOFF_JOBS)
         .join(format!("{}.cancel", job.id))
         .exists()
 }
@@ -598,7 +598,7 @@ fn transfer(paths: &Paths, job: &Job, file: &Path, target: PathBuf) -> Result<Pa
             );
             let backup = paths
                 .root
-                .join("move-backups")
+                .join(crate::layout::MOVE_BACKUPS)
                 .join(&job.id)
                 .join(&job.target);
             private_dir(&backup)?;

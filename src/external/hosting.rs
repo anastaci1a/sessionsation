@@ -34,12 +34,15 @@ fn process_socket(pid: u32) -> Option<PathBuf> {
 }
 fn binding_file(paths: &Paths, pane: &str) -> PathBuf {
     let key = format!("{:x}", Sha256::digest(pane.as_bytes()));
-    paths.root.join("herdr-panes").join(format!("{key}.json"))
+    paths
+        .root
+        .join(crate::layout::HERDR_PANES)
+        .join(format!("{key}.json"))
 }
 fn receipt_socket(paths: &Paths, pane: &str, thread: Option<&str>) -> Result<Option<PathBuf>> {
     let (session, pane_id) = target(pane)?;
     let mut latest: Option<(i64, PathBuf)> = None;
-    for directory in ["launches", "resumptions"] {
+    for directory in [crate::layout::LAUNCHES, crate::layout::RESUMPTIONS] {
         let dir = paths.root.join(directory);
         if !dir.exists() {
             continue;
@@ -119,7 +122,7 @@ pub(super) fn relaunch(paths: &Paths, pane: &str, cwd: &str, command: &str) -> R
 
 pub(super) fn bind(paths: &Paths, pane: &str, binding: Binding) -> Result<()> {
     target(pane)?;
-    let dir = paths.root.join("herdr-panes");
+    let dir = paths.root.join(crate::layout::HERDR_PANES);
     private_dir(&dir)?;
     let key = format!("{:x}", Sha256::digest(pane.as_bytes()));
     atomic_write(
@@ -140,7 +143,7 @@ fn instances_with_state(
     paths: &Paths,
     mut state: impl FnMut(&str, Option<&Path>) -> Result<(bool, u32)>,
 ) -> Result<Vec<Instance>> {
-    let dir = paths.root.join("herdr-panes");
+    let dir = paths.root.join(crate::layout::HERDR_PANES);
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -608,7 +611,7 @@ mod discovery_tests {
             )
             .unwrap();
         }
-        let files: Vec<_> = fs::read_dir(paths.root.join("herdr-panes"))
+        let files: Vec<_> = fs::read_dir(paths.root.join(crate::layout::HERDR_PANES))
             .unwrap()
             .map(|e| {
                 let p = e.unwrap().path();
@@ -678,8 +681,8 @@ mod discovery_tests {
         );
         child.kill().unwrap();
         child.wait().unwrap();
-        private_dir(&paths.root.join("resumptions")).unwrap();
-        fs::write(paths.root.join("resumptions/fixture.json"), serde_json::to_vec(&json!({"request":{"host":{"session":"named","socket":socket}},"pane_id":"w1:p1","conversation_id":"11111111-1111-4111-8111-111111111111","created_at":1})).unwrap()).unwrap();
+        private_dir(&paths.root.join(crate::layout::RESUMPTIONS)).unwrap();
+        fs::write(paths.root.join(crate::layout::RESUMPTIONS).join("fixture.json"), serde_json::to_vec(&json!({"request":{"host":{"session":"named","socket":socket}},"pane_id":"w1:p1","conversation_id":"11111111-1111-4111-8111-111111111111","created_at":1})).unwrap()).unwrap();
         assert_eq!(
             socket_for(&paths, pane).unwrap(),
             Some(socket.clone()),
@@ -732,7 +735,7 @@ mod space_binding_tests {
         let p = Paths::new(Some(d.path().join("state"))).unwrap();
         let thread = uuid::Uuid::new_v4().to_string();
         let home = p.root.join("synthetic-home");
-        private_dir(&p.root.join("herdr-panes")).unwrap();
+        private_dir(&p.root.join(crate::layout::HERDR_PANES)).unwrap();
         atomic_write(
             &binding_file(&p, "herdr/fixture/w1:p1"),
             &serde_json::to_vec(&HerdrBinding {
@@ -752,8 +755,11 @@ mod space_binding_tests {
             super::super::messaging_inventory(&p).unwrap(),
             vec![thread.clone()]
         );
-        private_dir(&p.root.join("conversations")).unwrap();
-        let record = p.root.join(format!("conversations/{thread}.json"));
+        private_dir(&p.root.join(crate::layout::CONVERSATIONS)).unwrap();
+        let record = p
+            .root
+            .join(crate::layout::CONVERSATIONS)
+            .join(format!("{thread}.json"));
         atomic_write(
             &record,
             &serde_json::to_vec(&json!({"owner":home,"deleted":true})).unwrap(),
@@ -774,7 +780,7 @@ mod space_binding_tests {
     fn binding_write_rename_gap_recovers_and_cannot_replace_another_process() {
         let d = tempfile::tempdir().unwrap();
         let p = Paths::new(Some(d.path().join("state"))).unwrap();
-        private_dir(&p.root.join("herdr-panes")).unwrap();
+        private_dir(&p.root.join(crate::layout::HERDR_PANES)).unwrap();
         let old = "herdr/fixture/w1:p1";
         let new = "herdr/fixture/w2:p2";
         let socket = p.root.join("owned.sock");

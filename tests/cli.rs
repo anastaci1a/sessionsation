@@ -20,7 +20,7 @@ fn reserved_launcher_is_honestly_gated_and_does_not_start_daemon() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("NATIVE_HANDOFF_UNVERIFIED"));
-    assert!(!root.join("registry.db").exists());
+    assert!(!root.join(sessionsation::layout::REGISTRY_DB).exists());
 }
 #[test]
 fn offline_status_is_machine_readable_without_starting_daemon() {
@@ -182,7 +182,7 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     assert!(observed, "account polling did not populate usage");
-    assert!(paths.root.join("accounts/first/auth.json").exists());
+    assert!(paths.root.join("accounts/codex/first/auth.json").exists());
     let api = |args: &[&str]| {
         let out = Command::new(binary())
             .arg("--data-dir")
@@ -296,7 +296,7 @@ fn public_account_creation_limit_and_invalid_limits_have_no_owner_side_effects()
             .unwrap();
         assert!(!out.status.success());
         assert!(String::from_utf8_lossy(&out.stderr).contains(code));
-        assert!(!tmp.path().join("registry.db").exists());
+        assert!(!tmp.path().join(sessionsation::layout::REGISTRY_DB).exists());
     }
 }
 #[test]
@@ -418,7 +418,7 @@ fn public_state_watch_flushes_complete_snapshots_and_stops_independently() {
         assert!(value["result"]["sessions"].is_array());
     }
     drop(watcher);
-    assert!(!dir.path().join("registry.db").exists());
+    assert!(!dir.path().join(sessionsation::layout::REGISTRY_DB).exists());
 }
 
 #[test]
@@ -601,7 +601,7 @@ async fn account_delete_is_async_preserves_conversations_and_removes_only_dispos
     // cannot race a still-running worker holding its durable request lock.
     let file = paths
         .root
-        .join("account-deletions")
+        .join(sessionsation::layout::ACCOUNT_DELETIONS)
         .join(format!("{blocked}.json"));
     let mut interrupted: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
     interrupted["phase"] = json!("checking_active");
@@ -698,7 +698,7 @@ async fn account_delete_is_async_preserves_conversations_and_removes_only_dispos
         !fs::read_to_string(
             paths
                 .root
-                .join("account-deletions")
+                .join(sessionsation::layout::ACCOUNT_DELETIONS)
                 .join(format!("{request}.json"))
         )
         .unwrap()

@@ -1,5 +1,5 @@
 //! Claude Code provider. Each account is an isolated `CLAUDE_CONFIG_DIR`, either
-//! created at `<root>/claude-accounts/<name>` or adopted in place. Sessionsation
+//! created at `<root>/accounts/claude/<name>` or adopted in place. Sessionsation
 //! never reads Claude credentials (`.credentials.json`, `sessions/*.key`); it uses
 //! only `claude auth status --json`, session registry metadata, transcript header
 //! fields (sessionId/cwd/timestamp) and statusline rate-limit fields.
@@ -118,7 +118,11 @@ pub fn capabilities() -> ProviderCapabilities {
 /// The managed (non-adopted) home for a Claude account.
 pub fn default_home(paths: &Paths, name: &str) -> Result<PathBuf> {
     validate_name(name)?;
-    Ok(paths.root.join("claude-accounts").join(name))
+    Ok(crate::layout::account_home(
+        &paths.root,
+        ProviderId::Claude,
+        name,
+    ))
 }
 pub fn home(paths: &Paths, name: &str, config_home: Option<&Path>) -> Result<PathBuf> {
     match config_home {
@@ -126,14 +130,14 @@ pub fn home(paths: &Paths, name: &str, config_home: Option<&Path>) -> Result<Pat
         None => default_home(paths, name),
     }
 }
-/// Create the managed home `<root>/claude-accounts/<name>` (0700), or register
+/// Create the managed home `<root>/accounts/claude/<name>` (0700), or register
 /// one an operator already placed there. An existing home is never wiped,
 /// re-initialised or re-permissioned: it must already be a private (0700)
 /// directory owned by this user and not a symlink. Returns (home, existed).
 pub fn create_home(paths: &Paths, name: &str) -> Result<(PathBuf, bool)> {
     use std::os::unix::fs::MetadataExt;
-    private_dir(&paths.root.join("claude-accounts"))?;
     let home = default_home(paths, name)?;
+    private_dir(home.parent().context("missing parent")?)?;
     match fs::symlink_metadata(&home) {
         Ok(m) => {
             ensure!(
@@ -1217,7 +1221,7 @@ pub struct Enrolled {
 }
 /// Claude accounts from a read-only registry snapshot (daemon need not run).
 pub fn enrolled(paths: &Paths) -> Result<Vec<Enrolled>> {
-    if !paths.root.join("registry.db").exists() {
+    if !paths.root.join(crate::layout::REGISTRY_DB).exists() {
         return Ok(vec![]);
     }
     let state = crate::store::load_state_snapshot(paths)?;
@@ -1262,7 +1266,10 @@ struct LineageCache {
 }
 impl LineageCache {
     fn load(paths: &Paths) -> Self {
-        let file = paths.root.join("session-catalog/claude-lineage.json");
+        let file = paths
+            .root
+            .join(crate::layout::SESSION_CATALOG)
+            .join("claude-lineage.json");
         let entries = fs::read(&file)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())

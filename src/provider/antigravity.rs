@@ -1,5 +1,5 @@
 //! Google Antigravity CLI (`agy`) provider (contract revision 24). Each account
-//! is an isolated `HOME` created at `<root>/antigravity-accounts/<name>`; agy
+//! is an isolated `HOME` created at `<root>/accounts/antigravity/<name>`; agy
 //! keeps everything under `<home>/.gemini/antigravity-cli/` (plus
 //! `.gemini/config` and `.config/antigravity`). Children get the account home
 //! as both `AGY_ACCOUNT_HOME` (the host wrapper's required variable) and `HOME`.
@@ -63,7 +63,6 @@ pub const STRIPPED_ENV: &[&str] = &[
 ];
 /// The host wrapper's account variable.
 pub const HOME_ENV: &str = "AGY_ACCOUNT_HOME";
-pub const MANAGED_PARENT: &str = "antigravity-accounts";
 /// The credential file (stat only, never opened).
 pub const TOKEN_FILE: &str = "antigravity-oauth-token";
 pub const YOLO_FLAG: &str = "--dangerously-skip-permissions";
@@ -151,14 +150,18 @@ pub fn capabilities() -> ProviderCapabilities {
 
 pub fn home(paths: &Paths, name: &str) -> Result<PathBuf> {
     validate_name(name)?;
-    Ok(paths.root.join(MANAGED_PARENT).join(name))
+    Ok(crate::layout::account_home(
+        &paths.root,
+        ProviderId::Antigravity,
+        name,
+    ))
 }
 /// Create the managed home (0700), or register one an operator already placed
 /// there; an existing home must be a private (0700) directory owned by this
 /// user and not a symlink, and is never wiped. Returns (home, existed).
 pub fn create_home(paths: &Paths, name: &str) -> Result<(PathBuf, bool)> {
     use std::os::unix::fs::MetadataExt;
-    private_dir(&paths.root.join(MANAGED_PARENT))?;
+    private_dir(home(paths, name)?.parent().context("missing parent")?)?;
     let home = home(paths, name)?;
     let existed = match fs::symlink_metadata(&home) {
         Ok(m) => {
@@ -946,7 +949,7 @@ pub fn process_arguments(pid: u32) -> Option<Vec<String>> {
 // ----------------------------------------------------------------- accounts
 
 pub fn enrolled(paths: &Paths) -> Result<Vec<Enrolled>> {
-    if !paths.root.join("registry.db").exists() {
+    if !paths.root.join(crate::layout::REGISTRY_DB).exists() {
         return Ok(vec![]);
     }
     let state = crate::store::load_state_snapshot(paths)?;

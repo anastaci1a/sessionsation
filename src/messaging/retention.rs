@@ -112,7 +112,10 @@ pub(super) fn run(ledger: &mut Ledger, now: i64, policy: Policy) -> Result<usize
     super::public::initialize(ledger)?;
     let mut retired = codex(ledger, now, policy)?;
     let root = ledger.paths.root.clone();
-    for store in ["claude-steer", "claude-deliveries"] {
+    for store in [
+        crate::layout::CLAUDE_STEER,
+        crate::layout::CLAUDE_DELIVERIES,
+    ] {
         retired += files(ledger, &root.join(store), now, policy)?;
     }
     ledger.db.execute(
@@ -407,7 +410,7 @@ mod tests {
     #[test]
     fn journals_retire_certain_outcomes_and_keep_uncertain_until_the_horizon() {
         let (_dir, paths, _input, now) = fixture();
-        let dir = paths.root.join("claude-steer");
+        let dir = paths.root.join(crate::layout::CLAUDE_STEER);
         fs::create_dir_all(&dir).unwrap();
         let write = |phase: &str, state: &str, age: i64| {
             let id = uuid::Uuid::new_v4().to_string();

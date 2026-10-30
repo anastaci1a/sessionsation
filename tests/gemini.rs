@@ -91,7 +91,7 @@ impl Fixture {
             .unwrap_or_else(|| panic!("no gemini session for {native}"))
     }
     fn home(&self, name: &str) -> PathBuf {
-        self.paths.root.join("gemini-accounts").join(name)
+        self.paths.root.join("accounts/gemini").join(name)
     }
     /// Enroll and give the home synthetic credential files (what a finished
     /// login leaves), then refresh so the account is selectable.
@@ -166,7 +166,7 @@ impl Fixture {
         let lock = self
             .paths
             .root
-            .join("account-deletions")
+            .join(sessionsation::layout::ACCOUNT_DELETIONS)
             .join(format!("{id}.worker.lock"));
         wait_for("worker exit", || {
             let f = std::fs::OpenOptions::new().write(true).open(&lock);
@@ -723,7 +723,7 @@ async fn external_processes_map_to_one_entry_and_accounts_and_providers_are_isol
     let claude_dir = f
         .paths
         .root
-        .join("claude-accounts/cl/projects")
+        .join("accounts/claude/cl/projects")
         .join(f.project.to_string_lossy().replace('/', "-"));
     std::fs::create_dir_all(&claude_dir).unwrap();
     std::fs::write(
@@ -980,7 +980,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     assert_eq!(gemini["operations"]["headless_delivery"]["supported"], true);
     assert_eq!(gemini["headless_delivery"]["automatic_replay"], false);
     assert_eq!(gemini["headless_delivery"]["approval_mode"], "default");
-    assert_eq!(caps["contract_revision"], 28);
+    assert_eq!(caps["contract_revision"], 29);
     assert_eq!(
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
@@ -1099,7 +1099,7 @@ async fn membership_removal_restore_rename_and_local_deletion_match_the_other_pr
     let vault = f
         .paths
         .root
-        .join("preserved-conversations")
+        .join(sessionsation::layout::PRESERVED_CONVERSATIONS)
         .join(&request)
         .join("home/.gemini");
     assert_eq!(read(&vault.join("history/marker")), "history");
@@ -1107,7 +1107,7 @@ async fn membership_removal_restore_rename_and_local_deletion_match_the_other_pr
     let preserved = find_chat(
         &f.paths
             .root
-            .join("preserved-conversations")
+            .join(sessionsation::layout::PRESERVED_CONVERSATIONS)
             .join(&request)
             .join("home"),
         &native,
@@ -1643,7 +1643,12 @@ async fn api_key_mode_stores_the_key_privately_injects_it_by_env_validates_and_n
     );
     // The validation child got the key only through the environment, in API-key mode,
     // in a throwaway home that is removed afterwards.
-    let report = read(&f.paths.root.join("provider-state/fake-validate-report"));
+    let report = read(
+        &f.paths
+            .root
+            .join(sessionsation::layout::PROVIDER_STATE)
+            .join("fake-validate-report"),
+    );
     assert!(
         report.contains("selected_type=gemini-api-key\n"),
         "{report}"
@@ -1663,9 +1668,14 @@ async fn api_key_mode_stores_the_key_privately_injects_it_by_env_validates_and_n
     );
     assert!(!report.contains(bad));
     assert_eq!(
-        std::fs::read_dir(f.paths.root.join("provider-state/gemini-validate"))
-            .unwrap()
-            .count(),
+        std::fs::read_dir(
+            f.paths
+                .root
+                .join(sessionsation::layout::PROVIDER_STATE)
+                .join("gemini-validate")
+        )
+        .unwrap()
+        .count(),
         0
     );
     let row = f.api(&["account", "list", "--platform", "gemini"])[0].clone();

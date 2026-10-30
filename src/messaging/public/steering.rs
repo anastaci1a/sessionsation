@@ -420,7 +420,7 @@ mod tests {
                 let seen = calls.clone();
                 let native = a.id.clone();
                 let client = input.message_id.clone();
-                let binding_path = paths.root.join("managed-panes/1.json");
+                let binding_path = paths.root.join(crate::layout::MANAGED_PANES).join("1.json");
                 let steered = Arc::new(Mutex::new(false));
                 let server=scripted_server(&a.endpoint(),move |req| {
                     let method=req["method"].as_str().unwrap(); seen.lock().unwrap().push(if req["params"]["itemsView"]=="full" {"full".to_owned()} else {method.to_owned()});
@@ -467,11 +467,11 @@ mod tests {
                     }),
                 };
                 if scenario == "stopped" {
-                    fs::create_dir_all(paths.root.join("conversations")).unwrap();
+                    fs::create_dir_all(paths.root.join(crate::layout::CONVERSATIONS)).unwrap();
                     fs::write(
                         paths
                             .root
-                            .join("conversations")
+                            .join(crate::layout::CONVERSATIONS)
                             .join(format!("{}.json", a.id)),
                         json!({"stop_intent":"stop-1"}).to_string(),
                     )

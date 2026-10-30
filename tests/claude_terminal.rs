@@ -137,7 +137,7 @@ impl Fixture {
         serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
     }
     fn home(&self) -> PathBuf {
-        self.paths.root.join("claude-accounts").join("personal")
+        self.paths.root.join("accounts/claude").join("personal")
     }
     fn session(&self, id: &str) -> Value {
         self.api(&["state"])["sessions"]
@@ -339,7 +339,10 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
         "the draft never reaches receipts"
     );
     let journal: Value = serde_json::from_str(&read(
-        &f.paths.root.join("claude-steer").join(format!("{m}.json")),
+        &f.paths
+            .root
+            .join(sessionsation::layout::CLAUDE_STEER)
+            .join(format!("{m}.json")),
     ))
     .unwrap();
     assert!(
@@ -477,7 +480,10 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
     b["timeout_seconds"] = json!(2);
     let journal_draft = |m: &str| {
         let j: Value = serde_json::from_str(&read(
-            &f.paths.root.join("claude-steer").join(format!("{m}.json")),
+            &f.paths
+                .root
+                .join(sessionsation::layout::CLAUDE_STEER)
+                .join(format!("{m}.json")),
         ))
         .unwrap();
         j["terminal"]["draft"].clone()

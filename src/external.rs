@@ -510,7 +510,7 @@ fn binding_path(paths: &Paths, pane: &str) -> Result<PathBuf> {
         name.bytes().all(|b| b.is_ascii_digit()) && !name.is_empty(),
         "invalid tmux pane ID"
     );
-    let dir = paths.root.join("managed-panes");
+    let dir = paths.root.join(crate::layout::MANAGED_PANES);
     private_dir(&dir)?;
     Ok(dir.join(format!("{name}.json")))
 }
@@ -919,7 +919,6 @@ fn inventory_complete(
     let mut scans = rollout_scan::ScanCache::load(paths);
     let live: std::collections::BTreeSet<_> = result.iter().map(|i| i.thread_id.clone()).collect();
     let config = crate::store::load_config(paths)?;
-    let accounts = paths.root.join("accounts");
     let mut homes: std::collections::BTreeSet<PathBuf> =
         result.iter().map(|i| i.home.clone()).collect();
     if let Some(home) = std::env::var_os("CODEX_HOME")
@@ -934,13 +933,8 @@ fn inventory_complete(
         homes.insert(job.source.home);
     }
     homes.extend(archiving::source_homes(paths)?);
-    if accounts.exists() {
-        for entry in fs::read_dir(accounts)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() && !entry.file_type()?.is_symlink() {
-                homes.insert(fs::canonicalize(entry.path())?);
-            }
-        }
+    for (_, home) in crate::layout::codex_homes(&paths.root) {
+        homes.insert(fs::canonicalize(home)?);
     }
     let preserved = preserved_homes(paths)?;
     homes.extend(preserved.iter().map(|(_, h)| h.clone()));
@@ -1117,12 +1111,9 @@ fn account_for_home(paths: &Paths, home: &Path) -> String {
     {
         return name;
     }
-    let Ok(accounts) = fs::read_dir(paths.root.join("accounts")) else {
-        return "external".into();
-    };
-    for entry in accounts.flatten() {
-        if fs::canonicalize(entry.path()).is_ok_and(|candidate| candidate == home) {
-            return entry.file_name().to_string_lossy().into_owned();
+    for (name, candidate) in crate::layout::codex_homes(&paths.root) {
+        if fs::canonicalize(candidate).is_ok_and(|candidate| candidate == home) {
+            return name;
         }
     }
     "external".into()
@@ -1556,7 +1547,7 @@ async fn run_account_thread_inner(
     Err(error).context("could not launch Codex")
 }
 fn jobs_dir(paths: &Paths) -> Result<PathBuf> {
-    let dir = paths.root.join("handoff-jobs");
+    let dir = paths.root.join(crate::layout::HANDOFF_JOBS);
     private_dir(&dir)?;
     Ok(dir)
 }
@@ -2018,7 +2009,10 @@ fn enqueue_with_id(
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .open(paths.root.join("handoff.log"))?;
+        .open({
+            private_dir(&paths.root.join(crate::layout::LOGS))?;
+            paths.root.join(crate::layout::HANDOFF_LOG)
+        })?;
     let child = Command::new(crate::self_executable::path()?)
         .arg("--data-dir")
         .arg(&paths.root)
@@ -2690,7 +2684,7 @@ pub(crate) fn messaging_recorded_bindings(
     paths: &Paths,
 ) -> Result<Vec<(String, PathBuf, u32, u64)>> {
     let mut result = Vec::new();
-    for name in ["managed-panes", "herdr-panes"] {
+    for name in [crate::layout::MANAGED_PANES, crate::layout::HERDR_PANES] {
         let dir = paths.root.join(name);
         if !dir.exists() {
             continue;
@@ -2702,7 +2696,7 @@ pub(crate) fn messaging_recorded_bindings(
                 continue;
             }
             let value: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
-            let binding: Binding = serde_json::from_value(if name == "herdr-panes" {
+            let binding: Binding = serde_json::from_value(if name == crate::layout::HERDR_PANES {
                 value["binding"].clone()
             } else {
                 value
@@ -2785,7 +2779,7 @@ pub(crate) fn messaging_clear_stop_intent(paths: &Paths, id: &str) -> Result<()>
 }
 pub(crate) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
     let mut ids = catalog::messaging_inventory(paths)?;
-    for directory in ["managed-panes", "herdr-panes"] {
+    for directory in [crate::layout::MANAGED_PANES, crate::layout::HERDR_PANES] {
         let dir = paths.root.join(directory);
         if !dir.exists() {
             continue;
@@ -3166,17 +3160,13 @@ mod tests {
                 ),
             ),
         ] {
-            let dir = paths
-                .root
-                .join("accounts")
-                .join(account)
-                .join("sessions/2026/10/09");
+            let dir = paths.account(account).unwrap().join("sessions/2026/10/09");
             private_dir(&dir).unwrap();
             fs::write(dir.join(format!("rollout-{id}.jsonl")), content).unwrap();
         }
         let unfinished = "55555555-5555-4555-8555-555555555555";
         fs::write(
-            paths.root.join(format!("accounts/first/sessions/2026/10/09/rollout-{unfinished}.jsonl")),
+            paths.root.join(format!("accounts/codex/first/sessions/2026/10/09/rollout-{unfinished}.jsonl")),
             format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{unfinished}\",\"source\":\"cli\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\"}}}}\n", tmp.path().display()),
         ).unwrap();
         let found = all_instances(&paths).unwrap();

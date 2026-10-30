@@ -79,7 +79,7 @@ impl Fixture {
             .unwrap()
     }
     fn home(&self, name: &str) -> PathBuf {
-        self.paths.root.join("claude-accounts").join(name)
+        self.paths.root.join("accounts/claude").join(name)
     }
 }
 fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
@@ -164,7 +164,7 @@ async fn enrollment_requires_a_platform_and_names_are_global_across_providers() 
         text.contains("codex") && text.contains("claude") && text.contains("gemini"),
         "{text}"
     );
-    assert!(!f.paths.root.join("accounts/work").exists());
+    assert!(!f.paths.root.join("accounts/codex/work").exists());
 
     let add = f.run(&["account", "add", "--platform", "claude", "personal"]);
     assert!(
@@ -191,7 +191,7 @@ async fn enrollment_requires_a_platform_and_names_are_global_across_providers() 
         text.contains("ACCOUNT_NAME_EXISTS") && text.contains("claude:personal"),
         "{text}"
     );
-    assert!(!f.paths.root.join("accounts/personal").exists());
+    assert!(!f.paths.root.join("accounts/codex/personal").exists());
     let text = f.api_error(&["account", "add", "claude:work"]);
     assert!(
         text.contains("ACCOUNT_PROVIDER_MISMATCH") || text.contains("ACCOUNT_NAME_EXISTS"),
@@ -229,7 +229,7 @@ async fn enrollment_requires_a_platform_and_names_are_global_across_providers() 
         "a1",
     ]);
     assert!(String::from_utf8_lossy(&relative.stderr).contains("INVALID_CONFIG_DIR"));
-    let inside = f.paths.root.join("accounts/work");
+    let inside = f.paths.root.join("accounts/codex/work");
     let nested = f.run(&[
         "account",
         "add",
@@ -576,7 +576,12 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
     assert_eq!(s["name"], "relabeled");
     assert_eq!(s["conversation_id"], native);
     assert_eq!(s["account_id"], "claude:personal");
-    let catalog = read(&f.paths.root.join("session-catalog/catalog.json"));
+    let catalog = read(
+        &f.paths
+            .root
+            .join(sessionsation::layout::SESSION_CATALOG)
+            .join("catalog.json"),
+    );
     assert!(
         catalog.contains("relabeled"),
         "rename persists in the catalog file"
@@ -812,7 +817,8 @@ async fn adopted_home_switches_to_the_managed_home_only_when_every_precondition_
     let row = || f.api(&["account", "list", "--platform", "claude"])[0].clone();
     assert!(!row()["config_home"].is_null());
     let events = || -> Vec<String> {
-        let db = rusqlite::Connection::open(f.paths.root.join("registry.db")).unwrap();
+        let db = rusqlite::Connection::open(f.paths.root.join(sessionsation::layout::REGISTRY_DB))
+            .unwrap();
         db.prepare("SELECT entity FROM events WHERE kind='account.claude_home_relocated'")
             .unwrap()
             .query_map([], |r| r.get(0))
@@ -1064,7 +1070,7 @@ impl Fixture {
         let lock = self
             .paths
             .root
-            .join("account-deletions")
+            .join(sessionsation::layout::ACCOUNT_DELETIONS)
             .join(format!("{id}.worker.lock"));
         wait_for("worker exit", || {
             let f = std::fs::OpenOptions::new().write(true).open(&lock);
@@ -1273,7 +1279,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 28);
+    assert_eq!(caps["contract_revision"], 29);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1287,14 +1293,14 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fresh_claude_home_returns_the_login_plan_and_refresh_observes_login() {
     let f = fixture().await;
-    std::fs::create_dir_all(f.paths.root.join("claude-accounts")).unwrap();
+    std::fs::create_dir_all(f.paths.root.join("accounts/claude")).unwrap();
     std::fs::set_permissions(
-        f.paths.root.join("claude-accounts"),
+        f.paths.root.join("accounts/claude"),
         std::fs::Permissions::from_mode(0o700),
     )
     .unwrap();
     std::fs::write(
-        f.paths.root.join("claude-accounts/fake-default-auth"),
+        f.paths.root.join("accounts/claude/fake-default-auth"),
         "logged_out",
     )
     .unwrap();
@@ -1352,13 +1358,13 @@ async fn fresh_claude_home_returns_the_login_plan_and_refresh_observes_login() {
     assert_eq!(row["auth_required"], false);
     assert_eq!(row["selectable"], true);
     // A logged-in home reports no required login; Codex refresh is explicit.
-    std::fs::remove_file(f.paths.root.join("claude-accounts/fake-default-auth")).unwrap();
+    std::fs::remove_file(f.paths.root.join("accounts/claude/fake-default-auth")).unwrap();
     let ready = f.api(&["account", "add", "claude:ready"]);
     assert_eq!(ready["login_required"], false);
     assert_eq!(ready["login"]["action"], "exec");
     // The human command without a terminal prints and does not start a login.
     std::fs::write(
-        f.paths.root.join("claude-accounts/fake-default-auth"),
+        f.paths.root.join("accounts/claude/fake-default-auth"),
         "logged_out",
     )
     .unwrap();
@@ -1481,7 +1487,7 @@ async fn claude_membership_removal_and_local_deletion_match_codex_semantics() {
     let vault = f
         .paths
         .root
-        .join("preserved-conversations")
+        .join(sessionsation::layout::PRESERVED_CONVERSATIONS)
         .join(&request)
         .join("home");
     assert!(vault.join("history.jsonl").is_file());
@@ -1554,7 +1560,7 @@ async fn claude_membership_removal_and_local_deletion_match_codex_semantics() {
     assert!(
         !f.paths
             .root
-            .join("preserved-conversations")
+            .join(sessionsation::layout::PRESERVED_CONVERSATIONS)
             .join(&request)
             .exists()
     );
@@ -1599,7 +1605,7 @@ async fn display_names_rename_any_provider_without_changing_identity() {
     assert_eq!(codex["display_name"], "Office");
     assert_eq!(codex["name"], "work");
     assert_eq!(codex["config_home"], codex_before["config_home"]);
-    assert!(f.paths.root.join("accounts/work").is_dir());
+    assert!(f.paths.root.join("accounts/codex/work").is_dir());
     assert_eq!(row("claude:personal")["display_name"], "Home-Max");
     assert!(f.home("personal").is_dir());
     // Collisions with any name or display name, and invalid names.
@@ -1641,7 +1647,8 @@ async fn display_names_rename_any_provider_without_changing_identity() {
     );
     assert_eq!(row("codex:work")["enabled"], false);
     // Persisted through the supervisor (single writer), with an event.
-    let db = rusqlite::Connection::open(f.paths.root.join("registry.db")).unwrap();
+    let db =
+        rusqlite::Connection::open(f.paths.root.join(sessionsation::layout::REGISTRY_DB)).unwrap();
     let events: i64 = db
         .query_row(
             "SELECT count(*) FROM events WHERE kind='account.renamed'",
@@ -1860,7 +1867,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 28);
+    assert_eq!(caps["contract_revision"], 29);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2321,7 +2328,11 @@ async fn continuation_identity_is_stable_across_repeated_state_calls_and_old_wri
     // An older release rewrites the catalog: drops both identity fields and
     // registers the continued conversations again. The next calls restore the
     // exact identity (never steal it) and keep every id resolvable.
-    let file = f.paths.root.join("session-catalog/catalog.json");
+    let file = f
+        .paths
+        .root
+        .join(sessionsation::layout::SESSION_CATALOG)
+        .join("catalog.json");
     let mut stray = vec![];
     for round in 0..2 {
         let mut v: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
@@ -2357,7 +2368,8 @@ async fn continuation_identity_is_stable_across_repeated_state_calls_and_old_wri
 }
 
 fn logout_events(f: &Fixture) -> Vec<String> {
-    let db = rusqlite::Connection::open(f.paths.root.join("registry.db")).unwrap();
+    let db =
+        rusqlite::Connection::open(f.paths.root.join(sessionsation::layout::REGISTRY_DB)).unwrap();
     db.prepare("SELECT entity FROM events WHERE kind='account.logged_out' ORDER BY rowid")
         .unwrap()
         .query_map([], |r| r.get(0))
@@ -2464,7 +2476,11 @@ async fn claude_logout_uses_the_official_command_refuses_in_use_and_is_idempoten
         f.api_error(&["account", "logout", "codex:work"])
             .contains("ACCOUNT_PROVIDER_MISMATCH")
     );
-    let marker = f.paths.root.join("account-catalog/claude");
+    let marker = f
+        .paths
+        .root
+        .join(sessionsation::layout::ACCOUNT_CATALOG)
+        .join("claude");
     std::fs::create_dir_all(&marker).unwrap();
     std::fs::write(marker.join("work.removed.json"), "{}").unwrap();
     assert!(
@@ -2594,7 +2610,8 @@ async fn account_order_is_persistent_shared_and_reorderable() {
     assert_eq!(caps["account_reorder"], true);
     assert_eq!(caps["state_cached"], true);
     let events = {
-        let db = rusqlite::Connection::open(f.paths.root.join("registry.db")).unwrap();
+        let db = rusqlite::Connection::open(f.paths.root.join(sessionsation::layout::REGISTRY_DB))
+            .unwrap();
         db.prepare("SELECT entity FROM events WHERE kind='account.reordered' ORDER BY rowid")
             .unwrap()
             .query_map([], |r| r.get::<_, String>(0))
@@ -2722,7 +2739,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 28);
+    assert_eq!(caps["contract_revision"], 29);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()
@@ -2768,7 +2785,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert!(
         f.paths
             .root
-            .join("archived-sessions")
+            .join(sessionsation::layout::ARCHIVED_SESSIONS)
             .join(s["id"].as_str().unwrap())
             .join("native.json")
             .is_file()
@@ -2855,7 +2872,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert!(
         !f.paths
             .root
-            .join("deletions")
+            .join(sessionsation::layout::DELETIONS)
             .join(format!("native-{}", op["id"].as_str().unwrap()))
             .exists(),
         "staging is removed after completion"
@@ -2979,7 +2996,12 @@ async fn running_sessions_are_refused_and_merged_lineages_move_together() {
     assert!(!p1.exists() && !p2.exists() && !dir.join(&a1).exists());
     assert!(all_claude(&f).is_empty());
     // The merged alias goes with its survivor, also from the identity record.
-    let identity = read(&f.paths.root.join("session-catalog/identity.json"));
+    let identity = read(
+        &f.paths
+            .root
+            .join(sessionsation::layout::SESSION_CATALOG)
+            .join("identity.json"),
+    );
     assert!(!identity.contains(e2["id"].as_str().unwrap()), "{identity}");
     let e = f.api_error(&[
         "session",
@@ -3105,7 +3127,7 @@ async fn delete_removes_only_its_own_empty_project_dir_and_redacts_the_manifest(
     let manifest = read(
         &f.paths
             .root
-            .join("archived-sessions")
+            .join(sessionsation::layout::ARCHIVED_SESSIONS)
             .join(session["id"].as_str().unwrap())
             .join("native.json"),
     );

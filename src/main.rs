@@ -387,6 +387,45 @@ enum Commands {
     },
     /// Open a plain interactive shell; never re-enter the terminal launcher.
     Shell,
+    /// Data-root layout: report it, migrate a legacy (version 1) root to
+    /// version 2, or roll back. Migrate and rollback need the supervisor stopped.
+    Layout {
+        #[command(subcommand)]
+        command: LayoutCommand,
+    },
+    /// Retention for logs, cache, operations history and receipts.
+    Retention {
+        #[command(subcommand)]
+        command: RetentionCommand,
+    },
+}
+#[derive(Subcommand)]
+enum LayoutCommand {
+    /// Layout version, deferred account homes (with reasons) and legacy entries.
+    Status,
+    /// Migrate to layout version 2 (idempotent; also moves deferred homes that are now idle).
+    Migrate {
+        /// New or empty directory for the metadata backup taken before any change.
+        #[arg(long)]
+        backup: Option<PathBuf>,
+        /// Print the plan only.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Move everything back to the legacy (version 1) layout.
+    Rollback {
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+#[derive(Subcommand)]
+enum RetentionCommand {
+    /// Run one retention pass now.
+    Run {
+        /// List what would be removed; receipts are skipped.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Host {
@@ -494,7 +533,7 @@ enum AccountCommand {
         #[arg(long)]
         show: bool,
     },
-    /// Claude: switch an adopted account to its managed home <root>/claude-accounts/NAME.
+    /// Claude: switch an adopted account to its managed home <root>/accounts/claude/NAME.
     /// The directory must already exist (0700, yours, no symlink) and hold the same login;
     /// nothing is copied. Refused while Claude is running on either home.
     ManagedHome {
@@ -590,12 +629,35 @@ async fn run(cli: Cli) -> Result<()> {
         std::process::exit(provider::claude::statusline_hook(*record_only));
     }
     // Only setup may create a data root; everything else fails closed.
+    let any_layout = matches!(
+        cli.command,
+        Commands::Layout { .. }
+            | Commands::Api {
+                command: sessionsation::api::Command::Version,
+                ..
+            }
+    );
     let paths = if matches!(cli.command, Commands::Setup { .. }) {
         Paths::new(cli.data_dir)?
+    } else if any_layout {
+        Paths::open_any_layout(cli.data_dir)?
     } else {
         Paths::open(cli.data_dir)?
     };
     match cli.command {
+        Commands::Layout { command } => {
+            use sessionsation::layout::migrate;
+            print_json(&match command {
+                LayoutCommand::Status => migrate::status(&paths.root)?,
+                LayoutCommand::Migrate { backup, dry_run } => {
+                    migrate::migrate(&paths.root, &migrate::Options { backup, dry_run })?
+                }
+                LayoutCommand::Rollback { dry_run } => migrate::rollback(&paths.root, dry_run)?,
+            })?;
+        }
+        Commands::Retention {
+            command: RetentionCommand::Run { dry_run },
+        } => print_json(&sessionsation::retention::run(&paths, dry_run)?)?,
         Commands::ConversationWorker { request_id } => {
             sessionsation::external::archiving::worker(&paths, &request_id).await?;
         }
@@ -1167,7 +1229,10 @@ async fn run(cli: Cli) -> Result<()> {
                 )
             };
             if probe {
-                compatibility::save_report(&paths.root.join("compatibility-report.json"), &report)?;
+                compatibility::save_report(
+                    &paths.root.join(sessionsation::layout::COMPATIBILITY_REPORT),
+                    &report,
+                )?;
             }
             if as_json {
                 print_json(&serde_json::to_value(report)?)?;
@@ -1581,7 +1646,7 @@ fn exec_login(
 }
 fn resolve_account(paths: &Paths, id: &str) -> Result<AccountRef> {
     let (wanted, name) = AccountRef::parse_lookup(id)?;
-    let state = if paths.root.join("registry.db").exists() {
+    let state = if paths.root.join(sessionsation::layout::REGISTRY_DB).exists() {
         store::load_state_snapshot(paths).ok()
     } else {
         None

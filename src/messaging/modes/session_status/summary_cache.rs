@@ -48,7 +48,8 @@ impl Cache {
         Some(Self {
             file: paths
                 .root
-                .join("observations/native-turns")
+                .join(crate::layout::OBSERVATIONS)
+                .join("native-turns")
                 .join(format!("{}.json", a.id)),
             history,
             fingerprint,

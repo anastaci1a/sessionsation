@@ -36,7 +36,7 @@ async fn one(paths: &Paths, t: Target, policy: &Policy) -> anyhow::Result<Value>
         .map(Attachment::generation);
     let file = paths
         .root
-        .join("observations")
+        .join(crate::layout::OBSERVATIONS)
         .join(format!("{}.json", s.id));
     if *policy != Policy::Refresh
         && let Ok(bytes) = fs::read(&file)
@@ -152,7 +152,7 @@ pub async fn observations(paths: &Paths, r: BatchRequest) -> anyhow::Result<Valu
         fs::read(
             paths
                 .root
-                .join("observations")
+                .join(crate::layout::OBSERVATIONS)
                 .join(format!("{}.json", t.session_id)),
         )
         .ok()
@@ -187,7 +187,7 @@ mod tests {
         let (_dir, paths, input, _) = fixture();
         let mut a = attachment_fixture(&paths, &input);
         bind(&paths, &mut a);
-        fs::remove_file(paths.root.join("managed-panes/1.json")).unwrap();
+        fs::remove_file(paths.root.join(crate::layout::MANAGED_PANES).join("1.json")).unwrap();
         let slow = uuid::Uuid::new_v4().to_string();
         let mut targets = Vec::new();
         for index in 0..16 {
@@ -197,7 +197,10 @@ mod tests {
                 uuid::Uuid::new_v4().to_string()
             };
             fs::write(
-                paths.root.join(format!("managed-panes/{index}.json")),
+                paths
+                    .root
+                    .join(crate::layout::MANAGED_PANES)
+                    .join(format!("{index}.json")),
                 json!({"pid":a.pid,"start_time":a.start,"home":a.home,"thread":id}).to_string(),
             )
             .unwrap();
@@ -321,11 +324,14 @@ mod tests {
             expected_generation: s.generation(),
         };
         // HERDR uses the same passive path as tmux, without querying the host.
-        let old = paths.root.join("managed-panes/1.json");
+        let old = paths.root.join(crate::layout::MANAGED_PANES).join("1.json");
         let b: Value = serde_json::from_slice(&fs::read(&old).unwrap()).unwrap();
-        fs::create_dir_all(paths.root.join("herdr-panes")).unwrap();
+        fs::create_dir_all(paths.root.join(crate::layout::HERDR_PANES)).unwrap();
         fs::write(
-            paths.root.join("herdr-panes/test.json"),
+            paths
+                .root
+                .join(crate::layout::HERDR_PANES)
+                .join("test.json"),
             json!({"target":"herdr/fixture/w1:p1","binding":b}).to_string(),
         )
         .unwrap();
@@ -348,7 +354,7 @@ mod tests {
         );
         let file = paths
             .root
-            .join("observations")
+            .join(crate::layout::OBSERVATIONS)
             .join(format!("{}.json", s.id));
         let mut c: Cached = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
         c.value["observed_at"] = json!(1);

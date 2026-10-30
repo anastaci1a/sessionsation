@@ -3,7 +3,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 fn read(paths: &Paths) -> Result<BTreeMap<String, i64>> {
-    let path = paths.root.join("session-access.json");
+    let path = paths.root.join(crate::layout::SESSION_ACCESS);
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
@@ -11,7 +11,7 @@ fn read(paths: &Paths) -> Result<BTreeMap<String, i64>> {
 }
 pub fn record(paths: &Paths, thread: &str) -> Result<()> {
     uuid::Uuid::parse_str(thread).context("invalid conversation identity")?;
-    let lock = crate::paths::lock_file(&paths.root.join("session-access.lock"))?;
+    let lock = crate::paths::lock_file(&paths.root.join(crate::layout::SESSION_ACCESS_LOCK))?;
     lock.lock_exclusive()?;
     let mut access = read(paths)?;
     let now = std::time::SystemTime::now()
@@ -20,7 +20,7 @@ pub fn record(paths: &Paths, thread: &str) -> Result<()> {
     let previous = access.values().copied().max().unwrap_or(0);
     access.insert(thread.into(), now.max(previous.saturating_add(1)));
     atomic_write(
-        &paths.root.join("session-access.json"),
+        &paths.root.join(crate::layout::SESSION_ACCESS),
         &serde_json::to_vec(&access)?,
     )
 }
@@ -56,7 +56,7 @@ pub(super) fn sort(paths: &Paths, items: &mut [Instance]) -> Result<()> {
             result
         });
     if !observed.is_empty() {
-        let lock = crate::paths::lock_file(&paths.root.join("session-access.lock"))?;
+        let lock = crate::paths::lock_file(&paths.root.join(crate::layout::SESSION_ACCESS_LOCK))?;
         lock.lock_exclusive()?;
         access = read(paths)?;
         for (id, at) in observed {
@@ -64,7 +64,7 @@ pub(super) fn sort(paths: &Paths, items: &mut [Instance]) -> Result<()> {
             *value = (*value).max(at);
         }
         atomic_write(
-            &paths.root.join("session-access.json"),
+            &paths.root.join(crate::layout::SESSION_ACCESS),
             &serde_json::to_vec(&access)?,
         )?;
     }

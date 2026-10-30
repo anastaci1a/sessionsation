@@ -37,7 +37,7 @@ fn file(paths: &Paths, name: &str) -> Result<PathBuf> {
     validate_name(name)?;
     Ok(paths
         .root
-        .join("provider-state")
+        .join(crate::layout::PROVIDER_STATE)
         .join("gemini-auth")
         .join(format!("{name}.json")))
 }
@@ -267,7 +267,7 @@ pub(crate) mod tests {
     fn setup() -> (tempfile::TempDir, Paths, PathBuf) {
         let t = tempfile::tempdir().unwrap();
         let paths = Paths::new(Some(t.path().join("root"))).unwrap();
-        let home = paths.root.join("gemini-accounts/g1");
+        let home = paths.root.join("accounts/gemini/g1");
         fs::create_dir_all(home.join(".gemini")).unwrap();
         fs::write(home.join(".gemini/oauth_creds.json"), b"{}").unwrap();
         (t, paths, home)

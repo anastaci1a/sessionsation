@@ -42,7 +42,7 @@ fn record_file(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id).context("INVALID_REQUEST_ID")?;
     Ok(paths
         .root
-        .join("account-deletions")
+        .join(crate::layout::ACCOUNT_DELETIONS)
         .join(format!("{id}.json")))
 }
 fn save(paths: &Paths, r: &mut Record) -> Result<()> {
@@ -68,7 +68,7 @@ fn worker_stopped(paths: &Paths, id: &str) -> Result<bool> {
     crate::background::worker_stopped(&record_file(paths, id)?.with_extension("worker.lock"))
 }
 pub fn list(paths: &Paths) -> Result<Vec<Record>> {
-    let dir = paths.root.join("account-deletions");
+    let dir = paths.root.join(crate::layout::ACCOUNT_DELETIONS);
     let mut out = vec![];
     if dir.is_dir() {
         for e in fs::read_dir(dir)? {
@@ -139,27 +139,30 @@ fn spawn(paths: &Paths, r: &Record) -> Result<()> {
         .spawn()?;
     Ok(())
 }
-fn account_home(paths: &Paths, name: &str) -> Result<PathBuf> {
-    let parent = fs::symlink_metadata(paths.root.join("accounts"))?;
-    ensure!(
-        parent.is_dir()
-            && !parent.file_type().is_symlink()
-            && parent.uid() == unsafe { libc::geteuid() },
-        "UNSAFE_ACCOUNT_PARENT"
-    );
-    paths.account(name)
+/// Refuse a symlinked or foreign directory between the data root and a
+/// managed home (`accounts/<platform>`, or a deferred home's legacy parent).
+fn safe_parent(paths: &Paths, home: &Path) -> Result<()> {
+    let parent = home.parent().context("UNSAFE_ACCOUNT_PARENT")?;
+    ensure!(parent.starts_with(&paths.root), "UNSAFE_ACCOUNT_PARENT");
+    for dir in parent.ancestors().take_while(|d| *d != paths.root) {
+        let m = fs::symlink_metadata(dir)?;
+        ensure!(
+            m.is_dir() && !m.file_type().is_symlink() && m.uid() == unsafe { libc::geteuid() },
+            "UNSAFE_ACCOUNT_PARENT"
+        );
+    }
+    Ok(())
 }
-/// The managed native-provider home, refusing a symlinked or foreign parent
-/// (`claude-accounts` or `gemini-accounts`).
+fn account_home(paths: &Paths, name: &str) -> Result<PathBuf> {
+    let home = paths.account(name)?;
+    safe_parent(paths, &home)?;
+    Ok(home)
+}
+/// The managed native-provider home, refusing a symlinked or foreign parent.
 fn native_managed_home(paths: &Paths, provider: ProviderId, name: &str) -> Result<PathBuf> {
-    let parent = fs::symlink_metadata(paths.root.join(native::managed_parent(provider)))?;
-    ensure!(
-        parent.is_dir()
-            && !parent.file_type().is_symlink()
-            && parent.uid() == unsafe { libc::geteuid() },
-        "UNSAFE_ACCOUNT_PARENT"
-    );
-    native::default_home(paths, provider, name)
+    let home = native::default_home(paths, provider, name)?;
+    safe_parent(paths, &home)?;
+    Ok(home)
 }
 pub async fn start(
     paths: &Paths,
@@ -174,7 +177,7 @@ pub async fn start(
         "CONFIRMATION_REQUIRED"
     );
     record_file(paths, id)?;
-    let root = paths.root.join("account-deletions");
+    let root = paths.root.join(crate::layout::ACCOUNT_DELETIONS);
     private_dir(&root)?;
     let lock = lock_file(&root.join("admission.lock"))?;
     lock.lock_exclusive()?;
@@ -236,7 +239,7 @@ pub async fn start(
         updated_at: daemon::now(),
         history_home: paths
             .root
-            .join("preserved-conversations")
+            .join(crate::layout::PRESERVED_CONVERSATIONS)
             .join(id)
             .join("home"),
         source_inode,
@@ -255,7 +258,12 @@ pub async fn start(
     Ok(json!(r))
 }
 pub fn recover(paths: &Paths, id: &str) -> Result<Value> {
-    let admission = lock_file(&paths.root.join("account-deletions/admission.lock"))?;
+    let admission = lock_file(
+        &paths
+            .root
+            .join(crate::layout::ACCOUNT_DELETIONS)
+            .join("admission.lock"),
+    )?;
     admission.lock_exclusive()?;
     let worker = lock_file(&record_file(paths, id)?.with_extension("worker.lock"))?;
     worker
@@ -380,7 +388,7 @@ async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
         r.history_home
             == paths
                 .root
-                .join("preserved-conversations")
+                .join(crate::layout::PRESERVED_CONVERSATIONS)
                 .join(&r.id)
                 .join("home"),
         "INVALID_HISTORY_VAULT"
@@ -391,7 +399,7 @@ async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
         .context("UNSUPPORTED_PROVIDER_OPERATION")?
         .to_owned();
     let _account = accounts::operation_lock(paths, &name)?;
-    let jobs = paths.root.join("handoff-jobs");
+    let jobs = paths.root.join(crate::layout::HANDOFF_JOBS);
     private_dir(&jobs)?;
     let queue = lock_file(&jobs.join("queue.lock"))?;
     queue.try_lock_exclusive().context("OPERATION_BUSY")?;
@@ -456,7 +464,7 @@ async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
     idle(paths, &home).await?;
     // Validate each parent before creating the vault or moving private data;
     // checking only the leaf would permit traversal through a parent symlink.
-    private_dir(&paths.root.join("preserved-conversations"))?;
+    private_dir(&paths.root.join(crate::layout::PRESERVED_CONVERSATIONS))?;
     private_dir(r.history_home.parent().context("INVALID_HISTORY_VAULT")?)?;
     external::preserve_history_checks(&home, &r.history_home).await?;
     // Native page verification can take time. Recheck immediately before the
@@ -534,7 +542,7 @@ async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
     // .fuse_hidden entries, making the final rmdir fail with ENOTEMPTY.
     drop(lease);
     fs::remove_dir_all(&home).context("ACCOUNT_LOCAL_DATA_CLEANUP_FAILED")?;
-    fs::File::open(paths.root.join("accounts"))?.sync_all()?;
+    fs::File::open(home.parent().context("UNSAFE_ACCOUNT_PARENT")?)?.sync_all()?;
     daemon::call(
         paths,
         "account/delete/finish",
@@ -674,7 +682,7 @@ async fn perform_native(paths: &Paths, r: &mut Record, provider: ProviderId) -> 
         r.history_home
             == paths
                 .root
-                .join("preserved-conversations")
+                .join(crate::layout::PRESERVED_CONVERSATIONS)
                 .join(&r.id)
                 .join("home"),
         "INVALID_HISTORY_VAULT"
@@ -791,7 +799,7 @@ async fn perform_native(paths: &Paths, r: &mut Record, provider: ProviderId) -> 
     )
     .await?;
     native_idle(paths, provider, &name, &home)?;
-    private_dir(&paths.root.join("preserved-conversations"))?;
+    private_dir(&paths.root.join(crate::layout::PRESERVED_CONVERSATIONS))?;
     private_dir(r.history_home.parent().context("INVALID_HISTORY_VAULT")?)?;
     phase(
         paths,
@@ -828,7 +836,7 @@ async fn perform_native(paths: &Paths, r: &mut Record, provider: ProviderId) -> 
         ),
     )?;
     fs::remove_dir_all(&home).context("ACCOUNT_LOCAL_DATA_CLEANUP_FAILED")?;
-    fs::File::open(paths.root.join(native::managed_parent(provider)))?.sync_all()?;
+    fs::File::open(home.parent().context("UNSAFE_ACCOUNT_PARENT")?)?.sync_all()?;
     finish(paths, &name, &r.id).await?;
     phase(
         paths,
@@ -860,7 +868,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(Some(dir.path().join("root"))).unwrap();
         let id = uuid::Uuid::new_v4().to_string();
-        private_dir(&paths.root.join("account-deletions")).unwrap();
+        private_dir(&paths.root.join(crate::layout::ACCOUNT_DELETIONS)).unwrap();
         let r = json!({"id":id,"account_id":"codex:fixture","kind":"account_delete","phase":"checking_active","detail":"checking","updated_at":0,"history_home":"/fixture","source_inode":null,"can_cancel":false,"history_preserved":true});
         atomic_write(
             &record_file(&paths, &id).unwrap(),
@@ -905,7 +913,7 @@ mod tests {
             updated_at: 0,
             history_home: paths
                 .root
-                .join("preserved-conversations")
+                .join(crate::layout::PRESERVED_CONVERSATIONS)
                 .join(id)
                 .join("home"),
             source_inode: Some(fs::metadata(&home).unwrap().ino().wrapping_add(1)),
@@ -927,15 +935,19 @@ mod tests {
             b"synthetic credential"
         );
         assert!(!r.history_home.exists());
-        assert!(!paths.root.join("registry.db").exists());
+        assert!(!paths.root.join(crate::layout::REGISTRY_DB).exists());
         fs::rename(
             paths.root.join("accounts"),
             paths.root.join("retained_accounts"),
         )
         .unwrap();
         let outside = d.path().join("outside");
-        fs::create_dir_all(outside.join("disposable")).unwrap();
-        fs::write(outside.join("disposable/auth.json"), "outside credential").unwrap();
+        fs::create_dir_all(outside.join("codex/disposable")).unwrap();
+        fs::write(
+            outside.join("codex/disposable/auth.json"),
+            "outside credential",
+        )
+        .unwrap();
         std::os::unix::fs::symlink(&outside, paths.root.join("accounts")).unwrap();
         assert!(
             perform(&paths, &mut r)
@@ -945,13 +957,13 @@ mod tests {
                 .contains("UNSAFE_ACCOUNT_PARENT")
         );
         assert_eq!(
-            fs::read(outside.join("disposable/auth.json")).unwrap(),
+            fs::read(outside.join("codex/disposable/auth.json")).unwrap(),
             b"outside credential"
         );
         assert!(
             paths
                 .root
-                .join("retained_accounts/disposable/auth.json")
+                .join("retained_accounts/codex/disposable/auth.json")
                 .is_file()
         );
     }

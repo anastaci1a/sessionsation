@@ -68,11 +68,11 @@ async fn explicit_exited_tmux_recovery_preserves_identity_context_and_sends_once
             None
         };
         if let Some(stop) = stop {
-            fs::create_dir_all(f.paths.root.join("conversations")).unwrap();
+            fs::create_dir_all(f.paths.root.join(sessionsation::layout::CONVERSATIONS)).unwrap();
             fs::write(
                 f.paths
                     .root
-                    .join("conversations")
+                    .join(sessionsation::layout::CONVERSATIONS)
                     .join(format!("{ID}.json")),
                 json!({"stop_intent":stop,"owner":f.paths.account("personal").unwrap()})
                     .to_string(),
@@ -109,7 +109,7 @@ async fn explicit_exited_tmux_recovery_preserves_identity_context_and_sends_once
                 &fs::read(
                     f.paths
                         .root
-                        .join("message-recoveries")
+                        .join(sessionsation::layout::MESSAGE_RECOVERIES)
                         .join(format!("{}.json", req["message_id"].as_str().unwrap())),
                 )
                 .unwrap(),
@@ -342,11 +342,11 @@ async fn retained_live_recovery_is_preconditioned_and_lost_ack_is_never_replayed
             .clone();
         let a = &s["attachment"];
         let home = f.paths.account("personal").unwrap();
-        fs::create_dir_all(f.paths.root.join("managed-panes")).unwrap();
+        fs::create_dir_all(f.paths.root.join(sessionsation::layout::MANAGED_PANES)).unwrap();
         fs::write(
             f.paths
                 .root
-                .join("managed-panes")
+                .join(sessionsation::layout::MANAGED_PANES)
                 .join(format!("{}.json", pane.trim_start_matches('%'))),
             json!({"pid":a["pid"],"start_time":a["process_start"],"home":home,"thread":ID})
                 .to_string(),
@@ -358,11 +358,11 @@ async fn retained_live_recovery_is_preconditioned_and_lost_ack_is_never_replayed
             None
         };
         if let Some(stop) = stop {
-            fs::create_dir_all(f.paths.root.join("conversations")).unwrap();
+            fs::create_dir_all(f.paths.root.join(sessionsation::layout::CONVERSATIONS)).unwrap();
             fs::write(
                 f.paths
                     .root
-                    .join("conversations")
+                    .join(sessionsation::layout::CONVERSATIONS)
                     .join(format!("{ID}.json")),
                 json!({"stop_intent":stop,"owner":home}).to_string(),
             )

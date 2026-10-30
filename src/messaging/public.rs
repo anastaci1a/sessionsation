@@ -475,7 +475,7 @@ mod evidence_tests {
         });
         let mut r = Ledger::open(&paths).unwrap().accept(&input, now).unwrap();
         r.state = "native_accepted".into();
-        let dir = paths.root.join("conversations");
+        let dir = paths.root.join(crate::layout::CONVERSATIONS);
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join(format!("{}.json", r.session_id));
         let set = |stop: &str| {
@@ -625,7 +625,7 @@ mod evidence_tests {
         assert_eq!(legacy.get(&input.message_id).unwrap(), Some(existing));
         assert_eq!(legacy.events(None).unwrap(), events);
         // Lock refusal precedes catalog resolution, discovery and native I/O.
-        assert!(!paths.root.join("session-catalog").exists());
+        assert!(!paths.root.join(crate::layout::SESSION_CATALOG).exists());
         drop(legacy);
         for id in refused {
             let error = receipt_public(&paths, &id, false).await.unwrap_err();

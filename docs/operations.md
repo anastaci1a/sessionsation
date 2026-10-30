@@ -101,6 +101,107 @@ repair another process's old discovery behavior. Preserve old receipt domains an
 modes. Legacy busy Submit/Steer and messaging Resume are not automatically mapped
 to non-steering v1 Submit/Queue.
 
+## Data-root layout (contract 1.29.0)
+
+Layout version 2 groups the data root by purpose; `layout.json` records the
+version, the migration state and every deferred account home:
+
+```text
+DATA_ROOT/
+  layout.json  config.json  daemon.lock
+  registry/    registry.db, account-catalog/, session-catalog/, conversations/,
+               thread-locations/, managed-panes/, herdr-panes/, provider-state/,
+               session-access.json
+  sessions/    archived/ (was archived-sessions/), preserved/ (was
+               preserved-conversations/), hosted/ (was claude-hosted/)
+  operations/  launches/, resumptions/, deletions/, account-deletions/,
+               conversation-operations/, handoff-jobs/, space-moves/,
+               lifecycle-admission/, message-recoveries/, move-backups/
+  messaging/   receipts.db, checkpoints/, observations/, claude-steer/,
+               claude-deliveries/, questions/
+  cache/       state-snapshot-*.json, observations/, compatibility-report.json
+  logs/        daemon.log, handoff.log
+  accounts/<platform>/<name>   codex, claude, gemini, antigravity homes
+```
+
+A new root is created as version 2. A legacy (version 1) root is refused by
+every command with `LAYOUT_MIGRATION_REQUIRED`, except `api version` and
+`layout`; an interrupted migration or rollback is refused with
+`LAYOUT_MIGRATION_IN_PROGRESS` until `layout migrate` (or `layout rollback`)
+is run again.
+
+### Migrate
+
+```sh
+sessionsation daemon stop
+sessionsation layout migrate --dry-run            # the plan, nothing changes
+sessionsation layout migrate --backup /path/new-empty-dir
+sessionsation daemon start
+sessionsation layout status                       # deferred homes and why
+```
+
+- It holds `daemon.lock` (so no supervisor of any build runs) and
+  `layout.lock`, and refuses a destination that already exists
+  (`LAYOUT_CONFLICT`) before changing anything.
+- The backup holds every top-level entry except account homes, with
+  `registry.db` and `messaging/receipts.db` copied consistently
+  (`VACUUM INTO`) and `layout-backup.json` listing the homes (path, inode).
+  Homes are only renamed, never copied, so credentials stay in the root.
+- The registry WAL is checkpointed, then `registry.db` moves with its
+  companions. A non-database file is left at `registry.db` so an older build
+  pointed at the root fails ("file is not a database") instead of creating an
+  empty registry.
+- `archived-sessions`, `preserved-conversations` and `move-backups` leave
+  relative compatibility symlinks: archive manifests, account-deletion records
+  and move backups store absolute paths, which keep resolving. Journals are
+  never rewritten.
+- An account home that any process uses (an environment value such as
+  `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GEMINI_CLI_HOME` or `HOME`, a
+  command-line argument such as a Codex `--remote unix://.../app-server-control.sock`,
+  a working directory, an executable or an open file under the home) is not
+  moved. It is *deferred*: it stays at its legacy path, the reason (pids and
+  how they use it) is recorded in `layout.json`, and the account keeps
+  working there (`api state` reports `home` and `home_deferred: true`).
+  Running Codex app-servers, Claude, Gemini and Antigravity processes are
+  therefore never disturbed.
+- An idle home moves to `accounts/<platform>/<name>` and leaves a relative
+  symlink at its legacy path, so absolute paths inside provider state (Codex
+  `state_5.sqlite` rollout paths, control socket paths) keep resolving. The
+  tests bind a Codex control socket, move the home and connect through the old
+  path, and read a recorded SQLite path through it.
+- Run `layout migrate --backup NEW-DIR` again at any time (for example after
+  a reboot, before the supervisor starts) to move deferred homes that are now
+  idle; a run with nothing to do needs no backup and changes nothing.
+
+### Roll back
+
+```sh
+sessionsation daemon stop
+sessionsation layout rollback --dry-run
+sessionsation layout rollback        # with this (layout-aware) build
+# then switch the installed release back and start the older supervisor
+```
+
+Rollback moves every store and every home at `accounts/<platform>/<name>`
+back to its legacy name (removing compatibility links and the registry
+tripwire) and removes `layout.json`. It refuses, before any change, a home in
+use at its new path or a legacy path that is occupied. Settings added in
+1.29.0 (the retention keys below) must not be present in `config.json` for an
+older build. As a last resort, the `--backup` directory restores all metadata.
+
+### Retention
+
+The supervisor runs one retention pass a few minutes after start and then
+hourly; `sessionsation retention run [--dry-run]` runs one now. Settings in
+`config.json` (days are 1..=3650):
+
+| Class | Setting (default) | Rule |
+| --- | --- | --- |
+| Logs | `log_max_bytes` (8 MiB), `log_retention_days` (30) | A larger `logs/*.log` is copied to `.log.1` and truncated in place; an older `.log.1` is removed. |
+| Cache | `cache_retention_days` (14) | Untouched files under `cache/observations/` are removed (regenerated on demand). Snapshots and reports are kept. |
+| Operations history | `operation_retention_days` (90) | Journals in a final phase (launches `running`/`failed`; resumptions also `abandoned`; conversation operations, space moves and message recoveries `complete`/`failed`; handoff jobs also `cancelled`/`recovered`) are removed with their sidecars unless a lock is held. Unfinished or `uncertain` journals, `deletions/`, `account-deletions/`, lifecycle admission locks and move backups are kept. |
+| Receipts | `receipt_retention_days` (14), `receipt_unknown_horizon_days` (90) | Unchanged receipt retention (revision 18) runs in the same pass; retired ids keep tombstones. |
+
 ## Remaining limits
 
 - Busy Queue/FIFO and unplanned native-loss acceptance in downstream adapters need

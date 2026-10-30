@@ -386,7 +386,7 @@ fn file(paths: &Paths, id: &str) -> anyhow::Result<PathBuf> {
     uuid(id)?;
     Ok(paths
         .root
-        .join("message-recoveries")
+        .join(crate::layout::MESSAGE_RECOVERIES)
         .join(format!("{id}.json")))
 }
 fn read(paths: &Paths, id: &str) -> anyhow::Result<Record> {
@@ -398,7 +398,7 @@ fn read(paths: &Paths, id: &str) -> anyhow::Result<Record> {
     Ok(r)
 }
 fn save(paths: &Paths, r: &Record) -> anyhow::Result<()> {
-    private_dir(&paths.root.join("message-recoveries"))?;
+    private_dir(&paths.root.join(crate::layout::MESSAGE_RECOVERIES))?;
     crate::paths::atomic_write(
         &file(paths, &r.request.message_id)?,
         &serde_json::to_vec(&{
@@ -584,7 +584,7 @@ pub(super) async fn send(paths: &Paths, request: PublicRequest) -> anyhow::Resul
     let _admission =
         crate::lifecycle::admit(paths, &selected.conversation_id, Some(&request.message_id))?;
     let session = validate(paths, &request, Some(&request.message_id)).await?;
-    let count = fs::read_dir(paths.root.join("message-recoveries"))
+    let count = fs::read_dir(paths.root.join(crate::layout::MESSAGE_RECOVERIES))
         .map(|es| {
             es.filter_map(std::result::Result::ok)
                 .filter(|e| e.path().extension().is_some_and(|s| s == "json"))

@@ -544,7 +544,7 @@ pub(super) async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
         risks(paths, job, job.source.warnings.join(" ")).await?;
     }
     // Serialize project changes, including ancestor/descendant paths.
-    let lock = crate::paths::lock_file(&paths.root.join("project-relocation.lock"))?;
+    let lock = crate::paths::lock_file(&paths.root.join(crate::layout::PROJECT_RELOCATION_LOCK))?;
     while lock.try_lock_exclusive().is_err() {
         phase(
             paths,
@@ -639,7 +639,7 @@ pub(super) fn record_location(paths: &Paths, job: &mut Job) -> Result<()> {
     transition(paths, job, "complete")
 }
 pub(crate) fn save_location(paths: &Paths, thread: &str, directory: &Path) -> Result<()> {
-    let dir = paths.root.join("thread-locations");
+    let dir = paths.root.join(crate::layout::THREAD_LOCATIONS);
     private_dir(&dir)?;
     uuid::Uuid::parse_str(thread)?;
     atomic_write(
@@ -653,7 +653,7 @@ pub(super) fn saved_location(paths: &Paths, thread: &str) -> Option<String> {
         &fs::read(
             paths
                 .root
-                .join("thread-locations")
+                .join(crate::layout::THREAD_LOCATIONS)
                 .join(format!("{thread}.json")),
         )
         .ok()?,

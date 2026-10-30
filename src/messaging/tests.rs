@@ -179,19 +179,32 @@ fn movement_and_message_share_locks() {
         mutation_lock(&paths, &input.session_id).unwrap_err().0,
         "operation_busy"
     );
-    let lock = lock_file(&paths.root.join("handoff-jobs/queue.lock")).unwrap();
+    let lock = lock_file(
+        &paths
+            .root
+            .join(crate::layout::HANDOFF_JOBS)
+            .join("queue.lock"),
+    )
+    .unwrap();
     assert!(lock.try_lock_exclusive().is_err());
     drop(first);
     assert!(mutation_lock(&paths, &input.session_id).is_ok());
     // Incomplete persisted jobs fail closed instead of assuming a vanished worker is safe.
-    fs::write(paths.root.join("handoff-jobs/broken.json"), b"{").unwrap();
+    fs::write(
+        paths
+            .root
+            .join(crate::layout::HANDOFF_JOBS)
+            .join("broken.json"),
+        b"{",
+    )
+    .unwrap();
     assert!(mutation_lock(&paths, &input.session_id).is_err());
 }
 
 #[test]
 fn handoff_reserves_delivery_until_worker_releases_even_after_terminal_phase() {
     let (_dir, paths, input, _) = fixture();
-    let root = paths.root.join("handoff-jobs");
+    let root = paths.root.join(crate::layout::HANDOFF_JOBS);
     crate::paths::private_dir(&root).unwrap();
     let worker = lock_file(&root.join("switch.worker-lock")).unwrap();
     let source = json!({"pane":"%1","tmux_session":"fixture","pid":1,
@@ -459,9 +472,9 @@ async fn stale_generation_blocks_actual_submission() {
         .unwrap()
         .parse()
         .unwrap();
-    fs::create_dir_all(paths.root.join("managed-panes")).unwrap();
+    fs::create_dir_all(paths.root.join(crate::layout::MANAGED_PANES)).unwrap();
     fs::write(
-        paths.root.join("managed-panes/1.json"),
+        paths.root.join(crate::layout::MANAGED_PANES).join("1.json"),
         json!({"pid":a.pid,"start_time":a.start,"home":a.home,"thread":a.id}).to_string(),
     )
     .unwrap();
@@ -491,9 +504,9 @@ pub(super) fn bind(paths: &Paths, a: &mut Attachment) {
         .unwrap()
         .parse()
         .unwrap();
-    fs::create_dir_all(paths.root.join("managed-panes")).unwrap();
+    fs::create_dir_all(paths.root.join(crate::layout::MANAGED_PANES)).unwrap();
     fs::write(
-        paths.root.join("managed-panes/1.json"),
+        paths.root.join(crate::layout::MANAGED_PANES).join("1.json"),
         json!({"pid":a.pid,"start_time":a.start,"home":a.home,"thread":a.id}).to_string(),
     )
     .unwrap();
@@ -578,7 +591,7 @@ async fn revalidates_generation_after_native_preflight() {
     let (_dir, paths, mut input, now) = fixture();
     let mut a = attachment_fixture(&paths, &input);
     bind(&paths, &mut a);
-    let binding = paths.root.join("managed-panes/1.json");
+    let binding = paths.root.join(crate::layout::MANAGED_PANES).join("1.json");
     let task = scripted_server(&a.endpoint(), move |req| {
         assert_eq!(req["method"], "thread/read");
         fs::remove_file(&binding).unwrap();
@@ -674,8 +687,8 @@ async fn submission_holds_movement_locks_and_journals_before_native_mutation() {
     bind(&paths, &mut a);
     let root = paths.root.clone();
     let task=scripted_server(&a.endpoint(),move|req|{
-        let queue=lock_file(&root.join("handoff-jobs/queue.lock")).unwrap();assert!(queue.try_lock_exclusive().is_err());
-        let conversation=lock_file(&root.join(format!("handoff-jobs/{}.open-lock",req["params"]["threadId"].as_str().unwrap()))).unwrap();assert!(conversation.try_lock_exclusive().is_err());
+        let queue=lock_file(&root.join(crate::layout::HANDOFF_JOBS).join("queue.lock")).unwrap();assert!(queue.try_lock_exclusive().is_err());
+        let conversation=lock_file(&root.join(crate::layout::HANDOFF_JOBS).join(format!("{}.open-lock",req["params"]["threadId"].as_str().unwrap()))).unwrap();assert!(conversation.try_lock_exclusive().is_err());
         if req["method"]=="thread/read" {return Some(json!({"thread":{"id":req["params"]["threadId"],"status":{"type":"active"}}}));}
         assert_eq!(req["method"],"thread/queue/add");
         let db=Connection::open(root.join("messaging/receipts.db")).unwrap();let text:String=db.query_row("SELECT receipt FROM receipts",[],|r|r.get(0)).unwrap();let persisted:Receipt=serde_json::from_str(&text).unwrap();assert_eq!(persisted.state,"unknown");
@@ -696,7 +709,7 @@ async fn already_queued_migration_rejects_enqueue_before_any_socket_use() {
     let mut a = attachment_fixture(&paths, &input);
     bind(&paths, &mut a);
     let fake = server(&a.endpoint(), "0.163.0", true, false, true).await;
-    let dir = paths.root.join("handoff-jobs");
+    let dir = paths.root.join(crate::layout::HANDOFF_JOBS);
     fs::create_dir_all(&dir).unwrap();
     let job = json!({"id":"job","source":{"pane":"%1","tmux_session":"fake","pid":a.pid,"start_time":a.start,"cwd":"/fixture","thread_id":a.id,"rollout":"/fixture/unused","home":a.home,"binary":"unused","resume_options":[]},"target":"other","phase":"queued","detail":"fixture","source_lease_released":false,"pause_approved":false,"risks_approved":false});
     let _: external::Job = serde_json::from_value(job.clone()).unwrap();
@@ -805,10 +818,13 @@ async fn session_labels_are_bounded_metadata_not_identity_or_credentials() {
     let other = shared["duplicate_name_session"]["session_id"]
         .as_str()
         .unwrap();
-    fs::create_dir_all(paths.root.join("conversations")).unwrap();
+    fs::create_dir_all(paths.root.join(crate::layout::CONVERSATIONS)).unwrap();
     let write_name = |id: &str, name: &str| {
         fs::write(
-            paths.root.join("conversations").join(format!("{id}.json")),
+            paths
+                .root
+                .join(crate::layout::CONVERSATIONS)
+                .join(format!("{id}.json")),
             json!({"name":name}).to_string(),
         )
         .unwrap();
@@ -834,7 +850,7 @@ async fn session_labels_are_bounded_metadata_not_identity_or_credentials() {
     write_name(&a.id, "\n\t");
     assert_eq!(labels(&paths, &a.id, None).unwrap().0, None);
     for account in ["personal", "work"] {
-        a.home = paths.root.join("accounts").join(account);
+        a.home = paths.account(account).unwrap();
         fs::create_dir_all(&a.home).unwrap();
         // Invalid credential fixture proves this mapping does not parse auth.
         fs::write(a.home.join("auth.json"), "must not be parsed").unwrap();
@@ -866,9 +882,9 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
             .unwrap()
             .parse()
             .unwrap();
-        fs::create_dir_all(paths.root.join("managed-panes")).unwrap();
+        fs::create_dir_all(paths.root.join(crate::layout::MANAGED_PANES)).unwrap();
         fs::write(
-            paths.root.join("managed-panes/1.json"),
+            paths.root.join(crate::layout::MANAGED_PANES).join("1.json"),
             json!({"pid":a.pid,"start_time":a.start,"home":a.home,"thread":a.id}).to_string(),
         )
         .unwrap();

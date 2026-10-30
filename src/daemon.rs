@@ -288,6 +288,22 @@ pub async fn serve(paths: Paths) -> Result<()> {
     crate::autostart::reconcile(&mut state);
     store.save(&state, now(), "automatic_reconciled", "")?;
     let mut config = load_config(&paths)?;
+    // Data-root retention (logs, cache, operations history, receipts): first
+    // pass a few minutes after start, then hourly. Housekeeping never blocks.
+    let retention_paths = paths.clone();
+    tokio::spawn(async move {
+        let mut delay = Duration::from_secs(300);
+        loop {
+            tokio::time::sleep(delay).await;
+            delay = Duration::from_secs(3600);
+            let p = retention_paths.clone();
+            match tokio::task::spawn_blocking(move || crate::retention::run(&p, false)).await {
+                Ok(Ok(summary)) => eprintln!("retention: {summary}"),
+                Ok(Err(e)) => eprintln!("retention failed: {e:#}"),
+                Err(e) => eprintln!("retention failed: {e}"),
+            }
+        }
+    });
     // Keep every enrolled Codex account's app-server on a deliberately selected
     // release; a running updater exits at its next check (no restart needed).
     for (name, account) in &state.accounts {
@@ -895,7 +911,8 @@ pub async fn ensure_started(paths: &Paths) -> Result<()> {
         return Ok(());
     }
     let executable = crate::self_executable::path()?;
-    let log_path = paths.root.join("daemon.log");
+    let log_path = paths.root.join(crate::layout::DAEMON_LOG);
+    private_dir(log_path.parent().context("log parent")?)?;
     use std::os::unix::fs::OpenOptionsExt;
     let log = std::fs::OpenOptions::new()
         .append(true)

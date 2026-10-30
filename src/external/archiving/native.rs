@@ -654,7 +654,7 @@ fn delete(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()> 
     }
     let staging = paths
         .root
-        .join("deletions")
+        .join(crate::layout::DELETIONS)
         .join(format!("native-{}", o.id));
     private_dir(&staging.join("files"))?;
     let staged: Vec<Staged> = sources

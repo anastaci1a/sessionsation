@@ -146,7 +146,7 @@ impl Fixture {
         serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
     }
     fn home(&self) -> PathBuf {
-        self.paths.root.join("gemini-accounts").join("personal")
+        self.paths.root.join("accounts/gemini").join("personal")
     }
     fn session(&self, native: &str) -> Value {
         self.api(&["state"])["sessions"]

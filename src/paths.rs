@@ -16,15 +16,21 @@ impl Paths {
     /// Resolve and, if missing, create a data root. Only `setup` (and disposable
     /// test fixtures) may create a root; every other command uses [`Paths::open`].
     pub fn new(root: Option<PathBuf>) -> Result<Self> {
-        Self::resolve(root, true)
+        Self::resolve(root, true, true)
     }
     /// Resolve an existing data root and fail closed when it is absent, so a
     /// stale `SESSIONSATION_HOME` or an unmounted array never creates a fresh,
     /// empty shadow root.
     pub fn open(root: Option<PathBuf>) -> Result<Self> {
-        Self::resolve(root, false)
+        Self::resolve(root, false, true)
     }
-    fn resolve(root: Option<PathBuf>, create: bool) -> Result<Self> {
+    /// Like [`Paths::open`] but without the layout admission
+    /// ([`crate::layout::admit`]): only for `layout` commands and `api version`,
+    /// which must work on a legacy or half-migrated root.
+    pub fn open_any_layout(root: Option<PathBuf>) -> Result<Self> {
+        Self::resolve(root, false, false)
+    }
+    fn resolve(root: Option<PathBuf>, create: bool, admit: bool) -> Result<Self> {
         let unraid = Path::new("/etc/unraid-version").is_file();
         let root = data_root(
             root,
@@ -56,14 +62,23 @@ impl Paths {
             &hash[..16]
         ));
         private_dir(&runtime)?;
+        if admit {
+            crate::layout::admit(&root)?;
+        }
         Ok(Self { root, runtime })
     }
     pub fn control(&self) -> PathBuf {
         self.runtime.join("control.sock")
     }
+    /// CODEX_HOME of a Codex account (`accounts/codex/<name>`, or its legacy
+    /// path while that home's move is deferred; see [`crate::layout`]).
     pub fn account(&self, name: &str) -> Result<PathBuf> {
         validate_name(name)?;
-        Ok(self.root.join("accounts").join(name))
+        Ok(crate::layout::account_home(
+            &self.root,
+            crate::provider::ProviderId::Codex,
+            name,
+        ))
     }
     pub fn session(&self, id: &str) -> Result<PathBuf> {
         validate_name(id)?;
@@ -192,23 +207,21 @@ fn journal_paths_from_entries(directory: &Path, entries: Vec<PathBuf>) -> Vec<Pa
 /// deliberately absent.
 const TEMP_SWEEP_DIRS: &[&str] = &[
     "messaging",
-    "observations",
-    "conversations",
-    "deletions",
-    "session-catalog",
-    "launches",
-    "conversation-operations",
-    "account-deletions",
-    "account-catalog",
-    "claude-steer",
-    "claude-deliveries",
-    "handoff-jobs",
-    "message-recoveries",
-    "resumptions",
-    "thread-locations",
-    "managed-panes",
-    "herdr-panes",
-    "lifecycle-admission",
+    crate::layout::OBSERVATIONS,
+    crate::layout::CONVERSATIONS,
+    crate::layout::DELETIONS,
+    crate::layout::SESSION_CATALOG,
+    crate::layout::LAUNCHES,
+    crate::layout::CONVERSATION_OPERATIONS,
+    crate::layout::ACCOUNT_DELETIONS,
+    crate::layout::ACCOUNT_CATALOG,
+    crate::layout::HANDOFF_JOBS,
+    crate::layout::MESSAGE_RECOVERIES,
+    crate::layout::RESUMPTIONS,
+    crate::layout::THREAD_LOCATIONS,
+    crate::layout::MANAGED_PANES,
+    crate::layout::HERDR_PANES,
+    crate::layout::LIFECYCLE_ADMISSION,
 ];
 pub const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 
@@ -275,7 +288,10 @@ mod tests {
     #[test]
     fn stale_atomic_write_temps_are_swept_and_nothing_else() {
         let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("observations/native-turns");
+        let dir = root
+            .path()
+            .join(crate::layout::OBSERVATIONS)
+            .join("native-turns");
         std::fs::create_dir_all(&dir).unwrap();
         let stale = dir.join(".tmpl2no68");
         let fresh = dir.join(".tmpAbC123");
@@ -285,7 +301,7 @@ mod tests {
         std::fs::write(&link_target, "x").unwrap();
         let link = dir.join(".tmpZZZZZZ");
         std::os::unix::fs::symlink(&link_target, &link).unwrap();
-        let outside = root.path().join("claude-accounts/a");
+        let outside = root.path().join("accounts/claude/a");
         std::fs::create_dir_all(&outside).unwrap();
         let outside = outside.join(".tmpl2no68");
         for p in [&stale, &fresh, &lookalike, &real, &outside] {

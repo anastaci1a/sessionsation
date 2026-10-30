@@ -17,7 +17,7 @@ fn marker_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<std::pa
     validate_name(name)?;
     Ok(paths
         .root
-        .join("account-catalog")
+        .join(crate::layout::ACCOUNT_CATALOG)
         .join(provider.as_str())
         .join(format!("{name}.removed.json")))
 }
@@ -58,7 +58,10 @@ pub fn ensure_available(paths: &Paths, name: &str) -> Result<()> {
 }
 pub fn operation_lock(paths: &Paths, name: &str) -> Result<fs::File> {
     validate_name(name)?;
-    let dir = paths.root.join("account-catalog/locks");
+    let dir = paths
+        .root
+        .join(crate::layout::ACCOUNT_CATALOG)
+        .join("locks");
     private_dir(&dir)?;
     let lock = lock_file(&dir.join(format!("codex-{name}.lock")))?;
     lock.try_lock_exclusive().context("ACCOUNT_BUSY")?;
@@ -66,7 +69,10 @@ pub fn operation_lock(paths: &Paths, name: &str) -> Result<fs::File> {
 }
 pub fn launch_lock(paths: &Paths, name: &str) -> Result<fs::File> {
     validate_name(name)?;
-    let dir = paths.root.join("account-catalog/locks");
+    let dir = paths
+        .root
+        .join(crate::layout::ACCOUNT_CATALOG)
+        .join("locks");
     private_dir(&dir)?;
     let lock = lock_file(&dir.join(format!("codex-{name}.lock")))?;
     FileExt::try_lock_shared(&lock).context("ACCOUNT_BUSY")?;
@@ -282,7 +288,7 @@ pub async fn remove(
         "CONFIRMATION_REQUIRED"
     );
     let _account = operation_lock(paths, name)?;
-    let jobs = paths.root.join("handoff-jobs");
+    let jobs = paths.root.join(crate::layout::HANDOFF_JOBS);
     private_dir(&jobs)?;
     let queue = lock_file(&jobs.join("queue.lock"))?;
     queue.try_lock_exclusive().context("OPERATION_BUSY")?;

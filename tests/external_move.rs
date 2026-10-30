@@ -610,7 +610,7 @@ int main(int argc,char**argv){char path[4096];if(argc>3 && strcmp(argv[1],"app-s
                 .iter()
                 .find(|j| j["id"] == id)
                 .unwrap_or_else(|| {
-                    let direct = fs::read(self.paths.root.join("handoff-jobs").join(format!("{id}.json")))
+                    let direct = fs::read(self.paths.root.join(sessionsation::layout::HANDOFF_JOBS).join(format!("{id}.json")))
                         .map(|bytes| serde_json::from_slice::<sessionsation::external::Job>(&bytes).map(|j|j.id).map_err(|e|e.to_string()));
                     panic!("Journal missing from listing: expected={id}, listed={jobs}, direct={direct:?}")
                 })
@@ -628,7 +628,7 @@ int main(int argc,char**argv){char path[4096];if(argc>3 && strcmp(argv[1],"app-s
                         .open(
                             self.paths
                                 .root
-                                .join("handoff-jobs")
+                                .join(sessionsation::layout::HANDOFF_JOBS)
                                 .join(format!("{id}.worker-lock")),
                         )
                         .unwrap();
@@ -1447,11 +1447,11 @@ async fn open_and_archive_recovery_use_original_external_home_without_a_turn() {
         saved_public["generation"].as_str().unwrap(),
     ]);
     assert_eq!(details["result"]["resume_block_reason"], Value::Null);
-    fs::create_dir_all(f.paths.root.join("conversations")).unwrap();
+    fs::create_dir_all(f.paths.root.join(sessionsation::layout::CONVERSATIONS)).unwrap();
     let stop_record = f
         .paths
         .root
-        .join("conversations")
+        .join(sessionsation::layout::CONVERSATIONS)
         .join(format!("{ID}.json"));
     fs::write(
         &stop_record,
@@ -1774,7 +1774,7 @@ async fn new_launch_does_not_attach_when_saving_or_resume_verification_fails() {
         assert!(
             !f.paths
                 .root
-                .join("managed-panes")
+                .join(sessionsation::layout::MANAGED_PANES)
                 .join(format!("{}.json", pane.trim_start_matches('%')))
                 .exists()
         );
@@ -1941,11 +1941,11 @@ async fn direct_resume_preserves_saved_location_and_applies_launch_permissions()
         };
         writeln!(fs::OpenOptions::new().append(true).open(&rollout).unwrap(), "{}",
             json!({"type":"turn_context","payload":{"approval_policy":approval,"sandbox_policy":{"type":sandbox}}})).unwrap();
-        fs::create_dir_all(f.paths.root.join("thread-locations")).unwrap();
+        fs::create_dir_all(f.paths.root.join(sessionsation::layout::THREAD_LOCATIONS)).unwrap();
         fs::write(
             f.paths
                 .root
-                .join("thread-locations")
+                .join(sessionsation::layout::THREAD_LOCATIONS)
                 .join(format!("{ID}.json")),
             serde_json::to_vec(&json!({"cwd":new_cwd})).unwrap(),
         )
@@ -2079,11 +2079,11 @@ async fn move_continuation_distinguishes_failure_from_completed_interrupted_and_
         f.a.lock().unwrap().threads.get_mut(ID).unwrap()["turns"] =
             json!([{"id":"last-turn","status":status,"itemsView":"summary","items":[]}]);
         if stopped {
-            fs::create_dir_all(f.paths.root.join("conversations")).unwrap();
+            fs::create_dir_all(f.paths.root.join(sessionsation::layout::CONVERSATIONS)).unwrap();
             fs::write(
                 f.paths
                     .root
-                    .join("conversations")
+                    .join(sessionsation::layout::CONVERSATIONS)
                     .join(format!("{ID}.json")),
                 serde_json::to_vec(&json!({"stop_intent":"explicit-user-stop"})).unwrap(),
             )
@@ -2503,7 +2503,11 @@ async fn permanent_delete_requires_fresh_confirmation_and_keeps_project_files() 
             + "\n",
     )
     .unwrap();
-    let backup = f.paths.root.join("move-backups/old/backup.jsonl");
+    let backup = f
+        .paths
+        .root
+        .join(sessionsation::layout::MOVE_BACKUPS)
+        .join("old/backup.jsonl");
     fs::create_dir_all(backup.parent().unwrap()).unwrap();
     fs::copy(&a, &backup).unwrap();
     // Audit C: the session-catalog entry for this conversation (and only it).
@@ -2589,7 +2593,11 @@ async fn permanent_delete_requires_fresh_confirmation_and_keeps_project_files() 
         "catalog entry removed with the conversation"
     );
     assert!(remaining.iter().any(|s| s.name == "unrelated"));
-    let journal = f.paths.root.join("deletions").join(format!("{ID}.json"));
+    let journal = f
+        .paths
+        .root
+        .join(sessionsation::layout::DELETIONS)
+        .join(format!("{ID}.json"));
     assert!(
         !journal.exists(),
         "completed journal (name, cwd) is removed"
@@ -2597,7 +2605,7 @@ async fn permanent_delete_requires_fresh_confirmation_and_keeps_project_files() 
     let record = fs::read_to_string(
         f.paths
             .root
-            .join("conversations")
+            .join(sessionsation::layout::CONVERSATIONS)
             .join(format!("{ID}.json")),
     )
     .unwrap();
@@ -3196,7 +3204,7 @@ async fn sessions_group_activity_before_access_and_keep_names_after_external_exi
     );
     let access = json!({ids[0]:100, ids[1]:200, ids[2]:300, ids[3]:400, ids[4]:500});
     fs::write(
-        f.paths.root.join("session-access.json"),
+        f.paths.root.join(sessionsation::layout::SESSION_ACCESS),
         serde_json::to_vec(&access).unwrap(),
     )
     .unwrap();
@@ -3594,7 +3602,7 @@ async fn public_stop_preserves_manual_intent_even_when_account_is_disabled() {
         &fs::read(
             f.paths
                 .root
-                .join("conversations")
+                .join(sessionsation::layout::CONVERSATIONS)
                 .join(format!("{ID}.json")),
         )
         .unwrap(),

@@ -16,8 +16,8 @@ checked alongside the CLI regression tests. See [CLI setup](cli.md) and
 The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
-compatibility and always equals the MINOR part: revisions 1-28 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.28.0`
+compatibility and always equals the MINOR part: revisions 1-29 were all additive,
+so revision N maps to contract `1.N.0` and the current contract is `1.29.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -742,7 +742,7 @@ conversations; it requires a capable sole owner. Arbitrary history purging remai
 unsupported. Since revision 11 `remove`, `restore` and `delete` also accept
 `claude:` IDs (see revision 11 below; revision 10 rejected them).
 `api account managed-home claude:NAME` (additive) switches an adopted Claude account to
-`<root>/claude-accounts/NAME` and returns `{account_id,provider,home,previous_home,relocated,already_managed}`
+`<root>/accounts/claude/NAME` and returns `{account_id,provider,home,previous_home,relocated,already_managed}`
 (`note:"ALREADY_MANAGED"` when idempotent). Error codes: `UNSUPPORTED_PROVIDER_OPERATION`,
 `ACCOUNT_HOME_UNAVAILABLE`, `UNSAFE_ACCOUNT_HOME`, `ACCOUNT_IN_USE`, `AUTH_REQUIRED`,
 `WRONG_AUTH_MODE`, `AUTH_IDENTITY_MISMATCH`. Claude session `capabilities.resume` is false with
@@ -1368,7 +1368,7 @@ add-to-herdr` for Gemini fails with `UNSUPPORTED_PROVIDER_OPERATION: NO_NATIVE_A
 accepts `gemini:` sessions/accounts; receipts carry `provider:"gemini"` and
 `account_id:"gemini:NAME"` (schemas `ClaudeHeadlessRequest`/`ClaudeHeadlessReceipt`
 admit both providers). Records of both providers share
-`DATA_ROOT/claude-deliveries/`; older records without a `provider` field are Claude.
+`DATA_ROOT/messaging/claude-deliveries/`; older records without a `provider` field are Claude.
 Login and headless delivery are verified only against fakes until a real login exists.
 
 ### Account log out (revision 14)
@@ -1404,7 +1404,7 @@ filter with the identical JSON shape plus `snapshot: {observed_at, fresh, cached
 `fresh` is true while the snapshot is at most 15 seconds old. It performs no
 transcript scan, process probe or catalog write (`capabilities` is current).
 Every full `api state` stores its result atomically as
-`DATA_ROOT/state-snapshot-<filter>.json` (and reports `snapshot.cached:false`);
+`DATA_ROOT/cache/state-snapshot-<filter>.json` (and reports `snapshot.cached:false`);
 there is no second writer. With no snapshot yet, `--cached` computes a full state.
 `api capabilities` advertises `state_cached:true`. Clients should refresh with a full
 `state` periodically and render `--cached` between refreshes; a cached read never
@@ -1758,7 +1758,7 @@ backslash (Enter would become a newline) and a last token starting with `@` or `
 (`escaped_prefix`), so command, shell, memory and help triggers stay plain text.
 The receipt correlates on that delivered text.
 
-Delivery is journaled under `DATA_ROOT/claude-steer/` before every write, one
+Delivery is journaled under `DATA_ROOT/messaging/claude-steer/` before every write, one
 request per pane at a time. Procedure, with codes ending the request `rejected`
 before anything is submitted:
 
@@ -2210,3 +2210,20 @@ sends, and releases the session reservation. Receipts gain optional
 `abandoned_from` and `abandoned_at`. Refused while the target session's process is
 live (`SESSION_PROCESS_LIVE`); see [cli](cli.md#abandoning-an-uncertain-resume-launch-contract-1280)
 for the error codes.
+
+### Data-root layout and retention (1.29.0)
+
+MINOR, additive. Account rows gain `home` (the home in use: an adopted Claude
+config home, the managed `accounts/<platform>/<name>`, or a deferred legacy
+path) and `home_deferred` (true while the layout migration left an in-use home
+at its legacy path). `api capabilities` gains `data_layout` (layout version,
+directories, the account fields and the `layout` commands) and `retention`
+(classes, settings and built-in defaults). New config keys
+`log_retention_days`, `log_max_bytes`, `cache_retention_days` and
+`operation_retention_days`. New error codes `LAYOUT_MIGRATION_REQUIRED`
+(a legacy root; every command except `api version` and `layout`),
+`LAYOUT_MIGRATION_IN_PROGRESS`, `LAYOUT_CONFLICT`, `LAYOUT_UNSUPPORTED`,
+`BACKUP_REQUIRED` and `DAEMON_RUNNING` (layout commands). Request and result
+shapes of existing commands are unchanged; clients that read data-root files
+directly must use the new paths (see
+[Data-root layout](operations.md#data-root-layout-contract-1290)).

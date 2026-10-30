@@ -332,7 +332,8 @@ fn scan_file(paths: &Paths, history: &Path) -> PathBuf {
     );
     paths
         .root
-        .join("questions/scan")
+        .join(crate::layout::QUESTIONS)
+        .join("scan")
         .join(format!("{}.json", &key[..32]))
 }
 
@@ -402,7 +403,11 @@ pub struct AnswerReceipt {
 }
 
 fn answers_dir(paths: &Paths, session: &str) -> PathBuf {
-    paths.root.join("questions/answers").join(session)
+    paths
+        .root
+        .join(crate::layout::QUESTIONS)
+        .join("answers")
+        .join(session)
 }
 
 fn receipt_path(paths: &Paths, session: &str, request: &str) -> PathBuf {
@@ -428,7 +433,7 @@ fn save_receipt(paths: &Paths, r: &mut AnswerReceipt) -> Result<()> {
 
 fn event(paths: &Paths, r: &AnswerReceipt) {
     use std::io::Write;
-    let dir = paths.root.join("questions");
+    let dir = paths.root.join(crate::layout::QUESTIONS);
     if crate::paths::private_dir(&dir).is_err() {
         return;
     }
@@ -695,7 +700,7 @@ pub struct AnswerRequest {
 }
 
 fn session_lock(paths: &Paths, session: &str) -> Result<fs::File> {
-    let dir = paths.root.join("questions/answers");
+    let dir = paths.root.join(crate::layout::QUESTIONS).join("answers");
     crate::paths::private_dir(&dir)?;
     let file = crate::paths::lock_file(&dir.join(format!("{session}.lock")))?;
     file.try_lock_exclusive().map_err(|_| {

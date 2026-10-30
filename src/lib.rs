@@ -27,8 +27,10 @@ pub mod usage_history;
 mod terminal;
 
 pub mod launch;
+pub mod layout;
 pub mod login;
 pub mod logout;
 pub mod resume;
+pub mod retention;
 
 pub mod account_deletion;

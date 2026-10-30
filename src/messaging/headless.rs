@@ -10,7 +10,7 @@
 //! uncertain outcome (timeout, crash, unparseable output, session-id mismatch) is
 //! never replayed. Live sessions are never addressed: Claude has no supported
 //! input API for a running interactive session. Records of both providers share
-//! `DATA_ROOT/claude-deliveries/` (the directory keeps its original name so
+//! `DATA_ROOT/messaging/claude-deliveries/` (the directory keeps its original name so
 //! existing receipts stay readable); each record names its provider.
 use crate::{
     catalog,
@@ -102,7 +102,7 @@ pub struct Record {
 }
 
 fn dir(paths: &Paths) -> PathBuf {
-    paths.root.join("claude-deliveries")
+    paths.root.join(crate::layout::CLAUDE_DELIVERIES)
 }
 fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id).context("INVALID_REQUEST")?;
@@ -838,7 +838,7 @@ pub async fn validate_gemini_key(
     };
     let run_home = paths
         .root
-        .join("provider-state")
+        .join(crate::layout::PROVIDER_STATE)
         .join("gemini-validate")
         .join(uuid::Uuid::new_v4().to_string());
     let prepared = private_dir(&run_home)
@@ -1143,7 +1143,10 @@ pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
 }
 fn catalog_provider(paths: &Paths, id: &str) -> Option<String> {
     uuid::Uuid::parse_str(id).ok()?;
-    let file = paths.root.join("session-catalog/catalog.json");
+    let file = paths
+        .root
+        .join(crate::layout::SESSION_CATALOG)
+        .join("catalog.json");
     let v: Value = serde_json::from_slice(&fs::read(file).ok()?).ok()?;
     v["sessions"][id]["provider"].as_str().map(str::to_owned)
 }
@@ -1300,7 +1303,7 @@ mod gemini_auth_tests {
     fn headless_gemini_runs_record_only_recognizable_auth_failures_and_clear_on_success() {
         let t = tempfile::tempdir().unwrap();
         let paths = Paths::new(Some(t.path().join("root"))).unwrap();
-        let home = paths.root.join("gemini-accounts/g1");
+        let home = paths.root.join("accounts/gemini/g1");
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
         std::fs::write(home.join(".gemini/oauth_creds.json"), b"{}").unwrap();
         let cur = || failure::current(&paths, "g1", &home);
@@ -1336,7 +1339,7 @@ mod gemini_sign_in_refusal_tests {
     fn real_unsupported_client_run_is_a_definite_refusal_and_marks_the_account() {
         let t = tempfile::tempdir().unwrap();
         let paths = Paths::new(Some(t.path().join("root"))).unwrap();
-        let home = paths.root.join("gemini-accounts/g1");
+        let home = paths.root.join("accounts/gemini/g1");
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
         std::fs::write(home.join(".gemini/oauth_creds.json"), b"{}").unwrap();
         let stderr = failure::tests::UNSUPPORTED_CLIENT_STDERR.as_bytes();

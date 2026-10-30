@@ -1,5 +1,5 @@
 //! Gemini CLI provider. Each account is an isolated `GEMINI_CLI_HOME` created at
-//! `<root>/gemini-accounts/<name>`; everything Gemini keeps lives in
+//! `<root>/accounts/gemini/<name>`; everything Gemini keeps lives in
 //! `<home>/.gemini/`. Sessionsation never reads Gemini credentials
 //! (`oauth_creds.json`): authentication is "present" when that file is a
 //! non-empty regular file and `google_accounts.json` names an active account.
@@ -129,9 +129,13 @@ pub fn capabilities() -> ProviderCapabilities {
 
 pub fn home(paths: &Paths, name: &str) -> Result<PathBuf> {
     validate_name(name)?;
-    Ok(paths.root.join("gemini-accounts").join(name))
+    Ok(crate::layout::account_home(
+        &paths.root,
+        ProviderId::Gemini,
+        name,
+    ))
 }
-/// Create the managed home `<root>/gemini-accounts/<name>` (0700), or register
+/// Create the managed home `<root>/accounts/gemini/<name>` (0700), or register
 /// one an operator already placed there. An existing home is never wiped or
 /// re-permissioned: it must already be a private (0700) directory owned by this
 /// user and not a symlink. Settings are seeded either way. Returns (home, existed).
@@ -139,8 +143,8 @@ pub fn create_home(paths: &Paths, name: &str) -> Result<(PathBuf, bool)> {
     use std::os::unix::fs::MetadataExt;
     // A new account never inherits an earlier same-named account's recorded failure.
     let fresh = !home(paths, name).is_ok_and(|h| h.exists());
-    private_dir(&paths.root.join("gemini-accounts"))?;
     let home = home(paths, name)?;
+    private_dir(home.parent().context("missing parent")?)?;
     let existed = match fs::symlink_metadata(&home) {
         Ok(m) => {
             ensure!(
@@ -765,7 +769,7 @@ pub fn observe(
 
 /// Gemini accounts from a read-only registry snapshot (daemon need not run).
 pub fn enrolled(paths: &Paths) -> Result<Vec<Enrolled>> {
-    if !paths.root.join("registry.db").exists() {
+    if !paths.root.join(crate::layout::REGISTRY_DB).exists() {
         return Ok(vec![]);
     }
     let state = crate::store::load_state_snapshot(paths)?;

@@ -209,11 +209,19 @@ pub(crate) fn create_directories(
 }
 fn location(paths: &Paths, id: &str) -> Result<PathBuf> {
     validate_id(id)?;
-    Ok(paths.root.join("launches").join(format!("{id}.json")))
+    Ok(paths
+        .root
+        .join(crate::layout::LAUNCHES)
+        .join(format!("{id}.json")))
 }
 fn lock(paths: &Paths) -> Result<fs::File> {
-    private_dir(&paths.root.join("launches"))?;
-    let f = lock_file(&paths.root.join("launches/admission.lock"))?;
+    private_dir(&paths.root.join(crate::layout::LAUNCHES))?;
+    let f = lock_file(
+        &paths
+            .root
+            .join(crate::layout::LAUNCHES)
+            .join("admission.lock"),
+    )?;
     f.lock_exclusive()?;
     Ok(f)
 }
@@ -345,7 +353,7 @@ async fn validate(paths: &Paths, r: &Request) -> Result<()> {
 pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     if matches!(command, Command::List) {
         let mut records = Vec::new();
-        let dir = paths.root.join("launches");
+        let dir = paths.root.join(crate::layout::LAUNCHES);
         if dir.is_dir() {
             for entry in crate::paths::journal_paths(&dir)? {
                 if !entry.is_file() {
@@ -426,7 +434,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         let f = lock_file(
             &paths
                 .root
-                .join("launches")
+                .join(crate::layout::LAUNCHES)
                 .join(format!("{id}.worker.lock")),
         )?;
         f.try_lock_exclusive()?;

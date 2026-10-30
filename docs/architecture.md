@@ -118,7 +118,7 @@ supervisor restart re-adopts it; a lost worker is reconciled to stopped and its
 in-flight deliveries to uncertain. `provider/claude/peer.rs` reads a live
 session's messaging endpoint from its registry entry and edits only the
 `crossSessionInbound` opt-in. `messaging/claude_steer.rs` owns admission, the
-durable records in `DATA_ROOT/claude-steer/`, the per-message peer worker and
+durable records in `DATA_ROOT/messaging/claude-steer/`, the per-message peer worker and
 listener socket, transcript anchoring and the receipts of both paths.
 
 Gemini sessions are likewise bound to their `GEMINI_CLI_HOME`. Gemini has no auth

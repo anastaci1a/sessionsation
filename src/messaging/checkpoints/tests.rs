@@ -493,11 +493,11 @@ async fn passive_turn_target_ignores_send_gates_but_rejects_turn_races() {
             let (_tmp, paths, input, _) = fixture();
             let mut a = attachment_fixture(&paths, &input);
             bind(&paths, &mut a);
-            fs::create_dir_all(paths.root.join("conversations")).unwrap();
+            fs::create_dir_all(paths.root.join(crate::layout::CONVERSATIONS)).unwrap();
             fs::write(
                 paths
                     .root
-                    .join("conversations")
+                    .join(crate::layout::CONVERSATIONS)
                     .join(format!("{}.json", a.id)),
                 json!({"stop_intent":"keep-stop"}).to_string(),
             )

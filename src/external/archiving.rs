@@ -76,7 +76,7 @@ struct Archive {
     facts: Value,
 }
 fn root(paths: &Paths) -> Result<PathBuf> {
-    let p = paths.root.join("archived-sessions");
+    let p = paths.root.join(crate::layout::ARCHIVED_SESSIONS);
     private_dir(&p)?;
     Ok(p)
 }
@@ -99,7 +99,7 @@ fn save(paths: &Paths, a: &Archive) -> Result<()> {
     atomic_write(&manifest(paths, &a.session.id)?, &serde_json::to_vec(a)?)
 }
 fn ops_root(paths: &Paths) -> Result<PathBuf> {
-    let p = paths.root.join("conversation-operations");
+    let p = paths.root.join(crate::layout::CONVERSATION_OPERATIONS);
     private_dir(&p)?;
     Ok(p)
 }
@@ -748,7 +748,7 @@ mod location_tests {
         fs::remove_file(
             paths
                 .root
-                .join("thread-locations")
+                .join(crate::layout::THREAD_LOCATIONS)
                 .join(format!("{thread}.json")),
         )
         .unwrap();
@@ -762,7 +762,7 @@ mod location_tests {
         fs::remove_file(
             paths
                 .root
-                .join("thread-locations")
+                .join(crate::layout::THREAD_LOCATIONS)
                 .join(format!("{thread}.json")),
         )
         .unwrap();

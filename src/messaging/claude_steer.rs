@@ -27,7 +27,7 @@
 //!   text is typed into the pane as the user's own input; see [`terminal`].
 //!
 //! All paths journal before any write, keep durable receipts in
-//! `DATA_ROOT/claude-steer/`, share the message-id namespace with the other
+//! `DATA_ROOT/messaging/claude-steer/`, share the message-id namespace with the other
 //! stores, and never replay an uncertain send.
 use crate::{
     catalog,
@@ -155,7 +155,7 @@ pub struct Record {
 }
 
 fn dir(paths: &Paths) -> PathBuf {
-    paths.root.join("claude-steer")
+    paths.root.join(crate::layout::CLAUDE_STEER)
 }
 fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id).context("INVALID_REQUEST")?;

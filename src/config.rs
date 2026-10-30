@@ -50,6 +50,15 @@ pub struct Config {
     /// Command seeded as `statusLine` in the settings.json of a NEW managed Claude
     /// account home (never adopted or existing). Empty disables seeding. Contract 1.27.0.
     pub claude_default_statusline_command: String,
+    /// Days a rotated log (`logs/<name>.log.1`) is kept. See `retention`.
+    pub log_retention_days: u32,
+    /// A log larger than this is rotated to `<name>.log.1` and truncated.
+    pub log_max_bytes: u64,
+    /// Days an untouched cache entry (`cache/observations/`) is kept.
+    pub cache_retention_days: u32,
+    /// Days a finished operation journal is kept (unfinished or uncertain ones
+    /// and tombstones are never removed).
+    pub operation_retention_days: u32,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -76,6 +85,10 @@ impl Default for Config {
             claude_pretrust_folders: true,
             antigravity_pretrust_folders: true,
             claude_default_statusline_command: DEFAULT_STATUSLINE_COMMAND.into(),
+            log_retention_days: 30,
+            log_max_bytes: 8 * 1024 * 1024,
+            cache_retention_days: 14,
+            operation_retention_days: 90,
         }
     }
 }
@@ -137,6 +150,17 @@ impl Config {
                 && (self.receipt_retention_days..=3650)
                     .contains(&self.receipt_unknown_horizon_days),
             "receipt_retention_days must be 1..=3650 and receipt_unknown_horizon_days at least that and at most 3650"
+        );
+        for (name, days) in [
+            ("log_retention_days", self.log_retention_days),
+            ("cache_retention_days", self.cache_retention_days),
+            ("operation_retention_days", self.operation_retention_days),
+        ] {
+            ensure!((1..=3650).contains(&days), "{name} must be 1..=3650");
+        }
+        ensure!(
+            self.log_max_bytes >= 65536,
+            "log_max_bytes must be at least 65536"
         );
         ensure!(
             self.claude_session_home

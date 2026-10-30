@@ -47,7 +47,7 @@ struct Operation {
     updated_at: i64,
 }
 fn dir(paths: &Paths) -> Result<PathBuf> {
-    let dir = paths.root.join("space-moves");
+    let dir = paths.root.join(crate::layout::SPACE_MOVES);
     private_dir(&dir)?;
     Ok(dir)
 }
@@ -521,7 +521,7 @@ pub fn recover(paths: &Paths, id: &str) -> Result<Value> {
 /// HERDR reuses its pane IDs. Never apply an earlier terminal's move history.
 pub(crate) fn receipt_location(paths: &Paths, id: &str) -> Result<Option<(String, Value)>> {
     let mut latest = None;
-    for directory in ["launches", "resumptions"] {
+    for directory in [crate::layout::LAUNCHES, crate::layout::RESUMPTIONS] {
         let root = paths.root.join(directory);
         if !root.is_dir() {
             continue;

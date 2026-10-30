@@ -35,7 +35,9 @@ struct Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         // Stop any hosted worker this fixture started (best effort).
-        if let Ok(entries) = std::fs::read_dir(self.paths.root.join("claude-hosted")) {
+        if let Ok(entries) =
+            std::fs::read_dir(self.paths.root.join(sessionsation::layout::CLAUDE_HOSTED))
+        {
             for e in entries.flatten() {
                 if let Ok(bytes) = std::fs::read(e.path().join("host.json"))
                     && let Ok(h) = serde_json::from_slice::<Value>(&bytes)
@@ -159,7 +161,7 @@ impl Fixture {
         String::from_utf8_lossy(&out.stderr).into_owned()
     }
     fn home(&self, name: &str) -> PathBuf {
-        self.paths.root.join("claude-accounts").join(name)
+        self.paths.root.join("accounts/claude").join(name)
     }
     fn add_logged_in(&self, name: &str) {
         let out = self.run(&["account", "add", "--platform", "claude", name]);
@@ -257,7 +259,7 @@ fn worker_gone(f: &Fixture, conversation: &str) -> bool {
     let lock = f
         .paths
         .root
-        .join("claude-hosted")
+        .join(sessionsation::layout::CLAUDE_HOSTED)
         .join(conversation)
         .join("worker.lock");
     let file = std::fs::OpenOptions::new().write(true).open(&lock);
@@ -955,7 +957,8 @@ async fn peer_messages_need_opt_in_and_claim_replies_only_with_transcript_proof(
         f.send_err(&body("steer", &f.session(&id), "x"))
             .contains("LIVE_STEERING_DISABLED")
     );
-    let db = rusqlite::Connection::open(f.paths.root.join("registry.db")).unwrap();
+    let db =
+        rusqlite::Connection::open(f.paths.root.join(sessionsation::layout::REGISTRY_DB)).unwrap();
     let kinds: Vec<String> = db
         .prepare("SELECT kind FROM events WHERE kind LIKE 'account.live_steering%' ORDER BY rowid")
         .unwrap()

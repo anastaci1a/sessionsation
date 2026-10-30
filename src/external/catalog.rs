@@ -14,7 +14,7 @@ struct Record {
 }
 fn record_path(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id)?;
-    let dir = paths.root.join("conversations");
+    let dir = paths.root.join(crate::layout::CONVERSATIONS);
     private_dir(&dir)?;
     Ok(dir.join(format!("{id}.json")))
 }
@@ -267,7 +267,7 @@ pub(super) fn messaging_owner(paths: &Paths, id: &str, home: &Path) -> Result<bo
 
 /// Inventory only switcher's own naming/ownership metadata; no history scan.
 pub(super) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
-    let dir = paths.root.join("conversations");
+    let dir = paths.root.join(crate::layout::CONVERSATIONS);
     let mut ids = Vec::new();
     if !dir.exists() {
         return Ok(ids);

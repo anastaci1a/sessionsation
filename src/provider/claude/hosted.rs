@@ -8,7 +8,7 @@
 //! started is still alive) no interactive resume, headless delivery or second
 //! host may open the conversation.
 //!
-//! State lives in `DATA_ROOT/claude-hosted/<conversation>/`: `host.json` (the
+//! State lives in `DATA_ROOT/sessions/hosted/<conversation>/`: `host.json` (the
 //! journaled host record), `events.jsonl` (normalized events for the viewer)
 //! and the worker lock. Requests reach the worker over a private control socket
 //! under the runtime directory. A supervisor/client restart re-adopts a worker
@@ -87,7 +87,7 @@ pub struct Host {
 }
 
 fn base(paths: &Paths) -> PathBuf {
-    paths.root.join("claude-hosted")
+    paths.root.join(crate::layout::CLAUDE_HOSTED)
 }
 fn dir(paths: &Paths, conversation: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(conversation).context("INVALID_CONVERSATION_ID")?;

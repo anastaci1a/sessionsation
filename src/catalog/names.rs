@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 fn lock(paths: &Paths) -> Result<fs::File> {
-    let dir = paths.root.join("session-catalog");
+    let dir = paths.root.join(crate::layout::SESSION_CATALOG);
     private_dir(&dir)?;
     let lock = lock_file(&dir.join("names.lock"))?;
     lock.try_lock_exclusive().context("NAME_SYNC_BUSY")?;

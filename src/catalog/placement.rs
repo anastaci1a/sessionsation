@@ -31,7 +31,10 @@ struct Evidence {
     reason: Option<String>,
 }
 fn file(paths: &Paths) -> std::path::PathBuf {
-    paths.root.join("session-catalog/placements.json")
+    paths
+        .root
+        .join(crate::layout::SESSION_CATALOG)
+        .join("placements.json")
 }
 fn read(paths: &Paths) -> Result<Placements> {
     match fs::read(file(paths)) {

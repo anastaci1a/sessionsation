@@ -64,14 +64,6 @@ pub fn stripped_env(provider: ProviderId) -> &'static [&'static str] {
         ProviderId::Claude | ProviderId::Codex => claude::STRIPPED_ENV,
     }
 }
-/// Directory under the data root that holds managed homes.
-pub fn managed_parent(provider: ProviderId) -> &'static str {
-    match provider {
-        ProviderId::Gemini => "gemini-accounts",
-        ProviderId::Antigravity => antigravity::MANAGED_PARENT,
-        ProviderId::Claude | ProviderId::Codex => "claude-accounts",
-    }
-}
 pub fn default_home(paths: &Paths, provider: ProviderId, name: &str) -> Result<PathBuf> {
     match provider {
         ProviderId::Gemini => gemini::home(paths, name),
@@ -296,7 +288,7 @@ mod gemini_probe_tests {
     async fn probe_reports_a_recorded_gemini_auth_failure_despite_present_credentials() {
         let t = tempfile::tempdir().unwrap();
         let paths = Paths::new(Some(t.path().join("root"))).unwrap();
-        let home = paths.root.join("gemini-accounts/g1");
+        let home = paths.root.join("accounts/gemini/g1");
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
         std::fs::write(home.join(".gemini/oauth_creds.json"), b"{}").unwrap();
         std::fs::write(

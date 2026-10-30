@@ -159,7 +159,7 @@ async fn generation_change_and_migration_do_not_retarget_writes() {
     let mut a = attachment_fixture(&paths, &input);
     bind(&paths, &mut a);
     let page = shared()["native_summary"].clone();
-    let binding = paths.root.join("managed-panes/1.json");
+    let binding = paths.root.join(crate::layout::MANAGED_PANES).join("1.json");
     let server = scripted_server(&a.endpoint(), move |req| {
         assert_eq!(req["method"], "thread/turns/list");
         fs::remove_file(&binding).unwrap();

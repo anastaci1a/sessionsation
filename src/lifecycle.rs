@@ -7,11 +7,11 @@ use std::fs;
 
 pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<Option<String>> {
     for directory in [
-        "resumptions",
-        "conversation-operations",
-        "handoff-jobs",
-        "space-moves",
-        "message-recoveries",
+        crate::layout::RESUMPTIONS,
+        crate::layout::CONVERSATION_OPERATIONS,
+        crate::layout::HANDOFF_JOBS,
+        crate::layout::SPACE_MOVES,
+        crate::layout::MESSAGE_RECOVERIES,
     ] {
         let root = paths.root.join(directory);
         if !root.is_dir() {
@@ -30,7 +30,7 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
                 .as_str()
                 .or_else(|| r["session"]["conversation_id"].as_str())
                 .or_else(|| r["source"]["thread_id"].as_str());
-            if directory == "handoff-jobs" {
+            if directory == crate::layout::HANDOFF_JOBS {
                 if source == Some(thread)
                     && id != own
                     && matches!(
@@ -68,7 +68,7 @@ pub(crate) fn ensure_available(paths: &Paths, thread: &str, own: Option<&str>) -
 /// Called after admission locking when the caller is not a handoff enqueue.
 /// Enqueue keeps its existing identical-request deduplication rules instead.
 pub(crate) fn ensure_no_handoff(paths: &Paths, thread: &str, own: Option<&str>) -> Result<()> {
-    let root = paths.root.join("handoff-jobs");
+    let root = paths.root.join(crate::layout::HANDOFF_JOBS);
     if !root.is_dir() {
         return Ok(());
     }
@@ -91,7 +91,7 @@ pub(crate) fn ensure_no_handoff(paths: &Paths, thread: &str, own: Option<&str>) 
 }
 pub(crate) fn admit(paths: &Paths, thread: &str, own: Option<&str>) -> Result<fs::File> {
     uuid::Uuid::parse_str(thread).context("INVALID_CONVERSATION_ID")?;
-    let root = paths.root.join("lifecycle-admission");
+    let root = paths.root.join(crate::layout::LIFECYCLE_ADMISSION);
     private_dir(&root)?;
     let lock = lock_file(&root.join(format!("{thread}.lock")))?;
     lock.try_lock_exclusive()
@@ -109,16 +109,21 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = Paths::new(Some(d.path().join("state"))).unwrap();
         let thread = uuid::Uuid::new_v4().to_string();
-        private_dir(&p.root.join("handoff-jobs")).unwrap();
+        private_dir(&p.root.join(crate::layout::HANDOFF_JOBS)).unwrap();
         fs::write(
-            p.root.join("handoff-jobs/move.json"),
+            p.root.join(crate::layout::HANDOFF_JOBS).join("move.json"),
             serde_json::to_vec(
                 &json!({"id":"move","source":{"thread_id":thread},"phase":"failed"}),
             )
             .unwrap(),
         )
         .unwrap();
-        let lock = lock_file(&p.root.join("handoff-jobs/move.worker-lock")).unwrap();
+        let lock = lock_file(
+            &p.root
+                .join(crate::layout::HANDOFF_JOBS)
+                .join("move.worker-lock"),
+        )
+        .unwrap();
         lock.lock_exclusive().unwrap();
         assert_eq!(pending(&p, &thread, None).unwrap().as_deref(), Some("move"));
         assert!(admit(&p, &thread, None).is_err());
@@ -131,7 +136,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = Paths::new(Some(d.path().join("state"))).unwrap();
         let thread = uuid::Uuid::new_v4().to_string();
-        private_dir(&p.root.join("resumptions")).unwrap();
+        private_dir(&p.root.join(crate::layout::RESUMPTIONS)).unwrap();
         for phase in [
             "admitted",
             "preparing",
@@ -140,7 +145,7 @@ mod tests {
             "transferring",
             "uncertain",
         ] {
-            fs::write(p.root.join("resumptions/original.json"), serde_json::to_vec(&json!({"conversation_id":thread,"request":{"request_id":"original"},"phase":phase})).unwrap()).unwrap();
+            fs::write(p.root.join(crate::layout::RESUMPTIONS).join("original.json"), serde_json::to_vec(&json!({"conversation_id":thread,"request":{"request_id":"original"},"phase":phase})).unwrap()).unwrap();
             assert!(admit(&p, &thread, Some("competing")).is_err(), "{phase}");
             let original = admit(&p, &thread, Some("original")).unwrap();
             assert!(
@@ -149,11 +154,13 @@ mod tests {
             );
             drop(original);
         }
-        fs::write(p.root.join("resumptions/original.json"), serde_json::to_vec(&json!({"conversation_id":thread,"request":{"request_id":"original"},"phase":"running"})).unwrap()).unwrap();
+        fs::write(p.root.join(crate::layout::RESUMPTIONS).join("original.json"), serde_json::to_vec(&json!({"conversation_id":thread,"request":{"request_id":"original"},"phase":"running"})).unwrap()).unwrap();
         assert!(admit(&p, &thread, None).is_ok());
-        private_dir(&p.root.join("conversation-operations")).unwrap();
+        private_dir(&p.root.join(crate::layout::CONVERSATION_OPERATIONS)).unwrap();
         fs::write(
-            p.root.join("conversation-operations/archive.json"),
+            p.root
+                .join(crate::layout::CONVERSATION_OPERATIONS)
+                .join("archive.json"),
             serde_json::to_vec(
                 &json!({"id":"archive","session":{"conversation_id":thread},"phase":"queued"}),
             )
@@ -161,9 +168,9 @@ mod tests {
         )
         .unwrap();
         assert!(admit(&p, &thread, None).is_err());
-        private_dir(&p.root.join("handoff-jobs")).unwrap();
+        private_dir(&p.root.join(crate::layout::HANDOFF_JOBS)).unwrap();
         fs::write(
-            p.root.join("handoff-jobs/move.json"),
+            p.root.join(crate::layout::HANDOFF_JOBS).join("move.json"),
             serde_json::to_vec(
                 &json!({"id":"move","source":{"thread_id":thread},"phase":"launching_target"}),
             )

@@ -253,7 +253,13 @@ fn a_stale_question_and_a_double_answer_are_definite_rejections() {
     r.state = "rejected".into();
     save_receipt(&paths, &mut r).unwrap();
     assert_eq!(project(&paths, "s", vec![p]).len(), 1);
-    let events = fs::read_to_string(paths.root.join("questions/events.jsonl")).unwrap();
+    let events = fs::read_to_string(
+        paths
+            .root
+            .join(crate::layout::QUESTIONS)
+            .join("events.jsonl"),
+    )
+    .unwrap();
     assert_eq!(events.lines().count(), 2);
 }
 

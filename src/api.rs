@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 28;
+pub const CONTRACT_MINOR: u32 = 29;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.28.0";
+pub const CONTRACT_VERSION: &str = "1.29.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -623,7 +623,7 @@ pub enum AccountCommand {
 /// Reject a qualified id whose name is enrolled under another provider. The
 /// supervisor repeats this check for the operations it owns.
 fn verify_provider(paths: &Paths, account: &AccountRef) -> Result<()> {
-    if !paths.root.join("registry.db").exists() {
+    if !paths.root.join(crate::layout::REGISTRY_DB).exists() {
         return Ok(());
     }
     let Ok(state) = store::load_state_snapshot(paths) else {
@@ -727,6 +727,18 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             a["provider"] = json!(provider);
             a["provider_capabilities"] = json!(crate::provider::capabilities(provider));
             a["membership"] = json!(if removed { "removed" } else { "enrolled" });
+            // The account home as used now (contract 1.29.0): an adopted Claude
+            // home, else the managed `accounts/<platform>/<name>`, or its legacy
+            // path while the layout migration deferred that home (in use).
+            let target = crate::layout::target_home(&paths.root, provider, name);
+            let home = a["config_home"]
+                .as_str()
+                .filter(|h| !h.is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| crate::layout::account_home(&paths.root, provider, name));
+            a["home_deferred"] =
+                json!(a["config_home"].as_str().is_none_or(str::is_empty) && home != target);
+            a["home"] = json!(home);
             if let Some(id) = a["deletion_id"].as_str() {
                 a["deletion"] = json!(crate::account_deletion::status(paths, id)?);
             }
@@ -1215,6 +1227,8 @@ pub fn capabilities() -> Value {
     // Revision 21: per-account Claude bypass-permissions warning.
     value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.27.0: default statusLine for new managed Claude homes.
+    value["data_layout"] = json!({"since_contract":"1.29.0","version":crate::layout::VERSION,"directories":[crate::layout::REGISTRY,crate::layout::SESSIONS,crate::layout::OPERATIONS,crate::layout::MESSAGING,crate::layout::CACHE,crate::layout::LOGS,crate::layout::ACCOUNTS],"account_home":"accounts/<platform>/<name>","account_fields":{"home":"the account home in use (adopted, managed, or a deferred legacy path)","home_deferred":"true while the layout migration left an in-use home at its legacy path"},"commands":["layout status","layout migrate --backup DIR [--dry-run]","layout rollback [--dry-run]"],"legacy_root":"LAYOUT_MIGRATION_REQUIRED","interrupted":"LAYOUT_MIGRATION_IN_PROGRESS"});
+    value["retention"] = crate::retention::describe();
     value["claude_default_statusline"] = json!({"since_contract":"1.27.0","setting":"claude_default_statusline_command","built_in_default":crate::config::Config::default().claude_default_statusline_command,"empty":"disabled","config_file":"CLAUDE_CONFIG_DIR/settings.json","key":"statusLine","value":{"type":"command","command":"<setting>"},"applies_to":"new_managed_homes_only","existing_key":"kept","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.28.0: operator abandon of uncertain/stuck resume-launch operations.
     value["abandon_operation"] = json!({"since_contract":"1.28.0","command":"abandon-operation","requires":["operation","confirm"],"applies_to":"resume_launch","phases":["uncertain","stuck"],"terminal_phase":"abandoned","replays":false,"sends":false,"refused_while_session_process_live":true});
@@ -1456,7 +1470,7 @@ fn snapshot_file(paths: &Paths, filter: ArchiveFilter) -> std::path::PathBuf {
         ArchiveFilter::Archived => "archived",
         ArchiveFilter::All => "all",
     };
-    paths.root.join(format!("state-snapshot-{name}.json"))
+    crate::layout::state_snapshot(&paths.root, name)
 }
 /// Every full `state` leaves its result for `state --cached` (atomic replace;
 /// best effort, never the catalog).
@@ -1512,7 +1526,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                 .clone(),
             "supervisor",
         ),
-        Err(_) if paths.root.join("registry.db").exists() => {
+        Err(_) if paths.root.join(crate::layout::REGISTRY_DB).exists() => {
             let state = store::load_state_snapshot(paths)?;
             let config = store::load_config(paths)?;
             let v = daemon::status(paths, &state, &config, "unavailable");
@@ -2402,7 +2416,7 @@ fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
         "target_account_id":format!("codex:{}",j.target),"provider_conversation_id":j.source.thread_id,
         "created_at":j.created_at,
         "can_cancel":external::can_cancel_move(&j),
-        "can_recover": crate::background::worker_stopped(&paths.root.join("handoff-jobs").join(format!("{}.worker-lock", j.id)))? && (j.phase == "failed" || (!matches!(j.phase.as_str(), "complete" | "cancelled" | "recovered") && daemon::now() - j.created_at > 10)),
+        "can_recover": crate::background::worker_stopped(&paths.root.join(crate::layout::HANDOFF_JOBS).join(format!("{}.worker-lock", j.id)))? && (j.phase == "failed" || (!matches!(j.phase.as_str(), "complete" | "cancelled" | "recovered") && daemon::now() - j.created_at > 10)),
         "can_respond":j.phase.starts_with("awaiting_"),
         "non_steering":j.non_steering}),
     )
@@ -2504,14 +2518,24 @@ mod prefill_tests {
                 }),
             )
             .unwrap();
-            let before = std::fs::read(p.root.join("session-catalog/catalog.json")).unwrap();
+            let before = std::fs::read(
+                p.root
+                    .join(crate::layout::SESSION_CATALOG)
+                    .join("catalog.json"),
+            )
+            .unwrap();
             let result = attachment(&p, &s.id, &s.generation()).unwrap();
             assert_eq!(result["id"], s.id);
             assert_eq!(result["attachment"]["host"], host);
             assert_eq!(result["starts_process"], false);
             assert_eq!(result["sends_input"], false);
             assert_eq!(
-                std::fs::read(p.root.join("session-catalog/catalog.json")).unwrap(),
+                std::fs::read(
+                    p.root
+                        .join(crate::layout::SESSION_CATALOG)
+                        .join("catalog.json")
+                )
+                .unwrap(),
                 before
             );
             catalog::rename(&p, &s.id, &s.generation(), &format!("{host}-renamed")).unwrap();
@@ -2548,7 +2572,7 @@ mod prefill_tests {
                 .to_string()
                 .contains("SESSION_NOT_ATTACHED")
         );
-        assert!(!p.root.join("launches").exists());
+        assert!(!p.root.join(crate::layout::LAUNCHES).exists());
     }
     #[test]
     fn resume_into_a_space_keeps_the_session_name_as_the_tab_label() {
