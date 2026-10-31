@@ -91,6 +91,10 @@ pub struct Receipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     pub updated_at: i64,
+    /// Contract 1.32: set when the launch was typed into an existing terminal
+    /// (`sessionsation run`) instead of dispatched to a HERDR host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline: Option<crate::inline::Info>,
 }
 fn validate_id(id: &str) -> Result<()> {
     ensure!(uuid::Uuid::parse_str(id).is_ok(), "INVALID_REQUEST_ID");
@@ -207,14 +211,14 @@ pub(crate) fn create_directories(
     }
     Ok(())
 }
-fn location(paths: &Paths, id: &str) -> Result<PathBuf> {
+pub(crate) fn location(paths: &Paths, id: &str) -> Result<PathBuf> {
     validate_id(id)?;
     Ok(paths
         .root
         .join(crate::layout::LAUNCHES)
         .join(format!("{id}.json")))
 }
-fn lock(paths: &Paths) -> Result<fs::File> {
+pub(crate) fn lock(paths: &Paths) -> Result<fs::File> {
     private_dir(&paths.root.join(crate::layout::LAUNCHES))?;
     let f = lock_file(
         &paths
@@ -225,7 +229,7 @@ fn lock(paths: &Paths) -> Result<fs::File> {
     f.lock_exclusive()?;
     Ok(f)
 }
-fn save(paths: &Paths, r: &mut Receipt) -> Result<()> {
+pub(crate) fn save(paths: &Paths, r: &mut Receipt) -> Result<()> {
     r.updated_at = daemon::now();
     atomic_write(
         &location(paths, &r.request.request_id)?,
@@ -239,6 +243,10 @@ pub fn status(paths: &Paths, id: &str) -> Result<Receipt> {
 }
 fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
     let r = status(paths, id)?;
+    if r.inline.is_some() {
+        crate::inline::settle_launch(paths, &r.request.request_id)?;
+        return status(paths, id);
+    }
     if daemon::now() - r.updated_at > 10
         && let Some((phase, detail)) = crate::background::interrupted_launch(&r.phase)
         && crate::background::worker_stopped(&location(paths, id)?.with_extension("worker.lock"))?
@@ -279,7 +287,11 @@ fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
         Ok(())
     })
 }
-fn change(paths: &Paths, id: &str, f: impl FnOnce(&mut Receipt) -> Result<()>) -> Result<Receipt> {
+pub(crate) fn change(
+    paths: &Paths,
+    id: &str,
+    f: impl FnOnce(&mut Receipt) -> Result<()>,
+) -> Result<Receipt> {
     let _lock = lock(paths)?;
     let mut r = status(paths, id)?;
     f(&mut r)?;
@@ -409,6 +421,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         created_directories: Vec::new(),
         created_at: Some(daemon::now()),
         updated_at: daemon::now(),
+        inline: None,
     };
     save(paths, &mut receipt)?;
     let spawned =
@@ -652,7 +665,7 @@ pub fn attached(
     Ok(session)
 }
 /// Positive provider-specific evidence that the recorded process runs the session.
-fn launch_observed(paths: &Paths, s: &catalog::Session) -> bool {
+pub(crate) fn launch_observed(paths: &Paths, s: &catalog::Session) -> bool {
     match ProviderId::parse(&s.provider) {
         Ok(ProviderId::Codex) => crate::external::new_launch_observed(paths, s).unwrap_or(false),
         Ok(ProviderId::Claude | ProviderId::Gemini | ProviderId::Antigravity) => {

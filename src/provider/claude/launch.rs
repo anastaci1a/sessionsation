@@ -130,6 +130,7 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
     claude::prelaunch_gate(&config, &account.home).await?;
     let attachment = crate::external::current_attachment(paths)?;
     let current = catalog::move_attachment(paths, &session, attachment)?;
+    crate::inline::mark_attached(paths);
     let mode = config.effective_launch_permissions();
     let settings = claude::launch_settings(&std::env::current_exe()?, mode);
     let argv = claude::resume_argv(

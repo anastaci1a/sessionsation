@@ -1333,3 +1333,21 @@ receipt changes.
 `api resume-launch --confirm-unfinished`. Without the flag such a session fails with
 `UNFINISHED_HISTORY_CONFIRMATION_REQUIRED`; any other block reason still fails with
 `SESSION_STATE_UNVERIFIED`.
+
+### Inline `run` and `resume`: names and journal (contract 1.32.0)
+
+```sh
+sessionsation run --account ACCOUNT [--name NAME] [--permissions yolo|default]
+sessionsation resume SESSION --expected-generation G [--confirm-unfinished] [--name NAME] [--permissions yolo|default]
+```
+
+`--name` follows the `api launch` / `api resume --name` rules. `run` creates the catalog entry
+with it; `resume` renames the session first. Inside a HERDR pane (`HERDR_PANE_ID`) the pane's
+tab is relabelled to match. `run --name` needs the inline host and no `--thread`/`--hosted`.
+
+Both commands are journaled as launch/resumption receipts marked `inline`
+(`api launch status`, `api resume-launch status`) and listed by `api operations`
+(`kind` `launch` or `resume`, `inline:true`). A refusal before the session is bound is
+`failed` and frees the name; anything unclear is `uncertain` and is never replayed
+(`api abandon-operation` ends an uncertain resumption). Account/conversation locks are the
+ones `api resume-launch` takes. Gate on `capabilities.inline_launch`.

@@ -366,6 +366,9 @@ enum Commands {
         /// With --hosted: account (default) | default | acceptEdits | plan | bypassPermissions.
         #[arg(long, requires = "hosted")]
         permission_mode: Option<String>,
+        /// Name of the new session (same rules as `api launch`); also labels this HERDR tab. Inline host only.
+        #[arg(long)]
+        name: Option<String>,
         #[arg(last = true)]
         codex_options: Vec<String>,
     },
@@ -387,6 +390,9 @@ enum Commands {
         /// Acknowledge only the unfinished-history warning of a saved Codex session.
         #[arg(long)]
         confirm_unfinished: bool,
+        /// Rename the session first (same rules as `api resume --name`); also labels this HERDR tab.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Open a plain interactive shell; never re-enter the terminal launcher.
     Shell,
@@ -1463,6 +1469,7 @@ async fn run(cli: Cli) -> Result<()> {
             thread,
             session,
             hosted,
+            name,
             permission_mode,
             codex_options,
         } => {
@@ -1472,6 +1479,14 @@ async fn run(cli: Cli) -> Result<()> {
                     "--session is reserved for managed launching"
                 );
                 let account = resolve_account(&paths, &account)?;
+                anyhow::ensure!(
+                    name.is_none()
+                        || (!hosted
+                            && thread.is_none()
+                            && herdr_session.is_none()
+                            && matches!(host, Host::Inline)),
+                    "INVALID_ARGUMENT: --name names a new session started in this terminal (inline host, no --thread or --hosted)"
+                );
                 if hosted {
                     anyhow::ensure!(
                         account.provider == ProviderId::Claude,
@@ -1489,6 +1504,24 @@ async fn run(cli: Cli) -> Result<()> {
                         thread.as_deref(),
                         permission_mode,
                         None,
+                    )
+                    .await;
+                }
+                if matches!(host, Host::Inline)
+                    && !hosted
+                    && thread.is_none()
+                    && herdr_session.is_none()
+                {
+                    anyhow::ensure!(
+                        codex_options.is_empty() || account.provider == ProviderId::Codex,
+                        "UNSUPPORTED_PROVIDER_OPERATION: provider options after -- are Codex-only"
+                    );
+                    return sessionsation::inline::run_new(
+                        &paths,
+                        account.provider,
+                        &account.name,
+                        name.as_deref(),
+                        &codex_options,
                     )
                     .await;
                 }
@@ -1561,12 +1594,14 @@ async fn run(cli: Cli) -> Result<()> {
             session,
             expected_generation,
             confirm_unfinished,
+            name,
         } => {
             sessionsation::api::resume_current(
                 &paths,
                 &session,
                 &expected_generation,
                 confirm_unfinished,
+                name.as_deref(),
             )
             .await?
         }

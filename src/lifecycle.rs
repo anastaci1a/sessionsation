@@ -5,7 +5,17 @@ use fs2::FileExt;
 use serde_json::Value;
 use std::fs;
 
+static INLINE_OWNER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// This process runs one inline `resume`: its own journal entry never blocks it.
+pub(crate) fn inline_owner() -> Option<&'static str> {
+    INLINE_OWNER.get().map(String::as_str)
+}
+pub(crate) fn set_inline_owner(request: &str) {
+    let _ = INLINE_OWNER.set(request.to_owned());
+}
 pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<Option<String>> {
+    let own = own.or(INLINE_OWNER.get().map(String::as_str));
+    crate::inline::settle_resumptions(paths);
     for directory in [
         crate::layout::RESUMPTIONS,
         crate::layout::CONVERSATION_OPERATIONS,

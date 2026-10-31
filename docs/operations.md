@@ -348,3 +348,10 @@ installed socket, use account homes or call a real model. The tested native serv
 is independent of whichever terminal frontend is on PATH. Source references are
 `core/src/session/turn_input.rs` and `core/tests/suite/pending_input.rs` in
 [Codex rust-v0.164.0](https://github.com/openai/codex/tree/rust-v0.164.0/codex-rs).
+
+## Inline run/resume journals (1.32)
+
+`sessionsation run`/`resume` typed into a terminal write launch/resumption receipts marked
+`inline` (see [cli](cli.md#inline-run-and-resume-names-and-journal-contract-1320)). A journal
+whose process ended after the session was bound is settled to `running` when read; one that
+never bound is `uncertain` and kept like any other uncertain journal.

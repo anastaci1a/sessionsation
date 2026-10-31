@@ -69,34 +69,37 @@ pub struct Receipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     pub updated_at: i64,
+    /// Contract 1.32: set for a `sessionsation resume` typed into an existing terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline: Option<crate::inline::Info>,
 }
-fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
+pub(crate) fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id).context("INVALID_REQUEST_ID")?;
     Ok(paths
         .root
         .join(crate::layout::RESUMPTIONS)
         .join(format!("{id}.json")))
 }
-fn lock(paths: &Paths) -> Result<fs::File> {
+pub(crate) fn lock(paths: &Paths) -> Result<fs::File> {
     let dir = paths.root.join(crate::layout::RESUMPTIONS);
     private_dir(&dir)?;
     let f = lock_file(&dir.join("admission.lock"))?;
     f.lock_exclusive()?;
     Ok(f)
 }
-fn read(paths: &Paths, id: &str) -> Result<Receipt> {
+pub(crate) fn read(paths: &Paths, id: &str) -> Result<Receipt> {
     let path = file(paths, id)?;
     ensure!(path.is_file(), "RESUME_NOT_FOUND");
     Ok(serde_json::from_slice(&fs::read(path)?)?)
 }
-fn save(paths: &Paths, r: &mut Receipt) -> Result<()> {
+pub(crate) fn save(paths: &Paths, r: &mut Receipt) -> Result<()> {
     r.updated_at = daemon::now();
     atomic_write(
         &file(paths, &r.request.request_id)?,
         &serde_json::to_vec_pretty(r)?,
     )
 }
-fn change(
+pub(crate) fn change(
     paths: &Paths,
     id: &str,
     edit: impl FnOnce(&mut Receipt) -> Result<()>,
@@ -107,7 +110,7 @@ fn change(
     save(paths, &mut r)?;
     Ok(r)
 }
-fn records(paths: &Paths) -> Result<Vec<Receipt>> {
+pub(crate) fn records(paths: &Paths) -> Result<Vec<Receipt>> {
     let dir = paths.root.join(crate::layout::RESUMPTIONS);
     let mut records = vec![];
     if dir.is_dir() {
@@ -283,6 +286,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         abandoned_at: None,
         created_at: Some(daemon::now()),
         updated_at: daemon::now(),
+        inline: None,
     };
     save(paths, &mut receipt)?;
     let child = crate::background::detach(&mut std::process::Command::new(
@@ -600,6 +604,10 @@ pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
 }
 pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
     let r = read(paths, id)?;
+    if r.inline.is_some() {
+        crate::inline::settle_resume(paths, id)?;
+        return read(paths, id);
+    }
     if r.operation_id.is_none()
         && daemon::now() - r.updated_at > 10
         && let Some((phase, detail)) = crate::background::interrupted_launch(&r.phase)

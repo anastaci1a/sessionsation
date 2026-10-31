@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.31.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.32.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2268,3 +2268,43 @@ before scanning, so a home reachable through both its legacy compatibility symli
 `accounts/codex/<name>` path is scanned once. Previously the same rollout was listed twice and
 the second `thread/read` failed with `-32600` after the first `thread/delete`, leaving the
 deletion `failed` with the history already removed.
+
+### Named, journaled inline `run` and `resume` (1.32.0)
+
+MINOR, additive. The commands a terminal client types into an existing pane
+(`sessionsation run --account A`, `sessionsation resume SESSION --expected-generation G`)
+gain two things, advertised as `capabilities.inline_launch`
+(`{since_revision:32, name:true, journaled:true, operations:true, ...}`; absent before 1.32,
+so gate on it):
+
+- `--name NAME` on both (`name:true`). Validated like `api launch` / `api resume --name`
+  (`INVALID_SESSION_NAME`, `SESSION_NAME_EXISTS`). `run` gives the new catalog entry that name;
+  `resume` renames the session first, as `api resume --name` does (the generation changes).
+  When `HERDR_PANE_ID` is set the pane's tab is relabelled with the name, as hosted launches
+  label their tabs (best effort; the catalog name is authoritative). `run --name` is refused
+  with `--thread`, `--hosted` or `--host herdr` (`INVALID_ARGUMENT`). Without `--name`, `run`
+  names the session as before (directory name, `-2` suffix on a clash).
+- Journaling (`journaled:true`). Every inline `run` (Codex, Claude, Gemini, Antigravity)
+  writes an ordinary launch receipt under `operations/launches` and every inline `resume` a
+  resumption receipt under `operations/resumptions`, so `api launch list|status` and
+  `api resume-launch list|status` show them. The receipt has `inline:{pid,process_start,pane_id}`
+  and a placeholder host (`host.session:"inline"`). Phases: `starting_provider` (nothing has
+  started), `attached` (the session is bound to the terminal process, which then becomes the
+  provider), `running` (observed, or the inline process has ended after attaching), `failed`
+  (the command was refused before the session was bound; the reserved name is released),
+  `uncertain` (the outcome after binding is unknown, or the process ended without attaching).
+  `uncertain` is never replayed and holds its reservation; an inline resumption is released
+  with `api abandon-operation`. A phase is settled lazily when the receipt is read.
+- `api operations` lists them (`operations:true`) as `{id, kind:"launch"|"resume", inline:true,
+  session_id, name, account_id, phase, detail, created_at, updated_at, pane_id, can_cancel:false,
+  can_respond:false, can_recover:false}`. Existing operation kinds and shapes are unchanged;
+  hosted `api launch` / `api resume-launch` receipts are still not listed there.
+- Locks: new launches take the shared account launch lock and the name reservation; resumes
+  take the resumption admission lock, the per-conversation admission lock, the handoff check
+  and the conversation lock (`RESUME_IN_PROGRESS` / `SESSION_OPERATION_IN_PROGRESS`),
+  exactly like `api resume-launch`. A non-terminal resumption of the session blocks an inline
+  resume and vice versa.
+
+Not covered: `run --thread`, `run --hosted` and `run --host herdr` are unchanged and not
+journaled here (hosted HERDR launches already use `api launch`); inline operations cannot be
+cancelled or recovered through `api operations`. See [cli](cli.md#inline-run-and-resume-names-and-journal-contract-1320).

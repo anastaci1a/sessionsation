@@ -1224,6 +1224,27 @@ pub async fn run_account_new_named(
     )
     .await
 }
+pub async fn run_account_new_named_options(
+    paths: &Paths,
+    account: &str,
+    request: &str,
+    name: &str,
+    options: &[String],
+) -> Result<()> {
+    run_account_thread_inner(
+        paths,
+        account,
+        None,
+        options,
+        None,
+        LaunchIntent::Creation(request, name),
+    )
+    .await
+}
+/// Start time of a process, for pid reuse checks.
+pub(crate) fn process_start(pid: u32) -> Result<u64> {
+    Ok(process_info(pid)?.start_time)
+}
 pub(crate) async fn run_account_resume_requested(
     paths: &Paths,
     account: &str,
@@ -1463,15 +1484,7 @@ async fn run_account_thread_inner(
         ensure!(Some(id) == requested, "RECOVERY_CONVERSATION_ID_CHANGED");
     }
     if requested.is_none() {
-        let name = if let Ok(pane) = std::env::var("TMUX_PANE") {
-            let name = tmux(&["display-message", "-p", "-t", &pane, "#{session_name}"])?;
-            name.strip_prefix("codex-").unwrap_or(&name).to_owned()
-        } else {
-            cwd.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("Codex session")
-                .to_owned()
-        };
+        let name = default_new_name(&cwd)?;
         let name = if let Some((_, selected_name)) = creation {
             selected_name
         } else if name.is_empty() {
@@ -2865,6 +2878,18 @@ pub(crate) fn conversation_lock(paths: &Paths, id: &str) -> Result<File> {
     Ok(lock)
 }
 
+/// Label of a new Codex session when none is given: the tmux session, else the directory.
+pub(crate) fn default_new_name(cwd: &Path) -> Result<String> {
+    Ok(if let Ok(pane) = std::env::var("TMUX_PANE") {
+        let name = tmux(&["display-message", "-p", "-t", &pane, "#{session_name}"])?;
+        name.strip_prefix("codex-").unwrap_or(&name).to_owned()
+    } else {
+        cwd.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Codex session")
+            .to_owned()
+    })
+}
 #[cfg(test)]
 mod tests {
     #[test]

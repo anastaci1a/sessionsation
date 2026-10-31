@@ -1032,6 +1032,30 @@ pub fn complete_reserved(
     })
 }
 
+/// First free session name: BASE, else BASE-2, BASE-3 ... (as unnamed launches record).
+pub fn free_name(paths: &Paths, label: &str) -> Result<String> {
+    transaction(paths, |c| {
+        let base: String = label
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(crate::model::SESSION_NAME_MAX)
+            .collect();
+        let base = base.trim();
+        let base = if base.is_empty() { "session" } else { base };
+        let mut name = base.to_owned();
+        let mut suffix = 2;
+        while c.sessions.values().any(|s| s.name == name) || c.reservations.contains_key(&name) {
+            let tail = format!("-{suffix}");
+            let prefix: String = base
+                .chars()
+                .take(crate::model::SESSION_NAME_MAX.saturating_sub(tail.len()))
+                .collect();
+            name = format!("{prefix}{tail}");
+            suffix += 1;
+        }
+        Ok(name)
+    })
+}
 pub fn release_reservation(paths: &Paths, request: &str, name: &str) -> Result<()> {
     transaction(paths, |c| {
         if c.reservations.get(name).is_some_and(|r| r == request) {

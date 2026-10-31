@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 31;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.31.1";
+pub const CONTRACT_MINOR: u32 = 32;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.32.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -388,28 +388,66 @@ pub async fn resume_current(
     id: &str,
     generation: &str,
     confirm_unfinished: bool,
+    name: Option<&str>,
 ) -> Result<()> {
-    if catalog::resolve(paths, id, generation).is_ok_and(|s| native::of(&s.provider).is_some()) {
-        return native::exec_resume_session(paths, id, generation).await;
+    if let Some(name) = name {
+        crate::launch::validate_session_name(name)?;
     }
-    let (s, source) = selected(paths, id, generation).await?;
-    ensure!(
-        source.inactive && s.attachment.is_none(),
-        "SESSION_ALREADY_RUNNING"
-    );
-    ensure_resumable_in_terminal(source.block_reason.as_deref(), confirm_unfinished)?;
-    ensure!(
-        !matches!(s.account.as_str(), "external" | "unknown"),
-        "ACCOUNT_UNAVAILABLE"
-    );
-    external::run_account_thread_guarded(
-        paths,
-        &s.account,
-        Some(&s.conversation_id),
-        &[],
-        Some((id, generation)),
-    )
-    .await
+    let native = catalog::resolve(paths, id, generation)
+        .ok()
+        .and_then(|s| native::of(&s.provider));
+    // Everything that can be refused is refused before the journal is written.
+    let (s, cwd) = if native.is_some() {
+        let (s, observation) = native_selected(paths, id, generation)?;
+        native::ensure_resumable(&s, &observation)?;
+        crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
+        (s, std::env::current_dir()?)
+    } else {
+        let (s, source) = selected(paths, id, generation).await?;
+        ensure!(
+            source.inactive && s.attachment.is_none(),
+            "SESSION_ALREADY_RUNNING"
+        );
+        ensure_resumable_in_terminal(source.block_reason.as_deref(), confirm_unfinished)?;
+        ensure!(
+            !matches!(s.account.as_str(), "external" | "unknown"),
+            "ACCOUNT_UNAVAILABLE"
+        );
+        (s, std::env::current_dir()?)
+    };
+    if let Some(name) = name
+        && name != s.name
+    {
+        catalog::check_name(paths, name, id)?;
+    }
+    let request =
+        crate::inline::begin_resume(paths, &s, name.unwrap_or(&s.name), confirm_unfinished, &cwd)?;
+    let result = async {
+        let s = named(paths, s, generation, name)?;
+        crate::inline::renamed(paths, &request, &s);
+        if name.is_some() {
+            crate::inline::label_tab(&s.name);
+        }
+        match native {
+            Some(_) => native::exec_resume_session(paths, id, &s.generation()).await,
+            None => {
+                external::run_account_resume_requested(
+                    paths,
+                    &s.account,
+                    &s.conversation_id,
+                    (id, &s.generation()),
+                    &request,
+                    None,
+                )
+                .await
+            }
+        }
+    }
+    .await;
+    if let Err(error) = &result {
+        crate::inline::fail_resume(paths, &request, error);
+    }
+    result
 }
 
 fn hosted_flags(argv: &mut Vec<String>, hosted: bool, permission_mode: Option<String>) {
@@ -1337,6 +1375,8 @@ pub fn capabilities() -> Value {
     value["steering"]["reply_observation"] = json!({"since_revision":15,"command":"receipt","native_method":"thread/turns/list","items_view":"full","scope":"steered_turn_only","anchor":"user_message_client_id","window":"until_next_user_input_or_turn_end","max_pages":8,"max_text_bytes":65536,"final_only_when_turn_completed":true});
     // Revision 18: bounded receipt stores with tombstoned retirement.
     let retention = crate::config::Config::default();
+    // Revision 32: journaled inline run/resume with --name.
+    value["inline_launch"] = crate::inline::capability();
     value["receipt_retention"] = json!({"since_revision":18,"capacity_per_store":10000,"default_terminal_retention_days":retention.receipt_retention_days,"default_unknown_horizon_days":retention.receipt_unknown_horizon_days,"age_from":"expires_at_or_last_update","horizon_state":"expired","horizon_reason":"outcome_unknown_at_retention_horizon","retired_ids":"tombstoned_never_reaccepted","retired_error":"RECEIPT_RETIRED","settings":["receipt_retention_days","receipt_unknown_horizon_days"],"recovery_journals_retained":true});
     // Revision 19: permission mode of newly started provider processes.
     value["launch_permissions"] = json!({"since_revision":19,"values":["yolo","default"],"built_in_default":crate::config::Config::default().launch_permissions.as_str(),"setting":"launch_permissions","request_field":"permissions","requests":["launch","resume-launch"],"cli_option":"--permissions","codex":{"yolo":{"approval_policy":"never","sandbox":"danger-full-access"}},"claude":{"yolo":"--dangerously-skip-permissions"},"gemini":{"yolo":"--approval-mode yolo"},"antigravity":{"yolo":"--dangerously-skip-permissions"},"applies_to":["new","resume","restart","account_switch","hosted"],"headless_delivery":"unchanged"});
@@ -2438,6 +2478,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             );
             ops.extend(external::archiving::operations(paths)?);
             ops.extend(external::spaces::operations(paths)?);
+            ops.extend(crate::inline::operations(paths)?);
             json!(ops)
         }
         Command::Respond {
