@@ -56,9 +56,11 @@ pub const LABEL_QUEUE: &str =
 pub const LABEL_STEER: &str = "Steer";
 pub const STEER_CAVEAT: &str = "agy sends the message to the running turn immediately (\"Sending to agent...\"); the model sees it at its next step and may answer within the same turn";
 /// agy's input box grows with the draft; typed text must stay verifiable on screen.
-pub const MAX_TEXT: usize = 1000;
-pub const MAX_LINES: usize = 8;
+pub const MAX_TEXT: usize = 8192;
+pub const MAX_LINES: usize = 200;
 const DRAFT_ROWS: usize = 9;
+/// Rows of the (tail-only) input box read back from a typed message.
+const TYPED_ROWS: usize = 120;
 const MAX_SCAN: u64 = 16 * 1024 * 1024;
 pub const QUEUE_MODE_UNKNOWN: &str = "ANTIGRAVITY_QUEUE_MODE_UNKNOWN: the session's queuedMessages setting cannot be determined (a --settings file, or an unreadable settings.json), so the key that queues or sends immediately is unknown";
 
@@ -188,7 +190,8 @@ pub(crate) fn classify(rows: &[Vec<Cell>], strict: bool) -> Result<View, &'stati
     let Some(bottom) = rows.iter().rposition(|r| is_border(r)) else {
         return Err("TERMINAL_VIEW_UNDETERMINED");
     };
-    let Some(top) = (bottom.saturating_sub(DRAFT_ROWS + 1)..bottom)
+    let box_rows = if strict { DRAFT_ROWS } else { TYPED_ROWS };
+    let Some(top) = (bottom.saturating_sub(box_rows + 1)..bottom)
         .rev()
         .find(|&i| is_border(&rows[i]))
     else {
@@ -227,8 +230,16 @@ pub(crate) fn classify(rows: &[Vec<Cell>], strict: bool) -> Result<View, &'stati
     });
     let busy = footer_busy || spinning;
     let width = rows[top].len();
+    // A long draft shows only its tail under a first row `> ↑ N more lines`.
+    let scrolled = lines[p]
+        .strip_prefix("> ")
+        .is_some_and(|r| r.starts_with('↑') && r.trim_end().ends_with(" more lines"));
+    if scrolled && strict {
+        return Err("TERMINAL_DRAFT_UNRECONSTRUCTABLE");
+    }
+    let first = if scrolled { p + 1 } else { p };
     let mut content: Vec<&[Cell]> = vec![];
-    for (i, row) in rows.iter().enumerate().take(bottom).skip(p) {
+    for (i, row) in rows.iter().enumerate().take(bottom).skip(first) {
         if i > p && row.iter().take(2).any(visible) {
             return Err(mismatch);
         }
@@ -327,7 +338,7 @@ async fn clear(host: &Host, text: &str) -> Result<()> {
         .map(|l| l.chars().count() / 30 + 1)
         .sum::<usize>();
     host.keys(&["alt+>"])?;
-    for _ in 0..(rows + 2).min(100) {
+    for _ in 0..(rows + 2).min(400) {
         host.keys(&["ctrl+u", "backspace"])?;
     }
     Ok(())
@@ -610,10 +621,14 @@ async fn deliver(
     }
     // 4. Type the message and check it on screen.
     step(paths, id, "type", |_| {})?;
-    host.type_text(&t.delivered_text).await?;
-    let want = squash(&t.delivered_text);
-    let typed = until(host, false, |v| is_main(v, |d| squash(d) == want)).await?;
-    if !is_main(&typed, |d| squash(d) == want) || blocked(host) {
+    let ok = host
+        .type_checked(&t.delivered_text, |rows| match classify(rows, false) {
+            Ok(View::Main { draft, .. }) => Some(draft),
+            _ => None,
+        })
+        .await?;
+    let typed = classify(&host.screen()?, false);
+    if !ok || !is_main(&typed, |_| true) || blocked(host) {
         let code = if blocked(host) {
             "TERMINAL_AGENT_BLOCKED"
         } else {
@@ -1119,6 +1134,22 @@ mod tests {
             .join("tests/fixtures/antigravity-screens")
             .join(name);
         cells(&fs::read_to_string(&path).unwrap_or_else(|_| panic!("{}", path.display())))
+    }
+
+    #[test]
+    fn a_scrolled_box_shows_its_tail_and_is_never_a_user_draft() {
+        // Real agy 1.4.12: a 1500-byte draft shows `> ↑ 26 more lines` and its tail.
+        let rows = screen("idle-scrolled-draft.ansi");
+        let Ok(View::Main { draft, .. }) = classify(&rows, false) else {
+            panic!("scrolled box not read: {:?}", classify(&rows, false));
+        };
+        assert!(!draft.contains("more lines"), "{draft}");
+        assert!(draft.starts_with("hip-20261031; latest"), "{draft}");
+        assert!(
+            draft.ends_with("Release remains audit-gated\nplu"),
+            "{draft}"
+        );
+        assert!(classify(&rows, true).is_err());
     }
 
     #[test]

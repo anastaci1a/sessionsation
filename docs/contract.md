@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.32.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.33.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -1752,7 +1752,7 @@ the submit/steer path. A terminal row's `steer` has `interrupt_option:null`, and
 The text must be typeable verbatim, or admission refuses it without journaling.
 Tabs and control characters are `TERMINAL_PAYLOAD_UNSUPPORTED`. So are a trailing
 backslash (Enter would become a newline) and a last token starting with `@` or `/`
-(Enter would accept a completion). The limit is 4096 bytes after trimming
+(Enter would accept a completion). The limit is 8192 bytes after trimming
 (`TERMINAL_TEXT_TOO_LONG`). CRLF becomes LF and surrounding whitespace is trimmed
 (`text_normalized`). A leading `/`, `!`, `#` or `?` gets a backslash
 (`escaped_prefix`), so command, shell, memory and help triggers stay plain text.
@@ -1786,7 +1786,7 @@ before anything is submitted:
    never appears in receipts.
 4. The input is cleared with ctrl+k/ctrl+u pairs and verified empty
    (`TERMINAL_CLEAR_UNVERIFIED`, draft kept in the journal).
-5. The text is typed with `pane send-text` (no bracketed paste) in small chunks,
+5. The text is typed with `pane send-text` (no bracketed paste, so Claude never collapses it to a `[Pasted text]` placeholder) in small chunks,
    with ctrl+j between lines, and checked on screen. On a mismatch or a block it
    is withdrawn and the draft restored (`TERMINAL_TYPED_TEXT_MISMATCH`). Enter is
    journaled (`steps` gains `submit`) and sent once. A failed Enter is
@@ -2308,3 +2308,29 @@ so gate on it):
 Not covered: `run --thread`, `run --hosted` and `run --host herdr` are unchanged and not
 journaled here (hosted HERDR launches already use `api launch`); inline operations cannot be
 cancelled or recovered through `api operations`. See [cli](cli.md#inline-run-and-resume-names-and-journal-contract-1320).
+
+### Long terminal messages verified on a scrolling input box (1.33.0)
+
+MINOR, behavior and limits. Claude Code (and agy) draw a long draft in an input box of
+limited height that shows only the last rows of the text; the rest scrolls out of view.
+Until 1.32 the whole typed text had to be on screen at once, so a message of roughly
+1.5 KB or more was withdrawn with `TERMINAL_TYPED_TEXT_MISMATCH` in a short or narrow pane
+(the receipt then showed `written:false`, `input_recorded:false`) although it was typed correctly.
+Typed input is not a paste, so Claude never collapsed it to a `[Pasted text #N +K lines]`
+placeholder; keystroke typing is kept because that is what the transcript correlation relies on.
+
+- The text is still typed in small chunks, but the screen is now read every 80 non-blank
+  characters. Each read must show a tail of everything typed so far, at least as long as the text
+  typed since the previous read. Consecutive reads then tile the message, so every character is
+  seen on screen; the first failed read withdraws the text (`TERMINAL_TYPED_TEXT_MISMATCH`)
+  before Enter, as before. A message that fits is compared whole. Blank lines and soft wraps do
+  not matter (whitespace is ignored in the comparison). The transcript correlation after Enter is unchanged.
+- Limits: Claude `max_text_bytes` 4096 -> 8192 (`TERMINAL_TEXT_TOO_LONG` above it).
+  agy `max_text_bytes` 1000 -> 8192 and `max_lines` 8 -> 200. agy shows `> ↑ N more lines`
+  over the tail; that row is skipped for typed text. A user draft read that way is never
+  reconstructed (refused as before). Gemini is unchanged (1000 bytes, 8 lines).
+- Input clearing (withdrawal, draft clear) now sends up to 600 (Claude) / 400 (agy) key rounds,
+  so long text can be removed; a clear that cannot be verified is still `TERMINAL_CLEAR_UNVERIFIED`.
+- No file-backed fallback: direct delivery is verified, so none is needed.
+- Capabilities: `terminal_input.max_text_bytes` (Claude) and the agy `max_text_bytes`/`max_lines`
+  report the new limits; there is no new field.

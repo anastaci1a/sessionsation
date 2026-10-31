@@ -554,6 +554,39 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
         "enter draft"
     );
 
+    // 7d. A several-KB, multi-paragraph message in a narrow, short box (it
+    //     shows only the tail): typed in segments, each verified on screen.
+    let long = (0..14)
+        .map(|i| {
+            format!(
+                "Paragraph {i}: {}",
+                "word-and-/a/very/long/path_token ".repeat(8)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    assert!(long.len() > 3500);
+    reset(json!({"input":"","wrap":30,"window":12}));
+    let b = body("steer", &f.session(&id), &long);
+    f.send_ok(&b);
+    let r = f.settled(b["message_id"].as_str().unwrap());
+    assert_eq!(r["state"], "completed_with_reply", "{r}");
+
+    // 7e. A corrupted early part of a scrolled message is still caught.
+    reset(json!({"input":"","wrap":30,"window":12,"garble_once":true}));
+    let b = body("steer", &f.session(&id), &long);
+    f.send_ok(&b);
+    let r = f.settled(b["message_id"].as_str().unwrap());
+    assert_eq!(r["state"], "rejected", "{r}");
+    assert_eq!(r["reason"], "TERMINAL_TYPED_TEXT_MISMATCH");
+
+    // 7f. Text over the limit is refused up front.
+    let over = "x ".repeat(4200);
+    assert!(
+        f.send_err(&body("steer", &f.session(&id), &over))
+            .contains("TERMINAL_TEXT_TOO_LONG")
+    );
+
     // 8. With live steering on, typed input still wins for submit/steer; queue
     //    and an explicit peer_message use the peer path.
     let out = f

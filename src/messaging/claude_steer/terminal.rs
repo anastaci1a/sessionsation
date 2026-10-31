@@ -47,15 +47,17 @@ use std::{
 pub const SEMANTICS: &str = "terminal_input";
 pub const LABEL: &str = "Typed into the session's HERDR terminal as the user's own input: Claude records it as a human message (queued mid-turn, or a new turn when idle)";
 /// Longest text typed into a terminal (the prompt must stay verifiable on screen).
-pub const MAX_TEXT: usize = 4096;
+pub const MAX_TEXT: usize = 8192;
 const CHUNK: usize = 32;
+/// Non-blank characters typed between two screen checks.
+pub(crate) const SEGMENT: usize = 80;
 const CHUNK_PAUSE: Duration = Duration::from_millis(15);
 pub(crate) const SETTLE: Duration = Duration::from_millis(120);
 pub(crate) const SCREEN_WAIT: Duration = Duration::from_secs(3);
 /// Rows a draft may occupy and still be read back exactly.
 const MAX_DRAFT_ROWS: usize = 12;
 /// Rows a typed message may occupy and still be verified.
-const MAX_TYPED_ROWS: usize = 60;
+const MAX_TYPED_ROWS: usize = 200;
 /// Window in which the typed input must appear in the transcript.
 pub(crate) const CONFIRM_SECONDS: u64 = 60;
 const MAX_SCAN: u64 = 16 * 1024 * 1024;
@@ -595,6 +597,67 @@ impl Host {
         }
         Ok(())
     }
+    /// Type text like [`Self::type_text`], reading the screen every `SEGMENT`
+    /// non-blank characters. Claude and agy draw a long draft in a box of
+    /// limited height that shows only its tail, so the whole text is never on
+    /// screen at once. Each check requires the visible text to be a suffix of
+    /// everything typed so far and at least as long as what was typed since the
+    /// last check: consecutive windows then tile the text, and every character
+    /// is seen on screen. Stops at the first failed check (false); the caller
+    /// withdraws. `view` gives the box text of a main prompt, None otherwise.
+    pub(crate) async fn type_checked(
+        &self,
+        s: &str,
+        view: impl Fn(&[Vec<Cell>]) -> Option<String>,
+    ) -> Result<bool> {
+        let mut typed = String::new();
+        let mut pending = 0usize;
+        let lines: Vec<&str> = s.split('\n').collect();
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                self.keys(&["ctrl+j"])?;
+                tokio::time::sleep(CHUNK_PAUSE).await;
+            }
+            let chars: Vec<char> = line.chars().collect();
+            let chunks: Vec<&[char]> = chars.chunks(CHUNK).collect();
+            for (j, chunk) in chunks.iter().enumerate() {
+                let part: String = chunk.iter().collect();
+                self.text(&part)?;
+                tokio::time::sleep(CHUNK_PAUSE).await;
+                let sq = squash(&part);
+                pending += sq.chars().count();
+                typed.push_str(&sq);
+                let last = i + 1 == lines.len() && j + 1 == chunks.len();
+                if (pending >= SEGMENT || last) && pending > 0 {
+                    if !self.window_ok(&typed, pending, &view).await? {
+                        return Ok(false);
+                    }
+                    pending = 0;
+                }
+            }
+        }
+        Ok(true)
+    }
+    async fn window_ok(
+        &self,
+        typed: &str,
+        pending: usize,
+        view: &impl Fn(&[Vec<Cell>]) -> Option<String>,
+    ) -> Result<bool> {
+        let deadline = Instant::now() + SCREEN_WAIT;
+        loop {
+            tokio::time::sleep(SETTLE).await;
+            if let Some(d) = view(&self.screen()?) {
+                let w = squash(&d);
+                if w.chars().count() >= pending && typed.ends_with(&w) {
+                    return Ok(true);
+                }
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+        }
+    }
     /// Kill the whole input with ctrl+k / ctrl+u pairs (each removes the rest
     /// of a row, or the newline next to the cursor).
     async fn clear(&self, text: &str) -> Result<()> {
@@ -603,7 +666,7 @@ impl Host {
             .map(|l| l.chars().count() / 40 + 1)
             .sum::<usize>();
         let pairs = rows * 2 + 2;
-        for _ in 0..pairs.min(200) {
+        for _ in 0..pairs.min(600) {
             self.keys(&["ctrl+k", "ctrl+u"])?;
         }
         Ok(())
@@ -948,15 +1011,12 @@ async fn typed_input(
     }
     // 4. Type the message and check it on screen.
     step(paths, id, "type", |_| {})?;
-    host.type_text(&t.delivered_text).await?;
-    let want = squash(&t.delivered_text);
-    let typed = host
-        .until(
-            false,
-            |v| matches!(v, Ok(View::Main(d)) if squash(d) == want),
-        )
+    let matches = host
+        .type_checked(&t.delivered_text, |rows| match classify(rows, false) {
+            Ok(View::Main(d)) => Some(d),
+            _ => None,
+        })
         .await?;
-    let matches = matches!(&typed, Ok(View::Main(d)) if squash(d) == want);
     let blocked = matches!(host.agent_status(), Ok(Some(s)) if s == "blocked");
     if !matches || blocked {
         let code = if blocked {

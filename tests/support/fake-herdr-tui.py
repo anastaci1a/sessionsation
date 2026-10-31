@@ -17,6 +17,7 @@ State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
   record              human (default) | none (Enter records nothing)
   drop_after_submit   ignore typing after Enter (a restore that fails)
   garble_once         drop the last character of the next typed chunk
+  wrap, window        soft-wrap the box at `wrap` columns and show only its last `window` rows
   fail_enter          `send-keys enter` fails and submits nothing
 The HERDR agent status at each `send-text` goes to $FAKE_HERDR_DIR/typed-status.
 Every command is appended to $FAKE_HERDR_DIR/calls as a JSON argv; Esc,
@@ -94,7 +95,16 @@ def splice(rows, text):
     p, end = box(rows)
     prefix = POINTER.match(rows[p]).group(1) + "\x1b[0m"
     lines = text.split("\n")
+    wrap = state.get("wrap")
+    if wrap:
+        # Soft-wrap every line to `wrap` columns, like the real box.
+        lines = [l[i:i + wrap] for l in lines for i in range(0, max(len(l), 1), wrap)]
     drawn = [prefix + lines[0]] + ["  " + line for line in lines[1:]]
+    window = state.get("window")
+    if window and len(drawn) > window:
+        # The real box is limited in height and shows only the tail.
+        drawn = drawn[-window:]
+        drawn[0] = prefix + drawn[0][2:]
     return rows[:p] + drawn + rows[end:]
 
 
