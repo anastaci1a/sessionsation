@@ -17,8 +17,8 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.31.0`
-(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251)).
+so revision N maps to contract `1.N.0` and the current contract is `1.31.1`
+(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -2259,3 +2259,12 @@ legacy compatibility symlink no longer hide live attachments (`ATTACHMENT_UNOBSE
 also rewrite the stored `owner` (conversations) and `home` (managed-panes, herdr-panes
 bindings) of the moved home; `layout migrate` reports `home_refs_rewritten`. Journals and
 receipts are never rewritten.
+
+### Deletion after a home move (1.31.1)
+
+PATCH, no request or result shape changes. Conversation archive and deletion resolve every
+candidate Codex home (the session's home, hosted instances, jobs and preserved homes) to one path
+before scanning, so a home reachable through both its legacy compatibility symlink and its
+`accounts/codex/<name>` path is scanned once. Previously the same rollout was listed twice and
+the second `thread/read` failed with `-32600` after the first `thread/delete`, leaving the
+deletion `failed` with the history already removed.
