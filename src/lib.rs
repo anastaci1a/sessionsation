@@ -35,4 +35,5 @@ pub mod retention;
 
 pub mod account_deletion;
 pub mod account_rename;
+pub mod claude_switch;
 pub mod inline;

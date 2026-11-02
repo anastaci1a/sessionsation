@@ -21,6 +21,7 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
         crate::layout::CONVERSATION_OPERATIONS,
         crate::layout::HANDOFF_JOBS,
         crate::layout::SPACE_MOVES,
+        crate::layout::CLAUDE_SWITCHES,
         crate::layout::MESSAGE_RECOVERIES,
     ] {
         let root = paths.root.join(directory);
@@ -58,7 +59,13 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
                 && !matches!(
                     r["phase"].as_str(),
                     Some(
-                        "running" | "complete" | "failed" | "cancelled" | "recovered" | "abandoned"
+                        "running"
+                            | "resuming"
+                            | "complete"
+                            | "failed"
+                            | "cancelled"
+                            | "recovered"
+                            | "abandoned"
                     )
                 )
             {

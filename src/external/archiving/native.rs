@@ -282,7 +282,7 @@ pub(super) fn admit(paths: &Paths, kind: Kind, s: &Session) -> Result<()> {
 
 // ------------------------------------------------------------ file handling
 
-fn reject_symlink(p: &Path) -> Result<fs::Metadata> {
+pub(crate) fn reject_symlink(p: &Path) -> Result<fs::Metadata> {
     let m = fs::symlink_metadata(p)?;
     ensure!(
         !m.file_type().is_symlink(),
@@ -297,7 +297,7 @@ fn reject_symlink(p: &Path) -> Result<fs::Metadata> {
     Ok(m)
 }
 /// (bytes, digest) of a regular file or a symlink-free directory tree.
-fn tree_digest(p: &Path) -> Result<(u64, String)> {
+pub(crate) fn tree_digest(p: &Path) -> Result<(u64, String)> {
     let m = reject_symlink(p)?;
     if m.is_file() {
         return Ok((m.len(), digest(p)?));
@@ -316,7 +316,7 @@ fn tree_digest(p: &Path) -> Result<(u64, String)> {
     }
     Ok((bytes, format!("{:x}", hash.finalize())))
 }
-fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+pub(crate) fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     let m = reject_symlink(src)?;
     if m.is_dir() {
         std::fs::DirBuilder::new().mode(0o700).create(dst)?;
@@ -340,7 +340,7 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     out.sync_all()?;
     Ok(())
 }
-fn remove_tree(p: &Path) -> Result<()> {
+pub(crate) fn remove_tree(p: &Path) -> Result<()> {
     if reject_symlink(p)?.is_dir() {
         tree_digest(p)?; // refuses any nested symlink before removing
         fs::remove_dir_all(p)?;
@@ -350,7 +350,7 @@ fn remove_tree(p: &Path) -> Result<()> {
     Ok(())
 }
 /// Create missing ancestors (0700) without re-permissioning existing ones.
-fn ensure_parent(p: &Path) -> Result<()> {
+pub(crate) fn ensure_parent(p: &Path) -> Result<()> {
     let parent = p.parent().context("INVALID_HISTORY_PATH")?;
     if !parent.exists() {
         std::fs::DirBuilder::new()
@@ -389,7 +389,7 @@ fn move_entry(src: &Path, dst: &Path, expected: &str) -> Result<()> {
 }
 
 /// Exact-id native files of these conversations in one account home.
-fn collect(provider: ProviderId, home: &Path, ids: &[String]) -> Result<Vec<PathBuf>> {
+pub(crate) fn collect(provider: ProviderId, home: &Path, ids: &[String]) -> Result<Vec<PathBuf>> {
     let mut out = BTreeSet::new();
     let mut add = |p: PathBuf| -> Result<()> {
         if fs::symlink_metadata(&p).is_ok() {
@@ -442,7 +442,7 @@ fn collect(provider: ProviderId, home: &Path, ids: &[String]) -> Result<Vec<Path
     }
     Ok(out.into_iter().collect())
 }
-fn not_open(p: &Path) -> Result<()> {
+pub(crate) fn not_open(p: &Path) -> Result<()> {
     let open = if fs::symlink_metadata(p)?.is_dir() {
         false
     } else {

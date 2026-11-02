@@ -100,8 +100,9 @@ migration `store::migrate_legacy_codex_provider` sets missing providers to Codex
 once and records one `account.provider_migrated_legacy_codex` event per account;
 it never infers a provider from a name. Account names are unique per provider; the registry key is the bare name for Codex and `<provider>:<name>` for the other providers (migrated once, event `account.key_migrated_per_provider`).
 
-Claude sessions are bound to their account config home: no account switch,
-history conversion or credential sharing exists. The supervisor only probes
+Claude sessions are bound to their account config home. An account switch (contract 1.34.0)
+moves a conversation's files between homes and resumes it; no history conversion or credential
+sharing exists. The supervisor only probes
 `claude auth status`; usage is projected from the statusline recorder. See
 [Claude Code accounts and sessions](cli.md#claude-code-accounts-and-sessions),
 checked against Claude's [CLI reference](https://code.claude.com/docs/en/cli-reference),

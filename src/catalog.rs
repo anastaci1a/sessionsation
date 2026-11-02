@@ -729,6 +729,33 @@ pub fn reassign_account(paths: &Paths, provider: &str, old: &str, new: &str) -> 
         Ok(changed)
     })
 }
+/// Move a Claude entry's account after its conversation files were moved
+/// (contract 1.34.0). Idempotent: an entry already on `to` is returned
+/// unchanged. The process attachment is cleared (the old process is gone) and
+/// the revision changes, so the generation changes and clients refresh.
+pub(crate) fn switch_account(
+    paths: &Paths,
+    id: &str,
+    from: &str,
+    to: &str,
+    conversation: &str,
+) -> Result<Session> {
+    transaction(paths, |c| {
+        let s = live(c, id)?;
+        ensure!(
+            s.provider == "claude" && s.conversation_id == conversation,
+            "STALE_TARGET"
+        );
+        if s.account == to {
+            return Ok(s.clone());
+        }
+        ensure!(s.account == from, "STALE_TARGET");
+        s.account = to.into();
+        s.attachment = None;
+        s.revision += 1;
+        Ok(s.clone())
+    })
+}
 pub fn rename(paths: &Paths, id: &str, generation: &str, name: &str) -> Result<Session> {
     validate_name(name)?;
     transaction(paths, |c| {

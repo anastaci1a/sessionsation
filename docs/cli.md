@@ -663,9 +663,9 @@ the HERDR tab. Detached or stopped sessions keep their catalog label (`name_sour
 "catalog"`). The native Claude title is never changed live; the label is applied as
 `--name` on the next launch/resume.
 
-Stop, restart, account switch, relocation and Space moves are unsupported for
+Stop, restart, relocation and Space moves are unsupported for
 Claude and rejected with `UNSUPPORTED_PROVIDER_OPERATION`; capabilities give the
-reason. Archive, restore and delete work for stopped sessions (see
+reason. Account switch is supported since contract 1.34.0 ([below](#claude-account-switch-contract-1340)). Archive, restore and delete work for stopped sessions (see
 [below](#claude-and-gemini-archive-and-delete-revision-17)). Submit/Queue/Steer work only for hosted sessions and
 for live sessions of accounts with live steering enabled (below).
 
@@ -694,6 +694,27 @@ with the same input and passes its output through. Recorder errors never break t
 statusline. Rate limits appear only for subscription accounts after the first API
 response; missing windows stay `null`, and readings older than 30 minutes or past
 their reset are stale. No model request is made to obtain usage.
+
+### Claude account switch (contract 1.34.0)
+
+```sh
+sessionsation api switch --session BACKEND-ID --expected-generation GENERATION --to claude:other [--accept-risks]
+sessionsation api operations
+sessionsation api recover OPERATION-ID
+sessionsation api abandon-operation OPERATION-ID --confirm OPERATION-ID
+```
+
+Moves one Claude conversation to another Claude account and, if it was running, resumes it in the
+same pane. A detached worker journals every phase; nothing is replayed automatically. It stops the
+live `claude` process by exact verified identity (SIGTERM, never a forced kill), moves the
+conversation's exact file set (transcript, subagent/tool-result directory, `file-history`,
+`session-env`, `todos`) with copy, digest verification, catalog switch and only then source removal,
+and relaunches `sessionsation resume` in the pane with the target account's config home and the
+recorded permissions. Per-project `memory/`, settings and credentials are account state: they stay
+with the source account (the receipt's `account_memory` says so). Hosted (stream-json), background and
+parked sessions, and running sessions outside a recorded pane, are refused with a clear code;
+a busy session needs `--accept-risks`. Codes, phases and recovery are in the
+[contract](contract.md#claude-account-switch-1340).
 
 ### Hosted Claude sessions and steering (revision 16)
 

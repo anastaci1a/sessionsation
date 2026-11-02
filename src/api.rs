@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 33;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.33.1";
+pub const CONTRACT_MINOR: u32 = 34;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.34.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1342,7 +1342,7 @@ pub fn capabilities() -> Value {
          "account_deletion":true,"account_removal":true,"account_rename":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"purge":false,"force_interrupt":false,"steer":true,"cross_provider_conversion":false,"operations":crate::provider::capabilities(ProviderId::Codex)},
         {"id":"claude","implemented":true,"enrollment":true,"adopt_config_dir":true,"login":"interactive_exec","usage":true,"usage_source":claude::USAGE_SOURCE,
          "new":true,"resume":true,"rename":true,"native_rename":false,"stop":false,
-         "account_switch":false,"restart":false,"submit":false,"queue":false,
+         "account_switch":true,"restart":false,"submit":false,"queue":false,
          "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false},
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false,
          "operations":crate::provider::capabilities(ProviderId::Claude)},
@@ -1549,12 +1549,21 @@ fn native_public(
         .as_deref()
         .is_some_and(|d| std::path::Path::new(d).is_absolute() && std::path::Path::new(d).is_dir());
     let resumable = availability == "stopped" && usable_directory && !account_deleted;
+    // Claude account switch: a stopped session, or a running interactive one in a recorded pane
+    // (admission rechecks accounts, hosting and conflicts).
+    let switch_account = provider == ProviderId::Claude
+        && !account_deleted
+        && (availability == "stopped"
+            || (running
+                && attached
+                && observed
+                    .is_some_and(|o| o.native_kind.as_deref().is_none_or(|k| k == "interactive"))));
     if account_deleted {
         value["resume_block_reason"] = json!("account_deleted");
         value["history_preserved"] = json!(true);
     }
     value["capabilities"] = json!({"rename":true,"native_rename":false,"resume":resumable,
-        "focus":running && attached,"switch_account":false,"restart":false,"stop":provider == ProviderId::Antigravity && running && observed.is_some_and(|o| o.pid.is_some()),"move_space":false,
+        "focus":running && attached,"switch_account":switch_account,"restart":false,"stop":provider == ProviderId::Antigravity && running && observed.is_some_and(|o| o.pid.is_some()),"move_space":false,
         "change_directory":false,"move_project":false,"archive":false,"delete":false,
         "submit":false,"queue":false,"steer":false,"add_to_herdr":add_to_herdr});
     let resume_reason = if account_deleted {
@@ -1562,7 +1571,18 @@ fn native_public(
     } else {
         (availability == "stopped" && !usable_directory).then_some("SAVED_DIRECTORY_UNAVAILABLE")
     };
-    value["capability_reasons"] = json!({"resume":resume_reason,"native_rename":caps.native_rename.reason,"switch_account":caps.account_switch.reason,
+    let switch_reason = if provider == ProviderId::Claude {
+        (!switch_account).then_some(if account_deleted {
+            "ACCOUNT_DELETED"
+        } else if running {
+            "SESSION_PANE_UNKNOWN: a running session must be in a pane Sessionsation recorded"
+        } else {
+            "SESSION_STATE_UNVERIFIED"
+        })
+    } else {
+        caps.account_switch.reason
+    };
+    value["capability_reasons"] = json!({"resume":resume_reason,"native_rename":caps.native_rename.reason,"switch_account":switch_reason,
         "restart":caps.restart.reason,"stop":caps.stop.reason,"move_space":caps.move_space.reason,
         "change_directory":caps.relocate.reason,"move_project":caps.relocate.reason,"archive":caps.archive.reason,
         "delete":caps.delete_session.reason,"submit":caps.submit.reason,"queue":caps.queue.reason,"steer":caps.steer.reason,"add_to_herdr":add_reason});
@@ -2292,6 +2312,17 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             expected_generation,
             to,
             accept_risks,
+        } if catalog::resolve(paths, &session, &expected_generation)
+            .is_ok_and(|s| s.provider == "claude") =>
+        {
+            crate::claude_switch::start(paths, &session, &expected_generation, &to, accept_risks)
+                .await?
+        }
+        Command::Switch {
+            session,
+            expected_generation,
+            to,
+            accept_risks,
         } => {
             let (_, source) = selected(paths, &session, &expected_generation).await?;
             let target = to
@@ -2476,6 +2507,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     .iter()
                     .map(crate::account_rename::public),
             );
+            ops.extend(crate::claude_switch::operations(paths)?);
             ops.extend(external::archiving::operations(paths)?);
             ops.extend(external::spaces::operations(paths)?);
             ops.extend(crate::inline::operations(paths)?);
@@ -2491,7 +2523,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             json!({"id":id,"response_recorded":true})
         }
         Command::AbandonOperation { operation, confirm } => {
-            if crate::account_rename::exists(paths, &operation) {
+            if crate::claude_switch::exists(paths, &operation) {
+                crate::claude_switch::abandon(paths, &operation, &confirm)?
+            } else if crate::account_rename::exists(paths, &operation) {
                 crate::account_rename::abandon(paths, &operation, &confirm)?
             } else {
                 crate::resume::abandon(paths, &operation, &confirm).await?
@@ -2501,6 +2535,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             managed_operation(paths, &id)?;
             external::cancel_move(paths, &id)?;
             json!({"id":id,"cancellation_requested":true})
+        }
+        Command::Recover { operation: id } if crate::claude_switch::exists(paths, &id) => {
+            crate::claude_switch::recover(paths, &id).await?
         }
         Command::Recover { operation: id } if external::spaces::exists(paths, &id) => {
             external::spaces::recover(paths, &id)?

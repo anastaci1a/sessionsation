@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.33.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.34.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2344,3 +2344,66 @@ phase `running` is the documented terminal phase, so `api abandon-operation` ans
 of `api operations` when their session no longer exists (deleted), or 24 hours after they ended
 (`failed`/`abandoned` after 24 hours). Receipt files are kept for history and listed by
 `api launch list` / `api resume-launch list`.
+
+### Claude account switch (1.34.0)
+
+MINOR, additive. `api switch --session ID --expected-generation G --to claude:B [--accept-risks]` now
+works for a Claude session (same provider only: another provider prefix or a bare name is
+`ACCOUNT_PROVIDER_REQUIRED`). The Claude provider capability `account_switch` and the operation
+capability `operations.account_switch` are `true`; each session's `capabilities.switch_account` is
+`true` for a stopped session and for a running interactive one whose process sits in a pane
+Sessionsation recorded, otherwise `false` with the reason in `capability_reasons.switch_account`.
+Gemini and Antigravity are unchanged. Codex switching is unchanged.
+
+The result and the `api operations` row have the Codex-switch keys (`id`, `kind:"account"`, `phase`,
+`detail`, `source_session_id`, `source_account_id`, `target_account_id`, `provider_conversation_id`,
+`can_cancel:false`, `can_recover`, `can_respond:false`) plus `provider:"claude"`, `uncertain`,
+`terminal`, `stalled`, `replays:false`, `generation` (the session's generation after the catalog
+switch), `resume {state, pane, permissions}` and a `receipt`:
+`{"files_moved":N,"paths":[...],"account_memory":{"moved":false,"stays_with":"claude:A","detail":...}}`.
+
+- **Phases** (journal `operations/claude-switches/ID.json`): `admitted`, `stopping`, `stopped`, `copying`,
+  `copied`, `switching`, `switched`, `removing`, `removed`, `resume_pending`, `resuming`, then the
+  terminal `complete`, `failed` or `abandoned`; `uncertain` waits for `api recover` or
+  `api abandon-operation`. Each phase is journaled before its work, a detached worker
+  (`claude-switch-worker`) drives them, and nothing is replayed automatically.
+- **Admission** (synchronous, nothing changes on refusal): generation (`STALE_TARGET`), the same
+  account (`SWITCH_SAME_ACCOUNT`), both accounts enrolled, enabled and authenticated
+  (`ACCOUNT_UNAVAILABLE`, `ACCOUNT_REMOVED`, `ACCOUNT_RENAME_UNRESOLVED`), no other unfinished
+  operation on the session (`OPERATION_BUSY`, `SESSION_OPERATION_IN_PROGRESS`), no headless delivery
+  in flight, a verified transcript (`HISTORY_NOT_FOUND`, `SESSION_STALE`,
+  `SESSION_STATE_UNVERIFIED`) and no copy of the conversation in the target home (`TARGET_CONFLICT`).
+- **Refusals for sessions that cannot be switched now**: `SESSION_HOSTED` (a Sessionsation-hosted
+  stream-json session; stop it first, hosted switching is not implemented), `SESSION_NOT_SWITCHABLE`
+  (background or parked sessions), `AMBIGUOUS_SESSION`, `SESSION_PANE_UNKNOWN` (a running process that
+  is not in a recorded pane cannot be resumed afterwards; end it first), `SAVED_DIRECTORY_UNAVAILABLE`,
+  and `RISK_CONFIRMATION_REQUIRED` for a running session that is `busy`: stopping it interrupts the
+  turn, so the request must repeat with `--accept-risks` (an idle running session needs no flag).
+- **Stop**: the live process is identified exactly as discovery does (registry pid, start time,
+  session id and config home), signalled with `SIGTERM` through a pidfd opened before the identity is
+  re-checked, and waited for (30 s). A process that does not exit is reported (`STOP_TIMEOUT`), never
+  killed; a different process holding the conversation is `SESSION_CHANGED` and nothing is signalled.
+- **What moves**: for every conversation of the lineage, `projects/<slug>/<id>.jsonl`,
+  `projects/<slug>/<id>/`, `file-history/<id>/`, `session-env/<id>/` and `todos/<id>-agent-*.json`, from
+  A's home to B's home (the exact set archive and delete use; symlinks are refused). **What stays**:
+  per-project `projects/<slug>/memory/`, `settings.json`, credentials and every other account-level
+  file stay with A and B gains none of them; `account_memory` in the receipt says so.
+- **Crash safety**: digests are journaled once the source is quiescent; each file is copied to a staging
+  directory in B's home, verified, then renamed into place; only then is the catalog switched (account
+  becomes B, a new revision so a new generation, attachment cleared) and A's copies removed after a
+  second digest check (stale registry entries of the stopped process are removed too). A failure
+  before the catalog change removes only what the operation placed and ends `failed` with A intact; a
+  failure after it ends `uncertain`. `api recover ID` continues from the journaled phase (copy,
+  switch and removal are idempotent; staging left by a crash is discarded and redone).
+  `api abandon-operation ID --confirm ID` ends an `uncertain` or stalled (no worker, over 10 s old)
+  operation and moves nothing.
+- **Resume**: a session that was running is relaunched in its pane (`resume_pending`, then
+  `resuming`) as `sessionsation resume` with the recorded permissions (`--permissions yolo|default`
+  from the stopped process's command line), the target account's `CLAUDE_CONFIG_DIR` and the recorded
+  directory; the new process's attachment re-establishes pane, messaging and steering bindings (they
+  follow the live process). `resume.state` is `confirmed` only after the exact new process is
+  observed on the target account; otherwise the operation is `uncertain` with
+  `resume.state:"unconfirmed"`. The dispatch is never replayed: `api recover` only re-checks. A
+  session that was not running is only moved (`resume.state:"not_needed"`).
+- UI and Agent-DM integration are not part of this revision; the API is additive and clients ignore
+  unknown fields.

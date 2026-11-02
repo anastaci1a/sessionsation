@@ -12,7 +12,14 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-alive() { [ -f "$dir/pid-$1" ] && kill -0 "$(cat "$dir/pid-$1")" 2>/dev/null; }
+# A zombie (an exited wrapper whose reaper is gone) is not a live process.
+alive() {
+  [ -f "$dir/pid-$1" ] || return 1
+  p=$(cat "$dir/pid-$1")
+  kill -0 "$p" 2>/dev/null || return 1
+  state=$(sed 's/^.*) //' "/proc/$p/stat" 2>/dev/null | cut -c1)
+  [ "$state" != Z ] && [ "$state" != X ]
+}
 case "$1 $2" in
   "api snapshot")
     printf '%s\n' '{"result":{"snapshot":{"panes":[],"tabs":[]}}}' ;;

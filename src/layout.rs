@@ -62,6 +62,7 @@ pub const RESUMPTIONS: &str = "operations/resumptions";
 pub const DELETIONS: &str = "operations/deletions";
 pub const ACCOUNT_DELETIONS: &str = "operations/account-deletions";
 pub const ACCOUNT_RENAMES: &str = "operations/account-renames";
+pub const CLAUDE_SWITCHES: &str = "operations/claude-switches";
 pub const CONVERSATION_OPERATIONS: &str = "operations/conversation-operations";
 pub const HANDOFF_JOBS: &str = "operations/handoff-jobs";
 pub const SPACE_MOVES: &str = "operations/space-moves";
@@ -93,6 +94,7 @@ pub const OPERATION_DIRS: &[&str] = &[
     DELETIONS,
     ACCOUNT_DELETIONS,
     ACCOUNT_RENAMES,
+    CLAUDE_SWITCHES,
     CONVERSATION_OPERATIONS,
     HANDOFF_JOBS,
     SPACE_MOVES,

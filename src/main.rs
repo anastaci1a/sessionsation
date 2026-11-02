@@ -44,6 +44,8 @@ enum Commands {
     #[command(hide = true)]
     ConversationWorker { request_id: String },
     #[command(hide = true)]
+    ClaudeSwitchWorker { request_id: String },
+    #[command(hide = true)]
     LaunchWorker { request_id: String },
     #[command(hide = true)]
     LaunchRun { request_id: String },
@@ -669,6 +671,9 @@ async fn run(cli: Cli) -> Result<()> {
         } => print_json(&sessionsation::retention::run(&paths, dry_run)?)?,
         Commands::ConversationWorker { request_id } => {
             sessionsation::external::archiving::worker(&paths, &request_id).await?;
+        }
+        Commands::ClaudeSwitchWorker { request_id } => {
+            sessionsation::claude_switch::worker(&paths, &request_id).await?;
         }
         Commands::ClaudeDeliveryWorker { message_id } => {
             sessionsation::messaging::headless::worker(&paths, &message_id).await?

@@ -49,6 +49,8 @@ pub const USAGE_STALE_SECONDS: i64 = 1800;
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const HOOK_MARKER: &str = "provider-hook claude-statusline";
 pub const NATIVE_HOME_BOUND: &str = "native session is bound to its account config home";
+/// Contract 1.34.0: per-session availability is in each session's capabilities.
+pub const ACCOUNT_SWITCH: &str = "moves the conversation files (transcript and sidecars) to another claude account home and resumes it there; account memory and settings stay with the source account; hosted and background sessions are refused";
 pub const NO_INPUT_API: &str = "no supported native input API for a live Claude session";
 pub const LABEL_ONLY: &str =
     "label applied as --name on next launch/resume; live native title unchanged";
@@ -78,7 +80,10 @@ pub fn capabilities() -> ProviderCapabilities {
         native_rename: no(LABEL_ONLY),
         stop: no(NO_LIFECYCLE),
         restart: no(NO_LIFECYCLE),
-        account_switch: no(NATIVE_HOME_BOUND),
+        account_switch: Capability {
+            supported: true,
+            reason: Some(ACCOUNT_SWITCH),
+        },
         relocate: no(NATIVE_HOME_BOUND),
         move_space: no("HERDR space moves are verified only for Codex"),
         archive: Capability {
