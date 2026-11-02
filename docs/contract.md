@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.33.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.33.1`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2334,3 +2334,13 @@ placeholder; keystroke typing is kept because that is what the transcript correl
 - No file-backed fallback: direct delivery is verified, so none is needed.
 - Capabilities: `terminal_input.max_text_bytes` (Claude) and the agy `max_text_bytes`/`max_lines`
   report the new limits; there is no new field.
+
+### Inline journal settling (1.33.1)
+
+PATCH, no shape changes. An inline receipt whose provider process has ended after it was
+observed `running` now gets the detail "The inline provider process has ended." (lazy, once; the
+phase `running` is the documented terminal phase, so `api abandon-operation` answers
+`OPERATION_ALREADY_TERMINAL` consistently with `api operations`). Finished inline entries drop out
+of `api operations` when their session no longer exists (deleted), or 24 hours after they ended
+(`failed`/`abandoned` after 24 hours). Receipt files are kept for history and listed by
+`api launch list` / `api resume-launch list`.

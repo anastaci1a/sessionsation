@@ -241,14 +241,41 @@ pub fn fail_resume(paths: &Paths, id: &str, error: &anyhow::Error) {
     });
 }
 
+const ENDED: &str = "The inline provider process has ended.";
+/// Ended inline entries leave `api operations` after this many seconds.
+const AGE_OUT: i64 = 24 * 3600;
+
+/// Unsettled entries always show; `running` only while its session exists and the
+/// process is alive or ended recently; other finished entries only recently.
+fn visible(phase: &str, info: &Info, session_exists: bool, updated_at: i64) -> bool {
+    if !terminal(phase) {
+        return true;
+    }
+    let recent = daemon::now() - updated_at <= AGE_OUT;
+    if phase == "running" {
+        session_exists && (alive(info) || recent)
+    } else {
+        recent
+    }
+}
+
 /// Next phase of an inline receipt from what is observable now.
-fn next(phase: &str, info: &Info, observed: bool) -> Option<(&'static str, &'static str)> {
+fn next(
+    phase: &str,
+    detail: Option<&str>,
+    updated_at: i64,
+    info: &Info,
+    observed: bool,
+) -> Option<(&'static str, &'static str)> {
     match (phase, alive(info)) {
+        ("running", false) if detail != Some(ENDED) && daemon::now() - updated_at <= AGE_OUT => {
+            Some(("running", ENDED))
+        }
         ("starting_provider", false) => Some((
             "uncertain",
             "The terminal process ended before the provider was attached. Inspect the session; it is not replayed.",
         )),
-        ("attached", false) => Some(("running", "The inline provider process has ended.")),
+        ("attached", false) => Some(("running", ENDED)),
         ("attached", true) if observed => Some((
             "running",
             "Exact provider process observed; no launch replay",
@@ -267,7 +294,9 @@ pub(crate) fn settle_resume(paths: &Paths, id: &str) -> Result<()> {
         && catalog::list(paths)?
             .iter()
             .any(|s| s.id == r.request.session_id && launch::launch_observed(paths, s));
-    if let Some((phase, detail)) = next(&r.phase, &info, observed) {
+    if let Some((phase, detail)) =
+        next(&r.phase, r.detail.as_deref(), r.updated_at, &info, observed)
+    {
         r.phase = phase.into();
         r.detail = Some(detail.into());
         resume::save(paths, &mut r)?;
@@ -283,7 +312,9 @@ pub(crate) fn settle_launch(paths: &Paths, id: &str) -> Result<()> {
         && catalog::list(paths)?
             .iter()
             .any(|s| s.id == id && launch::launch_observed(paths, s));
-    if let Some((phase, detail)) = next(&r.phase, &info, observed) {
+    if let Some((phase, detail)) =
+        next(&r.phase, r.detail.as_deref(), r.updated_at, &info, observed)
+    {
         if phase == "uncertain" {
             // Never attached: the name stays reserved with the uncertain journal.
         }
@@ -316,10 +347,28 @@ pub(crate) fn settle_resumptions(paths: &Paths) {
 /// Inline launches and resumptions for `api operations`.
 pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
     let mut out = vec![];
+    let sessions: Vec<String> = catalog::list(paths)?.into_iter().map(|s| s.id).collect();
     for id in journal_ids(paths, crate::layout::LAUNCHES) {
+        if let Ok(r) = launch::status(paths, &id)
+            && let Some(info) = &r.inline
+            && !visible(
+                &r.phase,
+                info,
+                sessions.contains(r.session_id.as_ref().unwrap_or(&id)),
+                r.updated_at,
+            )
+        {
+            continue; // aged out or deleted: the receipt is left untouched
+        }
         let _ = settle_launch(paths, &id);
         if let Ok(r) = launch::status(paths, &id)
-            && r.inline.is_some()
+            && let Some(info) = &r.inline
+            && visible(
+                &r.phase,
+                info,
+                sessions.contains(r.session_id.as_ref().unwrap_or(&id)),
+                r.updated_at,
+            )
         {
             out.push(json!({"id":id,"kind":"launch","inline":true,"session_id":r.session_id.clone().or_else(||(r.phase!="failed").then(||id.clone())),
                 "name":r.request.name,"account_id":r.request.account_id,"phase":r.phase,"detail":r.detail,
@@ -330,7 +379,13 @@ pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
     for id in journal_ids(paths, crate::layout::RESUMPTIONS) {
         let _ = settle_resume(paths, &id);
         if let Ok(r) = resume::read(paths, &id)
-            && r.inline.is_some()
+            && let Some(info) = &r.inline
+            && visible(
+                &r.phase,
+                info,
+                sessions.contains(&r.request.session_id),
+                r.updated_at,
+            )
         {
             out.push(json!({"id":id,"kind":"resume","inline":true,"session_id":r.request.session_id,
                 "name":r.request.name,"account_id":r.request.account_id,"phase":r.phase,"detail":r.detail,

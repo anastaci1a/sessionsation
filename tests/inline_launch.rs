@@ -351,7 +351,7 @@ fn kill_ref(child: &mut Child) {
 async fn capabilities_advertise_named_journaled_inline_launches() {
     let f = fixture().await;
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.33.0");
+    assert_eq!(caps["contract_version"], "1.33.1");
     assert_eq!(caps["contract_revision"], 33);
     let c = &caps["inline_launch"];
     assert_eq!(c["name"], true);
@@ -551,6 +551,14 @@ async fn inline_resume_renames_journals_and_settles() {
     wait_for("settled resume journal", || {
         inline_op(&f, "resume", "renamed by resume")["phase"] == "running"
     });
+    // Process exit: the same terminal phase, an honest detail, and abandon agrees.
+    let op = inline_op(&f, "resume", "renamed by resume");
+    assert_eq!(op["detail"], "The inline provider process has ended.");
+    let oid = op["id"].as_str().unwrap();
+    assert!(
+        f.api_error(&["abandon-operation", "--operation", oid, "--confirm", oid])
+            .contains("OPERATION_ALREADY_TERMINAL")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -635,4 +643,50 @@ async fn a_herdr_pane_tab_is_labelled_with_the_name() {
     });
     assert_eq!(inline_op(&f, "launch", "tabbed")["pane_id"], "w1:p2");
     reap(child);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finished_inline_entries_of_a_deleted_session_or_long_ago_leave_operations() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let (id, native) = f.stopped_session("personal");
+    let dir = f.paths.root.join(sessionsation::layout::RESUMPTIONS);
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |session: &str, name: &str, updated: i64| {
+        let rid = uuid::Uuid::new_v4().to_string();
+        // Dead process and gone pane: pid 0x7fffffff never exists.
+        std::fs::write(
+            dir.join(format!("{rid}.json")),
+            serde_json::to_vec(&json!({
+                "version":1,
+                "request":{"version":1,"request_id":rid,"session_id":session,"expected_generation":"g",
+                    "account_id":"gemini:personal","name":name,"host":{"session":"inline","socket":"/"},
+                    "space":{"kind":"existing","id":"inline"}},
+                "directory":"/","previous_name":"p","conversation_id":native,"generation":"g",
+                "phase":"running","detail":"Exact provider process observed; no launch replay",
+                "workspace_id":null,"tab_id":null,"pane_id":"w9:p9","operation_id":null,
+                "created_at":updated,"updated_at":updated,
+                "inline":{"pid":2147483647u32,"process_start":1,"pane_id":"w9:p9"}}))
+            .unwrap(),
+        )
+        .unwrap();
+        rid
+    };
+    let gone = write("00000000-0000-4000-8000-000000000000", "deleted", now());
+    let old = write(&id, "old", 1);
+    let recent = write(&id, "recent", now());
+    let names: Vec<_> = operations(&f).iter().map(|o| o["name"].clone()).collect();
+    assert_eq!(names, vec![json!("recent")], "{names:?}");
+    assert_eq!(
+        inline_op(&f, "resume", "recent")["detail"],
+        "The inline provider process has ended."
+    );
+    // Receipts stay for history, and abandon agrees that they are terminal.
+    for rid in [&gone, &old, &recent] {
+        assert!(dir.join(format!("{rid}.json")).exists());
+        assert!(
+            f.api_error(&["abandon-operation", "--operation", rid, "--confirm", rid])
+                .contains("OPERATION_ALREADY_TERMINAL")
+        );
+    }
 }
