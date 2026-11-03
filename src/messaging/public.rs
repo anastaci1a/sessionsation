@@ -88,7 +88,7 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         "delivery_semantics":"non_steering_native_queue",
         "state":if value["state"]=="unknown" {json!("delivery_unknown")} else {value["state"].clone()},
         "reason":value["reason"],"reason_detail":if value["reason"]=="unsupported_native_version" {Some("The account app-server version is not supported by this Sessionsation build. Use api observe to inspect its native_protocol version and supported_versions; no native input was attempted.")} else {None},"facts":{"accepted_local":true,"accepted_native":accepted,
-            "input_recorded":!value["correlation"].is_null(),"input_consumed":"unknown",
+            "input_recorded":!value["correlation"].is_null(),"input_consumed":if !value["correlation"].is_null() {json!(true)} else if value["state"]=="failed" && value["reason"]=="input_not_consumed" {json!(false)} else {json!("unknown")},
             "reply_observed":!reply.is_null()},
         "native_queue_id":value["native_queue_id"],"recovery_start":value["recovery_start"],
         "correlation":if correlation.is_null() {Value::Null} else {json!({
@@ -129,6 +129,19 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         "MESSAGE_ID_CONFLICT"
     );
     uuid(&request.session_id)?;
+    // Real input readiness first (bounded, no ledger lock held): a session launched
+    // moments ago can acknowledge input it is not yet reading.
+    if !delivery::timing(paths).ready.is_zero() && request.mode != PublicMode::Steer {
+        // A busy ledger refuses before any catalog or native work.
+        drop(Ledger::open(paths)?);
+        if let Ok(session) =
+            crate::catalog::resolve(paths, &request.session_id, &request.expected_generation)
+        {
+            if session.provider == "codex" {
+                delivery::await_ready(paths, &session.conversation_id).await;
+            }
+        }
+    }
     let mut ledger = Ledger::open(paths)?;
     initialize(&ledger)?;
     let binding =
@@ -202,8 +215,9 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         }
         return Ok(steering::receipt(&binding, &receipt));
     }
+    let mut accepted_from_idle = false;
     if matches!(receipt.state.as_str(), "pending_local" | "unknown") {
-        if let Err(error) = deliver_with_policy(
+        match deliver_with_policy(
             paths,
             &mut ledger,
             &mut receipt,
@@ -212,20 +226,33 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         )
         .await
         {
-            if receipt.state == "pending_local"
-                && matches!(
-                    error.0,
-                    "target_busy"
-                        | "generation_mismatch"
-                        | "explicit_resume_required"
-                        | "approval_or_user_input_required"
-                )
-            {
-                receipt.state = "rejected".into();
+            Ok(from_idle) => accepted_from_idle = from_idle,
+            Err(error) => {
+                if receipt.state == "pending_local"
+                    && matches!(
+                        error.0,
+                        "target_busy"
+                            | "generation_mismatch"
+                            | "explicit_resume_required"
+                            | "approval_or_user_input_required"
+                    )
+                {
+                    receipt.state = "rejected".into();
+                }
+                receipt.reason = Some(error.0.into());
+                ledger.save(&receipt)?;
             }
-            receipt.reason = Some(error.0.into());
-            ledger.save(&receipt)?;
         }
+    }
+    let checks = delivery::timing(paths);
+    if accepted_from_idle && !checks.verify.is_zero() {
+        // Acceptance is not consumption: prove the input left the native queue as a
+        // recorded turn input, or report it failed/uncertain. No ledger lock is held
+        // while waiting.
+        let original = receipt.clone();
+        drop(ledger);
+        let verdict = delivery::verify(paths, &original, &checks).await;
+        delivery::settle(paths, &mut receipt, verdict).await?;
     }
     Ok(wrap(&binding, json!(receipt)))
 }

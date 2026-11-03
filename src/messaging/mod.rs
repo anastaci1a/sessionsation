@@ -2,6 +2,7 @@
 mod batch;
 pub mod checkpoints;
 pub mod claude_steer;
+mod delivery;
 pub mod headless;
 mod modes;
 mod public;
@@ -696,15 +697,22 @@ async fn submit(
     receipt.reason = Some("submission_uncertain".into());
     ledger.save(receipt)?;
     let result:Result<Added>=control.request("thread/queue/add",json!({"threadId":receipt.session_id,"clientUserMessageId":receipt.message_id,"input":[{"type":"text","text":input.text,"text_elements":[]}]})).await;
-    if let Ok(response) = result {
-        if response.item.client_id == receipt.message_id
-            && !response.item.id.is_empty()
-            && response.item.id.len() <= 256
-        {
-            receipt.state = "native_accepted".into();
-            receipt.native_queue_id = Some(response.item.id);
-            receipt.reason = None;
-            ledger.save(receipt)?;
+    match result {
+        Ok(response) => {
+            if response.item.client_id == receipt.message_id
+                && !response.item.id.is_empty()
+                && response.item.id.len() <= 256
+            {
+                receipt.state = "native_accepted".into();
+                receipt.native_queue_id = Some(response.item.id);
+                receipt.reason = None;
+                ledger.save(receipt)?;
+            }
+        }
+        // A late acknowledgement (a session still starting) leaves the entry in the
+        // native queue: learn that without ever resending.
+        Err(_) => {
+            let _ = reconcile(control, ledger, receipt).await;
         }
     }
     Ok(())
@@ -715,7 +723,9 @@ async fn deliver(
     receipt: &mut Receipt,
     input: Option<&Enqueue>,
 ) -> Result<()> {
-    deliver_with_policy(paths, ledger, receipt, input, None).await
+    deliver_with_policy(paths, ledger, receipt, input, None)
+        .await
+        .map(|_| ())
 }
 async fn deliver_with_policy(
     paths: &Paths,
@@ -723,7 +733,7 @@ async fn deliver_with_policy(
     receipt: &mut Receipt,
     input: Option<&Enqueue>,
     public_mode: Option<PublicMode>,
-) -> Result<()> {
+) -> Result<bool> {
     let _guard = mutation_lock(paths, &receipt.session_id)?;
     let selected = attachment(paths, &receipt.session_id)?;
     if selected.generation() != receipt.generation {
@@ -737,9 +747,11 @@ async fn deliver_with_policy(
             return Err(Fault(reason));
         }
         match o.state.as_str() {
-            "idle" => "idle",
+            // A failed turn (capacity, quota) leaves a live idle session; only an
+            // interrupted turn needs explicit Resume.
+            "idle" | "errored" => "idle",
             "working" => "busy",
-            "interrupted" | "errored" => return Err(Fault("explicit_resume_required")),
+            "interrupted" => return Err(Fault("explicit_resume_required")),
             "disconnected" => return Err(Fault("unavailable")),
             _ => return Err(Fault("state_unverified")),
         }
@@ -757,6 +769,7 @@ async fn deliver_with_policy(
         return Err(Fault("generation_mismatch"));
     }
     ledger.expire(receipt, crate::daemon::now())?;
+    let mut accepted_from_idle = false;
     if receipt.state == "pending_local" {
         if let Some(input) = input {
             if !modes::queue::sending_enabled(paths)? {
@@ -769,11 +782,12 @@ async fn deliver_with_policy(
                 return Err(Fault("explicit_resume_required"));
             }
             submit(&mut control, ledger, receipt, input).await?;
+            accepted_from_idle = current == "idle" && receipt.state == "native_accepted";
         }
     } else if receipt.state == "unknown" {
         reconcile(&mut control, ledger, receipt).await?;
     }
-    Ok(())
+    Ok(accepted_from_idle)
 }
 async fn cancel(paths: &Paths, ledger: &mut Ledger, receipt: &mut Receipt) -> Result<()> {
     ledger.expire(receipt, crate::daemon::now())?;

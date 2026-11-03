@@ -12,6 +12,7 @@ pub mod daemon;
 pub mod external;
 pub mod identity;
 mod lifecycle;
+pub mod live_activity;
 pub mod messaging;
 pub mod model;
 pub mod paths;

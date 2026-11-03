@@ -310,7 +310,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enable_needs_a_live_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.36.0");
+    assert_eq!(caps["contract_version"], "1.37.0");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);

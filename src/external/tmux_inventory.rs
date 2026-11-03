@@ -29,7 +29,7 @@ fn supplement(paths: &Paths, items: &mut Vec<Instance>, exclude: Option<&str>) -
         items.push(Instance {
             tmux_only: true, tmux_dead: dead, display_name: f[0].into(), last_accessed: None,
             archived: false, inactive: false, account: String::new(), display_account: None,
-            block_reason: None, activity: Activity::Unknown,
+            block_reason: None, activity: Activity::Unknown, turn_facts: None,
             detail: if dead { "This tmux pane has exited and retains its output. Open it to inspect diagnostics. It has no running Codex instance; saved conversation history is separate." } else { "An ordinary tmux pane; no Codex process was detected. You can open it, but account switching and conversation actions do not apply." }.into(),
             warnings: vec![], shared_server: false, move_id: None, pane: f[1].into(),
             tmux_session: f[0].into(), pid: f[2].parse().unwrap_or(0), start_time: 0,

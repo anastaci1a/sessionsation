@@ -869,6 +869,12 @@ mod tests {
                 .unwrap();
             assert_eq!(observation["state"], expected);
             for mode in ["submit", "queue"] {
+                // A failed turn leaves a live idle session that takes ordinary input;
+                // only an interrupted one needs explicit Resume.
+                if expected == "errored" {
+                    assert_eq!(observation["actions"][mode]["available"], true);
+                    continue;
+                }
                 assert_eq!(
                     observation["actions"][mode]["reason"],
                     "explicit_resume_required"

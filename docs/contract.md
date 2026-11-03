@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.36.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.37.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -228,8 +228,8 @@ evidence. The compatibility `freshness` field remains fresh/stale.
 A changed catalog or runtime rejects the result as `STALE_TARGET`.
 
 `explicit_intent` reports a positively recorded stop token or unknown; an idle
-process never proves absence of deliberate stop/pause intent. Fresh interrupted/error
-turns expose `actions.resume.available:true` when otherwise eligible; Submit and
+process never proves absence of deliberate stop/pause intent. Fresh interrupted
+turns (1.37.0: not failed turns, see below) expose `actions.resume.available:true` when otherwise eligible; Submit and
 Queue report `explicit_resume_required`, matching dispatch. They are recoverable
 targets, not permanently unavailable sessions. Clients should offer explicit
 Resume-and-submit using the observed runtime, previous turn and stop token; do not
@@ -2537,3 +2537,47 @@ HERDR shell (auto-recover's reused pane, Codex relaunch into a shell pane) it cl
 `pane send-keys <pane> ctrl+e ctrl+u` (best effort, only when the foreground is the bare shell), so
 leftover unsubmitted text is not prepended. tmux relaunch uses `respawn-pane -k`, which replaces
 the shell, so nothing is cleared there.
+
+### Live activity, send checks, stop expiry (1.37.0)
+
+MINOR, additive. Capability flags `live_activity`, `pending_operations`, `native_send_checks`.
+
+- **Failed turns accept input.** A Codex turn that ends in failure (for example "Selected model is
+  at capacity", quota) leaves a live, idle session. Before 1.37.0 `api send` (submit/queue) and the
+  passive readiness `actions.submit|queue` treated the `errored` state like an interrupted turn and
+  refused with `explicit_resume_required`; the cause was the latest-turn status `failed` being
+  mapped to `errored` and `errored` being gated like `interrupted`. Now `errored` is
+  submit/queue-eligible when nothing else blocks (`actions.resume` stays available as well). Only an
+  `interrupted` turn, a recorded stop intent and an approval/input prompt still require explicit action.
+  `api observe` additionally carries `last_turn:{status,error}` and `activity`.
+- **`sessions[].live_activity`** (Codex, running sessions; null otherwise; also in `api state --cached`
+  since it is part of the stored snapshot):
+  `{state, error, last_turn_status, source, observed_at}`. `state` is `working` (a turn is in
+  progress), `idle` (ready, no turn seen), `turn_ended` (the latest turn completed or was
+  interrupted and nothing has started since), `blocked` (waiting on an approval or user input),
+  `error` (the latest turn failed; `error` holds the provider's text, at most 300 characters, one line)
+  or `unknown` (no evidence). `source` is `app_server` (thread status read during the state scan) or
+  `rollout` (bounded tail of the history file). `observed_at` is the snapshot time.
+  A cached snapshot shows the activity of its own `observed_at`.
+- **`sessions[].pending_operations`**: unfinished session operations of that conversation as
+  `[{id, kind, phase, created_at, expires_at}]`; `kind` is `stop`, `pause`, `switch` or `restart`;
+  `expires_at` is null except for a stop. (`pending_operation_id` is unchanged.)
+- **Stop expiry.** A queued stop that is still waiting for the session to become idle
+  (`waiting_for_*` phases) gives up after 1800 seconds (`TERMINATE_WAIT_SECONDS`, from the
+  operation's `created_at`; journals without `expires_at` use that default): the operation fails with
+  "the stop request expired while waiting for the session to become idle; nothing was stopped",
+  the session keeps running and the stop gate recorded for that request is released (a newer stop's
+  gate never is). Cancel with `api cancel-operation` is unchanged.
+- **Native send checks (submit/queue to Codex).** Acceptance by the app-server is not consumption.
+  (1) Before the send, up to 20 seconds are spent waiting (without holding the receipt ledger) for
+  real input readiness: a process older than 4 seconds whose thread answers native reads with a
+  settled turn state; busy, blocked and interrupted states end the wait at once and are then
+  refused as before. (2) A late or lost add acknowledgement is reconciled against the native queue
+  instead of left unknown when the entry is there. (3) After an input accepted by an idle session,
+  up to 8 seconds are spent confirming it was consumed (the queue entry is gone and a turn records
+  the message id). Consumed: `execution_started`/`completed_with_reply`, `facts.input_consumed:true`.
+  Still queued at the deadline: the entry is removed again and the receipt is `failed` with reason
+  `input_not_consumed` (`facts.input_consumed:false`, nothing ran, safe to resend with a new
+  message id). Neither seen: `delivery_unknown` with reason `consumption_unverified`; never replay.
+  A busy-target queue send is not subject to (3).
+  Environment `SESSIONSATION_NATIVE_SEND_CHECKS=off` disables (1) and (3) (test fixtures only).

@@ -983,13 +983,9 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
 }
 
 #[tokio::test]
-async fn ordinary_public_send_requires_explicit_recovery_for_terminal_turns() {
+async fn ordinary_public_send_requires_explicit_recovery_for_interrupted_turns() {
     for mode in [PublicMode::Submit, PublicMode::Queue] {
-        for (state, last) in [
-            ("idle", "interrupted"),
-            ("idle", "failed"),
-            ("systemError", "failed"),
-        ] {
+        for (state, last) in [("idle", "interrupted")] {
             let (_dir, paths, input, _) = fixture();
             let mut a = attachment_fixture(&paths, &input);
             bind(&paths, &mut a);

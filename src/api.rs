@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 36;
+pub const CONTRACT_MINOR: u32 = 37;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.36.0";
+pub const CONTRACT_VERSION: &str = "1.37.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1433,6 +1433,9 @@ pub fn capabilities() -> Value {
     value["stop_closes_pane"] = json!(true);
     value["stop_keep_pane"] = json!(true);
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
+    value["live_activity"] = json!({"since_revision":37,"version":1,"field":"sessions[].live_activity","providers":["codex"],"states":["working","idle","turn_ended","blocked","error","unknown"],"error_text":"provider turn-error text, bounded to 300 characters, only with state error","cached_state":true,"source":"app_server_thread_status_else_rollout_tail"});
+    value["pending_operations"] = json!({"since_revision":37,"field":"sessions[].pending_operations","kinds":["stop","pause","switch","restart"],"stop_wait_expiry_seconds":external::TERMINATE_WAIT_SECONDS});
+    value["native_send_checks"] = json!({"since_revision":37,"version":1,"commands":["send"],"modes":["submit","queue"],"providers":["codex"],"readiness_wait_seconds":20,"consumption_wait_seconds":8,"unconsumed_input":"removed_and_failed:input_not_consumed","unproven_input":"delivery_unknown:consumption_unverified","failed_turn_accepts_input":true});
     if let Some(claude) = value["providers"]
         .as_array_mut()
         .and_then(|p| p.iter_mut().find(|p| p["id"] == "claude"))
@@ -1710,6 +1713,22 @@ pub async fn state_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value>
     refresh_cached_accounts(paths, &mut value);
     Ok(value)
 }
+/// Queued session operations of one conversation that have not finished yet, so a
+/// caller sees a stop that is still waiting for idle (and when it gives up).
+/// `kind` is `stop`, `pause`, `switch` or `restart`; `expires_at` is null unless
+/// the operation expires.
+fn pending_operations(jobs: &[external::Job], thread: &str) -> Value {
+    json!(
+        jobs.iter()
+            .filter(|j| j.pending() && j.source.thread_id == thread)
+            .map(|j| json!({"id":j.id,"kind":match j.kind.as_str() {
+                "terminate" => "stop",
+                "account" => "switch",
+                other => other,
+            },"phase":j.phase,"created_at":j.created_at,"expires_at":j.expires_at()}))
+            .collect::<Vec<_>>()
+    )
+}
 pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Value> {
     let started = std::time::Instant::now();
     // Inventory and the supervisor's account status are independent reads.
@@ -1815,6 +1834,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["conversation_created_at"]=facts["conversation_created_at"].clone();
         value["history_file_bytes"]=facts["history_file_bytes"].clone();
         value["activity"]=source.map(|s|json!(s.activity)).unwrap_or(Value::Null);
+        value["live_activity"]=source.filter(|s|!s.inactive).map_or(Value::Null,|s|crate::live_activity::public(Some(&s.turn_facts.clone().unwrap_or_default()),now));
         value["pending_questions"]=match source.filter(|i|!i.inactive && !archived) {
             Some(i)=>crate::questions::to_values(crate::questions::codex_pending(paths,value["id"].as_str().unwrap_or_default(),&i.rollout)),
             None=>json!([]),
@@ -1832,16 +1852,19 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         fill_codex_reasons(&mut value, &ctx);
         value
     }).filter(|s|match filter { ArchiveFilter::All=>true, ArchiveFilter::Archived=>s["archived"]==true, ArchiveFilter::Active=>s["archived"]!=true }).collect::<Vec<_>>();
+    let jobs = external::jobs(paths).unwrap_or_default();
     for session in &mut sessions {
         let thread = session["conversation_id"]
             .as_str()
             .context("INVALID_CONVERSATION_ID")?;
+        let operations = pending_operations(&jobs, thread);
         let pending = crate::lifecycle::pending(paths, thread, None)?.or_else(|| {
             items
                 .iter()
                 .find(|i| i.thread_id == thread)
                 .and_then(|i| i.move_id.clone())
         });
+        session["pending_operations"] = operations;
         if let Some(operation) = pending {
             session["pending_operation_id"] = json!(operation);
             for capability in [
@@ -3234,5 +3257,36 @@ mod terminal_resume_gate_tests {
             let e = gate(Some(reason), true).unwrap_err().to_string();
             assert!(e.contains("SESSION_STATE_UNVERIFIED"), "{e}");
         }
+    }
+}
+#[cfg(test)]
+mod pending_operation_tests {
+    use super::*;
+
+    #[test]
+    fn pending_stops_are_listed_with_their_expiry_per_session() {
+        let job = |id: &str, kind: &str, phase: &str, thread: &str| -> external::Job {
+            serde_json::from_value(json!({"id":id,"kind":kind,"target":"","phase":phase,"detail":"",
+                "created_at":100,"source":{"account":"a","pane":"%1","tmux_session":"t","pid":1,
+                "cwd":"/","thread_id":thread,"rollout":"/r","home":"/h","binary":"b","resume_options":[]}}))
+            .unwrap()
+        };
+        let jobs = vec![
+            job("s", "terminate", "waiting_for_idle", "one"),
+            job("m", "account", "queued", "one"),
+            job("done", "terminate", "complete", "one"),
+            job("other", "terminate", "waiting_for_idle", "two"),
+        ];
+        let listed = pending_operations(&jobs, "one");
+        assert_eq!(listed.as_array().unwrap().len(), 2);
+        assert_eq!(listed[0]["kind"], "stop");
+        assert_eq!(listed[0]["phase"], "waiting_for_idle");
+        assert_eq!(
+            listed[0]["expires_at"],
+            100 + external::TERMINATE_WAIT_SECONDS
+        );
+        assert_eq!(listed[1]["kind"], "switch");
+        assert!(listed[1]["expires_at"].is_null());
+        assert_eq!(pending_operations(&jobs, "none"), json!([]));
     }
 }

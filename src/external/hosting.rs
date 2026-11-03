@@ -206,6 +206,7 @@ fn instances_with_state(
             continue;
         };
         let launch = parse_launch(&process_args(pid)?);
+        let turn_facts = rollout_turn_facts(&rollout);
         let activity = rollout_activity(&rollout);
         result.push(Instance {
             tmux_only: false,
@@ -218,6 +219,7 @@ fn instances_with_state(
             display_account: None,
             block_reason: None,
             activity,
+            turn_facts,
             detail: activity_detail(activity).into(),
             warnings: vec![],
             shared_server: true,

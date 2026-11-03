@@ -57,22 +57,34 @@ pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, 
         Some("native_sending_disabled")
     } else {
         match state {
-            "idle" | "working" => None,
-            // A terminal turn is recoverable, not an unspecified review dead end.
+            "idle" | "working" | "errored" => None,
+            // An interrupted turn is recoverable, not an unspecified review dead end.
             // Use the same actionable gate as dispatch: explicitly request Resume
-            // with the observed turn/runtime/stop preconditions below.
-            "interrupted" | "errored" => Some("explicit_resume_required"),
+            // with the observed turn/runtime/stop preconditions below. A turn that
+            // FAILED (for example "Selected model is at capacity") leaves a live,
+            // idle session that accepts input like any other.
+            "interrupted" => Some("explicit_resume_required"),
             "disconnected" => Some("existing_attachment_required"),
             _ => Some("state_unverified"),
         }
     };
-    let submit = blocked.is_none() && state == "idle";
-    let queue = blocked.is_none() && matches!(state, "idle" | "working");
+    let submit = blocked.is_none() && matches!(state, "idle" | "errored");
+    let queue = blocked.is_none() && matches!(state, "idle" | "working" | "errored");
     let resume = fresh
         && !removed
         && native["native_sending_enabled"] == true
         && native["reason"].is_null()
         && (matches!(state, "interrupted" | "errored") || (state == "idle" && stop.is_some()));
+    let activity = {
+        let facts = crate::live_activity::facts_from_readiness(
+            state,
+            native["reason"] == "approval_or_user_input_required",
+            !native["previous_turn_id"].is_null(),
+            native["last_turn"]["status"].as_str(),
+            native["last_turn"]["error"].as_str(),
+        );
+        crate::live_activity::public(Some(&facts), at.unwrap_or(now))
+    };
     json!({"session_id":session.id,"generation":session.generation(),
         "provider":"codex","provider_conversation_id":session.conversation_id,
         "account_id":format!("codex:{}",session.account),"state":state,
@@ -84,6 +96,7 @@ pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, 
         "process_state":native["process_state"].as_str().unwrap_or("unknown"),"process_observed_at":native["process_observed_at"],"previous_turn_id":native["previous_turn_id"],
         "explicit_intent":{"state":if stop.is_some() {"stop_requested"} else {"unknown"},"id":stop},
         "queued_work_count":null,"evidence":"native_read_only_snapshot_not_reservation",
+        "last_turn":native["last_turn"],"activity":activity,
         "actions":{"steer":{"available":blocked.is_none() && state=="working","reason":if blocked.is_none() && state=="working" {None}else{blocked.or(Some("steer_requires_active_turn"))},"target_command":"steer-target","requires_expected_turn_id":true,"requires_expected_runtime_generation":true,"acceptance_only":false,"reply_correlation":"after_steer_item"},"submit":{"available":submit,"reason":if submit {None} else {blocked.or(Some("target_busy"))}},
             "queue":{"available":queue,"reason":if queue {None} else {blocked.or(Some("state_unverified"))}},
             "resume":{"available":resume,"reason":if resume {Value::Null} else if state=="disconnected" {json!("validated_launch_plan_required")} else if state=="idle" && stop.is_none() && fresh && native["reason"].is_null() {json!("resume_not_required")} else if state=="working" {json!("session_already_working")} else {json!(blocked.unwrap_or("state_unverified"))},"starts_process":state=="disconnected","requires_final_validation":true,"requires_expected_previous_turn_id":true,"requires_expected_stop_id":true,"requires_expected_runtime_generation":state!="disconnected","requires_launch_plan":state=="disconnected"}},
@@ -173,6 +186,7 @@ pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow
                 .and_then(|v| v["observed_at"].as_i64())
                 .unwrap_or_else(crate::daemon::now);
             json!({"state":o.state,"reason":o.reason,"previous_turn_id":o.previous,
+                "last_turn":{"status":o.last_turn_status,"error":o.last_turn_error},
                 "summary_evidence":o.summary_evidence,
                 "observed_at":at,"valid_until":at+5,"observation_started_at":started,
                 "native_sending_enabled":modes::queue::sending_enabled(paths)?,
@@ -247,10 +261,13 @@ mod tests {
         ] {
             let native = json!({"state":state,"observed_at":100,"valid_until":105,"native_sending_enabled":true,"actions":{"submit":{"effective_action":"steer"}},"private":"SECRET"});
             let out = project(&s, native, false, 101);
-            assert_eq!(out["actions"]["submit"]["available"], state == "idle");
+            assert_eq!(
+                out["actions"]["submit"]["available"],
+                matches!(state, "idle" | "errored")
+            );
             assert_eq!(
                 out["actions"]["queue"]["available"],
-                matches!(state, "idle" | "working")
+                matches!(state, "idle" | "working" | "errored")
             );
             assert_eq!(out["explicit_intent"]["state"], "unknown");
             assert_eq!(

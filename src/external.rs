@@ -44,6 +44,9 @@ pub struct Instance {
     pub block_reason: Option<String>,
     #[serde(default)]
     pub activity: Activity,
+    /// Content-free turn facts behind the public `live_activity` row field.
+    #[serde(default)]
+    pub turn_facts: Option<crate::live_activity::TurnFacts>,
     #[serde(default)]
     pub detail: String,
     #[serde(default)]
@@ -131,6 +134,15 @@ pub fn reason_detail(reason: Option<&str>) -> &'static str {
         _ => "Saved conversation. Moving opens it in a new tmux session.",
     }
 }
+pub(crate) fn rollout_turn_facts(path: &Path) -> Option<crate::live_activity::TurnFacts> {
+    let tail = tail_window(File::open(path).ok()?)?;
+    let events: Vec<Value> = BufReader::new(&tail[..])
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str(&line).ok())
+        .collect();
+    Some(crate::live_activity::facts_from_events(&events))
+}
 fn rollout_activity(path: &Path) -> Activity {
     let Ok(file) = File::open(path) else {
         return Activity::Unknown;
@@ -138,35 +150,32 @@ fn rollout_activity(path: &Path) -> Activity {
     activity_from_tail(file)
 }
 const ACTIVITY_TAIL_BYTES: u64 = 64 * 1024;
-fn activity_from_tail(mut reader: impl Read + Seek) -> Activity {
-    let Ok(length) = reader.seek(SeekFrom::End(0)) else {
-        return Activity::Unknown;
-    };
+/// The last `ACTIVITY_TAIL_BYTES` of a rollout without a leading partial record.
+/// `None` when the window has no complete record boundary or cannot be read.
+fn tail_window(mut reader: impl Read + Seek) -> Option<Vec<u8>> {
+    let length = reader.seek(SeekFrom::End(0)).ok()?;
     let start = length.saturating_sub(ACTIVITY_TAIL_BYTES);
-    if reader.seek(SeekFrom::Start(start)).is_err() {
-        return Activity::Unknown;
-    }
+    reader.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
-    if reader
+    reader
         .take(ACTIVITY_TAIL_BYTES)
         .read_to_end(&mut bytes)
-        .is_err()
-    {
-        return Activity::Unknown;
-    }
+        .ok()?;
     // The window may start inside JSON or a UTF-8 sequence. Discard that first
-    // partial record. If no activity event remains, stay unknown rather than
-    // trusting an old idle event outside the bounded window.
-    let tail = if start > 0 {
-        let Some(end) = bytes.iter().position(|b| *b == b'\n') else {
-            return Activity::Unknown;
-        };
-        &bytes[end + 1..]
-    } else {
-        &bytes[..]
+    // partial record; with no record boundary stay unknown rather than trusting
+    // an old idle event outside the bounded window.
+    if start > 0 {
+        let end = bytes.iter().position(|b| *b == b'\n')?;
+        bytes.drain(..=end);
+    }
+    Some(bytes)
+}
+fn activity_from_tail(reader: impl Read + Seek) -> Activity {
+    let Some(tail) = tail_window(reader) else {
+        return Activity::Unknown;
     };
     let mut activity = Activity::Unknown;
-    for line in BufReader::new(tail).lines() {
+    for line in BufReader::new(&tail[..]).lines() {
         let Ok(value) = line
             .map_err(anyhow::Error::from)
             .and_then(|line| Ok(serde_json::from_str::<Value>(&line)?))
@@ -364,6 +373,13 @@ async fn enrich_native(result: &mut [Instance]) {
                 }
                 _ => Activity::Unknown,
             };
+            let mut facts = source.turn_facts.clone().unwrap_or_default();
+            crate::live_activity::overlay_thread(
+                &mut facts,
+                &state["status"],
+                state["turns"].as_array().and_then(|t| t.last()),
+            );
+            source.turn_facts = Some(facts);
             if source.move_id.is_none() {
                 source.detail = if state["status"]["type"] == "systemError"
                     && source.activity == Activity::Idle
@@ -424,6 +440,10 @@ fn snapshot(items: Vec<Instance>) -> Value {
         .collect::<Vec<_>>();
     json!({"schema_version":1,"observed_at":daemon::now(),"sessions":sessions})
 }
+/// How long a queued stop (`terminate`) may wait for the session to become idle. An
+/// interrupted client must not leave a stop that fires at some much later idle moment.
+pub const TERMINATE_WAIT_SECONDS: i64 = 1800;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
     /// Explicit new HERDR terminal for a saved-session transfer. Older jobs have none.
@@ -465,6 +485,10 @@ pub struct Job {
     pub source_archived: bool,
     #[serde(default)]
     pub created_at: i64,
+    /// Unix seconds after which a `terminate` still waiting for idle gives up
+    /// without stopping anything; 0 on journals written before this field.
+    #[serde(default)]
+    pub expires_at: i64,
     #[serde(default)]
     pub confirmation_seq: u64,
     #[serde(default)]
@@ -804,6 +828,7 @@ pub fn instances() -> Result<Vec<Instance>> {
         if launch.omitted {
             warnings.push("Some original launch switches are not supported on resume and will be omitted. Recorded permissions and conversation history are retained.".into());
         }
+        let turn_facts = rollout_turn_facts(&rollout);
         let activity = rollout_activity(&rollout);
         let mut cwd = fs::read_link(format!("/proc/{pid}/cwd"))
             .map(|p| p.to_string_lossy().into_owned())
@@ -824,6 +849,7 @@ pub fn instances() -> Result<Vec<Instance>> {
             display_account: None,
             block_reason: None,
             activity,
+            turn_facts,
             detail: if reason.is_some() { "Identifying the conversation in this pane. You can queue a move while identification completes.".into() } else { activity_detail(activity).into() },
             warnings,
             shared_server: false,
@@ -1008,6 +1034,7 @@ fn inventory_complete(
                 account: account.clone(),
                 display_account: display_account.clone(),
                 activity: Activity::Inactive,
+                turn_facts: None,
                 detail: reason_detail(block_reason.as_deref()).into(),
                 warnings: Vec::new(),
                 shared_server: false,
@@ -2017,6 +2044,11 @@ fn enqueue_with_id(
         pause_delivery: String::new(),
         source_archived: false,
         created_at: daemon::now(),
+        expires_at: if kind == "terminate" {
+            daemon::now() + TERMINATE_WAIT_SECONDS
+        } else {
+            0
+        },
         confirmation_seq: 0,
         acknowledged_risks: Vec::new(),
         target_loaded: false,
@@ -2233,6 +2265,26 @@ pub fn respond_move_sequence(
             &json!({"phase":job.phase,"sequence":job.confirmation_seq,"approve":approve}),
         )?,
     )
+}
+impl Job {
+    /// When a stop waiting for idle gives up; `None` for other kinds and undated journals.
+    pub fn expires_at(&self) -> Option<i64> {
+        if self.kind != "terminate" || self.created_at <= 0 {
+            return None;
+        }
+        Some(if self.expires_at > 0 {
+            self.expires_at
+        } else {
+            self.created_at + TERMINATE_WAIT_SECONDS
+        })
+    }
+    /// Not yet finished: queued, waiting, confirming or running.
+    pub fn pending(&self) -> bool {
+        !matches!(
+            self.phase.as_str(),
+            "complete" | "failed" | "cancelled" | "recovered"
+        )
+    }
 }
 pub fn cancel_move(paths: &Paths, id: &str) -> Result<()> {
     validate_name(id)?;
@@ -3262,6 +3314,7 @@ mod tests {
             continuation_observation: String::new(),
             source_archived: false,
             created_at: 0,
+            expires_at: 0,
             confirmation_seq: 0,
             acknowledged_risks: Vec::new(),
             target_loaded: false,

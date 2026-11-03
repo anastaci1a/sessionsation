@@ -28,6 +28,13 @@ struct Page {
 struct Turn {
     id: String,
     status: String,
+    /// Provider-reported failure of a `failed` turn (short text, no history).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<TurnError>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct TurnError {
+    message: Option<String>,
 }
 
 pub(in crate::messaging) struct Observation {
@@ -36,6 +43,10 @@ pub(in crate::messaging) struct Observation {
     pub previous: Option<String>,
     pub submit_supported: bool,
     pub summary_evidence: Option<Value>,
+    /// Status of the latest finished turn (`completed`, `failed`, `interrupted`).
+    pub last_turn_status: Option<String>,
+    /// The provider's own bounded error text for a failed latest turn.
+    pub last_turn_error: Option<String>,
 }
 async fn read(control: &mut Transport, id: &str) -> Result<Status> {
     let read: Read = control
@@ -93,12 +104,16 @@ async fn observe_inner(
             previous: None,
             submit_supported: false,
             summary_evidence: None,
+            last_turn_status: None,
+            last_turn_error: None,
         });
     }
     let cache = context.and_then(|(paths, attachment)| {
         summary_cache::Cache::new(paths, attachment, before.history.as_deref())
     });
     let mut summary_evidence = None;
+    let mut last_turn_status = None;
+    let mut last_turn_error = None;
     let (state, previous) = match before.kind.as_str() {
         "active" => ("working", None),
         "notLoaded" => ("disconnected", None),
@@ -136,15 +151,23 @@ async fn observe_inner(
                 {
                     return Err(Fault("malformed_summary"));
                 }
-                Some(turn) => (
-                    match turn.status.as_str() {
-                        "completed" if before.kind == "idle" => "idle",
-                        "interrupted" => "interrupted",
-                        "failed" => "errored",
-                        _ => "unknown",
-                    },
-                    Some(turn.id.clone()),
-                ),
+                Some(turn) => {
+                    last_turn_status = Some(turn.status.clone());
+                    last_turn_error = turn
+                        .error
+                        .as_ref()
+                        .and_then(|e| e.message.as_deref())
+                        .and_then(crate::live_activity::clean_error);
+                    (
+                        match turn.status.as_str() {
+                            "completed" if before.kind == "idle" => "idle",
+                            "interrupted" => "interrupted",
+                            "failed" => "errored",
+                            _ => "unknown",
+                        },
+                        Some(turn.id.clone()),
+                    )
+                }
                 None => (
                     if before.kind == "idle" {
                         "idle"
@@ -169,6 +192,8 @@ async fn observe_inner(
         previous,
         submit_supported: true,
         summary_evidence,
+        last_turn_status,
+        last_turn_error,
     })
 }
 fn actions(state: &str, reason: Option<&str>, submit_supported: bool, enabled: bool) -> Value {
@@ -243,6 +268,8 @@ pub(in crate::messaging) async fn target(paths: &Paths, id: &str) -> Result<Valu
             previous: None,
             submit_supported: false,
             summary_evidence: None,
+            last_turn_status: None,
+            last_turn_error: None,
         },
     };
     let mut action_caps = actions(&o.state, o.reason, o.submit_supported, enabled);
@@ -262,7 +289,7 @@ pub(in crate::messaging) async fn target(paths: &Paths, id: &str) -> Result<Valu
         _ => "unavailable",
     };
     Ok(
-        json!({"session_id":id,"display_name":name,"account_name":account,"state":o.state,"availability":availability,"reason":o.reason,"observed_at":at,"valid_until":at+5,"generation":generation,"queued_work_count":null,"paused_or_stopped":if o.state=="interrupted" {"interrupted_explicit_resume_required"}else{"unknown_without_explicit_intent_evidence"},"check_in_eligible":false,"native_sending_enabled":enabled,"capability_id":generation.as_deref().map(queue::capability_id),"submit_capability_id":generation.as_deref().map(submit::capability_id),"previous_turn_id":o.previous,"conditional_start_supported":false,"idle_submit_supported":o.submit_supported,"idle_submit_race":"may_steer_a_concurrently_started_turn","actions":action_caps,"stop_intent_id":stop,"evidence":"native_read_only_snapshot_not_reservation"}),
+        json!({"session_id":id,"display_name":name,"account_name":account,"state":o.state,"availability":availability,"reason":o.reason,"observed_at":at,"valid_until":at+5,"generation":generation,"queued_work_count":null,"paused_or_stopped":if o.state=="interrupted" {"interrupted_explicit_resume_required"}else{"unknown_without_explicit_intent_evidence"},"check_in_eligible":false,"native_sending_enabled":enabled,"capability_id":generation.as_deref().map(queue::capability_id),"submit_capability_id":generation.as_deref().map(submit::capability_id),"previous_turn_id":o.previous,"last_turn":{"status":o.last_turn_status,"error":o.last_turn_error},"conditional_start_supported":false,"idle_submit_supported":o.submit_supported,"idle_submit_race":"may_steer_a_concurrently_started_turn","actions":action_caps,"stop_intent_id":stop,"evidence":"native_read_only_snapshot_not_reservation"}),
     )
 }
 #[cfg(test)]

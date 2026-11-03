@@ -378,6 +378,8 @@ supported contract versions. All API output is JSON; watch uses NDJSON.
 sessionsation api state
 sessionsation api state --cached                 # last snapshot, no scans (see contract revision 14)
 sessionsation api state --watch --interval 2
+# each Codex session row has live_activity (working|idle|turn_ended|blocked|error|unknown, with the
+# provider error text for error) and pending_operations (e.g. a stop waiting for idle, with expires_at)
 sessionsation api launcher new --account codex:example
 sessionsation api operations
 ```
