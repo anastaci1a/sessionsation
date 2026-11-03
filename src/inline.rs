@@ -38,7 +38,10 @@ fn host() -> launch::Host {
     }
 }
 fn terminal(phase: &str) -> bool {
-    matches!(phase, "running" | "failed" | "recovered" | "abandoned")
+    matches!(
+        phase,
+        "complete" | "running" | "failed" | "recovered" | "abandoned"
+    )
 }
 
 /// Rename the HERDR tab of the invoking pane, as the hosted launch paths label tabs.
@@ -241,19 +244,20 @@ pub fn fail_resume(paths: &Paths, id: &str, error: &anyhow::Error) {
     });
 }
 
+const OBSERVED: &str = "Exact provider process observed; no launch replay";
 const ENDED: &str = "The inline provider process has ended.";
 /// Ended inline entries leave `api operations` after this many seconds.
 const AGE_OUT: i64 = 24 * 3600;
 
 /// Unsettled entries always show; `running` only while its session exists and the
 /// process is alive or ended recently; other finished entries only recently.
-fn visible(phase: &str, info: &Info, session_exists: bool, updated_at: i64) -> bool {
+fn visible(phase: &str, session_exists: bool, updated_at: i64) -> bool {
     if !terminal(phase) {
         return true;
     }
     let recent = daemon::now() - updated_at <= AGE_OUT;
-    if phase == "running" {
-        session_exists && (alive(info) || recent)
+    if phase == "complete" || phase == "running" {
+        session_exists && recent
     } else {
         recent
     }
@@ -267,19 +271,20 @@ fn next(
     info: &Info,
     observed: bool,
 ) -> Option<(&'static str, &'static str)> {
+    // `complete` is the terminal success phase: the exact provider process was observed (or
+    // has since ended). `running` is only read from receipts written by 1.33 - 1.35.0.
     match (phase, alive(info)) {
-        ("running", false) if detail != Some(ENDED) && daemon::now() - updated_at <= AGE_OUT => {
-            Some(("running", ENDED))
+        ("running", true) => Some(("complete", OBSERVED)),
+        ("running", false) if daemon::now() - updated_at <= AGE_OUT => Some(("complete", ENDED)),
+        ("complete", false) if detail != Some(ENDED) && daemon::now() - updated_at <= AGE_OUT => {
+            Some(("complete", ENDED))
         }
         ("starting_provider", false) => Some((
             "uncertain",
             "The terminal process ended before the provider was attached. Inspect the session; it is not replayed.",
         )),
-        ("attached", false) => Some(("running", ENDED)),
-        ("attached", true) if observed => Some((
-            "running",
-            "Exact provider process observed; no launch replay",
-        )),
+        ("attached", false) => Some(("complete", ENDED)),
+        ("attached", true) if observed => Some(("complete", OBSERVED)),
         _ => None,
     }
 }
@@ -350,10 +355,9 @@ pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
     let sessions: Vec<String> = catalog::list(paths)?.into_iter().map(|s| s.id).collect();
     for id in journal_ids(paths, crate::layout::LAUNCHES) {
         if let Ok(r) = launch::status(paths, &id)
-            && let Some(info) = &r.inline
+            && r.inline.is_some()
             && !visible(
                 &r.phase,
-                info,
                 sessions.contains(r.session_id.as_ref().unwrap_or(&id)),
                 r.updated_at,
             )
@@ -362,10 +366,9 @@ pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
         }
         let _ = settle_launch(paths, &id);
         if let Ok(r) = launch::status(paths, &id)
-            && let Some(info) = &r.inline
+            && r.inline.is_some()
             && visible(
                 &r.phase,
-                info,
                 sessions.contains(r.session_id.as_ref().unwrap_or(&id)),
                 r.updated_at,
             )
@@ -379,10 +382,9 @@ pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
     for id in journal_ids(paths, crate::layout::RESUMPTIONS) {
         let _ = settle_resume(paths, &id);
         if let Ok(r) = resume::read(paths, &id)
-            && let Some(info) = &r.inline
+            && r.inline.is_some()
             && visible(
                 &r.phase,
-                info,
                 sessions.contains(&r.request.session_id),
                 r.updated_at,
             )

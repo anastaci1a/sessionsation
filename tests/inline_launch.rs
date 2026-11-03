@@ -351,7 +351,7 @@ fn kill_ref(child: &mut Child) {
 async fn capabilities_advertise_named_journaled_inline_launches() {
     let f = fixture().await;
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.35.0");
+    assert_eq!(caps["contract_version"], "1.35.1");
     assert_eq!(caps["contract_revision"], 35);
     let c = &caps["inline_launch"];
     assert_eq!(c["name"], true);
@@ -385,7 +385,7 @@ async fn inline_run_with_name_is_journaled_visible_in_operations_and_settles_whe
     assert_eq!(f.gemini_sessions().len(), 1);
     let op = inline_op(&f, "launch", "typed name");
     assert!(
-        matches!(op["phase"].as_str(), Some("attached" | "running")),
+        matches!(op["phase"].as_str(), Some("attached" | "complete")),
         "{op}"
     );
     assert_eq!(op["account_id"], "gemini:personal");
@@ -409,7 +409,7 @@ async fn inline_run_with_name_is_journaled_visible_in_operations_and_settles_whe
     // Ending the inline process settles the journal; nothing is replayed.
     reap(child);
     wait_for("settled journal", || {
-        inline_op(&f, "launch", "typed name")["phase"] == "running"
+        inline_op(&f, "launch", "typed name")["phase"] == "complete"
     });
 }
 
@@ -532,7 +532,7 @@ async fn inline_resume_renames_journals_and_settles() {
     let op = inline_op(&f, "resume", "renamed by resume");
     assert_eq!(op["session_id"], id.as_str());
     assert!(
-        matches!(op["phase"].as_str(), Some("attached" | "running")),
+        matches!(op["phase"].as_str(), Some("attached" | "complete")),
         "{op}"
     );
     let receipt = f.api(&[
@@ -549,7 +549,7 @@ async fn inline_resume_renames_journals_and_settles() {
     assert!(!second.status.success());
     reap(child);
     wait_for("settled resume journal", || {
-        inline_op(&f, "resume", "renamed by resume")["phase"] == "running"
+        inline_op(&f, "resume", "renamed by resume")["phase"] == "complete"
     });
     // Process exit: the same terminal phase, an honest detail, and abandon agrees.
     let op = inline_op(&f, "resume", "renamed by resume");
@@ -689,4 +689,95 @@ async fn finished_inline_entries_of_a_deleted_session_or_long_ago_leave_operatio
                 .contains("OPERATION_ALREADY_TERMINAL")
         );
     }
+}
+
+fn proc_start(pid: u32) -> u64 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let after = &stat[stat.rfind(')').unwrap() + 2..];
+    after.split(' ').nth(19).unwrap().parse().unwrap()
+}
+#[allow(clippy::too_many_arguments)]
+fn write_inline_receipt(
+    f: &Fixture,
+    session: &str,
+    native: &str,
+    name: &str,
+    phase: &str,
+    detail: Option<&str>,
+    pid: u32,
+    start: u64,
+) -> String {
+    let dir = f.paths.root.join(sessionsation::layout::RESUMPTIONS);
+    std::fs::create_dir_all(&dir).unwrap();
+    let rid = uuid::Uuid::new_v4().to_string();
+    std::fs::write(
+        dir.join(format!("{rid}.json")),
+        serde_json::to_vec(&json!({
+            "version":1,
+            "request":{"version":1,"request_id":rid,"session_id":session,"expected_generation":"g",
+                "account_id":"gemini:personal","name":name,"host":{"session":"inline","socket":"/"},
+                "space":{"kind":"existing","id":"inline"}},
+            "directory":"/","previous_name":"p","conversation_id":native,"generation":"g",
+            "phase":phase,"detail":detail,
+            "workspace_id":null,"tab_id":null,"pane_id":"w9:p9","operation_id":null,
+            "created_at":now(),"updated_at":now(),
+            "inline":{"pid":pid,"process_start":start,"pane_id":"w9:p9"}}))
+        .unwrap(),
+    )
+    .unwrap();
+    rid
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_running_receipt_with_a_live_process_settles_to_complete_and_is_not_in_progress() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let (id, native) = f.stopped_session("personal");
+    let mut child = Command::new("sleep").arg("300").spawn().unwrap();
+    let rid = write_inline_receipt(
+        &f,
+        &id,
+        &native,
+        "live old",
+        "running",
+        Some("Exact provider process observed; no launch replay"),
+        child.id(),
+        proc_start(child.id()),
+    );
+    let op = inline_op(&f, "resume", "live old");
+    assert_eq!(op["phase"], "complete", "{op}");
+    assert_eq!(
+        op["detail"],
+        "Exact provider process observed; no launch replay"
+    );
+    let receipt = f.api(&["resume-launch", "status", "--request-id", &rid]);
+    assert_eq!(receipt["phase"], "complete");
+    // Terminal for abandon, and no longer an unfinished resumption of the session.
+    assert!(
+        f.api_error(&["abandon-operation", "--operation", &rid, "--confirm", &rid])
+            .contains("OPERATION_ALREADY_TERMINAL")
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_inline_process_that_dies_before_attaching_is_uncertain() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let (id, native) = f.stopped_session("personal");
+    let rid = write_inline_receipt(
+        &f,
+        &id,
+        &native,
+        "never attached",
+        "starting_provider",
+        None,
+        2147483647,
+        1,
+    );
+    let op = inline_op(&f, "resume", "never attached");
+    assert_eq!(op["phase"], "uncertain", "{op}");
+    let receipt = f.api(&["resume-launch", "status", "--request-id", &rid]);
+    assert_eq!(receipt["phase"], "uncertain");
 }

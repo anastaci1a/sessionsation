@@ -254,7 +254,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
             .any(|prior| prior.request.session_id == r.session_id
                 && !matches!(
                     prior.phase.as_str(),
-                    "running" | "failed" | "recovered" | "abandoned"
+                    "running" | "complete" | "failed" | "recovered" | "abandoned"
                 )),
         "RESUME_IN_PROGRESS"
     );
@@ -537,7 +537,7 @@ pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
     ensure!(
         !matches!(
             r.phase.as_str(),
-            "running" | "failed" | "recovered" | "abandoned"
+            "running" | "complete" | "failed" | "recovered" | "abandoned"
         ),
         "OPERATION_ALREADY_TERMINAL"
     );
@@ -586,7 +586,7 @@ pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
         ensure!(
             !matches!(
                 r.phase.as_str(),
-                "running" | "failed" | "recovered" | "abandoned"
+                "running" | "complete" | "failed" | "recovered" | "abandoned"
             ),
             "OPERATION_ALREADY_TERMINAL"
         );
@@ -625,7 +625,7 @@ pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
     // or generation must not rewrite it as uncertainty or change Space ordering.
     if matches!(
         r.phase.as_str(),
-        "running" | "failed" | "recovered" | "abandoned"
+        "running" | "complete" | "failed" | "recovered" | "abandoned"
     ) {
         return Ok(r);
     }

@@ -460,7 +460,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     })?;
     if let Err(error) = prepare(paths, &receipt).await {
         change(paths, id, |r| {
-            if !matches!(r.phase.as_str(), "running" | "failed") {
+            if !matches!(r.phase.as_str(), "running" | "complete" | "failed") {
                 if r.phase == "preparing" {
                     catalog::release_reservation(paths, id, &r.request.name)?;
                     r.phase = "failed".into();

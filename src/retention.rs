@@ -30,8 +30,11 @@ const DAY: u64 = 86400;
 
 /// Final phases per operation directory; anything else is kept.
 pub const PRUNABLE: &[(&str, &[&str])] = &[
-    (layout::LAUNCHES, &["running", "failed"]),
-    (layout::RESUMPTIONS, &["running", "failed", "abandoned"]),
+    (layout::LAUNCHES, &["running", "complete", "failed"]),
+    (
+        layout::RESUMPTIONS,
+        &["running", "complete", "failed", "abandoned"],
+    ),
     (layout::CONVERSATION_OPERATIONS, &["complete", "failed"]),
     (
         layout::HANDOFF_JOBS,

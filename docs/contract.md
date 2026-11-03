@@ -17,8 +17,8 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.35.0`
-(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311)).
+so revision N maps to contract `1.N.0` and the current contract is `1.35.1`
+(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -2290,7 +2290,7 @@ so gate on it):
   `api resume-launch list|status` show them. The receipt has `inline:{pid,process_start,pane_id}`
   and a placeholder host (`host.session:"inline"`). Phases: `starting_provider` (nothing has
   started), `attached` (the session is bound to the terminal process, which then becomes the
-  provider), `running` (observed, or the inline process has ended after attaching), `failed`
+  provider), `complete` (the exact provider process was observed, or has ended after attaching; 1.35.1, earlier receipts say `running`), `failed`
   (the command was refused before the session was bound; the reserved name is released),
   `uncertain` (the outcome after binding is unknown, or the process ended without attaching).
   `uncertain` is never replayed and holds its reservation; an inline resumption is released
@@ -2492,3 +2492,18 @@ session stays saved). A later normal resume (or opening it in the UI) starts it 
 recorded permissions: native resume rebuilds the target's index from the copied rollout. A resume
 launch that explicitly chooses an account (`resume_destination`) is unchanged, and so is switching a
 live session. Gemini and Antigravity do not support account switch.
+
+### Observed inline operations are complete (1.35.1)
+
+PATCH, no shape changes. An inline `run` / `resume` receipt used to stay in phase `running`
+("Exact provider process observed; no launch replay") for the whole life of the provider
+process, so `api operations` listed it as an ongoing resume although the session was up.
+Once the exact provider process is observed the operation is finished: the receipt moves to
+the terminal success phase `complete` (same detail), is never an unfinished resumption of the
+session (it does not block a later resume or hold a lock), and drops out of `api operations`
+24 hours after it completed (or when its session is deleted). Receipts already in `running`
+(written by 1.33.0 - 1.35.0) settle to `complete` on the next read or settle pass: a live
+process keeps the detail, an ended one gets "The inline provider process has ended.".
+A process that ends before the provider attached is still `uncertain` and never replayed.
+Hosted `api launch` / `api resume-launch` receipts keep `running` as their terminal success
+phase. Clients treat inline `complete` like `running` as final.
