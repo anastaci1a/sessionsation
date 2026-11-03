@@ -45,6 +45,9 @@ enum Commands {
     ConversationWorker { request_id: String },
     #[command(hide = true)]
     ClaudeSwitchWorker { request_id: String },
+    /// One auto-recover pass (the supervisor runs this loop itself); prints the recoveries it ran.
+    #[command(hide = true)]
+    AutoRecoverTick,
     #[command(hide = true)]
     LaunchWorker { request_id: String },
     #[command(hide = true)]
@@ -674,6 +677,10 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::ClaudeSwitchWorker { request_id } => {
             sessionsation::claude_switch::worker(&paths, &request_id).await?;
+        }
+        Commands::AutoRecoverTick => {
+            let outcomes = sessionsation::auto_recover::tick(&paths).await?;
+            println!("{}", serde_json::to_string(&outcomes)?);
         }
         Commands::ClaudeDeliveryWorker { message_id } => {
             sessionsation::messaging::headless::worker(&paths, &message_id).await?

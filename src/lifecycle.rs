@@ -22,6 +22,7 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
         crate::layout::HANDOFF_JOBS,
         crate::layout::SPACE_MOVES,
         crate::layout::CLAUDE_SWITCHES,
+        crate::layout::AUTO_RECOVERIES,
         crate::layout::MESSAGE_RECOVERIES,
     ] {
         let root = paths.root.join(directory);
@@ -60,6 +61,8 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
                     r["phase"].as_str(),
                     Some(
                         "running"
+                            | "resumed"
+                            | "prompting"
                             | "resuming"
                             | "complete"
                             | "failed"

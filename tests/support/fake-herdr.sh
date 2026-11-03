@@ -48,11 +48,23 @@ case "$1 $2" in
     printf '%s\n' '{"result":{}}' ;;
   "pane process-info")
     pane=$4
+    if [ -f "$dir/missing-$pane" ]; then printf '%s\n' '{"error":{"code":"pane_not_found"}}'; exit 1; fi
     if alive "$pane"; then
       printf '{"result":{"process_info":{"shell_pid":1,"foreground_processes":[{"pid":%s,"name":"claude"}]}}}\n' "$(cat "$dir/pid-$pane")"
     else
       printf '%s\n' '{"result":{"process_info":{"shell_pid":1,"foreground_processes":[{"pid":1,"name":"sh"}]}}}'
     fi ;;
+  "pane rename")
+    printf '%s\n' "$4" > "$dir/pane-name-$3"
+    printf '%s\n' '{"result":{}}' ;;
+  "pane list")
+    out=''
+    for f in "$dir"/pid-*; do
+      [ -e "$f" ] || continue
+      p=${f##*/pid-}; n=${p#*:p}
+      out="$out{\"pane_id\":\"$p\",\"tab_id\":\"${p%%:*}:t$n\"},"
+    done
+    printf '{"result":{"panes":[%s]}}\n' "${out%,}" ;;
   "pane run")
     pane=$3
     HERDR_ENV=1 HERDR_PANE_ID=$pane sh -c "$4" </dev/null >/dev/null 2>"$dir/run-$pane.err" &

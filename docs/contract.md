@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.34.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.35.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -760,7 +760,7 @@ substitute `updated_at`, which changes with progress. Legacy records are not
 rewritten to invent dates. Adapters can sort known creation times descending and
 place unknown dates last with stable ID ties.
 
-`new_account_name_max:30` limits new enrollments in both the public API and sole account owner; longer existing IDs
+`new_account_name_max:64` (and `session_name_max:64`, since 1.35.0; both were 30 before) limits new enrollments in both the public API and sole account owner; longer existing IDs
 continue to work. Clients must gate new commands on published capabilities.
 
 ## New-session popup admission
@@ -2407,3 +2407,68 @@ switch), `resume {state, pane, permissions}` and a `receipt`:
   session that was not running is only moved (`resume.state:"not_needed"`).
 - UI and Agent-DM integration are not part of this revision; the API is additive and clients ignore
   unknown fields.
+
+### Session auto-recover (1.35.0)
+
+MINOR, additive. `api auto-recover --session ID --expected-generation G (--enable [--prompt TEXT] |
+--disable)` turns a per-session toggle on or off. When it is on and the session's process later
+disappears without an explicit stop (a host restart, a crash), the supervisor resumes the same
+conversation, in its old HERDR pane when that is safe, and sends it a prompt. It works for every
+provider with a resume path (Codex, Claude, Gemini, Antigravity).
+
+- **Only for live sessions.** `--enable` is refused unless the session is running (`active` or
+  `idle`): a stopped, saved, stale, unavailable or archived session gets `AUTO_RECOVER_REQUIRES_LIVE`.
+  Hosted (stream-json) Claude sessions, background Claude sessions, Codex sessions of an unknown
+  account and any provider without a resume path get `AUTO_RECOVER_UNSUPPORTED`. A stale generation
+  is `STALE_TARGET`; an unfinished operation on the session is `SESSION_OPERATION_IN_PROGRESS`; a
+  bad `--prompt` (empty, over 4000 bytes) is `INVALID_ARGUMENT`. `--disable` is always allowed
+  (idempotent; `changed:false` when it was already off). Enabling again with the same prompt is
+  `changed:false`. The toggle does not change the session's generation.
+- **Receipt**: `{"session_id","generation","changed","auto_recover":{...}}`; clients ignore unknown fields.
+- **State**: every session row of `api state` adds `auto_recover:{enabled, prompt, last_pane,
+  last_recovered_at, last_result, workspace_label, suppressed, recoveries_last_hour, max_per_hour}`
+  and `capabilities.auto_recover` with `capability_reasons.auto_recover` (`AUTO_RECOVER_REQUIRES_LIVE`
+  or `AUTO_RECOVER_UNSUPPORTED[: reason]`; `true` while already enabled so it can be turned off).
+  `last_pane` is a `herdr/<session>/<pane>` target kept current while the session is live.
+  `last_result` is `null` or `{state, code, detail, operation_id, at}` with `state` one of
+  `recovered`, `recovered_without_prompt`, `failed`, `uncertain`, `rate_limited`, `waiting`,
+  `disabled`, `abandoned`. `api capabilities` adds the top-level `auto_recover` descriptor.
+- **Storage**: the setting lives in `registry/auto-recover.json` (atomic, fsynced writes under a
+  lock), not in the session catalog entry, so it survives restarts and pane bookkeeping never changes
+  a generation.
+- **Trigger**: the supervisor checks enabled sessions shortly after it starts and then every 15 s
+  (`SESSIONSATION_AUTO_RECOVER_SECONDS`, `0` turns the loop off). A session qualifies only when it is
+  enabled and not live by the same identity checks as `api state` for 3 consecutive checks (so a
+  session that is running again is never started twice), it is not archived, deleted, hosted or
+  suppressed, no other operation is running on it (`lifecycle` admission), no earlier recovery is
+  unfinished, and HERDR answers (`HERDR_UNAVAILABLE` is surfaced in `last_result` and retried). The
+  check is skipped entirely when no session has the toggle on.
+- **Explicit stop**: `api stop`, `api archive` and `api delete-session` on the session **disable**
+  auto-recover (`last_result.code:"EXPLICIT_STOP"`): a deliberate stop is never undone. `api switch`
+  and `api restart` only **suppress** it until the session is observed live again, so the process they
+  stop and relaunch themselves is not recovered a second time.
+- **Pane choice**: the recorded pane is reused only if it still exists and only an idle shell runs in
+  it (`herdr pane process-info`: foreground process group is the shell, a single shell process).
+  Otherwise a new tab is opened (`--no-focus`, labelled with the session name) in the same workspace
+  (the recorded id while it still has the recorded label, else the workspace with that label), else
+  in a new workspace. The pane and tab are renamed after the session.
+- **Resume**: through the normal path, as `sessionsation resume ID --expected-generation G
+  --confirm-unfinished` in the pane (same flags, permissions and environment as a manual resume; an
+  interrupted turn is expected). The prompt (default `Auto-recovery: the host restarted at <UTC time>
+  and sessionsation resumed this session. Re-check your state and continue your work.`) is then sent
+  once through the normal `api send` path (`mode:"submit"`) with a fixed `message_id`. A send is
+  retried only on refusals that precede any admission (`SESSION_NOT_RUNNING`, `STALE_TARGET`,
+  `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`, `PEER_SOCKET_UNLINKED`,
+  `SESSION_OPERATION_IN_PROGRESS`) for up to 90 s; a clean refusal ends the operation `complete` with
+  `prompt.state:"failed"` (`recovered_without_prompt`); anything ambiguous ends `uncertain` and is
+  never re-sent.
+- **Rate limit**: at most 3 recovery attempts per session per hour; beyond that nothing is started
+  and `last_result` is `rate_limited` until the window passes.
+- **Operations**: each recovery is journaled in `operations/auto-recoveries/ID.json` and listed by
+  `api operations` as `kind:"auto_recover"` with the operation keys of an account switch plus
+  `resume {state, pane, pane_reused, recorded_pane}` and `prompt {state, attempts, detail,
+  message_id}`. **Phases**: `admitted`, `pane_ready`, `resuming`, `resumed`, `prompting`, then the
+  terminal `complete`, `failed` (nothing was started) or `abandoned`; `uncertain` (the resume or prompt
+  was dispatched but not confirmed) waits for `api recover ID` (re-checks, never replays) or
+  `api abandon-operation ID --confirm ID`. A stalled operation (supervisor died, no worker, over 10 s
+  old) is recoverable the same way, and blocks further automatic recoveries of that session.

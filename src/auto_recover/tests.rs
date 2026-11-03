@@ -1,0 +1,277 @@
+use super::*;
+use std::sync::Mutex;
+
+fn record(paths: &Paths, session: &Session) -> Record {
+    Record {
+        schema_version: 1,
+        id: uuid::Uuid::new_v4().to_string(),
+        kind: "auto_recover".into(),
+        session_id: session.id.clone(),
+        conversation_id: session.conversation_id.clone(),
+        provider: "codex".into(),
+        account: "a".into(),
+        name: session.name.clone(),
+        herdr_session: "default".into(),
+        recorded_pane: None,
+        workspace_label: None,
+        directory: None,
+        pane: Some("herdr/default/w1:p2".into()),
+        pane_reused: Some(true),
+        prompt: "go on".into(),
+        message_id: uuid::Uuid::new_v4().to_string(),
+        prompt_state: "pending".into(),
+        prompt_attempts: 0,
+        prompt_detail: String::new(),
+        resume: "confirmed".into(),
+        phase: "resumed".into(),
+        detail: String::new(),
+        uncertain_from: None,
+        generation_after: None,
+        created_at: daemon::now(),
+        updated_at: daemon::now(),
+    }
+    .tap(|r| {
+        let _ = paths;
+        let _ = r;
+    })
+}
+trait Tap: Sized {
+    fn tap(self, f: impl FnOnce(&Self)) -> Self {
+        f(&self);
+        self
+    }
+}
+impl Tap for Record {}
+
+fn fixture() -> (tempfile::TempDir, Paths, Session) {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(dir.path().join("state"))).unwrap();
+    let conversation = uuid::Uuid::new_v4().to_string();
+    let s = catalog::record_launch(&paths, "a", &conversation, "work", None).unwrap();
+    (dir, paths, s)
+}
+
+/// Scripted replies for the normal send path; records every body.
+struct Script {
+    replies: Mutex<Vec<Result<Value>>>,
+    bodies: Mutex<Vec<Value>>,
+}
+impl Script {
+    fn new(mut replies: Vec<Result<Value>>) -> Self {
+        replies.reverse();
+        Self {
+            replies: Mutex::new(replies),
+            bodies: Mutex::new(vec![]),
+        }
+    }
+}
+impl Sender for Script {
+    async fn send(&self, _: &Paths, body: Value) -> Result<Value> {
+        self.bodies.lock().unwrap().push(body);
+        self.replies.lock().unwrap().pop().expect("unexpected send")
+    }
+}
+
+#[test]
+fn the_default_prompt_names_the_restart_time() {
+    assert_eq!(chrono_like(0), "1970-01-01 00:00:00 UTC");
+    assert_eq!(chrono_like(1_700_000_000), "2023-11-14 22:13:20 UTC");
+    assert!(
+        default_prompt(1_700_000_000).contains("the host restarted at 2023-11-14 22:13:20 UTC")
+    );
+    assert!(default_prompt(0).ends_with("Re-check your state and continue your work."));
+}
+
+#[test]
+fn the_workspace_is_found_by_id_while_its_label_matches_else_by_label() {
+    let list = json!({"workspaces":[{"workspace_id":"w1","label":"Other"},{"workspace_id":"w7","label":"Main"}]});
+    // Same id, same label: kept.
+    assert_eq!(
+        pick_workspace(&list, Some("w7"), Some("Main")).as_deref(),
+        Some("w7")
+    );
+    // The id now names a different workspace: find the labelled one.
+    assert_eq!(
+        pick_workspace(&list, Some("w1"), Some("Main")).as_deref(),
+        Some("w7")
+    );
+    // Label gone: no workspace (the caller creates one).
+    assert_eq!(pick_workspace(&list, Some("w1"), Some("Gone")), None);
+    // No recorded label: the id alone.
+    assert_eq!(
+        pick_workspace(&list, Some("w1"), None).as_deref(),
+        Some("w1")
+    );
+    assert_eq!(pick_workspace(&list, None, None), None);
+}
+
+#[tokio::test]
+async fn the_prompt_is_sent_once_with_one_message_id_and_retried_only_before_admission() {
+    let (_d, paths, s) = fixture();
+    let mut r = record(&paths, &s);
+    let script = Script::new(vec![
+        Err(anyhow::anyhow!("SESSION_NOT_RUNNING: not yet")),
+        Err(anyhow::anyhow!("STALE_TARGET")),
+        Ok(json!({"state":"accepted"})),
+    ]);
+    deliver(&paths, &mut r, &script).await.unwrap();
+    assert_eq!(r.prompt_state, "delivered");
+    assert_eq!(r.prompt_attempts, 3);
+    let bodies = script.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 3);
+    assert!(
+        bodies
+            .iter()
+            .all(|b| b["message_id"] == r.message_id.as_str())
+    );
+    assert!(
+        bodies
+            .iter()
+            .all(|b| b["text"] == "go on" && b["mode"] == "submit")
+    );
+    // Delivered is final: another call sends nothing.
+    deliver(&paths, &mut r, &Script::new(vec![])).await.unwrap();
+    // The state machine also refuses to re-enter after a dispatch.
+    r.prompt_state = "dispatching".into();
+    assert!(deliver(&paths, &mut r, &Script::new(vec![])).await.is_err());
+}
+
+#[tokio::test]
+async fn an_ambiguous_send_is_uncertain_and_never_replayed() {
+    let (_d, paths, s) = fixture();
+    let mut r = record(&paths, &s);
+    let script = Script::new(vec![Err(anyhow::anyhow!("terminal write timed out"))]);
+    let error = deliver(&paths, &mut r, &script).await.unwrap_err();
+    assert!(error.to_string().starts_with("PROMPT_DELIVERY_UNCERTAIN"));
+    assert_eq!(script.bodies.lock().unwrap().len(), 1);
+    assert_eq!(r.prompt_state, "dispatching");
+    fail(&paths, &mut r, &error);
+    assert_eq!(r.phase, "uncertain");
+    assert_eq!(r.uncertain_from.as_deref(), Some("prompting"));
+    // Recovery from 'prompting' completes without sending anything.
+    r.phase = "prompting".into();
+    let silent = Script::new(vec![]);
+    drive(&paths, &mut r, &silent).await.unwrap();
+    assert_eq!(r.phase, "complete");
+    assert!(silent.bodies.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_clean_refusal_ends_complete_with_the_prompt_marked_failed() {
+    let (_d, paths, s) = fixture();
+    let mut r = record(&paths, &s);
+    let script = Script::new(vec![Err(anyhow::anyhow!("TERMINAL_INPUT_DISABLED: off"))]);
+    drive(&paths, &mut r, &script).await.unwrap();
+    assert_eq!(r.phase, "complete");
+    assert_eq!(r.prompt_state, "failed");
+    assert!(r.prompt_detail.contains("TERMINAL_INPUT_DISABLED"));
+    assert_eq!(script.bodies.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_failure_before_dispatch_is_failed_and_after_it_uncertain() {
+    let (_d, paths, s) = fixture();
+    let mut r = record(&paths, &s);
+    r.phase = "pane_ready".into();
+    fail(&paths, &mut r, &anyhow::anyhow!("PANE_NOT_AVAILABLE"));
+    assert_eq!(r.phase, "failed");
+    r.phase = "resuming".into();
+    fail(&paths, &mut r, &anyhow::anyhow!("boom"));
+    assert_eq!(r.phase, "uncertain");
+    assert_eq!(r.uncertain_from.as_deref(), Some("resuming"));
+}
+
+#[test]
+fn abandon_needs_the_confirmation_and_a_stuck_operation() {
+    let (_d, paths, s) = fixture();
+    let mut r = record(&paths, &s);
+    save(&paths, &mut r).unwrap();
+    assert!(
+        abandon(&paths, &r.id, "nope")
+            .unwrap_err()
+            .to_string()
+            .contains("CONFIRMATION_MISMATCH")
+    );
+    assert!(
+        abandon(&paths, &r.id, &r.id)
+            .unwrap_err()
+            .to_string()
+            .contains("OPERATION_NOT_STUCK")
+    );
+    r.phase = "uncertain".into();
+    save(&paths, &mut r).unwrap();
+    let done = abandon(&paths, &r.id, &r.id).unwrap();
+    assert_eq!(done["phase"], "abandoned");
+    assert_eq!(done["terminal"], true);
+    assert!(exists(&paths, &r.id));
+    assert!(
+        abandon(&paths, &r.id, &r.id)
+            .unwrap_err()
+            .to_string()
+            .contains("OPERATION_ALREADY_TERMINAL")
+    );
+}
+
+#[test]
+fn explicit_stop_disables_and_suppress_only_pauses() {
+    let (_d, paths, s) = fixture();
+    with_store(&paths, |store| {
+        store.sessions.insert(
+            s.id.clone(),
+            Setting {
+                enabled: true,
+                misses: 2,
+                ..Default::default()
+            },
+        );
+    })
+    .unwrap();
+    suppress(&paths, &s.id);
+    let x = all(&paths)[&s.id].clone();
+    assert!(x.enabled && x.suppressed && x.misses == 0);
+    assert_eq!(public(Some(&x))["suppressed"], true);
+    explicit_stop(&paths, &s.id);
+    let x = all(&paths)[&s.id].clone();
+    assert!(!x.enabled);
+    assert_eq!(x.last_result.as_ref().unwrap()["code"], "EXPLICIT_STOP");
+    assert_eq!(public(Some(&x))["suppressed"], false);
+    // Unknown sessions are ignored and nothing is created.
+    explicit_stop(&paths, "no-such-session");
+    assert!(!all(&paths).contains_key("no-such-session"));
+}
+
+#[test]
+fn capability_reasons_follow_the_enable_rules() {
+    let live = json!({"provider":"claude","availability":"running","account":"a","hosted":null,"native_kind":"interactive"});
+    assert_eq!(capability_reason(&live, false), None);
+    let mut stopped = live.clone();
+    stopped["availability"] = json!("stopped");
+    assert_eq!(
+        capability_reason(&stopped, false),
+        Some("AUTO_RECOVER_REQUIRES_LIVE")
+    );
+    // Already enabled: the toggle stays available so it can be turned off.
+    assert_eq!(capability_reason(&stopped, true), None);
+    let mut hosted = live.clone();
+    hosted["hosted"] = json!({"state":"running"});
+    assert!(
+        capability_reason(&hosted, false)
+            .unwrap()
+            .starts_with("AUTO_RECOVER_UNSUPPORTED")
+    );
+    let mut background = live.clone();
+    background["native_kind"] = json!("bg");
+    assert!(
+        capability_reason(&background, false)
+            .unwrap()
+            .starts_with("AUTO_RECOVER_UNSUPPORTED")
+    );
+    let mut external = json!({"provider":"codex","availability":"running","account":"external"});
+    assert!(
+        capability_reason(&external, false)
+            .unwrap()
+            .starts_with("AUTO_RECOVER_UNSUPPORTED")
+    );
+    external["account"] = json!("a");
+    assert_eq!(capability_reason(&external, false), None);
+}

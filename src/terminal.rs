@@ -109,7 +109,7 @@ pub(crate) fn state_at(key: &str, socket: Option<&Path>) -> Result<(bool, u32)> 
     process_state(&result["process_info"])
 }
 
-fn process_state(info: &Value) -> Result<(bool, u32)> {
+pub(crate) fn process_state(info: &Value) -> Result<(bool, u32)> {
     let shell = info["shell_pid"]
         .as_u64()
         .context("HERDR shell PID missing")? as u32;

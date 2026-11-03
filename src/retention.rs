@@ -38,6 +38,10 @@ pub const PRUNABLE: &[(&str, &[&str])] = &[
         &["complete", "failed", "cancelled", "recovered"],
     ),
     (layout::SPACE_MOVES, &["complete", "failed"]),
+    (
+        layout::AUTO_RECOVERIES,
+        &["complete", "failed", "abandoned"],
+    ),
     (layout::MESSAGE_RECOVERIES, &["complete", "failed"]),
 ];
 

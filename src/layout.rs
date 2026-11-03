@@ -52,6 +52,11 @@ pub const THREAD_LOCATIONS: &str = "registry/thread-locations";
 pub const MANAGED_PANES: &str = "registry/managed-panes";
 pub const HERDR_PANES: &str = "registry/herdr-panes";
 pub const PROVIDER_STATE: &str = "registry/provider-state";
+/// Per-session auto-recover settings (contract 1.35.0), outside the catalog so
+/// pane bookkeeping never changes a session generation.
+pub const AUTO_RECOVER: &str = "registry/auto-recover.json";
+pub const AUTO_RECOVER_LOCK: &str = "registry/auto-recover.lock";
+pub const AUTO_RECOVER_TICK_LOCK: &str = "registry/auto-recover-tick.lock";
 
 pub const ARCHIVED_SESSIONS: &str = "sessions/archived";
 pub const PRESERVED_CONVERSATIONS: &str = "sessions/preserved";
@@ -63,6 +68,7 @@ pub const DELETIONS: &str = "operations/deletions";
 pub const ACCOUNT_DELETIONS: &str = "operations/account-deletions";
 pub const ACCOUNT_RENAMES: &str = "operations/account-renames";
 pub const CLAUDE_SWITCHES: &str = "operations/claude-switches";
+pub const AUTO_RECOVERIES: &str = "operations/auto-recoveries";
 pub const CONVERSATION_OPERATIONS: &str = "operations/conversation-operations";
 pub const HANDOFF_JOBS: &str = "operations/handoff-jobs";
 pub const SPACE_MOVES: &str = "operations/space-moves";
@@ -95,6 +101,7 @@ pub const OPERATION_DIRS: &[&str] = &[
     ACCOUNT_DELETIONS,
     ACCOUNT_RENAMES,
     CLAUDE_SWITCHES,
+    AUTO_RECOVERIES,
     CONVERSATION_OPERATIONS,
     HANDOFF_JOBS,
     SPACE_MOVES,

@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 34;
+pub const CONTRACT_MINOR: u32 = 35;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.34.0";
+pub const CONTRACT_VERSION: &str = "1.35.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -174,6 +174,20 @@ pub enum Command {
         to: String,
         #[arg(long)]
         accept_risks: bool,
+    },
+    /// Per-session auto-recover: resume a live session automatically if its process disappears.
+    AutoRecover {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+        /// Prompt sent after the session is resumed (default: a notice naming the restart time).
+        #[arg(long, requires = "enable")]
+        prompt: Option<String>,
     },
     /// Preview or request a generation-checked directory change or project-folder move.
     Relocate {
@@ -348,7 +362,7 @@ pub enum Launcher {
 
 /// Resolve a native-provider (Claude or Gemini) catalog session and observe it
 /// against its account home.
-fn native_selected(
+pub(crate) fn native_selected(
     paths: &Paths,
     id: &str,
     generation: &str,
@@ -557,7 +571,7 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
 }
 
 /// The recorded Codex session directory, which must still be an absolute directory.
-fn resume_cwd(cwd: &str) -> Result<std::path::PathBuf> {
+pub(crate) fn resume_cwd(cwd: &str) -> Result<std::path::PathBuf> {
     let p = std::path::PathBuf::from(cwd);
     ensure!(
         p.is_absolute() && p.is_dir(),
@@ -1359,6 +1373,7 @@ pub fn capabilities() -> Value {
     "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false});
     for provider in value["providers"].as_array_mut().into_iter().flatten() {
         provider["account_logout"] = json!(provider["id"] != "antigravity");
+        provider["session_name_max"] = json!(crate::model::SESSION_NAME_MAX);
     }
     value["contract_version"] = json!(CONTRACT_VERSION);
     value["state_cached"] = json!(true);
@@ -1410,6 +1425,7 @@ pub fn capabilities() -> Value {
     // Revision 20: create a new Space by label on resume, add-to-HERDR and move.
     value["new_space"] = json!({"since_revision":20,"version":1,"resume":true,"add_to_herdr":true,"move_space":true,"label_validation":"space_label","exists_error":"WORKSPACE_NAME_EXISTS"});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
+    value["auto_recover"] = crate::auto_recover::capability();
     if let Some(claude) = value["providers"]
         .as_array_mut()
         .and_then(|p| p.iter_mut().find(|p| p["id"] == "claude"))
@@ -1601,7 +1617,7 @@ fn native_public(
     value
 }
 
-async fn inventory(paths: &Paths) -> Result<Vec<external::Instance>> {
+pub(crate) async fn inventory(paths: &Paths) -> Result<Vec<external::Instance>> {
     let items = external::discover_catalog(paths).await?;
     catalog::reconcile(paths, &items)?;
     catalog::names::refresh(paths, &items).await?;
@@ -1837,6 +1853,15 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
             }
             session["resume_block_reason"] = json!("moving");
         }
+    }
+    let settings = crate::auto_recover::all(paths);
+    for session in &mut sessions {
+        let setting = settings.get(session["id"].as_str().unwrap_or_default());
+        let enabled = setting.is_some_and(|s| s.enabled);
+        session["auto_recover"] = crate::auto_recover::public(setting);
+        let reason = crate::auto_recover::capability_reason(session, enabled).map(str::to_owned);
+        session["capabilities"]["auto_recover"] = json!(reason.is_none());
+        session["capability_reasons"]["auto_recover"] = json!(reason);
     }
     let observed_at = daemon::now();
     let value = json!({"observed_at":observed_at,"account_source":source,
@@ -2106,6 +2131,7 @@ pub fn print(result: Value) -> Result<()> {
 }
 
 pub async fn run(paths: &Paths, command: Command) -> Result<()> {
+    note_deliberate_action(paths, &command);
     let result = match command {
         Command::ResumeLaunch { command } => crate::resume::api(paths, command).await?,
         Command::Session {
@@ -2306,6 +2332,19 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     catalog::names::rename(paths, &session, &expected_generation, &name).await?,
                 )
             }
+        }
+        Command::AutoRecover {
+            session,
+            expected_generation,
+            enable,
+            disable,
+            prompt,
+        } => {
+            ensure!(
+                enable != disable,
+                "INVALID_ARGUMENT: pass exactly one of --enable or --disable"
+            );
+            crate::auto_recover::set(paths, &session, &expected_generation, enable, prompt).await?
         }
         Command::Switch {
             session,
@@ -2508,6 +2547,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     .map(crate::account_rename::public),
             );
             ops.extend(crate::claude_switch::operations(paths)?);
+            ops.extend(crate::auto_recover::operations(paths)?);
             ops.extend(external::archiving::operations(paths)?);
             ops.extend(external::spaces::operations(paths)?);
             ops.extend(crate::inline::operations(paths)?);
@@ -2523,7 +2563,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             json!({"id":id,"response_recorded":true})
         }
         Command::AbandonOperation { operation, confirm } => {
-            if crate::claude_switch::exists(paths, &operation) {
+            if crate::auto_recover::exists(paths, &operation) {
+                crate::auto_recover::abandon(paths, &operation, &confirm)?
+            } else if crate::claude_switch::exists(paths, &operation) {
                 crate::claude_switch::abandon(paths, &operation, &confirm)?
             } else if crate::account_rename::exists(paths, &operation) {
                 crate::account_rename::abandon(paths, &operation, &confirm)?
@@ -2535,6 +2577,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             managed_operation(paths, &id)?;
             external::cancel_move(paths, &id)?;
             json!({"id":id,"cancellation_requested":true})
+        }
+        Command::Recover { operation: id } if crate::auto_recover::exists(paths, &id) => {
+            crate::auto_recover::recover(paths, &id).await?
         }
         Command::Recover { operation: id } if crate::claude_switch::exists(paths, &id) => {
             crate::claude_switch::recover(paths, &id).await?
@@ -2581,6 +2626,44 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
 /// Space) carries the session's current name, already updated by `--name`. Live
 /// HERDR session names follow the tab label, so a tab left with the default label
 /// would rename the session.
+/// A deliberate stop, archive or delete disables auto-recover for the session; a restart or
+/// account switch suppresses it until the session is live again. Only requests that name
+/// a current generation count, so a stale call never changes the setting.
+fn note_deliberate_action(paths: &Paths, command: &Command) {
+    let resolve =
+        |session: &str, generation: &str| catalog::resolve(paths, session, generation).ok();
+    match command {
+        Command::Stop {
+            session,
+            expected_generation,
+        } => {
+            if let Some(s) = resolve(session, expected_generation) {
+                crate::auto_recover::explicit_stop(paths, &s.id);
+            }
+        }
+        Command::Archive { target } | Command::DeleteSession { target } => {
+            if let Some(s) = resolve(&target.session, &target.expected_generation) {
+                crate::auto_recover::explicit_stop(paths, &s.id);
+            }
+        }
+        Command::Switch {
+            session,
+            expected_generation,
+            ..
+        }
+        | Command::Restart {
+            session,
+            expected_generation,
+            ..
+        } => {
+            if let Some(s) = resolve(session, expected_generation) {
+                crate::auto_recover::suppress(paths, &s.id);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn resume_placement<'a>(
     space: Option<&'a str>,
     new_space: Option<&'a str>,
