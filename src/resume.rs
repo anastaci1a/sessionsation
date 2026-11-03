@@ -902,11 +902,11 @@ mod tests {
     fn request_directory_is_explicit_and_unknown_provider_is_rejected() {
         let mut value = json!({"version":1,"request_id":uuid::Uuid::new_v4(),"session_id":uuid::Uuid::new_v4(),"expected_generation":"g","account_id":"codex:fixture","name":"Name","host":{"session":"fixture","socket":"/tmp/socket"},"space":{"kind":"existing","id":"w1"}});
         assert!(shape(&serde_json::from_value(value.clone()).unwrap()).is_ok());
-        for name in ["x".repeat(30), "界".repeat(30)] {
+        for name in ["x".repeat(64), "界".repeat(64)] {
             value["name"] = json!(name);
             assert!(shape(&serde_json::from_value(value.clone()).unwrap()).is_ok());
         }
-        for name in ["x".repeat(31), "界".repeat(31)] {
+        for name in ["x".repeat(65), "界".repeat(65)] {
             value["name"] = json!(name);
             assert!(shape(&serde_json::from_value(value.clone()).unwrap()).is_err());
         }

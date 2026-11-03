@@ -341,7 +341,7 @@
             "string",
             "null"
           ],
-          "maxLength": 30,
+          "maxLength": 64,
           "description": "Revision 11: optional display name; id/name/home never change on rename."
         },
         "auth_failed": {

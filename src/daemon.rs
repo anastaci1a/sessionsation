@@ -139,12 +139,12 @@ fn codex_named<'a>(state: &'a State, params: &Value) -> Result<&'a Account> {
     );
     Ok(account)
 }
-/// Display names follow account-name characters, up to 30 bytes.
+/// Display names follow account-name characters, up to 64 bytes.
 pub fn validate_display_name(display: &str) -> Result<()> {
     ensure!(
         display.len() <= crate::paths::NEW_ACCOUNT_NAME_MAX
             && crate::paths::validate_name(display).is_ok(),
-        "INVALID_DISPLAY_NAME: use 1-30 ASCII letters, digits, hyphens or underscores"
+        "INVALID_DISPLAY_NAME: use 1-64 ASCII letters, digits, hyphens or underscores"
     );
     Ok(())
 }
@@ -381,6 +381,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
         }
     });
     let automatic_task = tokio::spawn(crate::automatic::monitor(paths.clone()));
+    let auto_recover_task = tokio::spawn(crate::auto_recover::monitor(paths.clone()));
     let (history_tx, mut history_rx) = mpsc::channel(1);
     let history_task = tokio::spawn(crate::usage_history::monitor(paths.clone(), history_tx));
     let mut history = crate::usage_history::Recorder::default();
@@ -921,6 +922,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
         }
     }
     automatic_task.abort();
+    auto_recover_task.abort();
     history_task.abort();
     accept_task.abort();
     for (_, helper) in helpers {

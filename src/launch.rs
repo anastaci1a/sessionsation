@@ -109,7 +109,7 @@ fn folder(path: &Path) -> bool {
 pub fn validate_name(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty()
-            && name.len() <= 128
+            && name.len() <= 256
             && name.trim() == name
             && !name.chars().any(char::is_control)
             && !name.contains('/')
@@ -787,10 +787,10 @@ mod tests {
     }
     #[test]
     fn session_limit_is_separate_from_directory_and_space_names() {
-        for name in ["a".repeat(30), "界".repeat(30)] {
+        for name in ["a".repeat(64), "界".repeat(64)] {
             validate_session_name(&name).unwrap();
         }
-        for name in ["a".repeat(31), "界".repeat(31)] {
+        for name in ["a".repeat(65), "界".repeat(65)] {
             assert!(validate_session_name(&name).is_err());
             validate_name(&name).unwrap();
         }

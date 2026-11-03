@@ -853,19 +853,19 @@ mod tests {
                 .conversation_id,
             s.conversation_id
         );
-        assert!(rename(&p, &s.id, &legacy.generation(), &"x".repeat(31)).is_err());
-        let renamed = rename(&p, &s.id, &legacy.generation(), "界".repeat(30).as_str()).unwrap();
+        assert!(rename(&p, &s.id, &legacy.generation(), &"x".repeat(65)).is_err());
+        let renamed = rename(&p, &s.id, &legacy.generation(), "界".repeat(64).as_str()).unwrap();
         assert_eq!(renamed.id, s.id);
         for conversation in ["a", "b"] {
             let assigned = record_launch(
                 &p,
                 "selected",
                 conversation,
-                "long-provider-session-label-that-exceeds-thirty",
+                "long-provider-session-label-that-exceeds-the-sixty-four-character-session-name-limit",
                 None,
             )
             .unwrap();
-            assert_eq!(assigned.name.chars().count(), 30);
+            assert_eq!(assigned.name.chars().count(), 64);
         }
         assert_eq!(list(&p).unwrap().len(), 3);
     }

@@ -15,7 +15,7 @@
       "locked Rust tests",
       "documentation links",
       "JSON Schema and real CLI envelopes",
-      "30-character account and Unicode session boundaries; schema/admission/rename/resume consistency",
+      "64-character account and Unicode session boundaries; schema/admission/rename/resume consistency",
       "Direct attachment lookup is read-only and rejects stale generations, replaced process epochs and unattached sessions for HERDR/tmux",
       "Unregistered original-account saved history remains resumable; state/details agree, target account availability remains checked at explicit admission"
     ],

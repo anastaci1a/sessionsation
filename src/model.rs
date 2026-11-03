@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const SESSION_NAME_MAX: usize = 30;
+pub const SESSION_NAME_MAX: usize = 64;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Window {

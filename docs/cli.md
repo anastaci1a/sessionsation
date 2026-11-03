@@ -184,10 +184,10 @@ session or any readable process with `CLAUDE_CONFIG_DIR` set to either home),
 homes; identity values are never printed). An already managed account succeeds with
 `already_managed:true` and `note:"ALREADY_MANAGED"`. A change is recorded as event
 `account.claude_home_relocated` through the supervisor.
-New account names allow 1–30 ASCII letters, digits, hyphens or underscores
+New account names allow 1–64 ASCII letters, digits, hyphens or underscores
 (excluding `codex:`), enforced by public API admission and the account owner.
 Existing longer names remain valid for other operations.
-User-assigned public session names (new, resume and rename) allow at most 30 Unicode
+User-assigned public session names (new, resume and rename) allow at most 64 Unicode
 scalar values, excluding controls and surrounding whitespace. Existing longer
 catalog names remain readable and keep their identity; new automatic discovery
 labels are shortened with collision-safe suffixes. Space labels and directory
@@ -197,7 +197,7 @@ rename PROVIDER:NAME --display-name X|--clear`) apply to every provider and chan
 only the `display_name` shown in account JSON and the human `NAME` column (`display
 (name)`). The stable name, `<provider>:<name>` id and home directory (a live
 `CODEX_HOME` or `CLAUDE_CONFIG_DIR`) never change. Display names use the account-name
-characters, at most 30, and are unique among the name and display name of every account of
+characters, at most 64, and are unique among the name and display name of every account of
 the same provider (`ACCOUNT_DISPLAY_NAME_EXISTS`; a new account name equal to a display name is
 `ACCOUNT_NAME_EXISTS`). An empty value or `--clear` resets it. The change is written
 by the supervisor (event `account.renamed`). Human commands accept an unambiguous
@@ -715,6 +715,26 @@ with the source account (the receipt's `account_memory` says so). Hosted (stream
 parked sessions, and running sessions outside a recorded pane, are refused with a clear code;
 a busy session needs `--accept-risks`. Codes, phases and recovery are in the
 [contract](contract.md#claude-account-switch-1340).
+
+### Session auto-recover (contract 1.35.0)
+
+```sh
+sessionsation api auto-recover --session BACKEND-ID --expected-generation GENERATION --enable [--prompt TEXT]
+sessionsation api auto-recover --session BACKEND-ID --expected-generation GENERATION --disable
+sessionsation api operations
+```
+
+A per-session toggle: if the host restarts or the session's process otherwise disappears, the
+supervisor resumes it and sends it a prompt. **Only for live sessions**: enabling a stopped, saved,
+stale, unavailable or archived session fails with `AUTO_RECOVER_REQUIRES_LIVE` (hosted and
+background sessions with `AUTO_RECOVER_UNSUPPORTED`); disabling is always allowed. **An explicit
+stop disables it**: `api stop`, `api archive` and `api delete-session` turn it off so a deliberate
+stop is never undone; `api switch` and `api restart` only pause it until the session is live again.
+The recorded pane is reused only while an idle shell is all that runs there, otherwise the session
+opens in a new tab of the same workspace (or a new workspace). Each recovery is a journaled operation
+(`kind:"auto_recover"`, recoverable or abandonable, never replayed), limited to 3 per session per
+hour. The setting, `last_pane` and `last_result` appear as `auto_recover` on each session row of
+`api state`; details, codes and phases are in the [contract](contract.md#session-auto-recover-1350).
 
 ### Hosted Claude sessions and steering (revision 16)
 
