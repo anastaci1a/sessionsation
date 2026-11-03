@@ -1816,7 +1816,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["last_accessed"]=source.and_then(|s|s.last_accessed).map_or(Value::Null,|n|json!(n));
         value["active_since"]=json!(source.filter(|s|!s.inactive).and_then(|s|clock.and_then(|(uptime,hz)|attachment_started_at(now,uptime,s.start_time,hz))));
         let unambiguous=items.iter().filter(|i|!i.inactive && i.thread_id==value["conversation_id"]).count()<=1;
-        value["capabilities"]=json!({"rename":true,"move_space":running && unambiguous && source.is_some_and(|s|s.pane.starts_with("herdr/")),"resume":resume_supported && saved,"change_directory":known && running && unambiguous,"move_project":known && running && unambiguous,"switch_account":known && running && unambiguous,"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":source.is_some_and(|i|i.inactive),"delete":source.is_some_and(|i|i.inactive)});
+        value["capabilities"]=json!({"rename":true,"move_space":running && unambiguous && source.is_some_and(|s|s.pane.starts_with("herdr/")),"resume":resume_supported && saved,"change_directory":known && running && unambiguous,"move_project":known && running && unambiguous,"switch_account":known && unambiguous && (running || saved),"restart":known && running && unambiguous,"stop":known && running && unambiguous,"archive":source.is_some_and(|i|i.inactive),"delete":source.is_some_and(|i|i.inactive)});
         let (_, add_reason) = claude::attach::codex_capability(running, source.is_some_and(|s|s.pane.starts_with("herdr/")));
         value["capabilities"]["add_to_herdr"]=json!(false);
         value["capability_reasons"]=json!({"add_to_herdr":add_reason});
@@ -2368,7 +2368,13 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             let target = to
                 .strip_prefix("codex:")
                 .context("ACCOUNT_PROVIDER_REQUIRED")?;
-            ensure!(!source.inactive, "SESSION_NOT_RUNNING");
+            // A stopped session is only re-homed (never started).
+            ensure!(
+                !source.inactive
+                    || (source.move_id.is_none()
+                        && matches!(source.block_reason.as_deref(), None | Some("unfinished"))),
+                "SESSION_STATE_UNVERIFIED"
+            );
             operation(
                 paths,
                 external::queue_snapshot(

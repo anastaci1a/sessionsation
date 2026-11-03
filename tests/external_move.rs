@@ -1078,15 +1078,70 @@ async fn cancellation_and_decline_leave_busy_source_running() {
     );
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn inactive_moves_start_a_discoverable_pane() {
+async fn switching_a_saved_session_only_rehomes_it_and_a_later_resume_starts_it_there() {
     let f = Fixture::new().await;
-    history(&f.paths.account("personal").unwrap(), f.tmp.path(), ID);
+    let personal = f.paths.account("personal").unwrap();
+    let work = f.paths.account("work").unwrap();
+    history(&personal, f.tmp.path(), ID);
     let j = f.invoke(&["move", "--thread", ID, "--to", "work"]);
     let done = f.wait(j["id"].as_str().unwrap(), "complete").await;
-    assert!(done["source"]["pane"].as_str().unwrap().starts_with('%'));
+    assert!(
+        done["detail"].as_str().unwrap().contains("stays saved"),
+        "{done}"
+    );
+    // Re-homed only: no pane or terminal was opened and the target server never loaded the thread.
+    assert!(
+        !done["source"]["pane"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with('%')
+    );
+    assert!(!work.join("launch-args").exists());
+    assert!(
+        !f.b.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(method, params)| method == "thread/resume" && params["threadId"] == ID),
+        "the target app-server must not load the thread"
+    );
+    assert!(
+        find_rollout(&work, ID).is_some(),
+        "history moved to the target home"
+    );
     let list = f.invoke(&["sessions", "--all"]);
     assert_eq!(list["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(list["sessions"][0]["account"], "work");
+    assert_eq!(list["sessions"][0]["lifecycle"], "inactive");
+    // A later normal resume starts it on the target account (native resume with the rollout).
+    tmux(
+        &f.socket,
+        &[
+            "new-session",
+            "-d",
+            "-s",
+            "codex-resume",
+            "-c",
+            f.tmp.path().to_str().unwrap(),
+            &format!(
+                "exec {} --data-dir {} run --account work --thread {ID}",
+                binary(),
+                f.paths.root.display()
+            ),
+        ],
+    );
+    let until = Instant::now() + Duration::from_secs(10);
+    while !work.join("launch-args").exists() {
+        assert!(Instant::now() < until, "resume did not open on the target");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        f.b.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(method, params)| method == "thread/resume" && params["threadId"] == ID)
+    );
 }
 
 fn paginated(f: &Fixture, id: &str) {

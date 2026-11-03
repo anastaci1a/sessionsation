@@ -762,6 +762,9 @@ pub(super) async fn launch_target(
     root_target: &Path,
     mut target: Option<&mut Control>,
 ) -> Result<()> {
+    if job.source.inactive && job.kind == "account" && job.resume_destination.is_none() {
+        return rehome_saved(paths, job, target_home, root_target).await;
+    }
     let mode = crate::store::load_config(paths)?.effective_launch_permissions();
     let permissions = start_permissions(
         mode,
@@ -902,6 +905,42 @@ pub(super) async fn launch_target(
     }
     phase(paths, job, "complete", detail)?;
     Ok(())
+}
+
+/// Switching a stopped (saved) session only re-homes it: the verified history is already in the
+/// target home and the old copy is retired. Nothing is loaded on the target app-server and no
+/// terminal is opened; a later normal resume starts it there (native resume rebuilds the index
+/// from the rollout file).
+async fn rehome_saved(
+    paths: &Paths,
+    job: &mut Job,
+    target_home: &Path,
+    root_target: &Path,
+) -> Result<()> {
+    phase(
+        paths,
+        job,
+        "verifying_history",
+        "Verifying the copied history byte for byte. The session is not started.",
+    )?;
+    if let Ok(original) = fs::read(&job.source.rollout) {
+        ensure!(
+            fs::read(root_target)? == original,
+            "Transferred history did not match the original; the original is retained for recovery"
+        );
+    }
+    job.source_lease_released = true;
+    save_job(paths, job)?;
+    super::catalog::remember(paths, &job.source)?;
+    let mut detail = format!(
+        "Re-homed to {}. The session stays saved; resume it normally to start it there.",
+        job.target
+    );
+    if let Some(note) = super::catalog::moved(paths, job, target_home).await? {
+        detail.push(' ');
+        detail.push_str(&note);
+    }
+    phase(paths, job, "complete", detail)
 }
 
 pub(super) async fn stop_source(

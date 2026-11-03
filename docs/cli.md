@@ -716,6 +716,9 @@ parked sessions, and running sessions outside a recorded pane, are refused with 
 a busy session needs `--accept-risks`. Codes, phases and recovery are in the
 [contract](contract.md#claude-account-switch-1340).
 
+Switching the account of a stopped (saved) session only re-homes it: the history moves to the target
+account and the session stays saved; nothing is started until you resume it ([contract](contract.md#switching-a-stopped-session-only-re-homes-it-1350)).
+
 ### Session auto-recover (contract 1.35.0)
 
 ```sh

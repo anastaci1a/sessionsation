@@ -2477,3 +2477,18 @@ Known limitation: a new account's name is its folder name, and Codex's control s
 `<root>/accounts/codex/<folder>/app-server-control/app-server-control.sock`. Under a deep data root,
 folder names longer than about 17 characters can exceed the 107-byte `sun_path` limit. This is
 pre-existing and not widened here: `new_account_name_max` stays 30.
+
+### Switching a stopped session only re-homes it (1.35.0)
+
+`api switch` (and `move`) of a **stopped/saved** session is a quick re-homing, never a start. Claude
+already behaved this way (it resumes only if it was running). For Codex, `capabilities.switch_account`
+is now `true` for a saved session (with the usual `capability_reasons` otherwise) and `api switch`
+no longer refuses it with `SESSION_NOT_RUNNING`. The job copies and byte-verifies the rollout and
+child histories in the target home, retires the old copy and lets discovery list the session as
+`saved` on the target account (new catalog account and generation). It does **not** load the thread
+on the target app-server, open any pane or terminal, or start Codex; the journal phases are the
+usual ones minus `launching_target` (`... verifying_history`, `complete` with a detail that says the
+session stays saved). A later normal resume (or opening it in the UI) starts it there with the
+recorded permissions: native resume rebuilds the target's index from the copied rollout. A resume
+launch that explicitly chooses an account (`resume_destination`) is unchanged, and so is switching a
+live session. Gemini and Antigravity do not support account switch.
