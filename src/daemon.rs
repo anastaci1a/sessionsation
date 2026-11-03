@@ -139,10 +139,10 @@ fn codex_named<'a>(state: &'a State, params: &Value) -> Result<&'a Account> {
     );
     Ok(account)
 }
-/// Display names follow account-name characters, up to 64 bytes.
+/// Display names follow account-name characters, up to 64 bytes (ACCOUNT_DISPLAY_NAME_MAX).
 pub fn validate_display_name(display: &str) -> Result<()> {
     ensure!(
-        display.len() <= crate::paths::NEW_ACCOUNT_NAME_MAX
+        display.len() <= crate::paths::ACCOUNT_DISPLAY_NAME_MAX
             && crate::paths::validate_name(display).is_ok(),
         "INVALID_DISPLAY_NAME: use 1-64 ASCII letters, digits, hyphens or underscores"
     );

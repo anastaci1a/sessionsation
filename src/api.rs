@@ -1374,6 +1374,7 @@ pub fn capabilities() -> Value {
     for provider in value["providers"].as_array_mut().into_iter().flatten() {
         provider["account_logout"] = json!(provider["id"] != "antigravity");
         provider["session_name_max"] = json!(crate::model::SESSION_NAME_MAX);
+        provider["account_display_name_max"] = json!(crate::paths::ACCOUNT_DISPLAY_NAME_MAX);
     }
     value["contract_version"] = json!(CONTRACT_VERSION);
     value["state_cached"] = json!(true);

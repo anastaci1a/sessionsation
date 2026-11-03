@@ -312,7 +312,8 @@ async fn enable_needs_a_live_session_and_disable_is_always_allowed() {
     let caps = t.api(&["capabilities"]);
     assert_eq!(caps["contract_version"], "1.35.0");
     for p in caps["providers"].as_array().unwrap() {
-        assert_eq!(p["new_account_name_max"], 64);
+        assert_eq!(p["new_account_name_max"], 30);
+        assert_eq!(p["account_display_name_max"], 64);
         assert_eq!(p["session_name_max"], 64);
     }
     assert_eq!(caps["auto_recover"]["enable_requires"], "live_session");

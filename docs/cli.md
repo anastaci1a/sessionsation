@@ -184,7 +184,7 @@ session or any readable process with `CLAUDE_CONFIG_DIR` set to either home),
 homes; identity values are never printed). An already managed account succeeds with
 `already_managed:true` and `note:"ALREADY_MANAGED"`. A change is recorded as event
 `account.claude_home_relocated` through the supervisor.
-New account names allow 1–64 ASCII letters, digits, hyphens or underscores
+New account names allow 1–30 ASCII letters, digits, hyphens or underscores
 (excluding `codex:`), enforced by public API admission and the account owner.
 Existing longer names remain valid for other operations.
 User-assigned public session names (new, resume and rename) allow at most 64 Unicode
@@ -197,7 +197,7 @@ rename PROVIDER:NAME --display-name X|--clear`) apply to every provider and chan
 only the `display_name` shown in account JSON and the human `NAME` column (`display
 (name)`). The stable name, `<provider>:<name>` id and home directory (a live
 `CODEX_HOME` or `CLAUDE_CONFIG_DIR`) never change. Display names use the account-name
-characters, at most 64, and are unique among the name and display name of every account of
+characters, at most 64 (`account_display_name_max`), and are unique among the name and display name of every account of
 the same provider (`ACCOUNT_DISPLAY_NAME_EXISTS`; a new account name equal to a display name is
 `ACCOUNT_NAME_EXISTS`). An empty value or `--clear` resets it. The change is written
 by the supervisor (event `account.renamed`). Human commands accept an unambiguous

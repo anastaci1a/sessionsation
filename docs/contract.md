@@ -760,7 +760,7 @@ substitute `updated_at`, which changes with progress. Legacy records are not
 rewritten to invent dates. Adapters can sort known creation times descending and
 place unknown dates last with stable ID ties.
 
-`new_account_name_max:64` (and `session_name_max:64`, since 1.35.0; both were 30 before) limits new enrollments in both the public API and sole account owner; longer existing IDs
+`new_account_name_max:30` (also the folder name; display names allow `account_display_name_max:64` and session names `session_name_max:64`, both new in 1.35.0) limits new enrollments in both the public API and sole account owner; longer existing IDs
 continue to work. Clients must gate new commands on published capabilities.
 
 ## New-session popup admission
@@ -2472,3 +2472,8 @@ provider with a resume path (Codex, Claude, Gemini, Antigravity).
   was dispatched but not confirmed) waits for `api recover ID` (re-checks, never replays) or
   `api abandon-operation ID --confirm ID`. A stalled operation (supervisor died, no worker, over 10 s
   old) is recoverable the same way, and blocks further automatic recoveries of that session.
+
+Known limitation: a new account's name is its folder name, and Codex's control socket lives at
+`<root>/accounts/codex/<folder>/app-server-control/app-server-control.sock`. Under a deep data root,
+folder names longer than about 17 characters can exceed the 107-byte `sun_path` limit. This is
+pre-existing and not widened here: `new_account_name_max` stays 30.

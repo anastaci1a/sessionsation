@@ -146,14 +146,19 @@ async fn enrollment_monitoring_and_duplicate_identity_use_isolated_homes() {
         daemon::call(
             &paths,
             "account/add",
-            json!({"name":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+            json!({"name":"abcdefghijklmnopqrstuvwxyz12345"})
         )
         .await
         .unwrap_err()
         .to_string()
         .contains("ACCOUNT_NAME_TOO_LONG")
     );
-    assert!(!paths.account(&"a".repeat(64)).unwrap().exists());
+    assert!(
+        !paths
+            .account("abcdefghijklmnopqrstuvwxyz12345")
+            .unwrap()
+            .exists()
+    );
     let login = daemon::call(&paths, "account/add", json!({"name":"first"}))
         .await
         .unwrap();
@@ -266,12 +271,8 @@ fn public_account_creation_limit_and_invalid_limits_have_no_owner_side_effects()
             "SESSION_NOT_FOUND",
         ),
         (
-            vec![
-                "account",
-                "add",
-                "codex:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ],
-            "1–64 ASCII letters",
+            vec!["account", "add", "codex:abcdefghijklmnopqrstuvwxyz12345"],
+            "ACCOUNT_NAME_TOO_LONG",
         ),
         (
             vec![

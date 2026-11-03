@@ -103,7 +103,9 @@ fn data_root(
         .join(".local/share/sessionsation"))
 }
 
-pub const NEW_ACCOUNT_NAME_MAX: usize = 64;
+pub const NEW_ACCOUNT_NAME_MAX: usize = 30;
+/// Display names (`account rename`) are not folder names, so they may be longer.
+pub const ACCOUNT_DISPLAY_NAME_MAX: usize = 64;
 pub fn validate_new_account_name(name: &str) -> Result<()> {
     ensure!(name.len() <= NEW_ACCOUNT_NAME_MAX, "ACCOUNT_NAME_TOO_LONG");
     validate_name(name)?;
@@ -359,8 +361,8 @@ mod tests {
 
     #[test]
     fn new_account_limit_does_not_reject_readable_legacy_accounts() {
-        super::validate_new_account_name(&"x".repeat(64)).unwrap();
-        assert!(super::validate_new_account_name(&"x".repeat(65)).is_err());
+        super::validate_new_account_name(&"x".repeat(30)).unwrap();
+        assert!(super::validate_new_account_name(&"x".repeat(31)).is_err());
         assert!(super::validate_new_account_name("non ascii 界").is_err());
         super::validate_name(&"x".repeat(64)).unwrap();
     }
