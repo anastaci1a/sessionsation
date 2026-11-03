@@ -255,6 +255,9 @@ enum Commands {
         pause: bool,
         #[arg(long)]
         accept_risks: bool,
+        /// Keep the HERDR pane open after the session ends (default: close it once verified).
+        #[arg(long)]
+        keep_pane: bool,
     },
     /// Change a conversation's working directory, optionally moving the project folder.
     #[command(hide = true)]
@@ -1354,6 +1357,7 @@ async fn run(cli: Cli) -> Result<()> {
                     external::MoveOptions {
                         pause,
                         accept_risks,
+                        ..Default::default()
                     },
                 )
                 .await?,
@@ -1384,6 +1388,7 @@ async fn run(cli: Cli) -> Result<()> {
                     external::MoveOptions {
                         pause,
                         accept_risks,
+                        ..Default::default()
                     },
                 )
                 .await?,
@@ -1402,6 +1407,7 @@ async fn run(cli: Cli) -> Result<()> {
                     external::MoveOptions {
                         pause,
                         accept_risks,
+                        ..Default::default()
                     },
                 )
                 .await?,
@@ -1411,6 +1417,7 @@ async fn run(cli: Cli) -> Result<()> {
             pane,
             pause,
             accept_risks,
+            keep_pane,
         } => {
             daemon::ensure_started(&paths).await?;
             print_json(&serde_json::to_value(
@@ -1420,6 +1427,7 @@ async fn run(cli: Cli) -> Result<()> {
                     external::MoveOptions {
                         pause,
                         accept_risks,
+                        close_pane: !keep_pane,
                     },
                 )
                 .await?,
@@ -1457,6 +1465,7 @@ async fn run(cli: Cli) -> Result<()> {
                         external::MoveOptions {
                             pause,
                             accept_risks,
+                            ..Default::default()
                         },
                     )
                     .await?,

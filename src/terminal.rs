@@ -109,6 +109,40 @@ pub(crate) fn state_at(key: &str, socket: Option<&Path>) -> Result<(bool, u32)> 
     process_state(&result["process_info"])
 }
 
+/// Close exactly one recorded HERDR pane, only while an idle shell is all that
+/// runs in it (same test as auto-recover's reusable pane: foreground group is
+/// the shell, one shell process). Returns `(closed, reason)`; every refusal is
+/// a reason, never an error, and nothing is closed when the state is uncertain.
+pub(crate) fn close_idle_pane(key: &str, socket: Option<&Path>) -> (bool, Option<String>) {
+    let missing = |e: &anyhow::Error| {
+        e.downcast_ref::<HostRejection>()
+            .is_some_and(|r| r.0 == "pane_not_found")
+    };
+    let Ok((session, pane)) = target(key) else {
+        return (false, Some("PANE_TARGET_INVALID".into()));
+    };
+    let info = match call_at(session, &["pane", "process-info", "--pane", pane], socket) {
+        Ok(v) => v,
+        Err(e) if missing(&e) => return (false, Some("PANE_MISSING".into())),
+        Err(_) => return (false, Some("PANE_STATE_UNVERIFIED".into())),
+    };
+    let info = &info["process_info"];
+    let group_is_shell = info["foreground_process_group_id"]
+        .as_u64()
+        .is_none_or(|g| info["shell_pid"].as_u64() == Some(g));
+    if !group_is_shell || !process_state(info).is_ok_and(|(idle, _)| idle) {
+        return (
+            false,
+            Some("PANE_BUSY: another program is running in the pane".into()),
+        );
+    }
+    match raw_at(session, &["pane", "close", pane], socket) {
+        Ok(_) => (true, None),
+        Err(e) if missing(&e) => (false, Some("PANE_MISSING".into())),
+        Err(_) => (false, Some("PANE_CLOSE_FAILED".into())),
+    }
+}
+
 pub(crate) fn process_state(info: &Value) -> Result<(bool, u32)> {
     let shell = info["shell_pid"]
         .as_u64()
@@ -173,6 +207,13 @@ pub(crate) fn relaunch_at(
             "cd -- {} && {}",
             shell_quote(cwd),
             command.strip_prefix("exec ").unwrap_or(command)
+        );
+        // A restored shell may hold typed-but-unsubmitted text that would be prepended to the
+        // command. The foreground is the bare shell (checked above); best effort.
+        let _ = call_at(
+            session,
+            &["pane", "send-keys", id, "ctrl+e", "ctrl+u"],
+            socket,
         );
         call_at(session, &["pane", "run", id, &command], socket)?;
     } else {

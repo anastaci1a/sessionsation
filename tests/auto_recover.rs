@@ -310,7 +310,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enable_needs_a_live_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.35.1");
+    assert_eq!(caps["contract_version"], "1.36.0");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
@@ -439,6 +439,17 @@ async fn a_vanished_process_is_resumed_in_its_old_idle_pane_once_and_never_dupli
     assert_eq!(running["attachment"]["target"], "herdr/fixture/w1:p2");
     assert_ne!(running["pid"].as_u64().unwrap() as i32, pid);
     assert_eq!(t.herdr_calls("pane run"), 2);
+    // The reused shell's input line is cleared before our command is typed.
+    let log = read(&t.herdr_state.join("calls"));
+    let keys = log
+        .find("pane send-keys w1:p2 ctrl+e ctrl+u")
+        .expect("clear keys sent");
+    assert_eq!(log.matches("pane send-keys").count(), 1);
+    assert!(keys > log.find("pane run").unwrap());
+    assert!(
+        keys < log.rfind("pane run").unwrap(),
+        "cleared before the second command"
+    );
     assert_eq!(
         t.herdr_calls("tab create"),
         1,

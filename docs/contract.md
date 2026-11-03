@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.35.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.36.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2507,3 +2507,33 @@ process keeps the detail, an ended one gets "The inline provider process has end
 A process that ends before the provider attached is still `uncertain` and never replayed.
 Hosted `api launch` / `api resume-launch` receipts keep `running` as their terminal success
 phase. Clients treat inline `complete` like `running` as final.
+
+### Stop closes the HERDR pane (1.36.0)
+
+MINOR, additive. `api stop` (Codex and Antigravity; the hidden CLI `terminate` likewise) now also
+closes the session's HERDR pane by default, after the session has actually stopped. `--keep-pane`
+keeps the pane open (the previous behaviour). Capability flags: `stop_closes_pane: true`,
+`stop_keep_pane: true`, and `stop_pane_close` (details and reason codes). Restart, switch,
+move and auto-recover never close panes; the explicit stop already disables auto-recover.
+
+- **What is closed**: only the exact pane recorded for the session (its catalog attachment, for Codex
+  the source pane of the job), via `herdr pane close`, and only once the exact agent process is gone
+  (verified by identity: pid and start time) and, for Codex, the history is restored to the resume
+  list. A stop that fails, is refused, times out or is uncertain never closes anything.
+- **Safety**: just before closing, the pane must still exist and nothing but its shell may run in it
+  (`pane process-info`: foreground group is the shell, a single shell process; the same test as
+  auto-recover's reusable pane). A pane running anything else (the user started another program) is
+  left open.
+- **tmux**: a tmux attachment is never closed (documented choice: skipped with a reason).
+- **Receipt** (additive, on the stop result and `api operations` entries): `pane_closed` (bool) and
+  `pane_close_reason` (null when closed, else `KEEP_PANE`, `NO_PANE` (no recorded pane),
+  `PANE_BUSY`, `PANE_MISSING`, `PANE_STATE_UNVERIFIED`, `PANE_CLOSE_FAILED`,
+  `PANE_CLOSE_UNSUPPORTED` (tmux) or `PANE_TARGET_INVALID`). A pane that cannot be closed does not
+  fail the stop: the phase is still `complete`. For a Codex stop the outcome is final when the
+  operation reaches `complete`; before that `pane_closed` is `false` with a null reason.
+
+Related (1.36.0, no shape change): before sessionsation types a command into a reused, retained
+HERDR shell (auto-recover's reused pane, Codex relaunch into a shell pane) it clears the input line with
+`pane send-keys <pane> ctrl+e ctrl+u` (best effort, only when the foreground is the bare shell), so
+leftover unsubmitted text is not prepended. tmux relaunch uses `respawn-pane -k`, which replaces
+the shell, so nothing is cleared there.

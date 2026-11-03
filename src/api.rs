@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 35;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.35.1";
+pub const CONTRACT_MINOR: u32 = 36;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.36.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -215,6 +215,9 @@ pub enum Command {
         session: String,
         #[arg(long)]
         expected_generation: String,
+        /// Keep the session's HERDR pane open after it stops (default: close it once the stop is verified).
+        #[arg(long)]
+        keep_pane: bool,
     },
     Resume {
         #[arg(long)]
@@ -1427,6 +1430,9 @@ pub fn capabilities() -> Value {
     value["new_space"] = json!({"since_revision":20,"version":1,"resume":true,"add_to_herdr":true,"move_space":true,"label_validation":"space_label","exists_error":"WORKSPACE_NAME_EXISTS"});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
     value["auto_recover"] = crate::auto_recover::capability();
+    value["stop_closes_pane"] = json!(true);
+    value["stop_keep_pane"] = json!(true);
+    value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
     if let Some(claude) = value["providers"]
         .as_array_mut()
         .and_then(|p| p.iter_mut().find(|p| p["id"] == "claude"))
@@ -2384,6 +2390,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     external::MoveOptions {
                         pause: false,
                         accept_risks,
+                        ..Default::default()
                     },
                     "account",
                 )
@@ -2430,6 +2437,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     external::MoveOptions {
                         pause: false,
                         accept_risks,
+                        ..Default::default()
                     },
                     "restart",
                 )
@@ -2439,14 +2447,16 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         Command::Stop {
             session,
             expected_generation,
+            keep_pane,
         } if catalog::resolve(paths, &session, &expected_generation)
             .is_ok_and(|s| s.provider == ProviderId::Antigravity.as_str()) =>
         {
-            stop_antigravity(paths, &session, &expected_generation).await?
+            stop_antigravity(paths, &session, &expected_generation, keep_pane).await?
         }
         Command::Stop {
             session,
             expected_generation,
+            keep_pane,
         } => {
             let (_, source) = selected(paths, &session, &expected_generation).await?;
             ensure!(!source.inactive, "SESSION_NOT_RUNNING");
@@ -2456,7 +2466,10 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     paths,
                     source,
                     "",
-                    external::MoveOptions::default(),
+                    external::MoveOptions {
+                        close_pane: !keep_pane,
+                        ..Default::default()
+                    },
                     "terminate",
                 )
                 .await?,
@@ -2643,6 +2656,7 @@ fn note_deliberate_action(paths: &Paths, command: &Command) {
         Command::Stop {
             session,
             expected_generation,
+            ..
         } => {
             if let Some(s) = resolve(session, expected_generation) {
                 crate::auto_recover::explicit_stop(paths, &s.id);
@@ -2701,7 +2715,12 @@ fn named(
 /// Stop one running Antigravity session: SIGTERM to its exact verified agy
 /// process (see `provider::antigravity::stop`). Synchronous: the result is
 /// final, with `phase:"complete"` only after the process exited.
-async fn stop_antigravity(paths: &Paths, id: &str, generation: &str) -> Result<Value> {
+async fn stop_antigravity(
+    paths: &Paths,
+    id: &str,
+    generation: &str,
+    keep_pane: bool,
+) -> Result<Value> {
     let (s, observation) = native_selected(paths, id, generation)?;
     ensure!(observation.availability == "running", "SESSION_NOT_RUNNING");
     let account = native::account(paths, ProviderId::Antigravity, &s.account)?;
@@ -2715,9 +2734,28 @@ async fn stop_antigravity(paths: &Paths, id: &str, generation: &str) -> Result<V
         )
     })
     .await??;
+    // The stop is verified (process gone by exact identity) only now; a failed stop returned above.
+    let (pane_closed, pane_close_reason) = if keep_pane {
+        (false, Some("KEEP_PANE".to_owned()))
+    } else {
+        match observation
+            .attachment
+            .as_ref()
+            .or(s.attachment.as_ref())
+            .map(|a| a.target.clone())
+        {
+            Some(target) => {
+                let paths = paths.clone();
+                tokio::task::spawn_blocking(move || external::hosting::close_pane(&paths, &target))
+                    .await?
+            }
+            None => (false, Some("NO_PANE".to_owned())),
+        }
+    };
     Ok(
         json!({"id":uuid::Uuid::new_v4().to_string(),"source_session_id":s.id,"kind":"terminate","phase":"complete",
         "detail":"Antigravity received SIGTERM, flushed its conversation and exited; the session is saved and can be resumed.",
+        "pane_closed":pane_closed,"pane_close_reason":pane_close_reason,
         "provider":"antigravity","signal":"SIGTERM","pid":stopped.pid,"process_start":stopped.process_start,
         "provider_conversation_id":stopped.conversation_id,"source_account_id":format!("antigravity:{}",s.account)}),
     )
@@ -2736,7 +2774,8 @@ fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
         "can_cancel":external::can_cancel_move(&j),
         "can_recover": crate::background::worker_stopped(&paths.root.join(crate::layout::HANDOFF_JOBS).join(format!("{}.worker-lock", j.id)))? && (j.phase == "failed" || (!matches!(j.phase.as_str(), "complete" | "cancelled" | "recovered") && daemon::now() - j.created_at > 10)),
         "can_respond":j.phase.starts_with("awaiting_"),
-        "non_steering":j.non_steering}),
+        "non_steering":j.non_steering,
+        "pane_closed":j.pane_closed.unwrap_or(false),"pane_close_reason":j.pane_close_reason}),
     )
 }
 fn managed_operation(paths: &Paths, id: &str) -> Result<external::Job> {

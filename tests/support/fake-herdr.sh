@@ -48,12 +48,22 @@ case "$1 $2" in
     printf '%s\n' '{"result":{}}' ;;
   "pane process-info")
     pane=$4
+    if [ -f "$dir/closed-$pane" ]; then printf '%s\n' '{"error":{"code":"pane_not_found"}}'; exit 1; fi
+    if [ -f "$dir/busy-$pane" ]; then printf '%s\n' '{"result":{"process_info":{"shell_pid":1,"foreground_processes":[{"pid":4242,"name":"vim"}]}}}'; exit 0; fi
     if [ -f "$dir/missing-$pane" ]; then printf '%s\n' '{"error":{"code":"pane_not_found"}}'; exit 1; fi
     if alive "$pane"; then
       printf '{"result":{"process_info":{"shell_pid":1,"foreground_processes":[{"pid":%s,"name":"claude"}]}}}\n' "$(cat "$dir/pid-$pane")"
     else
       printf '%s\n' '{"result":{"process_info":{"shell_pid":1,"foreground_processes":[{"pid":1,"name":"sh"}]}}}'
     fi ;;
+  "pane send-keys")
+    printf '%s\n' "$*" >> "$dir/keys"
+    printf '%s\n' '{"result":{}}' ;;
+  "pane close")
+    pane=$3
+    if [ -f "$dir/closed-$pane" ] || [ -f "$dir/missing-$pane" ]; then printf '%s\n' '{"error":{"code":"pane_not_found"}}'; exit 1; fi
+    : > "$dir/closed-$pane"
+    printf '%s\n' '{"result":{"type":"ok"}}' ;;
   "pane rename")
     printf '%s\n' "$4" > "$dir/pane-name-$3"
     printf '%s\n' '{"result":{}}' ;;
@@ -61,6 +71,7 @@ case "$1 $2" in
     out=''
     for f in "$dir"/pid-*; do
       [ -e "$f" ] || continue
+      [ -f "$dir/closed-${f##*/pid-}" ] && continue
       p=${f##*/pid-}; n=${p#*:p}
       out="$out{\"pane_id\":\"$p\",\"tab_id\":\"${p%%:*}:t$n\"},"
     done

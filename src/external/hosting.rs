@@ -112,6 +112,21 @@ pub(super) fn state(paths: &Paths, pane: &str) -> Result<(bool, u32)> {
         crate::terminal::state(pane)
     }
 }
+/// Close the session's recorded pane after its agent has verifiably stopped.
+/// HERDR panes only, and only while nothing but the shell runs in them. tmux
+/// panes are never closed (documented: skipped with a reason).
+pub fn close_pane(paths: &Paths, pane: &str) -> (bool, Option<String>) {
+    if !pane.starts_with("herdr/") {
+        return (
+            false,
+            Some("PANE_CLOSE_UNSUPPORTED: tmux panes are left open".into()),
+        );
+    }
+    match socket_for(paths, pane) {
+        Ok(socket) => crate::terminal::close_idle_pane(pane, socket.as_deref()),
+        Err(_) => (false, Some("PANE_STATE_UNVERIFIED".into())),
+    }
+}
 pub(super) fn relaunch(paths: &Paths, pane: &str, cwd: &str, command: &str) -> Result<()> {
     if let Some(socket) = socket_for(paths, pane)? {
         crate::terminal::relaunch_at(pane, cwd, command, Some(&socket))

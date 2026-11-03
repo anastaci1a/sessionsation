@@ -486,6 +486,13 @@ pub struct Job {
     /// Explicit launch permissions of the queuing command; None uses the setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<LaunchPermissions>,
+    /// Terminate: close the recorded pane after the verified stop; the outcome is journaled.
+    #[serde(default)]
+    pub close_pane: bool,
+    #[serde(default)]
+    pub pane_closed: Option<bool>,
+    #[serde(default)]
+    pub pane_close_reason: Option<String>,
 }
 fn default_job_kind() -> String {
     "account".into()
@@ -495,6 +502,8 @@ fn default_job_kind() -> String {
 pub struct MoveOptions {
     pub pause: bool,
     pub accept_risks: bool,
+    /// Terminate only: close the session's HERDR pane once the stop is verified.
+    pub close_pane: bool,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -1872,6 +1881,7 @@ pub async fn queue_automatic(
         MoveOptions {
             pause: true,
             accept_risks: false,
+            ..Default::default()
         },
         None,
         if target == from { "pause" } else { "account" },
@@ -2016,6 +2026,9 @@ fn enqueue_with_id(
         history_checks: Vec::new(),
         prepared_threads: Vec::new(),
         permissions: crate::config::launch_permissions_override(),
+        close_pane: kind == "terminate" && options.close_pane,
+        pane_closed: None,
+        pane_close_reason: None,
     };
     save_job(paths, &job)?;
     if records_stop {
@@ -3258,6 +3271,9 @@ mod tests {
             history_checks: Vec::new(),
             prepared_threads: Vec::new(),
             permissions: None,
+            close_pane: false,
+            pane_closed: None,
+            pane_close_reason: None,
         };
         prior.source.pane = "%29".into();
         let mut live = latest.clone();

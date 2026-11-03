@@ -360,7 +360,9 @@ defaults (which gave `on-request`/`read-only` in an untrusted directory). Resume
 unless an explicit launch override is supplied.
 
 Detach a HERDR viewer with default **Ctrl+B, Q**. This leaves agents running.
-Backend `api stop` ends the selected agent and preserves resumable history.
+Backend `api stop` ends the selected agent and preserves resumable history. By default it then also closes the
+session's HERDR pane (`api stop --keep-pane` keeps it; hidden CLI `terminate --keep-pane` likewise); see
+[contract](contract.md#stop-closes-the-herdr-pane-1360).
 `herdr server stop` stops the named host and panes; it is not viewer detachment.
 Restart replaces the terminal client on its selected account, retaining recorded
 permissions and the existing account server. Clear unsent drafts before lifecycle
