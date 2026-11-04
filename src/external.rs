@@ -2874,7 +2874,35 @@ pub(crate) fn messaging_labels(
 }
 
 pub(crate) fn messaging_stop_intent(paths: &Paths, id: &str) -> Result<Option<String>> {
-    catalog::stop_intent(paths, id)
+    let Some(stop) = catalog::stop_intent(paths, id)? else {
+        return Ok(None);
+    };
+    if stale_stop_intent(paths, id, &stop) {
+        let _ = catalog::clear_stop_intent_if_matches(paths, id, Some(&stop));
+        return Ok(None);
+    }
+    Ok(Some(stop))
+}
+
+/// A stop intent whose job was cancelled or failed while the stopped process it named is
+/// still the same live process: nothing was stopped, so the gate is stale (contract 1.40.1).
+fn stale_stop_intent(paths: &Paths, id: &str, stop: &str) -> bool {
+    let Ok(bytes) = job_path(paths, stop).and_then(|p| Ok(fs::read(p)?)) else {
+        return false;
+    };
+    let Ok(job) = serde_json::from_slice::<Job>(&bytes) else {
+        return false;
+    };
+    job.source.thread_id == id
+        && matches!(job.phase.as_str(), "cancelled" | "failed")
+        && source_still_running(&job)
+}
+/// The exact process the job was going to stop is still alive.
+pub(crate) fn source_still_running(job: &Job) -> bool {
+    !job.source.inactive
+        && job.source.pid != 0
+        && process_info(job.source.pid)
+            .is_ok_and(|p| p.start_time == job.source.start_time && !matches!(p.state, 'Z' | 'X'))
 }
 pub(crate) fn messaging_clear_stop_intent(paths: &Paths, id: &str) -> Result<()> {
     catalog::set_stop_intent(paths, id, None)

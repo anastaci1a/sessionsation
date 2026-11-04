@@ -17,8 +17,8 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.40.0`
-(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351)).
+so revision N maps to contract `1.N.0` and the current contract is `1.40.1`
+(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -2740,3 +2740,22 @@ agent-to-agent path and aligns it with Claude Code 2.1.312/2.1.314 cross-session
 - Errors: existing `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`, `PEER_SOCKET_UNLINKED`,
   `PEER_SOCKET_UNREACHABLE`, `PEER_INTERRUPT_UNSUPPORTED`; new `PEER_MESSAGE_TOO_LARGE`,
   `PEER_REPLY_SOCKET_UNAVAILABLE`, `INVALID_REQUEST` for an unknown `origin`.
+
+### Stale stop gates and unsent receipts (1.40.1)
+
+PATCH, no new fields.
+
+- **A cancelled or failed stop no longer blocks sends.** `terminate`/move jobs record a stop
+  gate (`stop_intent`) when they are admitted; it makes `steer-target` and the delivery gate report
+  `explicit_resume_required` until the session is explicitly resumed. A job that was cancelled (or
+  failed) before it stopped anything left that gate behind, so a session that kept running
+  (state `working`, app-server confirmed) had no steer target and every submit was rejected
+  `target_busy`. The worker now releases the job's own gate when it ends `cancelled`/`failed` while
+  the exact source process (pid and start time) is still alive, and reads of the gate heal an
+  already-stale one the same way. A completed stop keeps its gate; a gate of another job is never
+  released.
+- **An unsent `pending_local` submission always ends.** A message admitted while the session was
+  `migrating` (or otherwise blocked by a transient reason) stayed `pending_local` for ever because
+  nothing re-examined it. Reading its receipt now settles it: past its expiry it is `expired`; if the
+  session it was admitted for has been replaced (its generation changed, for example by a stop and
+  relaunch) it is `rejected` with `generation_mismatch`. Nothing was sent in either case.

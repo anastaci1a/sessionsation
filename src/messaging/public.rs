@@ -382,6 +382,9 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
         };
         return Ok(steering::observed(&binding, &receipt, status));
     }
+    if !cancelling {
+        settle_pending(paths, &mut ledger, &mut receipt)?;
+    }
     if cancelling {
         cancel(paths, &mut ledger, &mut receipt).await?;
     }
@@ -422,6 +425,27 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
     }
     reconcile_recovered_stop(paths, &binding, &receipt)?;
     super::recovery::decorate(paths, id, wrap(&binding, value))
+}
+
+/// A submission that was admitted but never sent must not stay `pending_local` for ever
+/// (contract 1.40.1). Reading it settles it: past its expiry it becomes `expired`, and
+/// when the session it was admitted for has been replaced (its generation changed, for
+/// example by a move or relaunch) it is `rejected` with `generation_mismatch`. Nothing
+/// was sent in either case, so both are safe terminal states.
+fn settle_pending(paths: &Paths, ledger: &mut Ledger, receipt: &mut Receipt) -> Result<()> {
+    if receipt.state != "pending_local" {
+        return Ok(());
+    }
+    ledger.expire(receipt, crate::daemon::now())?;
+    if receipt.state == "pending_local"
+        && attachment(paths, &receipt.session_id)
+            .is_ok_and(|a| a.generation() != receipt.generation)
+    {
+        receipt.state = "rejected".into();
+        receipt.reason = Some("generation_mismatch".into());
+        ledger.save(receipt)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -470,6 +494,54 @@ mod tests {
 mod evidence_tests {
     use super::*;
     use crate::messaging::tests::{attachment_fixture, bind, fixture, scripted_server};
+
+    #[test]
+    fn reading_a_pending_receipt_settles_it_when_expired_or_the_session_was_replaced() {
+        let (_dir, paths, mut input, _) = fixture();
+        let now = crate::daemon::now();
+        input.expires_at = now + 600;
+        let mut a = attachment_fixture(&paths, &input);
+        bind(&paths, &mut a);
+        input.expected_generation = a.generation();
+        let mut ledger = Ledger::open(&paths).unwrap();
+        // Still valid and the same generation: stays pending (transient reasons keep waiting).
+        let mut r = ledger.accept(&input, now).unwrap();
+        r.reason = Some("migrating".into());
+        settle_pending(&paths, &mut ledger, &mut r).unwrap();
+        assert_eq!(
+            (r.state.as_str(), r.reason.as_deref()),
+            ("pending_local", Some("migrating"))
+        );
+        // The session behind it was replaced: terminal, nothing was sent.
+        r.generation = "f".repeat(64);
+        settle_pending(&paths, &mut ledger, &mut r).unwrap();
+        assert_eq!(
+            (r.state.as_str(), r.reason.as_deref()),
+            ("rejected", Some("generation_mismatch"))
+        );
+        assert_eq!(
+            ledger.get(&r.message_id).unwrap().unwrap().state,
+            "rejected"
+        );
+        // Terminal receipts are left alone.
+        settle_pending(&paths, &mut ledger, &mut r).unwrap();
+        assert_eq!(r.state, "rejected");
+        // Past its expiry a pending receipt is expired when read, never pending for ever.
+        let mut late = input.clone();
+        late.message_id = uuid::Uuid::new_v4().to_string();
+        late.expires_at = now + 1;
+        let mut r = ledger.accept(&late, now).unwrap();
+        r.reason = Some("migrating".into());
+        ledger
+            .db
+            .execute(
+                "UPDATE receipts SET expiry=? WHERE id=?",
+                params![now - 1, r.message_id],
+            )
+            .unwrap();
+        settle_pending(&paths, &mut ledger, &mut r).unwrap();
+        assert_eq!((r.state.as_str(), r.reason.as_deref()), ("expired", None));
+    }
     fn binding(input: Enqueue) -> Binding {
         Binding {
             cancelled: false,

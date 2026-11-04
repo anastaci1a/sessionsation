@@ -1117,6 +1117,15 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
             if was_cancelled { "cancelled" } else { "failed" },
             format!("{error:#}"),
         )?;
+        // Cancelled or failed with the source still running: nothing was stopped, so the
+        // stop gate recorded at admission must not outlive the job (contract 1.40.1).
+        if super::source_still_running(&job) {
+            let _ = super::catalog::clear_stop_intent_if_matches(
+                paths,
+                &job.source.thread_id,
+                Some(&job.id),
+            );
+        }
         if job.source_archived
             || job.target_loaded
             || !job.prepared_threads.is_empty()
@@ -1538,6 +1547,61 @@ mod expiry_tests {
                 "home":"/fixture","binary":"fake","resume_options":[]}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn a_cancelled_or_failed_stop_job_does_not_leave_a_stale_gate_on_a_live_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: dir.path().join("state"),
+            runtime: dir.path().join("runtime"),
+        };
+        let thread = uuid::Uuid::new_v4().to_string();
+        let me = std::process::id();
+        let start = process_info(me).unwrap().start_time;
+        let gate = |phase: &str, pid: u32, start_time: u64, thread_id: &str| {
+            let mut j = job("terminate", phase, daemon::now(), thread_id);
+            j.id = uuid::Uuid::new_v4().to_string();
+            j.source.pid = pid;
+            j.source.start_time = start_time;
+            save_job(&paths, &j).unwrap();
+            super::catalog::set_stop_intent(&paths, &thread, Some(j.id.clone())).unwrap();
+            j.id
+        };
+        let stop = |id: &str| {
+            super::messaging_stop_intent(&paths, &thread)
+                .unwrap()
+                .as_deref()
+                == Some(id)
+        };
+        // A finished stop keeps its gate: the session really was stopped.
+        let done = gate("complete", me, start, &thread);
+        assert!(stop(&done));
+        // Cancelled, but the process it was going to stop is still the same one: stale.
+        gate("cancelled", me, start, &thread);
+        assert!(
+            super::messaging_stop_intent(&paths, &thread)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            super::catalog::stop_intent(&paths, &thread)
+                .unwrap()
+                .is_none(),
+            "healed in the catalog"
+        );
+        gate("failed", me, start, &thread);
+        assert!(
+            super::messaging_stop_intent(&paths, &thread)
+                .unwrap()
+                .is_none()
+        );
+        // The process is gone or was replaced (other start time): the gate stands.
+        let replaced = gate("cancelled", me, start + 1, &thread);
+        assert!(stop(&replaced));
+        // A job that names another conversation never heals this one.
+        let other = gate("cancelled", me, start, &uuid::Uuid::new_v4().to_string());
+        assert!(stop(&other));
     }
 
     #[tokio::test]
