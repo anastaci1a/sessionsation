@@ -1503,6 +1503,10 @@ async fn run_account_thread_inner(
                         params["approvalPolicy"] = json!(value.trim().trim_matches('"'))
                     }
                     "sandbox_mode" => params["sandbox"] = json!(value.trim().trim_matches('"')),
+                    "model_reasoning_effort" => {
+                        params["config"] =
+                            json!({"model_reasoning_effort": value.trim().trim_matches('"')})
+                    }
                     _ => {}
                 }
             }

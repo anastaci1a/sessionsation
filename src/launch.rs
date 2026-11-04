@@ -67,6 +67,12 @@ pub struct Request {
     /// omitted uses the `launch_permissions` setting. A hosted `permission_mode` wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<crate::config::LaunchPermissions>,
+    /// Revision 38, Codex only: model for this session (e.g. `gpt-6-astra`), overriding the account default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Revision 38, Codex only: reasoning effort for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,6 +111,35 @@ fn folder(path: &Path) -> bool {
         && !path
             .components()
             .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+}
+/// Reasoning efforts accepted in a launch request.
+pub const REASONING_EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
+/// A model name as Codex accepts it, without anything a shell or option parser could read.
+pub fn validate_model(model: &str) -> Result<()> {
+    ensure!(
+        !model.is_empty()
+            && model.len() <= 100
+            && !model.starts_with('-')
+            && model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/')),
+        "INVALID_MODEL"
+    );
+    Ok(())
+}
+/// Codex options for a launch request's model and reasoning-effort overrides.
+pub fn model_options(model: Option<&str>, effort: Option<&str>) -> Vec<String> {
+    let mut options = Vec::new();
+    if let Some(model) = model {
+        options.extend(["-m".to_owned(), model.to_owned()]);
+    }
+    if let Some(effort) = effort {
+        options.extend([
+            "-c".to_owned(),
+            format!("model_reasoning_effort=\"{effort}\""),
+        ]);
+    }
+    options
 }
 pub fn validate_name(name: &str) -> Result<()> {
     ensure!(
@@ -145,6 +180,21 @@ fn shape(r: &Request) -> Result<()> {
                 .as_deref()
                 .is_none_or(|m| crate::provider::claude::hosted::PERMISSION_MODES.contains(&m)),
             "INVALID_PERMISSION_MODE"
+        );
+    }
+    if r.model.is_some() || r.reasoning_effort.is_some() {
+        ensure!(
+            AccountRef::parse(&r.account_id)?.provider == ProviderId::Codex,
+            "UNSUPPORTED_PROVIDER_OPERATION: model and reasoning_effort are Codex-only"
+        );
+    }
+    if let Some(model) = &r.model {
+        validate_model(model)?;
+    }
+    if let Some(effort) = &r.reasoning_effort {
+        ensure!(
+            REASONING_EFFORTS.contains(&effort.as_str()),
+            "INVALID_REASONING_EFFORT"
         );
     }
     if let Space::New { label } = &r.space {
@@ -593,7 +643,20 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
         Ok(AccountRef {
             provider: ProviderId::Codex,
             name,
-        }) => crate::external::run_account_new_named(paths, &name, id, &receipt.request.name).await,
+        }) => {
+            let options = model_options(
+                receipt.request.model.as_deref(),
+                receipt.request.reasoning_effort.as_deref(),
+            );
+            crate::external::run_account_new_named_options(
+                paths,
+                &name,
+                id,
+                &receipt.request.name,
+                &options,
+            )
+            .await
+        }
         Ok(AccountRef {
             provider: ProviderId::Claude,
             name,
@@ -822,6 +885,59 @@ mod tests {
         );
         let mut v = fixtures["launch_request"].clone();
         v["hosted"] = serde_json::json!({"permission_mode":"plan","extra":1});
+        assert!(serde_json::from_value::<Request>(v).is_err());
+    }
+    #[test]
+    fn model_and_reasoning_effort_are_codex_only_validated_and_become_options() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/contract/fixtures.json")).unwrap();
+        let mut r: Request = serde_json::from_value(fixtures["launch_request"].clone()).unwrap();
+        assert!(
+            r.model.is_none() && r.reasoning_effort.is_none(),
+            "older requests stay valid"
+        );
+        r.account_id = "codex:work".into();
+        r.model = Some("gpt-6-astra".into());
+        r.reasoning_effort = Some("medium".into());
+        shape(&r).unwrap();
+        assert_eq!(
+            model_options(r.model.as_deref(), r.reasoning_effort.as_deref()),
+            [
+                "-m",
+                "gpt-6-astra",
+                "-c",
+                "model_reasoning_effort=\"medium\""
+            ]
+        );
+        assert!(model_options(None, None).is_empty());
+        for bad in ["", "-x", "a b", "a;b", "a\nb", "$(x)", &"m".repeat(101)] {
+            r.model = Some(bad.into());
+            assert!(
+                shape(&r).unwrap_err().to_string().contains("INVALID_MODEL"),
+                "{bad:?}"
+            );
+        }
+        r.model = None;
+        for bad in ["MEDIUM", "", "extreme", "medium\""] {
+            r.reasoning_effort = Some(bad.into());
+            assert!(
+                shape(&r)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("INVALID_REASONING_EFFORT"),
+                "{bad:?}"
+            );
+        }
+        r.reasoning_effort = Some("high".into());
+        r.account_id = "claude:work".into();
+        assert!(
+            shape(&r)
+                .unwrap_err()
+                .to_string()
+                .contains("UNSUPPORTED_PROVIDER_OPERATION")
+        );
+        let mut v = fixtures["launch_request"].clone();
+        v["model"] = serde_json::json!(5);
         assert!(serde_json::from_value::<Request>(v).is_err());
     }
     #[test]

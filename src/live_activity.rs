@@ -30,6 +30,10 @@ pub struct TurnFacts {
     pub last_status: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    /// Rollout timestamp of the latest turn end (`task_complete` or `turn_aborted`): it
+    /// identifies that turn, so a short turn is noticed without ever being seen working.
+    #[serde(default)]
+    pub ended_at: Option<String>,
 }
 
 /// Bound provider error text: one line of printable characters.
@@ -84,6 +88,7 @@ pub fn facts_from_events<'a>(events: impl IntoIterator<Item = &'a Value>) -> Tur
                     .into(),
                 );
                 f.observed = true;
+                f.ended_at = value["timestamp"].as_str().map(str::to_owned);
             }
             Some("turn_aborted") => {
                 f.started = true;
@@ -97,6 +102,7 @@ pub fn facts_from_events<'a>(events: impl IntoIterator<Item = &'a Value>) -> Tur
                     .into(),
                 );
                 f.observed = true;
+                f.ended_at = value["timestamp"].as_str().map(str::to_owned);
             }
             _ => {}
         }
@@ -168,6 +174,7 @@ pub fn facts_from_readiness(
             _ => last_status.map(str::to_owned),
         },
         error: error.and_then(clean_error),
+        ended_at: None,
     }
 }
 

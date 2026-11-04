@@ -93,6 +93,10 @@ restores the recorded permissions exactly, and headless delivery (`api send`
 `mode:"resume"|"new"`) is unchanged: Claude prints without bypass and Gemini uses
 `--approval-mode default`. A running session keeps its mode until it is restarted.
 
+Codex launch requests also take `"model":"gpt-6-astra"` and `"reasoning_effort":"medium"`
+(none|minimal|low|medium|high|xhigh) to override the account default for that session only;
+see the [contract](contract.md#launch-model-override-and-turn-end-notifications-1380).
+
 ### Claude folder trust (revision 20)
 
 Claude Code asks "trust this folder?" the first time it opens a directory. Before a
@@ -381,6 +385,8 @@ sessionsation api state --watch --interval 2
 # each Codex session row has live_activity (working|idle|turn_ended|blocked|error|unknown, with the
 # provider error text for error) and pending_operations (e.g. a stop waiting for idle, with expires_at)
 sessionsation api launcher new --account codex:example
+sessionsation api turn-notify --session ID --expected-generation G --enable [--notify-session ID2]
+sessionsation api turn-events --after 0 --wait 60       # block until a notifying session ends a turn
 sessionsation api operations
 ```
 

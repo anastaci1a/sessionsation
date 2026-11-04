@@ -101,6 +101,8 @@ pub fn begin_new(
             },
             hosted: None,
             permissions: None,
+            model: None,
+            reasoning_effort: None,
         },
         phase: "starting_provider".into(),
         detail: None,

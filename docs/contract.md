@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.37.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.38.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2581,3 +2581,34 @@ MINOR, additive. Capability flags `live_activity`, `pending_operations`, `native
   message id). Neither seen: `delivery_unknown` with reason `consumption_unverified`; never replay.
   A busy-target queue send is not subject to (3).
   Environment `SESSIONSATION_NATIVE_SEND_CHECKS=off` disables (1) and (3) (test fixtures only).
+
+### Launch model override and turn-end notifications (1.38.0)
+
+MINOR, additive. Capability flags `launch_model` and `turn_notify`.
+
+- **Launch model override.** `LaunchRequest` (`api launch` validate/start) accepts optional
+  `model` (a Codex model name such as `gpt-6-astra`: letters, digits and `. _ - : /`, 1-100
+  characters, not starting with `-`) and `reasoning_effort` (`none`, `minimal`, `low`, `medium`,
+  `high` or `xhigh`), for Codex accounts only (`UNSUPPORTED_PROVIDER_OPERATION` otherwise;
+  `INVALID_MODEL` / `INVALID_REASONING_EFFORT` for bad values, rejected by `validate` as well as
+  `start`). They override the account default for that session only: the new thread is started with
+  that model and `model_reasoning_effort`, and the terminal is opened with `-m` and
+  `-c model_reasoning_effort="..."`. Omitted fields keep the account default. The model name is not
+  checked against what the account can use; an unavailable model is reported by Codex when a turn runs.
+- **`api turn-notify --session ID --expected-generation G (--enable [--notify-session ID2] | --disable)`**
+  (Codex sessions; default disabled; `sessions[].turn_notify:{enabled,notify_session,enabled_at}`).
+  While enabled, the supervisor (poll `SESSIONSATION_TURN_NOTIFY_SECONDS`, default 5, 0 disables)
+  records an event each time a turn of that session ends: `kind:"turn_ended"` (completed or
+  interrupted) or `kind:"error"` (the turn failed; `error` has the provider text). A turn is identified
+  by the rollout timestamp of its end, so it is reported exactly once and a turn shorter than the poll
+  interval is still reported; the first observation after enabling is only a baseline (a turn that
+  already ended is not reported). Settings and a journal of the last 500 events live in
+  `registry/turn-notify.json`; they never change a session generation.
+- **Delivery.** (1) The event journal: `api turn-events [--after SEQ] [--wait SECONDS]` returns
+  `{events:[{seq,at,session_id,name,kind,error,delivery}],cursor,gap}`; pass `cursor` as the next
+  `--after`; `--wait` (at most 300) blocks until an event after the cursor exists; `gap:true` means
+  events before the oldest kept one were dropped. (2) With `--notify-session`, the supervisor also
+  queues one short message (`mode:"queue"`, never a steer, never retried; content: the session's name and
+  id and, for an error, the provider's error text; no conversation content) to that other Codex session; its
+  outcome is the event's `delivery` (`{message_id,to,state,reason}` or `{state:"failed",error}`).
+  Delivery to the designated session is best effort: the journal is the source of truth.

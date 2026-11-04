@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 37;
+pub const CONTRACT_MINOR: u32 = 38;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.37.0";
+pub const CONTRACT_VERSION: &str = "1.38.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -188,6 +188,27 @@ pub enum Command {
         /// Prompt sent after the session is resumed (default: a notice naming the restart time).
         #[arg(long, requires = "enable")]
         prompt: Option<String>,
+    },
+    /// Per-session turn-end notification (opt-in): journal an event, optionally message a session.
+    TurnNotify {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+        /// Another Codex session (id) that also receives a queued message per event.
+        #[arg(long, requires = "enable")]
+        notify_session: Option<String>,
+    },
+    /// Turn-end events of notifying sessions after a cursor; --wait blocks for the next one.
+    TurnEvents {
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
     },
     /// Preview or request a generation-checked directory change or project-folder move.
     Relocate {
@@ -1433,6 +1454,8 @@ pub fn capabilities() -> Value {
     value["stop_closes_pane"] = json!(true);
     value["stop_keep_pane"] = json!(true);
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
+    value["launch_model"] = json!({"since_revision":38,"request_fields":["model","reasoning_effort"],"requests":["launch"],"providers":["codex"],"reasoning_efforts":crate::launch::REASONING_EFFORTS,"errors":["INVALID_MODEL","INVALID_REASONING_EFFORT","UNSUPPORTED_PROVIDER_OPERATION"],"model_not_checked_against_account":true});
+    value["turn_notify"] = crate::turn_notify::capability();
     value["live_activity"] = json!({"since_revision":37,"version":1,"field":"sessions[].live_activity","providers":["codex"],"states":["working","idle","turn_ended","blocked","error","unknown"],"error_text":"provider turn-error text, bounded to 300 characters, only with state error","cached_state":true,"source":"app_server_thread_status_else_rollout_tail"});
     value["pending_operations"] = json!({"since_revision":37,"field":"sessions[].pending_operations","kinds":["stop","pause","switch","restart"],"stop_wait_expiry_seconds":external::TERMINATE_WAIT_SECONDS});
     value["native_send_checks"] = json!({"since_revision":37,"version":1,"commands":["send"],"modes":["submit","queue"],"providers":["codex"],"readiness_wait_seconds":20,"consumption_wait_seconds":8,"unconsumed_input":"removed_and_failed:input_not_consumed","unproven_input":"delivery_unknown:consumption_unverified","failed_turn_accepts_input":true});
@@ -1885,10 +1908,14 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         }
     }
     let settings = crate::auto_recover::all(paths);
+    let turn_settings = crate::turn_notify::all(paths);
     for session in &mut sessions {
         let setting = settings.get(session["id"].as_str().unwrap_or_default());
         let enabled = setting.is_some_and(|s| s.enabled);
         session["auto_recover"] = crate::auto_recover::public(setting);
+        session["turn_notify"] = crate::turn_notify::public(
+            turn_settings.get(session["id"].as_str().unwrap_or_default()),
+        );
         let reason = crate::auto_recover::capability_reason(session, enabled).map(str::to_owned);
         session["capabilities"]["auto_recover"] = json!(reason.is_none());
         session["capability_reasons"]["auto_recover"] = json!(reason);
@@ -2362,6 +2389,28 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     catalog::names::rename(paths, &session, &expected_generation, &name).await?,
                 )
             }
+        }
+        Command::TurnNotify {
+            session,
+            expected_generation,
+            enable,
+            disable,
+            notify_session,
+        } => {
+            ensure!(
+                enable != disable,
+                "INVALID_ARGUMENT: pass exactly one of --enable or --disable"
+            );
+            crate::turn_notify::set(
+                paths,
+                &session,
+                &expected_generation,
+                enable,
+                notify_session,
+            )?
+        }
+        Command::TurnEvents { after, wait } => {
+            crate::turn_notify::events(paths, after, wait).await?
         }
         Command::AutoRecover {
             session,

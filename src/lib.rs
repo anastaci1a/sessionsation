@@ -23,6 +23,7 @@ pub mod scheduler;
 mod self_executable;
 pub mod simulation;
 pub mod store;
+pub mod turn_notify;
 pub mod usage_history;
 
 mod terminal;

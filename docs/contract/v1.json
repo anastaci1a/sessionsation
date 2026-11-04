@@ -1795,6 +1795,15 @@
         "permissions": {
           "description": "Revision 19: launch permissions for this start; omitted uses the launch_permissions setting (built-in default yolo).",
           "$ref": "#/$defs/LaunchPermissions"
+        },
+        "model": {
+          "description": "Revision 38, Codex accounts only: model for this session, overriding the account default (Codex model name; letters, digits, . _ - : / ; at most 100 characters).",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:/][A-Za-z0-9_.:/-]{0,99}$"
+        },
+        "reasoning_effort": {
+          "description": "Revision 38, Codex accounts only: reasoning effort for this session.",
+          "enum": ["none", "minimal", "low", "medium", "high", "xhigh"]
         }
       },
       "if": {
