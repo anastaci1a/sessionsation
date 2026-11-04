@@ -4,4 +4,9 @@ RUN rustup component add rustfmt clippy --toolchain 1.95.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux rsync python3 python3-jsonschema ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+# cargo-nextest runs every test in its own process, in parallel across binaries.
+# Pinned prebuilt release; plain `cargo test` keeps working without it.
+ARG NEXTEST_VERSION=0.9.100
+RUN curl -fsSL "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+    | tar -xz -C /usr/local/cargo/bin && cargo nextest --version
 WORKDIR /work

@@ -24,3 +24,12 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [profile.release]
 lto = "thin"
 strip = true
+
+# Check-suite speed: the tests hash and exercise the (debug) binary and bundled
+# SQLite many times, which is far slower unoptimized. Dependencies are built once
+# per target dir; the crate itself keeps fast incremental debug builds.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -70,7 +70,7 @@ pub fn operation_lock(paths: &Paths, provider: ProviderId, name: &str) -> Result
         .join("locks");
     private_dir(&dir)?;
     let lock = lock_file(&dir.join(format!("{provider}-{name}.lock")))?;
-    lock.try_lock_exclusive().context("ACCOUNT_BUSY")?;
+    crate::paths::try_lock_brief(&lock).context("ACCOUNT_BUSY")?;
     Ok(lock)
 }
 pub fn launch_lock(paths: &Paths, provider: ProviderId, name: &str) -> Result<fs::File> {
@@ -304,7 +304,7 @@ pub async fn remove(
     let jobs = paths.root.join(crate::layout::HANDOFF_JOBS);
     private_dir(&jobs)?;
     let queue = lock_file(&jobs.join("queue.lock"))?;
-    queue.try_lock_exclusive().context("OPERATION_BUSY")?;
+    crate::paths::try_lock_brief(&queue).context("OPERATION_BUSY")?;
     let current = preview_for(paths, provider, name).await?;
     ensure!(current["revision"] == revision, "STALE_ACCOUNT_PREVIEW");
     ensure!(current["can_remove"] == true, "ACCOUNT_IN_USE");

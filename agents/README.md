@@ -27,8 +27,29 @@ scripts/check.sh
 
 The script runs formatting, Clippy with warnings denied, locked Rust tests, local
 Markdown links and schema/CLI-envelope checks. It resolves the checkout itself,
-defaults to `target-review/`, and limits independent test cases to two. Override
-`CARGO_TARGET_DIR` with an absolute path or `RUST_TEST_THREADS` explicitly.
+defaults to `target-review/`, and runs independent test cases in parallel (one per
+core, at most 12; each test uses its own temporary root, sockets and fake peers).
+Override `CARGO_TARGET_DIR` with an absolute path or `RUST_TEST_THREADS` explicitly.
+When `cargo-nextest` is installed (the check image has it) the tests run under it,
+with every test in its own process and all test binaries in parallel; set
+`SESSIONSATION_NO_NEXTEST=1` for plain `cargo test`, which behaves the same.
+
+**Iterate fast, check once.** Builders do not run the full script after every edit.
+Iterate with `scripts/check.sh --quick` (fmt, Clippy on lib and bins, lib and bin
+unit tests) and with targeted tests, e.g. `scripts/check.sh --quick native_send` or
+`cargo test --test claude_terminal terminal_input`, then run the full
+`scripts/check.sh` once before committing.
+
+The suite compresses real-time waits with `SESSIONSATION_TEST_TIME_SCALE` (default 10
+in `scripts/check.sh` and the nextest profile; `1` is real time). It is **test-only**:
+unset in production, every wait keeps its documented value. It divides supervisor
+tick intervals, native-send readiness/consumption windows and terminal settle
+delays (see `src/timing.rs`; give-up budgets are never compressed below one second).
+When adding a production wait that tests would otherwise sit through, route it
+through `timing::scaled`, `timing::secs` or `timing::budget`, and use condition polls
+rather than fixed sleeps in tests.
+The fixtures fsync many small files; on a slow or network-backed disk point
+`TMPDIR` at a tmpfs mounted with exec (the Docker wrapper below does this).
 The initial run downloads locked public Cargo dependencies. For later offline
 runs use `CARGO_NET_OFFLINE=true scripts/check.sh` after `cargo fetch --locked`.
 Do not overwrite an executable selected by another consumer.
@@ -37,8 +58,12 @@ Alternatively, with Docker and no local Rust/Python installation:
 
 ```sh
 docker build -f scripts/Dockerfile.check -t sessionsation-check .
-docker run --rm -v "$PWD:/work" -w /work sessionsation-check scripts/check.sh
+docker run --rm -v "$PWD:/work" -w /work --tmpfs /tmp:rw,exec,size=6g sessionsation-check scripts/check.sh
 ```
+
+`scripts/docker-check.sh [command...]` does the same with a persistent build tree
+(`CHECK_TARGET`), an optional registry cache (`CHECK_REGISTRY`) and `/tmp` on tmpfs.
+The image also carries a pinned `cargo-nextest` release.
 
 This builds from a public Rust image and installs declared Debian dependencies.
 It needs network access for image/packages/crates on the first run, not a host

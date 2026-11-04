@@ -392,7 +392,7 @@ pub async fn monitor(paths: Paths) {
     }
     loop {
         let _ = tick(&paths).await;
-        tokio::time::sleep(Duration::from_secs(every)).await;
+        tokio::time::sleep(crate::timing::secs(every)).await;
     }
 }
 

@@ -30,7 +30,6 @@ use crate::{
     provider::ProviderId,
 };
 use anyhow::{Context, Result, bail, ensure};
-use fs2::FileExt;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -57,12 +56,11 @@ struct Locks {
 /// and never changes anything, so it may run beside a live supervisor).
 fn lock(root: &Path, change: bool) -> Result<Locks> {
     let layout = lock_file(&root.join(LAYOUT_LOCK))?;
-    layout
-        .try_lock_exclusive()
+    crate::paths::try_lock_brief(&layout)
         .context("LAYOUT_BUSY: another layout command is running")?;
     let daemon = if change {
         let daemon = lock_file(&root.join("daemon.lock"))?;
-        daemon.try_lock_exclusive().context(
+        crate::paths::try_lock_brief(&daemon).context(
             "DAEMON_RUNNING: stop the supervisor (`sessionsation daemon stop`) before changing the data-root layout",
         )?;
         Some(daemon)

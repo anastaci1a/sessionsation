@@ -924,7 +924,7 @@ async fn resume(paths: &Paths, r: &mut Record) -> Result<()> {
 /// re-checked, never re-sent.
 pub async fn recover(paths: &Paths, id: &str) -> Result<Value> {
     let lock = lock_file(&worker_lock_path(paths, id)?)?;
-    lock.try_lock_exclusive()
+    crate::paths::try_lock_brief(&lock)
         .context("SESSION_OPERATION_IN_PROGRESS: the operation's worker is still running")?;
     let mut r = read(paths, id)?;
     if is_terminal(&r) {

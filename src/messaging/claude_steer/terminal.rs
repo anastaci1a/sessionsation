@@ -592,12 +592,12 @@ impl Host {
         for (i, line) in s.split('\n').enumerate() {
             if i > 0 {
                 self.keys(&["ctrl+j"])?;
-                tokio::time::sleep(CHUNK_PAUSE).await;
+                tokio::time::sleep(crate::timing::scaled(CHUNK_PAUSE)).await;
             }
             let chars: Vec<char> = line.chars().collect();
             for chunk in chars.chunks(CHUNK) {
                 self.text(&chunk.iter().collect::<String>())?;
-                tokio::time::sleep(CHUNK_PAUSE).await;
+                tokio::time::sleep(crate::timing::scaled(CHUNK_PAUSE)).await;
             }
         }
         Ok(())
@@ -621,14 +621,14 @@ impl Host {
         for (i, line) in lines.iter().enumerate() {
             if i > 0 {
                 self.keys(&["ctrl+j"])?;
-                tokio::time::sleep(CHUNK_PAUSE).await;
+                tokio::time::sleep(crate::timing::scaled(CHUNK_PAUSE)).await;
             }
             let chars: Vec<char> = line.chars().collect();
             let chunks: Vec<&[char]> = chars.chunks(CHUNK).collect();
             for (j, chunk) in chunks.iter().enumerate() {
                 let part: String = chunk.iter().collect();
                 self.text(&part)?;
-                tokio::time::sleep(CHUNK_PAUSE).await;
+                tokio::time::sleep(crate::timing::scaled(CHUNK_PAUSE)).await;
                 let sq = squash(&part);
                 pending += sq.chars().count();
                 typed.push_str(&sq);
@@ -651,7 +651,7 @@ impl Host {
     ) -> Result<bool> {
         let deadline = Instant::now() + SCREEN_WAIT;
         loop {
-            tokio::time::sleep(SETTLE).await;
+            tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
             if let Some(d) = view(&self.screen()?) {
                 let w = squash(&d);
                 if w.chars().count() >= pending && typed.ends_with(&w) {
@@ -684,7 +684,7 @@ impl Host {
     ) -> Result<Result<View, &'static str>> {
         let deadline = Instant::now() + SCREEN_WAIT;
         loop {
-            tokio::time::sleep(SETTLE).await;
+            tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
             let v = classify(&self.screen()?, strict);
             if want(&v) || Instant::now() >= deadline {
                 return Ok(v);
@@ -1651,7 +1651,7 @@ async fn observe_loop(paths: &Paths, id: &str, host: &Host) -> Result<()> {
         } else if idle_since.is_none() {
             idle_since = Some(Instant::now());
         }
-        let settled = worked && idle_since.is_some_and(|s| s.elapsed() >= Duration::from_secs(2));
+        let settled = worked && idle_since.is_some_and(|s| s.elapsed() >= crate::timing::secs(2));
         observe(paths, id, settled)?;
         let r = read(paths, id)?;
         if is_terminal(&r) {
@@ -1680,7 +1680,7 @@ async fn observe_loop(paths: &Paths, id: &str, host: &Host) -> Result<()> {
         if start.elapsed() >= total {
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(crate::timing::scaled(Duration::from_millis(250))).await;
     }
 }
 

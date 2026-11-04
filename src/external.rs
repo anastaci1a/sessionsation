@@ -237,7 +237,7 @@ async fn discover_mode(
         // enrichment across every account and saved writer, retaining the
         // positively discovered process/history facts if a provider is slow.
         if tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            crate::timing::budget(std::time::Duration::from_secs(5)),
             enrich_native(&mut result),
         )
         .await

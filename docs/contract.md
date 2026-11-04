@@ -65,7 +65,8 @@ Clients must treat unknown data as forward-compatible and never misuse it:
    them additive. MAJOR: add a new `contract/vN.json` and migration notes.
 4. Update tests (the `contract_version`/`contract_revision` assertions in
    `tests/*.rs`) and `scripts/check_contract.py`.
-5. Run `scripts/check.sh` (fmt, clippy, tests, docs, contract) and review.
+5. Run `scripts/check.sh` once (fmt, clippy, tests, docs, contract; iterate with
+   `--quick` and targeted tests first) and review.
 6. Release and publish the new package; the `current` symlink moves it live.
    Clients that follow `current` and gate on semver need no change for MINOR or
    PATCH releases. A MAJOR release needs client releases first or in the same

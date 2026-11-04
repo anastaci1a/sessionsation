@@ -162,6 +162,23 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
+/// `try_lock_exclusive`, retried for at most ~50 ms on contention. A lock whose owner is
+/// really running stays refused. This only rides out the instant between another
+/// thread's `fork` and `exec`, when the child briefly shares every open lock
+/// description and a genuinely free lock reports `EWOULDBLOCK`.
+pub fn try_lock_brief(file: &fs::File) -> std::io::Result<()> {
+    use fs2::FileExt;
+    let mut tries = 0;
+    loop {
+        match file.try_lock_exclusive() {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && tries < 10 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            other => return other,
+        }
+    }
+}
 pub fn lock_file(path: &Path) -> Result<fs::File> {
     Ok(OpenOptions::new()
         .read(true)

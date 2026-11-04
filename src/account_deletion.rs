@@ -402,7 +402,7 @@ async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
     let jobs = paths.root.join(crate::layout::HANDOFF_JOBS);
     private_dir(&jobs)?;
     let queue = lock_file(&jobs.join("queue.lock"))?;
-    queue.try_lock_exclusive().context("OPERATION_BUSY")?;
+    crate::paths::try_lock_brief(&queue).context("OPERATION_BUSY")?;
     let home = account_home(paths, &name)?;
     if !home.exists() {
         ensure!(
@@ -448,7 +448,7 @@ async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
     )?;
     idle(paths, &home).await?;
     let lease = lock_file(&home.join(".switcher-lease"))?;
-    lease.try_lock_exclusive().context("ACCOUNT_BUSY")?;
+    crate::paths::try_lock_brief(&lease).context("ACCOUNT_BUSY")?;
     phase(
         paths,
         r,

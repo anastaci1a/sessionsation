@@ -314,7 +314,7 @@ pub fn reconcile(state: &mut crate::model::State) {
 /// are persisted by the daemon before launching an existing move worker.
 pub async fn monitor(paths: crate::paths::Paths) {
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(crate::timing::secs(5)).await;
         // An inspection error causes no action and is retried on the next tick.
         let _ = tick(&paths).await;
         let _ = crate::autostart::tick(&paths).await;

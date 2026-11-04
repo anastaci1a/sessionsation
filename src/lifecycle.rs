@@ -1,7 +1,6 @@
 //! Admission serialization across resume, handoff and conversation operations.
 use crate::paths::{Paths, lock_file, private_dir};
 use anyhow::{Context, Result, ensure};
-use fs2::FileExt;
 use serde_json::Value;
 use std::fs;
 
@@ -114,8 +113,7 @@ pub(crate) fn admit(paths: &Paths, thread: &str, own: Option<&str>) -> Result<fs
     let root = paths.root.join(crate::layout::LIFECYCLE_ADMISSION);
     private_dir(&root)?;
     let lock = lock_file(&root.join(format!("{thread}.lock")))?;
-    lock.try_lock_exclusive()
-        .context("SESSION_OPERATION_IN_PROGRESS")?;
+    crate::paths::try_lock_brief(&lock).context("SESSION_OPERATION_IN_PROGRESS")?;
     ensure_available(paths, thread, own)?;
     Ok(lock)
 }
@@ -123,6 +121,7 @@ pub(crate) fn admit(paths: &Paths, thread: &str, own: Option<&str>) -> Result<fs
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fs2::FileExt;
     use serde_json::json;
     #[test]
     fn failed_handoff_keeps_reservation_until_recovery_worker_exits() {

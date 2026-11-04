@@ -27,6 +27,17 @@ impl Timing {
         verify: Duration::from_secs(8),
         poll: Duration::from_millis(400),
     };
+    /// Compressed by `SESSIONSATION_TEST_TIME_SCALE` (test-only; identity otherwise).
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn scaled(self) -> Timing {
+        use crate::timing::scaled;
+        Timing {
+            ready: scaled(self.ready),
+            settle: scaled(self.settle),
+            verify: scaled(self.verify),
+            poll: scaled(self.poll),
+        }
+    }
     pub const DISABLED: Timing = Timing {
         ready: Duration::ZERO,
         settle: Duration::ZERO,
@@ -57,7 +68,7 @@ pub(super) fn timing(paths: &Paths) -> Timing {
         if std::env::var("SESSIONSATION_NATIVE_SEND_CHECKS").as_deref() == Ok("off") {
             Timing::DISABLED
         } else {
-            Timing::DEFAULT
+            Timing::DEFAULT.scaled()
         }
     }
 }

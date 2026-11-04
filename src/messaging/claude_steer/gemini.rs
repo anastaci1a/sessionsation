@@ -377,7 +377,7 @@ async fn until(
 ) -> Result<Result<View, &'static str>> {
     let deadline = Instant::now() + SCREEN_WAIT;
     loop {
-        tokio::time::sleep(SETTLE).await;
+        tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
         let v = classify(&host.screen()?, strict);
         if want(&v) || Instant::now() >= deadline {
             return Ok(v);
@@ -1064,7 +1064,7 @@ async fn observe_loop(paths: &Paths, id: &str, host: &Host) -> Result<()> {
         } else if idle_since.is_none() {
             idle_since = Some(Instant::now());
         }
-        let settled = worked && idle_since.is_some_and(|s| s.elapsed() >= Duration::from_secs(2));
+        let settled = worked && idle_since.is_some_and(|s| s.elapsed() >= crate::timing::secs(2));
         observe(paths, id, settled)?;
         let r = read(paths, id)?;
         if is_terminal(&r) {
@@ -1093,7 +1093,7 @@ async fn observe_loop(paths: &Paths, id: &str, host: &Host) -> Result<()> {
         if start.elapsed() >= total {
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(crate::timing::scaled(Duration::from_millis(250))).await;
     }
 }
 

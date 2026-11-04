@@ -25,6 +25,10 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+/// Long enough for two compressed supervisor ticks (5 s each in production).
+fn settle() -> Duration {
+    sessionsation::timing::secs(10).max(Duration::from_secs(1))
+}
 use tokio::net::UnixListener;
 use tokio_tungstenite::tungstenite::Message;
 const ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -748,7 +752,7 @@ async fn experimental_exhaustion_pauses_once_and_keeps_terminal_open() {
         )
     );
     assert_eq!(f.invoke(&["auto-switch", "--thread", ID])["active"], false);
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert_eq!(f.invoke(&["moves"]).as_array().unwrap().len(), 1);
     assert!(
         !f.b.lock()
@@ -777,7 +781,7 @@ async fn experimental_disable_prevents_threshold_actions() {
     ]);
     f.invoke(&["auto-switch", "--thread", ID, "--disable"]);
     f.invoke(&["thresholds", "personal", "--short", "5", "--weekly", "5"]);
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert!(f.invoke(&["moves"]).as_array().unwrap().is_empty());
     assert!(
         !f.a.lock()

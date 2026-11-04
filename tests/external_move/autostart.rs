@@ -59,7 +59,7 @@ async fn usage_failure_waits_for_fresh_reset_then_continues_once() {
         &["display-message", "-p", "-t", &pane, "#{pane_pid}"],
     );
     policy_where(&f, |p| p["waiting"].is_object()).await;
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert_eq!(starts(&f), 0, "expired reset timestamp is not capacity");
     reset(&f);
     policy_where(&f, |p| {
@@ -69,7 +69,7 @@ async fn usage_failure_waits_for_fresh_reset_then_continues_once() {
             .contains("accepted the continuation")
     })
     .await;
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert_eq!(starts(&f), 1);
     assert_eq!(
         pid,
@@ -133,7 +133,7 @@ async fn queued_user_input_cancels_waiting_even_if_later_removed() {
     policy_where(&f, |p| p["waiting"].is_null()).await;
     f.a.lock().unwrap().queue_after_reads = None;
     reset(&f);
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert_eq!(starts(&f), 0);
 }
 
@@ -143,7 +143,7 @@ async fn idle_before_exhaustion_and_other_errors_never_restart() {
     f.live(ID, false);
     setup(&f).await;
     f.a.lock().unwrap().limits = Some(limits(100., daemon::now() + 1));
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert!(f.invoke(&["auto-start", "--thread", ID])["policy"]["waiting"].is_null());
     {
         let mut s = f.a.lock().unwrap();
@@ -152,9 +152,9 @@ async fn idle_before_exhaustion_and_other_errors_never_restart() {
         t["turns"] =
             json!([{"id":"other-error","status":"failed","error":{"codexErrorInfo":"other"}}]);
     }
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     reset(&f);
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert_eq!(starts(&f), 0);
     assert!(f.invoke(&["auto-start", "--thread", ID])["policy"]["waiting"].is_null());
 }
@@ -168,7 +168,7 @@ async fn disabling_waiting_auto_start_prevents_continuation() {
     policy_where(&f, |p| p["waiting"].is_object()).await;
     f.invoke(&["auto-start", "--thread", ID, "--disable"]);
     reset(&f);
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert_eq!(starts(&f), 0);
     assert_eq!(f.invoke(&["auto-start", "--thread", ID])["active"], false);
 }
@@ -188,7 +188,7 @@ async fn new_completed_turn_cancels_pending_restart() {
     }
     reset(&f);
     policy_where(&f, |p| p["waiting"].is_null()).await;
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert_eq!(starts(&f), 0);
 }
 
@@ -202,7 +202,7 @@ async fn lost_continuation_reply_disables_without_replay() {
     f.a.lock().unwrap().lose_continuation_reply = true;
     reset(&f);
     policy_where(&f, |p| p["enabled"] == false).await;
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert_eq!(starts(&f), 1);
 }
 
@@ -260,8 +260,8 @@ async fn deliberate_pause_disables_auto_start_before_quota_observation() {
     f.wait(job["id"].as_str().unwrap(), "complete").await;
     assert_eq!(f.invoke(&["auto-start", "--thread", ID])["active"], false);
     fail_quota(&f);
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     reset(&f);
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::sleep(settle()).await;
     assert_eq!(starts(&f), 0);
 }

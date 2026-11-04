@@ -1,0 +1,14 @@
+experimental = ["setup-scripts"]
+# cargo-nextest profile for the check suite (scripts/check.sh uses it when installed).
+[profile.default]
+fail-fast = false
+slow-timeout = { period = "60s" }
+# Tests that leave a daemon/helper behind must not stall the run on shutdown.
+leak-timeout = "200ms"
+
+[scripts.setup.test-time-scale]
+command = "sh scripts/nextest-env.sh"
+
+[[profile.default.scripts]]
+filter = "all()"
+setup = "test-time-scale"

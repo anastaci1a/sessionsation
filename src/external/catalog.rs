@@ -37,7 +37,7 @@ fn update(paths: &Paths, id: &str, change: impl FnOnce(&mut Record)) -> Result<(
 pub(super) fn operation_lock(paths: &Paths, id: &str) -> Result<File> {
     uuid::Uuid::parse_str(id)?;
     let lock = crate::paths::lock_file(&jobs_dir(paths)?.join(format!("{id}.open-lock")))?;
-    lock.try_lock_exclusive()
+    crate::paths::try_lock_brief(&lock)
         .context("another operation is changing this conversation; retry shortly")?;
     Ok(lock)
 }
