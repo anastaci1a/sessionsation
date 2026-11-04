@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.39.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.40.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2687,3 +2687,56 @@ stay per account. Adopted (`--config-dir`) homes are never linked (`shared statu
 - **`shared status`** lists the store state and each Claude account's per-name state
   (`linked`, `missing`, `empty_directory`, `unmigrated`, `untrusted`); **`shared enable`** turns the
   feature on without migrating.
+
+### Native delivery to Claude sessions (1.40.0)
+
+MINOR, additive. Capability flags `claude_native_delivery` and `claude_idle_notify`.
+
+Sessionsation already delivered a Claude `peer_message` (revision 16); 1.40.0 makes it the
+agent-to-agent path and aligns it with Claude Code 2.1.312/2.1.314 cross-session messaging.
+
+- **Selection.** `api send` takes `origin:"operator"|"agent"` (default `operator`). With
+  `delivery:"auto"`, an operator send keeps the old preference (terminal input before peer
+  message, so human-input authority is unchanged) and an `agent` send tries the native peer
+  message first. `delivery:"native"` asks for it explicitly. `delivery:"peer_message"` stays
+  native-only. Receipts carry `origin` and `native_fallback`.
+- **Fallback, never both.** For `agent`/`native` sends of mode `submit` or `steer`, typing into the
+  HERDR pane is the fallback when nothing native was possible: no verified registry entry or
+  `peerProtocol` other than 1, inbound messages not accepted, the socket file gone
+  (`PEER_SOCKET_UNLINKED`), or the connection never opened (`PEER_SOCKET_UNREACHABLE`). The
+  receipt then has `native_fallback:{from:"peer_message",to:"terminal_input",reason,stage}`
+  (`stage` is `admission` or `delivery`). Once a byte was written (accepted, held, or a write error)
+  the message is never typed or resent: a failed write is `delivery_unknown`. `queue` and interrupts
+  cannot be typed, so they stay native-only and are refused with the native reason.
+- **Acceptance.** A session accepts inbound messages when the account sets
+  `crossSessionInbound: accept` (`account live-steering`) or the live process itself was started
+  with `--settings` saying so. Sessionsation launches and resumes Claude with
+  `crossSessionInbound:"accept"` merged into its existing `--settings` JSON (other keys are kept)
+  unless the account's own setting is an explicit `hold` or `refuse`. Bypass-permission sessions
+  hold external messages by default, which is why the launch sets it.
+- **Wire protocol** (one module, `provider/claude/native_peer.rs`, with the version pins): frame
+  `{"type":"user","message":{"role":"user","content":TEXT},"priority":"next"|"later","from":"uds:<our socket>",
+  "msgV":1,"msg_id":ID,...}`, newline terminated; control frames are `{"type":"control","action":...}`.
+  Our reply socket is bound in the receiver's own socket directory as `<our pid>-<8 hex>.sock`
+  (the receiver checks it against SO_PEERCRED and otherwise drops its receipts silently; the
+  receipt's `peer_message.reply_socket` says `namespaced` or `private`). The optional auth line is
+  not needed on Linux and the `*.key` token files are never read. Frames over 1 MiB are refused
+  (`PEER_MESSAGE_TOO_LARGE`).
+- **Receipts.** Success is silent. `peer_message_status` `delivered` gives `native_accepted`;
+  `held` gives `held` (a bypass-permission receiver); `denied`/`refused`/`dropped` end `refused`
+  (`PEER_MESSAGE_DENIED|REFUSED|DROPPED`, the drop reason is recorded) and `expired` ends `expired`.
+  With no receipt inside 3 seconds the state is `native_accepted` with
+  `peer_message.evidence:"transport_accepted_silent"`: the transport took the frame, which is not
+  proof that Claude read it (a receiver that dropped the connection looks the same). The existing
+  transcript correlation upgrades any of these to `input_recorded` and the reply
+  (`evidence:"transcript_anchor"`); delivery is never reported as answered without it.
+- **`api idle-notify --session ID --expected-generation G [--notify-session ID2]`** (Claude,
+  running, inbound accepted). Subscribes with `notify_when_idle` for one `peer_idle_notice`
+  (idle or exit), without a model request in the watched session. Journaled in
+  `operations/claude-idle-notify/`; a detached worker keeps the subscription for 12 hours (Claude's
+  own expiry). The notice becomes a `kind:"idle"` (or `"exited"`) event in `api turn-events`
+  with `detail:{state,finished_at,status}` and, with `--notify-session`, one queued message. A
+  repeat call returns the active subscription; a lost worker shows `stalled:true`; nothing is replayed.
+- Errors: existing `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`, `PEER_SOCKET_UNLINKED`,
+  `PEER_SOCKET_UNREACHABLE`, `PEER_INTERRUPT_UNSUPPORTED`; new `PEER_MESSAGE_TOO_LARGE`,
+  `PEER_REPLY_SOCKET_UNAVAILABLE`, `INVALID_REQUEST` for an unknown `origin`.

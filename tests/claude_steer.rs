@@ -892,7 +892,21 @@ async fn peer_messages_need_opt_in_and_claim_replies_only_with_transcript_proof(
     assert_eq!(user["session_id"], conversation.as_str());
     assert_eq!(user["priority"], "next");
     assert!(user["from"].as_str().unwrap().starts_with("uds:/"));
-    assert!(frames.iter().any(|f| f["type"] == "notify_when_idle"));
+    assert!(
+        frames
+            .iter()
+            .any(|f| f["type"] == "control" && f["action"] == "notify_when_idle")
+    );
+    assert_eq!(user["msgV"], 1);
+    // The reply socket lives next to the target's inbox socket as <pid>-<8 hex>.sock.
+    let from = std::path::Path::new(user["from"].as_str().unwrap().strip_prefix("uds:").unwrap());
+    assert_eq!(from.parent().unwrap(), socket.parent().unwrap());
+    let name = from.file_name().unwrap().to_str().unwrap();
+    let (pid, hex) = name.strip_suffix(".sock").unwrap().split_once('-').unwrap();
+    assert!(pid.parse::<u32>().is_ok() && hex.len() == 8, "{name}");
+    assert_eq!(r["peer_message"]["reply_socket"], "namespaced");
+    assert_eq!(r["peer_message"]["evidence"], "transcript_anchor");
+    assert_eq!(r["origin"], "operator");
     assert!(
         !r.to_string().contains("private operator prompt"),
         "user text never read into receipts"
@@ -915,7 +929,7 @@ async fn peer_messages_need_opt_in_and_claim_replies_only_with_transcript_proof(
     let silent = body("submit", &f.session(&id), "quiet one");
     f.send_ok(&silent);
     let r = f.receipt_until(silent["message_id"].as_str().unwrap(), |r| {
-        r["facts"]["idle_notice"] == true
+        r["facts"]["idle_notice"] == true && r["state"] == "native_accepted"
     });
     assert_eq!(r["state"], "native_accepted", "{r}");
     assert_eq!(r["observation"]["error_code"], "peer_anchor_not_found");
@@ -1084,4 +1098,190 @@ async fn hosted_launch_plans_and_terminal_viewer_render_the_event_log() {
         "{argv:?}"
     );
     assert_eq!(plan["cwd"], f.project.to_str().unwrap());
+}
+
+/// Native delivery (contract 1.40.0): an agent-originated send reaches a session that
+/// was launched accepting inbound messages without any account setting; every
+/// receipt shape of the cross-session protocol is reported honestly; nothing is
+/// ever sent twice; a native idle notice is journaled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_sends_use_the_native_peer_protocol_and_report_every_receipt_honestly() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let home = f.home("personal");
+    let conversation = uuid::Uuid::new_v4().to_string();
+    let socket = f.tmp.path().join("p.sock");
+    // Launched the way Sessionsation launches Claude: `--settings` carries the accept.
+    let peer = Process(
+        Command::new("python3")
+            .arg(f.tmp.path().join("fake-claude-peer.py"))
+            .args([
+                &conversation,
+                f.project.to_str().unwrap(),
+                socket.to_str().unwrap(),
+                "--settings",
+                r#"{"crossSessionInbound":"accept"}"#,
+            ])
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .current_dir(&f.project)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut s = Value::Null;
+    wait_for("live peer session", || {
+        s = f.session(&conversation);
+        s["availability"] == "running"
+    });
+    let id = s["id"].as_str().unwrap().to_owned();
+    assert!(
+        !read(&home.join("settings.json")).contains("crossSessionInbound"),
+        "no account-level opt-in was needed"
+    );
+    let frames = || -> Vec<Value> {
+        read(&home.join("fake-peer-frames.jsonl"))
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    let users = || frames().into_iter().filter(|x| x["type"] == "user").count();
+    let agent = |mode: &str, text: &str, delivery: &str| {
+        let mut b = body(mode, &f.session(&id), text);
+        b["origin"] = json!("agent");
+        b["delivery"] = json!(delivery);
+        b["timeout_seconds"] = json!(8);
+        b
+    };
+
+    // Receipt: delivered + transcript anchor.
+    let b = agent("submit", "agent hello", "native");
+    let r = f.send_ok(&b);
+    assert_eq!(r["delivery_semantics"], "peer_message");
+    assert_eq!(r["origin"], "agent");
+    let r = f.settled(b["message_id"].as_str().unwrap());
+    assert_eq!(r["state"], "completed_with_reply", "{r}");
+    assert_eq!(r["peer_message"]["evidence"], "transcript_anchor");
+    assert_eq!(r["native_fallback"], Value::Null);
+    let user = frames().into_iter().find(|x| x["type"] == "user").unwrap();
+    assert_eq!(user["msgV"], 1);
+    assert_eq!(user["message"]["content"], "agent hello");
+    assert_eq!(users(), 1);
+
+    // Real-receiver success is silent: the transcript anchor upgrades it.
+    std::fs::write(home.join("fake-peer-mode"), "quiet").unwrap();
+    let b = agent("submit", "quiet success", "auto");
+    f.send_ok(&b);
+    let r = f.settled(b["message_id"].as_str().unwrap());
+    assert_eq!(r["state"], "completed_with_reply", "{r}");
+    assert_eq!(r["facts"]["peer_status"], json!([]));
+    assert_eq!(r["facts"]["input_recorded"], true);
+
+    // Silent and unproven: transport-accepted only, never "read".
+    std::fs::write(home.join("fake-peer-mode"), "quiet-nothing").unwrap();
+    let b = agent("submit", "into the void", "native");
+    f.send_ok(&b);
+    let r = f.receipt_until(b["message_id"].as_str().unwrap(), |r| {
+        r["state"] == "native_accepted" && r["observation"]["error_code"] == "peer_anchor_not_found"
+    });
+    assert_eq!(r["peer_message"]["evidence"], "transport_accepted_silent");
+    assert_eq!(r["facts"]["input_recorded"], false);
+    assert_eq!(r["facts"]["input_consumed"], "unknown");
+    assert!(r["reply"].is_null());
+
+    // Denied, dropped, refused: failed with a reason.
+    let mut dropped_id = String::new();
+    for (mode, state, reason) in [
+        ("denied", "refused", "PEER_MESSAGE_DENIED"),
+        ("drop", "refused", "PEER_MESSAGE_DROPPED"),
+        ("refuse", "refused", "PEER_MESSAGE_REFUSED"),
+    ] {
+        std::fs::write(home.join("fake-peer-mode"), mode).unwrap();
+        let b = agent("submit", mode, "native");
+        f.send_ok(&b);
+        let r = f.settled(b["message_id"].as_str().unwrap());
+        assert_eq!(
+            (r["state"].as_str(), r["reason"].as_str()),
+            (Some(state), Some(reason)),
+            "{r}"
+        );
+        if mode == "drop" {
+            dropped_id = b["message_id"].as_str().unwrap().to_owned();
+        }
+    }
+    let dropped = f.receipt_until(&dropped_id, |_| true);
+    assert_eq!(
+        dropped["facts"]["peer_status"][0]["drop_reason"],
+        "queue-full"
+    );
+
+    // Held by a bypass-permission receiver.
+    std::fs::write(home.join("fake-peer-mode"), "hold").unwrap();
+    let b = agent("queue", "held one", "native");
+    f.send_ok(&b);
+    let r = f.receipt_until(b["message_id"].as_str().unwrap(), |r| r["state"] == "held");
+    assert_eq!(r["facts"]["held"], true);
+
+    // A receiver that requires an auth line drops silently: nothing is claimed,
+    // and the message is not sent again by any other path.
+    std::fs::write(home.join("fake-peer-mode"), "auth").unwrap();
+    let before = users();
+    let b = agent("submit", "needs auth", "native");
+    f.send_ok(&b);
+    let r = f.receipt_until(b["message_id"].as_str().unwrap(), |r| {
+        r["state"] == "native_accepted"
+    });
+    assert_eq!(r["facts"]["input_recorded"], false);
+    assert_eq!(r["native_fallback"], Value::Null);
+    assert_eq!(users(), before, "the dropped connection delivered nothing");
+
+    // Strict peer_message never falls back; an unknown origin is refused.
+    let mut bad = agent("submit", "x", "native");
+    bad["origin"] = json!("robot");
+    assert!(
+        f.send_err(&bad)
+            .contains("origin must be operator or agent")
+    );
+
+    // Native idle notice: journaled in the turn events, once.
+    std::fs::write(home.join("fake-peer-mode"), "accept").unwrap();
+    let s = f.session(&id);
+    let started = f.api(&[
+        "idle-notify",
+        "--session",
+        &id,
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+    ]);
+    assert_eq!(started["kind"], "idle_notice", "{started}");
+    assert_eq!(started["peer_message"]["reply_socket"], "namespaced");
+    let again = f.api(&[
+        "idle-notify",
+        "--session",
+        &id,
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+    ]);
+    assert_eq!(again["id"], started["id"], "idempotent while subscribed");
+    // Trigger a turn so the fake goes idle and answers.
+    let b = agent("submit", "finish a turn", "native");
+    f.send_ok(&b);
+    f.settled(b["message_id"].as_str().unwrap());
+    let events = f.api(&["turn-events", "--after", "0", "--wait", "20"]);
+    let e = &events["events"][0];
+    assert_eq!(e["kind"], "idle", "{events}");
+    assert_eq!(e["session_id"], id.as_str());
+    assert_eq!(e["detail"]["state"], "idle");
+    let ops = f.api(&[
+        "idle-notify",
+        "--session",
+        &id,
+        "--expected-generation",
+        f.session(&id)["generation"].as_str().unwrap(),
+    ]);
+    assert_ne!(
+        ops["id"], started["id"],
+        "a finished subscription is not reused"
+    );
+    drop(peer);
 }

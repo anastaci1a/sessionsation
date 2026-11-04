@@ -4712,9 +4712,14 @@
             "auto",
             "hosted_stream_json",
             "terminal_input",
-            "peer_message"
+            "peer_message",
+            "native"
           ],
-          "description": "Revision 17. A path that does not apply is refused (DELIVERY_UNAVAILABLE, TERMINAL_NOT_ATTACHED, LIVE_STEERING_DISABLED, ...)."
+          "description": "Revision 17; `native` (1.40.0) is the native cross-session peer message with typing as the fallback when nothing native was sent. A path that does not apply is refused (DELIVERY_UNAVAILABLE, TERMINAL_NOT_ATTACHED, LIVE_STEERING_DISABLED, ...)."
+        },
+        "origin": {
+          "enum": ["operator", "agent"],
+          "description": "1.40.0. operator (default) keeps the human-input path; agent makes delivery auto try the native peer message first."
         }
       },
       "if": {
@@ -4980,6 +4985,14 @@
             "label",
             "status"
           ]
+        },
+        "origin": {
+          "enum": ["operator", "agent"],
+          "description": "1.40.0."
+        },
+        "native_fallback": {
+          "description": "1.40.0. Null, or what happened when a native send was typed instead: {from:peer_message,to:terminal_input,reason,stage:admission|delivery}. Set only when nothing was sent natively.",
+          "type": ["object", "null"]
         },
         "terminal_input": {
           "$ref": "#/$defs/ClaudeTerminalInput"

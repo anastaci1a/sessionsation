@@ -106,7 +106,10 @@ pub async fn exec_new(
         )?,
     };
     let mode = config.effective_launch_permissions();
-    let settings = claude::launch_settings(&std::env::current_exe()?, mode);
+    let settings = claude::native_peer::with_inbound_accept(
+        &claude::launch_settings(&std::env::current_exe()?, mode),
+        &account.home,
+    );
     let argv = claude::new_argv(&config, &id, &session.name, &settings, mode);
     exec(&config, &account.home, &cwd, &argv)
 }
@@ -134,7 +137,10 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
     let current = catalog::move_attachment(paths, &session, attachment)?;
     crate::inline::mark_attached(paths);
     let mode = config.effective_launch_permissions();
-    let settings = claude::launch_settings(&std::env::current_exe()?, mode);
+    let settings = claude::native_peer::with_inbound_accept(
+        &claude::launch_settings(&std::env::current_exe()?, mode),
+        &account.home,
+    );
     let argv = claude::resume_argv(
         &config,
         &current.conversation_id,

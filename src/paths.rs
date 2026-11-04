@@ -219,6 +219,7 @@ const TEMP_SWEEP_DIRS: &[&str] = &[
     crate::layout::ACCOUNT_RENAMES,
     crate::layout::CLAUDE_SWITCHES,
     crate::layout::SHARED_MIGRATIONS,
+    crate::layout::CLAUDE_IDLE_NOTIFY,
     crate::layout::AUTO_RECOVERIES,
     crate::layout::ACCOUNT_CATALOG,
     crate::layout::HANDOFF_JOBS,

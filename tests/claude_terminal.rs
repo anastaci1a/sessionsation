@@ -632,3 +632,120 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
     );
     drop(claude);
 }
+
+/// Contract 1.40.0: agent-originated sends try the native peer message first and
+/// type into the pane only when nothing native was possible; operator sends keep
+/// typing; one message is never delivered twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_sends_try_native_first_and_fall_back_to_typing_once() {
+    let f = fixture().await;
+    let out = f
+        .command(&["account", "add", "--platform", "claude", "personal"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+    let home = f.home();
+    let conversation = uuid::Uuid::new_v4().to_string();
+    let socket = f.tmp.path().join("p.sock");
+    let claude = Process(
+        Command::new("python3")
+            .arg(f.tmp.path().join("fake-claude-peer.py"))
+            .args([
+                &conversation,
+                f.project.to_str().unwrap(),
+                socket.to_str().unwrap(),
+            ])
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .env("HERDR_PANE_ID", "w1:p1")
+            .env("HERDR_SESSION", "fixture")
+            .env("HERDR_ENV", "1")
+            .current_dir(&f.project)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let transcript = home
+        .join("projects")
+        .join(f.project.to_str().unwrap().replace('/', "-"))
+        .join(format!("{conversation}.jsonl"));
+    let screens = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/claude-screens");
+    f.set_tui(
+        &json!({"pane":"w1:p1","pid":claude.0.id(),"view":"main","input":"","status":"idle",
+        "transcript":transcript,"screens":screens}),
+    );
+    let mut s = Value::Null;
+    wait_for("attached live session", || {
+        s = f.session(&conversation);
+        s["availability"] == "running" && s["attachment"]["host"] == "herdr"
+    });
+    let id = s["id"].as_str().unwrap().to_owned();
+    let frames = || {
+        read(&home.join("fake-peer-frames.jsonl"))
+            .lines()
+            .filter(|l| l.contains("\"type\": \"user\""))
+            .count()
+    };
+    let agent = |text: &str, mode: &str| {
+        let mut b = body(mode, &f.session(&id), text);
+        b["origin"] = json!("agent");
+        b
+    };
+
+    // 1. The session does not accept peer messages: typed instead, with the reason.
+    let b = agent("typed because native is off", "steer");
+    let m = b["message_id"].as_str().unwrap().to_owned();
+    let first = f.send_ok(&b);
+    assert_eq!(first["delivery_semantics"], "terminal_input", "{first}");
+    assert_eq!(first["native_fallback"]["from"], "peer_message");
+    assert_eq!(first["native_fallback"]["reason"], "LIVE_STEERING_DISABLED");
+    assert_eq!(first["native_fallback"]["stage"], "admission");
+    let r = f.settled(&m);
+    assert_eq!(r["state"], "completed_with_reply", "{r}");
+    assert_eq!(frames(), 0, "nothing was sent natively");
+    let typed = f.writes().len();
+    assert!(typed > 0);
+
+    // 2. Queue cannot be typed: native only, so it is refused rather than typed.
+    let err = f.send_err(&agent("later", "queue"));
+    assert!(err.contains("LIVE_STEERING_DISABLED"), "{err}");
+    assert_eq!(f.writes().len(), typed);
+
+    // 3. Accepting: the agent send goes native and nothing is typed; operator keeps typing.
+    let toggled = f.api(&["account", "live-steering", "claude:personal", "--enable"]);
+    assert_eq!(toggled["live_steering"], true);
+    let b = agent("native now", "steer");
+    let m = b["message_id"].as_str().unwrap().to_owned();
+    let first = f.send_ok(&b);
+    assert_eq!(first["delivery_semantics"], "peer_message", "{first}");
+    assert_eq!(first["native_fallback"], Value::Null);
+    let r = f.settled(&m);
+    assert_eq!(r["state"], "completed_with_reply", "{r}");
+    assert_eq!(frames(), 1);
+    assert_eq!(f.writes().len(), typed, "nothing typed for a native send");
+    let mut operator = body("steer", &f.session(&id), "typed for the operator");
+    operator["origin"] = json!("operator");
+    let first = f.send_ok(&operator);
+    assert_eq!(first["delivery_semantics"], "terminal_input");
+    f.settled(operator["message_id"].as_str().unwrap());
+    assert_eq!(frames(), 1, "the operator send was not sent natively too");
+
+    // 4. The native endpoint disappears (socket file removed): typed, once.
+    std::fs::remove_file(&socket).unwrap();
+    let b = agent("endpoint gone", "steer");
+    let first = f.send_ok(&b);
+    assert_eq!(first["delivery_semantics"], "terminal_input", "{first}");
+    assert_eq!(first["native_fallback"]["reason"], "PEER_SOCKET_UNLINKED");
+    let r = f.settled(b["message_id"].as_str().unwrap());
+    assert_eq!(r["state"], "completed_with_reply", "{r}");
+    assert_eq!(frames(), 1);
+    assert_eq!(f.send_ok(&b)["state"], "completed_with_reply");
+    assert_eq!(
+        frames(),
+        1,
+        "same id: the original receipt, nothing re-sent"
+    );
+}

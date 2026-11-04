@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 39;
+pub const CONTRACT_MINOR: u32 = 40;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.39.0";
+pub const CONTRACT_VERSION: &str = "1.40.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -201,6 +201,16 @@ pub enum Command {
         disable: bool,
         /// Another Codex session (id) that also receives a queued message per event.
         #[arg(long, requires = "enable")]
+        notify_session: Option<String>,
+    },
+    /// Ask a live Claude session for one native notice when it next goes idle or exits.
+    IdleNotify {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        /// Another session (id) that also receives a queued message for the notice.
+        #[arg(long)]
         notify_session: Option<String>,
     },
     /// Turn-end events of notifying sessions after a cursor; --wait blocks for the next one.
@@ -1456,6 +1466,8 @@ pub fn capabilities() -> Value {
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
     value["launch_model"] = json!({"since_revision":38,"request_fields":["model","reasoning_effort"],"requests":["launch"],"providers":["codex"],"reasoning_efforts":crate::launch::REASONING_EFFORTS,"errors":["INVALID_MODEL","INVALID_REASONING_EFFORT","UNSUPPORTED_PROVIDER_OPERATION"],"model_not_checked_against_account":true});
     value["turn_notify"] = crate::turn_notify::capability();
+    value["claude_native_delivery"] = native_delivery_capability();
+    value["claude_idle_notify"] = crate::claude_idle::capability();
     value["shared_claude_state"] = crate::shared_state::capability();
     value["live_activity"] = json!({"since_revision":37,"version":1,"field":"sessions[].live_activity","providers":["codex"],"states":["working","idle","turn_ended","blocked","error","unknown"],"error_text":"provider turn-error text, bounded to 300 characters, only with state error","cached_state":true,"source":"app_server_thread_status_else_rollout_tail"});
     value["pending_operations"] = json!({"since_revision":37,"field":"sessions[].pending_operations","kinds":["stop","pause","switch","restart"],"stop_wait_expiry_seconds":external::TERMINATE_WAIT_SECONDS});
@@ -2410,6 +2422,13 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 notify_session,
             )?
         }
+        Command::IdleNotify {
+            session,
+            expected_generation,
+            notify_session,
+        } => {
+            crate::claude_idle::start(paths, &session, &expected_generation, notify_session).await?
+        }
         Command::TurnEvents { after, wait } => {
             crate::turn_notify::events(paths, after, wait).await?
         }
@@ -3339,4 +3358,24 @@ mod pending_operation_tests {
         assert!(listed[1]["expires_at"].is_null());
         assert_eq!(pending_operations(&jobs, "none"), json!([]));
     }
+}
+
+/// Contract 1.40.0: agent-originated sends reach live Claude sessions through
+/// Claude Code's cross-session messaging (`delivery:"native"`, `origin:"agent"`).
+fn native_delivery_capability() -> Value {
+    use crate::provider::claude::native_peer as peer;
+    json!({"since_contract":"1.40.0","version":1,"providers":["claude"],
+        "request_fields":{"origin":["operator","agent"],"delivery":["auto","native","peer_message","terminal_input","hosted_stream_json"]},
+        "selection":{"operator_auto":"terminal_input_before_peer_message","agent_auto":"native_then_terminal_input",
+            "native":"native_then_terminal_input","peer_message":"native_only"},
+        "fallback":{"to":"terminal_input","only_before_any_byte_was_written":true,"never_both":true,"receipt_field":"native_fallback",
+            "modes":["submit","steer"],"queue_and_interrupt":"native_only"},
+        "protocol":{"peer_protocol":peer::PEER_PROTOCOL,"msg_v":peer::MSG_V,"verified_versions":peer::VERIFIED_VERSIONS,
+            "max_frame_bytes":peer::MAX_FRAME_BYTES,"status_window_seconds":peer::STATUS_WINDOW.as_secs(),
+            "reply_socket":"receiver_socket_directory_named_pid_dash_8hex","auth_line":"not_needed_on_linux_tokens_never_read"},
+        "launch":{"setting":"crossSessionInbound","value":"accept","via":"--settings","kept_when_account_sets":["hold","refuse"]},
+        "receipt":{"states":["native_accepted","held","refused","expired","delivery_unknown","rejected"],
+            "evidence":["transcript_anchor","peer_status_delivered","transport_accepted_silent"],
+            "silent_accept_is_not_proof_of_reading":true},
+        "idle_notice":"claude_idle_notify"})
 }

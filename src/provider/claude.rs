@@ -17,6 +17,7 @@ pub mod attach;
 pub mod bypass;
 pub mod hosted;
 pub mod launch;
+pub mod native_peer;
 pub mod peer;
 pub mod statusline_seed;
 pub mod trust;

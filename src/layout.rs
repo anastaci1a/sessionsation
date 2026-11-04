@@ -71,6 +71,8 @@ pub const DELETIONS: &str = "operations/deletions";
 pub const ACCOUNT_DELETIONS: &str = "operations/account-deletions";
 pub const ACCOUNT_RENAMES: &str = "operations/account-renames";
 pub const CLAUDE_SWITCHES: &str = "operations/claude-switches";
+/// Native Claude idle-notice subscriptions (contract 1.40.0).
+pub const CLAUDE_IDLE_NOTIFY: &str = "operations/claude-idle-notify";
 /// Journals of `shared migrate` (contract 1.39.0).
 pub const SHARED_MIGRATIONS: &str = "operations/shared-migrations";
 pub const AUTO_RECOVERIES: &str = "operations/auto-recoveries";

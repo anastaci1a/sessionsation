@@ -32,7 +32,7 @@
 use crate::{
     catalog,
     paths::{Paths, atomic_write, lock_file, private_dir},
-    provider::{ProviderId, claude, claude::hosted},
+    provider::{ProviderId, claude, claude::hosted, claude::native_peer},
 };
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
@@ -82,6 +82,10 @@ pub struct Request {
     /// `terminal_input`, `peer_message` or `hosted_stream_json`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<String>,
+    /// Who originates the send: `operator` (default; keeps the human-input path) or
+    /// `agent` (agent-to-agent; `auto` then prefers the native peer message).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// Codex recovery intents do not apply; accepted only as absent/null.
     #[serde(default, skip_serializing)]
     pub recovery: Option<Value>,
@@ -96,6 +100,9 @@ pub struct Facts {
     pub shared_with_turn: bool,
     pub interrupt_requested: bool,
     pub peer_status: Vec<Value>,
+    /// No receipt arrived in the status window: accepted by the transport only.
+    #[serde(default)]
+    pub silent_accept: bool,
     pub idle_notice: Option<Value>,
     /// The `result` naming this input arrived; the terminal state waits for
     /// its terminal `command_lifecycle` (`completed` or `cancelled`).
@@ -116,6 +123,9 @@ pub struct Peer {
     pub notify_msg_id: String,
     pub anchor_found: bool,
     pub turn_ended: bool,
+    /// `namespaced` (receipts can reach us) or `private` (receiver may drop them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_socket: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -145,6 +155,12 @@ pub struct Record {
     /// Terminal-input delivery state (kind `terminal`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<terminal::Terminal>,
+    /// Native delivery fell back to terminal input (nothing was sent natively).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<Value>,
+    /// Terminal input is prepared as the fallback of a native send.
+    #[serde(default)]
+    pub fallback_allowed: bool,
     pub observation_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -271,9 +287,15 @@ fn shape(r: &Request) -> Result<()> {
     ensure!(
         matches!(
             r.delivery.as_deref(),
-            None | Some("auto" | "hosted_stream_json" | "terminal_input" | "peer_message")
+            None | Some(
+                "auto" | "hosted_stream_json" | "terminal_input" | "peer_message" | "native"
+            )
         ),
-        "INVALID_REQUEST: delivery must be auto, hosted_stream_json, terminal_input or peer_message"
+        "INVALID_REQUEST: delivery must be auto, hosted_stream_json, terminal_input, peer_message or native"
+    );
+    ensure!(
+        matches!(r.origin.as_deref(), None | Some("operator" | "agent")),
+        "INVALID_REQUEST: origin must be operator or agent"
     );
     ensure!(
         (1..=3600).contains(&r.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS)),
@@ -338,6 +360,9 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
     let c = session.conversation_id.clone();
     let interrupt = request.steering.as_ref().is_some_and(|s| s.interrupt);
     let wanted = request.delivery.as_deref().unwrap_or("auto");
+    let agent = request.origin.as_deref() == Some("agent");
+    let mut fallback: Option<Value> = None;
+    let mut fallback_allowed = false;
     let mut typed = None;
     let (kind, epoch, peer) = if is_gemini {
         ensure!(terminal::enabled(paths), "{}", terminal::DISABLED);
@@ -376,13 +401,20 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         } else {
             Err("TERMINAL_INPUT_DISABLED")
         };
-        let peer_on = claude::peer::enabled(&account.home);
+        let live_now = claude::holder(&claude::live_sessions(&account.home)?, &c).cloned();
+        let peer_on = live_now
+            .as_ref()
+            .is_some_and(|l| claude::native_peer::accepting(&account.home, l.pid));
+        // Agent-originated sends (and `delivery: native`) try the native peer message
+        // first and fall back to typing only when nothing was sent natively.
+        let native_first = wanted == "native" || (wanted == "auto" && agent);
         // Terminal input is preferred over a peer message. Queue (`later`) and
         // interrupts cannot be typed: with `auto` a queue uses the peer path
         // when it is enabled.
         let use_terminal = match wanted {
             "terminal_input" => true,
-            "peer_message" => false,
+            "peer_message" | "native" => false,
+            _ if agent => false,
             _ => attached.is_ok() && !(request.mode == "queue" && peer_on),
         };
         if use_terminal {
@@ -402,37 +434,56 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
                 !interrupt,
                 "PEER_INTERRUPT_UNSUPPORTED: peer messages cannot interrupt a live session; omit steering.interrupt"
             );
-            if !peer_on {
-                // Neither path works: keep the leading code (live steering is the toggle that
-                // can enable a peer message) and name why terminal input is ineligible too.
-                match (wanted, &attached) {
-                    ("auto", Err(code)) => bail!(
-                        "{}; terminal input is also unavailable: {}",
-                        claude::peer::DISABLED,
-                        terminal_unavailable(code)
-                    ),
-                    _ => bail!("{}", claude::peer::DISABLED),
+            // Typing can stand in for a native send only for submit/steer.
+            let typing = attached
+                .clone()
+                .ok()
+                .filter(|_| native_first && request.mode != "queue");
+            let native = (|| -> Result<Peer> {
+                if !peer_on {
+                    // Neither path works: keep the leading code (live steering is the toggle that
+                    // can enable a peer message) and name why terminal input is ineligible too.
+                    match (wanted, &attached) {
+                        ("auto" | "native", Err(code)) => bail!(
+                            "{}; terminal input is also unavailable: {}",
+                            claude::peer::DISABLED,
+                            terminal_unavailable(code)
+                        ),
+                        _ => bail!("{}", claude::peer::DISABLED),
+                    }
                 }
-            }
-            let live = claude::holder(&claude::live_sessions(&account.home)?, &c)
-                .cloned()
-                .context("SESSION_NOT_RUNNING")?;
-            let endpoint = claude::peer::endpoint(&account.home, &live)?;
-            let transcript = claude::find_transcript(&account.home, &c);
-            (
-                "peer",
-                None,
-                Some(Peer {
+                let live = live_now.clone().context("SESSION_NOT_RUNNING")?;
+                let endpoint = claude::peer::endpoint(&account.home, &live)?;
+                Ok(Peer {
                     pid: endpoint.pid,
                     process_start: endpoint.process_start,
                     socket: endpoint.socket,
                     anchor_offset: None,
-                    transcript,
+                    transcript: claude::find_transcript(&account.home, &c),
                     notify_msg_id: uuid::Uuid::new_v4().to_string(),
                     anchor_found: false,
                     turn_ended: false,
-                }),
-            )
+                    reply_socket: None,
+                })
+            })();
+            match (native, typing) {
+                (Ok(peer), t) => {
+                    if let Some(t) = t {
+                        // Prepared now; used only if the connection never opens.
+                        typed = Some(terminal::prepare(&request, t)?);
+                        fallback_allowed = true;
+                    }
+                    ("peer", None, Some(peer))
+                }
+                (Err(e), Some(t)) => {
+                    // Nothing native was attempted: type it instead and say so.
+                    fallback = Some(json!({"from":"peer_message","to":"terminal_input",
+                        "reason":terminal::reason(&e),"stage":"admission"}));
+                    typed = Some(terminal::prepare(&request, t)?);
+                    ("terminal", None, None)
+                }
+                (Err(e), None) => return Err(e),
+            }
         }
     };
     let mut record = Record {
@@ -463,6 +514,8 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
             None
         },
         terminal: typed,
+        fallback,
+        fallback_allowed,
         observation_error: None,
         created_at: now,
         updated_at: now,
@@ -842,14 +895,34 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
                 .next()
                 .unwrap_or("REJECTED")
                 .to_owned();
+            if fall_back_to_terminal(paths, id, &reason, "delivery")? {
+                drop(lock);
+                return spawn_terminal_worker(paths, id);
+            }
             return abandon_unsent(paths, id, &reason);
         }
     };
-    let listen = paths.runtime.join("peer").join(format!("{id}.sock"));
-    private_dir(listen.parent().context("socket parent")?)?;
-    let _ = fs::remove_file(&listen);
-    let listener = tokio::net::UnixListener::bind(&listen)?;
-    let from = format!("uds:{}", listen.display());
+    let frames = [
+        native_peer::user_frame(
+            id,
+            &r.conversation_id,
+            &r.request.text,
+            &r.priority,
+            "uds:/placeholder",
+        ),
+        native_peer::notify_idle_frame("uds:/placeholder", &peer.notify_msg_id),
+    ];
+    if let Err(e) = native_peer::encode(&frames) {
+        let reason = e
+            .to_string()
+            .split(':')
+            .next()
+            .unwrap_or("REJECTED")
+            .to_owned();
+        return abandon_unsent(paths, id, &reason);
+    }
+    let reply = native_peer::bind_reply(&peer.socket, &paths.runtime.join("peer"))?;
+    let from = reply.address();
     // Anchor: transcript size before the write; the injected record follows it.
     let anchor = peer
         .transcript
@@ -862,6 +935,14 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
         if let Some(p) = r.peer.as_mut() {
             p.transcript = peer.transcript.clone();
             p.anchor_offset = anchor;
+            p.reply_socket = Some(
+                if reply.namespaced {
+                    "namespaced"
+                } else {
+                    "private"
+                }
+                .into(),
+            );
         }
         Ok(())
     })?;
@@ -874,7 +955,11 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
         Ok(Ok(s)) => s,
         _ => {
             // Nothing was written: the connection never opened.
-            let _ = fs::remove_file(&listen);
+            if fall_back_to_terminal(paths, id, "PEER_SOCKET_UNREACHABLE", "delivery")? {
+                drop(reply);
+                drop(lock);
+                return spawn_terminal_worker(paths, id);
+            }
             return change(paths, id, |r| {
                 finish(r, "rejected", Some("PEER_SOCKET_UNREACHABLE"));
                 Ok(())
@@ -882,13 +967,12 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
         }
     };
     let (read_half, mut write_half) = stream.into_split();
-    let frame = json!({"type":"user","message":{"role":"user","content":r.request.text},
-        "uuid":id,"msg_id":id,"from":from,"priority":r.priority,"session_id":r.conversation_id});
-    let notify = json!({"type":"notify_when_idle","from":from,"msg_id":peer.notify_msg_id});
+    let frame =
+        native_peer::user_frame(id, &r.conversation_id, &r.request.text, &r.priority, &from);
+    let notify = native_peer::notify_idle_frame(&from, &peer.notify_msg_id);
+    let bytes = native_peer::encode(&[frame, notify])?;
     let wrote = async {
-        write_half
-            .write_all(format!("{frame}\n{notify}\n").as_bytes())
-            .await?;
+        write_half.write_all(&bytes).await?;
         write_half.flush().await
     }
     .await;
@@ -902,9 +986,9 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
         Ok(())
     })?;
     if wrote.is_err() {
-        let _ = fs::remove_file(&listen);
         return Ok(());
     }
+    let written_at = tokio::time::Instant::now();
     // Control frames may arrive on our listener (`from`) or the open connection.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Value>(32);
     let lines = |reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
@@ -923,6 +1007,7 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
     };
     tokio::spawn(lines(Box::new(read_half), tx.clone()));
     let accept_tx = tx.clone();
+    let listener = reply.listener.clone();
     tokio::spawn(async move {
         while let Ok((s, _)) = listener.accept().await {
             tokio::spawn(lines(Box::new(s), accept_tx.clone()));
@@ -931,12 +1016,33 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
     drop(tx);
     let timeout = r.request.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS);
     let mut deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+    let mut silent_check = Some(written_at + native_peer::STATUS_WINDOW);
     loop {
         let frame = tokio::select! {
             v = rx.recv() => v,
             _ = tokio::time::sleep_until(deadline) => None,
+            _ = async {
+                match silent_check {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                // Success is silent: no receipt inside the window means the transport
+                // accepted the frame, not that Claude read it.
+                silent_check = None;
+                change(paths, id, |r| {
+                    if r.state == "pending_local" && r.facts.peer_status.is_empty() {
+                        r.state = "native_accepted".into();
+                        r.facts.silent_accept = true;
+                    }
+                    Ok(())
+                })?;
+                let _ = peer_observe(paths, id);
+                continue;
+            }
         };
         let Some(v) = frame else { break };
+        silent_check = None;
         peer_frame(paths, id, &peer.notify_msg_id, &v)?;
         // Frames arrive on separate connections in any order: an idle notice
         // ends listening only together with a status (or after a short grace).
@@ -948,9 +1054,50 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
             deadline = deadline.min(tokio::time::Instant::now() + Duration::from_secs(3));
         }
     }
+    // Listening ended with no receipt at all: the transport accepted it, nothing more.
+    change(paths, id, |r| {
+        if r.state == "pending_local" && r.facts.peer_status.is_empty() && r.facts.written {
+            r.state = "native_accepted".into();
+            r.facts.silent_accept = true;
+        }
+        Ok(())
+    })?;
     let _ = peer_observe(paths, id);
     drop(write_half);
-    let _ = fs::remove_file(&listen);
+    drop(reply);
+    Ok(())
+}
+
+/// Turn an unsent native request into the prepared terminal input. Only before
+/// any byte was written, so one message is never delivered twice.
+fn fall_back_to_terminal(paths: &Paths, id: &str, reason: &str, stage: &str) -> Result<bool> {
+    change(paths, id, |r| {
+        if !r.fallback_allowed || r.terminal.is_none() || r.facts.written || r.kind != "peer" {
+            return Ok(false);
+        }
+        r.kind = "terminal".into();
+        r.peer = None;
+        r.phase = "admitted".into();
+        r.state = "pending_local".into();
+        r.reason = None;
+        r.dispatched_at = None;
+        r.fallback = Some(json!({"from":"peer_message","to":"terminal_input",
+            "reason":reason,"stage":stage}));
+        Ok(true)
+    })
+}
+fn spawn_terminal_worker(paths: &Paths, id: &str) -> Result<()> {
+    let spawned = crate::background::detach(&mut std::process::Command::new(
+        crate::self_executable::path()?,
+    ))
+    .arg("--data-dir")
+    .arg(&paths.root)
+    .arg("claude-terminal-worker")
+    .arg(id)
+    .spawn();
+    if spawned.is_err() {
+        abandon_unsent(paths, id, "WORKER_COULD_NOT_START_NO_PROVIDER_ACTION")?;
+    }
     Ok(())
 }
 
@@ -961,15 +1108,15 @@ fn peer_recheck(paths: &Paths, r: &Record) -> Result<Peer> {
     let session = catalog::find(paths, &r.session_id)?;
     ensure!(session.conversation_id == r.conversation_id, "STALE_TARGET");
     hosted::ensure_not_hosted(paths, &r.conversation_id)?;
-    ensure!(
-        claude::peer::enabled(&account.home),
-        "{}",
-        claude::peer::DISABLED
-    );
     let recorded = r.peer.clone().context("STALE_TARGET")?;
     let live = claude::holder(&claude::live_sessions(&account.home)?, &r.conversation_id)
         .cloned()
         .context("SESSION_NOT_RUNNING")?;
+    ensure!(
+        claude::native_peer::accepting(&account.home, live.pid),
+        "{}",
+        claude::peer::DISABLED
+    );
     ensure!(
         live.pid == recorded.pid && live.process_start == recorded.process_start,
         "STALE_TARGET: the live Claude process changed"
@@ -984,26 +1131,42 @@ fn peer_recheck(paths: &Paths, r: &Record) -> Result<Peer> {
 
 /// Record one control frame.
 fn peer_frame(paths: &Paths, id: &str, notify: &str, v: &Value) -> Result<()> {
-    let ty = v["type"].as_str().unwrap_or_default();
-    let orig = v["orig_msg_id"].as_str().unwrap_or_default();
-    match ty {
-        "peer_message_status" if orig == id => {
-            let status = v["status"].as_str().unwrap_or_default().to_owned();
+    use native_peer::Inbound;
+    match native_peer::classify(v) {
+        Inbound::Status {
+            orig,
+            status,
+            drop_reason,
+            ..
+        } if orig == id => {
             change(paths, id, |r| {
                 if r.facts.peer_status.len() < 32 {
-                    r.facts
-                        .peer_status
-                        .push(json!({"status":status,"at":crate::daemon::now()}));
+                    let mut entry = json!({"status":status,"at":crate::daemon::now()});
+                    if let Some(reason) = drop_reason.as_deref().filter(|d| {
+                        d.len() <= 40 && d.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    }) {
+                        entry["drop_reason"] = json!(reason);
+                    }
+                    r.facts.peer_status.push(entry);
                 }
                 r.evidence_at = Some(crate::daemon::now());
                 if is_terminal(r) {
                     return Ok(());
                 }
                 match status.as_str() {
-                    "delivered" if matches!(r.state.as_str(), "pending_local" | "held") => {
+                    "delivered"
+                        if matches!(
+                            r.state.as_str(),
+                            "pending_local" | "held" | "native_accepted"
+                        ) =>
+                    {
                         r.state = "native_accepted".into();
+                        r.facts.silent_accept = false;
                     }
-                    "held" if r.state == "pending_local" => r.state = "held".into(),
+                    "held" if matches!(r.state.as_str(), "pending_local" | "native_accepted") => {
+                        r.state = "held".into();
+                        r.facts.silent_accept = false;
+                    }
                     "denied" => finish(r, "refused", Some("PEER_MESSAGE_DENIED")),
                     "refused" => finish(r, "refused", Some("PEER_MESSAGE_REFUSED")),
                     "dropped" => finish(r, "refused", Some("PEER_MESSAGE_DROPPED")),
@@ -1014,10 +1177,14 @@ fn peer_frame(paths: &Paths, id: &str, notify: &str, v: &Value) -> Result<()> {
             })?;
             Ok(())
         }
-        "peer_idle_notice" if orig == notify || orig == id => {
+        Inbound::IdleNotice {
+            orig,
+            state,
+            finished_at,
+            ..
+        } if orig == notify || orig == id => {
             change(paths, id, |r| {
-                r.facts.idle_notice =
-                    Some(json!({"state":v["state"],"finished_at":v["finished_at"],
+                r.facts.idle_notice = Some(json!({"state":state,"finished_at":finished_at,
                     "received_at":crate::daemon::now()}));
                 Ok(())
             })?;
@@ -1292,8 +1459,26 @@ pub fn receipt_value(r: &Record) -> Value {
         "observation":{"state":observation_state,"checked_at":crate::daemon::now(),"evidence_observed_at":r.evidence_at,
             "error_code":r.observation_error}});
     if peer {
-        v["peer_message"] = json!({"label":PEER_LABEL,"status":r.facts.peer_status.last().map(|s| s["status"].clone())});
+        let evidence = if r.facts.input_recorded {
+            "transcript_anchor"
+        } else if r
+            .facts
+            .peer_status
+            .iter()
+            .any(|s| s["status"] == "delivered")
+        {
+            "peer_status_delivered"
+        } else if r.facts.silent_accept {
+            "transport_accepted_silent"
+        } else {
+            "none"
+        };
+        v["peer_message"] = json!({"label":PEER_LABEL,"status":r.facts.peer_status.last().map(|s| s["status"].clone()),
+            "evidence":evidence,"reply_socket":r.peer.as_ref().and_then(|p| p.reply_socket.clone()),
+            "protocol":{"peer_protocol":native_peer::PEER_PROTOCOL,"msg_v":native_peer::MSG_V,"verified_versions":native_peer::VERIFIED_VERSIONS}});
     }
+    v["origin"] = json!(r.request.origin.as_deref().unwrap_or("operator"));
+    v["native_fallback"] = r.fallback.clone().unwrap_or(Value::Null);
     if r.kind == "terminal" {
         terminal::receipt_fields(r, &mut v);
         if gemini::is_gemini(r) {
@@ -1641,5 +1826,56 @@ mod tests {
         assert_eq!(priority("steer"), "next");
         assert_eq!(priority("submit"), "next");
         assert_eq!(priority("queue"), "later");
+    }
+
+    fn peer_record(id: &str, allowed: bool, written: bool) -> Record {
+        serde_json::from_value(json!({"schema_version":1,"kind":"peer",
+            "request":{"api_version":1,"message_id":id,"mode":"steer","session_id":"s","expected_generation":"g",
+                "text":"hello","expires_at":i64::MAX,"origin":"agent","delivery":"native"},
+            "session_id":"s","conversation_id":"c","account":"a","accepted_generation":"g","priority":"next",
+            "host_epoch":null,"phase":"dispatching","state":"pending_local","reason":null,
+            "facts":{"written":written,"lifecycle":[],"input_recorded":false,"folded":false,"shared_with_turn":false,
+                "interrupt_requested":false,"peer_status":[],"idle_notice":null},
+            "reply_text":"","reply_truncated":false,"result":null,
+            "peer":{"pid":1,"process_start":1,"socket":"/x/1.sock","transcript":null,"anchor_offset":null,
+                "notify_msg_id":"n","anchor_found":false,"turn_ended":false},
+            "terminal":terminal::Terminal { target: "herdr/x".into(), pid: 1, delivered_text: "hello".into(), ..Default::default() },
+            "fallback_allowed":allowed,"observation_error":null,"created_at":1,"updated_at":1,
+            "dispatched_at":1,"started_at":null,"finished_at":null,"evidence_at":null}))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_unsent_native_request_becomes_terminal_input_exactly_once() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(d.path().join("root"))).unwrap();
+        private_dir(&dir(&paths)).unwrap();
+        let (a, b, c) = (
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        );
+        for (id, allowed, written) in [(&a, true, false), (&b, true, true), (&c, false, false)] {
+            save(&paths, &mut peer_record(id, allowed, written)).unwrap();
+        }
+        // Connection never opened: converted, not yet complete, native evidence gone.
+        assert!(fall_back_to_terminal(&paths, &a, "PEER_SOCKET_UNREACHABLE", "delivery").unwrap());
+        let r = read(&paths, &a).unwrap();
+        assert_eq!(
+            (r.kind.as_str(), r.phase.as_str()),
+            ("terminal", "admitted")
+        );
+        assert!(r.peer.is_none());
+        assert_eq!(r.fallback.unwrap()["reason"], "PEER_SOCKET_UNREACHABLE");
+        // Converting again is a no-op (the record is no longer a peer record).
+        assert!(!fall_back_to_terminal(&paths, &a, "x", "delivery").unwrap());
+        // A byte was written, or no fallback was prepared: never converted.
+        assert!(!fall_back_to_terminal(&paths, &b, "PEER_WRITE_FAILED", "delivery").unwrap());
+        assert!(!fall_back_to_terminal(&paths, &c, "PEER_SOCKET_UNREACHABLE", "delivery").unwrap());
+        for id in [&b, &c] {
+            let r = read(&paths, id).unwrap();
+            assert_eq!(r.kind, "peer");
+            assert!(r.fallback.is_none());
+        }
     }
 }

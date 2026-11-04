@@ -55,6 +55,9 @@ pub struct Event {
     /// `turn_ended` (completed or interrupted) or `error` (the turn failed).
     pub kind: String,
     pub error: Option<String>,
+    /// Native Claude idle notice: state, finished_at and the one-line status (1.40.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Value>,
     /// null without a designated session; else the queued message's outcome.
     pub delivery: Option<Value>,
 }
@@ -210,6 +213,7 @@ pub fn process(
                 session_id: id,
                 kind: state.to_owned(),
                 error: error.filter(|_| state == "error"),
+                detail: None,
                 delivery: None,
             };
             store.events.push(event.clone());
@@ -232,6 +236,17 @@ fn record_delivery(paths: &Paths, seq: u64, delivery: Value) {
 
 /// The text queued to the designated session: identity and outcome only.
 pub fn message_text(event: &Event) -> String {
+    if matches!(event.kind.as_str(), "idle" | "exited") {
+        let what = if event.kind == "idle" {
+            "went idle"
+        } else {
+            "exited"
+        };
+        return format!(
+            "[sessionsation] Claude session \"{}\" ({}) {what}.",
+            event.name, event.session_id
+        );
+    }
     match (&event.kind[..], &event.error) {
         ("error", Some(error)) => format!(
             "[sessionsation] Codex session \"{}\" ({}) ended its turn with an error: {error}",
@@ -249,7 +264,7 @@ pub fn message_text(event: &Event) -> String {
 }
 
 /// Queue the notification once; the outcome (never a retry) goes in the journal.
-async fn deliver(paths: &Paths, event: &Event, target: &str) {
+pub(crate) async fn deliver(paths: &Paths, event: &Event, target: &str) {
     let outcome = async {
         let generation = catalog::find(paths, target)?.generation();
         let message_id = uuid::Uuid::new_v4().to_string();
@@ -315,6 +330,34 @@ pub async fn tick(paths: &Paths) -> Result<Vec<Event>> {
         }
     }
     Ok(events)
+}
+
+/// Journal an event produced outside the polling loop (the native Claude idle
+/// notice, contract 1.40.0). Delivery to a designated session is the caller's step.
+pub fn record_external(
+    paths: &Paths,
+    session_id: &str,
+    name: &str,
+    kind: &str,
+    detail: Option<Value>,
+) -> Result<Event> {
+    with_store(paths, |store| {
+        store.next_seq += 1;
+        let event = Event {
+            seq: store.next_seq,
+            at: daemon::now(),
+            session_id: session_id.to_owned(),
+            name: name.to_owned(),
+            kind: kind.to_owned(),
+            error: None,
+            detail,
+            delivery: None,
+        };
+        store.events.push(event.clone());
+        let excess = store.events.len().saturating_sub(MAX_EVENTS);
+        store.events.drain(..excess);
+        Ok(event)
+    })
 }
 
 /// `api turn-events`: events after `after` (0 for all kept), waiting up to `wait`
@@ -532,6 +575,7 @@ mod tests {
                     name: String::new(),
                     kind: "turn_ended".into(),
                     error: None,
+                    detail: None,
                     delivery: None,
                 });
             }

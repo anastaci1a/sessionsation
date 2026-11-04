@@ -750,6 +750,22 @@ cannot exchange or reflink); the links still point at the configured `/mnt/user/
 between two linked accounts copies and deletes nothing; deleting an account removes only its links.
 Details, errors and the trust rules are in the [contract](contract.md#shared-claude-conversation-state-1390).
 
+### Native delivery to Claude sessions (contract 1.40.0)
+
+```sh
+echo '{"api_version":1,"message_id":"…","mode":"steer","session_id":"…","expected_generation":"…",
+       "text":"…","expires_at":…,"origin":"agent"}' | sessionsation api send
+sessionsation api idle-notify --session ID --expected-generation G [--notify-session ID2]
+sessionsation api turn-events --after 0 --wait 60
+```
+
+`origin:"agent"` (or `delivery:"native"`) sends through Claude Code's cross-session messaging and types
+into the HERDR pane only if nothing native was possible; an operator send keeps typing. Sessions
+that Sessionsation launches accept inbound messages (`crossSessionInbound` in their `--settings`).
+A silent success is reported as `native_accepted` with `evidence:"transport_accepted_silent"`, never
+as read; the transcript anchor proves it. Details and the live-test limits are in the
+[contract](contract.md#native-delivery-to-claude-sessions-1400).
+
 ### Session auto-recover (contract 1.35.0)
 
 ```sh

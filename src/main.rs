@@ -77,6 +77,8 @@ enum Commands {
     #[command(hide = true)]
     ClaudePeerWorker { message_id: String },
     #[command(hide = true)]
+    ClaudeIdleWorker { id: String },
+    #[command(hide = true)]
     ClaudeTerminalWorker { message_id: String },
     #[command(hide = true)]
     GeminiTerminalWorker { message_id: String },
@@ -757,6 +759,9 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::ClaudeHostWorker { conversation_id } => {
             sessionsation::provider::claude::hosted::worker(&paths, &conversation_id).await?
+        }
+        Commands::ClaudeIdleWorker { id } => {
+            sessionsation::claude_idle::worker(&paths, &id).await?
         }
         Commands::ClaudePeerWorker { message_id } => {
             sessionsation::messaging::claude_steer::peer_worker(&paths, &message_id).await?

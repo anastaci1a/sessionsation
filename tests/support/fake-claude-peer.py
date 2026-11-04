@@ -5,14 +5,23 @@ socket, for peer-message tests. No network, model or credential access.
 Usage: fake-claude-peer.py SESSION_ID CWD SOCKET_PATH (CLAUDE_CONFIG_DIR = home).
 It writes a verified registry entry (pid, procStart, messagingSocketPath,
 peerProtocol 1), records each received frame in <home>/fake-peer-frames.jsonl
-and answers per <home>/fake-peer-mode:
+and answers per <home>/fake-peer-mode, speaking the Claude Code 2.1.312 wire
+protocol: control frames are {"type":"control","action":...}, and receipts go to
+the frame's `from` socket only when that address is vettable (the receiver's own
+socket directory, named <pid>.sock or <pid>-<8 hex>.sock, pid = SO_PEERCRED pid).
   accept (default): status delivered, synthetic transcript turn, idle notice
   hold: status held only;  refuse: status refused;  expire: held then expired
   silent: delivered + idle notice but no transcript record (no anchor)
+  denied / drop: status denied / dropped
+  auth: connections whose first line is not an auth line are closed, nothing delivered
+  quiet: like the real receiver on success: no status frame, transcript record + idle notice
+  quiet-nothing: no status frame and no transcript record (transport-accepted only)
 """
 import json
 import os
+import re
 import socket
+import struct
 import sys
 import threading
 import time
@@ -38,7 +47,17 @@ def append(obj):
         f.write(json.dumps(obj) + "\n")
 
 
+def valid_reply(address, peer_pid):
+    path = address[4:] if address.startswith("uds:") else ""
+    if os.path.dirname(path) != os.path.dirname(sock_path):
+        return False
+    m = re.fullmatch(r"(\d+)(-[0-9a-f]{8})?\.sock", os.path.basename(path))
+    return bool(m) and int(m.group(1)) == peer_pid
+
+
 def send_to(address, obj):
+    if not address:
+        return
     path = address[4:] if address.startswith("uds:") else address
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(path)
@@ -47,26 +66,32 @@ def send_to(address, obj):
 
 
 def status(address, msg_id, value):
-    send_to(address, {"type": "peer_message_status", "orig_msg_id": msg_id, "status": value})
+    extra = {"drop_reason": "queue-full"} if value == "dropped" else {}
+    send_to(address, {"type": "control", "action": "peer_message_status", "orig_msg_id": msg_id,
+                      "status": value, **extra})
 
 
 def notice(address, msg_id):
-    send_to(address, {"type": "peer_idle_notice", "orig_msg_id": msg_id, "state": "idle",
+    send_to(address, {"type": "control", "action": "peer_idle_notice", "orig_msg_id": msg_id, "state": "idle",
                       "finished_at": int(time.time() * 1000), "detail": None})
 
 
-def handle_user(frame):
-    mode = "accept"
+def mode_now():
     mode_file = os.path.join(home, "fake-peer-mode")
     if os.path.exists(mode_file):
-        mode = open(mode_file).read().strip()
+        return open(mode_file).read().strip()
+    return "accept"
+
+
+def handle_user(frame):
+    mode = mode_now()
     msg_id = frame.get("msg_id")
-    sender = frame.get("from", "")
+    sender = frame.get("from", "") if frame.get("_reply_ok") else ""
     text = frame.get("message", {}).get("content", "")
     if frame.get("session_id") != session:
         return
-    if mode == "refuse":
-        status(sender, msg_id, "refused")
+    if mode in ("refuse", "denied", "drop"):
+        status(sender, msg_id, {"refuse": "refused", "denied": "denied", "drop": "dropped"}[mode])
         return
     if mode in ("hold", "expire"):
         status(sender, msg_id, "held")
@@ -74,32 +99,47 @@ def handle_user(frame):
             time.sleep(0.3)
             status(sender, msg_id, "expired")
         return
-    status(sender, msg_id, "delivered")
-    if mode != "silent":
+    if mode not in ("quiet", "quiet-nothing"):
+        status(sender, msg_id, "delivered")
+    if mode not in ("silent", "quiet-nothing"):
         append({"type": "user", "isMeta": True, "uuid": str(uuid.uuid4()),
-                "origin": {"kind": "peer", "from": sender, "msg_id": msg_id},
+                "origin": {"kind": "peer", "from": frame.get("from", ""), "msg_id": msg_id},
                 "message": {"role": "user", "content": "Another Claude session sent a message: " + text}})
         time.sleep(0.2)
         append({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "peer reply to: " + text}]}})
     idle["done"] = True
     for notify_id, address in list(waiting.items()):
-        notice(address, notify_id)
         waiting.pop(notify_id, None)
+        try:
+            notice(address, notify_id)
+        except OSError:
+            pass  # the subscriber is gone
 
 
 def connection(conn):
+    peer_pid = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))[0]
+    first = True
     with conn, conn.makefile("r") as reader:
         for line in reader:
             try:
                 frame = json.loads(line)
             except ValueError:
                 continue
+            if first and mode_now() == "auth" and frame.get("type") != "auth":
+                return
+            first = False
+            if frame.get("type") == "auth":
+                continue
+            reply_ok = valid_reply(frame.get("from", ""), peer_pid)
             with lock, open(os.path.join(home, "fake-peer-frames.jsonl"), "a") as f:
                 f.write(json.dumps(frame) + "\n")
+            frame["_reply_ok"] = reply_ok
             if frame.get("type") == "user":
                 idle["done"] = False
                 threading.Thread(target=handle_user, args=(frame,), daemon=True).start()
-            elif frame.get("type") == "notify_when_idle":
+            elif frame.get("type") == "control" and frame.get("action") == "notify_when_idle":
+                if not reply_ok:
+                    continue
                 if idle.get("done"):
                     notice(frame.get("from", ""), frame.get("msg_id"))
                 else:
