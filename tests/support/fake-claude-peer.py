@@ -72,7 +72,9 @@ def status(address, msg_id, value):
 
 
 def notice(address, msg_id):
-    send_to(address, {"type": "control", "action": "peer_idle_notice", "orig_msg_id": msg_id, "state": "idle",
+    state_file = os.path.join(home, "fake-peer-notice-state")
+    state = open(state_file).read().strip() if os.path.exists(state_file) else "idle"
+    send_to(address, {"type": "control", "action": "peer_idle_notice", "orig_msg_id": msg_id, "state": state,
                       "finished_at": int(time.time() * 1000), "detail": None})
 
 

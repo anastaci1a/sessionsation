@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.40.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.41.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2759,3 +2759,47 @@ PATCH, no new fields.
   nothing re-examined it. Reading its receipt now settles it: past its expiry it is `expired`; if the
   session it was admitted for has been replaced (its generation changed, for example by a stop and
   relaunch) it is `rejected` with `generation_mismatch`. Nothing was sent in either case.
+
+### Detected agent origin, safer terminal typing, disk-space guard (1.41.0)
+
+MINOR, additive. Capability additions: `claude_native_delivery.origin_detection`, `disk_space`.
+
+- **Origin detection.** `api send` with no `origin` used to mean `operator` (typing into the pane).
+  Callers that are agents (and scripts they run) rarely set it, so their messages were typed into a busy
+  Claude's input box. When `origin` is omitted, Sessionsation now walks the caller's process tree
+  (`/proc/<pid>/stat` parent chain, at most 64 hops) and treats the send as `agent` when an ancestor is the
+  verified process (pid and start time) of a live catalog attachment, that is, when the caller runs
+  inside a Sessionsation-managed session. A plain shell or the HERDR UI has no such ancestor and stays
+  `operator`. An explicit `origin` always wins and is never second-guessed. The receipt carries
+  `origin` (the resolved value) and `origin_source`: `explicit`, `detected` or `default`. Idempotent
+  repeats return the original receipt, whatever the caller looks like the second time. Only the
+  catalog is consulted (no provider, no HERDR); an unreadable catalog means `default`.
+- **Terminal typing after a worker failure.** A typed message is never reported as delivered unless Enter
+  went out (`submit` is journaled first). New:
+  - When the worker fails after typing and before Enter (a HERDR error, or a journal write that fails on a
+    full disk) it withdraws the message it typed even when the user had no draft; before, only a
+    non-empty draft triggered that pass and the message stayed in the input box.
+  - A worker that dies past the clear (`steps` has `clear`, not `submit`) leaves an orphan. A receipt
+    read after the 10 second grace starts a cleanup worker (step `orphan_cleanup`) that withdraws the
+    text if the box still holds it (all of it, its tail, or the part typed so far), types the user's
+    journaled draft back, and ends the request `rejected` with `TERMINAL_WORKER_EXITED_BEFORE_SUBMIT`.
+    The next delivery to the same pane does the same for any orphan found there before it reads the pane,
+    so a stranded message no longer makes every later send fail `TERMINAL_DRAFT_UNRECONSTRUCTABLE`.
+    A box that holds anything else is left alone and reported (`left_in_input`).
+  - A refused screen records `terminal_input.refusal_layout`: `screen_rows`, `rules`, `box_rows`,
+    `max_draft_rows` and the footer rows under the input box (UI chrome; never draft text), so
+    `TERMINAL_DRAFT_UNRECONSTRUCTABLE` (a draft taller than `max_draft_rows`) and
+    `TERMINAL_OVERLAY_UNIDENTIFIED` (an unrecognised footer) can be told apart.
+- **Disk space.** `config.json` `min_free_disk_mb` (default 512, 0 disables). Archive, restore, delete,
+  switch, restart, resume, relocate (not `--dry-run`), move-space, launch start, resume-launch start,
+  account delete, `shared migrate` and `layout migrate` (not dry runs) check the free space of the
+  filesystem holding the data root before changing anything and refuse with
+  `INSUFFICIENT_DISK_SPACE` (error fields `free_bytes`, `needed_bytes`, `operation`). `api disk-space`
+  reports the same figures read-only, so a script can check before a multi-step sequence (for example
+  before stopping a session it is going to archive). Any ENOSPC/EDQUOT anywhere in an `api` or CLI
+  failure is reported as `DISK_FULL` instead of a raw I/O message. A non-cached `api state` whose
+  refresh fails that way serves the last cached snapshot with `snapshot.refresh_failed:"DISK_FULL"`,
+  `snapshot.fresh:false` and a `warnings[]` entry `STATE_REFRESH_FAILED_DISK_FULL`; without a snapshot it
+  fails `DISK_FULL`.
+- **`api idle-notify` exit event.** A notice reporting `state:"exited"` is journaled as kind `exited`
+  (it was `idle` with `detail.state:"exited"`); `detail` is unchanged.

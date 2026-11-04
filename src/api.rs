@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 40;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.40.1";
+pub const CONTRACT_MINOR: u32 = 41;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.41.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -67,6 +67,8 @@ pub enum Command {
     Placements,
     /// Discover the exact executable and contract without contacting a provider.
     Version,
+    /// Free space on the data root's filesystem against the `min_free_disk_mb` floor (read-only).
+    DiskSpace,
     Archives,
     Archive {
         #[command(flatten)]
@@ -1468,6 +1470,7 @@ pub fn capabilities() -> Value {
     value["turn_notify"] = crate::turn_notify::capability();
     value["claude_native_delivery"] = native_delivery_capability();
     value["claude_idle_notify"] = crate::claude_idle::capability();
+    value["disk_space"] = json!({"since_contract":"1.41.0","command":"disk-space","config":"min_free_disk_mb","default_mb":crate::disk_space::DEFAULT_MIN_FREE_MB,"refusal":"INSUFFICIENT_DISK_SPACE","write_failure":"DISK_FULL","state_fallback":"cached_snapshot_with_warning"});
     value["shared_claude_state"] = crate::shared_state::capability();
     value["live_activity"] = json!({"since_revision":37,"version":1,"field":"sessions[].live_activity","providers":["codex"],"states":["working","idle","turn_ended","blocked","error","unknown"],"error_text":"provider turn-error text, bounded to 300 characters, only with state error","cached_state":true,"source":"app_server_thread_status_else_rollout_tail"});
     value["pending_operations"] = json!({"since_revision":37,"field":"sessions[].pending_operations","kinds":["stop","pause","switch","restart"],"stop_wait_expiry_seconds":external::TERMINATE_WAIT_SECONDS});
@@ -1733,13 +1736,47 @@ fn write_snapshot(paths: &Paths, filter: ArchiveFilter, value: &Value) {
         let _ = crate::paths::atomic_write(&snapshot_file(paths, filter), &bytes);
     }
 }
+/// The last full result of `filter`, when one was written and still parses.
+fn read_snapshot(paths: &Paths, filter: ArchiveFilter) -> Option<Value> {
+    std::fs::read(snapshot_file(paths, filter))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .filter(|v| v["observed_at"].is_i64() && v["sessions"].is_array())
+}
+/// Non-cached `state`; when the refresh fails because the disk is full, the cached snapshot is
+/// served with a warning instead of the I/O error (contract 1.41.0). Without a snapshot the
+/// error stays (reported as `DISK_FULL`).
+pub async fn state_or_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value> {
+    match state_filtered(paths, filter).await {
+        Err(error) => serve_snapshot_when_disk_full(paths, filter, error),
+        ok => ok,
+    }
+}
+/// The cached snapshot with a warning when `error` is a full disk and a snapshot exists;
+/// otherwise the error itself.
+fn serve_snapshot_when_disk_full(
+    paths: &Paths,
+    filter: ArchiveFilter,
+    error: anyhow::Error,
+) -> Result<Value> {
+    if !crate::disk_space::is_disk_full(&error) {
+        return Err(error);
+    }
+    let Some(mut value) = read_snapshot(paths, filter) else {
+        return Err(error);
+    };
+    let observed_at = value["observed_at"].as_i64().unwrap_or(0);
+    value["snapshot"] =
+        json!({"observed_at":observed_at,"fresh":false,"cached":true,"refresh_failed":"DISK_FULL"});
+    value["warnings"] = json!([{"code":"STATE_REFRESH_FAILED_DISK_FULL","message":crate::disk_space::disk_full_message(&error)}]);
+    value["capabilities"] = capabilities();
+    refresh_cached_accounts(paths, &mut value);
+    Ok(value)
+}
 /// `api state --cached`: the last full result with no catalog write, transcript
 /// scan or process probe. Without a snapshot a full state is computed.
 pub async fn state_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value> {
-    let read = std::fs::read(snapshot_file(paths, filter))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .filter(|v| v["observed_at"].is_i64() && v["sessions"].is_array());
+    let read = read_snapshot(paths, filter);
     let Some(mut value) = read else {
         return state_filtered(paths, filter).await;
     };
@@ -2200,7 +2237,35 @@ pub fn print(result: Value) -> Result<()> {
     Ok(())
 }
 
+/// The multi-step mutating operations that need free space on the data root's filesystem
+/// (they journal, copy or relaunch and can leave a half-done result when the disk fills up).
+fn space_hungry(command: &Command) -> Option<&'static str> {
+    Some(match command {
+        Command::Archive { .. } => "archive",
+        Command::RestoreSession { .. } => "restore",
+        Command::DeleteSession { .. } => "delete",
+        Command::Switch { .. } => "switch",
+        Command::Restart { .. } => "restart",
+        Command::Resume { .. } => "resume",
+        Command::Relocate { dry_run: false, .. } => "relocate",
+        Command::MoveSpace { .. } => "move",
+        Command::Launch {
+            command: crate::launch::Command::Start,
+        } => "launch",
+        Command::ResumeLaunch {
+            command: crate::resume::Command::Start,
+        } => "resume",
+        Command::Account {
+            command: AccountCommand::Delete { .. },
+        } => "account delete",
+        _ => return None,
+    })
+}
+
 pub async fn run(paths: &Paths, command: Command) -> Result<()> {
+    if let Some(operation) = space_hungry(&command) {
+        crate::disk_space::preflight(paths, operation)?;
+    }
     note_deliberate_action(paths, &command);
     let result = match command {
         Command::ResumeLaunch { command } => crate::resume::api(paths, command).await?,
@@ -2277,6 +2342,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             catalog::placement::project(paths, &catalog::list(paths)?)?
         }
         Command::Version => version()?,
+        Command::DiskSpace => crate::disk_space::report(paths),
         Command::Archives => external::archiving::list(paths)?,
         Command::Archive { target } => {
             external::archiving::start(paths, external::archiving::Kind::Archive, target).await?
@@ -2304,7 +2370,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             print(if cached {
                 state_cached(paths, archive_filter).await?
             } else {
-                state_filtered(paths, archive_filter).await?
+                state_or_cached(paths, archive_filter).await?
             })?;
             if !watch {
                 return Ok(());
@@ -3377,5 +3443,43 @@ fn native_delivery_capability() -> Value {
         "receipt":{"states":["native_accepted","held","refused","expired","delivery_unknown","rejected"],
             "evidence":["transcript_anchor","peer_status_delivered","transport_accepted_silent"],
             "silent_accept_is_not_proof_of_reading":true},
-        "idle_notice":"claude_idle_notify"})
+        "idle_notice":"claude_idle_notify",
+        "origin_detection":{"since_contract":"1.41.0","when":"origin_omitted","agent_if":"caller_process_tree_contains_a_live_session_attachment","receipt_field":"origin_source","values":["explicit","detected","default"]}})
+}
+
+#[cfg(test)]
+mod disk_full_state_tests {
+    use super::*;
+
+    fn enospc() -> anyhow::Error {
+        anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ENOSPC)).context("refresh state")
+    }
+
+    #[test]
+    fn a_full_disk_serves_the_cached_snapshot_with_a_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        // No snapshot yet: the error stays.
+        assert!(serve_snapshot_when_disk_full(&paths, ArchiveFilter::Active, enospc()).is_err());
+        let observed_at = daemon::now() - 100;
+        let snapshot = json!({"observed_at":observed_at,"accounts":[],"sessions":[{"id":"s1"}]});
+        write_snapshot(&paths, ArchiveFilter::Active, &snapshot);
+        let served =
+            serve_snapshot_when_disk_full(&paths, ArchiveFilter::Active, enospc()).unwrap();
+        assert_eq!(served["sessions"][0]["id"], "s1");
+        assert_eq!(served["snapshot"]["cached"], true);
+        assert_eq!(served["snapshot"]["fresh"], false);
+        assert_eq!(served["snapshot"]["refresh_failed"], "DISK_FULL");
+        assert_eq!(
+            served["warnings"][0]["code"],
+            "STATE_REFRESH_FAILED_DISK_FULL"
+        );
+        assert_eq!(served["observed_at"], observed_at);
+        // Another failure is never masked by an old snapshot.
+        let other =
+            serve_snapshot_when_disk_full(&paths, ArchiveFilter::Active, anyhow::anyhow!("BOOM"));
+        assert!(other.unwrap_err().to_string().contains("BOOM"));
+        // Another filter has its own snapshot.
+        assert!(serve_snapshot_when_disk_full(&paths, ArchiveFilter::All, enospc()).is_err());
+    }
 }

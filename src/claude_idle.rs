@@ -287,7 +287,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
                     && let Inbound::IdleNotice { orig, state, finished_at, detail } = native_peer::classify(&v)
                     && orig == r.notify_msg_id
                 {
-                    outcome = Some(("idle", json!({"state":state,"finished_at":finished_at,"status":detail})));
+                    outcome = Some((notice_kind(&state), json!({"state":state,"finished_at":finished_at,"status":detail})));
                 }
             }
             _ = tokio::time::sleep(step) => {
@@ -298,7 +298,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
                         if let Inbound::IdleNotice { orig, state, finished_at, detail } = native_peer::classify(&v)
                             && orig == r.notify_msg_id
                         {
-                            outcome = Some(("idle", json!({"state":state,"finished_at":finished_at,"status":detail})));
+                            outcome = Some((notice_kind(&state), json!({"state":state,"finished_at":finished_at,"status":detail})));
                         }
                     }
                     if outcome.is_none() {
@@ -344,4 +344,22 @@ pub fn capability() -> Value {
         "events":"api turn-events (kind idle|exited, detail:{state,finished_at,status})",
         "journal":"operations/claude-idle-notify","replays":false,"model_requests":false,
         "refusal_codes":["UNSUPPORTED_PROVIDER_OPERATION","SESSION_NOT_RUNNING","LIVE_STEERING_DISABLED","PEER_ENDPOINT_UNAVAILABLE","PEER_SOCKET_UNLINKED","STALE_TARGET"]})
+}
+
+/// Event kind of a received notice: a notice reporting `state:"exited"` is the session's exit
+/// (`exited`, as the contract says), any other state is `idle`.
+fn notice_kind(state: &str) -> &'static str {
+    if state == "exited" { "exited" } else { "idle" }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::notice_kind;
+
+    #[test]
+    fn an_exit_notice_is_an_exited_event() {
+        assert_eq!(notice_kind("exited"), "exited");
+        assert_eq!(notice_kind("idle"), "idle");
+        assert_eq!(notice_kind("anything-else"), "idle");
+    }
 }

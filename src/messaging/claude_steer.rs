@@ -161,6 +161,12 @@ pub struct Record {
     /// Terminal input is prepared as the fallback of a native send.
     #[serde(default)]
     pub fallback_allowed: bool,
+    /// Resolved origin (`operator` / `agent`) and its source (`explicit`, `detected`,
+    /// `default`); absent in records written before 1.41.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_resolved: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_source: Option<String>,
     pub observation_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -360,7 +366,8 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
     let c = session.conversation_id.clone();
     let interrupt = request.steering.as_ref().is_some_and(|s| s.interrupt);
     let wanted = request.delivery.as_deref().unwrap_or("auto");
-    let agent = request.origin.as_deref() == Some("agent");
+    let (origin, origin_source) = crate::caller_origin::resolve(paths, request.origin.as_deref());
+    let agent = origin == "agent";
     let mut fallback: Option<Value> = None;
     let mut fallback_allowed = false;
     let mut typed = None;
@@ -516,6 +523,8 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         terminal: typed,
         fallback,
         fallback_allowed,
+        origin_resolved: Some(origin),
+        origin_source: Some(origin_source.to_owned()),
         observation_error: None,
         created_at: now,
         updated_at: now,
@@ -1086,6 +1095,19 @@ fn fall_back_to_terminal(paths: &Paths, id: &str, reason: &str, stage: &str) -> 
         Ok(true)
     })
 }
+/// Start a detached worker subcommand for a record; whether it could be started.
+fn spawn_worker(paths: &Paths, subcommand: &str, id: &str) -> bool {
+    let Ok(exe) = crate::self_executable::path() else {
+        return false;
+    };
+    crate::background::detach(&mut std::process::Command::new(exe))
+        .arg("--data-dir")
+        .arg(&paths.root)
+        .arg(subcommand)
+        .arg(id)
+        .spawn()
+        .is_ok()
+}
 fn spawn_terminal_worker(paths: &Paths, id: &str) -> Result<()> {
     let spawned = crate::background::detach(&mut std::process::Command::new(
         crate::self_executable::path()?,
@@ -1354,7 +1376,19 @@ fn reconcile(paths: &Paths, id: &str) -> Result<Record> {
                 }
             } else if r.facts.written {
                 peer_observe(paths, id)?;
+            } else if stopped
+                && age > ADMITTED_GRACE_SECONDS
+                && terminal::orphaned(&r)
+                && !terminal::cleanup_started(&r)
+            {
+                // The worker died after clearing or typing: a cleanup worker withdraws the
+                // text and restores the draft, and ends the request `rejected`.
+                terminal::step(paths, id, "orphan_cleanup", |_| {})?;
+                if !spawn_worker(paths, "claude-terminal-worker", id) {
+                    terminal::unsent_left_in_input(paths, id)?;
+                }
             } else if stopped && age > ADMITTED_GRACE_SECONDS {
+                terminal::unsent_left_in_input(paths, id)?;
                 change(paths, id, |r| {
                     // Enter is journaled (`submit`) before it is sent.
                     let submitting = r
@@ -1477,7 +1511,19 @@ pub fn receipt_value(r: &Record) -> Value {
             "evidence":evidence,"reply_socket":r.peer.as_ref().and_then(|p| p.reply_socket.clone()),
             "protocol":{"peer_protocol":native_peer::PEER_PROTOCOL,"msg_v":native_peer::MSG_V,"verified_versions":native_peer::VERIFIED_VERSIONS}});
     }
-    v["origin"] = json!(r.request.origin.as_deref().unwrap_or("operator"));
+    v["origin"] = json!(
+        r.origin_resolved
+            .as_deref()
+            .or(r.request.origin.as_deref())
+            .unwrap_or("operator")
+    );
+    v["origin_source"] = json!(r.origin_source.as_deref().unwrap_or(
+        if r.request.origin.is_some() {
+            "explicit"
+        } else {
+            "default"
+        }
+    ));
     v["native_fallback"] = r.fallback.clone().unwrap_or(Value::Null);
     if r.kind == "terminal" {
         terminal::receipt_fields(r, &mut v);

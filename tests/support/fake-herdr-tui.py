@@ -19,6 +19,11 @@ State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
   garble_once         drop the last character of the next typed chunk
   wrap, window        soft-wrap the box at `wrap` columns and show only its last `window` rows
   fail_enter          `send-keys enter` fails and submits nothing
+  break_journal       directory of Sessionsation's request records; after the first typed text each
+                      <id>.json there becomes a directory (the worker's journal writes then fail,
+                      the way a full disk fails them); the original is kept as <id>.json.held
+  break_screen_after_type   after the first typed text `pane read` fails
+  break_at_chunk      the typed chunk (1-based) after which the two breaks above happen
 The HERDR agent status at each `send-text` goes to $FAKE_HERDR_DIR/typed-status.
 Every command is appended to $FAKE_HERDR_DIR/calls as a JSON argv; Esc,
 Ctrl+C, Ctrl+D and Ctrl+L are also logged to $FAKE_HERDR_DIR/forbidden.
@@ -231,6 +236,8 @@ elif cmd == "pane process-info":
 elif cmd == "pane read":
     if args[2] != state["pane"]:
         fail("pane_not_found")
+    if state.get("screen_broken"):
+        fail("pane_read_failed")
     sys.stdout.write("\r\n".join(render()))
 elif cmd == "pane send-text":
     if args[2] != state["pane"]:
@@ -239,6 +246,19 @@ elif cmd == "pane send-text":
         f.write(state["status"] + "\n")
     type_text(" ".join(args[3:]))
     save()
+    state["chunks"] = state.get("chunks", 0) + 1
+    save()
+    if state.get("break_journal") and not state.get("journal_broken") and state["chunks"] >= state.get("break_at_chunk", 1):
+        d = state["break_journal"]
+        for n in os.listdir(d):
+            if n.endswith(".json") and os.path.isfile(os.path.join(d, n)):
+                os.rename(os.path.join(d, n), os.path.join(d, n) + ".held")
+                os.mkdir(os.path.join(d, n))
+        state["journal_broken"] = True
+        save()
+    if state.get("break_screen_after_type") and not state.get("screen_broken") and state["chunks"] >= state.get("break_at_chunk", 1):
+        state["screen_broken"] = True
+        save()
 elif cmd == "pane send-keys":
     if args[2] != state["pane"]:
         fail("pane_not_found")

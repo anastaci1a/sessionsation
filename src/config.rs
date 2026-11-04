@@ -44,6 +44,10 @@ pub struct Config {
     /// folder trust for the launch directory in the account's `.claude.json`
     /// (`projects[dir].hasTrustDialogAccepted`). Contract revision 20.
     pub claude_pretrust_folders: bool,
+    /// Multi-step mutating operations (archive, delete, switch, launch, migrate, ...) refuse with
+    /// `INSUFFICIENT_DISK_SPACE` when the filesystem holding the data root has less than this many
+    /// MB free. 0 disables the check. Contract 1.41.0.
+    pub min_free_disk_mb: u64,
     /// Before a yolo Antigravity start, pre-accept agy's folder trust for the launch
     /// directory (`trustedWorkspaces` in the account's `settings.json`). Contract revision 25.
     pub antigravity_pretrust_folders: bool,
@@ -83,6 +87,7 @@ impl Default for Config {
             receipt_unknown_horizon_days: 90,
             launch_permissions: LaunchPermissions::Yolo,
             claude_pretrust_folders: true,
+            min_free_disk_mb: crate::disk_space::DEFAULT_MIN_FREE_MB,
             antigravity_pretrust_folders: true,
             claude_default_statusline_command: DEFAULT_STATUSLINE_COMMAND.into(),
             log_retention_days: 30,

@@ -4719,7 +4719,7 @@
         },
         "origin": {
           "enum": ["operator", "agent"],
-          "description": "1.40.0. operator (default) keeps the human-input path; agent makes delivery auto try the native peer message first."
+          "description": "1.40.0. operator (default) keeps the human-input path; agent makes delivery auto try the native peer message first. 1.41.0: when omitted, a caller inside a Sessionsation-managed session's process tree is treated as agent (receipt origin_source detected)."
         }
       },
       "if": {
@@ -4989,6 +4989,10 @@
         "origin": {
           "enum": ["operator", "agent"],
           "description": "1.40.0."
+        },
+        "origin_source": {
+          "enum": ["explicit", "detected", "default"],
+          "description": "1.41.0. Where the receipt origin came from."
         },
         "native_fallback": {
           "description": "1.40.0. Null, or what happened when a native send was typed instead: {from:peer_message,to:terminal_input,reason,stage:admission|delivery}. Set only when nothing was sent natively.",

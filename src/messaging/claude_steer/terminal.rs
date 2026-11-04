@@ -27,7 +27,9 @@
 //! 7. The transcript is read for the human record carrying exactly the typed
 //!    text after the submit; its uuid anchors the reply. Without it the
 //!    receipt is `delivery_unknown`. Nothing is ever re-sent.
-use super::{Record, Request, abandon_unsent, change, dir, finish, is_terminal, read, worker_lock};
+use super::{
+    Record, Request, abandon_unsent, all, change, dir, finish, is_terminal, read, worker_lock,
+};
 use crate::{
     catalog,
     paths::{Paths, lock_file, private_dir},
@@ -122,6 +124,9 @@ pub struct Terminal {
     pub left_in_input: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub left_chars: Option<usize>,
+    /// Why a screen was refused: the layout around the input box (no draft text), for diagnosis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal_layout: Option<Value>,
     pub anchor_offset: Option<u64>,
     pub submitted_at_ms: Option<i64>,
     pub input_uuid: Option<String>,
@@ -788,6 +793,35 @@ pub(crate) fn step(paths: &Paths, id: &str, s: &str, f: impl FnOnce(&mut Record)
         Ok(())
     })
 }
+/// What a refused screen looked like around the input box, without any draft text: the rows
+/// between the last two rules (count, longest row), and the footer rows below the box (UI
+/// chrome: key hints, status line, agent list), each cut to 120 characters.
+pub(crate) fn layout(rows: &[Vec<Cell>]) -> Value {
+    let lines: Vec<String> = rows.iter().map(|r| row_text(r)).collect();
+    let rules: Vec<usize> = (0..rows.len()).filter(|&i| is_rule(&rows[i])).collect();
+    let (box_rows, footer_from) = match rules.as_slice() {
+        [.., a, b] => (b - a - 1, b + 1),
+        [b] => (0, b + 1),
+        _ => (0, rows.len()),
+    };
+    let footer: Vec<String> = lines[footer_from.min(lines.len())..]
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .take(12)
+        .map(|l| l.trim_end().chars().take(120).collect())
+        .collect();
+    json!({"screen_rows":rows.len(),"rules":rules.len(),"box_rows":box_rows,"max_draft_rows":MAX_DRAFT_ROWS,"footer":footer})
+}
+pub(crate) fn reject_screen(paths: &Paths, id: &str, code: &str, rows: &[Vec<Cell>]) -> Result<()> {
+    let layout = layout(rows);
+    change(paths, id, |r| {
+        if let Some(t) = r.terminal.as_mut() {
+            t.refusal_layout = Some(layout);
+        }
+        finish(r, "rejected", Some(code));
+        Ok(())
+    })
+}
 pub(crate) fn reject(paths: &Paths, id: &str, code: &str) -> Result<()> {
     change(paths, id, |r| {
         finish(r, "rejected", Some(code));
@@ -829,6 +863,9 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         return Ok(());
     }
     let r = read(paths, id)?;
+    if orphaned(&r) {
+        return cleanup_orphan(paths, id, &r).await;
+    }
     if r.phase != "admitted"
         || r.kind != "terminal"
         || super::gemini::is_gemini(&r)
@@ -860,6 +897,8 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         Ok(())
     })?;
     let host = Host::new(&t)?;
+    // A dead worker's typed message or taken-away draft must not poison this delivery.
+    withdraw_orphans(paths, id, &host, &t.target).await;
     let outcome = deliver(paths, id, &host, &t).await;
     if let Err(e) = outcome {
         // A HERDR failure mid-procedure: never retried. Before Enter the
@@ -927,7 +966,7 @@ async fn deliver(paths: &Paths, id: &str, host: &Host, t: &Terminal) -> Result<(
     let draft = match view {
         Ok(View::Main(d)) => d,
         Ok(_) => return reject(paths, id, "TERMINAL_VIEW_UNDETERMINED"),
-        Err(code) => return reject(paths, id, code),
+        Err(code) => return reject_screen(paths, id, code, &host.screen().unwrap_or(screen)),
     };
     if !restorable(&draft) {
         // Typing it back would toggle help, a mode or a menu instead.
@@ -1154,7 +1193,8 @@ async fn salvage(
         .ok()
         .and_then(|r| r.terminal)
         .is_some_and(|t| t.draft_restored.is_some());
-    if draft.is_empty() || done {
+    // An empty draft still needs the pass: the typed message itself may be sitting in the box.
+    if done {
         return;
     }
     let note = format!("host_failed:{}", reason(error));
@@ -1170,7 +1210,7 @@ async fn salvage(
         return;
     };
     let mut v = classify(&rows, false);
-    let unsent = !submitted && matches!(&v, Ok(View::Main(d)) if squash(d) == squash(message));
+    let unsent = !submitted && matches!(&v, Ok(View::Main(d)) if typed_remains(d, message));
     if unsent && host.clear(message).await.is_ok() {
         v = host
             .until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
@@ -1191,6 +1231,162 @@ async fn salvage(
     } else {
         let _ = left(paths, id, &note, &v, draft, message);
     }
+}
+
+/// Whether `shown` (the input box as read) is what is left of the typed `message`: all of it,
+/// or the tail of it while the box shows only its last rows, or what an interrupted typing
+/// had written so far.
+fn typed_remains(shown: &str, message: &str) -> bool {
+    let s = squash(shown);
+    let m = squash(message);
+    !s.is_empty() && (s == m || (s.chars().count() >= 12 && (m.ends_with(&s) || m.starts_with(&s))))
+}
+
+/// A terminal request whose worker is gone after the clear and before Enter: the typed
+/// message may still sit in the input box and the user's draft is not restored. Never
+/// delivered; this is cleaned up (and then ends `rejected`), not reported as sent.
+pub(crate) fn orphaned(r: &Record) -> bool {
+    r.kind == "terminal"
+        && r.phase == "dispatching"
+        && r.provider.is_none()
+        && r.terminal.as_ref().is_some_and(|t| {
+            t.steps.iter().any(|s| s == "clear")
+                && !t.steps.iter().any(|s| s == "submit")
+                && t.draft_restored.is_none()
+        })
+}
+
+/// Whether a cleanup worker was already started for an orphaned request.
+pub(crate) fn cleanup_started(r: &Record) -> bool {
+    r.terminal
+        .as_ref()
+        .is_some_and(|t| t.steps.iter().any(|s| s == "orphan_cleanup"))
+}
+
+/// A request that ends unsent after its worker died past the clear: what the input box holds
+/// is unknown (nothing could be checked), and the journaled draft stays private.
+pub(crate) fn unsent_left_in_input(paths: &Paths, id: &str) -> Result<()> {
+    change(paths, id, |r| {
+        if orphaned(r)
+            && let Some(t) = r.terminal.as_mut()
+            && t.left_in_input.is_none()
+        {
+            t.left_in_input = Some("unknown".into());
+            t.restore_error
+                .get_or_insert_with(|| "worker_exited_after_clear".into());
+        }
+        Ok(())
+    })
+}
+
+/// Take the typed text of a dead worker out of the pane and put its draft back, then end
+/// the request `rejected`. The pane lock is held by the caller. Best effort and never
+/// sends Enter: a box that holds anything but the message (or nothing) is left as it is.
+async fn withdraw_orphan(paths: &Paths, id: &str, host: &Host) {
+    let Ok(r) = read(paths, id) else {
+        return;
+    };
+    if !orphaned(&r) {
+        return;
+    }
+    let Some(t) = r.terminal.clone() else {
+        return;
+    };
+    let draft = t.draft.clone().unwrap_or_default();
+    let message = t.delivered_text.clone();
+    let typed = t.steps.iter().any(|s| s == "type");
+    match host.screen().map(|rows| classify(&rows, false)) {
+        Ok(Ok(View::Main(d))) if typed && typed_remains(&d, &message) => {
+            let ok = host.clear(&message).await.is_ok();
+            let v = if ok {
+                host.until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
+                    .await
+                    .unwrap_or(Err("TERMINAL_HOST_UNAVAILABLE"))
+            } else {
+                Err("TERMINAL_HOST_UNAVAILABLE")
+            };
+            if matches!(&v, Ok(View::Main(d)) if d.is_empty()) {
+                let _ = restore(paths, id, host, &draft, &message).await;
+            } else {
+                let _ = left(
+                    paths,
+                    id,
+                    "orphan_withdraw_unverified",
+                    &v,
+                    &draft,
+                    &message,
+                );
+            }
+        }
+        Ok(Ok(View::Main(d))) if d.is_empty() => {
+            let _ = restore(paths, id, host, &draft, &message).await;
+        }
+        Ok(v) => {
+            let _ = left(paths, id, "orphan_input_not_ours", &v, &draft, &message);
+        }
+        Err(_) => {
+            let _ = left(
+                paths,
+                id,
+                "orphan_host_unavailable",
+                &Err("TERMINAL_HOST_UNAVAILABLE"),
+                &draft,
+                &message,
+            );
+        }
+    }
+    let _ = change(paths, id, |r| {
+        finish(r, "rejected", Some("TERMINAL_WORKER_EXITED_BEFORE_SUBMIT"));
+        Ok(())
+    });
+}
+
+/// Orphans of other requests on the same pane (see [`orphaned`]) are withdrawn before this
+/// delivery reads the pane: their text would otherwise read as a draft nothing can restore.
+async fn withdraw_orphans(paths: &Paths, id: &str, host: &Host, target: &str) {
+    for o in all(paths) {
+        let oid = o.request.message_id.clone();
+        if oid == id
+            || !orphaned(&o)
+            || o.terminal.as_ref().is_none_or(|t| t.target != target)
+            || !worker_lock(paths, &oid)
+                .and_then(|p| crate::background::worker_stopped(&p))
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        withdraw_orphan(paths, &oid, host).await;
+    }
+}
+
+/// Worker entry for an orphaned request found by a receipt read.
+async fn cleanup_orphan(paths: &Paths, id: &str, r: &Record) -> Result<()> {
+    let t = match recheck(paths, r) {
+        Ok(t) => t,
+        Err(_) => {
+            // The target is gone: nothing can be withdrawn; say what is unknown.
+            return change(paths, id, |r| {
+                if let Some(t) = r.terminal.as_mut() {
+                    t.left_in_input = Some("unknown".into());
+                    t.restore_error
+                        .get_or_insert_with(|| "orphan_target_unavailable".into());
+                }
+                finish(r, "rejected", Some("TERMINAL_WORKER_EXITED_BEFORE_SUBMIT"));
+                Ok(())
+            });
+        }
+    };
+    private_dir(&dir(paths))?;
+    let key: String = t
+        .target
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let pane_lock = lock_file(&dir(paths).join(format!("terminal-{key}.lock")))?;
+    pane_lock.lock_exclusive()?;
+    let host = Host::new(&t)?;
+    withdraw_orphan(paths, id, &host).await;
+    Ok(())
 }
 
 /// Type the draft back (no Enter) and verify it exactly; never retried.
@@ -1506,7 +1702,7 @@ pub fn receipt_fields(r: &Record, v: &mut Value) {
         "text_normalized":t.normalized,"view_switched":t.view_switched,
         "draft":{"present":t.draft_chars.map(|n| n > 0),"chars":t.draft_chars,"restored":t.draft_restored,
             "restore_error":t.restore_error,"left_in_input":t.left_in_input,"left_chars":t.left_chars},
-        "steps":t.steps});
+        "steps":t.steps,"refusal_layout":t.refusal_layout});
 }
 
 /// With the worker gone, a submit never matched in the transcript within the

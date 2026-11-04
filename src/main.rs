@@ -653,10 +653,7 @@ async fn main() {
         }
     };
     if let Err(error) = run(cli).await {
-        eprintln!(
-            "{}",
-            json!({"api_version":1,"ok":false,"error":{"code":error_code(&error),"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":sessionsation::messaging::recovery::diagnostic(&error_code(&error)).map(|help|format!("{}: {}",error_code(&error),help)).unwrap_or_else(||format!("{error:#}")),"retryable":matches!(error_code(&error).as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS")}})
-        );
+        eprintln!("{}", error_envelope(&error));
         std::process::exit(1);
     }
 }
@@ -697,6 +694,9 @@ async fn run(cli: Cli) -> Result<()> {
             print_json(&match command {
                 LayoutCommand::Status => migrate::status(&paths.root)?,
                 LayoutCommand::Migrate { backup, dry_run } => {
+                    if !dry_run {
+                        sessionsation::disk_space::preflight(&paths, "layout migrate")?;
+                    }
                     migrate::migrate(&paths.root, &migrate::Options { backup, dry_run })?
                 }
                 LayoutCommand::Rollback { dry_run } => migrate::rollback(&paths.root, dry_run)?,
@@ -724,6 +724,9 @@ async fn run(cli: Cli) -> Result<()> {
                         account.provider == ProviderId::Claude,
                         "ACCOUNT_PROVIDER_REQUIRED: shared state applies to claude:<name> accounts"
                     );
+                    if !dry_run {
+                        sessionsation::disk_space::preflight(&paths, "shared migrate")?;
+                    }
                     let result = shared::migrate::migrate(
                         &paths,
                         &shared::migrate::Options {
@@ -1898,7 +1901,28 @@ fn install_systemd(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
+fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
+    let code = error_code(error);
+    let message = if code == "DISK_FULL" {
+        sessionsation::disk_space::disk_full_message(error)
+    } else {
+        sessionsation::messaging::recovery::diagnostic(&code)
+            .map(|help| format!("{code}: {help}"))
+            .unwrap_or_else(|| format!("{error:#}"))
+    };
+    let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS")}});
+    if let Some(space) = error.downcast_ref::<sessionsation::disk_space::InsufficientSpace>() {
+        envelope["error"]["free_bytes"] = json!(space.free_bytes);
+        envelope["error"]["needed_bytes"] = json!(space.needed_bytes);
+        envelope["error"]["operation"] = json!(space.operation);
+    }
+    envelope
+}
+
 fn error_code(error: &anyhow::Error) -> String {
+    if sessionsation::disk_space::is_disk_full(error) {
+        return "DISK_FULL".into();
+    }
     if error
         .downcast_ref::<sessionsation::messaging::NativeReadFailure>()
         .is_some()
@@ -1919,5 +1943,44 @@ fn error_code(error: &anyhow::Error) -> String {
         candidate.into()
     } else {
         "OPERATION_FAILED".into()
+    }
+}
+
+#[cfg(test)]
+mod error_envelope_tests {
+    use super::*;
+
+    #[test]
+    fn enospc_anywhere_in_the_chain_is_disk_full() {
+        let raw = std::io::Error::from_raw_os_error(libc::ENOSPC);
+        let error = anyhow::Error::new(raw).context("write the catalog");
+        let envelope = error_envelope(&error);
+        assert_eq!(envelope["error"]["code"], "DISK_FULL");
+        let message = envelope["error"]["message"].as_str().unwrap();
+        assert!(message.starts_with("DISK_FULL:"), "{message}");
+        assert!(message.contains("No space left on device"), "{message}");
+        assert_eq!(envelope["error"]["retryable"], false);
+        // Another I/O failure keeps the generic code.
+        let other = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EACCES));
+        assert_eq!(error_envelope(&other)["error"]["code"], "OPERATION_FAILED");
+    }
+
+    #[test]
+    fn insufficient_space_carries_both_figures() {
+        let error = anyhow::Error::new(sessionsation::disk_space::InsufficientSpace {
+            operation: "archive".into(),
+            path: "/root".into(),
+            free_bytes: 5,
+            needed_bytes: 9,
+        });
+        let envelope = error_envelope(&error);
+        assert_eq!(envelope["error"]["code"], "INSUFFICIENT_DISK_SPACE");
+        assert_eq!(
+            (
+                envelope["error"]["free_bytes"].as_u64(),
+                envelope["error"]["needed_bytes"].as_u64()
+            ),
+            (Some(5), Some(9))
+        );
     }
 }

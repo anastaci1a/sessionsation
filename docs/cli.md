@@ -766,6 +766,24 @@ A silent success is reported as `native_accepted` with `evidence:"transport_acce
 as read; the transcript anchor proves it. Details and the live-test limits are in the
 [contract](contract.md#native-delivery-to-claude-sessions-1400).
 
+### Agent origin, terminal safety and disk space (contract 1.41.0)
+
+`api send` without `origin` is treated as `agent` when the caller runs inside a Sessionsation-managed
+session (its process tree contains a live session's verified process); a plain shell or the HERDR UI
+stays `operator`. Receipts show `origin` and `origin_source` (`explicit`, `detected`, `default`).
+A worker that fails after typing withdraws its text; orphaned typed text is cleaned up on the next
+receipt read or delivery; a refused screen reports `terminal_input.refusal_layout`.
+
+```sh
+sessionsation api disk-space      # free_bytes vs min_free_bytes (config min_free_disk_mb, default 512)
+sessionsation config set min_free_disk_mb 1024   # 0 disables the preflight
+```
+
+Archive, delete, switch, launch, resume, move and migrate refuse with `INSUFFICIENT_DISK_SPACE`
+(`free_bytes`, `needed_bytes`) before changing anything; a write that hits ENOSPC is `DISK_FULL`; a
+non-cached `api state` falls back to the cached snapshot with a warning. See the
+[contract](contract.md#detected-agent-origin-safer-terminal-typing-disk-space-guard-1410).
+
 ### Session auto-recover (contract 1.35.0)
 
 ```sh

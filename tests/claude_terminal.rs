@@ -749,3 +749,237 @@ async fn agent_sends_try_native_first_and_fall_back_to_typing_once() {
         "same id: the original receipt, nothing re-sent"
     );
 }
+
+/// A live fake Claude in pane w1:p1 with an idle prompt; returns the process, the session id and
+/// a function that resets the fake pane's state.
+async fn live_pane(f: &Fixture) -> (Process, String, Box<dyn Fn(Value) + '_>) {
+    let out = f
+        .command(&["account", "add", "--platform", "claude", "personal"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+    let home = f.home();
+    let conversation = uuid::Uuid::new_v4().to_string();
+    let socket = f.tmp.path().join("p.sock");
+    let claude = Process(
+        Command::new("python3")
+            .arg(f.tmp.path().join("fake-claude-peer.py"))
+            .args([
+                &conversation,
+                f.project.to_str().unwrap(),
+                socket.to_str().unwrap(),
+            ])
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .env("HERDR_PANE_ID", "w1:p1")
+            .env("HERDR_SESSION", "fixture")
+            .env("HERDR_ENV", "1")
+            .current_dir(&f.project)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let transcript = home
+        .join("projects")
+        .join(f.project.to_str().unwrap().replace('/', "-"))
+        .join(format!("{conversation}.jsonl"));
+    let screens = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/claude-screens");
+    let base = json!({"pane":"w1:p1","pid":claude.0.id(),"view":"main","input":"","status":"idle",
+        "transcript":transcript,"screens":screens});
+    let reset = move |patch: Value| {
+        let mut v = base.clone();
+        for (k, x) in patch.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        std::fs::write(f.herdr.join("tui.json"), v.to_string()).unwrap();
+    };
+    reset(json!({}));
+    let mut s = Value::Null;
+    wait_for("attached live session", || {
+        s = f.session(&conversation);
+        s["availability"] == "running" && s["attachment"]["host"] == "herdr"
+    });
+    let id = s["id"].as_str().unwrap().to_owned();
+    (claude, id, Box::new(reset))
+}
+
+/// Put the journal files back after the fake broke them (see `break_journal`).
+fn mend_journal(dir: &Path) {
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "json") && p.is_dir() {
+            std::fs::remove_dir(&p).unwrap();
+            let held = PathBuf::from(format!("{}.held", p.display()));
+            std::fs::rename(held, &p).unwrap();
+        }
+    }
+}
+
+/// Contract 1.41.0: a worker that fails between typing and Enter (a journal write that fails on a
+/// full disk) withdraws the message it typed, even when the user had no draft. Nothing is sent, the
+/// request is never reported delivered, and the box is empty again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failure_between_typing_and_enter_withdraws_the_typed_message() {
+    let f = fixture().await;
+    let (_claude, id, reset) = live_pane(&f).await;
+    let journal = f.paths.root.join("messaging/claude-steer");
+    reset(json!({"input":"","break_journal":journal,"break_at_chunk":5}));
+    let enters_before = f
+        .writes()
+        .iter()
+        .filter(|w| w.iter().any(|x| x == "enter"))
+        .count();
+    let b = body(
+        "submit",
+        &f.session(&id),
+        &"this must never be left unsent. ".repeat(8),
+    );
+    let m = b["message_id"].as_str().unwrap().to_owned();
+    f.send_ok(&b);
+    wait_for("the journal to break", || f.tui()["journal_broken"] == true);
+    // The worker fails at its next journal write; give it the time to withdraw.
+    wait_for("the typed text to be withdrawn", || f.tui()["input"] == "");
+    wait_for("the worker to finish", || {
+        std::fs::read_dir(&journal).unwrap().flatten().all(|e| {
+            let p = e.path();
+            p.extension().is_none_or(|x| x != "lock") || sessionsation_worker_stopped(&p)
+        })
+    });
+    assert_eq!(
+        f.writes()
+            .iter()
+            .filter(|w| w.iter().any(|x| x == "enter"))
+            .count(),
+        enters_before,
+        "Enter was never sent"
+    );
+    mend_journal(&journal);
+    // Unsent: never reported as delivered; settled as rejected once the dead worker is certain.
+    let r = f.settled(&m);
+    assert_eq!(r["state"], "rejected", "{r}");
+    assert_eq!(r["reason"], "TERMINAL_WORKER_EXITED_BEFORE_SUBMIT");
+    assert_eq!(r["facts"]["input_recorded"], false);
+    assert_eq!(f.tui()["input"], "");
+}
+
+fn sessionsation_worker_stopped(lock: &Path) -> bool {
+    use fs2::FileExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock)
+        .map(|f| f.try_lock_exclusive().is_ok())
+        .unwrap_or(true)
+}
+
+/// Contract 1.41.0: a worker that died with the typed message still in the box (and the user's
+/// draft taken out) is cleaned up: by a cleanup worker when its receipt is read, or before the next
+/// delivery on that pane, which then sees the user's own draft instead of an unreconstructable one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_orphaned_typed_message_is_withdrawn_and_the_draft_restored() {
+    let f = fixture().await;
+    let (_claude, id, reset) = live_pane(&f).await;
+    let journal = f.paths.root.join("messaging/claude-steer");
+    // The journal and the screen both fail after the first typed chunk: the worker can neither
+    // record nor clean anything.
+    reset(
+        json!({"input":"my draft","break_journal":journal,"break_screen_after_type":true,"break_at_chunk":5}),
+    );
+    let msg = "left behind by a dead worker. ".repeat(8);
+    let b = body("submit", &f.session(&id), &msg);
+    let m = b["message_id"].as_str().unwrap().to_owned();
+    f.send_ok(&b);
+    wait_for("the worker to give up", || {
+        let t = f.tui();
+        t["screen_broken"] == true
+            && std::fs::read_dir(&journal).unwrap().flatten().all(|e| {
+                let p = e.path();
+                p.extension().is_none_or(|x| x != "lock") || sessionsation_worker_stopped(&p)
+            })
+    });
+    let t = f.tui();
+    let stuck = t["input"].as_str().unwrap();
+    assert!(
+        stuck.len() > 32 && msg.starts_with(stuck),
+        "the typed part of the message is stuck in the input box: {stuck:?}"
+    );
+    mend_journal(&journal);
+    // The pane is readable again; a receipt read starts the cleanup.
+    let mut v = f.tui();
+    v["screen_broken"] = json!(false);
+    v.as_object_mut().unwrap().remove("break_journal");
+    v.as_object_mut().unwrap().remove("break_screen_after_type");
+    f.set_tui(&v);
+    let r = f.settled(&m);
+    assert_eq!(r["state"], "rejected", "{r}");
+    assert_eq!(r["reason"], "TERMINAL_WORKER_EXITED_BEFORE_SUBMIT");
+    assert_eq!(r["facts"]["input_recorded"], false);
+    assert_eq!(r["terminal_input"]["draft"]["restored"], true, "{r}");
+    assert_eq!(f.tui()["input"], "my draft", "the user's draft is back");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_next_delivery_withdraws_an_orphan_instead_of_refusing_its_text() {
+    let f = fixture().await;
+    let (_claude, id, reset) = live_pane(&f).await;
+    let journal = f.paths.root.join("messaging/claude-steer");
+    reset(
+        json!({"input":"","break_journal":journal,"break_screen_after_type":true,"break_at_chunk":5}),
+    );
+    let msg = "orphan text that stays in the box. ".repeat(8);
+    let b = body("submit", &f.session(&id), &msg);
+    let orphan = b["message_id"].as_str().unwrap().to_owned();
+    f.send_ok(&b);
+    wait_for("the worker to give up", || {
+        f.tui()["screen_broken"] == true
+            && std::fs::read_dir(&journal).unwrap().flatten().all(|e| {
+                let p = e.path();
+                p.extension().is_none_or(|x| x != "lock") || sessionsation_worker_stopped(&p)
+            })
+    });
+    let stuck = f.tui()["input"].as_str().unwrap().to_owned();
+    assert!(stuck.len() > 32 && msg.starts_with(&stuck), "{stuck:?}");
+    mend_journal(&journal);
+    let mut v = f.tui();
+    v["screen_broken"] = json!(false);
+    v.as_object_mut().unwrap().remove("break_journal");
+    v.as_object_mut().unwrap().remove("break_screen_after_type");
+    f.set_tui(&v);
+    // A new send to the same pane: the orphan's text is withdrawn first, then this one is delivered.
+    let next = body("submit", &f.session(&id), "the next message.");
+    let n = next["message_id"].as_str().unwrap().to_owned();
+    f.send_ok(&next);
+    let r = f.settled(&n);
+    assert_eq!(r["state"], "completed_with_reply", "{r}");
+    assert_eq!(r["reply"]["text"], "terminal reply to: the next message.");
+    let o = f.api(&["receipt", &orphan]);
+    assert_eq!(o["state"], "rejected", "{o}");
+    assert_eq!(o["facts"]["input_recorded"], false);
+}
+
+/// A refused screen records the layout around the input box (never the draft), so a refusal can be
+/// diagnosed from its receipt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_screen_reports_its_layout() {
+    let f = fixture().await;
+    let (_claude, id, reset) = live_pane(&f).await;
+    // A long unsent draft in a narrow, short window: more rows than a draft may take.
+    let long = (0..14)
+        .map(|i| format!("line {i} of someone's unsent draft"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    reset(json!({"input":long,"wrap":0,"window":20}));
+    let b = body("submit", &f.session(&id), "will be refused.");
+    f.send_ok(&b);
+    let r = f.settled(b["message_id"].as_str().unwrap());
+    assert_eq!(r["state"], "rejected", "{r}");
+    assert_eq!(r["reason"], "TERMINAL_DRAFT_UNRECONSTRUCTABLE", "{r}");
+    let layout = &r["terminal_input"]["refusal_layout"];
+    assert!(layout["box_rows"].as_u64().unwrap() > 12, "{layout}");
+    assert_eq!(layout["max_draft_rows"], 12);
+    assert!(!layout.to_string().contains("someone's unsent draft"));
+    assert_eq!(f.tui()["input"], long, "the user's draft was not touched");
+}

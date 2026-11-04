@@ -705,3 +705,131 @@ async fn account_delete_is_async_preserves_conversations_and_removes_only_dispos
         .contains("test-shared-identity")
     );
 }
+
+fn api_error(root: &std::path::Path, args: &[&str]) -> Value {
+    let out = Command::new(binary())
+        .arg("--data-dir")
+        .arg(root)
+        .arg("api")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "unexpectedly succeeded: {args:?}");
+    serde_json::from_slice(&out.stderr).unwrap()
+}
+
+/// Contract 1.41.0: multi-step mutating operations refuse up front when the data root's filesystem
+/// is below `min_free_disk_mb`, before changing anything, and say how much is free and needed.
+#[test]
+fn mutating_operations_refuse_up_front_without_enough_free_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("state");
+    sessionsation::paths::Paths::new(Some(root.clone())).unwrap();
+    // An absurd floor: no real filesystem has it free.
+    std::fs::write(
+        root.join("config.json"),
+        serde_json::json!({"min_free_disk_mb": 1_000_000_000_000u64}).to_string(),
+    )
+    .unwrap();
+    let report = Command::new(binary())
+        .arg("--data-dir")
+        .arg(&root)
+        .args(["api", "disk-space"])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(v["result"]["ok"], false, "{v}");
+    assert!(v["result"]["free_bytes"].as_u64().unwrap() > 0);
+    for (operation, args) in [
+        (
+            "archive",
+            vec![
+                "archive",
+                "--session",
+                "x",
+                "--expected-generation",
+                "y",
+                "--request-id",
+                "r",
+                "--confirm",
+                "c",
+            ],
+        ),
+        (
+            "delete",
+            vec![
+                "delete-session",
+                "--session",
+                "x",
+                "--expected-generation",
+                "y",
+                "--request-id",
+                "r",
+                "--confirm",
+                "c",
+            ],
+        ),
+        (
+            "switch",
+            vec![
+                "switch",
+                "--session",
+                "x",
+                "--expected-generation",
+                "y",
+                "--to",
+                "codex:b",
+            ],
+        ),
+        (
+            "restart",
+            vec!["restart", "--session", "x", "--expected-generation", "y"],
+        ),
+    ] {
+        let e = api_error(&root, &args);
+        assert_eq!(
+            e["error"]["code"], "INSUFFICIENT_DISK_SPACE",
+            "{operation}: {e}"
+        );
+        assert_eq!(e["error"]["operation"], operation);
+        assert!(
+            e["error"]["free_bytes"].as_u64().unwrap()
+                < e["error"]["needed_bytes"].as_u64().unwrap()
+        );
+        assert_eq!(e["error"]["retryable"], false);
+    }
+    // Zero turns the check off: the operation then fails for its own reason.
+    std::fs::write(root.join("config.json"), r#"{"min_free_disk_mb":0}"#).unwrap();
+    let e = api_error(
+        &root,
+        &[
+            "archive",
+            "--session",
+            "x",
+            "--expected-generation",
+            "y",
+            "--request-id",
+            "r",
+            "--confirm",
+            "c",
+        ],
+    );
+    assert_ne!(e["error"]["code"], "INSUFFICIENT_DISK_SPACE", "{e}");
+    // Reads are never blocked.
+    std::fs::write(
+        root.join("config.json"),
+        serde_json::json!({"min_free_disk_mb": 1_000_000_000_000u64}).to_string(),
+    )
+    .unwrap();
+    let ok = Command::new(binary())
+        .arg("--data-dir")
+        .arg(&root)
+        .args(["api", "state", "--cached"])
+        .output()
+        .unwrap();
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+}

@@ -1272,6 +1272,8 @@ async fn agent_sends_use_the_native_peer_protocol_and_report_every_receipt_hones
     assert_eq!(e["kind"], "idle", "{events}");
     assert_eq!(e["session_id"], id.as_str());
     assert_eq!(e["detail"]["state"], "idle");
+    // A notice that reports the session's exit is an `exited` event (contract 1.41.0).
+    std::fs::write(home.join("fake-peer-notice-state"), "exited").unwrap();
     let ops = f.api(&[
         "idle-notify",
         "--session",
@@ -1283,5 +1285,68 @@ async fn agent_sends_use_the_native_peer_protocol_and_report_every_receipt_hones
         ops["id"], started["id"],
         "a finished subscription is not reused"
     );
+    let last = e["seq"].as_i64().unwrap();
+    let b = agent("submit", "finish another turn", "native");
+    f.send_ok(&b);
+    f.settled(b["message_id"].as_str().unwrap());
+    let events = f.api(&["turn-events", "--after", &last.to_string(), "--wait", "20"]);
+    let e = &events["events"][0];
+    assert_eq!(e["kind"], "exited", "{events}");
+    assert_eq!(e["detail"]["state"], "exited");
+    // Origin: omitted from a plain shell = operator (default); explicit is recorded as such;
+    // omitted from inside a managed session's process tree = agent (detected, contract 1.41.0).
+    std::fs::write(home.join("fake-peer-mode"), "accept").unwrap();
+    let mut plain = body("submit", &f.session(&id), "no origin given");
+    plain["timeout_seconds"] = json!(8);
+    let r = f.send_ok(&plain);
+    assert_eq!(
+        (r["origin"].as_str(), r["origin_source"].as_str()),
+        (Some("operator"), Some("default")),
+        "{r}"
+    );
+    f.settled(plain["message_id"].as_str().unwrap());
+    let b = agent("submit", "explicit agent", "auto");
+    let r = f.send_ok(&b);
+    assert_eq!(
+        (r["origin"].as_str(), r["origin_source"].as_str()),
+        (Some("agent"), Some("explicit")),
+        "{r}"
+    );
+    f.settled(b["message_id"].as_str().unwrap());
+    let mut detected = body("submit", &f.session(&id), "detected agent");
+    detected["timeout_seconds"] = json!(8);
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+    let start: u64 = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    sessionsation::catalog::record_provider_launch(
+        &f.paths,
+        sessionsation::provider::ProviderId::Claude,
+        "personal",
+        &uuid::Uuid::new_v4().to_string(),
+        "the-sender",
+        None,
+        Some(sessionsation::catalog::Attachment {
+            host: "herdr/x".into(),
+            target: "herdr/x/w:p".into(),
+            pid: std::process::id(),
+            process_start: start,
+        }),
+    )
+    .unwrap();
+    let r = f.send_ok(&detected);
+    assert_eq!(
+        (r["origin"].as_str(), r["origin_source"].as_str()),
+        (Some("agent"), Some("detected")),
+        "{r}"
+    );
+    assert_eq!(r["delivery_semantics"], "peer_message");
+    f.settled(detected["message_id"].as_str().unwrap());
     drop(peer);
 }
