@@ -283,6 +283,7 @@ pub fn exec_attach(paths: &Paths, id: &str, generation: &str) -> Result<()> {
     let account = claude::account(paths, &session.account)?;
     crate::accounts::ensure_available(paths, ProviderId::Claude, &session.account)?;
     ensure!(account.enabled, "ACCOUNT_UNAVAILABLE: account is disabled");
+    crate::shared_state::ensure_links(paths, &account.home)?;
     let config = crate::store::load_config(paths)?;
     let o = observe(
         &account.home,

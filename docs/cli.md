@@ -729,6 +729,27 @@ a busy session needs `--accept-risks`. Codes, phases and recovery are in the
 Switching the account of a stopped (saved) session only re-homes it: the history moves to the target
 account and the session stays saved; nothing is started until you resume it ([contract](contract.md#switching-a-stopped-session-only-re-homes-it-1350)).
 
+### Shared Claude state (contract 1.39.0)
+
+```sh
+sessionsation shared status
+sessionsation shared enable
+sessionsation shared migrate --account claude:NAME --dry-run [--fs-path /mnt/disk1/appdata/sessionsation]
+sessionsation shared migrate --account claude:NAME [--allow-full-copy] [--fs-path DISK-PATH]
+```
+
+A conversation looks the same on every account: `projects` (transcripts and per-project `memory/`),
+`file-history`, `todos` and `session-env` live once in `<root>/shared/claude/` and each managed Claude
+account home links to them. Credentials, settings and live-session registries stay per account.
+`shared migrate` moves one account's existing directories into the store with a single atomic
+`renameat2(RENAME_EXCHANGE)` per directory (no copy, no moment without the path, open files of
+running Claude processes keep working), after a reflink backup under `<root>/backups/`. Later accounts
+are merged: nothing is overwritten and conflicting files are reported and left in place. It is journaled,
+idempotent and resumable. On Unraid pass the real-disk path with `--fs-path` (the user share is FUSE and
+cannot exchange or reflink); the links still point at the configured `/mnt/user/...` root. Switching
+between two linked accounts copies and deletes nothing; deleting an account removes only its links.
+Details, errors and the trust rules are in the [contract](contract.md#shared-claude-conversation-state-1390).
+
 ### Session auto-recover (contract 1.35.0)
 
 ```sh

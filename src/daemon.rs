@@ -553,13 +553,15 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 let (home, existing) = match &adopted { Some(dir) => (dir.clone(), true), None => crate::provider::claude::create_home(&paths,name)? };
                                 if adopted.is_none() && !existing { if let Err(e) = crate::provider::claude::bypass::default_new(&home) { eprintln!("bypass-warning default not set: {e}"); } }
                                 if adopted.is_none() && !existing { if let Err(e) = crate::provider::claude::statusline_seed::default_new(&home,&config.claude_default_statusline_command) { eprintln!("statusLine default not set: {e}"); } }
+                                // Shared Claude state (1.39.0): link a managed home to the shared store when the store is enabled.
+                                let shared_state = match &adopted { Some(_) => crate::shared_state::Ensure::NotApplicable.public(), None => match crate::shared_state::ensure_links(&paths,&home) { Ok(e) => e.public(), Err(e) => json!({"state":"error","error":format!("{e:#}")}) } };
                                 let auth = crate::provider::claude::auth_report(&config,&home).await;
                                 let mut account = Account::with_provider(ProviderId::Claude,name.into(),String::new());
                                 account.config_home = adopted; account.auth_required = !auth["problem"].is_null();
                                 account.auth_detail = auth["problem"].as_str().map(str::to_owned);
                                 state.insert_account(account); last_poll.remove(&key);
                                 store.save(&state,now(),"account_added",name)?;
-                                return Ok(json!({"name":name,"provider":"claude","account_id":format!("claude:{name}"),"home":home,"adopted":params["config_dir"].is_string(),"existing_home":existing,"auth":auth,
+                                return Ok(json!({"name":name,"provider":"claude","account_id":format!("claude:{name}"),"home":home,"adopted":params["config_dir"].is_string(),"existing_home":existing,"auth":auth,"shared_state":shared_state,
                                     "login":{"action":"exec","interactive":true,"command":["sessionsation","account","login",format!("claude:{name}")]}}));
                             }
                             ensure!(config_dir.is_none(), "INVALID_ARGUMENT: --config-dir is only supported for claude accounts");

@@ -71,6 +71,8 @@ pub const DELETIONS: &str = "operations/deletions";
 pub const ACCOUNT_DELETIONS: &str = "operations/account-deletions";
 pub const ACCOUNT_RENAMES: &str = "operations/account-renames";
 pub const CLAUDE_SWITCHES: &str = "operations/claude-switches";
+/// Journals of `shared migrate` (contract 1.39.0).
+pub const SHARED_MIGRATIONS: &str = "operations/shared-migrations";
 pub const AUTO_RECOVERIES: &str = "operations/auto-recoveries";
 pub const CONVERSATION_OPERATIONS: &str = "operations/conversation-operations";
 pub const HANDOFF_JOBS: &str = "operations/handoff-jobs";

@@ -19,6 +19,8 @@ fn context(paths: &Paths, name: &str) -> Result<(Enrolled, Config)> {
         account.home.is_dir(),
         "ACCOUNT_HOME_UNAVAILABLE: the Claude config home does not exist"
     );
+    // Create or repair the shared-store links before any Claude process uses the home.
+    crate::shared_state::ensure_links(paths, &account.home)?;
     Ok((account, crate::store::load_config(paths)?))
 }
 

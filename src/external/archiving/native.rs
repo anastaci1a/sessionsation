@@ -358,8 +358,11 @@ pub(crate) fn ensure_parent(p: &Path) -> Result<()> {
             .mode(0o700)
             .create(parent)?;
     }
+    // The only symlinked parent ever accepted is an account-home link to the
+    // shared Claude store (`file-history`, `todos`, `session-env`, `projects`).
     ensure!(
-        !fs::symlink_metadata(parent)?.file_type().is_symlink(),
+        !fs::symlink_metadata(parent)?.file_type().is_symlink()
+            || crate::shared_state::trusted_link(parent),
         "HISTORY_SYMLINK: {}",
         parent.display()
     );

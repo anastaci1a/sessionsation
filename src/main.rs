@@ -415,6 +415,34 @@ enum Commands {
         #[command(subcommand)]
         command: RetentionCommand,
     },
+    /// Shared Claude conversation state (projects, file-history, todos, session-env) in one store for every account.
+    Shared {
+        #[command(subcommand)]
+        command: SharedCommand,
+    },
+}
+#[derive(Subcommand)]
+enum SharedCommand {
+    /// Store state and each Claude account's link state.
+    Status,
+    /// Turn the feature on for this root (creates the store; new and empty homes are then linked).
+    Enable,
+    /// Move one account's directories into the shared store and link them (journaled, idempotent, resumable).
+    Migrate {
+        /// The Claude account, claude:NAME.
+        #[arg(long)]
+        account: String,
+        /// Print the plan and preflight facts; change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Accept a full-copy backup where the file system cannot reflink.
+        #[arg(long)]
+        allow_full_copy: bool,
+        /// Real-disk alias of the data root used for all file operations (for example /mnt/disk1/appdata/sessionsation
+        /// when --data-dir is the Unraid FUSE share /mnt/user/...). Link targets still use --data-dir.
+        #[arg(long)]
+        fs_path: Option<PathBuf>,
+    },
 }
 #[derive(Subcommand)]
 enum LayoutCommand {
@@ -675,6 +703,45 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Retention {
             command: RetentionCommand::Run { dry_run },
         } => print_json(&sessionsation::retention::run(&paths, dry_run)?)?,
+        Commands::Shared { command } => {
+            use sessionsation::shared_state as shared;
+            print_json(&match command {
+                SharedCommand::Status => shared::status(&paths)?,
+                SharedCommand::Enable => {
+                    shared::enable(&paths.root)?;
+                    shared::status(&paths)?
+                }
+                SharedCommand::Migrate {
+                    account,
+                    dry_run,
+                    allow_full_copy,
+                    fs_path,
+                } => {
+                    let account = AccountRef::parse(&account)?;
+                    anyhow::ensure!(
+                        account.provider == ProviderId::Claude,
+                        "ACCOUNT_PROVIDER_REQUIRED: shared state applies to claude:<name> accounts"
+                    );
+                    let result = shared::migrate::migrate(
+                        &paths,
+                        &shared::migrate::Options {
+                            account: account.name,
+                            dry_run,
+                            allow_full_copy,
+                            fs_path,
+                        },
+                    )?;
+                    let incomplete = !dry_run && result["complete"] == false;
+                    print_json(&result)?;
+                    if incomplete {
+                        bail!(
+                            "SHARED_STATE_MIGRATION_INCOMPLETE: entries conflict with the shared store; see the conflicts in the output above"
+                        );
+                    }
+                    return Ok(());
+                }
+            })?;
+        }
         Commands::ConversationWorker { request_id } => {
             sessionsation::external::archiving::worker(&paths, &request_id).await?;
         }

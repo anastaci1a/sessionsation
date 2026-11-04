@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.38.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.39.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2612,3 +2612,78 @@ MINOR, additive. Capability flags `launch_model` and `turn_notify`.
   id and, for an error, the provider's error text; no conversation content) to that other Codex session; its
   outcome is the event's `delivery` (`{message_id,to,state,reason}` or `{state:"failed",error}`).
   Delivery to the designated session is best effort: the journal is the source of truth.
+
+### Shared Claude conversation state (1.39.0)
+
+MINOR, additive. Capability `shared_claude_state` (`api capabilities`).
+
+A session must behave the same, and see the same information, on any account, so Claude's
+non-credential per-conversation state moves out of the account homes into one store in the data root:
+`<root>/shared/claude/<name>` for `name` in `projects` (transcripts and per-project `memory/`),
+`file-history`, `todos` and `session-env` (the real subdirectory names of the Claude config dir).
+Every managed Claude account home gets a directory symlink `<account home>/<name>` whose stored
+target is exactly the absolute path `<root>/shared/claude/<name>` (as the root is configured, for
+example `/mnt/user/appdata/sessionsation/...`). Credentials, settings, `sessions/` and everything else
+stay per account. Adopted (`--config-dir`) homes are never linked (`shared status` reports them as
+`applicable:false`).
+
+- **Dormant until enabled.** Nothing changes on a root until `shared enable` or the first
+  `shared migrate` writes `shared/claude/.sessionsation-shared`. Deploying the build alone changes
+  no behavior.
+- **Trusted-link model.** Sessionsation still refuses symlinks everywhere (generic walkers such as
+  digest, copy and remove fail with `HISTORY_SYMLINK` on a link, so nothing can copy, digest or delete
+  *through* one). One helper, `shared_state::trusted_link`, accepts exactly these links: a symlink at
+  exactly `<managed Claude home>/<name>` for a listed name, owned by this user, whose stored target is
+  exactly `<root>/shared/claude/<name>`, which resolves (no other symlink on the way) to that
+  directory, and which is a real private (no group/other access) directory owned by this user inside
+  real private `shared/` and `shared/claude/`. A link to another place, a link replaced by another
+  link, a relative spelling, a link owned by another user, a link at an unlisted name or outside an
+  account home, or a store entry that is itself a symlink is not trusted and is refused as before.
+  The helper is consulted only where code explicitly handles a link: launch-time repair, the parent
+  check when restoring archived files (`file-history/<id>`, `todos/...`), account deletion and the
+  switch no-op.
+- **Ensure-links.** On `account add`, before every Claude launch, resume, hosted start, headless
+  delivery and attach, and on a switch, a missing link is created, an empty real directory is
+  replaced by a link and a trusted link is kept. Errors: `SHARED_STATE_UNMIGRATED` (an account home
+  has a real directory with data where a link belongs: nothing is merged automatically; run
+  `sessionsation shared migrate --account claude:NAME`), `SHARED_STATE_LINK_UNTRUSTED` (another
+  symlink or a file is there; left unchanged), `SHARED_STATE_STORE_UNSAFE`. `account add` reports
+  `shared_state:{state:"linked"|"disabled"|"not_applicable"|"error"}`. Once the store is enabled, an
+  account that is not migrated cannot be launched or resumed until it is migrated; running sessions
+  are not affected.
+- **Account switch.** When both accounts are fully linked the `copying`/`copied` and
+  `removing`/`removed` phases are still journaled but copy and delete nothing (`receipt.shared_state:true`,
+  `files_moved:0`; only dead `sessions/<pid>.json` entries of the source account are cleared). Per-project
+  `memory/` is the same on both accounts. Two plain accounts keep the old move. A half-linked pair is
+  refused with `SHARED_STATE_MIXED`, because the old move
+  would delete from the shared store.
+- **Delete, log out, rename.** Account deletion removes the links only (`unlink`; shared data is
+  never moved or deleted, so conversations survive the account). Log out runs the provider's own
+  logout and touches no history. Rename is a directory rename and the links stay valid.
+- **`shared migrate --account claude:NAME [--dry-run] [--allow-full-copy] [--fs-path DIR]`** (CLI,
+  not an `api` command; prints JSON). Journaled in `operations/shared-migrations/<id>.json`,
+  idempotent (`already_migrated:true`) and resumable (the same command continues an unfinished
+  journal). Steps: (1) preflight: account home and store on one file system (`st_dev`), the alias
+  proven, `renameat2(RENAME_EXCHANGE)` and (unless `--allow-full-copy`) reflink probed on the real
+  disk; `--dry-run` runs only the read-only checks and prints the per-name plan. (2) Backup: a reflink
+  copy (`FICLONE`) of each directory to `<root>/backups/shared-migrate-<UTC time>/<account>/<name>`;
+  without reflink support it fails with `BACKUP_REFLINK_UNSUPPORTED` unless `--allow-full-copy`.
+  (3) Link, per name, with no moment in which the account path is missing and no data copied (inodes
+  are unchanged, so file descriptors of live Claude processes keep working): if the store has no
+  `<name>` yet, a placeholder symlink to `<root>/shared/claude/<name>` is created at that store path
+  and exchanged in one `RENAME_EXCHANGE` with the account's real directory (the real directory is now
+  in the store, the link at the account path); if the store already has `<name>`, non-conflicting
+  entries are moved by `RENAME_NOREPLACE`, directories present on both sides are merged recursively,
+  a file present on both sides is a reported conflict (never overwritten), and a temporary link is then
+  exchanged with the emptied account directory the same way. Conflicts leave that name a real
+  directory, print the paths under `results.<name>.conflicts`, exit non-zero with
+  `SHARED_STATE_MIGRATION_INCOMPLETE`, and the command is repeated after the operator resolves them.
+  Leftover `-tmp-*` project slugs are moved like any other entry.
+- **`--fs-path`.** The Unraid user share (`/mnt/user`) is a FUSE union with no `RENAME_EXCHANGE` and
+  no reflink. `--data-dir` stays the logical root, so every link target is `/mnt/user/...`, while
+  `--fs-path /mnt/disk1/appdata/sessionsation` makes all file operations run on the real disk. The alias
+  is proven by creating a probe file there and finding it under the data root. If the account's
+  directories sit on another disk than the store, the preflight fails with `SHARED_STATE_CROSS_DEVICE`.
+- **`shared status`** lists the store state and each Claude account's per-name state
+  (`linked`, `missing`, `empty_directory`, `unmigrated`, `untrusted`); **`shared enable`** turns the
+  feature on without migrating.

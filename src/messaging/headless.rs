@@ -541,6 +541,9 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
 
 async fn prepare(paths: &Paths, r: &Record) -> Result<(PathBuf, fs::File)> {
     let account = usable_account(paths, r.provider, &r.account)?;
+    if r.provider == ProviderId::Claude {
+        crate::shared_state::ensure_links(paths, &account.home)?;
+    }
     let session = catalog::find(paths, &r.session_id)?;
     ensure!(
         session.provider == r.provider.as_str()

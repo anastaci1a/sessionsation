@@ -742,6 +742,7 @@ pub async fn worker(paths: &Paths, c: &str) -> Result<()> {
 /// Rechecks inside the worker before any provider process starts.
 async fn prepare(paths: &Paths, h: &Host) -> Result<PathBuf> {
     let enrolled = account(paths, &h.account)?;
+    crate::shared_state::ensure_links(paths, &enrolled.home)?;
     let session = catalog::find(paths, &h.session_id)?;
     ensure!(
         session.conversation_id == h.conversation_id && session.account == h.account,

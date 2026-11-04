@@ -22,6 +22,9 @@
 //! `todos/<id>-agent-*.json`) for every conversation of the lineage. NOT moved:
 //! per-project `projects/<slug>/memory/`, settings, credentials and any other
 //! account-level state stay with the source account.
+//!
+//! Shared store (contract 1.39.0): when both homes link to `<root>/shared/claude`
+//! the copy and remove phases are journaled no-ops (nothing copied or deleted).
 use crate::{
     catalog::{self, Session},
     daemon,
@@ -87,6 +90,9 @@ pub struct Record {
     conversation_id: String,
     conversation_ids: Vec<String>,
     expected_generation: String,
+    /// Both homes link to the shared Claude store: the copy and remove phases move nothing.
+    #[serde(default)]
+    shared: bool,
     accept_risks: bool,
     source_account: String,
     target_account: String,
@@ -186,9 +192,9 @@ fn public(paths: &Paths, r: &Record) -> Value {
     "non_steering":true,"replays":false,
     "resume":{"state":r.resume,"pane":r.pane,"permissions":r.permissions},
     "generation":r.generation_after,
-    "receipt":{"files_moved":moved,"paths":r.entries.as_ref().map(|e| e.iter().map(|x| x.relative.to_string_lossy().into_owned()).collect::<Vec<_>>()),
-        "account_memory":{"moved":false,"stays_with":format!("claude:{}",r.source_account),
-            "detail":"Per-project memory/, settings and credentials are account state and stay with the source account."}},
+    "receipt":{"shared_state":r.shared,"files_moved":if r.shared {Some(0)} else {moved},"paths":r.entries.as_ref().map(|e| e.iter().map(|x| x.relative.to_string_lossy().into_owned()).collect::<Vec<_>>()),
+        "account_memory":{"moved":false,"shared":r.shared,"stays_with":format!("claude:{}",r.source_account),
+            "detail":if r.shared {"Per-project memory/ lives in the shared store and is the same on both accounts; settings and credentials stay with the source account."} else {"Per-project memory/, settings and credentials are account state and stay with the source account."}}},
     "next":match r.phase.as_str() {
         "uncertain" => "api recover <operation> to continue from the journaled phase (a resume is never replayed), or api abandon-operation <operation> --confirm <operation>",
         "complete" | "failed" | "abandoned" => "none",
@@ -251,6 +257,9 @@ pub async fn start(
         source.enabled && dest.enabled && source.home.is_dir() && dest.home.is_dir(),
         "ACCOUNT_UNAVAILABLE"
     );
+    // Ensures both homes are linked when the shared store is on. Both linked: the
+    // conversation already is in both accounts, so nothing is copied or deleted.
+    let shared = crate::shared_state::switch_shared(paths, &source.home, &dest.home)?;
     daemon::ensure_started(paths).await?;
     let state = daemon::call(paths, "status", json!({})).await?;
     for name in [&s.account, &target] {
@@ -339,7 +348,7 @@ pub async fn start(
         "HISTORY_NOT_FOUND"
     );
     ensure!(
-        files::collect(ProviderId::Claude, &dest.home, &ids)?.is_empty(),
+        shared || files::collect(ProviderId::Claude, &dest.home, &ids)?.is_empty(),
         "TARGET_CONFLICT: claude:{target} already holds a copy of this conversation; nothing was moved"
     );
     let id = uuid::Uuid::new_v4().to_string();
@@ -362,6 +371,7 @@ pub async fn start(
         conversation_id: s.conversation_id.clone(),
         conversation_ids: ids,
         expected_generation: expected_generation.into(),
+        shared,
         accept_risks,
         source_account: s.account.clone(),
         target_account: target,
@@ -631,6 +641,20 @@ fn entries(r: &Record) -> Result<&Vec<Entry>> {
 }
 
 fn copy(paths: &Paths, r: &mut Record) -> Result<()> {
+    if r.shared {
+        phase(
+            paths,
+            r,
+            "copying",
+            "Shared Claude state: both accounts link to the same store, so nothing is copied.",
+        )?;
+        return phase(
+            paths,
+            r,
+            "copied",
+            "Nothing to copy: the conversation is already in both account homes through the shared store.",
+        );
+    }
     if r.entries.is_none() {
         r.entries = Some(plan(r)?);
     }
@@ -722,6 +746,24 @@ fn switch(paths: &Paths, r: &mut Record) -> Result<()> {
 }
 
 fn remove(paths: &Paths, r: &mut Record) -> Result<()> {
+    if r.shared {
+        phase(
+            paths,
+            r,
+            "removing",
+            "Shared Claude state: nothing is deleted from the shared store; only dead registry entries of the source account are cleared.",
+        )?;
+        let ids: std::collections::BTreeSet<String> = r.conversation_ids.iter().cloned().collect();
+        for stale in claude::dead_registry_entries(&r.source_home, &ids)? {
+            let _ = fs::remove_file(stale);
+        }
+        return phase(
+            paths,
+            r,
+            "removed",
+            "Nothing was removed: the conversation stays in the shared store.",
+        );
+    }
     phase(
         paths,
         r,

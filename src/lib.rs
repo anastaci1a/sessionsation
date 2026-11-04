@@ -21,6 +21,7 @@ pub mod questions;
 pub mod rpc;
 pub mod scheduler;
 mod self_executable;
+pub mod shared_state;
 pub mod simulation;
 pub mod store;
 pub mod turn_notify;

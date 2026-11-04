@@ -57,11 +57,24 @@ fn tree(home: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(false)
+}
+/// `shared`: managed homes linked to the shared store before the conversation is written.
+fn fixture_with(shared: bool) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::new(Some(dir.path().join("root"))).unwrap();
-    let (a, b) = (dir.path().join("home-a"), dir.path().join("home-b"));
+    let (a, b) = if shared {
+        let home = |n| crate::layout::target_home(&paths.root, ProviderId::Claude, n);
+        (home("a"), home("b"))
+    } else {
+        (dir.path().join("home-a"), dir.path().join("home-b"))
+    };
     fs::create_dir_all(&a).unwrap();
     fs::create_dir_all(&b).unwrap();
+    if shared {
+        crate::shared_state::enable(&paths.root).unwrap();
+        assert!(crate::shared_state::switch_shared(&paths, &a, &b).unwrap());
+    }
     let project = dir.path().join("project");
     fs::create_dir_all(&project).unwrap();
     let conversation = uuid::Uuid::new_v4().to_string();
@@ -105,6 +118,7 @@ fn fixture() -> Fixture {
         conversation_id: conversation.clone(),
         conversation_ids: vec![conversation.clone()],
         expected_generation: s.generation(),
+        shared,
         accept_risks: false,
         source_account: "a".into(),
         target_account: "b".into(),
@@ -404,4 +418,53 @@ async fn a_replaced_process_is_never_signalled() {
 fn the_phase_order_is_total_and_terminal_phases_are_unordered() {
     assert!(order("admitted") < order("copying") && order("switched") < order("removing"));
     assert_eq!(order("failed"), usize::MAX);
+}
+
+#[tokio::test]
+async fn linked_accounts_switch_without_copying_or_deleting_anything() {
+    let mut f = fixture_with(true);
+    let store = crate::shared_state::store(&f.paths.root);
+    let before = tree(&store);
+    assert!(
+        before.len() >= 7,
+        "the conversation lives in the shared store"
+    );
+    run(&f.paths, &mut f.record).await;
+    let r = read(&f.paths, &f.record.id).unwrap();
+    assert_eq!(r.phase, "complete", "{}", r.detail);
+    assert!(r.shared && r.entries.is_none(), "no file plan was made");
+    assert_eq!(
+        tree(&store),
+        before,
+        "the shared store is byte-for-byte unchanged"
+    );
+    for p in f.moved_paths().iter().chain(f.stays_paths().iter().take(2)) {
+        assert!(f.a.join(p).exists(), "{p} visible on A");
+        assert!(f.b.join(p).exists(), "{p} visible on B");
+    }
+    assert!(!f.b.join(STAGING).exists());
+    assert!(crate::shared_state::fully_linked(&f.a) && crate::shared_state::fully_linked(&f.b));
+    let s = catalog::find(&f.paths, &f.record.session_id).unwrap();
+    assert_eq!(s.account, "b");
+    let public = public(&f.paths, &r);
+    assert_eq!(public["receipt"]["files_moved"], 0);
+    assert_eq!(public["receipt"]["shared_state"], true);
+    assert_eq!(public["receipt"]["account_memory"]["shared"], true);
+}
+
+#[tokio::test]
+async fn linked_switch_journals_every_phase_and_recovers_from_a_crash_in_the_noop_phases() {
+    for phase in ["copying", "copied", "removing", "removed"] {
+        let mut f = fixture_with(true);
+        let store = crate::shared_state::store(&f.paths.root);
+        let before = tree(&store);
+        crash_at(Some(phase));
+        let error = drive(&f.paths, &mut f.record).await.unwrap_err();
+        crash_at(None);
+        assert!(format!("{error:#}").contains("SIMULATED_CRASH"), "{phase}");
+        assert_eq!(read(&f.paths, &f.record.id).unwrap().phase, phase);
+        let value = recover(&f.paths, &f.record.id).await.unwrap();
+        assert_eq!(value["phase"], "complete", "{phase}: {value}");
+        assert_eq!(tree(&store), before, "{phase}");
+    }
 }

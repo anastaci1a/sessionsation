@@ -566,6 +566,10 @@ fn claude_history_entry(name: &str) -> bool {
 }
 fn preserve_claude(home: &Path, vault: &Path) -> Result<()> {
     private_dir(vault)?;
+    // Shared-store links are removed (the link only, never what it points to):
+    // the conversations stay in the shared store and remain visible to every
+    // other account. Any other symlink still fails `no_symlinks` below.
+    crate::shared_state::detach_links(home)?;
     for e in fs::read_dir(home)? {
         let e = e?;
         let name = e.file_name();
@@ -1017,5 +1021,52 @@ mod tests {
         );
         fs::remove_dir_all(home).unwrap();
         assert!(vault.join("archived_sessions/old.jsonl").exists());
+    }
+
+    #[test]
+    fn deleting_a_linked_claude_account_removes_only_the_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(dir.path().join("root"))).unwrap();
+        let (home, _) = crate::provider::claude::create_home(&paths, "a").unwrap();
+        crate::shared_state::enable(&paths.root).unwrap();
+        crate::shared_state::ensure_links(&paths, &home).unwrap();
+        fs::create_dir_all(home.join("projects/-w")).unwrap();
+        fs::write(home.join("projects/-w/c.jsonl"), "transcript").unwrap();
+        fs::create_dir_all(home.join("session-env/c")).unwrap();
+        fs::write(home.join("session-env/c/e"), "env").unwrap();
+        fs::write(home.join("history.jsonl"), "prompts").unwrap();
+        fs::write(home.join(".credentials.json"), "x").unwrap();
+        let vault = paths.root.join("vault");
+        preserve_claude(&home, &vault).unwrap();
+        assert!(
+            !crate::shared_state::any_linked(&home),
+            "links are gone from the home"
+        );
+        assert!(vault.join("history.jsonl").exists());
+        assert!(
+            !vault.join("projects").exists(),
+            "nothing is moved out of the store"
+        );
+        let store = crate::shared_state::store(&paths.root);
+        assert_eq!(
+            fs::read(store.join("projects/-w/c.jsonl")).unwrap(),
+            b"transcript"
+        );
+        fs::remove_dir_all(&home).unwrap();
+        assert_eq!(fs::read(store.join("session-env/c/e")).unwrap(), b"env");
+        assert_eq!(
+            fs::read(store.join("projects/-w/c.jsonl")).unwrap(),
+            b"transcript"
+        );
+
+        // A foreign link is still refused, and what it points to is untouched.
+        let (home, _) = crate::provider::claude::create_home(&paths, "b").unwrap();
+        let outside = paths.root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep"), "k").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("projects")).unwrap();
+        let error = preserve_claude(&home, &paths.root.join("vault2")).unwrap_err();
+        assert!(format!("{error:#}").contains("HISTORY_SYMLINK_UNVERIFIED"));
+        assert!(outside.join("keep").exists());
     }
 }
