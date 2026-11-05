@@ -30,7 +30,8 @@ source/fixture check is distinct from provider compatibility acceptance.
 | Codex terminal 0.162.1 / account app-server 0.163.0 | Earlier authorized disposable native acceptance | Not a promise for all stock builds, newer versions or other account setups |
 | HERDR 0.9.5, terminal protocol 22 | Isolated headless host and PTY tests | Other versions must be checked explicitly |
 | tmux | Isolated discovery, exact process ownership and lifecycle regressions | Existing unrelated live sessions are never silently migrated |
-| Claude Code 2.1.312 | Fake-provider fixtures for enrollment, auth gating, launch/resume, live identity and statusline usage | No stop/restart/switch/messaging; usage only while Claude Code runs |
+| Claude Code 2.1.312 (native messaging aligned with 2.1.314) | Fake-provider fixtures for enrollment, auth gating, launch/resume, live identity, statusline usage, account switch, shared state, hosted sessions and live delivery; redacted real screens for terminal input | No stop/restart/Space move; usage only while Claude Code runs; native cross-session delivery is fixture-verified, with live-test limits in the contract |
+| Gemini CLI, Antigravity CLI 1.4.10 | Fake-provider fixtures and installed-CLI source review | No usage; login and delivery verified only against fakes until a real login exists |
 
 Earlier native acceptance established account-specific launch, reported usage,
 correlated replies, account transfer with history comparison, restart/resume,

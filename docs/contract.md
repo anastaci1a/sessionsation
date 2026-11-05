@@ -859,7 +859,7 @@ conversations have no live attachment time. Normal provider exit (including Code
 `/exit`) clears runtime attachment on discovery while retaining stable identity,
 conversation files, names and resume availability.
 
-Revision 17 (unreleased) populates `active_since` for running Claude and Gemini
+Revision 17 populates `active_since` for running Claude and Gemini
 sessions from the first honest source, never a guess, and leaves it null otherwise
 (`last_accessed` stays null for them until 1.26.0). Claude: the live registry
 `sessions/<pid>.json` `startedAt`, accepted only when the registry process is
@@ -1541,7 +1541,7 @@ mode `resume`), `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`,
 `INVALID_EXPIRY`. Message ids are shared with every other store; same id and
 payload return the original receipt, a change is `MESSAGE_ID_CONFLICT`.
 
-Revision 17 (unreleased) also adds the capability/admission reason
+Revision 17 also adds the capability/admission reason
 `PEER_SOCKET_UNLINKED`: the live registry names a `messagingSocketPath` but the
 socket file is missing (typically elogind removed `/run/user/<uid>`); the reason text
 adds that the process still listens when `/proc/net/unix` and its fds show it.

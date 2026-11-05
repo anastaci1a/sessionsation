@@ -82,17 +82,20 @@ Cross-provider conversation conversion is outside this version.
 
 ## Providers
 
-`src/provider/` is the provider boundary: `ProviderId` (`codex`, `claude`, `gemini`),
+`src/provider/` is the provider boundary: `ProviderId` (`codex`, `claude`, `gemini`, `antigravity`),
 provider-qualified `AccountRef` parsing, and an explicit `ProviderCapabilities`
 table (supported flag plus reason per operation). Codex behavior remains in the
 supervisor, discovery and lifecycle modules; Claude enrollment, environment,
 authentication probe, launch/resume plans, discovery, live identity and usage live
 in `provider/claude.rs`. Callers dispatch on `ProviderId`, never on strings.
 `provider/native.rs` dispatches the shared native-session model (account home,
-chat/transcript discovery, live identity, launch, headless delivery) between Claude
-and Gemini; Gemini enrollment, environment, file-based auth, discovery from chat
+chat/transcript discovery, live identity, launch, headless delivery) between Claude,
+Gemini and Antigravity; Gemini enrollment, environment, file-based auth, discovery from chat
 headers and `projects.json`, /proc-based live identity and launches live in
-`provider/gemini.rs`.
+`provider/gemini.rs`, and the Antigravity equivalents (conversation index, folder
+trust, launch) in `provider/antigravity.rs` and `provider/antigravity/`.
+`provider/activity.rs` and `native_activity.rs` derive the per-session
+`live_activity` (native registry or transcript tail; contract 1.42.0).
 
 Account records carry `provider` and, for adopted Claude homes, `config_home`.
 Registries written before providers could enroll only Codex, so the named
@@ -122,6 +125,16 @@ session's messaging endpoint from its registry entry and edits only the
 `crossSessionInbound` opt-in. `messaging/claude_steer.rs` owns admission, the
 durable records in `DATA_ROOT/messaging/claude-steer/`, the per-message peer worker and
 listener socket, transcript anchoring and the receipts of both paths.
+
+Shared Claude conversation state (contract 1.39.0, `shared_state/`) is opt-in: `sessionsation
+shared enable` creates one store under `<root>/shared/claude/` and each managed Claude
+account home links its `projects`, `file-history`, `todos` and `session-env` to it, so
+an account switch between linked accounts copies nothing. Migration is journaled and
+resumable; credentials, settings and live-session registries stay per account. Native
+Claude delivery (contract 1.40.0; `claude_idle.rs`) sends agent-origin messages through Claude
+Code's cross-session messaging and types into the pane only when nothing native is
+possible. Before mutating operations (archive, delete, switch, launch, resume, move, migrate) the `disk_space.rs` guard
+refuses with `INSUFFICIENT_DISK_SPACE` (contract 1.41.0).
 
 Gemini sessions are likewise bound to their `GEMINI_CLI_HOME`. Gemini has no auth
 status, live registry, rename or usage interface, so authentication is file

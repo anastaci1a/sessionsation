@@ -38,7 +38,9 @@ with every test in its own process and all test binaries in parallel; set
 Iterate with `scripts/check.sh --quick` (fmt, Clippy on lib and bins, lib and bin
 unit tests) and with targeted tests, e.g. `scripts/check.sh --quick native_send` or
 `cargo test --test claude_terminal terminal_input`, then run the full
-`scripts/check.sh` once before committing.
+`scripts/check.sh` once before committing. `--quick` does not run the documentation-link or
+contract-schema checks; after docs or contract edits run `python3 scripts/check_docs.py`
+and `python3 scripts/check_contract.py` (or the full script).
 
 The suite compresses real-time waits with `SESSIONSATION_TEST_TIME_SCALE` (default 10
 in `scripts/check.sh` and the nextest profile; `1` is real time). It is **test-only**:
@@ -57,8 +59,9 @@ Do not overwrite an executable selected by another consumer.
 Alternatively, with Docker and no local Rust/Python installation:
 
 ```sh
-docker build -f scripts/Dockerfile.check -t sessionsation-check .
-docker run --rm -v "$PWD:/work" -w /work --tmpfs /tmp:rw,exec,size=6g sessionsation-check scripts/check.sh
+docker build -f scripts/Dockerfile.check -t sessionsation-public-check:local scripts
+scripts/docker-check.sh                          # full check in the image
+scripts/docker-check.sh scripts/check.sh --quick # fast pass
 ```
 
 `scripts/docker-check.sh [command...]` does the same with a persistent build tree

@@ -407,7 +407,7 @@ BACKEND-ID --expected-generation GENERATION`; see the authoritative
 [readiness and receipt contract](contract.md#passive-readiness). Aggregate state/watch
 remains attachment discovery, not proof of idle activity.
 
-Running Claude and Gemini rows carry `active_since` (Unix seconds; revision 17, unreleased)
+Running Claude and Gemini rows carry `active_since` (Unix seconds; revision 17)
 for the popup's live elapsed counter. It is the verified registry or /proc process
 start, or the hosted worker start, and is never the start of a pre-started `claude
 bg-spare` process (then only the verified HERDR attach client start, else null). It
