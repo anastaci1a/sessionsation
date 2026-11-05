@@ -246,6 +246,8 @@ pub fn fail_resume(paths: &Paths, id: &str, error: &anyhow::Error) {
     });
 }
 
+const NEVER_ATTACHED: &str = "The terminal process ended before the provider was attached. Nothing was resumed and no input was sent.";
+const NEVER_ATTACHED_LEGACY: &str = "The terminal process ended before the provider was attached. Inspect the session; it is not replayed.";
 const OBSERVED: &str = "Exact provider process observed; no launch replay";
 const ENDED: &str = "The inline provider process has ended.";
 /// Ended inline entries leave `api operations` after this many seconds.
@@ -272,6 +274,7 @@ fn next(
     updated_at: i64,
     info: &Info,
     observed: bool,
+    resume: bool,
 ) -> Option<(&'static str, &'static str)> {
     // `complete` is the terminal success phase: the exact provider process was observed (or
     // has since ended). `running` is only read from receipts written by 1.33 - 1.35.0.
@@ -281,10 +284,14 @@ fn next(
         ("complete", false) if detail != Some(ENDED) && daemon::now() - updated_at <= AGE_OUT => {
             Some(("complete", ENDED))
         }
-        ("starting_provider", false) => Some((
-            "uncertain",
-            "The terminal process ended before the provider was attached. Inspect the session; it is not replayed.",
-        )),
+        // A resume whose terminal process ended before any provider attached started
+        // nothing and sent no input: it failed, so the session is not left blocked.
+        // (Receipts an earlier release settled as uncertain for this reason follow.)
+        ("starting_provider", false) if resume => Some(("failed", NEVER_ATTACHED)),
+        ("uncertain", false) if resume && detail == Some(NEVER_ATTACHED_LEGACY) => {
+            Some(("failed", NEVER_ATTACHED))
+        }
+        ("starting_provider", false) => Some(("uncertain", NEVER_ATTACHED_LEGACY)),
         ("attached", false) => Some(("complete", ENDED)),
         ("attached", true) if observed => Some(("complete", OBSERVED)),
         _ => None,
@@ -301,9 +308,14 @@ pub(crate) fn settle_resume(paths: &Paths, id: &str) -> Result<()> {
         && catalog::list(paths)?
             .iter()
             .any(|s| s.id == r.request.session_id && launch::launch_observed(paths, s));
-    if let Some((phase, detail)) =
-        next(&r.phase, r.detail.as_deref(), r.updated_at, &info, observed)
-    {
+    if let Some((phase, detail)) = next(
+        &r.phase,
+        r.detail.as_deref(),
+        r.updated_at,
+        &info,
+        observed,
+        true,
+    ) {
         r.phase = phase.into();
         r.detail = Some(detail.into());
         resume::save(paths, &mut r)?;
@@ -319,9 +331,14 @@ pub(crate) fn settle_launch(paths: &Paths, id: &str) -> Result<()> {
         && catalog::list(paths)?
             .iter()
             .any(|s| s.id == id && launch::launch_observed(paths, s));
-    if let Some((phase, detail)) =
-        next(&r.phase, r.detail.as_deref(), r.updated_at, &info, observed)
-    {
+    if let Some((phase, detail)) = next(
+        &r.phase,
+        r.detail.as_deref(),
+        r.updated_at,
+        &info,
+        observed,
+        false,
+    ) {
         if phase == "uncertain" {
             // Never attached: the name stays reserved with the uncertain journal.
         }
@@ -482,5 +499,127 @@ pub async fn run_new(
             fail_new(paths, &id, &error);
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dead() -> Info {
+        Info {
+            pid: 999_999_999,
+            process_start: 1,
+            pane_id: None,
+        }
+    }
+    fn receipt(conversation: &str, phase: &str, detail: Option<&str>) -> resume::Receipt {
+        resume::Receipt {
+            version: 1,
+            request: resume::Request {
+                version: 1,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                session_id: uuid::Uuid::new_v4().to_string(),
+                expected_generation: "g".into(),
+                account_id: "codex:a".into(),
+                name: "agent-1".into(),
+                host: host(),
+                space: launch::Space::Existing {
+                    id: "inline".into(),
+                },
+                directory: None,
+                confirm_unfinished: false,
+                permissions: None,
+            },
+            directory: "/tmp".into(),
+            saved_directory: None,
+            created_directories: vec![],
+            previous_name: "agent-1".into(),
+            conversation_id: conversation.into(),
+            generation: "g".into(),
+            phase: phase.into(),
+            detail: detail.map(str::to_owned),
+            workspace_id: None,
+            tab_id: None,
+            pane_id: None,
+            operation_id: None,
+            abandoned_from: None,
+            abandoned_at: None,
+            created_at: Some(daemon::now()),
+            updated_at: daemon::now(),
+            inline: Some(dead()),
+        }
+    }
+
+    #[test]
+    fn a_resume_that_never_attached_settles_failed_and_unblocks_the_session() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(d.path().join("state"))).unwrap();
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let mut r = receipt(&conversation, "starting_provider", None);
+        let id = r.request.request_id.clone();
+        resume::save(&paths, &mut r).unwrap();
+        // Reading the session's operations settles the dead inline resume.
+        assert_eq!(
+            lifecycle::pending(&paths, &conversation, None).unwrap(),
+            None
+        );
+        let settled = resume::read(&paths, &id).unwrap();
+        assert_eq!(settled.phase, "failed");
+        assert_eq!(settled.detail.as_deref(), Some(NEVER_ATTACHED));
+        lifecycle::ensure_available(&paths, &conversation, None).unwrap();
+    }
+
+    #[test]
+    fn a_legacy_uncertain_never_attached_resume_settles_failed_but_other_uncertain_stays() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(d.path().join("state"))).unwrap();
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let mut legacy = receipt(&conversation, "uncertain", Some(NEVER_ATTACHED_LEGACY));
+        let mut other = receipt(
+            &conversation,
+            "uncertain",
+            Some("The resume was dispatched"),
+        );
+        let (legacy_id, other_id) = (
+            legacy.request.request_id.clone(),
+            other.request.request_id.clone(),
+        );
+        resume::save(&paths, &mut legacy).unwrap();
+        resume::save(&paths, &mut other).unwrap();
+        // The unrelated uncertain resume still blocks, and is named with its id.
+        let blocked = lifecycle::pending_detail(&paths, &conversation, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(blocked.id, other_id);
+        assert_eq!(
+            (blocked.kind, blocked.phase.as_str()),
+            ("resume", "uncertain")
+        );
+        let error = lifecycle::ensure_available(&paths, &conversation, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("RECOVERY_UNRESOLVED: operation "),
+            "{error}"
+        );
+        assert!(error.contains(&other_id), "{error}");
+        assert_eq!(resume::read(&paths, &legacy_id).unwrap().phase, "failed");
+        // An in-progress phase keeps the retryable code, still with the id.
+        let mut running = receipt(&uuid::Uuid::new_v4().to_string(), "dispatching", None);
+        let (running_id, running_conversation) = (
+            running.request.request_id.clone(),
+            running.conversation_id.clone(),
+        );
+        running.inline = None;
+        resume::save(&paths, &mut running).unwrap();
+        let error = lifecycle::ensure_available(&paths, &running_conversation, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("SESSION_OPERATION_IN_PROGRESS: operation "),
+            "{error}"
+        );
+        assert!(error.contains(&running_id), "{error}");
     }
 }

@@ -1455,17 +1455,62 @@ pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
     if !limits.is_object() {
         return Ok(false);
     }
+    // Claude Code drops a window after its reset until the next API response, so a
+    // payload can lack one. Carry the recorded window forward until its own
+    // resets_at; every window keeps the time it was last observed.
+    let previous: Value = fs::read(usage_file(home))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(Value::Null);
+    let window = |key: &str| {
+        let fresh = statusline_window(&limits[key]);
+        if !fresh.is_null() {
+            return json!({"used_percentage":fresh["used_percentage"],"resets_at":fresh["resets_at"],"observed_at":now});
+        }
+        let old = statusline_window(&previous[key]);
+        match old["resets_at"].as_i64() {
+            Some(resets) if resets > now => {
+                json!({"used_percentage":old["used_percentage"],"resets_at":resets,
+                "observed_at":previous[key]["observed_at"].as_i64().or_else(|| previous["observed_at"].as_i64())})
+            }
+            _ => Value::Null,
+        }
+    };
     let record = json!({
         "source": USAGE_SOURCE,
         "observed_at": now,
         "claude_version": input["version"].as_str(),
         "session_id": input["session_id"].as_str(),
-        "five_hour": statusline_window(&limits["five_hour"]),
-        "seven_day": statusline_window(&limits["seven_day"]),
+        "five_hour": window("five_hour"),
+        "seven_day": window("seven_day"),
     });
     private_dir(&home.join(".sessionsation"))?;
+    sweep_stale_tmp(&home.join(".sessionsation"), now);
     atomic_write(&usage_file(home), &serde_json::to_vec(&record)?)?;
     Ok(true)
+}
+/// Remove leaked `.tmp*` files (killed recorder runs, full disks) older than ten
+/// minutes from the recorder directory. Best effort; never touches other names.
+pub fn sweep_stale_tmp(dir: &Path, now: i64) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(".tmp") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .ok()
+            .filter(|m| m.is_file())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .is_some_and(|t| now - t.as_secs() as i64 > 600);
+        if old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 /// The hidden statusline hook. Never fails the statusline on recorder errors.
 pub fn statusline_hook(record_only: bool) -> i32 {
@@ -1534,7 +1579,8 @@ pub fn project_usage(home: &Path, now: i64) -> (Value, bool, &'static str) {
         if w.is_null() {
             Value::Null
         } else {
-            json!({"duration_minutes":minutes,"used_percent":w["used_percentage"],"resets_at":w["resets_at"]})
+            json!({"duration_minutes":minutes,"used_percent":w["used_percentage"],"resets_at":w["resets_at"],
+                "observed_at":record[key]["observed_at"].as_i64().unwrap_or(observed)})
         }
     };
     let short = window("five_hour", 300);
@@ -1838,17 +1884,53 @@ mod tests {
         assert_eq!(state, "stale", "a passed reset is stale");
         let partial =
             json!({"rate_limits":{"five_hour":{"used_percentage":5,"resets_at":now+3600}}});
-        record_statusline(home, &partial, now).unwrap();
-        let (usage, fresh, state) = project_usage(home, now);
-        assert_eq!(state, "partial");
-        assert!(!fresh);
-        assert!(usage["weekly"].is_null(), "missing window is null, never 0");
-        record_statusline(home, &json!({"rate_limits":{}}), now).unwrap();
-        let (usage, _, state) = project_usage(home, now);
+        // A payload without seven_day carries the recorded window until its own reset,
+        // with its own observed_at.
+        record_statusline(home, &partial, now + 100).unwrap();
+        let (usage, fresh, state) = project_usage(home, now + 100);
+        assert_eq!(state, "fresh");
+        assert!(fresh);
+        assert_eq!(usage["weekly"]["used_percent"], 40.0);
+        assert_eq!(usage["weekly"]["observed_at"], now);
+        assert_eq!(usage["short"]["observed_at"], now + 100);
+        assert_eq!(usage["short"]["used_percent"], 5.0);
+        // Past its reset the carried window is dropped: null, never 0.
+        let later = now + 86401;
+        record_statusline(home, &json!({"rate_limits":{}}), later).unwrap();
+        let (usage, _, state) = project_usage(home, later);
         assert_eq!(state, "no_windows");
         assert!(usage["short"].is_null() && usage["weekly"].is_null());
         fs::write(usage_file(home), b"{").unwrap();
         assert_eq!(project_usage(home, now).2, "error");
+    }
+    #[test]
+    fn recorder_sweeps_only_stale_tmp_files() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join(".sessionsation");
+        fs::create_dir_all(&dir).unwrap();
+        let (old, young, other) = (
+            dir.join(".tmpOLD"),
+            dir.join(".tmpYOUNG"),
+            dir.join("keep.txt"),
+        );
+        for p in [&old, &young, &other] {
+            fs::write(p, b"x").unwrap();
+        }
+        let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&other)
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+        sweep_stale_tmp(&dir, crate::daemon::now());
+        assert!(!old.exists() && young.exists() && other.exists());
     }
     #[test]
     fn chained_statusline_skips_the_recorder_itself() {

@@ -380,6 +380,17 @@ pub async fn serve(paths: Paths) -> Result<()> {
             });
         }
     });
+    // A restart (cutover) must not leave `state --cached` on the previous process's
+    // last snapshot: write a fresh one as soon as the socket serves requests.
+    let snapshot_paths = paths.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(crate::timing::secs(2)).await;
+        if let Err(e) =
+            crate::api::state_filtered(&snapshot_paths, crate::api::ArchiveFilter::Active).await
+        {
+            eprintln!("startup state snapshot failed: {e:#}");
+        }
+    });
     let automatic_task = tokio::spawn(crate::automatic::monitor(paths.clone()));
     let auto_recover_task = tokio::spawn(crate::auto_recover::monitor(paths.clone()));
     let turn_notify_task = tokio::spawn(crate::turn_notify::monitor(paths.clone()));

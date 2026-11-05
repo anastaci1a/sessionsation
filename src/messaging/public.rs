@@ -36,6 +36,12 @@ pub struct PublicRequest {
 pub(super) struct Binding {
     #[serde(default)]
     cancelled: bool,
+    /// Resolved caller origin and its source (`explicit`, `detected`, `default`);
+    /// absent on bindings written before contract 1.42.0.
+    #[serde(default)]
+    origin: Option<String>,
+    #[serde(default)]
+    origin_source: Option<String>,
     #[serde(default)]
     evidence_observed_at: Option<i64>,
     request: PublicRequest,
@@ -81,7 +87,8 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         Some(_) => "stale",
         None => "unknown",
     };
-    json!({"message_id":binding.request.message_id,"session_id":binding.request.session_id,
+    json!({"origin":binding.origin.as_deref().unwrap_or("operator"),"origin_source":binding.origin_source.as_deref().unwrap_or("default"),
+        "message_id":binding.request.message_id,"session_id":binding.request.session_id,
         "accepted_generation":binding.request.expected_generation,"provider":"codex",
         "accepted_runtime_generation":binding.native.expected_generation,
         "provider_conversation_id":binding.native.session_id,"mode":binding.request.mode,
@@ -176,10 +183,13 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
                 request.expires_at > now && request.expires_at <= now + 86400,
                 "INVALID_EXPIRY"
             );
+            let (origin, origin_source) = crate::caller_origin::resolve(paths, None);
             let binding = Binding {
                 request,
                 native,
                 cancelled: false,
+                origin: Some(origin),
+                origin_source: Some(origin_source.to_owned()),
                 evidence_observed_at: None,
             };
             // Bind the logical request before any native mutation. A crash here is
@@ -455,6 +465,8 @@ mod tests {
     fn public_receipt_distinguishes_native_acceptance_and_completion() {
         let b = Binding {
             cancelled: false,
+            origin: None,
+            origin_source: None,
             evidence_observed_at: None,
             request: PublicRequest {
                 steering: None,
@@ -545,6 +557,8 @@ mod evidence_tests {
     fn binding(input: Enqueue) -> Binding {
         Binding {
             cancelled: false,
+            origin: None,
+            origin_source: None,
             evidence_observed_at: None,
             request: PublicRequest {
                 steering: None,
@@ -897,6 +911,7 @@ pub(super) async fn deliver_recovered(
             ledger.get(&request.message_id)?.is_none(),
             "MESSAGE_ID_CONFLICT"
         );
+        let (origin, origin_source) = crate::caller_origin::resolve(paths, None);
         let b = Binding {
             native: Enqueue {
                 message_id: request.message_id.clone(),
@@ -907,6 +922,8 @@ pub(super) async fn deliver_recovered(
             },
             request,
             cancelled: false,
+            origin: Some(origin),
+            origin_source: Some(origin_source.to_owned()),
             evidence_observed_at: None,
         };
         ledger.db.execute(

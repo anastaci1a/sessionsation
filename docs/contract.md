@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.41.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.42.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2804,3 +2804,54 @@ MINOR, additive. Capability additions: `claude_native_delivery.origin_detection`
   fails `DISK_FULL`.
 - **`api idle-notify` exit event.** A notice reporting `state:"exited"` is journaled as kind `exited`
   (it was `idle` with `detail.state:"exited"`); `detail` is unchanged.
+
+### Native live activity, usage read, uncertain operations (1.42.0)
+
+MINOR, additive. Capability additions: `usage_read`; `live_activity.providers` now lists `claude`,
+`gemini` and `antigravity`.
+
+- **`activity` and `live_activity` for running Claude, Gemini and Antigravity sessions** (also in
+  `api state --cached`). Same shape and states as Codex rows: `activity` is `busy`, `idle` or `unknown`;
+  `live_activity` is `{state, error, last_turn_status, source, observed_at}`. Not-running native rows keep
+  `null`. Signals are local and read-only, bounded tail reads only (128 KiB, one retry at 1 MiB), and
+  never include message text:
+  - Claude `source:"transcript_tail"`: the newest decisive transcript record. An assistant record with
+    `stop_reason` `tool_use` (or still streaming), a `tool_result`, or a user prompt with no reply
+    is `working`; an `end_turn`/`stop_sequence`/`max_tokens` assistant record or a `turn_duration` system
+    record is `turn_ended`; a `[Request interrupted by user]` record is `turn_ended` with
+    `last_turn_status:"interrupted"`; an API-error record is `error` (`error` is Claude's short error
+    code, or `api_error`). Sidechain, meta and bookkeeping records are skipped.
+  - Claude `source:"native_registry"`: `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json` (`status` `busy`, `idle`
+    or `waiting`, with `statusUpdatedAt`; pid and process start must match the observed process). It is
+    used only when it is newer than the newest transcript record, because Claude does not rewrite it on
+    every transition. `waiting` (a permission prompt or question) is `blocked`. A session that also has
+    `pending_questions` is `blocked` while a turn is in progress.
+  - Gemini and Antigravity `source:"transcript_tail"`: the last chat/step record (a `gemini` record with
+    no tool calls, or a planner response with no tool calls, is `turn_ended`; with tool calls, or a
+    user input or tool step with no answer yet, `working`). An unanswered user input older than 10
+    minutes, or a step that is not `DONE`, is `unknown`.
+  - No usable evidence is `unknown` (`activity:"unknown"`), never a guess. `observed_at` is the time of
+    the evidence used (the record or registry update), not of the snapshot; `api idle-notify` remains the
+    push signal for the next idle transition.
+- **`api usage [--account claude:NAME]`**: the projected Claude usage per account with `state`, `fresh`,
+  `source`, `observed_at`, `age_seconds`, and `short` / `weekly` windows each carrying their own
+  `observed_at` and `age_seconds`. The statusline recorder carries each window (`five_hour`,
+  `seven_day`) forward until its own `resets_at` when a payload lacks it (Claude Code drops a window
+  after its reset until the next API response), records a per-window `observed_at`, and sweeps
+  `.tmp*` files older than 10 minutes from `<home>/.sessionsation/`. `usage.<window>.observed_at` is
+  also in the account rows of `api state`.
+- **Uncertain operations are named.** A session blocked by an unfinished journaled operation reports it
+  in `sessions[].pending_operations` (`{id, kind, phase, created_at:null, expires_at:null, unresolved,
+  resolve}` for journals that are not queued jobs; `kind` also `resume`, `auto_recover`, `switch`,
+  `space_move`, `conversation`, `move` or `message_recovery`). Capability reasons are
+  `RECOVERY_UNRESOLVED` for an `uncertain` or `stuck` operation (with `resume_block_reason:
+  "recovery_unresolved"`) and `SESSION_OPERATION_IN_PROGRESS` otherwise; refusals carry the operation
+  id (`RECOVERY_UNRESOLVED: operation ID (kind, phase uncertain); ...`), and `api resume` no longer
+  answers `SESSION_STATE_UNVERIFIED` for them. An inline `resume` whose terminal process ended before
+  any provider attached (nothing resumed, no input sent) settles as `failed` instead of `uncertain`,
+  so the session is not left blocked; such receipts an earlier release left `uncertain` settle the same
+  way on the next read.
+- **Codex receipts carry `origin` and `origin_source`** (resolved by caller detection as for Claude;
+  `operator`/`default` for receipts recorded before 1.42.0).
+- **Daemon start** writes a fresh `api state` snapshot two seconds after the socket serves requests, so
+  `api state --cached` does not show the previous process's data after a cutover.

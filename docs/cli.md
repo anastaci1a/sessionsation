@@ -382,7 +382,7 @@ supported contract versions. All API output is JSON; watch uses NDJSON.
 sessionsation api state
 sessionsation api state --cached                 # last snapshot, no scans (see contract revision 14)
 sessionsation api state --watch --interval 2
-# each Codex session row has live_activity (working|idle|turn_ended|blocked|error|unknown, with the
+# each Codex session row has live_activity (working|idle|turn_ended|blocked|error|unknown; Codex, and since 1.42.0 running Claude/Gemini/Antigravity rows too, with the
 # provider error text for error) and pending_operations (e.g. a stop waiting for idle, with expires_at)
 sessionsation api launcher new --account codex:example
 sessionsation api turn-notify --session ID --expected-generation G --enable [--notify-session ID2]
@@ -783,6 +783,19 @@ Archive, delete, switch, launch, resume, move and migrate refuse with `INSUFFICI
 (`free_bytes`, `needed_bytes`) before changing anything; a write that hits ENOSPC is `DISK_FULL`; a
 non-cached `api state` falls back to the cached snapshot with a warning. See the
 [contract](contract.md#detected-agent-origin-safer-terminal-typing-disk-space-guard-1410).
+
+### Native live activity, usage read, uncertain operations (contract 1.42.0)
+
+```sh
+sessionsation api state --cached      # running Claude/Gemini/Antigravity rows now carry activity + live_activity
+sessionsation api usage [--account claude:NAME]   # projected usage with age and source, per window
+```
+
+`live_activity.source` names the signal (`native_registry` or `transcript_tail`); `observed_at` is the
+time of that evidence. Unknown evidence is `unknown`. A session blocked by an unresolved recovery or
+resume reports `RECOVERY_UNRESOLVED` (or `SESSION_OPERATION_IN_PROGRESS`) with the operation id in
+`pending_operations`; an inline resume that never attached a provider settles as `failed`. See the
+[contract](contract.md#native-live-activity-usage-read-uncertain-operations-1420).
 
 ### Session auto-recover (contract 1.35.0)
 

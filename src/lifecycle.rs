@@ -12,7 +12,60 @@ pub(crate) fn inline_owner() -> Option<&'static str> {
 pub(crate) fn set_inline_owner(request: &str) {
     let _ = INLINE_OWNER.set(request.to_owned());
 }
+/// The unfinished operation that blocks a conversation: its id, journal kind and phase.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Pending {
+    pub id: String,
+    pub kind: &'static str,
+    pub phase: String,
+}
+impl Pending {
+    /// `uncertain` and `stuck` operations need an explicit recover or abandon.
+    pub fn unresolved(&self) -> bool {
+        matches!(self.phase.as_str(), "uncertain" | "stuck")
+    }
+    pub fn code(&self) -> &'static str {
+        if self.unresolved() {
+            "RECOVERY_UNRESOLVED"
+        } else {
+            "SESSION_OPERATION_IN_PROGRESS"
+        }
+    }
+    /// The refusal text: code, operation id, kind and phase, and how an unresolved one ends.
+    pub fn message(&self) -> String {
+        let how = if self.unresolved() {
+            "; api recover it or api abandon-operation it (operator) to unblock the session"
+        } else {
+            "; retry when it finishes"
+        };
+        format!(
+            "{}: operation {} ({}, phase {}){how}",
+            self.code(),
+            self.id,
+            self.kind,
+            self.phase
+        )
+    }
+}
+fn kind_of(directory: &str) -> &'static str {
+    match directory {
+        d if d == crate::layout::RESUMPTIONS => "resume",
+        d if d == crate::layout::CONVERSATION_OPERATIONS => "conversation",
+        d if d == crate::layout::HANDOFF_JOBS => "move",
+        d if d == crate::layout::SPACE_MOVES => "space_move",
+        d if d == crate::layout::CLAUDE_SWITCHES => "switch",
+        d if d == crate::layout::AUTO_RECOVERIES => "auto_recover",
+        _ => "message_recovery",
+    }
+}
 pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<Option<String>> {
+    Ok(pending_detail(paths, thread, own)?.map(|p| p.id))
+}
+pub(crate) fn pending_detail(
+    paths: &Paths,
+    thread: &str,
+    own: Option<&str>,
+) -> Result<Option<Pending>> {
     let own = own.or(INLINE_OWNER.get().map(String::as_str));
     crate::inline::settle_resumptions(paths);
     for directory in [
@@ -50,7 +103,11 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
                     )
                     && !crate::background::worker_stopped(&entry.with_extension("worker-lock"))?
                 {
-                    return Ok(Some(id.context("INVALID_OPERATION_ID")?.into()));
+                    return Ok(Some(Pending {
+                        id: id.context("INVALID_OPERATION_ID")?.into(),
+                        kind: kind_of(directory),
+                        phase: r["phase"].as_str().unwrap_or("unknown").into(),
+                    }));
                 }
                 continue;
             }
@@ -71,17 +128,20 @@ pub(crate) fn pending(paths: &Paths, thread: &str, own: Option<&str>) -> Result<
                     )
                 )
             {
-                return Ok(Some(id.context("INVALID_OPERATION_ID")?.into()));
+                return Ok(Some(Pending {
+                    id: id.context("INVALID_OPERATION_ID")?.into(),
+                    kind: kind_of(directory),
+                    phase: r["phase"].as_str().unwrap_or("unknown").into(),
+                }));
             }
         }
     }
     Ok(None)
 }
 pub(crate) fn ensure_available(paths: &Paths, thread: &str, own: Option<&str>) -> Result<()> {
-    ensure!(
-        pending(paths, thread, own)?.is_none(),
-        "SESSION_OPERATION_IN_PROGRESS"
-    );
+    if let Some(p) = pending_detail(paths, thread, own)? {
+        anyhow::bail!("{}", p.message());
+    }
     Ok(())
 }
 /// Called after admission locking when the caller is not a handoff enqueue.

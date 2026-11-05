@@ -308,7 +308,7 @@ fn project(b: &Binding, r: &Receipt, observation: Value) -> Value {
         None => "unknown",
     };
     let obs = observation["state"].as_str().unwrap_or("acceptance_only");
-    json!({"message_id":b.request.message_id,"session_id":b.request.session_id,
+    json!({"origin":b.origin.as_deref().unwrap_or("operator"),"origin_source":b.origin_source.as_deref().unwrap_or("default"),"message_id":b.request.message_id,"session_id":b.request.session_id,
         "accepted_generation":b.request.expected_generation,"accepted_runtime_generation":b.native.expected_generation,
         "provider":"codex","provider_conversation_id":b.native.session_id,"mode":"steer",
         "delivery_semantics":"deliberate_in_turn_steer","state":if state=="unknown" {"delivery_unknown"} else {state},
@@ -490,6 +490,8 @@ mod tests {
                     initialize(&db).unwrap();
                     let b = Binding {
                         cancelled: false,
+                        origin: None,
+                        origin_source: None,
                         evidence_observed_at: None,
                         request: request.clone(),
                         native: Enqueue {

@@ -351,8 +351,8 @@ fn kill_ref(child: &mut Child) {
 async fn capabilities_advertise_named_journaled_inline_launches() {
     let f = fixture().await;
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.41.0");
-    assert_eq!(caps["contract_revision"], 41);
+    assert_eq!(caps["contract_version"], "1.42.0");
+    assert_eq!(caps["contract_revision"], 42);
     let c = &caps["inline_launch"];
     assert_eq!(c["name"], true);
     assert_eq!(c["journaled"], true);
@@ -762,7 +762,7 @@ async fn a_running_receipt_with_a_live_process_settles_to_complete_and_is_not_in
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_inline_process_that_dies_before_attaching_is_uncertain() {
+async fn an_inline_process_that_dies_before_attaching_settles_failed() {
     let f = fixture().await;
     f.add_logged_in("personal");
     let (id, native) = f.stopped_session("personal");
@@ -777,7 +777,7 @@ async fn an_inline_process_that_dies_before_attaching_is_uncertain() {
         1,
     );
     let op = inline_op(&f, "resume", "never attached");
-    assert_eq!(op["phase"], "uncertain", "{op}");
+    assert_eq!(op["phase"], "failed", "{op}");
     let receipt = f.api(&["resume-launch", "status", "--request-id", &rid]);
-    assert_eq!(receipt["phase"], "uncertain");
+    assert_eq!(receipt["phase"], "failed");
 }

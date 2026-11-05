@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 41;
+pub const CONTRACT_MINOR: u32 = 42;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.41.0";
+pub const CONTRACT_VERSION: &str = "1.42.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -214,6 +214,12 @@ pub enum Command {
         /// Another session (id) that also receives a queued message for the notice.
         #[arg(long)]
         notify_session: Option<String>,
+    },
+    /// Projected Claude usage windows with age and source (read-only).
+    Usage {
+        /// Only this account, e.g. claude:main (default: every Claude account).
+        #[arg(long)]
+        account: Option<String>,
     },
     /// Turn-end events of notifying sessions after a cursor; --wait blocks for the next one.
     TurnEvents {
@@ -458,6 +464,7 @@ pub async fn resume_current(
             source.inactive && s.attachment.is_none(),
             "SESSION_ALREADY_RUNNING"
         );
+        crate::lifecycle::ensure_available(paths, &s.conversation_id, None)?;
         ensure_resumable_in_terminal(source.block_reason.as_deref(), confirm_unfinished)?;
         ensure!(
             !matches!(s.account.as_str(), "external" | "unknown"),
@@ -768,6 +775,44 @@ fn account_ref(paths: &Paths, id: &str) -> Result<AccountRef> {
         );
     }
     Ok(account)
+}
+/// `api usage`: the usage projected from each Claude account's statusline recorder,
+/// with the age of the whole record and of every window, and the source.
+fn usage_read(paths: &Paths, account: Option<&str>) -> Result<Value> {
+    let want = account.map(|a| account_ref(paths, a)).transpose()?;
+    if let Some(w) = &want {
+        ensure!(
+            w.provider == ProviderId::Claude,
+            "UNSUPPORTED_PROVIDER_OPERATION: api usage reads the Claude statusline recorder; other providers report usage in api state"
+        );
+    }
+    let state = store::load_state_snapshot(paths)?;
+    let now = daemon::now();
+    let mut rows = vec![];
+    for a in state.ordered() {
+        if a.provider != ProviderId::Claude || want.as_ref().is_some_and(|w| w.name != a.name) {
+            continue;
+        }
+        let home = crate::provider::account_home(paths, a)?;
+        let (usage, fresh, usage_state) = claude::project_usage(&home, now);
+        let age = |t: &Value| t.as_i64().map(|t| (now - t).max(0));
+        let window = |key: &str| {
+            let mut w = usage[key].clone();
+            if w.is_object() {
+                w["age_seconds"] = json!(age(&w["observed_at"]));
+            }
+            w
+        };
+        rows.push(json!({"account":format!("claude:{}",a.name),"provider":"claude",
+            "state":usage_state,"fresh":fresh,"source":usage["source"],"semantics":usage["semantics"],
+            "observed_at":usage["observed_at"],"age_seconds":age(&usage["observed_at"]),
+            "claude_version":usage["claude_version"],
+            "short":window("short"),"weekly":window("weekly"),"exhausted":usage["exhausted"]}));
+    }
+    if let Some(w) = &want {
+        ensure!(!rows.is_empty(), "ACCOUNT_NOT_FOUND: {}", w.id());
+    }
+    Ok(json!({"read_at":now,"accounts":rows}))
 }
 /// Whether an account row can be chosen for new work.
 fn account_selectable(a: &Value, removed: bool) -> bool {
@@ -1472,7 +1517,8 @@ pub fn capabilities() -> Value {
     value["claude_idle_notify"] = crate::claude_idle::capability();
     value["disk_space"] = json!({"since_contract":"1.41.0","command":"disk-space","config":"min_free_disk_mb","default_mb":crate::disk_space::DEFAULT_MIN_FREE_MB,"refusal":"INSUFFICIENT_DISK_SPACE","write_failure":"DISK_FULL","state_fallback":"cached_snapshot_with_warning"});
     value["shared_claude_state"] = crate::shared_state::capability();
-    value["live_activity"] = json!({"since_revision":37,"version":1,"field":"sessions[].live_activity","providers":["codex"],"states":["working","idle","turn_ended","blocked","error","unknown"],"error_text":"provider turn-error text, bounded to 300 characters, only with state error","cached_state":true,"source":"app_server_thread_status_else_rollout_tail"});
+    value["usage_read"] = json!({"since_contract":"1.42.0","command":"usage","args":["--account"],"providers":["claude"],"fields":["observed_at","age_seconds","short.observed_at","weekly.observed_at"],"windows_carried_until_own_reset":true});
+    value["live_activity"] = json!({"since_revision":37,"version":1,"field":"sessions[].live_activity","providers":["codex","claude","gemini","antigravity"],"claude_gemini_antigravity_since_contract":"1.42.0","states":["working","idle","turn_ended","blocked","error","unknown"],"native_sources":{"claude":["native_registry","transcript_tail"],"gemini":["transcript_tail"],"antigravity":["transcript_tail"]},"error_text":"provider turn-error text, bounded to 300 characters, only with state error","cached_state":true,"source":"app_server_thread_status_else_rollout_tail"});
     value["pending_operations"] = json!({"since_revision":37,"field":"sessions[].pending_operations","kinds":["stop","pause","switch","restart"],"stop_wait_expiry_seconds":external::TERMINATE_WAIT_SECONDS});
     value["native_send_checks"] = json!({"since_revision":37,"version":1,"commands":["send"],"modes":["submit","queue"],"providers":["codex"],"readiness_wait_seconds":20,"consumption_wait_seconds":8,"unconsumed_input":"removed_and_failed:input_not_consumed","unproven_input":"delivery_unknown:consumption_unverified","failed_turn_accepts_input":true});
     if let Some(claude) = value["providers"]
@@ -1885,6 +1931,9 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                 value["pending_questions_unsupported_reason"] = json!(crate::questions::NO_DETECTION_ANTIGRAVITY);
             }
             value["placement"] = placements["memberships"][id.as_str()].clone();
+            if let Some((o, home)) = observed.get(&id) {
+                crate::native_activity::apply(provider, home, &mut value, Some(o), now);
+            }
             return value;
         }
         let source=items.iter().find(|i|source_matches(&s,i));
@@ -1931,15 +1980,31 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
             .as_str()
             .context("INVALID_CONVERSATION_ID")?;
         let operations = pending_operations(&jobs, thread);
-        let pending = crate::lifecycle::pending(paths, thread, None)?.or_else(|| {
+        let blocking = crate::lifecycle::pending_detail(paths, thread, None)?;
+        let pending = blocking.as_ref().map(|p| p.id.clone()).or_else(|| {
             items
                 .iter()
                 .find(|i| i.thread_id == thread)
                 .and_then(|i| i.move_id.clone())
         });
+        let mut operations = operations;
+        // Journaled operations that are not queued jobs (an unfinished or uncertain resume,
+        // auto-recover, switch, ...) are listed too, with their id, kind and phase.
+        if let Some(p) = &blocking
+            && !operations
+                .as_array()
+                .is_some_and(|o| o.iter().any(|j| j["id"] == p.id.as_str()))
+        {
+            operations.as_array_mut().unwrap().push(json!({"id":p.id,"kind":p.kind,"phase":p.phase,
+                "created_at":null,"expires_at":null,"unresolved":p.unresolved(),
+                "resolve":if p.unresolved() {json!("api recover OPERATION, or api abandon-operation OPERATION --confirm OPERATION (operator)")} else {Value::Null}}));
+        }
         session["pending_operations"] = operations;
         if let Some(operation) = pending {
             session["pending_operation_id"] = json!(operation);
+            let reason = blocking
+                .as_ref()
+                .map_or("SESSION_OPERATION_IN_PROGRESS", |p| p.code());
             for capability in [
                 "resume",
                 "switch_account",
@@ -1952,9 +2017,14 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                 "delete",
             ] {
                 session["capabilities"][capability] = json!(false);
-                session["capability_reasons"][capability] = json!("SESSION_OPERATION_IN_PROGRESS");
+                session["capability_reasons"][capability] = json!(reason);
             }
-            session["resume_block_reason"] = json!("moving");
+            session["resume_block_reason"] =
+                json!(if blocking.as_ref().is_some_and(|p| p.unresolved()) {
+                    "recovery_unresolved"
+                } else {
+                    "moving"
+                });
         }
     }
     let settings = crate::auto_recover::all(paths);
@@ -2495,6 +2565,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         } => {
             crate::claude_idle::start(paths, &session, &expected_generation, notify_session).await?
         }
+        Command::Usage { account } => usage_read(paths, account.as_deref())?,
         Command::TurnEvents { after, wait } => {
             crate::turn_notify::events(paths, after, wait).await?
         }
@@ -2672,6 +2743,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 source.inactive && s.attachment.is_none(),
                 "SESSION_ALREADY_RUNNING"
             );
+            crate::lifecycle::ensure_available(paths, &s.conversation_id, None)?;
             ensure!(source.block_reason.is_none(), "SESSION_STATE_UNVERIFIED");
             ensure!(
                 !matches!(s.account.as_str(), "external" | "unknown"),

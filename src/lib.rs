@@ -17,6 +17,7 @@ mod lifecycle;
 pub mod live_activity;
 pub mod messaging;
 pub mod model;
+pub mod native_activity;
 pub mod paths;
 pub mod provider;
 pub mod questions;

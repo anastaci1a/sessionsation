@@ -720,12 +720,21 @@ async fn statusline_usage_is_recorded_chained_and_projected_without_zero_fill() 
     );
     assert!(out.stdout.is_empty(), "--record-only does not chain");
     let a = account(&f);
-    assert_eq!(a["usage_state"], "partial");
-    assert_eq!(a["usage_fresh"], false);
-    assert!(
-        a["usage"]["short"].is_null(),
-        "a missing window is null, never 0%"
-    );
+    // The payload lacked five_hour: the recorded window is carried to its own reset,
+    // with its own observed_at (never zero-filled).
+    assert_eq!(a["usage_state"], "fresh");
+    assert_eq!(a["usage"]["short"]["used_percent"], 12.5);
+    assert!(a["usage"]["short"]["observed_at"].as_i64().is_some());
+    assert_eq!(a["usage"]["weekly"]["used_percent"], 41.0);
+    // `api usage` reads the same projection with ages and the source.
+    let u = f.api(&["usage", "--account", "claude:personal"]);
+    let row = &u["accounts"][0];
+    assert_eq!(row["account"], "claude:personal");
+    assert_eq!(row["source"], "claude-code-statusline");
+    assert!(row["age_seconds"].as_i64().is_some());
+    assert_eq!(row["short"]["used_percent"], 12.5);
+    assert!(row["short"]["age_seconds"].as_i64().unwrap() >= 0);
+    assert!(row["weekly"]["age_seconds"].as_i64().is_some());
     // Broken input never fails the statusline.
     let mut child = Command::new(binary())
         .args(["provider-hook", "claude-statusline"])
@@ -1283,7 +1292,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 41);
+    assert_eq!(caps["contract_revision"], 42);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1878,7 +1887,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 41);
+    assert_eq!(caps["contract_revision"], 42);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2750,7 +2759,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 41);
+    assert_eq!(caps["contract_revision"], 42);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()
