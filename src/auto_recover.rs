@@ -132,6 +132,13 @@ pub struct Setting {
     /// `boot_id` of the boot this session was last started for (at most one per boot).
     #[serde(default)]
     pub boot_started: Option<String>,
+    /// Array start (`array_id`) this session is due a start for; cleared once started,
+    /// seen running, or disabled.
+    #[serde(default)]
+    pub array_due: Option<String>,
+    /// `array_id` of the array start this session was last started for.
+    #[serde(default)]
+    pub array_started: Option<String>,
     /// Unix seconds of the last explicit `api stop`; cleared when the session runs again.
     /// It never changes the mode.
     #[serde(default)]
@@ -158,6 +165,7 @@ impl Setting {
         self.enabled = mode != Mode::Disabled;
         if mode == Mode::Disabled {
             self.boot_due = None;
+            self.array_due = None;
         }
     }
 }
@@ -171,6 +179,10 @@ struct Store {
     /// and starts nothing).
     #[serde(default)]
     boot_id: Option<String>,
+    /// Mount id of `/mnt/user` the supervisor last saw (the array start epoch, see
+    /// `array_id`; absent before 1.45.0: the first pass records it and starts nothing).
+    #[serde(default)]
+    array_id: Option<String>,
 }
 
 fn store_file(paths: &Paths) -> PathBuf {
@@ -331,6 +343,12 @@ fn default_prompt(at: i64, crash: Option<&str>) -> String {
             "Auto-start: this session's process crashed ({what}) and sessionsation started it again at {when}. Re-check your state and continue your work."
         ),
     }
+}
+fn array_prompt(at: i64) -> String {
+    format!(
+        "Auto-start: the array was restarted at {} and sessionsation started this session again after the restart. Re-check your state and continue your work.",
+        chrono_like(at)
+    )
 }
 /// `YYYY-MM-DD HH:MM:SS UTC` without a date dependency.
 fn chrono_like(unix: i64) -> String {
@@ -545,6 +563,9 @@ pub fn capability_start() -> Value {
             "host_boot":{"detect":"/proc/sys/kernel/random/boot_id differs from the persisted boot id",
                 "scope":"every session with a mode that is not running, including explicitly stopped ones",
                 "once_per_boot":true,"daemon_restart_starts_nothing":true},
+            "array_start":{"detect":"the kernel mount id of /mnt/user (the shfs array mount) differs from the persisted one on the same boot",
+                "scope":"every session with a mode that is not running",
+                "once_per_array_start":true,"daemon_restart_starts_nothing":true},
             "crash":{"scope":"same boot; the session was seen running and its process ended abnormally",
                 "crash_evidence":["kernel_oom_kill","kernel_segfault","kernel_fatal_trap"],
                 "not_crashes":["clean_exit","closed_pane_sighup_sigterm","explicit_stop"],
@@ -564,7 +585,7 @@ pub fn capability_start() -> Value {
         "max_per_hour":MAX_PER_HOUR,"operation_kind":"auto_recover","operation_dir":crate::layout::AUTO_RECOVERIES,
         "phases":["admitted","pane_ready","resuming","resumed","prompting","complete","failed","uncertain","abandoned"],
         "replays":false,"recover":"recover","abandon":"abandon-operation",
-        "last_result_states":["started_after_boot","started_after_boot_with_prompt","started_after_crash","started_after_crash_with_prompt","skipped_clean_exit","exit_unclassified","skipped_explicit_stop","failed","uncertain","rate_limited","waiting","disabled","abandoned"],
+        "last_result_states":["started_after_array_start","started_after_array_start_with_prompt","started_after_boot","started_after_boot_with_prompt","started_after_crash","started_after_crash_with_prompt","skipped_clean_exit","exit_unclassified","skipped_explicit_stop","failed","uncertain","rate_limited","waiting","disabled","abandoned"],
         "refusal_codes":["AUTO_RECOVER_UNSUPPORTED","STALE_TARGET","SESSION_OPERATION_IN_PROGRESS","INVALID_ARGUMENT","ACCOUNT_UNAVAILABLE","AMBIGUOUS_SESSION"]})
 }
 
@@ -1071,7 +1092,7 @@ fn outcome(v: &Value) -> Outcome {
     Outcome::Uncertain(label)
 }
 
-fn note(r: &mut Record, text: String) {
+fn add_detail(r: &mut Record, text: String) {
     if !r.prompt_detail.is_empty() {
         r.prompt_detail.push_str("; ");
     }
@@ -1120,7 +1141,7 @@ async fn deliver<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result
         let generation = catalog::find(paths, &r.session_id)?.generation();
         if generation != first_generation {
             r.prompt_state = "failed".into();
-            note(r, "the session changed generation; not retried".into());
+            add_detail(r, "the session changed generation; not retried".into());
             return Ok(());
         }
         let mut body = json!({"api_version":1,"message_id":r.message_id,"session_id":r.session_id,
@@ -1141,10 +1162,10 @@ async fn deliver<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result
                     Err(format!("{c} (before admission)"))
                 } else if CLEAN_REFUSAL.contains(&c.as_str()) {
                     r.prompt_state = "failed".into();
-                    note(r, format!("attempt {attempt}: {e:#}"));
+                    add_detail(r, format!("attempt {attempt}: {e:#}"));
                     return Ok(());
                 } else {
-                    note(r, format!("attempt {attempt} ({id}): {e:#}"));
+                    add_detail(r, format!("attempt {attempt} ({id}): {e:#}"));
                     bail!("PROMPT_DELIVERY_UNCERTAIN: {e:#}");
                 }
             }
@@ -1170,11 +1191,11 @@ async fn deliver<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result
                 match out {
                     Outcome::Delivered(label) => {
                         r.prompt_state = "delivered".into();
-                        note(r, format!("attempt {attempt} ({id}): {label}"));
+                        add_detail(r, format!("attempt {attempt} ({id}): {label}"));
                         return Ok(());
                     }
                     Outcome::Uncertain(label) => {
-                        note(r, format!("attempt {attempt} ({id}): {label}"));
+                        add_detail(r, format!("attempt {attempt} ({id}): {label}"));
                         bail!("PROMPT_DELIVERY_UNCERTAIN: receipt {label}");
                     }
                     Outcome::Refused(label) => (label, true),
@@ -1182,11 +1203,11 @@ async fn deliver<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result
                 }
             }
         };
-        note(r, format!("attempt {attempt} ({id}): {label}"));
+        add_detail(r, format!("attempt {attempt} ({id}): {label}"));
         refused += 1;
         if std::time::Instant::now() >= deadline {
             r.prompt_state = "failed".into();
-            note(r, format!("not delivered after {refused} refused attempts"));
+            add_detail(r, format!("not delivered after {refused} refused attempts"));
             return Ok(());
         }
         if fresh_id {
@@ -1466,6 +1487,7 @@ fn finish(paths: &Paths, r: &Record) {
     let started = |with_prompt: bool, code: &str| {
         let base = match r.trigger.as_str() {
             "boot" => "started_after_boot",
+            "array_start" => "started_after_array_start",
             "crash" => "started_after_crash",
             _ => "started",
         };
@@ -1529,6 +1551,24 @@ fn boot_id() -> Option<String> {
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
 }
+/// The array start epoch: the kernel mount id of `/mnt/user` (the shfs union mount that only
+/// exists while the array is started). Every mount gets a new id, so a stop/start of the
+/// array on the same boot changes it, while a supervisor or daemon restart never does. It
+/// needs no hook or token file. `SESSIONSATION_MOUNTINFO_FILE` replaces the mountinfo file
+/// and `SESSIONSATION_ARRAY_MOUNT` the mount point (tests).
+fn array_id() -> Option<String> {
+    let file = std::env::var("SESSIONSATION_MOUNTINFO_FILE")
+        .unwrap_or_else(|_| "/proc/self/mountinfo".into());
+    let point = std::env::var("SESSIONSATION_ARRAY_MOUNT").unwrap_or_else(|_| "/mnt/user".into());
+    array_id_in(&fs::read_to_string(file).ok()?, &point)
+}
+fn array_id_in(mountinfo: &str, point: &str) -> Option<String> {
+    mountinfo.lines().rev().find_map(|l| {
+        let mut f = l.split_whitespace();
+        let id = f.next()?;
+        (f.nth(3)? == point).then(|| id.to_owned())
+    })
+}
 /// When the host booted (Unix seconds), for the boot prompt; falls back to `now`.
 fn boot_time() -> i64 {
     fs::read_to_string("/proc/stat")
@@ -1553,11 +1593,13 @@ fn kernel_log() -> Option<String> {
 /// Compare the boot with the persisted one. A different boot makes every session with a
 /// mode that has not been started for it due a boot start; the same boot (a daemon or
 /// supervisor restart) changes nothing; the very first pass only records the boot.
-fn detect_boot(paths: &Paths, current: &str) -> Result<()> {
+fn detect_boot(paths: &Paths, current: &str) -> Result<bool> {
+    let mut changed = false;
     with_store(paths, |store| {
         if store.boot_id.as_deref() == Some(current) {
             return;
         }
+        changed = store.boot_id.is_some();
         let first = store.boot_id.is_none();
         store.boot_id = Some(current.to_owned());
         if first {
@@ -1572,6 +1614,34 @@ fn detect_boot(paths: &Paths, current: &str) -> Result<()> {
             s.suppressed = false;
             s.boot_due = (s.mode() != Mode::Disabled && s.boot_started.as_deref() != Some(current))
                 .then(|| current.to_owned());
+        }
+    })?;
+    Ok(changed)
+}
+
+/// Compare the array start epoch with the persisted one (same boot only; a new boot already
+/// made every session due). A different epoch makes every session with a mode that has not
+/// been started for it due an array-start start; an unchanged one (a supervisor restart,
+/// a cutover) changes nothing; the very first pass only records it.
+fn detect_array(paths: &Paths, current: &str, boot_changed: bool) -> Result<()> {
+    with_store(paths, |store| {
+        if store.array_id.as_deref() == Some(current) {
+            return;
+        }
+        let first = store.array_id.is_none();
+        store.array_id = Some(current.to_owned());
+        if first || boot_changed {
+            return;
+        }
+        for s in store.sessions.values_mut() {
+            s.live_pid = None;
+            s.live_start = None;
+            s.live_boot = None;
+            s.misses = 0;
+            s.suppressed = false;
+            s.array_due = (s.mode() != Mode::Disabled
+                && s.array_started.as_deref() != Some(current))
+            .then(|| current.to_owned());
         }
     })
 }
@@ -1650,6 +1720,7 @@ fn classify(paths: &Paths, s: &Session, setting: &Setting, log: Option<&str>) ->
 /// What started a session.
 enum Trigger {
     Boot,
+    Array,
     Crash(String),
 }
 
@@ -1664,8 +1735,13 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
     // Before the early return: the boot must be recorded even while no session has a mode,
     // or a session enabled later would look like it was due a boot start.
     let boot = boot_id();
-    if let Some(b) = &boot {
-        detect_boot(paths, b)?;
+    let array = array_id();
+    let boot_changed = match &boot {
+        Some(b) => detect_boot(paths, b)?,
+        None => false,
+    };
+    if let Some(a) = &array {
+        detect_array(paths, a, boot_changed)?;
     }
     let store = load(paths)?;
     if !store.sessions.values().any(|s| s.enabled) {
@@ -1710,18 +1786,28 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
         }
         match status_of(&s, &seen) {
             Status::Unknown => {}
-            Status::Live(pane, proc) => note_live(paths, &s, &setting, pane, proc, boot.as_deref()),
+            Status::Live(pane, proc) => {
+                note_live(paths, &s, &setting, pane, proc, boot.as_deref());
+                if setting.array_due.is_some() {
+                    update(paths, &s.id, |x| {
+                        x.array_started = x.array_due.take();
+                    });
+                }
+            }
             Status::Down => {
                 if setting.suppressed {
                     continue;
                 }
                 let due_boot =
                     boot.is_some() && setting.boot_due == boot && setting.boot_started != boot;
+                let due_array = array.is_some()
+                    && setting.array_due == array
+                    && setting.array_started != array;
                 let was_running =
                     boot.is_some() && setting.live_boot == boot && setting.live_pid.is_some();
                 // Never seen running on this boot and not due a boot start (enabled while
                 // stopped, or explicitly stopped): nothing can start it now.
-                if !due_boot && !was_running {
+                if !due_boot && !due_array && !was_running {
                     continue;
                 }
                 // Settle: the same number of consecutive checks as ever, so discovery
@@ -1735,6 +1821,8 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
                 }
                 let trigger = if due_boot {
                     Trigger::Boot
+                } else if due_array {
+                    Trigger::Array
                 } else {
                     match classify(paths, &s, &setting, kernel_log().as_deref()) {
                         Exit::Crash(what) => Trigger::Crash(what),
@@ -1755,7 +1843,15 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
                     }
                 };
                 if let Some(op) =
-                    attempt(paths, &s, &setting, &trigger, boot.as_deref(), sender).await
+                    attempt(
+                        paths,
+                        &s,
+                        &setting,
+                        &trigger,
+                        (boot.as_deref(), array.as_deref()),
+                        sender,
+                    )
+                    .await
                 {
                     outcomes.push(op);
                 }
@@ -1842,7 +1938,7 @@ async fn attempt<S: Sender>(
     s: &Session,
     setting: &Setting,
     trigger: &Trigger,
-    boot: Option<&str>,
+    (boot, array): (Option<&str>, Option<&str>),
     sender: &S,
 ) -> Option<Value> {
     let now = daemon::now();
@@ -1904,12 +2000,17 @@ async fn attempt<S: Sender>(
     }
     let prompt = setting.prompt.clone().unwrap_or_else(|| match trigger {
         Trigger::Boot => default_prompt(boot_time(), None),
+        Trigger::Array => array_prompt(now),
         Trigger::Crash(what) => default_prompt(now, Some(what)),
     });
     let (trigger_name, trigger_detail) = match trigger {
         Trigger::Boot => (
             "boot",
             "The host booted; the session was not running.".to_owned(),
+        ),
+        Trigger::Array => (
+            "array_start",
+            "The array was started; the session was not running.".to_owned(),
         ),
         Trigger::Crash(what) => ("crash", what.clone()),
     };
@@ -1950,6 +2051,7 @@ async fn attempt<S: Sender>(
     save(paths, &mut r).ok()?;
     let id = s.id.clone();
     let boot = boot.map(str::to_owned);
+    let array = array.map(str::to_owned);
     let _ = with_store(paths, |store| {
         if let Some(setting) = store.sessions.get_mut(&id) {
             setting.recoveries.retain(|t| now - *t < HOUR);
@@ -1962,6 +2064,10 @@ async fn attempt<S: Sender>(
             if boot.is_some() {
                 setting.boot_started = boot;
                 setting.boot_due = None;
+            }
+            if array.is_some() {
+                setting.array_started = array;
+                setting.array_due = None;
             }
         }
     });

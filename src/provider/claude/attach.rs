@@ -104,6 +104,7 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         "UNSUPPORTED_PROVIDER_OPERATION"
     );
     let account = claude::account(paths, &s.account)?;
+    let mut resolved: Option<String> = None;
     let (session, directory, job) = {
         // Serialize admission per conversation; released before the pane step,
         // which re-verifies identity itself (it cannot take this lock).
@@ -118,18 +119,15 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         let list = spaces["workspaces"]
             .as_array()
             .context("INVALID_HOST_SPACES")?;
+        // Space by id, else visible name; a new-Space name that exists is reused.
         if let Some(space) = r.space {
-            ensure!(
-                list.iter().any(|w| w["workspace_id"] == space),
-                "SPACE_NOT_FOUND"
+            resolved = Some(
+                crate::external::hosting::resolve_space(list, space).context("SPACE_NOT_FOUND")?,
             );
         }
         if let Some(label) = r.new_space {
             crate::paths::validate_space_label(label)?;
-            ensure!(
-                !list.iter().any(|w| w["label"] == label),
-                "WORKSPACE_NAME_EXISTS"
-            );
+            resolved = crate::external::hosting::resolve_space(list, label);
         }
         let name = r.name.unwrap_or(&s.name);
         crate::launch::validate_session_name(name)?;
@@ -151,7 +149,7 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
     let dir = directory.to_str().context("INVALID_DIRECTORY")?;
     // A new Space is created with its own initial shell pane, which becomes the
     // viewer pane (as New session does): no extra pane is created or closed.
-    let created = match (r.space, r.new_space) {
+    let created = match (resolved.as_deref(), r.new_space) {
         (Some(space), _) => host(
             r.herdr_session,
             r.herdr_socket,
@@ -195,7 +193,7 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         .or_else(|| created["workspace"]["workspace_id"].as_str())
         .context("HOST_WORKSPACE_ID_MISSING")?
         .to_owned();
-    if let Some(space) = r.space {
+    if let Some(space) = resolved.as_deref() {
         ensure!(space == space_id, "HOST_WRONG_WORKSPACE");
     } else if let Some(tab) = &tab {
         // HERDR names a new Space's first tab by number; use the session label.

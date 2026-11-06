@@ -254,6 +254,25 @@ fn finish(paths: &Paths, op: &mut Operation, current: Value) -> Result<()> {
         "Session moved to the selected Space. No agent was restarted and no message was sent.",
     )
 }
+/// Visible-name fallback: a Space id that is gone (HERDR or array restart) is found by
+/// its name, and a new-Space name that already exists is that Space.
+fn normalize_target(request: &mut Target, available: &Value) {
+    let list: Vec<Value> = available["spaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| json!({"workspace_id":s["id"],"label":s["name"]}))
+        .collect();
+    let found = |wanted: &str| crate::external::hosting::resolve_space(&list, wanted);
+    if let Some(id) = request.space.as_deref().and_then(found) {
+        request.space = Some(id);
+    } else if request.space.is_none()
+        && let Some(id) = request.new_space.as_deref().and_then(found)
+    {
+        request.space = Some(id);
+        request.new_space = None;
+    }
+}
 fn check_destination(request: &Target, available: &Value) -> Result<()> {
     if let Some(space) = &request.space {
         ensure!(
@@ -297,6 +316,8 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         .map_err(|_| anyhow::anyhow!("SESSION_OPERATION_IN_PROGRESS"))?;
     let socket = hosting::socket_for(paths, &source.pane)?.context("MISSING_HOST_SOCKET")?;
     let available = choices(&session, &source, &socket)?;
+    let mut request = request;
+    normalize_target(&mut request, &available);
     check_destination(&request, &available)?;
     crate::catalog::resolve(paths, &request.session, &request.expected_generation)?;
     let epoch = receipt_location(paths, &session.id)?.map(|(id, _)| id);
@@ -703,6 +724,17 @@ pub fn host_list(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_move_destination_falls_back_to_the_visible_name_and_reuses_an_existing_name() {
+        let available = json!({"spaces":[{"id":"wR","name":"localica"},{"id":"w21","name":"sessionstuffs"}]});
+        let mut by_name = Target { space: Some("localica".into()), new_space: None, ..serde_json::from_value::<Target>(json!({"session":"s","expected_generation":"g","space":"x","request_id":"r"})).unwrap() };
+        normalize_target(&mut by_name, &available);
+        assert_eq!(by_name.space.as_deref(), Some("wR"));
+        let mut reuse = Target { space: None, new_space: Some("sessionstuffs".into()), ..serde_json::from_value::<Target>(json!({"session":"s","expected_generation":"g","space":"x","request_id":"r"})).unwrap() };
+        normalize_target(&mut reuse, &available);
+        assert_eq!((reuse.space.as_deref(), reuse.new_space.as_deref()), (Some("w21"), None));
+        check_destination(&reuse, &available).unwrap();
+    }
     use super::*;
     fn fixture(paths: &Paths) -> Operation {
         let thread = uuid::Uuid::new_v4().to_string();

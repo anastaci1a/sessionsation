@@ -348,6 +348,22 @@ pub(crate) fn change(
     save(paths, &mut r)?;
     Ok(r)
 }
+/// Resolve a requested Space with the visible-name fallback: an id that no longer exists
+/// (HERDR or array restart) is found by its name, and a new-Space name that exists is
+/// that Space. Unresolvable requests are left for validation to refuse.
+pub(crate) fn normalize_space(list: &[Value], space: &Space) -> Space {
+    match space {
+        Space::Existing { id } => crate::external::hosting::resolve_space(list, id)
+            .map_or_else(|| space.clone(), |id| Space::Existing { id }),
+        Space::New { label } => crate::external::hosting::resolve_space(list, label)
+            .map_or_else(|| space.clone(), |id| Space::Existing { id }),
+    }
+}
+pub(crate) async fn resolve_space(host: &Host, space: &mut Space) -> Result<()> {
+    let spaces = host_call(host, &["workspace", "list"]).await?;
+    *space = normalize_space(spaces["workspaces"].as_array().context("HOST_PROTOCOL")?, space);
+    Ok(())
+}
 pub async fn host_call(host: &Host, args: &[&str]) -> Result<Value> {
     ensure!(
         fs::metadata(&host.socket)?.file_type().is_socket(),
@@ -442,8 +458,9 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     let mut bytes = Vec::new();
     std::io::stdin().take(65537).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 65536, "REQUEST_TOO_LARGE");
-    let r: Request = serde_json::from_slice(&bytes).context("INVALID_LAUNCH_REQUEST")?;
+    let mut r: Request = serde_json::from_slice(&bytes).context("INVALID_LAUNCH_REQUEST")?;
     shape(&r)?;
+    resolve_space(&r.host, &mut r.space).await?;
     if matches!(command, Command::Validate) {
         validate(paths, &r).await?;
         return Ok(json!({"valid":true,"request_id":r.request_id}));

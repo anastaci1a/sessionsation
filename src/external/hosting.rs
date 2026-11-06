@@ -280,6 +280,22 @@ pub async fn launch_checked(
     )
     .await
 }
+/// Resolve a requested Space against HERDR's list: the HERDR workspace id, else
+/// the visible name (exact, then case-insensitive). Stored ids do not survive a
+/// HERDR or array restart; the name does.
+pub(crate) fn resolve_space(list: &[Value], wanted: &str) -> Option<String> {
+    list.iter()
+        .find(|w| w["workspace_id"] == wanted)
+        .or_else(|| list.iter().find(|w| w["label"] == wanted))
+        .or_else(|| {
+            list.iter().find(|w| {
+                w["label"]
+                    .as_str()
+                    .is_some_and(|l| l.eq_ignore_ascii_case(wanted.trim()))
+            })
+        })
+        .and_then(|w| w["workspace_id"].as_str().map(str::to_owned))
+}
 /// Where Start Session opens: a new tab in an existing Space, or (default) a new
 /// Space; `label` names the new tab.
 #[derive(Clone, Copy, Debug, Default)]
@@ -373,17 +389,24 @@ async fn launch_inner(
     // starting/stopping headless hosting is an owner's separate operation.
     call(session, &["api", "snapshot"])?;
     let dir = cwd.to_str().context("working directory is not UTF-8")?;
-    let created = match placement.space {
-        Some(space) => {
+    // An existing Space is found by its id, else by its visible name; a requested
+    // new Space whose name exists is that Space (never an error).
+    let existing = match (placement.space, placement.new_space) {
+        (None, None) => None,
+        (wanted, label) => {
             let spaces = call(session, &["workspace", "list"])?;
-            ensure!(
-                spaces["workspaces"]
-                    .as_array()
-                    .context("INVALID_HOST_SPACES")?
-                    .iter()
-                    .any(|w| w["workspace_id"] == space),
-                "SPACE_NOT_FOUND"
-            );
+            let list = spaces["workspaces"]
+                .as_array()
+                .context("INVALID_HOST_SPACES")?;
+            match (wanted, label) {
+                (Some(w), _) => Some(resolve_space(list, w).context("SPACE_NOT_FOUND")?),
+                (None, Some(l)) => resolve_space(list, l),
+                _ => None,
+            }
+        }
+    };
+    let created = match existing.as_deref() {
+        Some(space) => {
             let created = call(
                 session,
                 &[
@@ -408,15 +431,6 @@ async fn launch_inner(
         None => {
             if let Some(label) = placement.new_space {
                 crate::paths::validate_space_label(label)?;
-                let spaces = call(session, &["workspace", "list"])?;
-                ensure!(
-                    !spaces["workspaces"]
-                        .as_array()
-                        .context("INVALID_HOST_SPACES")?
-                        .iter()
-                        .any(|w| w["label"] == label),
-                    "WORKSPACE_NAME_EXISTS"
-                );
             }
             // The new Space's own initial shell is the pane that runs the
             // session; nothing extra is created or closed.
@@ -898,5 +912,42 @@ mod space_binding_tests {
         rebind(&p, old, new, &socket, &binding).unwrap();
         let changed = Binding { pid: 99, ..binding };
         assert!(rebind(&p, old, new, &socket, &changed).is_err());
+    }
+}
+
+#[cfg(test)]
+mod space_resolution_tests {
+    use super::*;
+    use serde_json::json;
+    fn list() -> Vec<Value> {
+        vec![
+            json!({"workspace_id":"wR","label":"localica"}),
+            json!({"workspace_id":"w21","label":"sessionstuffs"}),
+        ]
+    }
+    #[test]
+    fn a_space_resolves_by_id_then_by_visible_name() {
+        let l = list();
+        assert_eq!(resolve_space(&l, "wR").as_deref(), Some("wR"));
+        // A stale stored UUID that is also never a name: not found.
+        assert_eq!(resolve_space(&l, "5ad10912-0000-4000-8000-000000000000"), None);
+        assert_eq!(resolve_space(&l, "sessionstuffs").as_deref(), Some("w21"));
+        assert_eq!(resolve_space(&l, "LocaLica").as_deref(), Some("wR"));
+    }
+    #[test]
+    fn an_existing_new_space_name_is_reused_in_every_request_shape() {
+        let l = list();
+        let existing = crate::launch::Space::New { label: "localica".into() };
+        assert_eq!(
+            crate::launch::normalize_space(&l, &existing),
+            crate::launch::Space::Existing { id: "wR".into() }
+        );
+        let gone = crate::launch::Space::Existing { id: "localica".into() };
+        assert_eq!(
+            crate::launch::normalize_space(&l, &gone),
+            crate::launch::Space::Existing { id: "wR".into() }
+        );
+        let fresh = crate::launch::Space::New { label: "brand new".into() };
+        assert_eq!(crate::launch::normalize_space(&l, &fresh), fresh);
     }
 }

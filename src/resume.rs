@@ -234,8 +234,9 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     let mut bytes = vec![];
     std::io::stdin().take(65537).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 65536, "REQUEST_TOO_LARGE");
-    let r: Request = serde_json::from_slice(&bytes).context("INVALID_RESUME_REQUEST")?;
+    let mut r: Request = serde_json::from_slice(&bytes).context("INVALID_RESUME_REQUEST")?;
     shape(&r)?;
+    launch::resolve_space(&r.host, &mut r.space).await?;
     if matches!(command, Command::Validate) {
         let (_, source) = validate(paths, &r).await?;
         return Ok(

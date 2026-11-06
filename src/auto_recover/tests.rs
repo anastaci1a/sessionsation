@@ -561,3 +561,35 @@ async fn claude_waits_for_the_native_registry_then_delivers_natively() {
     assert_eq!(r.prompt_state, "delivered");
     assert_eq!(script.bodies.lock().unwrap()[0]["delivery"], "native");
 }
+
+#[test]
+fn the_array_epoch_is_the_user_mount_id_and_only_a_new_mount_makes_a_session_due() {
+    let info = "20 1 0:5 / /proc rw - proc proc rw\n77 20 0:60 / /mnt/user rw - fuse.shfs shfs rw\n";
+    assert_eq!(array_id_in(info, "/mnt/user").as_deref(), Some("77"));
+    assert_eq!(array_id_in("20 1 0:5 / /proc rw - proc proc rw\n", "/mnt/user"), None);
+    let (_d, paths, s) = fixture();
+    with_store(&paths, |st| {
+        let mut x = Setting::default();
+        x.set_mode(Mode::StartPrompt);
+        st.sessions.insert(s.id.clone(), x);
+    })
+    .unwrap();
+    // First pass records only; the same epoch (a supervisor restart) starts nothing.
+    detect_array(&paths, "77", false).unwrap();
+    detect_array(&paths, "77", false).unwrap();
+    assert!(load(&paths).unwrap().sessions[&s.id].array_due.is_none());
+    // A new mount on the same boot is an array start: due once.
+    detect_array(&paths, "91", false).unwrap();
+    assert_eq!(load(&paths).unwrap().sessions[&s.id].array_due.as_deref(), Some("91"));
+    // A new boot makes the boot trigger due, not a second array start.
+    with_store(&paths, |st| st.sessions.get_mut(&s.id).unwrap().array_due = None).unwrap();
+    detect_array(&paths, "5", true).unwrap();
+    assert!(load(&paths).unwrap().sessions[&s.id].array_due.is_none());
+    // Result names.
+    let mut r = record(&paths, &s);
+    r.trigger = "array_start".into();
+    r.phase = "complete".into();
+    r.prompt_state = "delivered".into();
+    finish(&paths, &r);
+    assert_eq!(all(&paths)[&s.id].last_result.as_ref().unwrap()["state"], "started_after_array_start_with_prompt");
+}
