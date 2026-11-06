@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.44.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.45.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2958,3 +2958,57 @@ never-replayed operations, the 3 per hour rate limit, `RECOVERY_UNRESOLVED`, sup
   `live_boot` per session) default to absent. Operations gain an optional `trigger` (`boot` | `crash`).
 - **Tests only** override the sources: `SESSIONSATION_BOOT_ID_FILE` and `SESSIONSATION_KERNEL_LOG_FILE`.
 
+
+### Auto Start delivery, array start and Space names (1.45.0)
+
+MINOR (includes the 1.44.1 fixes). Auto Start and resume no longer fail on things that change after a
+reboot or an array restart.
+
+- **Delivered means delivered (1.44.1).** The Auto Start prompt is read back through its message receipt.
+  `prompt.state` is `delivered` only when the receipt shows `written`, `input_consumed` or native
+  acceptance (or later). A `rejected` receipt with nothing written (for example
+  `TERMINAL_VIEW_UNDETERMINED`, `ADAPTER_BUSY`) and the pre-admission refusals
+  (`PEER_SOCKET_UNLINKED`, `SESSION_NOT_RUNNING`, ...) are retried with backoff for up to 180 s
+  (`SESSIONSATION_AUTO_RECOVER_PROMPT_SECONDS`) with a fresh message id, while the session keeps its
+  generation. Anything that may have been written (`delivery_unknown`, uncertain) is never retried and ends
+  `uncertain`. `prompt.attempts` and `prompt.detail` list every attempt with its final receipt state
+  (`attempt 1 (<id>): rejected/TERMINAL_VIEW_UNDETERMINED; attempt 2 (<id>): native_accepted`);
+  `last_result` is `started_after_*_with_prompt` only for a delivered prompt, else `PROMPT_NOT_DELIVERED`.
+- **Native first.** For Claude the prompt waits up to 60 s (`SESSIONSATION_AUTO_RECOVER_NATIVE_SECONDS`) for
+  `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json` and its socket, then is sent with `delivery: native`.
+  Every other Sessionsation-to-Claude `submit`/`steer` with `delivery: auto` now also prefers the native
+  peer message (shown by Claude Code as a collapsed `@ sender` entry) and waits up to 5 s
+  (`SESSIONSATION_NATIVE_WAIT_SECONDS`) for the endpoint; it types only when native is unavailable.
+- **Classifier fix.** The input box of a resumed Claude session has a short labelled top rule
+  (`──── <session name> ─`, 8 dashes in 58 cells). It was not read as a rule, so every typed send was refused
+  `TERMINAL_VIEW_UNDETERMINED`. A rule that starts with 3 or more dashes followed by a space now counts
+  (fixture `labelled-top-rule-resumed.ansi`).
+- **Trigger C, array start.** On the same boot, a changed mount id of `/mnt/user` (the shfs array mount;
+  every mount gets a new id) makes every session with a mode that is not running due one start
+  (`array_due`/`array_started` per session, `array_id` at the top of `registry/auto-recover.json`). A
+  supervisor restart or cutover keeps the id and starts nothing; the first pass after upgrading only records it;
+  a new boot uses the boot trigger, not both. Results are `started_after_array_start[_with_prompt]`;
+  operations carry `trigger: array_start`. Default prompt: `Auto-start: the array was restarted at <UTC time>
+  and sessionsation started this session again after the restart. ...`. Tests override with
+  `SESSIONSATION_MOUNTINFO_FILE` and `SESSIONSATION_ARRAY_MOUNT`.
+- **Space names.** A requested Space (`--space`, `resume`, `launch`, `move-space`, `add-to-herdr`) is resolved
+  as the HERDR workspace id, then the visible name (exact, then case-insensitive). `--new-space <label>`
+  whose name already exists reuses that Space instead of `WORKSPACE_NAME_EXISTS`. Auto Start already falls
+  back from the recorded id to the recorded Space label.
+- **No stale generation.** After `resume`, `stop`, `restart`, `switch`, `move-space`, `launch` the cached
+  snapshots are refreshed at once (the session's `generation` is patched immediately, then a full
+  refresh), and the `resume`/`stop`/`restart`/`switch` result carries the new `generation`.
+- **Build identity.** `api version` reports `commit`, the git commit embedded at build time
+  (`SESSIONSATION_COMMIT`, else `git rev-parse HEAD`). `scripts/smoke-installed.sh BIN COMMIT` checks the
+  installed binary (`api version`, `api capabilities`, `api state --cached`) and the commit.
+- **Sender name (not changed).** Claude Code labels a native message with the registry `name` of the
+  sending process (`nameSource` `auto` = an AI title, `user` = `/rename`). `--name` on resume does not
+  override an existing AI title; `/rename` does. Sessionsation does not edit transcripts or registries.
+
+- **Idle subscription is opt-in (`await_reply`).** A native Claude delivery used to also ask for Claude's idle
+  notice, which Claude Code shows to the receiving user as "A process claiming the address
+  uds:/tmp/cc-socks/<pid>-<hex>.sock asked to be told when this session is next idle". The send request now has
+  an optional boolean `await_reply` (default false); only `true` sends that subscription so the receipt can
+  reach `completed_with_reply`. Without it (sends, Auto Start prompts and notices) nothing is requested, the
+  receipt settles `native_accepted` (upgraded to `input_recorded`/consumed from the transcript anchor) after at most the
+  3 s status window, and the worker exits promptly instead of lingering up to the 600 s timeout.

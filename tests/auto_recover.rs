@@ -161,6 +161,7 @@ impl Setup {
             .env("SESSIONSATION_BOOT_ID_FILE", self.boot_file())
             .env("SESSIONSATION_KERNEL_LOG_FILE", self.kmsg_file())
             .env("SESSIONSATION_AUTO_RECOVER_PROMPT_SECONDS", "1")
+            .env("SESSIONSATION_AUTO_RECOVER_NATIVE_SECONDS", "1")
             .env("SESSIONSATION_AUTO_RECOVER_CONFIRM_SECONDS", "30")
             .stdin(Stdio::null());
         c
@@ -373,7 +374,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.44.0");
+    assert_eq!(caps["contract_version"], "1.45.0");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
@@ -533,7 +534,8 @@ async fn a_vanished_process_is_resumed_in_its_old_idle_pane_once_and_never_dupli
     assert_eq!(state["enabled"], true);
     assert_eq!(
         t.session(&id)["auto_start"]["last_result"]["state"],
-        "started_after_crash_with_prompt"
+        "started_after_crash",
+        "the fake pane cannot take the prompt: not delivered, not reported as delivered"
     );
     assert_eq!(state["last_pane"], "herdr/fixture/w1:p2");
     assert!(state["last_recovered_at"].as_i64().unwrap() > 0);

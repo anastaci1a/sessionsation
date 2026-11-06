@@ -203,7 +203,7 @@ impl Fixture {
 }
 fn body(mode: &str, session: &Value, text: &str) -> Value {
     json!({"api_version":1,"message_id":uuid::Uuid::new_v4().to_string(),"mode":mode,"session_id":session["id"],
-        "expected_generation":session["generation"],"text":text,"expires_at":daemon::now()+600})
+        "expected_generation":session["generation"],"text":text,"expires_at":daemon::now()+600,"await_reply":true})
 }
 fn records(transcript: &Path) -> Vec<Value> {
     read(transcript)
@@ -727,6 +727,7 @@ async fn agent_sends_try_native_first_and_fall_back_to_typing_once() {
     assert_eq!(frames(), 1);
     assert_eq!(f.writes().len(), typed, "nothing typed for a native send");
     let mut operator = body("steer", &f.session(&id), "typed for the operator");
+    operator["delivery"] = json!("terminal_input");
     operator["origin"] = json!("operator");
     let first = f.send_ok(&operator);
     assert_eq!(first["delivery_semantics"], "terminal_input");

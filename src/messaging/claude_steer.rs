@@ -86,6 +86,13 @@ pub struct Request {
     /// `agent` (agent-to-agent; `auto` then prefers the native peer message).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// Native Claude delivery only: subscribe to Claude's idle notice so the receipt can reach
+    /// `completed_with_reply`. Off by default: the subscription shows the receiving user a
+    /// visible "asked to be told when this session is next idle" notice, and the worker
+    /// lingers until the turn ends. Without it the receipt settles as `native_accepted`
+    /// (upgraded from the transcript anchor) and the worker exits within seconds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub await_reply: bool,
     /// Codex recovery intents do not apply; accepted only as absent/null.
     #[serde(default, skip_serializing)]
     pub recovery: Option<Value>,
@@ -408,20 +415,41 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         } else {
             Err("TERMINAL_INPUT_DISABLED")
         };
-        let live_now = claude::holder(&claude::live_sessions(&account.home)?, &c).cloned();
-        let peer_on = live_now
+        let mut live_now = claude::holder(&claude::live_sessions(&account.home)?, &c).cloned();
+        let mut peer_on = live_now
             .as_ref()
             .is_some_and(|l| claude::native_peer::accepting(&account.home, l.pid));
+        // Native peer delivery is the preferred path for every Sessionsation->Claude
+        // message (Claude Code shows it as a collapsed `@ sender` entry). Wait briefly for
+        // the endpoint to be published, e.g. right after a start; type only when native
+        // is truly unavailable.
+        if wanted == "auto" && !peer_on {
+            let until = std::time::Instant::now()
+                + Duration::from_secs(
+                    std::env::var("SESSIONSATION_NATIVE_WAIT_SECONDS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(5),
+                );
+            while !peer_on && std::time::Instant::now() < until {
+                tokio::time::sleep(crate::timing::scaled(Duration::from_millis(250))).await;
+                live_now = claude::holder(&claude::live_sessions(&account.home)?, &c).cloned();
+                peer_on = live_now.as_ref().is_some_and(|l| {
+                    claude::native_peer::accepting(&account.home, l.pid)
+                        && claude::peer::endpoint(&account.home, l).is_ok()
+                });
+            }
+        }
         // Agent-originated sends (and `delivery: native`) try the native peer message
         // first and fall back to typing only when nothing was sent natively.
-        let native_first = wanted == "native" || (wanted == "auto" && agent);
+        let native_first = wanted == "native" || wanted == "auto";
         // Terminal input is preferred over a peer message. Queue (`later`) and
         // interrupts cannot be typed: with `auto` a queue uses the peer path
         // when it is enabled.
         let use_terminal = match wanted {
             "terminal_input" => true,
             "peer_message" | "native" => false,
-            _ if agent => false,
+            _ if agent || peer_on => false,
             _ => attached.is_ok() && !(request.mode == "queue" && peer_on),
         };
         if use_terminal {
@@ -911,16 +939,19 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
             return abandon_unsent(paths, id, &reason);
         }
     };
-    let frames = [
-        native_peer::user_frame(
-            id,
-            &r.conversation_id,
-            &r.request.text,
-            &r.priority,
+    let mut frames = vec![native_peer::user_frame(
+        id,
+        &r.conversation_id,
+        &r.request.text,
+        &r.priority,
+        "uds:/placeholder",
+    )];
+    if r.request.await_reply {
+        frames.push(native_peer::notify_idle_frame(
             "uds:/placeholder",
-        ),
-        native_peer::notify_idle_frame("uds:/placeholder", &peer.notify_msg_id),
-    ];
+            &peer.notify_msg_id,
+        ));
+    }
     if let Err(e) = native_peer::encode(&frames) {
         let reason = e
             .to_string()
@@ -978,8 +1009,12 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let frame =
         native_peer::user_frame(id, &r.conversation_id, &r.request.text, &r.priority, &from);
-    let notify = native_peer::notify_idle_frame(&from, &peer.notify_msg_id);
-    let bytes = native_peer::encode(&[frame, notify])?;
+    let await_reply = r.request.await_reply;
+    let mut frames = vec![frame];
+    if await_reply {
+        frames.push(native_peer::notify_idle_frame(&from, &peer.notify_msg_id));
+    }
+    let bytes = native_peer::encode(&frames)?;
     let wrote = async {
         write_half.write_all(&bytes).await?;
         write_half.flush().await
@@ -1047,12 +1082,24 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
                     Ok(())
                 })?;
                 let _ = peer_observe(paths, id);
+                if !await_reply {
+                    break;
+                }
                 continue;
             }
         };
         let Some(v) = frame else { break };
         silent_check = None;
         peer_frame(paths, id, &peer.notify_msg_id, &v)?;
+        if !await_reply
+            && read(paths, id)?
+                .facts
+                .peer_status
+                .last()
+                .is_some_and(|s| s["status"] != "held")
+        {
+            break;
+        }
         // Frames arrive on separate connections in any order: an idle notice
         // ends listening only together with a status (or after a short grace).
         let r = read(paths, id)?;

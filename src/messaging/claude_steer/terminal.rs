@@ -308,8 +308,7 @@ fn labelled_rule(row: &[Cell]) -> bool {
     row.iter().take_while(|c| c.ch == '─').count() >= 3
         && row
             .iter()
-            .skip_while(|c| c.ch == '─')
-            .next()
+            .find(|c| c.ch != '─')
             .is_some_and(|c| c.ch == ' ')
 }
 /// The top rule of a viewed agent's box carries the agent's name as a pill (a

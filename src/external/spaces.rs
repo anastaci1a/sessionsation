@@ -726,13 +726,31 @@ pub fn host_list(
 mod tests {
     #[test]
     fn a_move_destination_falls_back_to_the_visible_name_and_reuses_an_existing_name() {
-        let available = json!({"spaces":[{"id":"wR","name":"localica"},{"id":"w21","name":"sessionstuffs"}]});
-        let mut by_name = Target { space: Some("localica".into()), new_space: None, ..serde_json::from_value::<Target>(json!({"session":"s","expected_generation":"g","space":"x","request_id":"r"})).unwrap() };
+        let available =
+            json!({"spaces":[{"id":"wR","name":"localica"},{"id":"w21","name":"sessionstuffs"}]});
+        let mut by_name = Target {
+            space: Some("localica".into()),
+            new_space: None,
+            ..serde_json::from_value::<Target>(
+                json!({"session":"s","expected_generation":"g","space":"x","request_id":"r"}),
+            )
+            .unwrap()
+        };
         normalize_target(&mut by_name, &available);
         assert_eq!(by_name.space.as_deref(), Some("wR"));
-        let mut reuse = Target { space: None, new_space: Some("sessionstuffs".into()), ..serde_json::from_value::<Target>(json!({"session":"s","expected_generation":"g","space":"x","request_id":"r"})).unwrap() };
+        let mut reuse = Target {
+            space: None,
+            new_space: Some("sessionstuffs".into()),
+            ..serde_json::from_value::<Target>(
+                json!({"session":"s","expected_generation":"g","space":"x","request_id":"r"}),
+            )
+            .unwrap()
+        };
         normalize_target(&mut reuse, &available);
-        assert_eq!((reuse.space.as_deref(), reuse.new_space.as_deref()), (Some("w21"), None));
+        assert_eq!(
+            (reuse.space.as_deref(), reuse.new_space.as_deref()),
+            (Some("w21"), None)
+        );
         check_destination(&reuse, &available).unwrap();
     }
     use super::*;

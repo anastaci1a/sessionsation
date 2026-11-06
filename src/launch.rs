@@ -361,7 +361,10 @@ pub(crate) fn normalize_space(list: &[Value], space: &Space) -> Space {
 }
 pub(crate) async fn resolve_space(host: &Host, space: &mut Space) -> Result<()> {
     let spaces = host_call(host, &["workspace", "list"]).await?;
-    *space = normalize_space(spaces["workspaces"].as_array().context("HOST_PROTOCOL")?, space);
+    *space = normalize_space(
+        spaces["workspaces"].as_array().context("HOST_PROTOCOL")?,
+        space,
+    );
     Ok(())
 }
 pub async fn host_call(host: &Host, args: &[&str]) -> Result<Value> {

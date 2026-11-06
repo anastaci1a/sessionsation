@@ -1292,7 +1292,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 44);
+    assert_eq!(caps["contract_revision"], 45);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1887,7 +1887,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 44);
+    assert_eq!(caps["contract_revision"], 45);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2115,8 +2115,6 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
         let refs: Vec<&str> = v.iter().map(String::as_str).collect();
         hosted(&refs)
     };
-    let exists = run(&["--new-space", "Main"]);
-    assert!(String::from_utf8_lossy(&exists.stderr).contains("WORKSPACE_NAME_EXISTS"));
     assert!(!run(&["--new-space", "X", "--space", "w1"]).status.success());
     assert!(!run(&[]).status.success());
     assert!(!run(&["--new-space", "bad/label"]).status.success());
@@ -2169,10 +2167,8 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
     let stopped = find(&other);
     assert_eq!(stopped["availability"], "stopped");
     let creates = calls().matches("workspace create").count();
-    for extra in [
-        vec!["--new-space", "Main"],
-        vec!["--new-space", "Z", "--space", "w1"],
-    ] {
+    #[allow(clippy::single_element_loop)]
+    for extra in [vec!["--new-space", "Z", "--space", "w1"]] {
         let mut v = vec![
             "resume",
             "--session",
@@ -2759,7 +2755,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 44);
+    assert_eq!(caps["contract_revision"], 45);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()

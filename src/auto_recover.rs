@@ -1181,10 +1181,14 @@ async fn deliver<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result
                             tokio::time::sleep(sender.poll()).await;
                             match sender.receipt(paths, &id).await {
                                 Ok(next) => v = next,
-                                Err(e) => break Outcome::Uncertain(format!("receipt unreadable: {e:#}")),
+                                Err(e) => {
+                                    break Outcome::Uncertain(format!("receipt unreadable: {e:#}"));
+                                }
                             }
                         }
-                        Outcome::Pending => break Outcome::Uncertain("not final after 30 s".into()),
+                        Outcome::Pending => {
+                            break Outcome::Uncertain("not final after 30 s".into());
+                        }
                         other => break other,
                     }
                 };
@@ -1800,9 +1804,8 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
                 }
                 let due_boot =
                     boot.is_some() && setting.boot_due == boot && setting.boot_started != boot;
-                let due_array = array.is_some()
-                    && setting.array_due == array
-                    && setting.array_started != array;
+                let due_array =
+                    array.is_some() && setting.array_due == array && setting.array_started != array;
                 let was_running =
                     boot.is_some() && setting.live_boot == boot && setting.live_pid.is_some();
                 // Never seen running on this boot and not due a boot start (enabled while
@@ -1842,16 +1845,15 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
                         }
                     }
                 };
-                if let Some(op) =
-                    attempt(
-                        paths,
-                        &s,
-                        &setting,
-                        &trigger,
-                        (boot.as_deref(), array.as_deref()),
-                        sender,
-                    )
-                    .await
+                if let Some(op) = attempt(
+                    paths,
+                    &s,
+                    &setting,
+                    &trigger,
+                    (boot.as_deref(), array.as_deref()),
+                    sender,
+                )
+                .await
                 {
                     outcomes.push(op);
                 }

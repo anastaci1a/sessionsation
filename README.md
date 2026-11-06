@@ -91,3 +91,13 @@ See [documentation](docs/README.md), [public API v1](docs/contract.md),
 
 MIT licensed; backend reuse and the retained upstream revision are recorded in
 [NOTICE](NOTICE) and [LICENSE](LICENSE).
+
+## Release procedure
+
+1. From a clean checkout of the commit being released (never a `git archive` copy), use a **fresh,
+   empty target dir** every time: `SESSIONSATION_COMMIT=$(git rev-parse HEAD) CARGO_TARGET_DIR=$(mktemp -d) cargo build --release --locked`.
+2. Run `scripts/check.sh` on that commit.
+3. Install to `releases/<sha>` and check the embedded commit: `api version` must print `"commit":"<sha>"`.
+4. Switch the `current` link, then run `scripts/smoke-installed.sh <installed binary> <sha>`. A failure
+   means: switch the link back to the previous release immediately.
+`--help` is not a check: it never loads the real state.

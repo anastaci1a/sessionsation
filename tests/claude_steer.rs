@@ -240,7 +240,7 @@ impl Fixture {
 }
 fn body(mode: &str, session: &Value, text: &str) -> Value {
     json!({"api_version":1,"message_id":uuid::Uuid::new_v4().to_string(),"mode":mode,"session_id":session["id"],
-        "expected_generation":session["generation"],"text":text,"expires_at":now()+600})
+        "expected_generation":session["generation"],"text":text,"expires_at":now()+600,"await_reply":true})
 }
 fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
@@ -552,6 +552,7 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
     let generation = s["generation"].as_str().unwrap().to_owned();
     let mut resume = body("resume", &s, "x");
     resume.as_object_mut().unwrap().remove("mode");
+    resume.as_object_mut().unwrap().remove("await_reply");
     resume["mode"] = json!("resume");
     assert!(f.send_err(&resume).contains("SESSION_ALREADY_RUNNING"));
     assert!(

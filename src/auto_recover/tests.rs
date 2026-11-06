@@ -72,12 +72,20 @@ impl Script {
 impl Sender for Script {
     async fn native_ready(&self, _: &Paths, _: &str) -> bool {
         let mut n = self.ready_after.lock().unwrap();
-        if *n == 0 { return true; }
-        if *n != u32::MAX { *n -= 1; }
+        if *n == 0 {
+            return true;
+        }
+        if *n != u32::MAX {
+            *n -= 1;
+        }
         false
     }
-    fn poll(&self) -> Duration { Duration::from_millis(1) }
-    fn backoff(&self, _: u32) -> Duration { Duration::from_millis(1) }
+    fn poll(&self) -> Duration {
+        Duration::from_millis(1)
+    }
+    fn backoff(&self, _: u32) -> Duration {
+        Duration::from_millis(1)
+    }
     async fn send(&self, _: &Paths, body: Value) -> Result<Value> {
         self.bodies.lock().unwrap().push(body);
         self.replies.lock().unwrap().pop().expect("unexpected send")
@@ -519,7 +527,11 @@ async fn a_rejected_receipt_is_retried_with_a_fresh_id_until_accepted() {
     let (_d, paths, s) = fixture();
     let mut r = record(&paths, &s);
     let first = r.message_id.clone();
-    let script = Script::new(vec![Ok(rejected()), Ok(rejected()), Ok(json!({"state":"native_accepted"}))]);
+    let script = Script::new(vec![
+        Ok(rejected()),
+        Ok(rejected()),
+        Ok(json!({"state":"native_accepted"})),
+    ]);
     deliver(&paths, &mut r, &script).await.unwrap();
     assert_eq!(r.prompt_state, "delivered");
     assert_eq!(r.prompt_attempts, 3);
@@ -527,15 +539,21 @@ async fn a_rejected_receipt_is_retried_with_a_fresh_id_until_accepted() {
     assert_ne!(bodies[0]["message_id"], bodies[1]["message_id"]);
     assert_ne!(bodies[1]["message_id"], bodies[2]["message_id"]);
     assert_eq!(bodies[0]["message_id"], first.as_str());
-    assert!(r.prompt_detail.contains("rejected/TERMINAL_VIEW_UNDETERMINED"));
+    assert!(
+        r.prompt_detail
+            .contains("rejected/TERMINAL_VIEW_UNDETERMINED")
+    );
     assert!(r.prompt_detail.contains("native_accepted"));
 }
 
 #[tokio::test]
-async fn an_unconfirmed_or_rejected_only_receipt_is_never_called_delivered_and_uncertain_is_not_retried() {
+async fn an_unconfirmed_or_rejected_only_receipt_is_never_called_delivered_and_uncertain_is_not_retried()
+ {
     let (_d, paths, s) = fixture();
     let mut r = record(&paths, &s);
-    let script = Script::new(vec![Ok(json!({"state":"delivery_unknown","facts":{"written":false}}))]);
+    let script = Script::new(vec![Ok(
+        json!({"state":"delivery_unknown","facts":{"written":false}}),
+    )]);
     let e = deliver(&paths, &mut r, &script).await.unwrap_err();
     assert!(e.to_string().starts_with("PROMPT_DELIVERY_UNCERTAIN"));
     assert_eq!(script.bodies.lock().unwrap().len(), 1);
@@ -564,9 +582,13 @@ async fn claude_waits_for_the_native_registry_then_delivers_natively() {
 
 #[test]
 fn the_array_epoch_is_the_user_mount_id_and_only_a_new_mount_makes_a_session_due() {
-    let info = "20 1 0:5 / /proc rw - proc proc rw\n77 20 0:60 / /mnt/user rw - fuse.shfs shfs rw\n";
+    let info =
+        "20 1 0:5 / /proc rw - proc proc rw\n77 20 0:60 / /mnt/user rw - fuse.shfs shfs rw\n";
     assert_eq!(array_id_in(info, "/mnt/user").as_deref(), Some("77"));
-    assert_eq!(array_id_in("20 1 0:5 / /proc rw - proc proc rw\n", "/mnt/user"), None);
+    assert_eq!(
+        array_id_in("20 1 0:5 / /proc rw - proc proc rw\n", "/mnt/user"),
+        None
+    );
     let (_d, paths, s) = fixture();
     with_store(&paths, |st| {
         let mut x = Setting::default();
@@ -580,9 +602,15 @@ fn the_array_epoch_is_the_user_mount_id_and_only_a_new_mount_makes_a_session_due
     assert!(load(&paths).unwrap().sessions[&s.id].array_due.is_none());
     // A new mount on the same boot is an array start: due once.
     detect_array(&paths, "91", false).unwrap();
-    assert_eq!(load(&paths).unwrap().sessions[&s.id].array_due.as_deref(), Some("91"));
+    assert_eq!(
+        load(&paths).unwrap().sessions[&s.id].array_due.as_deref(),
+        Some("91")
+    );
     // A new boot makes the boot trigger due, not a second array start.
-    with_store(&paths, |st| st.sessions.get_mut(&s.id).unwrap().array_due = None).unwrap();
+    with_store(&paths, |st| {
+        st.sessions.get_mut(&s.id).unwrap().array_due = None
+    })
+    .unwrap();
     detect_array(&paths, "5", true).unwrap();
     assert!(load(&paths).unwrap().sessions[&s.id].array_due.is_none());
     // Result names.
@@ -591,5 +619,8 @@ fn the_array_epoch_is_the_user_mount_id_and_only_a_new_mount_makes_a_session_due
     r.phase = "complete".into();
     r.prompt_state = "delivered".into();
     finish(&paths, &r);
-    assert_eq!(all(&paths)[&s.id].last_result.as_ref().unwrap()["state"], "started_after_array_start_with_prompt");
+    assert_eq!(
+        all(&paths)[&s.id].last_result.as_ref().unwrap()["state"],
+        "started_after_array_start_with_prompt"
+    );
 }

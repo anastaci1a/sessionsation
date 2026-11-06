@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 44;
+pub const CONTRACT_MINOR: u32 = 45;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.44.0";
+pub const CONTRACT_VERSION: &str = "1.45.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -56,7 +56,7 @@ pub fn version() -> Result<Value> {
     use sha2::{Digest, Sha256};
     let executable = std::env::current_exe()?;
     Ok(
-        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"api_version":VERSION,"contract_revision":CONTRACT_MINOR,"contract_version":CONTRACT_VERSION,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
+        json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"commit":env!("SESSIONSATION_BUILD_COMMIT"),"api_version":VERSION,"contract_revision":CONTRACT_MINOR,"contract_version":CONTRACT_VERSION,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
 }
 
@@ -2357,7 +2357,8 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         crate::disk_space::preflight(paths, operation)?;
     }
     note_deliberate_action(paths, &command);
-    let result = match command {
+    let lifecycle = lifecycle_subject(paths, &command);
+    let mut result = match command {
         Command::ResumeLaunch { command } => crate::resume::api(paths, command).await?,
         Command::Session {
             action:
@@ -2911,7 +2912,73 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             crate::messaging::receipt_public(paths, &message, true).await?
         }
     };
+    if let Some(subject) = lifecycle {
+        // A lifecycle operation changes the generation: the next `state --cached` and the
+        // generation guard of the next send must see it at once, not after the next full
+        // state. Best effort; the operation itself already succeeded.
+        if let Some(id) = &subject {
+            patch_snapshot_generation(paths, id);
+        }
+        refresh_snapshots(paths).await;
+        if let Some(id) = subject
+            && result.is_object()
+            && result.get("generation").is_none()
+            && let Ok(s) = catalog::find(paths, &id)
+        {
+            result["generation"] = json!(s.generation());
+        }
+    }
     print(result)
+}
+
+/// Commands that start, stop, move or switch a session. `Some(Some(id))` names the session
+/// whose new generation joins the result.
+fn lifecycle_subject(paths: &Paths, command: &Command) -> Option<Option<String>> {
+    match command {
+        Command::Resume { session, .. }
+        | Command::Stop { session, .. }
+        | Command::Restart { session, .. }
+        | Command::Switch { session, .. } => Some(catalog::find(paths, session).ok().map(|s| s.id)),
+        Command::MoveSpace { .. } | Command::ResumeLaunch { .. } | Command::Launch { .. } => {
+            Some(None)
+        }
+        _ => None,
+    }
+}
+
+/// Put the catalog's current generation of one session into every cached snapshot at once
+/// (no provider probe), so `state --cached` never returns the generation from before a
+/// lifecycle operation.
+pub(crate) fn patch_snapshot_generation(paths: &Paths, id: &str) {
+    let Ok(session) = catalog::find(paths, id) else {
+        return;
+    };
+    for filter in [
+        ArchiveFilter::Active,
+        ArchiveFilter::Archived,
+        ArchiveFilter::All,
+    ] {
+        let Some(mut value) = read_snapshot(paths, filter) else {
+            continue;
+        };
+        let mut changed = false;
+        for s in value["sessions"].as_array_mut().into_iter().flatten() {
+            if s["id"] == id {
+                s["generation"] = json!(session.generation());
+                changed = true;
+            }
+        }
+        if changed {
+            write_snapshot(paths, filter, &value);
+        }
+    }
+}
+
+/// Rewrite the cached state snapshots from the current catalog.
+pub(crate) async fn refresh_snapshots(paths: &Paths) {
+    for filter in [ArchiveFilter::Active, ArchiveFilter::All] {
+        let _ = state_filtered(paths, filter).await;
+    }
 }
 
 /// Apply an optional Start Session name before launch (generation-checked).
@@ -3597,5 +3664,36 @@ mod disk_full_state_tests {
         assert!(other.unwrap_err().to_string().contains("BOOM"));
         // Another filter has its own snapshot.
         assert!(serve_snapshot_when_disk_full(&paths, ArchiveFilter::All, enospc()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod stale_generation_tests {
+    use super::*;
+
+    #[test]
+    fn a_lifecycle_operation_refreshes_the_cached_generation_at_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let s = catalog::record_launch(&paths, "a", &conversation, "work", None).unwrap();
+        let old = s.generation();
+        let snapshot = json!({"observed_at":daemon::now(),"accounts":[],
+            "sessions":[{"id":s.id,"generation":old},{"id":"other","generation":"x"}]});
+        write_snapshot(&paths, ArchiveFilter::Active, &snapshot);
+        let renamed = catalog::rename(&paths, &s.id, &old, "work2").unwrap();
+        assert_ne!(renamed.generation(), old);
+        // Stale until the lifecycle hook runs.
+        assert_eq!(
+            read_snapshot(&paths, ArchiveFilter::Active).unwrap()["sessions"][0]["generation"],
+            old.as_str()
+        );
+        patch_snapshot_generation(&paths, &s.id);
+        let fresh = read_snapshot(&paths, ArchiveFilter::Active).unwrap();
+        assert_eq!(
+            fresh["sessions"][0]["generation"],
+            renamed.generation().as_str()
+        );
+        assert_eq!(fresh["sessions"][1]["generation"], "x");
     }
 }
