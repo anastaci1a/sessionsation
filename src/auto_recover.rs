@@ -960,12 +960,42 @@ pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
 /// The prompt delivery path; the supervisor uses the normal `api send`.
 pub(crate) trait Sender {
     async fn send(&self, paths: &Paths, body: Value) -> Result<Value>;
+    /// The current receipt of a sent message.
+    async fn receipt(&self, paths: &Paths, id: &str) -> Result<Value> {
+        crate::messaging::receipt_public(paths, id, false).await
+    }
+    /// Claude only: the live process has published its native peer endpoint
+    /// (`<home>/sessions/<pid>.json` and its socket).
+    async fn native_ready(&self, paths: &Paths, session_id: &str) -> bool {
+        native_endpoint_ready(paths, session_id)
+    }
+    fn poll(&self) -> Duration {
+        Duration::from_millis(500)
+    }
+    fn backoff(&self, attempt: u32) -> Duration {
+        Duration::from_secs((2u64 << attempt.min(3)).min(15))
+    }
 }
 struct Normal;
 impl Sender for Normal {
     async fn send(&self, paths: &Paths, body: Value) -> Result<Value> {
         crate::messaging::headless::dispatch(paths, &serde_json::to_vec(&body)?).await
     }
+}
+fn native_endpoint_ready(paths: &Paths, session_id: &str) -> bool {
+    let Ok(s) = catalog::find(paths, session_id) else {
+        return false;
+    };
+    let Ok(account) = native::account(paths, ProviderId::Claude, &s.account) else {
+        return false;
+    };
+    let Ok(live) = claude::live_sessions(&account.home) else {
+        return false;
+    };
+    claude::holder(&live, &s.conversation_id).is_some_and(|l| {
+        claude::native_peer::accepting(&account.home, l.pid)
+            && claude::peer::endpoint(&account.home, l).is_ok()
+    })
 }
 const RETRYABLE: &[&str] = &[
     "SESSION_NOT_RUNNING",
@@ -974,6 +1004,7 @@ const RETRYABLE: &[&str] = &[
     "PEER_ENDPOINT_UNAVAILABLE",
     "PEER_SOCKET_UNLINKED",
     "SESSION_OPERATION_IN_PROGRESS",
+    "ADAPTER_BUSY",
 ];
 /// Refusals that happen before anything is typed or journaled by the send path.
 const CLEAN_REFUSAL: &[&str] = &[
@@ -993,8 +1024,65 @@ fn code(error: &anyhow::Error) -> String {
         .to_owned()
 }
 
-/// Send the prompt once. Retried only on refusals that precede any admission;
-/// anything ambiguous ends `uncertain` and is never re-sent.
+/// What a message receipt says about the prompt.
+#[derive(Debug, PartialEq)]
+enum Outcome {
+    /// written, input consumed, or accepted natively (or later).
+    Delivered(String),
+    /// Refused and provably nothing written: safe to retry with a fresh id.
+    Refused(String),
+    /// Not final yet.
+    Pending,
+    /// Anything that may have been written but is not confirmed.
+    Uncertain(String),
+}
+fn outcome(v: &Value) -> Outcome {
+    let v = v.get("result").unwrap_or(v);
+    let state = v["state"].as_str().unwrap_or("unknown");
+    let reason = v["reason"].as_str().unwrap_or("");
+    let label = if reason.is_empty() {
+        state.to_owned()
+    } else {
+        format!("{state}/{reason}")
+    };
+    let facts = &v["facts"];
+    let written = facts["written"].as_bool().unwrap_or(false);
+    if written
+        || facts["input_consumed"] == true
+        || matches!(
+            state,
+            "native_accepted"
+                | "execution_started"
+                | "completed_with_reply"
+                | "completed_without_reply"
+        )
+    {
+        return Outcome::Delivered(label);
+    }
+    let steps = v["terminal_input"]["steps"]
+        .as_array()
+        .is_none_or(|s| s.is_empty());
+    if state == "rejected" && !written && steps && facts["input_recorded"] != true {
+        return Outcome::Refused(label);
+    }
+    if matches!(state, "pending_local" | "held") {
+        return Outcome::Pending;
+    }
+    Outcome::Uncertain(label)
+}
+
+fn note(r: &mut Record, text: String) {
+    if !r.prompt_detail.is_empty() {
+        r.prompt_detail.push_str("; ");
+    }
+    r.prompt_detail.push_str(&text);
+}
+
+/// Deliver the prompt and read the receipt to a final state. `delivered` means
+/// written / consumed / natively accepted. A rejected receipt (nothing written)
+/// and a pre-admission refusal are retried with backoff (a fresh message id for
+/// a rejected receipt) while the session keeps its generation; anything that
+/// may have been written ends `uncertain` and is never re-sent.
 async fn deliver<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result<()> {
     if r.prompt_state == "delivered" {
         return Ok(());
@@ -1004,39 +1092,109 @@ async fn deliver<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result
         paths,
         r,
         "prompting",
-        "Sending the recovery prompt through the normal send path (once).",
+        "Sending the recovery prompt through the normal send path.",
     )?;
-    let deadline = std::time::Instant::now()
-        + Duration::from_secs(seconds("SESSIONSATION_AUTO_RECOVER_PROMPT_SECONDS", 90));
+    let started = std::time::Instant::now();
+    let deadline =
+        started + Duration::from_secs(seconds("SESSIONSATION_AUTO_RECOVER_PROMPT_SECONDS", 180));
+    let first_generation = catalog::find(paths, &r.session_id)?.generation();
+    let claude = r.provider == "claude";
+    // Prefer a native peer message: wait (bounded) for the registry entry and socket.
+    let mut native = false;
+    if claude {
+        let wait = std::time::Instant::now()
+            + Duration::from_secs(seconds("SESSIONSATION_AUTO_RECOVER_NATIVE_SECONDS", 60));
+        loop {
+            if sender.native_ready(paths, &r.session_id).await {
+                native = true;
+                break;
+            }
+            if std::time::Instant::now() >= wait {
+                break;
+            }
+            tokio::time::sleep(sender.poll()).await;
+        }
+    }
+    let mut refused = 0u32;
     loop {
         let generation = catalog::find(paths, &r.session_id)?.generation();
-        let body = json!({"api_version":1,"message_id":r.message_id,"session_id":r.session_id,
+        if generation != first_generation {
+            r.prompt_state = "failed".into();
+            note(r, "the session changed generation; not retried".into());
+            return Ok(());
+        }
+        let mut body = json!({"api_version":1,"message_id":r.message_id,"session_id":r.session_id,
             "expected_generation":generation,"mode":"submit","text":r.prompt,"expires_at":daemon::now() + 600});
+        if native {
+            body["delivery"] = json!("native");
+        }
         r.prompt_state = "dispatching".into();
         r.prompt_attempts += 1;
         save(paths, r)?;
-        match sender.send(paths, body).await {
-            Ok(_) => {
-                r.prompt_state = "delivered".into();
-                r.prompt_detail = "Accepted by the normal send path.".into();
-                return Ok(());
-            }
+        let attempt = r.prompt_attempts;
+        let id = r.message_id.clone();
+        let sent = match sender.send(paths, body).await {
+            Ok(v) => Ok(v),
             Err(e) => {
                 let c = code(&e);
-                if RETRYABLE.contains(&c.as_str()) && std::time::Instant::now() < deadline {
-                    r.prompt_state = "pending".into();
-                    save(paths, r)?;
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    continue;
-                }
-                if RETRYABLE.contains(&c.as_str()) || CLEAN_REFUSAL.contains(&c.as_str()) {
+                if RETRYABLE.contains(&c.as_str()) {
+                    Err(format!("{c} (before admission)"))
+                } else if CLEAN_REFUSAL.contains(&c.as_str()) {
                     r.prompt_state = "failed".into();
-                    r.prompt_detail = format!("{e:#}");
+                    note(r, format!("attempt {attempt}: {e:#}"));
                     return Ok(());
+                } else {
+                    note(r, format!("attempt {attempt} ({id}): {e:#}"));
+                    bail!("PROMPT_DELIVERY_UNCERTAIN: {e:#}");
                 }
-                bail!("PROMPT_DELIVERY_UNCERTAIN: {e:#}");
             }
+        };
+        let (label, fresh_id) = match sent {
+            Err(label) => (label, false),
+            Ok(mut v) => {
+                // Read the receipt to a final state.
+                let settle_by = std::time::Instant::now() + Duration::from_secs(30);
+                let out = loop {
+                    match outcome(&v) {
+                        Outcome::Pending if std::time::Instant::now() < settle_by => {
+                            tokio::time::sleep(sender.poll()).await;
+                            match sender.receipt(paths, &id).await {
+                                Ok(next) => v = next,
+                                Err(e) => break Outcome::Uncertain(format!("receipt unreadable: {e:#}")),
+                            }
+                        }
+                        Outcome::Pending => break Outcome::Uncertain("not final after 30 s".into()),
+                        other => break other,
+                    }
+                };
+                match out {
+                    Outcome::Delivered(label) => {
+                        r.prompt_state = "delivered".into();
+                        note(r, format!("attempt {attempt} ({id}): {label}"));
+                        return Ok(());
+                    }
+                    Outcome::Uncertain(label) => {
+                        note(r, format!("attempt {attempt} ({id}): {label}"));
+                        bail!("PROMPT_DELIVERY_UNCERTAIN: receipt {label}");
+                    }
+                    Outcome::Refused(label) => (label, true),
+                    Outcome::Pending => unreachable!(),
+                }
+            }
+        };
+        note(r, format!("attempt {attempt} ({id}): {label}"));
+        refused += 1;
+        if std::time::Instant::now() >= deadline {
+            r.prompt_state = "failed".into();
+            note(r, format!("not delivered after {refused} refused attempts"));
+            return Ok(());
         }
+        if fresh_id {
+            r.message_id = uuid::Uuid::new_v4().to_string();
+        }
+        r.prompt_state = "pending".into();
+        save(paths, r)?;
+        tokio::time::sleep(sender.backoff(refused)).await;
     }
 }
 

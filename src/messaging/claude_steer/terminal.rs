@@ -1,4 +1,13 @@
-//! Terminal input (contract revision 17): real typed input into the HERDR pane
+//! Terminal input (fn is_rule(row: &[Cell]) -> bool {
+    matches!(row.first().map(|c| c.ch), Some('─' | '╭' | '╰'))
+        && (row.iter().filter(|c| c.ch == '─').count() * 2 > row.len() || labelled_rule(row))
+}
+/// A top rule carrying the session name (`──── name ─`, a resumed or named
+/// session) is mostly text: the real post-resume screen has 8 dash cells in 58.
+fn labelled_rule(row: &[Cell]) -> bool {
+    row.iter().take_while(|c| c.ch == '─').count() >= 3
+        && row.iter().skip_while(|c| c.ch == '─').next().is_some_and(|c| c.ch == ' ')
+}ontract revision 17): real typed input into the HERDR pane
 //! of an interactive Claude Code session that Sessionsation tracks.
 //!
 //! The text is typed as ordinary keystrokes (`herdr pane send-text`, which
@@ -1944,6 +1953,10 @@ mod tests {
             // A `claude attach` client of a background session: the session
             // name labels the top rule as plain text (no pill).
             ("bg-attach-idle", ""),
+            // Real resumed screen (2026-11-06): the labelled top rule has 8
+            // dashes in 58 cells, was read as no rule, and every auto-start
+            // prompt was refused TERMINAL_VIEW_UNDETERMINED.
+            ("labelled-top-rule-resumed", ""),
         ] {
             for strict in [true, false] {
                 assert_eq!(

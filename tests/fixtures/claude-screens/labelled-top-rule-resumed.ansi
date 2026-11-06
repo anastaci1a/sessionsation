@@ -1,0 +1,58 @@
+  prompt. sessionsation refused both sends because it couldn't
+  recognise the screen layout, before typing anything. As you
+  saw, the input was already usable, so the screen check was
+  wrong. Auto Start still recorded the prompt as delivered,
+  because it only looked at whether the send was accepted, not
+  what happened to it.
+
+  The fix, sessionsation 1.44.1:
+  - [0m[1mDelivered means delivered:[0m the prompt only counts once the
+    message is actually written or accepted.
+  - [0m[1mRetries:[0m refusals where nothing was typed get retried for up
+    to about 3 minutes.
+  - [0m[1mClaude delivery:[0m Claude sessions get the prompt through
+    Claude's own messaging channel first.
+  - [0m[1mScreen check: [0mwhatever made the check misread your ready
+    screen gets fixed.
+
+  [0m[1m[38;2;177;185;249mprotected[0m[1m still showing Unmountable:[0m at boot Unraid did find
+  both drives and the filesystem, then refused to mount it with
+  "no pool uuid". When I built the pool by hand, the filesystem
+  ID never got written into Unraid's pool settings. 
+  - [0m[1mSettings:[0m I've added that ID to [0m[38;2;177;185;249mpools/protected.cfg[0m, with a
+    backup. I also added a small hook, installed at boot, that
+    puts it back if Unraid ever blanks it before mounting. 
+  - [0m[1mMounted by hand for now: [0m[38;2;177;185;249m/mnt/protected [0mis mounted again so
+    the backups are reachable. Both drives are present and there
+    are no errors.
+  - [0m[1mWhat I can't do yet:[0m the webui label only updates when the
+    array next starts. Stopping it now would close every session
+    and pane, this one included. With the new Auto Start rules,
+    a stop and start without a reboot doesn't restart them. So,
+    your call: say the word and I'll stop and start the array
+    now (you'd then restart the sessions yourself), or I'll
+    check it at your next reboot.
+
+  The drives also changed names after the move (the WD is now
+  [0m[38;2;177;185;249mnvme2n1[0m). The WD's 256 MB erase-chunk setting was still
+  applied, because it matches by serial number, not by name.
+
+[0m[38;2;153;153;153m✻[0m [0m[38;2;153;153;153mWaiting for [0m[1m[38;2;153;153;153m1[0m[38;2;153;153;153m background agent to finish[0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mand initiate the resume prompt for [0m[38;2;177;185;249m[48;2;55;55;55mlocalica-lead[0m[38;2;255;255;255m[48;2;55;55;55m manually[0m[48;2;55;55;55m     [0m
+
+[0m[38;2;153;153;153m [0m Reading the exact default prompt template
+[0m[38;2;153;153;153m  ⎿  $ sed -n 327,330p [0m
+     [0m[38;2;153;153;153m/mnt/disk1/live/projects/sessionsation/src/auto_recover.rs[0m
+
+[0m[38;2;215;119;87m✻ Razzle-dazzling… [0m[38;2;153;153;153m(9s · ↓[0m [0m[38;2;153;153;153m836 tokens · thought for 1s)[0m
+[0m[38;2;153;153;153m  ⎿  Tip: Use /feedback to help us improve![0m
+
+[0m[38;2;136;136;136m─────── Claude Code integration for Sessionsation and Agent-DM ─[0m
+[0m[38;2;153;153;153m❯ [0m
+[0m[38;2;136;136;136m────────────────────────────────────────────────────────────────[0m
+  [0m[1m[38;5;2mroot@Satellite[0m[38;2;153;153;153m:[0m[1m[38;5;4m/live/projects[0m[38;2;153;153;153m | [0m[38;5;15m5h: 80%[0m[38;2;153;153;153m | [0m[38;5;15mwk: 14%[0m
+  [0m[38;2;255;107;128m⏵⏵ bypass permissions on[0m[38;2;153;153;153m (shift+tab to cycle)[0m
+
+[0m[1m  ● main[0m
+[0m[38;2;153;153;153m  ◯ rust-impl  Inspecting is_rule in ter… 45s · ↓ 55.4k tokens[0m

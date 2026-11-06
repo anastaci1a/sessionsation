@@ -55,6 +55,7 @@ fn fixture() -> (tempfile::TempDir, Paths, Session) {
 
 /// Scripted replies for the normal send path; records every body.
 struct Script {
+    ready_after: Mutex<u32>,
     replies: Mutex<Vec<Result<Value>>>,
     bodies: Mutex<Vec<Value>>,
 }
@@ -62,12 +63,21 @@ impl Script {
     fn new(mut replies: Vec<Result<Value>>) -> Self {
         replies.reverse();
         Self {
+            ready_after: Mutex::new(u32::MAX),
             replies: Mutex::new(replies),
             bodies: Mutex::new(vec![]),
         }
     }
 }
 impl Sender for Script {
+    async fn native_ready(&self, _: &Paths, _: &str) -> bool {
+        let mut n = self.ready_after.lock().unwrap();
+        if *n == 0 { return true; }
+        if *n != u32::MAX { *n -= 1; }
+        false
+    }
+    fn poll(&self) -> Duration { Duration::from_millis(1) }
+    fn backoff(&self, _: u32) -> Duration { Duration::from_millis(1) }
     async fn send(&self, _: &Paths, body: Value) -> Result<Value> {
         self.bodies.lock().unwrap().push(body);
         self.replies.lock().unwrap().pop().expect("unexpected send")
@@ -117,7 +127,7 @@ async fn the_prompt_is_sent_once_with_one_message_id_and_retried_only_before_adm
     let script = Script::new(vec![
         Err(anyhow::anyhow!("SESSION_NOT_RUNNING: not yet")),
         Err(anyhow::anyhow!("STALE_TARGET")),
-        Ok(json!({"state":"accepted"})),
+        Ok(json!({"state":"native_accepted"})),
     ]);
     deliver(&paths, &mut r, &script).await.unwrap();
     assert_eq!(r.prompt_state, "delivered");
@@ -351,7 +361,7 @@ async fn mode_start_sends_no_prompt_and_start_prompt_sends_exactly_once() {
             r.prompt_state = "skipped".into();
         }
         let script = Script::new(if sends == 1 {
-            vec![Ok(json!({"state":"accepted"}))]
+            vec![Ok(json!({"state":"native_accepted"}))]
         } else {
             vec![]
         });
@@ -498,4 +508,56 @@ fn the_first_boot_record_starts_nothing_and_a_new_boot_makes_modes_due_once() {
     update(&paths, &s.id, |x| x.set_mode(Mode::Disabled));
     detect_boot(&paths, "boot-3").unwrap();
     assert_eq!(all(&paths)[&s.id].boot_due, None);
+}
+
+fn rejected() -> Value {
+    json!({"state":"rejected","reason":"TERMINAL_VIEW_UNDETERMINED","facts":{"written":false,"input_consumed":"unknown"}})
+}
+
+#[tokio::test]
+async fn a_rejected_receipt_is_retried_with_a_fresh_id_until_accepted() {
+    let (_d, paths, s) = fixture();
+    let mut r = record(&paths, &s);
+    let first = r.message_id.clone();
+    let script = Script::new(vec![Ok(rejected()), Ok(rejected()), Ok(json!({"state":"native_accepted"}))]);
+    deliver(&paths, &mut r, &script).await.unwrap();
+    assert_eq!(r.prompt_state, "delivered");
+    assert_eq!(r.prompt_attempts, 3);
+    let bodies = script.bodies.lock().unwrap().clone();
+    assert_ne!(bodies[0]["message_id"], bodies[1]["message_id"]);
+    assert_ne!(bodies[1]["message_id"], bodies[2]["message_id"]);
+    assert_eq!(bodies[0]["message_id"], first.as_str());
+    assert!(r.prompt_detail.contains("rejected/TERMINAL_VIEW_UNDETERMINED"));
+    assert!(r.prompt_detail.contains("native_accepted"));
+}
+
+#[tokio::test]
+async fn an_unconfirmed_or_rejected_only_receipt_is_never_called_delivered_and_uncertain_is_not_retried() {
+    let (_d, paths, s) = fixture();
+    let mut r = record(&paths, &s);
+    let script = Script::new(vec![Ok(json!({"state":"delivery_unknown","facts":{"written":false}}))]);
+    let e = deliver(&paths, &mut r, &script).await.unwrap_err();
+    assert!(e.to_string().starts_with("PROMPT_DELIVERY_UNCERTAIN"));
+    assert_eq!(script.bodies.lock().unwrap().len(), 1);
+    assert_ne!(r.prompt_state, "delivered");
+    // A rejection that typed something (steps journaled) is uncertain too.
+    let (_d, paths, s) = fixture();
+    let mut r = record(&paths, &s);
+    let mut v = rejected();
+    v["terminal_input"] = json!({"steps":[{"step":"clear"}]});
+    let script = Script::new(vec![Ok(v)]);
+    assert!(deliver(&paths, &mut r, &script).await.is_err());
+    assert_eq!(script.bodies.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn claude_waits_for_the_native_registry_then_delivers_natively() {
+    let (_d, paths, s) = fixture();
+    let mut r = record(&paths, &s);
+    r.provider = "claude".into();
+    let script = Script::new(vec![Ok(json!({"state":"native_accepted"}))]);
+    *script.ready_after.lock().unwrap() = 3;
+    deliver(&paths, &mut r, &script).await.unwrap();
+    assert_eq!(r.prompt_state, "delivered");
+    assert_eq!(script.bodies.lock().unwrap()[0]["delivery"], "native");
 }
