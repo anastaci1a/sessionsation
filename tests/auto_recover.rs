@@ -43,6 +43,20 @@ fn gone(pid: i32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| s.contains(") Z "))
 }
 
+#[derive(Clone, Copy)]
+enum Ending {
+    /// SIGKILL with a kernel OOM-kill line.
+    OomKill,
+    /// SIGKILL with a kernel segfault line.
+    Segfault,
+    /// SIGKILL and nothing in the kernel log (could be a manual kill).
+    HardKill,
+    /// `/exit` or any orderly shutdown (registry entry removed).
+    Clean,
+    /// The terminal closed (SIGHUP; registry entry removed).
+    PaneClosed,
+}
+
 struct Setup {
     _tmp: tempfile::TempDir,
     paths: Paths,
@@ -118,9 +132,20 @@ impl Setup {
             spare: vec![],
             _daemon: daemon,
         };
+        t.set_boot("boot-1");
         t.add_logged_in("a");
         t.add_logged_in("b");
         t
+    }
+    fn boot_file(&self) -> PathBuf {
+        self.paths.root.parent().unwrap().join("boot-id")
+    }
+    fn kmsg_file(&self) -> PathBuf {
+        self.paths.root.parent().unwrap().join("kmsg")
+    }
+    /// The host boots (a different boot id) or not (the same one).
+    fn set_boot(&self, id: &str) {
+        std::fs::write(self.boot_file(), format!("{id}\n")).unwrap();
     }
     fn command(&self, args: &[&str]) -> Command {
         let mut c = Command::new(binary());
@@ -133,6 +158,8 @@ impl Setup {
             .env_remove("CLAUDE_CONFIG_DIR")
             .env("PATH", &self.path)
             .env("FAKE_HERDR_DIR", &self.herdr_state)
+            .env("SESSIONSATION_BOOT_ID_FILE", self.boot_file())
+            .env("SESSIONSATION_KERNEL_LOG_FILE", self.kmsg_file())
             .env("SESSIONSATION_AUTO_RECOVER_PROMPT_SECONDS", "1")
             .env("SESSIONSATION_AUTO_RECOVER_CONFIRM_SECONDS", "30")
             .stdin(Stdio::null());
@@ -282,10 +309,46 @@ impl Setup {
     fn setting(&self, id: &str) -> Value {
         self.session(id)["auto_recover"].clone()
     }
-    /// The live process dies (host restart) and its wrapper exits.
+    /// The live process dies of a crash signal the kernel logged (an OOM kill).
     fn crash(&self, pid: i32) {
-        kill_pid(pid);
+        self.end(pid, Ending::OomKill);
+    }
+    /// The live process ends. The supervisor has seen it running first, as it always
+    /// has on a real host (a pass every few seconds).
+    fn end(&self, pid: i32, ending: Ending) {
+        self.tick();
+        let signal = match ending {
+            Ending::Clean => libc::SIGTERM,
+            Ending::PaneClosed => libc::SIGHUP,
+            _ => libc::SIGKILL,
+        };
+        unsafe {
+            libc::kill(pid, signal);
+        }
         wait_for("process exit", || gone(pid));
+        let entry = self.home("a").join("sessions").join(format!("{pid}.json"));
+        let line = match ending {
+            Ending::OomKill => Some(format!(
+                "[99999999.000000] Out of memory: Killed process {pid} (claude) total-vm:1kB\n"
+            )),
+            Ending::Segfault => Some(format!(
+                "[99999999.000001] claude[{pid}]: segfault at 0 ip 0000 sp 0000 error 4\n"
+            )),
+            _ => None,
+        };
+        if let Some(line) = line {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.kmsg_file())
+                .unwrap();
+            f.write_all(line.as_bytes()).unwrap();
+        }
+        // An orderly shutdown removes the registry entry; a hard kill cannot.
+        if matches!(ending, Ending::Clean | Ending::PaneClosed) {
+            let _ = std::fs::remove_file(entry);
+        }
         if let Ok(wrapper) = read(&self.herdr_state.join("pid-w1:p2"))
             .trim()
             .parse::<i32>()
@@ -307,31 +370,32 @@ fn cleanup(t: &Setup, id: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn enable_needs_a_live_session_and_disable_is_always_allowed() {
+async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.43.0");
+    assert_eq!(caps["contract_version"], "1.44.0");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
         assert_eq!(p["session_name_max"], 64);
     }
-    assert_eq!(caps["auto_recover"]["enable_requires"], "live_session");
+    assert_eq!(caps["auto_recover"]["enable_requires"], "none");
+    assert_eq!(caps["auto_start"]["enable_requires"], "none");
+    assert_eq!(caps["auto_start"]["explicit_stop"], "marks_only");
     let (id, native) = t.stopped_session("a");
     let stopped = t.session(&id);
-    assert_eq!(stopped["capabilities"]["auto_recover"], false);
-    assert_eq!(
-        stopped["capability_reasons"]["auto_recover"],
-        "AUTO_RECOVER_REQUIRES_LIVE"
-    );
+    assert_eq!(stopped["capabilities"]["auto_recover"], true);
+    assert_eq!(stopped["capabilities"]["auto_start"], true);
+    assert_eq!(stopped["capability_reasons"]["auto_start"], Value::Null);
     assert_eq!(stopped["auto_recover"]["enabled"], false);
-    let refused = t.enable(&id, &[]).unwrap_err();
-    assert!(refused.contains("AUTO_RECOVER_REQUIRES_LIVE"), "{refused}");
-    assert!(!t.store_path().exists(), "a refusal writes nothing");
-    // Disable is always allowed (and a no-op here).
+    let on = t.enable(&id, &[]).unwrap();
+    assert_eq!(on["changed"], true);
+    assert_eq!(on["auto_start"]["mode"], "start_prompt");
+    assert_eq!(t.session(&id)["availability"], "stopped");
     let off = t.set(&id, "--disable", &[]).unwrap();
-    assert_eq!(off["changed"], false);
+    assert_eq!(off["changed"], true);
     assert_eq!(off["auto_recover"]["enabled"], false);
+    t.set(&id, "--disable", &[]).unwrap();
     // Exactly one of --enable / --disable.
     let both = t.api_error(&[
         "auto-recover",
@@ -467,6 +531,10 @@ async fn a_vanished_process_is_resumed_in_its_old_idle_pane_once_and_never_dupli
     let message_id = op["prompt"]["message_id"].clone();
     let state = t.setting(&id);
     assert_eq!(state["enabled"], true);
+    assert_eq!(
+        t.session(&id)["auto_start"]["last_result"]["state"],
+        "started_after_crash_with_prompt"
+    );
     assert_eq!(state["last_pane"], "herdr/fixture/w1:p2");
     assert!(state["last_recovered_at"].as_i64().unwrap() > 0);
     assert!(state["last_result"]["operation_id"] == op["id"], "{state}");
@@ -519,7 +587,7 @@ async fn a_busy_or_missing_pane_gets_a_new_tab_in_the_same_workspace() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_stop_archive_or_delete_disables_and_switch_only_suppresses() {
+async fn archive_or_delete_disables_and_switch_only_suppresses() {
     let t = Setup::new().await;
     let (id, _) = t.stopped_session("a");
     let pid = t.live_session(&id);
@@ -579,7 +647,7 @@ async fn explicit_stop_archive_or_delete_disables_and_switch_only_suppresses() {
     ]);
     let _ = out;
     assert_eq!(t.stored(&id2)["enabled"], false, "archive disables");
-    assert_eq!(t.stored(&id2)["last_result"]["code"], "EXPLICIT_STOP");
+    assert_eq!(t.stored(&id2)["last_result"]["code"], "ARCHIVED_OR_DELETED");
     assert!(t.ticks(4).is_empty());
     assert!(t.recoveries().is_empty());
 }
@@ -732,7 +800,7 @@ async fn mode_start_resumes_without_a_prompt_and_the_rate_limit_applies() {
     assert_eq!(op["prompt"]["attempts"], 0);
     assert_eq!(t.session(&id)["availability"], "running");
     let st = t.session(&id)["auto_start"].clone();
-    assert_eq!(st["last_result"]["state"], "started", "{st}");
+    assert_eq!(st["last_result"]["state"], "started_after_crash", "{st}");
     assert!(st["last_started_at"].as_i64().unwrap() > 0);
     assert_eq!(
         t.setting(&id)["last_result"]["state"],
@@ -772,4 +840,125 @@ async fn a_pre_1_43_record_is_migrated_to_start_prompt_on_the_next_pass() {
     assert_eq!(s["mode"], "start_prompt");
     assert_eq!(s["prompt"], "old");
     cleanup(&t, &id);
+}
+
+/// Resume the session once (so it has a process), then give it a mode.
+fn live_with_mode(t: &Setup, id: &str, mode: &str) -> i32 {
+    let pid = t.live_session(id);
+    t.start(id, mode, &[]).unwrap();
+    pid
+}
+fn state_of(t: &Setup, id: &str) -> String {
+    t.session(id)["auto_start"]["last_result"]["state"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_boot_starts_stopped_sessions_once_and_the_same_boot_starts_nothing() {
+    let t = Setup::new().await;
+    let (id, native) = t.stopped_session("a");
+    // The mode works on a stopped session; the same boot (and any number of daemon or
+    // supervisor restarts, which are just more passes) starts nothing.
+    let on = t.start(&id, "start", &[]).unwrap();
+    assert_eq!(on["auto_start"]["mode"], "start");
+    assert!(t.ticks(6).is_empty());
+    assert_eq!(t.session(&id)["availability"], "stopped");
+    assert_eq!(t.herdr_calls("pane run"), 0);
+    // The host boots: after the settle checks the session is started, with its trigger.
+    t.set_boot("boot-2");
+    assert!(t.ticks(2).is_empty());
+    let done = t.tick();
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0]["phase"], "complete", "{}", done[0]);
+    assert_eq!(done[0]["prompt"]["state"], "skipped");
+    assert_eq!(t.session(&id)["availability"], "running");
+    assert_eq!(state_of(&t, &id), "started_after_boot");
+    let launch = read(&t.home("a").join("fake-launch-resume"));
+    assert!(launch.contains(&format!("session={native}")), "{launch}");
+    assert_eq!(t.stored(&id)["boot_started"], "boot-2");
+    // Exactly once per boot: more passes, even after it dies unclassified, start nothing.
+    assert!(t.ticks(4).is_empty());
+    let pid = t.session(&id)["pid"].as_u64().unwrap() as i32;
+    t.end(pid, Ending::HardKill);
+    assert!(t.ticks(6).is_empty());
+    assert_eq!(t.recoveries().len(), 1);
+    // The next boot starts it again.
+    t.set_boot("boot-3");
+    assert_eq!(t.ticks(3).len(), 1);
+    assert_eq!(t.recoveries().len(), 2);
+    cleanup(&t, &id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_explicit_stop_keeps_the_mode_and_only_the_next_boot_starts_it() {
+    let t = Setup::new().await;
+    let (id, _) = t.stopped_session("a");
+    let _pid = live_with_mode(&t, &id, "start");
+    assert!(t.ticks(2).is_empty());
+    // `api stop` marks the session first (note_deliberate_action), then the process ends.
+    sessionsation::auto_recover::explicit_stop(&t.paths, &id);
+    let pid = t.session(&id)["pid"].as_u64().unwrap() as i32;
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    wait_for("stopped", || gone(pid));
+    let _ = std::fs::remove_file(t.home("a").join("sessions").join(format!("{pid}.json")));
+    assert_eq!(t.session(&id)["availability"], "stopped");
+    assert_eq!(t.session(&id)["auto_start"]["mode"], "start", "mode kept");
+    // Same boot: stopped on purpose is not a crash.
+    assert!(t.ticks(6).is_empty());
+    assert_eq!(state_of(&t, &id), "skipped_explicit_stop");
+    assert_eq!(t.session(&id)["auto_start"]["mode"], "start");
+    // Next boot: started although it was stopped explicitly before the reboot.
+    t.set_boot("boot-2");
+    let done = t.ticks(3);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(state_of(&t, &id), "started_after_boot");
+    cleanup(&t, &id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_clean_exit_and_a_closed_pane_start_nothing() {
+    for (ending, label) in [(Ending::Clean, "clean"), (Ending::PaneClosed, "pane")] {
+        let t = Setup::new().await;
+        let (id, _) = t.stopped_session("a");
+        let pid = live_with_mode(&t, &id, "start_prompt");
+        t.end(pid, ending);
+        assert!(t.ticks(6).is_empty(), "{label}");
+        assert_eq!(t.herdr_calls("pane run"), 1, "{label}: nothing was started");
+        assert_eq!(state_of(&t, &id), "skipped_clean_exit", "{label}");
+        assert_eq!(t.session(&id)["auto_start"]["mode"], "start_prompt");
+        assert_eq!(t.setting(&id)["last_result"]["state"], "waiting");
+        assert!(t.recoveries().is_empty());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn crash_signals_start_and_an_unknown_exit_does_not() {
+    // A segfault in the kernel log is a crash.
+    let t = Setup::new().await;
+    let (id, _) = t.stopped_session("a");
+    let pid = live_with_mode(&t, &id, "start");
+    t.end(pid, Ending::Segfault);
+    assert!(t.ticks(2).is_empty());
+    let done = t.tick();
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(state_of(&t, &id), "started_after_crash");
+    cleanup(&t, &id);
+
+    // A kill with no kernel record cannot be told from a closed pane: no start.
+    let t = Setup::new().await;
+    let (id, _) = t.stopped_session("a");
+    let pid = live_with_mode(&t, &id, "start");
+    t.end(pid, Ending::HardKill);
+    assert!(t.ticks(6).is_empty());
+    assert_eq!(state_of(&t, &id), "exit_unclassified");
+    assert_eq!(
+        t.session(&id)["auto_start"]["last_result"]["code"],
+        "EXIT_UNCLASSIFIED"
+    );
+    assert_eq!(t.session(&id)["auto_start"]["mode"], "start");
+    assert!(t.recoveries().is_empty());
 }

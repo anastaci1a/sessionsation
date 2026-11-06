@@ -797,16 +797,25 @@ resume reports `RECOVERY_UNRESOLVED` (or `SESSION_OPERATION_IN_PROGRESS`) with t
 `pending_operations`; an inline resume that never attached a provider settles as `failed`. See the
 [contract](contract.md#native-live-activity-usage-read-uncertain-operations-1420).
 
-### Session Auto Start (contract 1.43.0; auto-recover since 1.35.0)
+### Session Auto Start (contract 1.44.0; auto-recover since 1.35.0)
 
 ```sh
 sessionsation api auto-start --session BACKEND-ID --expected-generation GENERATION --mode disabled|start|start_prompt [--prompt TEXT]   # start_prompt without --prompt clears the custom prompt
 sessionsation api auto-start --all --mode disabled     # operator bulk: disable every session
 ```
 
-Modes: `disabled` (default for every session), `start` (resume the session after its process
-disappears, send nothing) and `start_prompt` (resume, then send the prompt once; `--prompt` only
-here). State appears as `auto_start` on each session row and `capabilities.auto_start`; see the
+Modes: `disabled` (default for every session), `start` (start the session again, send
+nothing) and `start_prompt` (start it, then send the prompt once; `--prompt` only here). **Since
+1.44.0 Auto Start means "start after a host reboot or a crash, and not much else":** the mode can be
+set on stopped and saved sessions too; after a host boot (a new `/proc/sys/kernel/random/boot_id`)
+every session with a mode that is not running is started once, including ones stopped before the
+reboot; on the same boot only a crash restarts a session (a kernel-logged OOM kill, segfault or fatal
+trap of the recorded process), never `/exit`, a closed pane, an explicit stop or an exit that cannot be
+classified (`last_result.state` `skipped_clean_exit` / `exit_unclassified`). `api stop` keeps the mode
+(`api archive` and `api delete-session` still disable it). A restart of the daemon on the same boot
+starts nothing. Results are `started_after_boot` / `started_after_crash` (each optionally
+`_with_prompt`). Classification details and what cannot be classified:
+[contract](contract.md#auto-start-semantics-host-boot-and-crash-1440). State appears as `auto_start` on each session row and `capabilities.auto_start`; see the
 [contract](contract.md#auto-start-modes-1430). The commands below are the **deprecated** 1.35.0
 form (`--enable` = `start_prompt`, `--disable` = `disabled`), still served with `auto_recover` fields.
 
@@ -816,11 +825,13 @@ sessionsation api auto-recover --session BACKEND-ID --expected-generation GENERA
 sessionsation api operations
 ```
 
-A per-session toggle: if the host restarts or the session's process otherwise disappears, the
-supervisor resumes it and sends it a prompt. **Only for live sessions**: enabling a stopped, saved,
-stale, unavailable or archived session fails with `AUTO_RECOVER_REQUIRES_LIVE` (hosted and
-background sessions with `AUTO_RECOVER_UNSUPPORTED`); disabling is always allowed. **An explicit
-stop disables it**: `api stop`, `api archive` and `api delete-session` turn it off so a deliberate
+A per-session toggle (the deprecated form maps to `start_prompt`): after a host reboot, or a
+classified crash on the same boot, the supervisor starts the session again and sends it a prompt.
+Works for live, stopped and saved sessions (hosted and background sessions fail with
+`AUTO_RECOVER_UNSUPPORTED`, archived ones are excluded); disabling is always allowed. **An explicit
+stop keeps the setting** (`api stop` only marks it, so it is no crash and the next boot starts the
+session); `api archive` and `api delete-session` turn it off; `api switch` and `api restart` only pause
+it until the session is live again.
 stop is never undone; `api switch` and `api restart` only pause it until the session is live again.
 The recorded pane is reused only while an idle shell is all that runs there, otherwise the session
 opens in a new tab of the same workspace (or a new workspace). Each recovery is a journaled operation

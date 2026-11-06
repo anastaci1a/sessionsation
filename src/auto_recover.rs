@@ -1,8 +1,15 @@
-//! Per-session Auto Start (contract 1.43.0; "auto-recover" since 1.35.0): when a mode other
-//! than `disabled` is set for a live session and its process later disappears without an
-//! explicit stop (host restart, crash), the supervisor resumes the same conversation,
-//! preferably in the HERDR pane it last ran in. Mode `start` sends nothing; mode
-//! `start_prompt` then sends a prompt (custom or default).
+//! Per-session Auto Start (contract 1.44.0; "auto-recover" since 1.35.0). The mode is
+//! independent of whether the session runs. A mode other than `disabled` starts the same
+//! conversation again, preferably in the HERDR pane it last ran in, on exactly two triggers:
+//!
+//! * host boot: the supervisor sees a `boot_id` different from the persisted one and starts
+//!   every non-disabled session that is not running (also ones stopped explicitly before the
+//!   reboot), once per boot;
+//! * crash: on the same boot, a session that was seen running and whose process then ended
+//!   abnormally (see [`classify`]). A clean exit, a closed pane, an explicit stop or an exit
+//!   that cannot be classified starts nothing.
+//!
+//! Mode `start` sends nothing; mode `start_prompt` then sends a prompt (custom or default).
 //!
 //! The setting lives in `registry/auto-recover.json` (crash-safe writes), not in the
 //! catalog entry, so pane bookkeeping never changes a session generation. Every
@@ -118,6 +125,25 @@ pub struct Setting {
     pub recoveries: Vec<i64>,
     #[serde(default)]
     pub enabled_at: i64,
+    /// Host boot (`boot_id`) this session is due a boot start for; cleared once started,
+    /// seen running, or disabled.
+    #[serde(default)]
+    pub boot_due: Option<String>,
+    /// `boot_id` of the boot this session was last started for (at most one per boot).
+    #[serde(default)]
+    pub boot_started: Option<String>,
+    /// Unix seconds of the last explicit `api stop`; cleared when the session runs again.
+    /// It never changes the mode.
+    #[serde(default)]
+    pub stopped_explicitly_at: Option<i64>,
+    /// Process last seen running (pid, /proc start ticks) and the boot it ran in: the
+    /// subject of crash classification.
+    #[serde(default)]
+    pub live_pid: Option<u32>,
+    #[serde(default)]
+    pub live_start: Option<u64>,
+    #[serde(default)]
+    pub live_boot: Option<String>,
 }
 impl Setting {
     pub fn mode(&self) -> Mode {
@@ -130,6 +156,9 @@ impl Setting {
     fn set_mode(&mut self, mode: Mode) {
         self.mode = Some(mode);
         self.enabled = mode != Mode::Disabled;
+        if mode == Mode::Disabled {
+            self.boot_due = None;
+        }
     }
 }
 #[derive(Default, Serialize, Deserialize)]
@@ -138,6 +167,10 @@ struct Store {
     schema_version: u32,
     #[serde(default)]
     sessions: BTreeMap<String, Setting>,
+    /// `boot_id` the supervisor last saw (absent before 1.44.0: the first pass records it
+    /// and starts nothing).
+    #[serde(default)]
+    boot_id: Option<String>,
 }
 
 fn store_file(paths: &Paths) -> PathBuf {
@@ -215,13 +248,17 @@ fn legacy_result(result: Option<&Value>) -> Value {
     let Some(r) = result else { return Value::Null };
     let mut r = r.clone();
     match r["state"].as_str() {
-        Some("started_with_prompt") => {
+        Some(state) if state.starts_with("started") && state.ends_with("_with_prompt") => {
             r["state"] = json!("recovered");
             r["code"] = json!("RECOVERED");
         }
-        Some("started") => {
+        Some(state) if state.starts_with("started") => {
             r["state"] = json!("recovered_without_prompt");
             r["code"] = json!("PROMPT_NOT_DELIVERED");
+        }
+        // Nothing was started and nothing failed: an old client sees a pending wait.
+        Some("skipped_clean_exit" | "exit_unclassified" | "skipped_explicit_stop") => {
+            r["state"] = json!("waiting");
         }
         _ => {}
     }
@@ -232,18 +269,40 @@ pub fn all(paths: &Paths) -> BTreeMap<String, Setting> {
     load(paths).map(|s| s.sessions).unwrap_or_default()
 }
 
-/// The user stopped, archived or deleted the session: a deliberate stop is never undone.
+/// `api stop` (1.44.0): only marks that the session was stopped intentionally. The mode
+/// is kept, no crash start follows, and the next host boot starts it again.
 pub fn explicit_stop(paths: &Paths, session: &str) {
+    update(paths, session, |s| {
+        s.stopped_explicitly_at = Some(daemon::now());
+        s.live_pid = None;
+        s.live_start = None;
+        s.live_boot = None;
+        s.misses = 0;
+        if s.enabled {
+            s.last_result = Some(result(
+                "skipped_explicit_stop",
+                "EXPLICIT_STOP",
+                "Stopped explicitly: no crash start; the mode is kept and applies at the next host boot.",
+                None,
+            ));
+        }
+    });
+}
+/// Archive or delete: the setting is switched off for good.
+pub fn retire(paths: &Paths, session: &str) {
     update(paths, session, |s| {
         if s.enabled {
             s.set_mode(Mode::Disabled);
             s.last_result = Some(result(
                 "disabled",
-                "EXPLICIT_STOP",
-                "Disabled by an explicit stop, archive or delete.",
+                "ARCHIVED_OR_DELETED",
+                "Disabled because the session was archived or deleted.",
                 None,
             ));
         }
+        s.live_pid = None;
+        s.live_start = None;
+        s.live_boot = None;
     });
 }
 /// A deliberate restart or account switch: recovery is suppressed until the
@@ -260,11 +319,18 @@ pub fn suppress(paths: &Paths, session: &str) {
 fn result(state: &str, code: &str, detail: &str, operation: Option<&str>) -> Value {
     json!({"state":state,"code":code,"detail":detail,"operation_id":operation,"at":daemon::now()})
 }
-fn default_prompt(at: i64) -> String {
+/// The default prompt: after a host restart (`crash` None, `at` = boot time) or after a
+/// crash (`crash` = what was seen, `at` = now).
+fn default_prompt(at: i64, crash: Option<&str>) -> String {
     let when = chrono_like(at);
-    format!(
-        "Auto-start: the host restarted at {when} and sessionsation resumed this session. Re-check your state and continue your work."
-    )
+    match crash {
+        None => format!(
+            "Auto-start: the host restarted at {when} and sessionsation started this session again after the restart. Re-check your state and continue your work."
+        ),
+        Some(what) => format!(
+            "Auto-start: this session's process crashed ({what}) and sessionsation started it again at {when}. Re-check your state and continue your work."
+        ),
+    }
 }
 /// `YYYY-MM-DD HH:MM:SS UTC` without a date dependency.
 fn chrono_like(unix: i64) -> String {
@@ -291,8 +357,10 @@ fn chrono_like(unix: i64) -> String {
 
 // ------------------------------------------------------------------- liveness
 
+/// Process identity of a running session: pid and /proc start ticks.
+type Proc = Option<(u32, u64)>;
 enum Status {
-    Live(Option<String>),
+    Live(Option<String>, Proc),
     Down,
     Unknown,
 }
@@ -327,12 +395,15 @@ fn status_of(s: &Session, seen: &Seen) -> Status {
             return Status::Unknown;
         };
         return match map.get(&s.id) {
-            Some((o, _)) if o.availability == "running" => Status::Live(herdr_pane(
-                o.attachment
-                    .as_ref()
-                    .or(s.attachment.as_ref())
-                    .map(|a| a.target.as_str()),
-            )),
+            Some((o, _)) if o.availability == "running" => Status::Live(
+                herdr_pane(
+                    o.attachment
+                        .as_ref()
+                        .or(s.attachment.as_ref())
+                        .map(|a| a.target.as_str()),
+                ),
+                o.pid.zip(o.process_start),
+            ),
             Some((o, _)) if o.availability == "stopped" => Status::Down,
             _ => Status::Unknown,
         };
@@ -342,7 +413,10 @@ fn status_of(s: &Session, seen: &Seen) -> Status {
     };
     let mut mine = items.iter().filter(|i| i.thread_id == s.conversation_id);
     if let Some(live) = mine.clone().find(|i| !i.inactive) {
-        return Status::Live(herdr_pane(Some(&live.pane)));
+        return Status::Live(
+            herdr_pane(Some(&live.pane)),
+            Some((live.pid, live.start_time)),
+        );
     }
     if mine.any(|i| i.inactive) {
         Status::Down
@@ -351,7 +425,8 @@ fn status_of(s: &Session, seen: &Seen) -> Status {
     }
 }
 
-/// Liveness for `enable`: an interactive, non-hosted session with a running process.
+/// Checks for `enable` (an interactive, non-hosted session; running or not) and the pane
+/// its running process is in, if any.
 async fn live_for_enable(paths: &Paths, s: &Session) -> Result<Option<String>> {
     if let Some(provider) = native::of(&s.provider) {
         if provider == ProviderId::Claude {
@@ -377,14 +452,13 @@ async fn live_for_enable(paths: &Paths, s: &Session) -> Result<Option<String>> {
                 )
             });
         ensure!(
-            o.availability == "running",
-            "AUTO_RECOVER_REQUIRES_LIVE: the session is {}; auto-recover can only be enabled for a live (active or idle) session",
-            o.availability
-        );
-        ensure!(
             o.native_kind.as_deref().is_none_or(|k| k == "interactive") && o.job_id.is_none(),
             "AUTO_RECOVER_UNSUPPORTED: background Claude sessions cannot be resumed into a pane"
         );
+        // A stopped or saved session may have the setting too (1.44.0): no pane to record.
+        if o.availability != "running" {
+            return Ok(None);
+        }
         return Ok(herdr_pane(
             o.attachment
                 .as_ref()
@@ -406,10 +480,10 @@ async fn live_for_enable(paths: &Paths, s: &Session) -> Result<Option<String>> {
         mine.len() <= 1,
         "AMBIGUOUS_SESSION: more than one process holds this conversation"
     );
-    let live = mine.first().filter(|i| !i.archived).with_context(|| {
-        "AUTO_RECOVER_REQUIRES_LIVE: the session is not running; auto-recover can only be enabled for a live (active or idle) session"
-    })?;
-    Ok(herdr_pane(Some(&live.pane)))
+    Ok(mine
+        .first()
+        .filter(|i| !i.archived)
+        .and_then(|live| herdr_pane(Some(&live.pane))))
 }
 /// Why `enable` would be refused for a row, for `capability_reasons` (None = allowed).
 pub fn capability_reason(value: &Value, already_enabled: bool) -> Option<&'static str> {
@@ -429,8 +503,9 @@ pub fn capability_reason(value: &Value, already_enabled: bool) -> Option<&'stati
     {
         return Some("AUTO_RECOVER_UNSUPPORTED: background sessions cannot be resumed into a pane");
     }
-    if value["availability"] != "running" {
-        return Some("AUTO_RECOVER_REQUIRES_LIVE");
+    // Running state is irrelevant since 1.44.0; only archived sessions are excluded.
+    if value["archived"] == true {
+        return Some("AUTO_RECOVER_UNSUPPORTED: archived sessions are not started automatically");
     }
     if provider == "codex" && matches!(value["account"].as_str(), Some("external" | "unknown")) {
         return Some("AUTO_RECOVER_UNSUPPORTED");
@@ -443,7 +518,7 @@ pub fn capability() -> Value {
     json!({"since_contract":"1.35.0","version":1,"command":"auto-recover",
         "args":["--session","--expected-generation","--enable","--disable","--prompt"],
         "providers":["codex","claude","gemini","antigravity"],
-        "enable_requires":"live_session","disable":"always_allowed","session_capability":"auto_recover",
+        "enable_requires":"none","disable":"always_allowed","session_capability":"auto_recover",
         "state_field":"auto_recover","setting_storage":"registry/auto-recover.json","changes_session_generation":false,
         "trigger":["supervisor_startup","supervisor_loop"],"consecutive_checks":MISS_THRESHOLD,"check_seconds":15,
         "max_per_hour":MAX_PER_HOUR,"operation_kind":"auto_recover","operation_dir":crate::layout::AUTO_RECOVERIES,
@@ -451,9 +526,10 @@ pub fn capability() -> Value {
         "replays":false,"recover":"recover","abandon":"abandon-operation",
         "pane_reuse":"recorded_pane_only_if_idle_shell","fallback":["new_tab_in_workspace_by_id_and_label","new_workspace"],
         "prompt_delivery":"api_send_submit_once",
-        "explicit_stop_disables":["stop","archive","delete"],"switch_or_restart":"suppressed_until_live_again",
-        "refusal_codes":["AUTO_RECOVER_REQUIRES_LIVE","AUTO_RECOVER_UNSUPPORTED","STALE_TARGET","SESSION_OPERATION_IN_PROGRESS","INVALID_ARGUMENT","ACCOUNT_UNAVAILABLE","AMBIGUOUS_SESSION"],
+        "explicit_stop_disables":["archive","delete"],"explicit_stop":"marks_only","switch_or_restart":"suppressed_until_live_again",
+        "refusal_codes":["AUTO_RECOVER_UNSUPPORTED","STALE_TARGET","SESSION_OPERATION_IN_PROGRESS","INVALID_ARGUMENT","ACCOUNT_UNAVAILABLE","AMBIGUOUS_SESSION"],
         "last_result_states":["recovered","recovered_without_prompt","failed","uncertain","rate_limited","waiting","disabled","abandoned"],
+        "note":"from 1.44.0 skipped and unclassified exits read as waiting",
         "deprecated":true,"replaced_by":"auto_start"})
 }
 
@@ -462,19 +538,34 @@ pub fn capability_start() -> Value {
     json!({"since_contract":"1.43.0","version":1,"command":"auto-start",
         "args":["--session","--expected-generation","--mode","--prompt","--all"],
         "modes":["disabled","start","start_prompt"],"default_mode":"disabled",
-        "default_prompt":"Auto-start: the host restarted at <UTC time> and sessionsation resumed this session. Re-check your state and continue your work.",
+        "default_prompt":"Auto-start: the host restarted at <UTC time> and sessionsation started this session again after the restart. Re-check your state and continue your work.",
+        "default_prompt_crash":"Auto-start: this session's process crashed (<what was seen>) and sessionsation started it again at <UTC time>. Re-check your state and continue your work.",
+        "revised_in":"1.44.0","explicit_stop":"marks_only","explicit_stop_disables":["archive","delete"],
+        "triggers":{
+            "host_boot":{"detect":"/proc/sys/kernel/random/boot_id differs from the persisted boot id",
+                "scope":"every session with a mode that is not running, including explicitly stopped ones",
+                "once_per_boot":true,"daemon_restart_starts_nothing":true},
+            "crash":{"scope":"same boot; the session was seen running and its process ended abnormally",
+                "crash_evidence":["kernel_oom_kill","kernel_segfault","kernel_fatal_trap"],
+                "not_crashes":["clean_exit","closed_pane_sighup_sigterm","explicit_stop"],
+                "unknown_exit":"no start; last_result exit_unclassified",
+                "classifiable":{
+                    "all_providers":"kernel log (dmesg) lines naming the recorded pid: OOM kill (SIGKILL), segfault (SIGSEGV), fatal trap (SIGILL, SIGSEGV, SIGFPE)",
+                    "claude":"registry entry sessions/<pid>.json removed = orderly shutdown (skipped_clean_exit); left behind without kernel evidence = exit_unclassified",
+                    "codex_gemini_antigravity":"kernel log only; any other exit is exit_unclassified"},
+                "unclassifiable":["SIGABRT and runtime aborts without a kernel log line","manual kill -9 without a kernel log line","a non-zero exit that still shuts down cleanly","the HERDR pane exit status (HERDR does not expose one)"]}},
         "max_prompt_bytes":MAX_PROMPT_BYTES,"clear_prompt":"api auto-start --mode start_prompt without --prompt resets to the default prompt",
         "mode_semantics":{"start":"resume only, nothing is sent","start_prompt":"resume, then send the prompt (custom or default) once"},
         "prompt":"only_with_start_prompt","bulk":{"flag":"--all","mode":"disabled","operator_only":true},
-        "enable_requires":"live_session","disable":"always_allowed","session_capability":"auto_start",
+        "enable_requires":"none","disable":"always_allowed","session_capability":"auto_start",
         "state_field":"auto_start","setting_storage":"registry/auto-recover.json","changes_session_generation":false,
         "deprecated_aliases":{"command":"auto-recover","state_field":"auto_recover","capability":"auto_recover"},
-        "trigger":["supervisor_startup","supervisor_loop"],"consecutive_checks":MISS_THRESHOLD,"check_seconds":15,
+        "trigger":["host_boot","crash"],"consecutive_checks":MISS_THRESHOLD,"check_seconds":15,
         "max_per_hour":MAX_PER_HOUR,"operation_kind":"auto_recover","operation_dir":crate::layout::AUTO_RECOVERIES,
         "phases":["admitted","pane_ready","resuming","resumed","prompting","complete","failed","uncertain","abandoned"],
         "replays":false,"recover":"recover","abandon":"abandon-operation",
-        "last_result_states":["started","started_with_prompt","failed","uncertain","rate_limited","waiting","disabled","abandoned"],
-        "refusal_codes":["AUTO_RECOVER_REQUIRES_LIVE","AUTO_RECOVER_UNSUPPORTED","STALE_TARGET","SESSION_OPERATION_IN_PROGRESS","INVALID_ARGUMENT","ACCOUNT_UNAVAILABLE","AMBIGUOUS_SESSION"]})
+        "last_result_states":["started_after_boot","started_after_boot_with_prompt","started_after_crash","started_after_crash_with_prompt","skipped_clean_exit","exit_unclassified","skipped_explicit_stop","failed","uncertain","rate_limited","waiting","disabled","abandoned"],
+        "refusal_codes":["AUTO_RECOVER_UNSUPPORTED","STALE_TARGET","SESSION_OPERATION_IN_PROGRESS","INVALID_ARGUMENT","ACCOUNT_UNAVAILABLE","AMBIGUOUS_SESSION"]})
 }
 
 // -------------------------------------------------------------------------- API
@@ -501,8 +592,7 @@ pub async fn set(
     set_mode(paths, session, expected_generation, mode, prompt).await
 }
 
-/// `api auto-start --mode`: set the mode (live sessions only unless disabling or
-/// switching between the two start modes of an already enabled session).
+/// `api auto-start --mode`: set the mode, whether or not the session runs (1.44.0).
 pub async fn set_mode(
     paths: &Paths,
     session: &str,
@@ -547,7 +637,7 @@ pub async fn set_mode(
     if !already {
         ensure!(
             !external::archiving::hidden(paths)?.contains(&s.id),
-            "AUTO_RECOVER_REQUIRES_LIVE: the session is archived"
+            "AUTO_RECOVER_UNSUPPORTED: the session is archived"
         );
         crate::lifecycle::ensure_available(paths, &s.conversation_id, None)?;
         pane = live_for_enable(paths, &s).await?;
@@ -749,6 +839,9 @@ pub struct Record {
     schema_version: u32,
     id: String,
     kind: String,
+    /// boot | crash (empty on operations from before 1.44.0).
+    #[serde(default)]
+    trigger: String,
     session_id: String,
     /// Top level so lifecycle admission blocks other operations on the conversation.
     conversation_id: String,
@@ -1119,7 +1212,7 @@ async fn dispatch(paths: &Paths, r: &mut Record) -> Result<()> {
     let s = catalog::find(paths, &r.session_id)?;
     let live = {
         let seen = observe_all(paths, std::slice::from_ref(&s)).await;
-        matches!(status_of(&s, &seen), Status::Live(_))
+        matches!(status_of(&s, &seen), Status::Live(..))
     };
     ensure!(
         !live,
@@ -1209,22 +1302,49 @@ fn fail(paths: &Paths, r: &mut Record, error: &anyhow::Error) {
 }
 
 /// Record the outcome on the setting (`last_result`, `last_recovered_at`, `last_pane`).
+/// A start names its trigger (`started_after_boot`, `started_after_crash`, each with an
+/// optional `_with_prompt`); operations from before 1.44.0 have none and keep the old names.
 fn finish(paths: &Paths, r: &Record) {
+    let started = |with_prompt: bool, code: &str| {
+        let base = match r.trigger.as_str() {
+            "boot" => "started_after_boot",
+            "crash" => "started_after_crash",
+            _ => "started",
+        };
+        let state = if with_prompt {
+            format!("{base}_with_prompt")
+        } else {
+            base.to_owned()
+        };
+        let code = if code.is_empty() {
+            state.to_uppercase()
+        } else {
+            code.to_owned()
+        };
+        (state, code, r.detail.clone())
+    };
     let (state, code, detail) = match r.phase.as_str() {
-        "complete" if r.prompt_state == "delivered" => (
-            "started_with_prompt",
-            "STARTED_WITH_PROMPT",
+        "complete" if r.prompt_state == "delivered" => started(true, ""),
+        "complete" if r.mode == "start" => started(
+            false,
+            &if r.trigger.is_empty() {
+                "STARTED".to_owned()
+            } else {
+                String::new()
+            },
+        ),
+        "complete" => started(false, "PROMPT_NOT_DELIVERED"),
+        "uncertain" => (
+            "uncertain".into(),
+            "RECOVERY_UNCERTAIN".into(),
             r.detail.clone(),
         ),
-        "complete" if r.mode == "start" => ("started", "STARTED", r.detail.clone()),
-        "complete" => ("started", "PROMPT_NOT_DELIVERED", r.detail.clone()),
-        "uncertain" => ("uncertain", "RECOVERY_UNCERTAIN", r.detail.clone()),
-        "failed" => ("failed", "RECOVERY_FAILED", r.detail.clone()),
+        "failed" => ("failed".into(), "RECOVERY_FAILED".into(), r.detail.clone()),
         _ => return,
     };
     let confirmed = r.resume == "confirmed";
     update(paths, &r.session_id, |s| {
-        s.last_result = Some(result(state, code, &detail, Some(&r.id)));
+        s.last_result = Some(result(&state, &code, &detail, Some(&r.id)));
         s.misses = 0;
         if confirmed {
             s.last_recovered_at = Some(daemon::now());
@@ -1240,6 +1360,141 @@ async fn run<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) {
     finish(paths, r);
 }
 
+// ------------------------------------------------------------- boot and crash
+
+/// The current host boot (`SESSIONSATION_BOOT_ID_FILE` overrides the path, for tests).
+fn boot_id() -> Option<String> {
+    let path = std::env::var("SESSIONSATION_BOOT_ID_FILE")
+        .unwrap_or_else(|_| "/proc/sys/kernel/random/boot_id".into());
+    fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+/// When the host booted (Unix seconds), for the boot prompt; falls back to `now`.
+fn boot_time() -> i64 {
+    fs::read_to_string("/proc/stat")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok())
+        })
+        .unwrap_or_else(daemon::now)
+}
+/// The kernel log (`dmesg`; `SESSIONSATION_KERNEL_LOG_FILE` replaces it, for tests).
+fn kernel_log() -> Option<String> {
+    if let Ok(path) = std::env::var("SESSIONSATION_KERNEL_LOG_FILE") {
+        return fs::read_to_string(path).ok();
+    }
+    let out = std::process::Command::new("dmesg").output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Compare the boot with the persisted one. A different boot makes every session with a
+/// mode that has not been started for it due a boot start; the same boot (a daemon or
+/// supervisor restart) changes nothing; the very first pass only records the boot.
+fn detect_boot(paths: &Paths, current: &str) -> Result<()> {
+    with_store(paths, |store| {
+        if store.boot_id.as_deref() == Some(current) {
+            return;
+        }
+        let first = store.boot_id.is_none();
+        store.boot_id = Some(current.to_owned());
+        if first {
+            return;
+        }
+        for s in store.sessions.values_mut() {
+            // Processes of the previous boot are gone; whatever paused recovery is moot.
+            s.live_pid = None;
+            s.live_start = None;
+            s.live_boot = None;
+            s.misses = 0;
+            s.suppressed = false;
+            s.boot_due = (s.mode() != Mode::Disabled && s.boot_started.as_deref() != Some(current))
+                .then(|| current.to_owned());
+        }
+    })
+}
+
+/// How a vanished process ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Exit {
+    /// Killed by a crash signal: start again.
+    Crash(String),
+    /// An orderly exit, or no sign of a crash: nothing to do.
+    Clean(String),
+    /// Cannot be told reliably: nothing to do (unknown means no start).
+    Unclassified(String),
+}
+/// Crash evidence for `pid` in a kernel log: an OOM kill (SIGKILL), a segfault (SIGSEGV)
+/// or a fatal CPU trap (SIGILL, SIGSEGV, SIGFPE). Lines older than the process (`start`
+/// in clock ticks since boot) belong to an earlier user of the pid.
+fn kernel_evidence(log: &str, pid: u32, start: u64) -> Option<String> {
+    let oom = format!("Killed process {pid} (");
+    let segv = format!("[{pid}]: segfault at");
+    let trap = format!("[{pid}] trap ");
+    let general = format!("[{pid}] general protection");
+    log.lines().find_map(|line| {
+        let stamp = line
+            .strip_prefix('[')
+            .and_then(|l| l.split_once(']'))
+            .and_then(|(t, _)| t.trim().parse::<f64>().ok());
+        // Ticks are 1/100 s (USER_HZ); one second of slack.
+        if start > 0 && stamp.is_some_and(|t| t * 100.0 + 100.0 < start as f64) {
+            return None;
+        }
+        if line.contains("Out of memory") && line.contains(&oom)
+            || line.contains("out of memory") && line.contains(&oom)
+        {
+            Some("killed by the kernel OOM killer (SIGKILL)".to_owned())
+        } else if line.contains(&segv) {
+            Some("SIGSEGV (segfault)".to_owned())
+        } else if line.contains(&trap) || line.contains(&general) {
+            Some("fatal CPU trap (SIGILL/SIGSEGV/SIGFPE)".to_owned())
+        } else {
+            None
+        }
+    })
+}
+/// Decide how the process last seen running ended. Sources, in order: the kernel log
+/// (any provider); for Claude the registry entry `sessions/<pid>.json`, which an orderly
+/// shutdown removes. HERDR exposes no pane exit status and the other providers no exit
+/// marker, so everything else is `Unclassified`.
+fn classify(paths: &Paths, s: &Session, setting: &Setting, log: Option<&str>) -> Exit {
+    let Some(pid) = setting.live_pid else {
+        return Exit::Unclassified("no process was recorded".into());
+    };
+    if let Some(what) = log.and_then(|l| kernel_evidence(l, pid, setting.live_start.unwrap_or(0))) {
+        return Exit::Crash(what);
+    }
+    if native::of(&s.provider) == Some(ProviderId::Claude) {
+        let entry = native::account(paths, ProviderId::Claude, &s.account)
+            .ok()
+            .map(|a| a.home.join("sessions").join(format!("{pid}.json")));
+        return match entry {
+            Some(path) if path.exists() => Exit::Unclassified(format!(
+                "process {pid} left its registry entry behind but no kernel record of a crash signal exists (a hard kill and a closed pane look alike)"
+            )),
+            Some(_) => Exit::Clean(format!(
+                "process {pid} shut down in order (its registry entry was removed) and the kernel log shows no crash"
+            )),
+            None => Exit::Unclassified("the account home is unavailable".into()),
+        };
+    }
+    Exit::Unclassified(format!(
+        "{} exposes no exit status and the kernel log shows no crash of process {pid}",
+        s.provider
+    ))
+}
+
+/// What started a session.
+enum Trigger {
+    Boot,
+    Crash(String),
+}
+
 // ------------------------------------------------------------------------ tick
 
 /// One pass of the supervisor loop. Cheap when no session has the setting on.
@@ -1248,6 +1503,12 @@ pub async fn tick(paths: &Paths) -> Result<Vec<Value>> {
 }
 pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Vec<Value>> {
     migrate(paths)?;
+    // Before the early return: the boot must be recorded even while no session has a mode,
+    // or a session enabled later would look like it was due a boot start.
+    let boot = boot_id();
+    if let Some(b) = &boot {
+        detect_boot(paths, b)?;
+    }
     let store = load(paths)?;
     if !store.sessions.values().any(|s| s.enabled) {
         return Ok(vec![]);
@@ -1291,15 +1552,52 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
         }
         match status_of(&s, &seen) {
             Status::Unknown => {}
-            Status::Live(pane) => note_live(paths, &s, &setting, pane),
+            Status::Live(pane, proc) => note_live(paths, &s, &setting, pane, proc, boot.as_deref()),
             Status::Down => {
                 if setting.suppressed {
                     continue;
                 }
-                let misses = setting.misses + 1;
-                update(paths, &s.id, |x| x.misses = misses);
-                if misses >= MISS_THRESHOLD
-                    && let Some(op) = attempt(paths, &s, &setting, sender).await
+                let due_boot =
+                    boot.is_some() && setting.boot_due == boot && setting.boot_started != boot;
+                let was_running =
+                    boot.is_some() && setting.live_boot == boot && setting.live_pid.is_some();
+                // Never seen running on this boot and not due a boot start (enabled while
+                // stopped, or explicitly stopped): nothing can start it now.
+                if !due_boot && !was_running {
+                    continue;
+                }
+                // Settle: the same number of consecutive checks as ever, so discovery
+                // (and a HERDR that is still coming up) has time to catch up.
+                let misses = (setting.misses + 1).min(MISS_THRESHOLD);
+                if misses != setting.misses {
+                    update(paths, &s.id, |x| x.misses = misses);
+                }
+                if misses < MISS_THRESHOLD {
+                    continue;
+                }
+                let trigger = if due_boot {
+                    Trigger::Boot
+                } else {
+                    match classify(paths, &s, &setting, kernel_log().as_deref()) {
+                        Exit::Crash(what) => Trigger::Crash(what),
+                        Exit::Clean(detail) => {
+                            skip_exit(paths, &s.id, "skipped_clean_exit", "CLEAN_EXIT", &detail);
+                            continue;
+                        }
+                        Exit::Unclassified(detail) => {
+                            skip_exit(
+                                paths,
+                                &s.id,
+                                "exit_unclassified",
+                                "EXIT_UNCLASSIFIED",
+                                &detail,
+                            );
+                            continue;
+                        }
+                    }
+                };
+                if let Some(op) =
+                    attempt(paths, &s, &setting, &trigger, boot.as_deref(), sender).await
                 {
                     outcomes.push(op);
                 }
@@ -1309,9 +1607,33 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
     Ok(outcomes)
 }
 
-fn note_live(paths: &Paths, s: &Session, setting: &Setting, pane: Option<String>) {
+/// A vanished process that starts nothing: record why, once, and stop watching that pid.
+fn skip_exit(paths: &Paths, id: &str, state: &str, code: &str, detail: &str) {
+    update(paths, id, |s| {
+        s.live_pid = None;
+        s.live_start = None;
+        s.live_boot = None;
+        s.misses = 0;
+        s.last_result = Some(result(state, code, detail, None));
+    });
+}
+
+fn note_live(
+    paths: &Paths,
+    s: &Session,
+    setting: &Setting,
+    pane: Option<String>,
+    proc: Proc,
+    boot: Option<&str>,
+) {
     let moved = pane.is_some() && pane != setting.last_pane;
-    if !moved && setting.misses == 0 && !setting.suppressed {
+    let process_changed = boot.is_some()
+        && proc.is_some()
+        && (setting.live_pid != proc.map(|p| p.0)
+            || setting.live_start != proc.map(|p| p.1)
+            || setting.live_boot.as_deref() != boot);
+    let boot_pending = setting.boot_due.is_some() || setting.stopped_explicitly_at.is_some();
+    if !moved && !process_changed && !boot_pending && setting.misses == 0 && !setting.suppressed {
         return;
     }
     let label = if moved {
@@ -1322,6 +1644,20 @@ fn note_live(paths: &Paths, s: &Session, setting: &Setting, pane: Option<String>
     update(paths, &s.id, |x| {
         x.misses = 0;
         x.suppressed = false;
+        // Running: no boot start is needed (it already runs for this boot), and any
+        // earlier explicit stop is over.
+        if let Some(b) = boot {
+            if x.boot_due.is_some() {
+                x.boot_started = Some(b.to_owned());
+            }
+            x.boot_due = None;
+            if let Some((pid, start)) = proc {
+                x.live_pid = Some(pid);
+                x.live_start = Some(start);
+                x.live_boot = Some(b.to_owned());
+            }
+        }
+        x.stopped_explicitly_at = None;
         if moved {
             x.last_pane = pane;
             if label.is_some() {
@@ -1347,6 +1683,8 @@ async fn attempt<S: Sender>(
     paths: &Paths,
     s: &Session,
     setting: &Setting,
+    trigger: &Trigger,
+    boot: Option<&str>,
     sender: &S,
 ) -> Option<Value> {
     let now = daemon::now();
@@ -1392,7 +1730,7 @@ async fn attempt<S: Sender>(
         return None;
     }
     if external::archiving::hidden(paths).ok()?.contains(&s.id) {
-        explicit_stop(paths, &s.id);
+        retire(paths, &s.id);
         return None;
     }
     let hs = herdr_session_of(setting.last_pane.as_deref());
@@ -1406,10 +1744,17 @@ async fn attempt<S: Sender>(
         );
         return None;
     }
-    let prompt = setting
-        .prompt
-        .clone()
-        .unwrap_or_else(|| default_prompt(now));
+    let prompt = setting.prompt.clone().unwrap_or_else(|| match trigger {
+        Trigger::Boot => default_prompt(boot_time(), None),
+        Trigger::Crash(what) => default_prompt(now, Some(what)),
+    });
+    let (trigger_name, trigger_detail) = match trigger {
+        Trigger::Boot => (
+            "boot",
+            "The host booted; the session was not running.".to_owned(),
+        ),
+        Trigger::Crash(what) => ("crash", what.clone()),
+    };
     let mut r = Record {
         schema_version: 1,
         id: uuid::Uuid::new_v4().to_string(),
@@ -1437,7 +1782,8 @@ async fn attempt<S: Sender>(
         prompt_detail: String::new(),
         resume: "pending".into(),
         phase: "admitted".into(),
-        detail: "Admitted; the session process is gone.".into(),
+        detail: format!("Admitted ({trigger_name}): {trigger_detail}"),
+        trigger: trigger_name.into(),
         uncertain_from: None,
         generation_after: None,
         created_at: now,
@@ -1445,10 +1791,20 @@ async fn attempt<S: Sender>(
     };
     save(paths, &mut r).ok()?;
     let id = s.id.clone();
+    let boot = boot.map(str::to_owned);
     let _ = with_store(paths, |store| {
         if let Some(setting) = store.sessions.get_mut(&id) {
             setting.recoveries.retain(|t| now - *t < HOUR);
             setting.recoveries.push(now);
+            // One start per boot and one per observed process, recorded at admission.
+            setting.live_pid = None;
+            setting.live_start = None;
+            setting.live_boot = None;
+            setting.stopped_explicitly_at = None;
+            if boot.is_some() {
+                setting.boot_started = boot;
+                setting.boot_due = None;
+            }
         }
     });
     let lock = lock_file(&worker_lock_path(paths, &r.id).ok()?).ok()?;

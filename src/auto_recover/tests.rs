@@ -6,6 +6,7 @@ fn record(paths: &Paths, session: &Session) -> Record {
         schema_version: 1,
         id: uuid::Uuid::new_v4().to_string(),
         kind: "auto_recover".into(),
+        trigger: String::new(),
         session_id: session.id.clone(),
         conversation_id: session.conversation_id.clone(),
         provider: "codex".into(),
@@ -78,9 +79,12 @@ fn the_default_prompt_names_the_restart_time() {
     assert_eq!(chrono_like(0), "1970-01-01 00:00:00 UTC");
     assert_eq!(chrono_like(1_700_000_000), "2023-11-14 22:13:20 UTC");
     assert!(
-        default_prompt(1_700_000_000).contains("the host restarted at 2023-11-14 22:13:20 UTC")
+        default_prompt(1_700_000_000, None)
+            .contains("the host restarted at 2023-11-14 22:13:20 UTC")
     );
-    assert!(default_prompt(0).ends_with("Re-check your state and continue your work."));
+    assert!(default_prompt(0, None).ends_with("Re-check your state and continue your work."));
+    let crash = default_prompt(0, Some("SIGSEGV (segfault)"));
+    assert!(crash.contains("crashed (SIGSEGV (segfault))") && !crash.contains("host restarted"));
 }
 
 #[test]
@@ -233,8 +237,16 @@ fn explicit_stop_disables_and_suppress_only_pauses() {
     assert_eq!(public(Some(&x))["suppressed"], true);
     explicit_stop(&paths, &s.id);
     let x = all(&paths)[&s.id].clone();
-    assert!(!x.enabled);
+    assert!(x.enabled, "an explicit stop keeps the mode");
+    assert!(x.stopped_explicitly_at.is_some());
     assert_eq!(x.last_result.as_ref().unwrap()["code"], "EXPLICIT_STOP");
+    retire(&paths, &s.id);
+    let x = all(&paths)[&s.id].clone();
+    assert!(!x.enabled, "archive and delete disable");
+    assert_eq!(
+        x.last_result.as_ref().unwrap()["code"],
+        "ARCHIVED_OR_DELETED"
+    );
     assert_eq!(public(Some(&x))["suppressed"], false);
     // Unknown sessions are ignored and nothing is created.
     explicit_stop(&paths, "no-such-session");
@@ -249,8 +261,12 @@ fn capability_reasons_follow_the_enable_rules() {
     stopped["availability"] = json!("stopped");
     assert_eq!(
         capability_reason(&stopped, false),
-        Some("AUTO_RECOVER_REQUIRES_LIVE")
+        None,
+        "stopped sessions qualify"
     );
+    let mut archived = live.clone();
+    archived["archived"] = json!(true);
+    assert!(capability_reason(&archived, false).is_some());
     // Already enabled: the toggle stays available so it can be turned off.
     assert_eq!(capability_reason(&stopped, true), None);
     let mut hosted = live.clone();
@@ -279,7 +295,7 @@ fn capability_reasons_follow_the_enable_rules() {
 
 #[test]
 fn default_prompt_says_auto_start() {
-    assert!(default_prompt(0).starts_with("Auto-start:"));
+    assert!(default_prompt(0, None).starts_with("Auto-start:"));
 }
 
 #[test]
@@ -366,6 +382,36 @@ fn results_use_started_names_and_the_deprecated_projection_keeps_the_old_ones() 
     let x = all(&paths)[&s.id].clone();
     assert_eq!(public_start(Some(&x))["last_result"]["state"], "started");
     assert_eq!(public_start(Some(&x))["mode"], "start");
+    // A trigger-named start keeps the legacy projection.
+    for (trigger, with, state, legacy) in [
+        (
+            "boot",
+            false,
+            "started_after_boot",
+            "recovered_without_prompt",
+        ),
+        (
+            "crash",
+            true,
+            "started_after_crash_with_prompt",
+            "recovered",
+        ),
+    ] {
+        let mut t = record(&paths, &s);
+        t.trigger = trigger.into();
+        t.phase = "complete".into();
+        t.prompt_state = if with { "delivered" } else { "skipped" }.into();
+        t.mode = if with { "start_prompt" } else { "start" }.into();
+        finish(&paths, &t);
+        let x = all(&paths)[&s.id].clone();
+        assert_eq!(public_start(Some(&x))["last_result"]["state"], state);
+        assert_eq!(public(Some(&x))["last_result"]["state"], legacy);
+    }
+    finish(&paths, &{
+        let mut t = r.clone();
+        t.trigger = String::new();
+        t
+    });
     assert_eq!(
         public(Some(&x))["last_result"]["state"],
         "recovered_without_prompt"
@@ -405,4 +451,51 @@ fn disable_all_disables_every_enabled_session() {
             .all(|x| x.mode() == Mode::Disabled && !x.enabled)
     );
     assert_eq!(disable_all(&paths).unwrap()["changed"], false);
+}
+
+#[test]
+fn kernel_evidence_matches_the_exact_pid_and_ignores_older_lines() {
+    let log = "[ 10.000000] Out of memory: Killed process 4242 (claude) total-vm:1kB\n\
+               [ 20.000000] claude[77]: segfault at 0 ip 0 sp 0 error 4\n\
+               [ 30.000000] traps: node[88] trap invalid opcode ip:0 sp:0 error:0\n";
+    // 1/100 s ticks since boot: a process started at 5 s.
+    assert!(kernel_evidence(log, 4242, 500).unwrap().contains("OOM"));
+    assert!(kernel_evidence(log, 77, 500).unwrap().contains("SIGSEGV"));
+    assert!(kernel_evidence(log, 88, 500).unwrap().contains("trap"));
+    // Another pid (42 is a prefix of 4242), or a line from before the process started.
+    assert_eq!(kernel_evidence(log, 42, 500), None);
+    assert_eq!(kernel_evidence(log, 4242, 5000), None);
+    assert_eq!(kernel_evidence("", 4242, 0), None);
+}
+
+#[test]
+fn the_first_boot_record_starts_nothing_and_a_new_boot_makes_modes_due_once() {
+    let (_d, paths, s) = fixture();
+    with_store(&paths, |st| {
+        let mut x = Setting::default();
+        x.set_mode(Mode::Start);
+        st.sessions.insert(s.id.clone(), x);
+    })
+    .unwrap();
+    detect_boot(&paths, "boot-1").unwrap();
+    assert_eq!(
+        all(&paths)[&s.id].boot_due,
+        None,
+        "first record: not a reboot"
+    );
+    detect_boot(&paths, "boot-1").unwrap();
+    assert_eq!(all(&paths)[&s.id].boot_due, None);
+    detect_boot(&paths, "boot-2").unwrap();
+    assert_eq!(all(&paths)[&s.id].boot_due.as_deref(), Some("boot-2"));
+    // Started for that boot: a later pass of the same boot does not make it due again.
+    update(&paths, &s.id, |x| {
+        x.boot_due = None;
+        x.boot_started = Some("boot-2".into());
+    });
+    detect_boot(&paths, "boot-2").unwrap();
+    assert_eq!(all(&paths)[&s.id].boot_due, None);
+    // A disabled session is never due.
+    update(&paths, &s.id, |x| x.set_mode(Mode::Disabled));
+    detect_boot(&paths, "boot-3").unwrap();
+    assert_eq!(all(&paths)[&s.id].boot_due, None);
 }

@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.43.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.44.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2870,7 +2870,7 @@ journaled never-replayed operations) applies to both start modes.
 - **Command**: `api auto-start --session ID --expected-generation G --mode disabled|start|start_prompt
   [--prompt TEXT]`. `--prompt` is only valid with `start_prompt` (`INVALID_ARGUMENT` otherwise; 1-4000
   bytes). `--mode start_prompt` without `--prompt` clears a custom prompt (the default applies);
-  the descriptor carries `default_prompt` and `max_prompt_bytes` for clients that show a hint. Enabling a mode (from `disabled`) needs a live session exactly like `--enable` before
+  the descriptor carries `default_prompt` and `max_prompt_bytes` for clients that show a hint. Until 1.44.0 enabling a mode (from `disabled`) needed a live session exactly like `--enable` before (no longer: see [1.44.0](#auto-start-semantics-host-boot-and-crash-1440))
   (`AUTO_RECOVER_REQUIRES_LIVE`, `AUTO_RECOVER_UNSUPPORTED`); switching between `start` and
   `start_prompt` on an already enabled session, and `disabled`, are always allowed. The receipt is
   `{"session_id","generation","changed","mode","auto_start":{...},"auto_recover":{...}}`.
@@ -2895,3 +2895,66 @@ journaled never-replayed operations) applies to both start modes.
   disabled one as `disabled`. The rewrite is one atomic replace under the store lock (a crash leaves the
   old or the new file) and running it again changes nothing. `enabled` stays in the file, mirroring
   the mode.
+
+### Auto Start semantics: host boot and crash (1.44.0)
+
+MINOR, a behavioural change to Auto Start (1.43.0). Auto Start now means "start this session after a
+host reboot or a crash, and not much else". It supersedes the live-only, disable-on-stop and
+start-on-any-disappearance rules of [Session auto-recover (1.35.0)](#session-auto-recover-1350) and
+[Auto Start modes (1.43.0)](#auto-start-modes-1430); everything else there (pane choice, journaled
+never-replayed operations, the 3 per hour rate limit, `RECOVERY_UNRESOLVED`, suppression by
+`switch`/`restart`, HERDR availability, the 3 consecutive checks as settle delay) is unchanged.
+
+- **The setting is independent of running state.** `api auto-start --mode start|start_prompt` (and the
+  deprecated `--enable`) works on live, stopped and saved sessions; `AUTO_RECOVER_REQUIRES_LIVE` is no
+  longer returned. `capabilities.auto_start` / `auto_recover` are true for inactive sessions;
+  only archived sessions (and hosted/background/unsupported ones: `AUTO_RECOVER_UNSUPPORTED`) are
+  excluded. The descriptor reports `enable_requires:"none"`.
+- **An explicit stop no longer changes the mode**; it only marks the stop (so it is not a crash) and
+  sets `last_result` to `skipped_explicit_stop` / `EXPLICIT_STOP`. **Archive and delete still set the
+  mode to `disabled`** (`last_result.code` `ARCHIVED_OR_DELETED`; it was `EXPLICIT_STOP`).
+  `switch` and `restart` still only pause until the session is live again.
+- **Trigger A, host boot.** The supervisor compares `/proc/sys/kernel/random/boot_id` with the boot id
+  persisted in `registry/auto-recover.json` (`boot_id`). When it differs, every session whose mode is not
+  `disabled` and that is not running is started, including ones stopped (explicitly or not) before the
+  reboot, after 3 consecutive not-running checks and once HERDR answers. Each session is started once
+  per boot (`boot_started` records the boot id). A supervisor or daemon restart on the same boot (a
+  cutover) starts nothing. The first pass after upgrading only records the boot id: it starts nothing.
+- **Trigger B, crash.** On the same boot, a session that was seen running and whose process then
+  vanished is started again only when the exit is classified as a crash. A clean exit (`/exit`), a closed
+  pane (SIGHUP/SIGTERM from the terminal) and an explicit stop start nothing, and neither does an exit
+  that cannot be classified (unknown means no start).
+- **Classification** (`sessions[].auto_start.last_result`), using the process recorded while it ran
+  (pid and /proc start time):
+  - Kernel log (`dmesg`), any provider: a line naming that exact pid and not older than the process:
+    `Out of memory: Killed process <pid>` (OOM killer, SIGKILL), `<comm>[<pid>]: segfault at` (SIGSEGV),
+    `traps: <comm>[<pid>] trap ...` / `general protection` (SIGILL, SIGSEGV, SIGFPE). This is a crash:
+    `started_after_crash`.
+  - Claude additionally: the registry entry `<home>/sessions/<pid>.json` is removed by an orderly
+    shutdown. Gone and no crash line: `skipped_clean_exit`. Left behind and no crash line: a hard kill,
+    but a closed pane may look the same, so `exit_unclassified` (no start).
+  - Codex, Gemini and Antigravity: the kernel log only; any other exit is `exit_unclassified`.
+  - HERDR exposes no pane exit status and no provider transcript carries a reliable exit marker, so
+    those are not used. **Cannot be classified**: SIGABRT and runtime aborts (e.g. a JavaScript heap
+    out-of-memory abort) without a kernel line, a manual `kill -9`, a non-zero exit that still shuts down
+    cleanly, and a crash whose kernel line already left the kernel ring buffer or that `dmesg` may not
+    read. A hard kill the kernel did not log is deliberately not started.
+- **`last_result.state`** is `started_after_boot`, `started_after_boot_with_prompt`,
+  `started_after_crash`, `started_after_crash_with_prompt`, `skipped_clean_exit`, `exit_unclassified`,
+  `skipped_explicit_stop`, `failed`, `uncertain`, `rate_limited`, `waiting`, `disabled` or `abandoned`
+  (codes `STARTED_AFTER_BOOT[_WITH_PROMPT]`, `STARTED_AFTER_CRASH[_WITH_PROMPT]`, `CLEAN_EXIT`,
+  `EXIT_UNCLASSIFIED`, `EXPLICIT_STOP`, `PROMPT_NOT_DELIVERED`, ...). Records from 1.43.0 may still read
+  `started` / `started_with_prompt`.
+- **Default prompts**: after a boot `Auto-start: the host restarted at <UTC boot time> and sessionsation
+  started this session again after the restart. Re-check your state and continue your work.`; after a
+  crash `Auto-start: this session's process crashed (<what was seen>) and sessionsation started it again
+  at <UTC time>. Re-check your state and continue your work.` The descriptor carries both
+  (`default_prompt`, `default_prompt_crash`) and the classification table under `triggers`.
+- **Deprecated projection**: `auto_recover.last_result.state` maps every `started_after_*_with_prompt` to
+  `recovered`, every other `started*` to `recovered_without_prompt`, and the `skipped_*` /
+  `exit_unclassified` states to `waiting`. `enabled` still mirrors the mode.
+- **Data**: existing records stay valid. New optional fields in `registry/auto-recover.json`
+  (`boot_id` at the top; `boot_due`, `boot_started`, `stopped_explicitly_at`, `live_pid`, `live_start`,
+  `live_boot` per session) default to absent. Operations gain an optional `trigger` (`boot` | `crash`).
+- **Tests only** override the sources: `SESSIONSATION_BOOT_ID_FILE` and `SESSIONSATION_KERNEL_LOG_FILE`.
+

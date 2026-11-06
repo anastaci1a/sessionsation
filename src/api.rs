@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 43;
+pub const CONTRACT_MINOR: u32 = 44;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.43.0";
+pub const CONTRACT_VERSION: &str = "1.44.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -177,7 +177,7 @@ pub enum Command {
         #[arg(long)]
         accept_risks: bool,
     },
-    /// Per-session Auto Start (1.43.0): resume a live session automatically if its process disappears.
+    /// Per-session Auto Start (1.43.0, revised 1.44.0): start a session after a host boot or a crash; works on stopped sessions too.
     AutoStart {
         #[arg(long, required_unless_present = "all", conflicts_with = "all")]
         session: Option<String>,
@@ -2919,7 +2919,8 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
 /// Space) carries the session's current name, already updated by `--name`. Live
 /// HERDR session names follow the tab label, so a tab left with the default label
 /// would rename the session.
-/// A deliberate stop, archive or delete disables auto-recover for the session; a restart or
+/// A deliberate stop only marks the session (Auto Start keeps its mode, 1.44.0); archive or
+/// delete disables it; a restart or
 /// account switch suppresses it until the session is live again. Only requests that name
 /// a current generation count, so a stale call never changes the setting.
 fn note_deliberate_action(paths: &Paths, command: &Command) {
@@ -2937,7 +2938,7 @@ fn note_deliberate_action(paths: &Paths, command: &Command) {
         }
         Command::Archive { target } | Command::DeleteSession { target } => {
             if let Some(s) = resolve(&target.session, &target.expected_generation) {
-                crate::auto_recover::explicit_stop(paths, &s.id);
+                crate::auto_recover::retire(paths, &s.id);
             }
         }
         Command::Switch {
