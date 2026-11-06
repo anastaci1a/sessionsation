@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.42.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.43.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2855,3 +2855,43 @@ MINOR, additive. Capability additions: `usage_read`; `live_activity.providers` n
   `operator`/`default` for receipts recorded before 1.42.0).
 - **Daemon start** writes a fresh `api state` snapshot two seconds after the socket serves requests, so
   `api state --cached` does not show the previous process's data after a cutover.
+
+### Auto Start modes (1.43.0)
+
+MINOR, additive. "Auto recover" is renamed **Auto Start** and gains three modes per session:
+`disabled` (the default for every session, including new ones; a session with no record is
+`disabled`), `start` (when the process disappears, resume the session and send **nothing**) and
+`start_prompt` (resume, then send the prompt once: the custom `--prompt` or the default `Auto-start:
+the host restarted at <UTC time> and sessionsation resumed this session. Re-check your state and
+continue your work.`). Everything in [Session auto-recover (1.35.0)](#session-auto-recover-1350)
+(liveness checks, pane choice, explicit-stop disable, suppression, the 3 per hour rate limit,
+journaled never-replayed operations) applies to both start modes.
+
+- **Command**: `api auto-start --session ID --expected-generation G --mode disabled|start|start_prompt
+  [--prompt TEXT]`. `--prompt` is only valid with `start_prompt` (`INVALID_ARGUMENT` otherwise; 1-4000
+  bytes). `--mode start_prompt` without `--prompt` clears a custom prompt (the default applies);
+  the descriptor carries `default_prompt` and `max_prompt_bytes` for clients that show a hint. Enabling a mode (from `disabled`) needs a live session exactly like `--enable` before
+  (`AUTO_RECOVER_REQUIRES_LIVE`, `AUTO_RECOVER_UNSUPPORTED`); switching between `start` and
+  `start_prompt` on an already enabled session, and `disabled`, are always allowed. The receipt is
+  `{"session_id","generation","changed","mode","auto_start":{...},"auto_recover":{...}}`.
+- **Bulk**: `api auto-start --all --mode disabled` disables every session at once (operator-only,
+  like the other local admin commands; no `--session` or generation; only `disabled` is accepted
+  since it can only stop actions). Receipt `{"all":true,"mode":"disabled","changed","disabled_count","disabled":[ids]}`.
+- **State**: every session row adds `auto_start:{mode, enabled, prompt, last_pane, last_started_at,
+  last_result, workspace_label, suppressed, starts_last_hour, max_per_hour}` and
+  `capabilities.auto_start` / `capability_reasons.auto_start` (same rules as `auto_recover`).
+  `last_result.state` is `started` (resumed, nothing to send or the prompt was not delivered; see
+  `code`), `started_with_prompt`, `failed`, `uncertain`, `rate_limited`, `waiting`, `disabled` or
+  `abandoned`. `api capabilities` adds the top-level `auto_start` descriptor (clients show the control
+  only when it is present).
+- **Journal**: operations keep `kind:"auto_recover"` and add `mode`. With `start` the `prompting`
+  phase is skipped (`resumed` -> `complete`) and `prompt.state` is `skipped`.
+- **Deprecated, still served**: `api auto-recover` (`--enable` = `start_prompt`, `--disable` =
+  `disabled`), `sessions[].auto_recover` (`enabled` = mode is not `disabled`; `last_result.state`
+  keeps the 1.35.0 names `recovered` / `recovered_without_prompt`) and `capabilities.auto_recover`
+  (marked `deprecated:true`). Older clients keep working; they cannot see or set `start`.
+- **Storage migration**: `registry/auto-recover.json` records gain `mode` (schema_version 2). A record
+  without `mode` that is enabled reads, and is rewritten, as `start_prompt` with its prompt kept; a
+  disabled one as `disabled`. The rewrite is one atomic replace under the store lock (a crash leaves the
+  old or the new file) and running it again changes nothing. `enabled` stays in the file, mirroring
+  the mode.

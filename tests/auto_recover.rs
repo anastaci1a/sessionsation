@@ -310,7 +310,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enable_needs_a_live_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.42.0");
+    assert_eq!(caps["contract_version"], "1.43.0");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
@@ -641,5 +641,135 @@ async fn nothing_is_started_while_herdr_is_unreachable() {
     let done = t.tick();
     assert_eq!(done.len(), 1, "{done:?}");
     assert_eq!(done[0]["phase"], "complete");
+    cleanup(&t, &id);
+}
+
+impl Setup {
+    fn start(&self, id: &str, mode: &str, extra: &[&str]) -> Result<Value, String> {
+        let s = self.session(id);
+        let mut args = vec![
+            "api",
+            "auto-start",
+            "--session",
+            id,
+            "--expected-generation",
+            s["generation"].as_str().unwrap(),
+            "--mode",
+            mode,
+        ];
+        args.extend_from_slice(extra);
+        let out = self.output(&args);
+        if out.status.success() {
+            Ok(serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).into_owned())
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_start_modes_transition_and_the_deprecated_alias_follows() {
+    let t = Setup::new().await;
+    let caps = t.api(&["capabilities"]);
+    assert_eq!(caps["auto_start"]["default_mode"], "disabled");
+    assert_eq!(caps["auto_recover"]["deprecated"], true);
+    let (id, _) = t.stopped_session("a");
+    let _pid = t.live_session(&id);
+    let row = t.session(&id);
+    assert_eq!(row["auto_start"]["mode"], "disabled");
+    assert_eq!(row["capabilities"]["auto_start"], true);
+    // --prompt is only valid with start_prompt.
+    for mode in ["start", "disabled"] {
+        let e = t.start(&id, mode, &["--prompt", "x"]).unwrap_err();
+        assert!(e.contains("INVALID_ARGUMENT"), "{e}");
+    }
+    assert!(
+        t.start(&id, "bogus", &[])
+            .unwrap_err()
+            .contains("INVALID_ARGUMENT")
+    );
+    assert!(!t.store_path().exists());
+    let on = t.start(&id, "start", &[]).unwrap();
+    assert_eq!(on["changed"], true);
+    assert_eq!(on["auto_start"]["mode"], "start");
+    assert_eq!(on["auto_recover"]["enabled"], true);
+    assert_eq!(t.start(&id, "start", &[]).unwrap()["changed"], false);
+    let sp = t.start(&id, "start_prompt", &["--prompt", "hi"]).unwrap();
+    assert_eq!(sp["changed"], true);
+    assert_eq!(sp["auto_start"]["prompt"], "hi");
+    assert_eq!(t.stored(&id)["mode"], "start_prompt");
+    // Deprecated alias: disable, then enable maps to start_prompt.
+    assert_eq!(
+        t.set(&id, "--disable", &[]).unwrap()["auto_start"]["mode"],
+        "disabled"
+    );
+    assert_eq!(t.session(&id)["auto_recover"]["enabled"], false);
+    let en = t.enable(&id, &[]).unwrap();
+    assert_eq!(en["auto_start"]["mode"], "start_prompt");
+    assert_eq!(en["auto_recover"]["enabled"], true);
+    // Bulk disable.
+    let all = t.api(&["auto-start", "--all", "--mode", "disabled"]);
+    assert_eq!(all["disabled_count"], 1);
+    assert_eq!(t.session(&id)["auto_start"]["mode"], "disabled");
+    let e = t.api_error(&["auto-start", "--all", "--mode", "start"]);
+    assert!(e.contains("INVALID_ARGUMENT"), "{e}");
+    cleanup(&t, &id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mode_start_resumes_without_a_prompt_and_the_rate_limit_applies() {
+    let t = Setup::new().await;
+    let (id, _) = t.stopped_session("a");
+    let pid = t.live_session(&id);
+    t.start(&id, "start", &[]).unwrap();
+    t.crash(pid);
+    let done = t.ticks(3);
+    assert_eq!(done.len(), 1, "{done:?}");
+    let op = &done[0];
+    assert_eq!(op["phase"], "complete", "{op}");
+    assert_eq!(op["mode"], "start");
+    assert_eq!(op["prompt"]["state"], "skipped");
+    assert_eq!(op["prompt"]["attempts"], 0);
+    assert_eq!(t.session(&id)["availability"], "running");
+    let st = t.session(&id)["auto_start"].clone();
+    assert_eq!(st["last_result"]["state"], "started", "{st}");
+    assert!(st["last_started_at"].as_i64().unwrap() > 0);
+    assert_eq!(
+        t.setting(&id)["last_result"]["state"],
+        "recovered_without_prompt"
+    );
+    // Rate limit still applies in start mode.
+    let pid = t.session(&id)["pid"].as_u64().unwrap() as i32;
+    let mut stored: Value = serde_json::from_str(&read(&t.store_path())).unwrap();
+    let now = daemon::now();
+    stored["sessions"][&id]["recoveries"] = json!([now - 30, now - 20, now - 10]);
+    std::fs::write(t.store_path(), stored.to_string()).unwrap();
+    t.crash(pid);
+    assert!(t.ticks(6).is_empty());
+    assert_eq!(t.session(&id)["availability"], "stopped");
+    assert_eq!(
+        t.session(&id)["auto_start"]["last_result"]["state"],
+        "rate_limited"
+    );
+    cleanup(&t, &id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pre_1_43_record_is_migrated_to_start_prompt_on_the_next_pass() {
+    let t = Setup::new().await;
+    let (id, _) = t.stopped_session("a");
+    let _pid = t.live_session(&id);
+    std::fs::create_dir_all(t.store_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        t.store_path(),
+        json!({"schema_version":1,"sessions":{id.clone():{"enabled":true,"prompt":"old"}}})
+            .to_string(),
+    )
+    .unwrap();
+    assert_eq!(t.session(&id)["auto_start"]["mode"], "start_prompt");
+    t.tick();
+    let s = t.stored(&id);
+    assert_eq!(s["mode"], "start_prompt");
+    assert_eq!(s["prompt"], "old");
     cleanup(&t, &id);
 }

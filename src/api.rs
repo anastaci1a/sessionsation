@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 42;
+pub const CONTRACT_MINOR: u32 = 43;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.42.0";
+pub const CONTRACT_VERSION: &str = "1.43.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -177,7 +177,23 @@ pub enum Command {
         #[arg(long)]
         accept_risks: bool,
     },
-    /// Per-session auto-recover: resume a live session automatically if its process disappears.
+    /// Per-session Auto Start (1.43.0): resume a live session automatically if its process disappears.
+    AutoStart {
+        #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+        session: Option<String>,
+        #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+        expected_generation: Option<String>,
+        /// disabled | start (resume only) | start_prompt (resume, then send the prompt).
+        #[arg(long)]
+        mode: String,
+        /// Prompt for start_prompt (default: a notice naming the restart time).
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Operator bulk admin: apply to every session (only `--mode disabled`).
+        #[arg(long)]
+        all: bool,
+    },
+    /// Deprecated (1.43.0, use auto-start): per-session auto-recover; --enable is start_prompt.
     AutoRecover {
         #[arg(long)]
         session: String,
@@ -1508,6 +1524,7 @@ pub fn capabilities() -> Value {
     value["new_space"] = json!({"since_revision":20,"version":1,"resume":true,"add_to_herdr":true,"move_space":true,"label_validation":"space_label","exists_error":"WORKSPACE_NAME_EXISTS"});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
     value["auto_recover"] = crate::auto_recover::capability();
+    value["auto_start"] = crate::auto_recover::capability_start();
     value["stop_closes_pane"] = json!(true);
     value["stop_keep_pane"] = json!(true);
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
@@ -2033,12 +2050,15 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         let setting = settings.get(session["id"].as_str().unwrap_or_default());
         let enabled = setting.is_some_and(|s| s.enabled);
         session["auto_recover"] = crate::auto_recover::public(setting);
+        session["auto_start"] = crate::auto_recover::public_start(setting);
         session["turn_notify"] = crate::turn_notify::public(
             turn_settings.get(session["id"].as_str().unwrap_or_default()),
         );
         let reason = crate::auto_recover::capability_reason(session, enabled).map(str::to_owned);
         session["capabilities"]["auto_recover"] = json!(reason.is_none());
         session["capability_reasons"]["auto_recover"] = json!(reason);
+        session["capabilities"]["auto_start"] = json!(reason.is_none());
+        session["capability_reasons"]["auto_start"] = json!(reason);
     }
     let observed_at = daemon::now();
     let value = json!({"observed_at":observed_at,"account_source":source,
@@ -2568,6 +2588,29 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         Command::Usage { account } => usage_read(paths, account.as_deref())?,
         Command::TurnEvents { after, wait } => {
             crate::turn_notify::events(paths, after, wait).await?
+        }
+        Command::AutoStart {
+            session,
+            expected_generation,
+            mode,
+            prompt,
+            all,
+        } => {
+            let mode = crate::auto_recover::Mode::parse(&mode)?;
+            if all {
+                ensure!(
+                    mode == crate::auto_recover::Mode::Disabled && prompt.is_none(),
+                    "INVALID_ARGUMENT: --all only supports --mode disabled"
+                );
+                crate::auto_recover::disable_all(paths)?
+            } else {
+                let (Some(session), Some(expected_generation)) = (session, expected_generation)
+                else {
+                    bail!("INVALID_ARGUMENT: --session and --expected-generation are required")
+                };
+                crate::auto_recover::set_mode(paths, &session, &expected_generation, mode, prompt)
+                    .await?
+            }
         }
         Command::AutoRecover {
             session,

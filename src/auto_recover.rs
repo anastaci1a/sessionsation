@@ -1,7 +1,8 @@
-//! Per-session auto-recover (contract 1.35.0): when enabled for a live session and its
-//! process later disappears without an explicit stop (host restart, crash), the
-//! supervisor resumes the same conversation, preferably in the HERDR pane it last
-//! ran in, and sends it a prompt.
+//! Per-session Auto Start (contract 1.43.0; "auto-recover" since 1.35.0): when a mode other
+//! than `disabled` is set for a live session and its process later disappears without an
+//! explicit stop (host restart, crash), the supervisor resumes the same conversation,
+//! preferably in the HERDR pane it last ran in. Mode `start` sends nothing; mode
+//! `start_prompt` then sends a prompt (custom or default).
 //!
 //! The setting lives in `registry/auto-recover.json` (crash-safe writes), not in the
 //! catalog entry, so pane bookkeeping never changes a session generation. Every
@@ -9,7 +10,8 @@
 //! by the supervisor, and never replayed automatically. Phases:
 //!
 //! ```text
-//! admitted -> pane_ready -> resuming -> resumed -> prompting -> complete
+//! admitted -> pane_ready -> resuming -> resumed -> prompting -> complete   (start_prompt)
+//! admitted -> pane_ready -> resuming -> resumed -> complete                (start: no prompting)
 //!    \_ failed (before the resume was dispatched; nothing was started)
 //!    \_ uncertain (after dispatch, or an ambiguous prompt send) -> recover | abandoned
 //! ```
@@ -54,9 +56,46 @@ fn seconds(name: &str, default: u64) -> u64 {
 
 // -------------------------------------------------------------------- settings
 
+/// What happens when a watched session's process disappears.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    #[default]
+    Disabled,
+    /// Resume only; nothing is sent.
+    Start,
+    /// Resume, then send the prompt (custom or default) once.
+    StartPrompt,
+}
+impl Mode {
+    pub fn parse(text: &str) -> Result<Self> {
+        match text {
+            "disabled" => Ok(Self::Disabled),
+            "start" => Ok(Self::Start),
+            "start_prompt" => Ok(Self::StartPrompt),
+            _ => bail!("INVALID_ARGUMENT: --mode must be disabled, start or start_prompt"),
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Start => "start",
+            Self::StartPrompt => "start_prompt",
+        }
+    }
+}
+fn default_record_mode() -> String {
+    "start_prompt".into()
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Setting {
+    /// Mirrors `mode != disabled` (kept so a downgrade still reads the old field).
     pub enabled: bool,
+    /// Absent in records written before 1.43.0: those read as `start_prompt` when enabled
+    /// (see [`Setting::mode`]) and are rewritten by [`migrate`].
+    #[serde(default)]
+    pub mode: Option<Mode>,
     #[serde(default)]
     pub prompt: Option<String>,
     /// HERDR target (`herdr/<session>/<pane>`) the live process last ran in.
@@ -79,6 +118,19 @@ pub struct Setting {
     pub recoveries: Vec<i64>,
     #[serde(default)]
     pub enabled_at: i64,
+}
+impl Setting {
+    pub fn mode(&self) -> Mode {
+        self.mode.unwrap_or(if self.enabled {
+            Mode::StartPrompt
+        } else {
+            Mode::Disabled
+        })
+    }
+    fn set_mode(&mut self, mode: Mode) {
+        self.mode = Some(mode);
+        self.enabled = mode != Mode::Disabled;
+    }
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Store {
@@ -104,14 +156,28 @@ fn with_store<R>(paths: &Paths, f: impl FnOnce(&mut Store) -> R) -> Result<R> {
     let lock = lock_file(&paths.root.join(crate::layout::AUTO_RECOVER_LOCK))?;
     lock.lock_exclusive()?;
     let mut store = load(paths)?;
-    let before = serde_json::to_vec(&store)?;
+    // Compared with the file as stored, so records from before 1.43.0 are rewritten
+    // (with their mode filled in) by the first write.
+    let before = fs::read(store_file(paths)).unwrap_or(serde_json::to_vec(&store)?);
+    for setting in store.sessions.values_mut() {
+        setting.mode = Some(setting.mode());
+    }
     let out = f(&mut store);
-    store.schema_version = 1;
+    store.schema_version = 2;
     let after = serde_json::to_vec(&store)?;
     if before != after {
         atomic_write(&store_file(paths), &after)?;
     }
     Ok(out)
+}
+/// Storage migration (1.43.0): every record gets an explicit `mode` (an enabled record
+/// from before becomes `start_prompt`, prompt kept). One atomic replace under the store
+/// lock, so a crash leaves the old or the new file; running it again changes nothing.
+pub fn migrate(paths: &Paths) -> Result<()> {
+    if store_file(paths).is_file() {
+        with_store(paths, |_| ())?;
+    }
+    Ok(())
 }
 fn update(paths: &Paths, id: &str, f: impl FnOnce(&mut Setting)) {
     let _ = with_store(paths, |s| {
@@ -122,14 +188,44 @@ fn update(paths: &Paths, id: &str, f: impl FnOnce(&mut Setting)) {
 }
 
 /// Public projection (`api state` rows and `api auto-recover` receipts).
+/// Deprecated `auto_recover` projection (since 1.43.0; kept for older clients).
 pub fn public(setting: Option<&Setting>) -> Value {
     let default = Setting::default();
     let s = setting.unwrap_or(&default);
     let now = daemon::now();
-    json!({"enabled":s.enabled,"prompt":s.prompt,"last_pane":s.last_pane,"last_recovered_at":s.last_recovered_at,
-        "last_result":s.last_result,"workspace_label":s.workspace_label,"suppressed":s.suppressed && s.enabled,
+    json!({"enabled":s.mode() != Mode::Disabled,"prompt":s.prompt,"last_pane":s.last_pane,"last_recovered_at":s.last_recovered_at,
+        "last_result":legacy_result(s.last_result.as_ref()),"workspace_label":s.workspace_label,"suppressed":s.suppressed && s.enabled,
         "recoveries_last_hour":s.recoveries.iter().filter(|t| now - **t < HOUR).count(),
         "max_per_hour":MAX_PER_HOUR})
+}
+/// `auto_start` projection (contract 1.43.0): the old fields plus `mode`, with
+/// `last_started_at` in place of `last_recovered_at`.
+pub fn public_start(setting: Option<&Setting>) -> Value {
+    let default = Setting::default();
+    let s = setting.unwrap_or(&default);
+    let now = daemon::now();
+    json!({"mode":s.mode().as_str(),"enabled":s.mode() != Mode::Disabled,"prompt":s.prompt,"last_pane":s.last_pane,
+        "last_started_at":s.last_recovered_at,"last_result":s.last_result,"workspace_label":s.workspace_label,
+        "suppressed":s.suppressed && s.enabled,
+        "starts_last_hour":s.recoveries.iter().filter(|t| now - **t < HOUR).count(),
+        "max_per_hour":MAX_PER_HOUR})
+}
+/// The 1.35.0 names of the new result states, for the deprecated projection.
+fn legacy_result(result: Option<&Value>) -> Value {
+    let Some(r) = result else { return Value::Null };
+    let mut r = r.clone();
+    match r["state"].as_str() {
+        Some("started_with_prompt") => {
+            r["state"] = json!("recovered");
+            r["code"] = json!("RECOVERED");
+        }
+        Some("started") => {
+            r["state"] = json!("recovered_without_prompt");
+            r["code"] = json!("PROMPT_NOT_DELIVERED");
+        }
+        _ => {}
+    }
+    r
 }
 /// Settings of every session, for `api state` (an unreadable file reads as none).
 pub fn all(paths: &Paths) -> BTreeMap<String, Setting> {
@@ -140,7 +236,7 @@ pub fn all(paths: &Paths) -> BTreeMap<String, Setting> {
 pub fn explicit_stop(paths: &Paths, session: &str) {
     update(paths, session, |s| {
         if s.enabled {
-            s.enabled = false;
+            s.set_mode(Mode::Disabled);
             s.last_result = Some(result(
                 "disabled",
                 "EXPLICIT_STOP",
@@ -167,7 +263,7 @@ fn result(state: &str, code: &str, detail: &str, operation: Option<&str>) -> Val
 fn default_prompt(at: i64) -> String {
     let when = chrono_like(at);
     format!(
-        "Auto-recovery: the host restarted at {when} and sessionsation resumed this session. Re-check your state and continue your work."
+        "Auto-start: the host restarted at {when} and sessionsation resumed this session. Re-check your state and continue your work."
     )
 }
 /// `YYYY-MM-DD HH:MM:SS UTC` without a date dependency.
@@ -357,12 +453,33 @@ pub fn capability() -> Value {
         "prompt_delivery":"api_send_submit_once",
         "explicit_stop_disables":["stop","archive","delete"],"switch_or_restart":"suppressed_until_live_again",
         "refusal_codes":["AUTO_RECOVER_REQUIRES_LIVE","AUTO_RECOVER_UNSUPPORTED","STALE_TARGET","SESSION_OPERATION_IN_PROGRESS","INVALID_ARGUMENT","ACCOUNT_UNAVAILABLE","AMBIGUOUS_SESSION"],
-        "last_result_states":["recovered","recovered_without_prompt","failed","uncertain","rate_limited","waiting","disabled","abandoned"]})
+        "last_result_states":["recovered","recovered_without_prompt","failed","uncertain","rate_limited","waiting","disabled","abandoned"],
+        "deprecated":true,"replaced_by":"auto_start"})
+}
+
+/// The `capabilities.auto_start` descriptor (contract 1.43.0).
+pub fn capability_start() -> Value {
+    json!({"since_contract":"1.43.0","version":1,"command":"auto-start",
+        "args":["--session","--expected-generation","--mode","--prompt","--all"],
+        "modes":["disabled","start","start_prompt"],"default_mode":"disabled",
+        "default_prompt":"Auto-start: the host restarted at <UTC time> and sessionsation resumed this session. Re-check your state and continue your work.",
+        "max_prompt_bytes":MAX_PROMPT_BYTES,"clear_prompt":"api auto-start --mode start_prompt without --prompt resets to the default prompt",
+        "mode_semantics":{"start":"resume only, nothing is sent","start_prompt":"resume, then send the prompt (custom or default) once"},
+        "prompt":"only_with_start_prompt","bulk":{"flag":"--all","mode":"disabled","operator_only":true},
+        "enable_requires":"live_session","disable":"always_allowed","session_capability":"auto_start",
+        "state_field":"auto_start","setting_storage":"registry/auto-recover.json","changes_session_generation":false,
+        "deprecated_aliases":{"command":"auto-recover","state_field":"auto_recover","capability":"auto_recover"},
+        "trigger":["supervisor_startup","supervisor_loop"],"consecutive_checks":MISS_THRESHOLD,"check_seconds":15,
+        "max_per_hour":MAX_PER_HOUR,"operation_kind":"auto_recover","operation_dir":crate::layout::AUTO_RECOVERIES,
+        "phases":["admitted","pane_ready","resuming","resumed","prompting","complete","failed","uncertain","abandoned"],
+        "replays":false,"recover":"recover","abandon":"abandon-operation",
+        "last_result_states":["started","started_with_prompt","failed","uncertain","rate_limited","waiting","disabled","abandoned"],
+        "refusal_codes":["AUTO_RECOVER_REQUIRES_LIVE","AUTO_RECOVER_UNSUPPORTED","STALE_TARGET","SESSION_OPERATION_IN_PROGRESS","INVALID_ARGUMENT","ACCOUNT_UNAVAILABLE","AMBIGUOUS_SESSION"]})
 }
 
 // -------------------------------------------------------------------------- API
 
-/// `api auto-recover`: enable (live sessions only) or disable (always allowed).
+/// Deprecated `api auto-recover`: `--enable` is `start_prompt`, `--disable` is `disabled`.
 pub async fn set(
     paths: &Paths,
     session: &str,
@@ -370,15 +487,38 @@ pub async fn set(
     enable: bool,
     prompt: Option<String>,
 ) -> Result<Value> {
-    let s = catalog::resolve(paths, session, expected_generation)?;
     if !enable {
         ensure!(
             prompt.is_none(),
             "INVALID_ARGUMENT: --prompt needs --enable"
         );
+    }
+    let mode = if enable {
+        Mode::StartPrompt
+    } else {
+        Mode::Disabled
+    };
+    set_mode(paths, session, expected_generation, mode, prompt).await
+}
+
+/// `api auto-start --mode`: set the mode (live sessions only unless disabling or
+/// switching between the two start modes of an already enabled session).
+pub async fn set_mode(
+    paths: &Paths,
+    session: &str,
+    expected_generation: &str,
+    mode: Mode,
+    prompt: Option<String>,
+) -> Result<Value> {
+    let s = catalog::resolve(paths, session, expected_generation)?;
+    ensure!(
+        prompt.is_none() || mode == Mode::StartPrompt,
+        "INVALID_ARGUMENT: --prompt is only valid with --mode start_prompt"
+    );
+    if mode == Mode::Disabled {
         let changed = with_store(paths, |store| match store.sessions.get_mut(&s.id) {
-            Some(setting) if setting.enabled => {
-                setting.enabled = false;
+            Some(setting) if setting.mode() != Mode::Disabled => {
+                setting.set_mode(Mode::Disabled);
                 setting.suppressed = false;
                 setting.misses = 0;
                 setting.last_result = Some(result(
@@ -393,30 +533,30 @@ pub async fn set(
         })?;
         return Ok(receipt(paths, &s, changed));
     }
-    let prompt = match prompt {
-        Some(p) => {
-            ensure!(
-                !p.trim().is_empty() && p.len() <= MAX_PROMPT_BYTES && !p.contains('\0'),
-                "INVALID_ARGUMENT: --prompt must be 1-{MAX_PROMPT_BYTES} bytes of text"
-            );
-            Some(p)
-        }
-        None => None,
-    };
-    ensure!(
-        !external::archiving::hidden(paths)?.contains(&s.id),
-        "AUTO_RECOVER_REQUIRES_LIVE: the session is archived"
-    );
-    crate::lifecycle::ensure_available(paths, &s.conversation_id, None)?;
-    let pane = live_for_enable(paths, &s).await?;
-    let label = match &pane {
-        Some(p) => workspace_label_of(p),
-        None => None,
-    };
+    if let Some(p) = &prompt {
+        ensure!(
+            !p.trim().is_empty() && p.len() <= MAX_PROMPT_BYTES && !p.contains('\0'),
+            "INVALID_ARGUMENT: --prompt must be 1-{MAX_PROMPT_BYTES} bytes of text"
+        );
+    }
+    let already = all(paths)
+        .get(&s.id)
+        .is_some_and(|x| x.mode() != Mode::Disabled);
+    let mut pane = None;
+    let mut label = None;
+    if !already {
+        ensure!(
+            !external::archiving::hidden(paths)?.contains(&s.id),
+            "AUTO_RECOVER_REQUIRES_LIVE: the session is archived"
+        );
+        crate::lifecycle::ensure_available(paths, &s.conversation_id, None)?;
+        pane = live_for_enable(paths, &s).await?;
+        label = pane.as_deref().and_then(workspace_label_of);
+    }
     let changed = with_store(paths, |store| {
         let setting = store.sessions.entry(s.id.clone()).or_default();
-        let changed = !setting.enabled || setting.prompt != prompt;
-        setting.enabled = true;
+        let changed = setting.mode() != mode || setting.prompt != prompt;
+        setting.set_mode(mode);
         setting.prompt = prompt;
         setting.suppressed = false;
         setting.misses = 0;
@@ -432,9 +572,34 @@ pub async fn set(
     })?;
     Ok(receipt(paths, &s, changed))
 }
+/// `api auto-start --all --mode disabled`: disable every session (operator bulk admin).
+pub fn disable_all(paths: &Paths) -> Result<Value> {
+    let ids = with_store(paths, |store| {
+        let mut ids = vec![];
+        for (id, setting) in store.sessions.iter_mut() {
+            if setting.mode() != Mode::Disabled {
+                setting.set_mode(Mode::Disabled);
+                setting.suppressed = false;
+                setting.misses = 0;
+                setting.last_result = Some(result(
+                    "disabled",
+                    "DISABLED",
+                    "Disabled by the operator (all sessions).",
+                    None,
+                ));
+                ids.push(id.clone());
+            }
+        }
+        ids
+    })?;
+    Ok(
+        json!({"all":true,"mode":"disabled","changed":!ids.is_empty(),"disabled_count":ids.len(),"disabled":ids}),
+    )
+}
 fn receipt(paths: &Paths, s: &Session, changed: bool) -> Value {
     let store = all(paths);
-    json!({"session_id":s.id,"generation":s.generation(),"changed":changed,"auto_recover":public(store.get(&s.id))})
+    json!({"session_id":s.id,"generation":s.generation(),"changed":changed,"mode":store.get(&s.id).map_or("disabled",|x| x.mode().as_str()),
+        "auto_start":public_start(store.get(&s.id)),"auto_recover":public(store.get(&s.id))})
 }
 
 // ---------------------------------------------------------------------- HERDR
@@ -597,6 +762,9 @@ pub struct Record {
     /// HERDR target the session is resumed into.
     pane: Option<String>,
     pane_reused: Option<bool>,
+    /// start | start_prompt (records from before 1.43.0 prompted).
+    #[serde(default = "default_record_mode")]
+    mode: String,
     prompt: String,
     message_id: String,
     /// pending | dispatching | delivered | failed
@@ -678,7 +846,7 @@ fn public_record(paths: &Paths, r: &Record) -> Value {
     "created_at":r.created_at,"updated_at":r.updated_at,"can_cancel":false,"can_recover":can_recover,"can_respond":false,
     "non_steering":true,"replays":false,
     "resume":{"state":r.resume,"pane":r.pane,"pane_reused":r.pane_reused,"recorded_pane":r.recorded_pane},
-    "prompt":{"state":r.prompt_state,"attempts":r.prompt_attempts,"detail":r.prompt_detail,"message_id":r.message_id},
+    "mode":r.mode,"prompt":{"state":r.prompt_state,"attempts":r.prompt_attempts,"detail":r.prompt_detail,"message_id":r.message_id},
     "generation":r.generation_after,
     "next":match r.phase.as_str() {
         "uncertain" => "api recover <operation> to re-check from the journaled phase (a resume or prompt is never replayed), or api abandon-operation <operation> --confirm <operation>",
@@ -996,11 +1164,21 @@ async fn drive<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result<(
                 "Recovered; the prompt send was not confirmed and is not replayed.",
             );
         }
+        if r.mode == "start" {
+            r.prompt_state = "skipped".into();
+            r.prompt_detail = "Mode start: no prompt is sent.".into();
+            return phase(
+                paths,
+                r,
+                "complete",
+                "Session resumed in its pane; mode start sends no prompt.",
+            );
+        }
         deliver(paths, r, sender).await?;
         let detail = if r.prompt_state == "delivered" {
-            "Session resumed in its pane and the recovery prompt was delivered."
+            "Session resumed in its pane and the auto-start prompt was delivered."
         } else {
-            "Session resumed in its pane; the recovery prompt was not delivered (see prompt.detail)."
+            "Session resumed in its pane; the auto-start prompt was not delivered (see prompt.detail)."
         };
         phase(paths, r, "complete", detail)?;
     }
@@ -1033,12 +1211,13 @@ fn fail(paths: &Paths, r: &mut Record, error: &anyhow::Error) {
 /// Record the outcome on the setting (`last_result`, `last_recovered_at`, `last_pane`).
 fn finish(paths: &Paths, r: &Record) {
     let (state, code, detail) = match r.phase.as_str() {
-        "complete" if r.prompt_state == "delivered" => ("recovered", "RECOVERED", r.detail.clone()),
-        "complete" => (
-            "recovered_without_prompt",
-            "PROMPT_NOT_DELIVERED",
+        "complete" if r.prompt_state == "delivered" => (
+            "started_with_prompt",
+            "STARTED_WITH_PROMPT",
             r.detail.clone(),
         ),
+        "complete" if r.mode == "start" => ("started", "STARTED", r.detail.clone()),
+        "complete" => ("started", "PROMPT_NOT_DELIVERED", r.detail.clone()),
         "uncertain" => ("uncertain", "RECOVERY_UNCERTAIN", r.detail.clone()),
         "failed" => ("failed", "RECOVERY_FAILED", r.detail.clone()),
         _ => return,
@@ -1068,6 +1247,7 @@ pub async fn tick(paths: &Paths) -> Result<Vec<Value>> {
     tick_with(paths, &Normal).await
 }
 pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Vec<Value>> {
+    migrate(paths)?;
     let store = load(paths)?;
     if !store.sessions.values().any(|s| s.enabled) {
         return Ok(vec![]);
@@ -1089,7 +1269,7 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
         match catalog::find(paths, id) {
             Ok(s) => sessions.push(s),
             Err(_) => update(paths, id, |s| {
-                s.enabled = false;
+                s.set_mode(Mode::Disabled);
                 s.last_result = Some(result(
                     "disabled",
                     "SESSION_GONE",
@@ -1245,9 +1425,14 @@ async fn attempt<S: Sender>(
         directory: s.directory.clone(),
         pane: None,
         pane_reused: None,
+        mode: setting.mode().as_str().into(),
         prompt,
         message_id: uuid::Uuid::new_v4().to_string(),
-        prompt_state: "pending".into(),
+        prompt_state: if setting.mode() == Mode::Start {
+            "skipped".into()
+        } else {
+            "pending".into()
+        },
         prompt_attempts: 0,
         prompt_detail: String::new(),
         resume: "pending".into(),

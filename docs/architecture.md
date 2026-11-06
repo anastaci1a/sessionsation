@@ -105,7 +105,7 @@ it never infers a provider from a name. Account names are unique per provider; t
 
 Claude sessions are bound to their account config home. An account switch (contract 1.34.0)
 moves a conversation's files between homes and resumes it; no history conversion or credential
-sharing exists. Per-session auto-recover (contract 1.35.0) is supervisor-driven: the setting lives in
+sharing exists. Per-session Auto Start (disabled, start, start_prompt; contract 1.43.0, auto-recover since 1.35.0) is supervisor-driven: the setting lives in
 `registry/auto-recover.json`, each recovery is a journaled operation, and nothing is replayed. The supervisor only probes
 `claude auth status`; usage is projected from the statusline recorder. See
 [Claude Code accounts and sessions](cli.md#claude-code-accounts-and-sessions),

@@ -20,7 +20,7 @@ conversion.
 Today the CLI provides account enrollment, usage/reset reporting, enable/disable,
 local account deletion with preserved conversations, session discovery, new/resume,
 rename, idle-bound account switching, running HERDR Space moves, archives and explicit
-conversation deletion, per-session auto-recover and turn-end notifications, shared
+conversation deletion, per-session Auto Start (resume only, or resume and prompt) and turn-end notifications, shared
 Claude conversation state across accounts (`sessionsation shared`), data-root layout
 migration and retention, and a disk-space guard.
 Integrations use a versioned JSON API with stable session IDs, generation checks,

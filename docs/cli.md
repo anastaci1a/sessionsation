@@ -797,7 +797,18 @@ resume reports `RECOVERY_UNRESOLVED` (or `SESSION_OPERATION_IN_PROGRESS`) with t
 `pending_operations`; an inline resume that never attached a provider settles as `failed`. See the
 [contract](contract.md#native-live-activity-usage-read-uncertain-operations-1420).
 
-### Session auto-recover (contract 1.35.0)
+### Session Auto Start (contract 1.43.0; auto-recover since 1.35.0)
+
+```sh
+sessionsation api auto-start --session BACKEND-ID --expected-generation GENERATION --mode disabled|start|start_prompt [--prompt TEXT]   # start_prompt without --prompt clears the custom prompt
+sessionsation api auto-start --all --mode disabled     # operator bulk: disable every session
+```
+
+Modes: `disabled` (default for every session), `start` (resume the session after its process
+disappears, send nothing) and `start_prompt` (resume, then send the prompt once; `--prompt` only
+here). State appears as `auto_start` on each session row and `capabilities.auto_start`; see the
+[contract](contract.md#auto-start-modes-1430). The commands below are the **deprecated** 1.35.0
+form (`--enable` = `start_prompt`, `--disable` = `disabled`), still served with `auto_recover` fields.
 
 ```sh
 sessionsation api auto-recover --session BACKEND-ID --expected-generation GENERATION --enable [--prompt TEXT]

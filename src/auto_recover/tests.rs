@@ -17,6 +17,7 @@ fn record(paths: &Paths, session: &Session) -> Record {
         directory: None,
         pane: Some("herdr/default/w1:p2".into()),
         pane_reused: Some(true),
+        mode: "start_prompt".into(),
         prompt: "go on".into(),
         message_id: uuid::Uuid::new_v4().to_string(),
         prompt_state: "pending".into(),
@@ -274,4 +275,134 @@ fn capability_reasons_follow_the_enable_rules() {
     );
     external["account"] = json!("a");
     assert_eq!(capability_reason(&external, false), None);
+}
+
+#[test]
+fn default_prompt_says_auto_start() {
+    assert!(default_prompt(0).starts_with("Auto-start:"));
+}
+
+#[test]
+fn mode_parsing_and_the_enabled_mirror() {
+    assert_eq!(Mode::parse("start_prompt").unwrap(), Mode::StartPrompt);
+    assert_eq!(Mode::parse("start").unwrap(), Mode::Start);
+    assert_eq!(Mode::parse("disabled").unwrap(), Mode::Disabled);
+    assert!(Mode::parse("on").is_err());
+    assert_eq!(Setting::default().mode(), Mode::Disabled);
+    let mut s = Setting::default();
+    s.set_mode(Mode::Start);
+    assert!(s.enabled);
+    s.set_mode(Mode::Disabled);
+    assert!(!s.enabled);
+}
+
+#[test]
+fn old_records_migrate_to_start_prompt_crash_safely_and_idempotently() {
+    let (_d, paths, s) = fixture();
+    private_dir(&paths.root.join(crate::layout::REGISTRY)).unwrap();
+    let old = json!({"schema_version":1,"sessions":{
+        s.id.clone(): {"enabled":true,"prompt":"keep me","last_pane":"herdr/x/w1:p1","misses":1},
+        "other": {"enabled":false}}});
+    fs::write(store_file(&paths), old.to_string()).unwrap();
+    // Reads see the migrated mode before anything is rewritten.
+    assert_eq!(all(&paths)[&s.id].mode(), Mode::StartPrompt);
+    assert_eq!(all(&paths)["other"].mode(), Mode::Disabled);
+    migrate(&paths).unwrap();
+    let after: Value = serde_json::from_slice(&fs::read(store_file(&paths)).unwrap()).unwrap();
+    assert_eq!(after["sessions"][&s.id]["mode"], "start_prompt");
+    assert_eq!(after["sessions"][&s.id]["enabled"], true);
+    assert_eq!(after["sessions"][&s.id]["prompt"], "keep me");
+    assert_eq!(after["sessions"]["other"]["mode"], "disabled");
+    assert_eq!(after["schema_version"], 2);
+    // Idempotent: a second run leaves the bytes untouched.
+    let bytes = fs::read(store_file(&paths)).unwrap();
+    migrate(&paths).unwrap();
+    migrate(&paths).unwrap();
+    assert_eq!(fs::read(store_file(&paths)).unwrap(), bytes);
+    // No store: nothing is created.
+    let (_d2, p2, _) = fixture();
+    migrate(&p2).unwrap();
+    assert!(!store_file(&p2).exists());
+}
+
+#[tokio::test]
+async fn mode_start_sends_no_prompt_and_start_prompt_sends_exactly_once() {
+    for (mode, sends) in [("start", 0usize), ("start_prompt", 1)] {
+        let (_d, paths, s) = fixture();
+        let mut r = record(&paths, &s);
+        r.mode = mode.into();
+        if mode == "start" {
+            r.prompt_state = "skipped".into();
+        }
+        let script = Script::new(if sends == 1 {
+            vec![Ok(json!({"state":"accepted"}))]
+        } else {
+            vec![]
+        });
+        drive(&paths, &mut r, &script).await.unwrap();
+        assert_eq!(r.phase, "complete");
+        assert_eq!(script.bodies.lock().unwrap().len(), sends, "{mode}");
+        assert!(r.phase != "prompting");
+        // Driving again (a recover) never sends a second time.
+        drive(&paths, &mut r, &Script::new(vec![])).await.unwrap();
+        finish(&paths, &r);
+    }
+}
+
+#[test]
+fn results_use_started_names_and_the_deprecated_projection_keeps_the_old_ones() {
+    let (_d, paths, s) = fixture();
+    with_store(&paths, |st| {
+        let mut x = Setting::default();
+        x.set_mode(Mode::Start);
+        st.sessions.insert(s.id.clone(), x);
+    })
+    .unwrap();
+    let mut r = record(&paths, &s);
+    r.mode = "start".into();
+    r.phase = "complete".into();
+    r.prompt_state = "skipped".into();
+    finish(&paths, &r);
+    let x = all(&paths)[&s.id].clone();
+    assert_eq!(public_start(Some(&x))["last_result"]["state"], "started");
+    assert_eq!(public_start(Some(&x))["mode"], "start");
+    assert_eq!(
+        public(Some(&x))["last_result"]["state"],
+        "recovered_without_prompt"
+    );
+    assert_eq!(public(Some(&x))["enabled"], true);
+    r.mode = "start_prompt".into();
+    r.prompt_state = "delivered".into();
+    finish(&paths, &r);
+    let x = all(&paths)[&s.id].clone();
+    assert_eq!(
+        public_start(Some(&x))["last_result"]["state"],
+        "started_with_prompt"
+    );
+    assert_eq!(public(Some(&x))["last_result"]["state"], "recovered");
+}
+
+#[test]
+fn disable_all_disables_every_enabled_session() {
+    let (_d, paths, s) = fixture();
+    with_store(&paths, |st| {
+        for (id, mode) in [
+            (s.id.as_str(), Mode::Start),
+            ("b", Mode::StartPrompt),
+            ("c", Mode::Disabled),
+        ] {
+            let mut x = Setting::default();
+            x.set_mode(mode);
+            st.sessions.insert(id.into(), x);
+        }
+    })
+    .unwrap();
+    let out = disable_all(&paths).unwrap();
+    assert_eq!(out["disabled_count"], 2);
+    assert!(
+        all(&paths)
+            .values()
+            .all(|x| x.mode() == Mode::Disabled && !x.enabled)
+    );
+    assert_eq!(disable_all(&paths).unwrap()["changed"], false);
 }
