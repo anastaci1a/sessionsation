@@ -420,6 +420,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         return Ok(());
     }
     run(paths, &mut r).await;
+    crate::api::refresh_snapshots(paths).await;
     Ok(())
 }
 

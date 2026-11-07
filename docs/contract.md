@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.45.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.45.1`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3012,3 +3012,12 @@ reboot or an array restart.
   reach `completed_with_reply`. Without it (sends, Auto Start prompts and notices) nothing is requested, the
   receipt settles `native_accepted` (upgraded to `input_recorded`/consumed from the transcript anchor) after at most the
   3 s status window, and the worker exits promptly instead of lingering up to the 600 s timeout.
+
+### Cached snapshots follow asynchronous lifecycle jobs (1.45.1)
+
+PATCH. 1.45.0 refreshed the cached snapshots when a lifecycle command returned, but `stop`, `restart`,
+`switch`, move, archive/delete/restore, resume and launch finish in a background worker: the refresh ran
+when the job was only queued, so `api state --cached` kept `availability: running` and the old generation
+until a full `state`, and archive/delete were refused `STALE_TARGET`. Every job worker now rewrites the
+`active`, `archived` and `all` snapshots when its job completes (or fails), before it releases its lock.
+No field or command changed.

@@ -715,6 +715,8 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
             ),
         )?;
     }
+    // The job is done: leave the cached snapshots showing its result (1.45.1).
+    crate::api::refresh_snapshots(paths).await;
     Ok(())
 }
 

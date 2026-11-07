@@ -542,6 +542,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
             Ok(())
         })?;
     }
+    crate::api::refresh_snapshots(paths).await;
     Ok(())
 }
 async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {

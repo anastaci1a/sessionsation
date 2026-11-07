@@ -455,3 +455,41 @@ async fn external_inactive_history_can_archive_and_delete_without_enrollment() {
     );
     server.abort();
 }
+
+/// 1.45.1: `stop` queues an async terminate job. The cached snapshot must show the stopped
+/// session with its new generation as soon as the job is complete (not only after a full
+/// `state`), and archive must then accept that cached generation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cached_read_after_an_async_stop_shows_it_stopped_and_archive_accepts_it() {
+    let f = Fixture::new().await;
+    let pane = f.live(ID, false);
+    f.a.lock().unwrap().threads.get_mut(ID).unwrap()["historyMode"] = json!("paginated");
+    let before = target(&f); // full state: writes the snapshots
+    assert_eq!(before["availability"], "running", "{before}");
+    let job = api(
+        &f,
+        &[
+            "stop",
+            "--session",
+            before["id"].as_str().unwrap(),
+            "--expected-generation",
+            before["generation"].as_str().unwrap(),
+        ],
+    );
+    f.wait(job["id"].as_str().unwrap(), "complete").await;
+    let _ = pane;
+    let cached = api(&f, &["state", "--cached"])["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap()
+        .clone();
+    assert_ne!(cached["availability"], "running", "{cached}");
+    assert_ne!(cached["generation"], before["generation"], "{cached}");
+    let rid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let submitted = start(&f, "archive", &cached, rid);
+    assert_eq!(submitted["phase"], "queued", "{submitted}");
+    let result = wait(&f, rid).await;
+    assert_eq!(result["phase"], "complete", "{result}");
+}
