@@ -905,6 +905,9 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
             .unwrap()
             .remove(0);
         let request = PublicRequest {
+            origin: None,
+            delivery: None,
+            await_reply: false,
             steering: None,
             recovery: None,
             api_version: 1,
@@ -1003,6 +1006,9 @@ async fn ordinary_public_send_requires_explicit_recovery_for_interrupted_turns()
                 .unwrap()
                 .remove(0);
             let request = PublicRequest {
+                origin: None,
+                delivery: None,
+                await_reply: false,
                 steering: None,
                 api_version: 1,
                 message_id: input.message_id,
@@ -1049,6 +1055,9 @@ async fn approval_blocked_public_send_is_a_definite_refusal_never_dispatched_on_
             .unwrap()
             .remove(0);
         let request = PublicRequest {
+            origin: None,
+            delivery: None,
+            await_reply: false,
             steering: None,
             api_version: 1,
             message_id: input.message_id,

@@ -332,6 +332,9 @@ mod tests {
             .unwrap()
             .remove(0);
         let result = PublicRequest {
+            origin: None,
+            delivery: None,
+            await_reply: false,
             steering: None,
             recovery: None,
             api_version: 1,

@@ -1145,7 +1145,8 @@ pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
             _ => bail!("INVALID_REQUEST"),
         }
     }
-    let request: super::PublicRequest = serde_json::from_value(v).context("INVALID_REQUEST")?;
+    let request: super::PublicRequest =
+        serde_json::from_value(v).map_err(|e| anyhow::anyhow!("INVALID_REQUEST: {e}"))?;
     super::send_public(paths, request).await
 }
 fn catalog_provider(paths: &Paths, id: &str) -> Option<String> {

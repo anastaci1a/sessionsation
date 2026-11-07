@@ -890,6 +890,9 @@ mod tests {
                     .all(|m| m == "thread/read" || m == "thread/turns/list")
             );
             let request = PublicRequest {
+                origin: None,
+                delivery: None,
+                await_reply: false,
                 api_version: 1,
                 message_id: input.message_id.clone(),
                 session_id: session.id,
@@ -987,6 +990,9 @@ mod tests {
             previous_conversation_ids: vec![],
         };
         let request = PublicRequest {
+            origin: None,
+            delivery: None,
+            await_reply: false,
             steering: None,
             api_version: 1,
             message_id: input.message_id,

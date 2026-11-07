@@ -241,7 +241,10 @@ impl Account {
         }
     }
     pub fn observe(&mut self, usage: Usage) {
-        if usage.observed_at < self.usage.observed_at {
+        // An older reading is dropped, unless the stored one claims a time ahead of the clock
+        // (clock stepped back): that value is untrustworthy and must not block fresh polls.
+        let ahead = self.usage.observed_at > crate::daemon::now().saturating_add(2);
+        if usage.observed_at < self.usage.observed_at && !ahead {
             return;
         }
         fn delta(old: &Option<Window>, new: &Option<Window>) -> f64 {

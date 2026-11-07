@@ -63,6 +63,10 @@ pub struct Config {
     /// Days a finished operation journal is kept (unfinished or uncertain ones
     /// and tombstones are never removed).
     pub operation_retention_days: u32,
+    /// Opt-in (contract 1.45.2): the native-message worker registers its own pid in the receiving
+    /// Claude account's session registry under the sending session's name, so Claude renders the
+    /// message as a collapsed `@name` entry. Removed on every exit path; default off.
+    pub native_sender_registration: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -94,6 +98,7 @@ impl Default for Config {
             log_max_bytes: 8 * 1024 * 1024,
             cache_retention_days: 14,
             operation_retention_days: 90,
+            native_sender_registration: false,
         }
     }
 }

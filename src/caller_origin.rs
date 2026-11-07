@@ -39,20 +39,54 @@ fn chain_hits(
     attachments: &[(u32, u64)],
     stat: impl Fn(u32) -> Option<(u32, u64)>,
 ) -> bool {
+    chain_match(start, attachments, stat).is_some()
+}
+
+/// The first attachment found walking up from `start`.
+fn chain_match(
+    start: u32,
+    attachments: &[(u32, u64)],
+    stat: impl Fn(u32) -> Option<(u32, u64)>,
+) -> Option<(u32, u64)> {
     let mut pid = start;
     for _ in 0..MAX_HOPS {
         if pid <= 1 {
-            return false;
+            return None;
         }
-        let Some((parent, started)) = stat(pid) else {
-            return false;
-        };
+        let (parent, started) = stat(pid)?;
         if attachments.contains(&(pid, started)) {
-            return true;
+            return Some((pid, started));
         }
         pid = parent;
     }
-    false
+    None
+}
+
+/// Catalog name of the managed session this process runs under (a parent is its attachment);
+/// `sessionsation` when called from outside any session (operator, supervisor, system).
+pub fn sender_name(paths: &Paths) -> String {
+    let found = catalog::list(paths).ok().and_then(|sessions| {
+        let hit = chain_match(
+            std::process::id(),
+            &sessions
+                .iter()
+                .filter_map(|s| s.attachment.as_ref())
+                .map(|a| (a.pid, a.process_start))
+                .collect::<Vec<_>>(),
+            proc_stat,
+        )?;
+        sessions
+            .into_iter()
+            .find(|s| {
+                s.attachment
+                    .as_ref()
+                    .is_some_and(|a| (a.pid, a.process_start) == hit)
+            })
+            .map(|s| s.name)
+    });
+    found
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "sessionsation".into())
 }
 
 /// `(ppid, start ticks)` from /proc.

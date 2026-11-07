@@ -187,6 +187,9 @@ fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value
         ProviderId::Codex => {
             let fresh = a.usage.fresh(at, config.stale_seconds);
             let mut usage = json!(a.usage);
+            if a.usage.observed_at > at {
+                usage["observed_at"] = json!(at);
+            }
             if a.usage.observed_at == 0 {
                 usage["observed_at"] = Value::Null;
             }
@@ -400,6 +403,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     let mut helpers = BTreeMap::<String, Rpc>::new();
     let mut pending = BTreeSet::new();
     let mut last_poll = BTreeMap::<String, i64>::new();
+    let mut last_sender_sweep = 0i64;
     let (poll_tx, mut polls) = mpsc::channel::<Poll>(64);
     let (claude_tx, mut claude_polls) = mpsc::channel::<ClaudePoll>(64);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -883,6 +887,14 @@ pub async fn serve(paths: Paths) -> Result<()> {
                 }
             }
             _ = interval.tick() => {
+                if now() - last_sender_sweep >= 60 {
+                    last_sender_sweep = now();
+                        for a in state.accounts.values().filter(|a| a.provider == ProviderId::Claude) {
+                            if let Ok(home) = crate::provider::account_home(&paths, a) {
+                                crate::provider::claude::sender_registry::sweep(&home);
+                            }
+                        }
+                }
                 for a in state.accounts.values() {
                     let akey = a.key();
                     if !a.enabled || pending.contains(&akey) { continue; }
@@ -1045,6 +1057,31 @@ mod tests {
                 name => assert!(observed.is_null(), "{name}: {observed}"),
             }
         }
+    }
+
+    #[test]
+    fn a_future_observed_at_neither_blocks_new_polls_nor_is_reported() {
+        let mut a = Account::new("cx".into(), "fixture".into());
+        let ahead = now() + 3600;
+        a.usage.observed_at = ahead;
+        let fresh = Usage {
+            observed_at: now(),
+            ..Default::default()
+        };
+        a.observe(fresh.clone());
+        assert_eq!(a.usage.observed_at, fresh.observed_at);
+        // A genuinely older reading is still dropped.
+        a.observe(Usage {
+            observed_at: fresh.observed_at - 10,
+            ..Default::default()
+        });
+        assert_eq!(a.usage.observed_at, fresh.observed_at);
+        // Reporting clamps a value that is ahead of the clock.
+        a.usage.observed_at = ahead;
+        let paths = Paths::new(Some(tempfile::tempdir().unwrap().keep().join("s"))).unwrap();
+        let (usage, fresh, _) = account_usage(&paths, &a, &Config::default(), now());
+        assert!(usage["observed_at"].as_i64().unwrap() <= now());
+        assert!(!fresh);
     }
 
     #[test]

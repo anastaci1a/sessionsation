@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.45.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.45.2`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3021,3 +3021,43 @@ when the job was only queued, so `api state --cached` kept `availability: runnin
 until a full `state`, and archive/delete were refused `STALE_TARGET`. Every job worker now rewrites the
 `active`, `archived` and `all` snapshots when its job completes (or fails), before it releases its lock.
 No field or command changed.
+
+### Codex send options, opt-in native sender registration, Codex usage clock (1.45.2)
+
+PATCH (additive).
+
+- **Codex targets accept the Claude send options.** `origin` (`operator` or `agent`; auto-detected when
+  omitted, recorded on the receipt as `origin`/`origin_source`), `delivery` and `await_reply` no longer fail
+  the whole request with `ok:false`. `delivery` other than `auto` names a Claude path and returns
+  `PROVIDER_DELIVERY_UNSUPPORTED` (an unknown value is `INVALID_REQUEST`); `await_reply` is ignored for Codex.
+  A refused unknown field now answers `INVALID_REQUEST: unknown field \`x\`, expected one of ...`.
+- **`native_sender_registration` (config.json, default `false`).** When on, the native-message worker writes
+  one registry entry for its own pid into the receiving Claude account (`<home>/sessions/<pid>.json`) before
+  the frame is written, so Claude shows a Codex-originated or agent-originated message as the collapsed
+  `@<sender> ❯` entry instead of an unidentified block. `name` is the sending session's catalog name
+  (`sessionsation` for system messages); `messagingSocketPath` is the worker's reply socket, which is also the
+  frame's `from`. Fields written: `pid`, `procStart` (the `/proc/<pid>/stat` start tick, as Claude writes it),
+  `pidDomain`, `startedAt`, `updatedAt`, `cwd`, `version` (`sessionsation-<version>`), `peerProtocol` 1,
+  `name`, `nameSource` `peer`, `nameSince`, `messagingSocketPath`, and the ownership markers `entrypoint`
+  `sessionsation-peer-worker` plus `registeredBy` `sessionsation`. Deliberately absent: `sessionId`, `kind`,
+  `peerFeatures`, `status`. No Claude process runs and no API call is made.
+  - Receipt `sender_registration`: `{"name":..,"registered":true}` or `{"registered":false,"reason":..}`
+    (`SENDER_NAME_COLLIDES_WITH_LIVE_SESSION` when a live non-sessionsation record already has that name,
+    `SENDER_REGISTRY_UNAVAILABLE`, `SENDER_PID_FILE_FOREIGN`, `SENDER_NAME_INVALID`); the message is then
+    delivered unregistered.
+  - Cleanup: removed by a drop guard on success, error and timeout, and by a SIGTERM/SIGINT handler (which
+    also unlinks the reply socket). After SIGKILL the entry is swept: by the next worker for that account and by
+    the supervisor every 60 s, for every Claude account, whether or not the setting is still on. A sweep removes
+    only entries carrying both ownership markers whose pid is dead or whose `procStart` no longer matches; it
+    never matches by name and never touches any other entry.
+  - Caveats: the entry is visible to Claude (for example in `/list-agents`) for the seconds the worker lives.
+    Replies Claude sends back go to the worker's reply socket: with `await_reply` the worker records them into
+    the receipt as before, otherwise they are ignored. Claude Code's use of the registry is undocumented; the
+    rendering was derived from Claude Code 2.1.314 and is not asserted for other versions.
+- **Codex usage clock and staleness.** An `observed_at` ahead of the clock (a clock step back) used to make
+  `Account::observe` drop every later reading as older, freezing usage until the clock caught up, and was
+  reported as is. A stored reading ahead of the clock no longer blocks new polls, and status never reports
+  `observed_at` after now. `api state --cached` replayed Codex usage frozen at the last full `state`
+  (hours old); it now overlays the supervisor's current Codex usage (a local read, no provider contact,
+  2 s bound) and, when the supervisor does not answer, marks the frozen value `stale` by its age and clamps a
+  future `observed_at` (adding `usage.observed_at_clamped_from`).

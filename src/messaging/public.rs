@@ -30,6 +30,15 @@ pub struct PublicRequest {
     pub recovery: Option<super::recovery::Intent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steering: Option<SteeringIntent>,
+    /// Caller origin (`operator` or `agent`); auto-detected when omitted. Recorded on the receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Accepted for parity with Claude targets; Codex supports only `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
+    /// Accepted and ignored for Codex targets (no idle subscription).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub await_reply: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -109,11 +118,30 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         "reply":if reply.is_null() {Value::Null} else {json!({"item_id":reply["item_id"],"text":reply["text"],"phase":reply["phase"]})}})
 }
 
+/// `origin` must be `operator` or `agent`; a `delivery` other than `auto` names a Claude
+/// path a Codex target does not have. `await_reply` is ignored for Codex.
+fn check_codex_options(request: &PublicRequest) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(request.origin.as_deref(), None | Some("operator" | "agent")),
+        "INVALID_REQUEST: origin must be operator or agent"
+    );
+    match request.delivery.as_deref() {
+        None | Some("auto") => Ok(()),
+        Some(d @ ("native" | "terminal_input" | "peer_message" | "hosted_stream_json")) => {
+            anyhow::bail!(
+                "PROVIDER_DELIVERY_UNSUPPORTED: delivery {d} is a Claude path; Codex targets accept only auto"
+            )
+        }
+        Some(_) => anyhow::bail!("INVALID_REQUEST: unknown delivery value"),
+    }
+}
+
 pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Result<Value> {
     anyhow::ensure!(
         request.api_version == crate::api::VERSION,
         "UNSUPPORTED_API_VERSION"
     );
+    check_codex_options(&request)?;
     if request.mode == PublicMode::Steer {
         request
             .steering
@@ -130,6 +158,7 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         request.recovery.is_none(),
         "RECOVERY_ONLY_VALID_WITH_RESUME"
     );
+    check_codex_options(&request)?;
     uuid(&request.message_id)?;
     anyhow::ensure!(
         !super::recovery::exists(paths, &request.message_id),
@@ -183,7 +212,8 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
                 request.expires_at > now && request.expires_at <= now + 86400,
                 "INVALID_EXPIRY"
             );
-            let (origin, origin_source) = crate::caller_origin::resolve(paths, None);
+            let (origin, origin_source) =
+                crate::caller_origin::resolve(paths, request.origin.as_deref());
             let binding = Binding {
                 request,
                 native,
@@ -460,6 +490,37 @@ fn settle_pending(paths: &Paths, ledger: &mut Ledger, receipt: &mut Receipt) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_send_accepts_claude_parity_fields_and_names_unknown_ones() {
+        use super::*;
+        let base = json!({"api_version":1,"message_id":"m","session_id":"s","expected_generation":"g",
+            "mode":"steer","text":"t","expires_at":1});
+        let mut v = base.clone();
+        v["origin"] = json!("agent");
+        v["delivery"] = json!("auto");
+        v["await_reply"] = json!(true);
+        let r: PublicRequest = serde_json::from_value(v).unwrap();
+        assert_eq!(r.origin.as_deref(), Some("agent"));
+        assert!(check_codex_options(&r).is_ok());
+        let mut native = r.clone();
+        native.delivery = Some("native".into());
+        let e = check_codex_options(&native).unwrap_err().to_string();
+        assert!(e.starts_with("PROVIDER_DELIVERY_UNSUPPORTED"), "{e}");
+        let mut bad = r.clone();
+        bad.origin = Some("robot".into());
+        assert!(
+            check_codex_options(&bad)
+                .unwrap_err()
+                .to_string()
+                .starts_with("INVALID_REQUEST")
+        );
+        let mut v = base;
+        v["bogus_field"] = json!(1);
+        let e = serde_json::from_value::<PublicRequest>(v)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("bogus_field"), "{e}");
+    }
     use super::*;
     #[test]
     fn public_receipt_distinguishes_native_acceptance_and_completion() {
@@ -469,6 +530,9 @@ mod tests {
             origin_source: None,
             evidence_observed_at: None,
             request: PublicRequest {
+                origin: None,
+                delivery: None,
+                await_reply: false,
                 steering: None,
                 api_version: 1,
                 message_id: uuid::Uuid::new_v4().to_string(),
@@ -561,6 +625,9 @@ mod evidence_tests {
             origin_source: None,
             evidence_observed_at: None,
             request: PublicRequest {
+                origin: None,
+                delivery: None,
+                await_reply: false,
                 steering: None,
                 api_version: 1,
                 message_id: input.message_id.clone(),
@@ -911,7 +978,8 @@ pub(super) async fn deliver_recovered(
             ledger.get(&request.message_id)?.is_none(),
             "MESSAGE_ID_CONFLICT"
         );
-        let (origin, origin_source) = crate::caller_origin::resolve(paths, None);
+        let (origin, origin_source) =
+            crate::caller_origin::resolve(paths, request.origin.as_deref());
         let b = Binding {
             native: Enqueue {
                 message_id: request.message_id.clone(),

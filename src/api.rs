@@ -18,8 +18,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 45;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.45.1";
+pub const CONTRACT_PATCH: u32 = 2;
+pub const CONTRACT_VERSION: &str = "1.45.2";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1845,9 +1845,49 @@ pub async fn state_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value>
     };
     let observed_at = value["observed_at"].as_i64().unwrap_or(0);
     value["snapshot"] = json!({"observed_at":observed_at,"fresh":daemon::now() - observed_at <= SNAPSHOT_FRESH_SECONDS,"cached":true});
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        daemon::call(paths, "status", json!({})),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok);
+    let stale = crate::store::load_config(paths).map_or(300, |c| c.stale_seconds);
+    overlay_codex_usage(&mut value, status.as_ref(), daemon::now(), stale);
     value["capabilities"] = capabilities();
     refresh_cached_accounts(paths, &mut value);
     Ok(value)
+}
+/// Codex usage in a cached snapshot is frozen at the last full `state`, which can be hours
+/// old. Take the supervisor's current snapshot (a local read, no provider contact) when it
+/// answers; otherwise judge the frozen value against now. Either way `observed_at` is never
+/// reported ahead of `now` and `usage_fresh`/`usage_state` reflect the age.
+fn overlay_codex_usage(value: &mut Value, status: Option<&Value>, now: i64, stale: u64) {
+    let Some(accounts) = value["accounts"].as_array_mut() else {
+        return;
+    };
+    for a in accounts.iter_mut().filter(|a| a["provider"] == "codex") {
+        let live = status.and_then(|s| s["accounts"].as_array()).and_then(|l| {
+            l.iter()
+                .find(|l| l["name"] == a["name"] && l["provider"] == "codex")
+        });
+        if let Some(l) = live {
+            for k in ["usage", "usage_fresh", "usage_state", "credit_fresh"] {
+                a[k] = l[k].clone();
+            }
+        } else if let Some(at) = a["usage"]["observed_at"].as_i64() {
+            let fresh = at > 0 && at <= now && now - at < stale as i64;
+            a["usage_fresh"] = json!(a["usage_fresh"] == true && fresh);
+            if !fresh {
+                a["usage_state"] = json!("stale");
+            }
+        }
+        if let Some(at) = a["usage"]["observed_at"].as_i64().filter(|at| *at > now) {
+            a["usage"]["observed_at"] = json!(now);
+            a["usage"]["observed_at_clamped_from"] = json!(at);
+            a["usage_fresh"] = json!(false);
+        }
+    }
 }
 /// Queued session operations of one conversation that have not finished yet, so a
 /// caller sees a stop that is still waiting for idle (and when it gives up).
@@ -3453,6 +3493,35 @@ mod codex_reason_tests {
         let mut v = row(json!({"stop":true}));
         fill_codex_reasons(&mut v, &ctx(true, true, true, true, false));
         assert!(v["capability_reasons"]["stop"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod codex_usage_overlay_tests {
+    use super::*;
+    #[test]
+    fn cached_codex_usage_is_refreshed_from_the_supervisor_and_never_ahead_of_now() {
+        let row = |at: i64, pct: f64| {
+            json!({"name":"p","provider":"codex","usage_fresh":true,"usage_state":"fresh","credit_fresh":false,
+            "usage":{"observed_at":at,"weekly":{"used_percent":pct,"resets_at":9999}}})
+        };
+        let mut cached = json!({"accounts":[row(1000, 64.)]});
+        let status = json!({"accounts":[row(2000, 75.)]});
+        overlay_codex_usage(&mut cached, Some(&status), 2001, 300);
+        assert_eq!(
+            cached["accounts"][0]["usage"]["weekly"]["used_percent"],
+            75.
+        );
+        // Supervisor unreachable: the frozen value ages out instead of staying fresh.
+        let mut cached = json!({"accounts":[row(1000, 64.)]});
+        overlay_codex_usage(&mut cached, None, 5000, 300);
+        assert_eq!(cached["accounts"][0]["usage_state"], "stale");
+        assert_eq!(cached["accounts"][0]["usage_fresh"], false);
+        // A future timestamp is clamped and not fresh.
+        let mut cached = json!({"accounts":[row(1191, 64.)]});
+        overlay_codex_usage(&mut cached, None, 1000, 300);
+        assert_eq!(cached["accounts"][0]["usage"]["observed_at"], 1000);
+        assert_eq!(cached["accounts"][0]["usage_fresh"], false);
     }
 }
 

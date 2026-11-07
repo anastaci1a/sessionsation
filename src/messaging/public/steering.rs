@@ -448,6 +448,9 @@ mod tests {
                     .unwrap()
                     .remove(0);
                 let request = PublicRequest {
+                    origin: None,
+                    delivery: None,
+                    await_reply: false,
                     api_version: 1,
                     message_id: input.message_id.clone(),
                     session_id: s.id.clone(),
@@ -763,6 +766,9 @@ mod tests {
                 .unwrap()
                 .remove(0);
             let request = PublicRequest {
+                origin: None,
+                delivery: None,
+                await_reply: false,
                 api_version: 1,
                 message_id: input.message_id.clone(),
                 session_id: s.id.clone(),

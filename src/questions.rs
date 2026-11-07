@@ -839,6 +839,9 @@ pub async fn answer(paths: &Paths, request: AnswerRequest) -> Result<Value> {
         }
         KIND_CODEX_ASYNC => {
             let message = crate::messaging::PublicRequest {
+                origin: None,
+                delivery: None,
+                await_reply: false,
                 api_version: crate::api::VERSION,
                 message_id: uuid::Uuid::new_v4().to_string(),
                 session_id: s.id.clone(),

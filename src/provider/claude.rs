@@ -19,6 +19,7 @@ pub mod hosted;
 pub mod launch;
 pub mod native_peer;
 pub mod peer;
+pub mod sender_registry;
 pub mod statusline_seed;
 pub mod trust;
 
