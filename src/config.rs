@@ -55,6 +55,9 @@ pub struct Config {
     /// account home (never adopted or existing). Empty disables seeding. Contract 1.27.0.
     pub claude_default_statusline_command: String,
     /// Days a rotated log (`logs/<name>.log.1`) is kept. See `retention`.
+    /// Seconds between re-runs of the Claude statusLine command while idle (`refreshInterval` in
+    /// the launch `--settings`); 0 disables. Contract 1.46.1.
+    pub claude_statusline_refresh_seconds: u32,
     pub log_retention_days: u32,
     /// A log larger than this is rotated to `<name>.log.1` and truncated.
     pub log_max_bytes: u64,
@@ -94,6 +97,7 @@ impl Default for Config {
             min_free_disk_mb: crate::disk_space::DEFAULT_MIN_FREE_MB,
             antigravity_pretrust_folders: true,
             claude_default_statusline_command: DEFAULT_STATUSLINE_COMMAND.into(),
+            claude_statusline_refresh_seconds: 300,
             log_retention_days: 30,
             log_max_bytes: 8 * 1024 * 1024,
             cache_retention_days: 14,

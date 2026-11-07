@@ -107,7 +107,11 @@ pub async fn exec_new(
     };
     let mode = config.effective_launch_permissions();
     let settings = claude::native_peer::with_inbound_accept(
-        &claude::launch_settings(&std::env::current_exe()?, mode),
+        &claude::launch_settings(
+            &std::env::current_exe()?,
+            mode,
+            config.claude_statusline_refresh_seconds,
+        ),
         &account.home,
     );
     let argv = claude::new_argv(&config, &id, &session.name, &settings, mode);
@@ -138,7 +142,11 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
     crate::inline::mark_attached(paths);
     let mode = config.effective_launch_permissions();
     let settings = claude::native_peer::with_inbound_accept(
-        &claude::launch_settings(&std::env::current_exe()?, mode),
+        &claude::launch_settings(
+            &std::env::current_exe()?,
+            mode,
+            config.claude_statusline_refresh_seconds,
+        ),
         &account.home,
     );
     let argv = claude::resume_argv(

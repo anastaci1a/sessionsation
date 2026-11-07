@@ -439,11 +439,14 @@ pub async fn prelaunch_gate(config: &Config, home: &Path) -> Result<()> {
 /// which then chains to the account's own statusline command.
 /// With `yolo`, the flag-level `skipDangerousModePermissionPrompt` accepts the
 /// one-time bypass dialog so a new account never stops at it.
-pub fn launch_settings(executable: &Path, mode: LaunchPermissions) -> String {
+pub fn launch_settings(executable: &Path, mode: LaunchPermissions, refresh_seconds: u32) -> String {
     let mut settings = json!({"statusLine":{"type":"command","command":format!(
         "{} {HOOK_MARKER}",
         crate::terminal::shell_quote(&executable.to_string_lossy())
     )}});
+    if refresh_seconds > 0 {
+        settings["statusLine"]["refreshInterval"] = json!(refresh_seconds);
+    }
     if mode.is_yolo() {
         settings["skipDangerousModePermissionPrompt"] = json!(true);
     }
@@ -1953,8 +1956,11 @@ mod tests {
     #[test]
     fn launch_plans_set_native_identity_name_and_settings() {
         let config = Config::default();
-        let settings =
-            launch_settings(Path::new("/opt/session sation"), LaunchPermissions::Default);
+        let settings = launch_settings(
+            Path::new("/opt/session sation"),
+            LaunchPermissions::Default,
+            300,
+        );
         assert!(
             serde_json::from_str::<Value>(&settings).unwrap()["skipDangerousModePermissionPrompt"]
                 .is_null()
@@ -1966,6 +1972,7 @@ mod tests {
                 .unwrap()
                 .ends_with(HOOK_MARKER)
         );
+        assert_eq!(v["statusLine"]["refreshInterval"], 300);
         assert!(
             v["statusLine"]["command"]
                 .as_str()
@@ -1990,7 +1997,7 @@ mod tests {
             "--resume"
         );
         // yolo: Claude's bypass flag plus the flag-level dialog acceptance.
-        let yolo = launch_settings(Path::new("/x"), LaunchPermissions::Yolo);
+        let yolo = launch_settings(Path::new("/x"), LaunchPermissions::Yolo, 0);
         assert_eq!(
             serde_json::from_str::<Value>(&yolo).unwrap()["skipDangerousModePermissionPrompt"],
             true

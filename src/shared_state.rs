@@ -6,7 +6,7 @@
 //! it with a directory symlink `<account home>/<name>` for these names:
 //! `projects` (transcripts and per-project `memory/`), `file-history`, `todos`
 //! and `session-env`. Contract 1.46.0 adds the user-level Claude customisation
-//! directories `agents` (custom subagents), `skills` and `commands` (slash
+//! directories `agents` (custom subagents) and `commands` (slash
 //! commands), so a session finds the same subagent types on every account.
 //! Credentials, `settings.json` (statusLine, permissions and similar values may
 //! legitimately differ per account) and the live `sessions/` registry stay per
@@ -42,20 +42,21 @@ mod tests;
 
 /// Directory names inside a Claude config dir that are shared, mirroring the
 /// real subdirectory names Claude Code uses.
-pub const NAMES: [&str; 7] = [
+pub const NAMES: [&str; 6] = [
     "projects",
     "file-history",
     "todos",
     "session-env",
     "agents",
-    "skills",
     "commands",
 ];
 /// The per-conversation names (1.39.0). An account switch only depends on these.
 pub const CORE: [&str; 4] = ["projects", "file-history", "todos", "session-env"];
 /// Per-user customisation (1.46.0). Migration merges these by newest file instead
-/// of reporting a same-name file as a conflict.
-pub const CUSTOM: [&str; 3] = ["agents", "skills", "commands"];
+/// of reporting a same-name file as a conflict. `skills` is deliberately NOT shared
+/// (1.46.1): a live `skills/` holds `skills/synced/<org-bucket-id>`, claude.ai
+/// cloud-synced skills specific to one account, so sharing it would mix accounts.
+pub const CUSTOM: [&str; 2] = ["agents", "commands"];
 /// Written by `shared enable` / `shared migrate`; its presence enables the feature.
 pub const MARKER: &str = ".sessionsation-shared";
 const LOCK: &str = ".lock";
@@ -186,7 +187,7 @@ pub fn state_of(home: &Path, name: &str) -> LinkState {
 pub fn fully_linked(home: &Path) -> bool {
     CORE.iter().all(|n| state_of(home, n) == LinkState::Linked)
 }
-/// Every listed name, including `agents`, `skills` and `commands`, is a trusted link.
+/// Every listed name, including `agents` and `commands`, is a trusted link.
 pub fn all_linked(home: &Path) -> bool {
     NAMES.iter().all(|n| state_of(home, n) == LinkState::Linked)
 }
@@ -231,7 +232,7 @@ pub enum Ensure {
     /// An adopted config directory; never linked.
     NotApplicable,
     /// All links are trusted; `created` lists those made by this call. `unmigrated`
-    /// lists `agents`/`skills`/`commands` that still hold their own data (left
+    /// lists `agents`/`commands` that still hold their own data (left
     /// untouched until `shared migrate`; they never block a launch).
     Linked {
         created: Vec<&'static str>,

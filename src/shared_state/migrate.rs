@@ -847,6 +847,10 @@ pub fn migrate(paths: &Paths, opts: &Options) -> Result<Value> {
             }
         }
     };
+    // A 1.46.0 journal may list `skills` (no longer shared). Drop it when it did
+    // nothing (still pending); a recorded outcome is kept as history.
+    r.names
+        .retain(|k, v| NAMES.contains(&k.as_str()) || v.link != "pending");
     for n in NAMES {
         // A journal written before 1.46.0 only knows the four conversation names.
         r.names.entry((*n).to_owned()).or_insert_with(|| NameRec {

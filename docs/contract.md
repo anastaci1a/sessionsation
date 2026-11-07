@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.46.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.46.1`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3062,7 +3062,7 @@ PATCH (additive).
   2 s bound) and, when the supervisor does not answer, marks the frozen value `stale` by its age and clamps a
   future `observed_at` (adding `usage.observed_at_clamped_from`).
 
-### Shared Claude customisation: agents, skills, commands (1.46.0)
+### Shared Claude customisation: agents, skills, commands (1.46.0, skills withdrawn in 1.46.1)
 
 MINOR, additive. Capability `shared_claude_state` (names extended; `core_names`, `custom_names`,
 `custom_since_contract`, `custom_merge`, `per_account` added).
@@ -3072,7 +3072,7 @@ conversation directories were shared. The shared set now also contains `agents` 
 `skills` and `commands` (slash commands), the user-level directories of the Claude config dir. They use
 the same store (`<root>/shared/claude/<name>`), the same trusted-link rule, the same migration (reflink
 backup, `RENAME_EXCHANGE`, journal) and the same `shared status` reporting (`names.<name>`, and `linked`
-is true only when all seven are links).
+is true only when all six are links (seven in 1.46.0, before `skills` was withdrawn)).
 
 - **Per account on purpose.** `settings.json` and credentials are not shared: values such as `statusLine`
   and `permissions` may legitimately differ between accounts, and credentials are the account.
@@ -3097,3 +3097,20 @@ is true only when all seven are links).
   `set_aside` counts.
 - Accounts get the links when they are added (and at every launch) once shared state is enabled, as for the
   other directories. A journal written before 1.46.0 is resumed with the three names added.
+
+### Statusline refresh and `skills` no longer shared (1.46.1)
+
+PATCH. No request or result shape changes except the lists noted below.
+
+- **Statusline refresh.** The `--settings` that sessionsation injects on Claude launch and resume now
+  carries `"refreshInterval": 300` in `statusLine`. Claude Code re-runs the statusline command every N
+  seconds even while the session is idle, so `usage.json` no longer goes stale for sessions that are driven
+  only by background messages. New config key `claude_statusline_refresh_seconds` (default 300; `0`
+  omits `refreshInterval`, restoring the previous behaviour).
+- **`skills` is no longer shared.** A live `skills/` holds `skills/synced/<org-bucket-id>`, claude.ai
+  cloud-synced skills that are specific to each account, so linking it across accounts mixed them up. The
+  shared set is `projects`, `file-history`, `todos`, `session-env`, `agents`, `commands`: `names` in
+  `shared status` and `api capabilities` has six entries, `custom_names` is `["agents","commands"]`, and
+  `linked` is true when those six are links. `skills` is never linked, migrated or reported as `unmigrated`.
+  A `skills/` that an earlier 1.46.x run linked is left as it is. A migration journal from 1.46.0 that listed
+  `skills` without having moved it is resumed with that entry dropped; nothing in `skills/` is touched.

@@ -349,7 +349,6 @@ fn detaching_removes_only_the_links_and_deleting_the_home_keeps_shared_data() {
             "file-history",
             "session-env",
             "agents",
-            "skills",
             "commands"
         ]
     );
@@ -875,7 +874,8 @@ fn custom_names_are_shared_status_reports_them_and_settings_stay_per_account() {
     let home = f.account("a");
     write(&home.join("settings.json"), "{}");
     enable(f.root()).unwrap();
-    assert_eq!(CUSTOM, ["agents", "skills", "commands"]);
+    assert_eq!(CUSTOM, ["agents", "commands"]);
+    assert!(!NAMES.contains(&"skills"));
     ensure_links(&f.paths, &home).unwrap();
     for n in CUSTOM {
         assert_eq!(state_of(&home, n), LinkState::Linked);
@@ -935,7 +935,7 @@ fn custom_merge_keeps_identical_once_newest_of_differing_and_every_unique_file()
     write(&a.join("agents/newer-in-b.md"), "a-old");
     write(&a.join("agents/newer-in-a.md"), "a-new");
     write(&a.join("agents/only-a.md"), "only a");
-    write(&a.join("skills/s/SKILL.md"), "skill a");
+    write(&a.join("commands/s/SKILL.md"), "skill a");
     set_mtime(&a.join("agents/newer-in-b.md"), 1_000);
     set_mtime(&a.join("agents/newer-in-a.md"), 3_000);
     f.migrate("a").unwrap();
@@ -944,11 +944,11 @@ fn custom_merge_keeps_identical_once_newest_of_differing_and_every_unique_file()
     write(&b.join("agents/newer-in-b.md"), "b-new");
     write(&b.join("agents/newer-in-a.md"), "b-old");
     write(&b.join("agents/only-b.md"), "only b");
-    write(&b.join("skills/s/SKILL.md"), "skill b");
-    write(&b.join("skills/s/extra.md"), "extra");
+    write(&b.join("commands/s/SKILL.md"), "skill b");
+    write(&b.join("commands/s/extra.md"), "extra");
     set_mtime(&b.join("agents/newer-in-b.md"), 2_000);
     set_mtime(&b.join("agents/newer-in-a.md"), 2_000);
-    set_mtime(&b.join("skills/s/SKILL.md"), 5);
+    set_mtime(&b.join("commands/s/SKILL.md"), 5);
     let store = target(f.root(), "agents");
 
     let d = dry(&f, "b");
@@ -1001,7 +1001,7 @@ fn custom_merge_keeps_identical_once_newest_of_differing_and_every_unique_file()
     assert_eq!(read("newer-in-a.md"), "a-new");
     assert_eq!(read("only-a.md"), "only a");
     assert_eq!(read("only-b.md"), "only b");
-    let skills = target(f.root(), "skills");
+    let skills = target(f.root(), "commands");
     assert_eq!(
         fs::read_to_string(skills.join("s/SKILL.md")).unwrap(),
         "skill a"
@@ -1014,7 +1014,7 @@ fn custom_merge_keeps_identical_once_newest_of_differing_and_every_unique_file()
     let aside = |p: &str| fs::read_to_string(backup.join("set-aside").join(p)).unwrap();
     assert_eq!(aside("agents/newer-in-a.md"), "b-old");
     assert_eq!(aside("agents/newer-in-b.md"), "a-old");
-    assert_eq!(aside("skills/s/SKILL.md"), "skill b");
+    assert_eq!(aside("commands/s/SKILL.md"), "skill b");
     // The reflink backup of the account still holds its own versions.
     assert_eq!(
         fs::read_to_string(backup.join("agents/newer-in-a.md")).unwrap(),
@@ -1039,4 +1039,38 @@ fn conversation_files_present_on_both_sides_stay_conflicts() {
     let d = dry(&f, "b");
     assert_eq!(d["names"]["todos"]["action"], "conflicts");
     assert!(d["names"]["todos"].get("report").is_none());
+}
+
+#[test]
+fn a_1_46_0_journal_that_listed_skills_resumes_without_it() {
+    require_exchange!();
+    let mut f = fx();
+    let home = f.account("a");
+    seed(&home, CONVERSATION_A, "a");
+    write(&home.join("skills/synced/org1/s.md"), "cloud skill");
+    crash_at(Some("backed_up"));
+    f.migrate("a").unwrap_err();
+    crash_at(None);
+    let dir = f.root().join(crate::layout::SHARED_MIGRATIONS);
+    let journal = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+    let journal = if journal.is_dir() {
+        fs::read_dir(&journal)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+    } else {
+        journal
+    };
+    let mut v: Value = serde_json::from_str(&fs::read_to_string(&journal).unwrap()).unwrap();
+    v["names"]["skills"] = json!({"backup":"pending","link":"pending"});
+    fs::write(&journal, v.to_string()).unwrap();
+    let done = f.migrate("a").unwrap();
+    assert_eq!(done["complete"], true, "{done}");
+    assert!(done["results"].get("skills").is_none(), "{done}");
+    assert!(home.join("skills/synced/org1/s.md").exists());
+    assert!(!trusted_link(&home.join("skills")));
+    let status = account_status(&f.paths, "a", &home);
+    assert!(status["names"].get("skills").is_none());
 }
