@@ -1,5 +1,5 @@
 //! `sessionsation shared migrate --account claude:<name>`: move one account's
-//! `projects`, `file-history`, `todos` and `session-env` into the shared store
+//! `projects`, `file-history`, `todos`, `session-env`, `agents`, `skills` and `commands` into the shared store
 //! and leave a link behind, without copying data and without any moment in which
 //! the account path is missing.
 //!
@@ -77,6 +77,18 @@ struct NameRec {
     backup_files: u64,
     backup_bytes: u64,
     backup_full_copies: u64,
+    /// `agents`/`skills`/`commands` only: files identical to the shared copy (kept once).
+    #[serde(default)]
+    duplicates: u64,
+    /// ... files whose account copy was newer and replaced the shared copy.
+    #[serde(default)]
+    replaced: u64,
+    /// ... files set aside in the migration backup (the losing side of a differing file).
+    #[serde(default)]
+    set_aside: u64,
+    /// One line per merged duplicate / differing file, as the dry run prints it.
+    #[serde(default)]
+    report: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Record {
@@ -360,9 +372,126 @@ fn tree_size(path: &Path) -> (u64, u64) {
     }
 }
 
+/// How `agents`/`skills`/`commands` files present on both sides are resolved:
+/// identical files are kept once; of two different files the newest (modification
+/// time; the shared copy on a tie) stays in the store and the other is moved to
+/// `dir/<name>/<relative path>` inside the migration backup. Nothing is lost.
+struct Aside {
+    name: String,
+    /// Real-disk path of `<backup_dir>/set-aside`; logical path in `shown`.
+    dir: PathBuf,
+    shown: PathBuf,
+    duplicates: u64,
+    replaced: u64,
+    set_aside: u64,
+    report: Vec<String>,
+}
+impl Aside {
+    fn new(name: &str, dir: PathBuf, shown: PathBuf) -> Self {
+        Self {
+            name: name.into(),
+            dir,
+            shown,
+            duplicates: 0,
+            replaced: 0,
+            set_aside: 0,
+            report: vec![],
+        }
+    }
+    fn dest(&self, rel: &Path) -> (PathBuf, PathBuf) {
+        let tail = Path::new(&self.name).join(rel);
+        (self.dir.join(&tail), self.shown.join(&tail))
+    }
+}
+fn same_content(a: &Path, b: &Path) -> Result<bool> {
+    use std::io::Read;
+    if fs::metadata(a)?.len() != fs::metadata(b)?.len() {
+        return Ok(false);
+    }
+    let (mut fa, mut fb) = (fs::File::open(a)?, fs::File::open(b)?);
+    let (mut x, mut y) = ([0u8; 65536], [0u8; 65536]);
+    loop {
+        let n = fa.read(&mut x)?;
+        if n == 0 {
+            return Ok(true);
+        }
+        fb.read_exact(&mut y[..n])?;
+        if x[..n] != y[..n] {
+            return Ok(false);
+        }
+    }
+}
+/// Move `from` to `to` without overwriting (a numeric suffix if `to` exists).
+fn move_aside(from: &Path, to: &Path) -> Result<()> {
+    if let Some(parent) = to.parent() {
+        mkdir_private(parent)?;
+    }
+    let mut candidate = to.to_path_buf();
+    for n in 1.. {
+        match super::rename_noreplace(from, &candidate) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let mut name = to.file_name().unwrap_or_default().to_os_string();
+                name.push(format!(".{n}"));
+                candidate = to.with_file_name(name);
+            }
+            Err(e) => return Err(e).context("SHARED_STATE_SET_ASIDE_FAILED"),
+        }
+    }
+    unreachable!()
+}
+/// Resolve one file present on both sides under the newest-wins policy.
+fn resolve_pair(s: &Path, d: &Path, rel: &Path, dry_run: bool, aside: &mut Aside) -> Result<()> {
+    let shown_rel = Path::new(&aside.name).join(rel);
+    if same_content(s, d)? {
+        aside
+            .report
+            .push(format!("identical {}: kept once", shown_rel.display()));
+        aside.duplicates += 1;
+        if !dry_run {
+            fs::remove_file(s)?;
+        }
+        return Ok(());
+    }
+    let account_newer = fs::metadata(s)?.modified()? > fs::metadata(d)?.modified()?;
+    let (io, shown) = aside.dest(rel);
+    aside.report.push(if account_newer {
+        format!(
+            "differs {}: account copy is newer, kept in the shared store; the previous shared copy is set aside at {}",
+            shown_rel.display(),
+            shown.display()
+        )
+    } else {
+        format!(
+            "differs {}: shared copy is newer, kept in the shared store; the account copy is set aside at {}",
+            shown_rel.display(),
+            shown.display()
+        )
+    });
+    aside.set_aside += 1;
+    if account_newer {
+        aside.replaced += 1;
+    }
+    if dry_run {
+        return Ok(());
+    }
+    if account_newer {
+        super::rename_exchange(s, d).context("SHARED_STATE_EXCHANGE_FAILED")?;
+    }
+    move_aside(s, &io)
+}
+
 /// Move every non-conflicting entry of `src` into `dst`; returns (moved, conflicts).
 /// Never overwrites. A directory present on both sides is merged recursively.
-fn merge(src: &Path, dst: &Path, rel: &Path, dry_run: bool) -> Result<(u64, Vec<String>)> {
+/// With `aside` (the customisation directories) a file on both sides is resolved
+/// by [`resolve_pair`] instead of being a conflict.
+fn merge(
+    src: &Path,
+    dst: &Path,
+    rel: &Path,
+    dry_run: bool,
+    mut aside: Option<&mut Aside>,
+) -> Result<(u64, Vec<String>)> {
     let mut moved = 0;
     let mut conflicts = vec![];
     let mut entries: Vec<_> = fs::read_dir(src)?.collect::<std::io::Result<_>>()?;
@@ -395,12 +524,15 @@ fn merge(src: &Path, dst: &Path, rel: &Path, dry_run: bool) -> Result<(u64, Vec<
                 }
             }
             Ok(dm) if sm.is_dir() && dm.is_dir() => {
-                let (m, c) = merge(&s, &d, &r, dry_run)?;
+                let (m, c) = merge(&s, &d, &r, dry_run, aside.as_deref_mut())?;
                 moved += m;
                 if c.is_empty() && !dry_run {
                     let _ = fs::remove_dir(&s);
                 }
                 conflicts.extend(c);
+            }
+            Ok(dm) if sm.is_file() && dm.is_file() && aside.is_some() => {
+                resolve_pair(&s, &d, &r, dry_run, aside.as_deref_mut().expect("checked"))?;
             }
             Ok(_) => conflicts.push(r.to_string_lossy().into_owned()),
             Err(err) => return Err(err.into()),
@@ -410,7 +542,18 @@ fn merge(src: &Path, dst: &Path, rel: &Path, dry_run: bool) -> Result<(u64, Vec<
 }
 
 /// Link one name. `home` and the store are logical; `fs` maps them for I/O.
-fn link_name(fs_map: &Fs, root: &Path, home: &Path, name: &str, id: &str) -> Result<NameRec> {
+fn link_name(
+    fs_map: &Fs,
+    root: &Path,
+    home: &Path,
+    name: &str,
+    id: &str,
+    backup_dir: &Path,
+) -> Result<NameRec> {
+    let mut aside = CUSTOM.contains(&name).then(|| {
+        let shown = backup_dir.join("set-aside");
+        Aside::new(name, fs_map.io(&shown), shown)
+    });
     let mut rec = NameRec {
         backup: "skipped".into(),
         link: "pending".into(),
@@ -463,9 +606,10 @@ fn link_name(fs_map: &Fs, root: &Path, home: &Path, name: &str, id: &str) -> Res
                 "SHARED_STATE_STORE_UNSAFE: {} must be a private directory owned by this user",
                 z.display()
             );
-            let (moved, conflicts) = merge(&a_io, &z_io, Path::new(""), false)?;
+            let (moved, conflicts) = merge(&a_io, &z_io, Path::new(""), false, aside.as_mut())?;
             rec.moved += moved;
             if !conflicts.is_empty() {
+                fold(&mut rec, aside.take());
                 rec.link = "conflicts".into();
                 rec.conflicts = conflicts;
                 return Ok(rec);
@@ -483,7 +627,8 @@ fn link_name(fs_map: &Fs, root: &Path, home: &Path, name: &str, id: &str) -> Res
             symlink(&z, &tmp)?;
             super::rename_exchange(&tmp, &a_io).context("SHARED_STATE_EXCHANGE_FAILED")?;
             // `tmp` now names the displaced (empty) directory; absorb late arrivals.
-            let (late, left) = merge(&tmp, &z_io, Path::new(""), false)?;
+            let (late, left) = merge(&tmp, &z_io, Path::new(""), false, aside.as_mut())?;
+            fold(&mut rec, aside.take());
             rec.moved += late;
             if left.is_empty() {
                 let _ = fs::remove_dir(&tmp);
@@ -515,6 +660,15 @@ fn link_name(fs_map: &Fs, root: &Path, home: &Path, name: &str, id: &str) -> Res
     Ok(rec)
 }
 
+fn fold(rec: &mut NameRec, aside: Option<Aside>) {
+    if let Some(a) = aside {
+        rec.duplicates += a.duplicates;
+        rec.replaced += a.replaced;
+        rec.set_aside += a.set_aside;
+        rec.report.extend(a.report);
+    }
+}
+
 /// First account: one `RENAME_EXCHANGE` puts the real directory into the store
 /// and a link to it at the account path.
 fn adopt(a_io: &Path, z: &Path, z_io: &Path, a: &Path, rec: &mut NameRec) -> Result<()> {
@@ -538,7 +692,7 @@ fn adopt(a_io: &Path, z: &Path, z_io: &Path, a: &Path, rec: &mut NameRec) -> Res
     Ok(())
 }
 
-fn plan_name(fs_map: &Fs, root: &Path, home: &Path, name: &str) -> Value {
+fn plan_name(fs_map: &Fs, root: &Path, home: &Path, name: &str, backup_dir: &Path) -> Value {
     let a_io = fs_map.io(&home.join(name));
     let z_io = fs_map.io(&target(root, name));
     let state = state_of(home, name);
@@ -551,10 +705,20 @@ fn plan_name(fs_map: &Fs, root: &Path, home: &Path, name: &str) -> Value {
         LinkState::EmptyDir | LinkState::Data => match fs::symlink_metadata(&z_io) {
             Err(_) => json!("adopt_by_exchange"),
             Ok(m) if m.is_dir() => {
+                let mut aside = CUSTOM.contains(&name).then(|| {
+                    let shown = backup_dir.join("set-aside");
+                    Aside::new(name, fs_map.io(&shown), shown)
+                });
                 let (moved, conflicts) =
-                    merge(&a_io, &z_io, Path::new(""), true).unwrap_or((0, vec![]));
+                    merge(&a_io, &z_io, Path::new(""), true, aside.as_mut()).unwrap_or((0, vec![]));
                 v["would_move"] = json!(moved);
                 v["conflicts"] = json!(conflicts);
+                if let Some(a) = aside {
+                    v["would_keep_once"] = json!(a.duplicates);
+                    v["would_replace_with_newer"] = json!(a.replaced);
+                    v["would_set_aside"] = json!(a.set_aside);
+                    v["report"] = json!(a.report);
+                }
                 json!(if conflicts.is_empty() {
                     "merge_then_link"
                 } else {
@@ -615,9 +779,15 @@ pub fn migrate(paths: &Paths, opts: &Options) -> Result<Value> {
             }
         }
     }
+    let planned_backup = backup_root(&root, daemon::now()).join(name);
     let plan: serde_json::Map<String, Value> = NAMES
         .iter()
-        .map(|n| ((*n).to_owned(), plan_name(&fs_map, &root, &home, n)))
+        .map(|n| {
+            (
+                (*n).to_owned(),
+                plan_name(&fs_map, &root, &home, n, &planned_backup),
+            )
+        })
         .collect();
     let base = json!({"account_id":format!("claude:{name}"),"home":home,"fs_path":opts.fs_path,
         "alias_proof":alias,"fuse_filesystem":fuse,"live_sessions":live,"names":plan});
@@ -631,7 +801,7 @@ pub fn migrate(paths: &Paths, opts: &Options) -> Result<Value> {
         out["problems"] = json!(problems);
         out["probes"] = json!("skipped_in_dry_run");
         out["would_complete"] = json!(problems.is_empty() && !conflicts);
-        out["backup_dir"] = json!(backup_root(&root, daemon::now()).join(name));
+        out["backup_dir"] = json!(planned_backup);
         return Ok(out);
     }
     ensure!(problems.is_empty(), "{}", problems.join("; "));
@@ -642,7 +812,7 @@ pub fn migrate(paths: &Paths, opts: &Options) -> Result<Value> {
     let mut r = match unfinished(paths, name) {
         Some(r) => r,
         None => {
-            if fully_linked(&home) {
+            if all_linked(&home) {
                 let mut out = base;
                 out["already_migrated"] = json!(true);
                 out["complete"] = json!(true);
@@ -677,6 +847,14 @@ pub fn migrate(paths: &Paths, opts: &Options) -> Result<Value> {
             }
         }
     };
+    for n in NAMES {
+        // A journal written before 1.46.0 only knows the four conversation names.
+        r.names.entry((*n).to_owned()).or_insert_with(|| NameRec {
+            backup: "pending".into(),
+            link: "pending".into(),
+            ..Default::default()
+        });
+    }
     r.allow_full_copy = r.allow_full_copy || opts.allow_full_copy;
     r.fs_path = opts.fs_path.clone();
     save(paths, &mut r)?;
@@ -738,24 +916,28 @@ pub fn migrate(paths: &Paths, opts: &Options) -> Result<Value> {
         {
             continue;
         }
-        let done = link_name(&fs_map, &root, &home, n, &r.id)?;
+        let done = link_name(&fs_map, &root, &home, n, &r.id, &r.backup_dir)?;
         let rec = r.names.get_mut(n).expect("journaled");
         rec.moved += done.moved;
         rec.link = done.link;
         rec.conflicts = done.conflicts;
+        rec.duplicates += done.duplicates;
+        rec.replaced += done.replaced;
+        rec.set_aside += done.set_aside;
+        rec.report.extend(done.report);
         save(paths, &mut r)?;
     }
     drop(lock);
     let complete = NAMES
         .iter()
         .all(|n| matches!(r.names[*n].link.as_str(), "linked" | "adopted" | "merged"))
-        && fully_linked(&home);
+        && all_linked(&home);
     if complete {
         phase(
             paths,
             &mut r,
             "complete",
-            "All four directories are links to the shared store.",
+            "All directories are links to the shared store.",
         )?;
     } else {
         phase(

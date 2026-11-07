@@ -5,8 +5,12 @@
 //! `<root>/shared/claude/<name>` and every managed Claude account home links to
 //! it with a directory symlink `<account home>/<name>` for these names:
 //! `projects` (transcripts and per-project `memory/`), `file-history`, `todos`
-//! and `session-env`. Credentials, settings and the live `sessions/` registry
-//! stay per account.
+//! and `session-env`. Contract 1.46.0 adds the user-level Claude customisation
+//! directories `agents` (custom subagents), `skills` and `commands` (slash
+//! commands), so a session finds the same subagent types on every account.
+//! Credentials, `settings.json` (statusLine, permissions and similar values may
+//! legitimately differ per account) and the live `sessions/` registry stay per
+//! account.
 //!
 //! Sessionsation refuses symlinks nearly everywhere. [`trusted_link`] is the one
 //! helper that makes exactly these account-home links acceptable; it is called
@@ -38,7 +42,20 @@ mod tests;
 
 /// Directory names inside a Claude config dir that are shared, mirroring the
 /// real subdirectory names Claude Code uses.
-pub const NAMES: [&str; 4] = ["projects", "file-history", "todos", "session-env"];
+pub const NAMES: [&str; 7] = [
+    "projects",
+    "file-history",
+    "todos",
+    "session-env",
+    "agents",
+    "skills",
+    "commands",
+];
+/// The per-conversation names (1.39.0). An account switch only depends on these.
+pub const CORE: [&str; 4] = ["projects", "file-history", "todos", "session-env"];
+/// Per-user customisation (1.46.0). Migration merges these by newest file instead
+/// of reporting a same-name file as a conflict.
+pub const CUSTOM: [&str; 3] = ["agents", "skills", "commands"];
 /// Written by `shared enable` / `shared migrate`; its presence enables the feature.
 pub const MARKER: &str = ".sessionsation-shared";
 const LOCK: &str = ".lock";
@@ -164,8 +181,13 @@ pub fn state_of(home: &Path, name: &str) -> LinkState {
         _ => LinkState::Data,
     }
 }
-/// Every listed name of this home is a trusted link.
+/// Every per-conversation name of this home is a trusted link (what an account
+/// switch depends on).
 pub fn fully_linked(home: &Path) -> bool {
+    CORE.iter().all(|n| state_of(home, n) == LinkState::Linked)
+}
+/// Every listed name, including `agents`, `skills` and `commands`, is a trusted link.
+pub fn all_linked(home: &Path) -> bool {
     NAMES.iter().all(|n| state_of(home, n) == LinkState::Linked)
 }
 pub fn any_linked(home: &Path) -> bool {
@@ -208,20 +230,30 @@ pub enum Ensure {
     Disabled,
     /// An adopted config directory; never linked.
     NotApplicable,
-    /// All four links are trusted; `created` lists those made by this call.
-    Linked { created: Vec<&'static str> },
+    /// All links are trusted; `created` lists those made by this call. `unmigrated`
+    /// lists `agents`/`skills`/`commands` that still hold their own data (left
+    /// untouched until `shared migrate`; they never block a launch).
+    Linked {
+        created: Vec<&'static str>,
+        unmigrated: Vec<&'static str>,
+    },
 }
 impl Ensure {
     pub fn public(&self) -> Value {
         match self {
             Self::Disabled => json!({"state":"disabled"}),
             Self::NotApplicable => json!({"state":"not_applicable","reason":"adopted_config_dir"}),
-            Self::Linked { created } => json!({"state":"linked","created":created}),
+            Self::Linked {
+                created,
+                unmigrated,
+            } => {
+                json!({"state":"linked","created":created,"unmigrated":unmigrated})
+            }
         }
     }
 }
 
-/// Create or repair the four account-home links of a managed Claude home.
+/// Create or repair the account-home links of a managed Claude home.
 /// A missing name is linked, an empty real directory is replaced by a link, a
 /// trusted link is kept. A real directory that holds data is never merged here:
 /// it fails with `SHARED_STATE_UNMIGRATED` and the operator runs
@@ -244,6 +276,7 @@ pub fn ensure_links(paths: &Paths, home: &Path) -> Result<Ensure> {
     let lock = lock_file(&store(&root).join(LOCK))?;
     lock.lock_exclusive()?;
     let mut created = vec![];
+    let mut unmigrated = vec![];
     for name in NAMES {
         let link = home.join(name);
         let shared = ensure_store_dir(&root, name)?;
@@ -274,6 +307,7 @@ pub fn ensure_links(paths: &Paths, home: &Path) -> Result<Ensure> {
                 );
                 created.push(name);
             }
+            LinkState::Data if CUSTOM.contains(&name) => unmigrated.push(name),
             LinkState::Data => bail!(
                 "SHARED_STATE_UNMIGRATED: {} holds data that is not in the shared store; run `sessionsation shared migrate --account claude:{account} --dry-run`, then without --dry-run",
                 link.display()
@@ -285,7 +319,10 @@ pub fn ensure_links(paths: &Paths, home: &Path) -> Result<Ensure> {
             ),
         }
     }
-    Ok(Ensure::Linked { created })
+    Ok(Ensure::Linked {
+        created,
+        unmigrated,
+    })
 }
 
 /// What a Claude account switch does with the conversation's files. Links of both
@@ -365,7 +402,7 @@ pub fn account_status(paths: &Paths, name: &str, home: &Path) -> Value {
                 .map(|n| ((*n).to_owned(), json!(state_of(home, n).as_str())))
                 .collect();
             json!({"account_id":format!("claude:{name}"),"home":home,"applicable":true,
-                "linked":fully_linked(home),"names":names})
+                "linked":all_linked(home),"names":names})
         }
         _ => json!({"account_id":format!("claude:{name}"),"home":home,"applicable":false,
             "reason":"adopted_config_dir"}),
@@ -383,7 +420,10 @@ pub fn status(paths: &Paths) -> Result<Value> {
 }
 /// The capability document entry.
 pub fn capability() -> Value {
-    json!({"since_contract":"1.39.0","version":1,"names":NAMES,"store":"<root>/shared/claude/<name>",
+    json!({"since_contract":"1.39.0","version":1,"names":NAMES,"core_names":CORE,
+        "custom_names":CUSTOM,"custom_since_contract":"1.46.0",
+        "custom_merge":"identical_kept_once_differing_newest_wins_other_set_aside_in_backup",
+        "per_account":["settings.json","credentials","sessions"],"store":"<root>/shared/claude/<name>",
         "link":"<account home>/<name> -> <root>/shared/claude/<name>",
         "scope":"managed_claude_homes","adopted_config_dir":"never_linked",
         "enable":"shared enable | shared migrate","commands":["shared status","shared enable","shared migrate"],

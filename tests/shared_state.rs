@@ -86,12 +86,20 @@ fn exchange_supported(dir: &Path) -> bool {
 fn capabilities_advertise_shared_claude_state() {
     let f = fixture(&[]);
     let caps = f.json(&["api", "capabilities"]);
-    assert_eq!(caps["result"]["contract_version"], "1.45.2");
+    assert_eq!(caps["result"]["contract_version"], "1.46.0");
     let shared = &caps["result"]["shared_claude_state"];
     assert_eq!(shared["version"], 1);
     assert_eq!(
         shared["names"],
-        serde_json::json!(["projects", "file-history", "todos", "session-env"])
+        serde_json::json!([
+            "projects",
+            "file-history",
+            "todos",
+            "session-env",
+            "agents",
+            "skills",
+            "commands"
+        ])
     );
 }
 

@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.45.2`
+so revision N maps to contract `1.N.0` and the current contract is `1.46.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3061,3 +3061,39 @@ PATCH (additive).
   (hours old); it now overlays the supervisor's current Codex usage (a local read, no provider contact,
   2 s bound) and, when the supervisor does not answer, marks the frozen value `stale` by its age and clamps a
   future `observed_at` (adding `usage.observed_at_clamped_from`).
+
+### Shared Claude customisation: agents, skills, commands (1.46.0)
+
+MINOR, additive. Capability `shared_claude_state` (names extended; `core_names`, `custom_names`,
+`custom_since_contract`, `custom_merge`, `per_account` added).
+
+After `api switch` to another account, user-level custom subagents vanished because only the four
+conversation directories were shared. The shared set now also contains `agents` (custom subagents),
+`skills` and `commands` (slash commands), the user-level directories of the Claude config dir. They use
+the same store (`<root>/shared/claude/<name>`), the same trusted-link rule, the same migration (reflink
+backup, `RENAME_EXCHANGE`, journal) and the same `shared status` reporting (`names.<name>`, and `linked`
+is true only when all seven are links).
+
+- **Per account on purpose.** `settings.json` and credentials are not shared: values such as `statusLine`
+  and `permissions` may legitimately differ between accounts, and credentials are the account.
+- **Launch is never blocked by these three.** `ensure_links` links a missing or empty `agents`, `skills` or
+  `commands`; a real directory that holds data is left untouched and listed under `unmigrated` in the
+  `shared_state` of the launch result until `shared migrate` runs. (For the four conversation names such
+  data still fails with `SHARED_STATE_UNMIGRATED`.) An account switch depends only on the four conversation
+  names.
+- **Migration merges instead of reporting conflicts, for these three names.** When the store already holds
+  the directory (a second account), each file present on both sides is resolved: identical content is kept
+  once; for different content the file with the newest modification time stays in the store (the shared copy
+  on a tie) and the other is moved, never deleted, to `<backup_dir>/set-aside/<name>/<relative path>`
+  (a numeric suffix if that exists). Files only on one side move into the store. Entries that cannot be
+  resolved (a file against a directory, a symlink) are still listed under `conflicts` and nothing is
+  overwritten. Every account file is also in the reflink backup `<backup_dir>/<name>`.
+- **`--dry-run` shows exactly this.** Per name: `would_move`, `would_keep_once`, `would_replace_with_newer`,
+  `would_set_aside`, `conflicts` and `report`, one line per resolved file:
+  `identical agents/a.md: kept once`,
+  `differs agents/b.md: account copy is newer, kept in the shared store; the previous shared copy is set aside at <backup_dir>/set-aside/agents/b.md`,
+  `differs agents/c.md: shared copy is newer, kept in the shared store; the account copy is set aside at <backup_dir>/set-aside/agents/c.md`.
+  A real run reports the same lines under `results.<name>.report` with `duplicates`, `replaced` and
+  `set_aside` counts.
+- Accounts get the links when they are added (and at every launch) once shared state is enabled, as for the
+  other directories. A journal written before 1.46.0 is resumed with the three names added.

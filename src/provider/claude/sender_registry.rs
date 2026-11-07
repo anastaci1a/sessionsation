@@ -266,9 +266,8 @@ mod tests {
         child.kill().unwrap();
         child.wait().unwrap();
         assert_eq!(sweep(h.path()), 1); // the SIGKILLed worker's entry
-        assert_eq!(
-            files(h.path()),
-            [format!("{me}.json"), "4000000.json".into()]
-        );
+        let mut expected = vec![format!("{me}.json"), "4000000.json".to_owned()];
+        expected.sort();
+        assert_eq!(files(h.path()), expected);
     }
 }

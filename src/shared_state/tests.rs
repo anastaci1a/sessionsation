@@ -130,7 +130,8 @@ fn only_the_exact_account_home_link_is_trusted() {
     assert_eq!(
         ensure_links(&f.paths, &home).unwrap(),
         Ensure::Linked {
-            created: NAMES.to_vec()
+            created: NAMES.to_vec(),
+            unmigrated: vec![]
         }
     );
     assert_all_trusted(&home);
@@ -241,14 +242,17 @@ fn ensure_links_creates_repairs_and_refuses_data_and_foreign_links() {
     enable(f.root()).unwrap();
     // An empty real directory is replaced; the others are created.
     fs::create_dir(home.join("todos")).unwrap();
-    let Ensure::Linked { created } = ensure_links(&f.paths, &home).unwrap() else {
+    let Ensure::Linked { created, .. } = ensure_links(&f.paths, &home).unwrap() else {
         panic!()
     };
     assert_eq!(created, NAMES.to_vec());
     assert_all_trusted(&home);
     assert_eq!(
         ensure_links(&f.paths, &home).unwrap(),
-        Ensure::Linked { created: vec![] },
+        Ensure::Linked {
+            created: vec![],
+            unmigrated: vec![]
+        },
         "idempotent"
     );
     // A deleted link is repaired.
@@ -256,7 +260,8 @@ fn ensure_links_creates_repairs_and_refuses_data_and_foreign_links() {
     assert_eq!(
         ensure_links(&f.paths, &home).unwrap(),
         Ensure::Linked {
-            created: vec!["projects"]
+            created: vec!["projects"],
+            unmigrated: vec![]
         }
     );
 
@@ -337,7 +342,17 @@ fn detaching_removes_only_the_links_and_deleting_the_home_keeps_shared_data() {
     fs::remove_file(home.join("todos")).unwrap();
     symlink(&foreign, home.join("todos")).unwrap();
     let removed = detach_links(&home).unwrap();
-    assert_eq!(removed, vec!["projects", "file-history", "session-env"]);
+    assert_eq!(
+        removed,
+        vec![
+            "projects",
+            "file-history",
+            "session-env",
+            "agents",
+            "skills",
+            "commands"
+        ]
+    );
     assert!(
         fs::symlink_metadata(home.join("todos"))
             .unwrap()
@@ -386,7 +401,7 @@ fn first_account_is_adopted_by_one_exchange_without_copying_or_a_missing_moment(
         "mem-a",
     );
     write(&home.join("settings.json"), "{\"keep\":true}");
-    let dir_inodes: Vec<_> = NAMES.iter().map(|n| ino(&home.join(n))).collect();
+    let dir_inodes: Vec<_> = CORE.iter().map(|n| ino(&home.join(n))).collect();
     let transcript = home.join(format!("projects/{SLUG}/{CONVERSATION_A}.jsonl"));
     let inode = ino(&transcript);
     // A "live Claude process": an open append handle on the transcript.
@@ -399,7 +414,7 @@ fn first_account_is_adopted_by_one_exchange_without_copying_or_a_missing_moment(
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observer = {
         let (stop, paths): (_, Vec<PathBuf>) =
-            (stop.clone(), NAMES.iter().map(|n| home.join(n)).collect());
+            (stop.clone(), CORE.iter().map(|n| home.join(n)).collect());
         std::thread::spawn(move || {
             let mut missing = 0u64;
             let mut seen = 0u64;
@@ -425,7 +440,7 @@ fn first_account_is_adopted_by_one_exchange_without_copying_or_a_missing_moment(
 
     assert_eq!(out["complete"], true, "{out}");
     assert_all_trusted(&home);
-    for (n, before) in NAMES.iter().zip(dir_inodes) {
+    for (n, before) in CORE.iter().zip(dir_inodes) {
         assert_eq!(out["results"][n]["link"], "adopted", "{out}");
         assert_eq!(
             ino(&target(f.root(), n)),
@@ -605,7 +620,7 @@ fn merge_without_conflicts_links_atomically() {
     seed(&b, CONVERSATION_B, "b");
     let out = f.migrate("b").unwrap();
     assert_eq!(out["complete"], true, "{out}");
-    for n in NAMES {
+    for n in CORE {
         assert_eq!(out["results"][n]["link"], "merged");
     }
     assert!(fs::read_dir(&b).unwrap().all(|e| {
@@ -829,4 +844,199 @@ fn switching_needs_both_accounts_linked_or_both_plain() {
 fn stamp_formats_utc_seconds() {
     assert_eq!(migrate::stamp(0), "19700101T000000Z");
     assert_eq!(migrate::stamp(1_793_000_000), "20261026T073320Z");
+}
+
+// ------------------------------------------- agents, skills and commands (1.46.0)
+
+fn set_mtime(path: &Path, secs: u64) {
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+    fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(t)
+        .unwrap();
+}
+fn dry(f: &Fx, name: &str) -> Value {
+    migrate::migrate(
+        &f.paths,
+        &Options {
+            account: name.into(),
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn custom_names_are_shared_status_reports_them_and_settings_stay_per_account() {
+    let mut f = fx();
+    let home = f.account("a");
+    write(&home.join("settings.json"), "{}");
+    enable(f.root()).unwrap();
+    assert_eq!(CUSTOM, ["agents", "skills", "commands"]);
+    ensure_links(&f.paths, &home).unwrap();
+    for n in CUSTOM {
+        assert_eq!(state_of(&home, n), LinkState::Linked);
+        assert!(trusted_link(&home.join(n)));
+    }
+    assert!(
+        fs::symlink_metadata(home.join("settings.json"))
+            .unwrap()
+            .is_file()
+    );
+    let st = account_status(&f.paths, "a", &home);
+    for n in CUSTOM {
+        assert_eq!(st["names"][n], "linked");
+    }
+    assert_eq!(st["linked"], true);
+    // A real directory with data does not block ensure_links for the new names.
+    let mut g = fx();
+    let h = g.account("b");
+    enable(g.root()).unwrap();
+    write(&h.join("agents/x.md"), "x");
+    let Ensure::Linked { unmigrated, .. } = ensure_links(&g.paths, &h).unwrap() else {
+        panic!()
+    };
+    assert_eq!(unmigrated, vec!["agents"]);
+    assert_eq!(state_of(&h, "agents"), LinkState::Data);
+    assert_eq!(
+        account_status(&g.paths, "b", &h)["names"]["agents"],
+        "unmigrated"
+    );
+    assert_eq!(account_status(&g.paths, "b", &h)["linked"], false);
+}
+
+#[test]
+fn a_new_account_gets_the_custom_links_when_shared_state_is_enabled() {
+    let mut f = fx();
+    let a = f.account("a");
+    write(&a.join("agents/builder.md"), "builder");
+    f.migrate("a").unwrap();
+    let work = f.account("work");
+    // What the daemon does when an account is added.
+    ensure_links(&f.paths, &work).unwrap();
+    for n in CUSTOM {
+        assert!(trusted_link(&work.join(n)), "{n}");
+    }
+    assert_eq!(
+        fs::read_to_string(work.join("agents/builder.md")).unwrap(),
+        "builder"
+    );
+}
+
+#[test]
+fn custom_merge_keeps_identical_once_newest_of_differing_and_every_unique_file() {
+    require_exchange!();
+    let mut f = fx();
+    let a = f.account("a");
+    write(&a.join("agents/same.md"), "same");
+    write(&a.join("agents/newer-in-b.md"), "a-old");
+    write(&a.join("agents/newer-in-a.md"), "a-new");
+    write(&a.join("agents/only-a.md"), "only a");
+    write(&a.join("skills/s/SKILL.md"), "skill a");
+    set_mtime(&a.join("agents/newer-in-b.md"), 1_000);
+    set_mtime(&a.join("agents/newer-in-a.md"), 3_000);
+    f.migrate("a").unwrap();
+    let b = f.account("b");
+    write(&b.join("agents/same.md"), "same");
+    write(&b.join("agents/newer-in-b.md"), "b-new");
+    write(&b.join("agents/newer-in-a.md"), "b-old");
+    write(&b.join("agents/only-b.md"), "only b");
+    write(&b.join("skills/s/SKILL.md"), "skill b");
+    write(&b.join("skills/s/extra.md"), "extra");
+    set_mtime(&b.join("agents/newer-in-b.md"), 2_000);
+    set_mtime(&b.join("agents/newer-in-a.md"), 2_000);
+    set_mtime(&b.join("skills/s/SKILL.md"), 5);
+    let store = target(f.root(), "agents");
+
+    let d = dry(&f, "b");
+    assert_eq!(d["names"]["agents"]["action"], "merge_then_link");
+    assert_eq!(d["names"]["agents"]["would_keep_once"], 1);
+    assert_eq!(d["names"]["agents"]["would_replace_with_newer"], 1);
+    assert_eq!(d["names"]["agents"]["would_set_aside"], 2);
+    assert_eq!(d["names"]["agents"]["would_move"], 1);
+    assert_eq!(d["names"]["agents"]["conflicts"], json!([]));
+    assert_eq!(d["would_complete"], true);
+    let lines: Vec<String> = d["names"]["agents"]["report"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap().to_owned())
+        .collect();
+    let backup = d["backup_dir"].as_str().unwrap();
+    assert_eq!(
+        lines,
+        vec![
+            format!(
+                "differs agents/newer-in-a.md: shared copy is newer, kept in the shared store; the account copy is set aside at {backup}/set-aside/agents/newer-in-a.md"
+            ),
+            format!(
+                "differs agents/newer-in-b.md: account copy is newer, kept in the shared store; the previous shared copy is set aside at {backup}/set-aside/agents/newer-in-b.md"
+            ),
+            "identical agents/same.md: kept once".to_owned(),
+        ]
+    );
+    // The dry run changed nothing.
+    assert_eq!(
+        fs::read_to_string(store.join("newer-in-b.md")).unwrap(),
+        "a-old"
+    );
+    assert!(b.join("agents").is_dir() && !b.join("agents").is_symlink());
+    assert!(
+        !f.root()
+            .join("backups")
+            .read_dir()
+            .unwrap()
+            .any(|e| { fs::read_dir(e.unwrap().path().join("b")).is_ok() })
+    );
+
+    let out = f.migrate("b").unwrap();
+    assert_eq!(out["complete"], true, "{out:#}");
+    assert!(trusted_link(&b.join("agents")));
+    let read = |p: &str| fs::read_to_string(store.join(p)).unwrap();
+    assert_eq!(read("same.md"), "same");
+    assert_eq!(read("newer-in-b.md"), "b-new");
+    assert_eq!(read("newer-in-a.md"), "a-new");
+    assert_eq!(read("only-a.md"), "only a");
+    assert_eq!(read("only-b.md"), "only b");
+    let skills = target(f.root(), "skills");
+    assert_eq!(
+        fs::read_to_string(skills.join("s/SKILL.md")).unwrap(),
+        "skill a"
+    );
+    assert_eq!(
+        fs::read_to_string(skills.join("s/extra.md")).unwrap(),
+        "extra"
+    );
+    let backup = PathBuf::from(out["backup_dir"].as_str().unwrap());
+    let aside = |p: &str| fs::read_to_string(backup.join("set-aside").join(p)).unwrap();
+    assert_eq!(aside("agents/newer-in-a.md"), "b-old");
+    assert_eq!(aside("agents/newer-in-b.md"), "a-old");
+    assert_eq!(aside("skills/s/SKILL.md"), "skill b");
+    // The reflink backup of the account still holds its own versions.
+    assert_eq!(
+        fs::read_to_string(backup.join("agents/newer-in-a.md")).unwrap(),
+        "b-old"
+    );
+    let rec = &out["results"]["agents"];
+    assert_eq!(rec["duplicates"], 1);
+    assert_eq!(rec["replaced"], 1);
+    assert_eq!(rec["set_aside"], 2);
+    assert_eq!(rec["report"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn conversation_files_present_on_both_sides_stay_conflicts() {
+    require_exchange!();
+    let mut f = fx();
+    let a = f.account("a");
+    write(&a.join("todos/t.json"), "a");
+    f.migrate("a").unwrap();
+    let b = f.account("b");
+    write(&b.join("todos/t.json"), "b");
+    let d = dry(&f, "b");
+    assert_eq!(d["names"]["todos"]["action"], "conflicts");
+    assert!(d["names"]["todos"].get("report").is_none());
 }

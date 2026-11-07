@@ -749,6 +749,12 @@ idempotent and resumable. On Unraid pass the real-disk path with `--fs-path` (th
 cannot exchange or reflink); the links still point at the configured `/mnt/user/...` root. Switching
 between two linked accounts copies and deletes nothing; deleting an account removes only its links.
 Details, errors and the trust rules are in the [contract](contract.md#shared-claude-conversation-state-1390).
+Since 1.46.0 the user-level `agents` (custom subagents), `skills` and `commands` are shared the same way, so
+custom subagent types survive `api switch`. `settings.json` and credentials stay per account (statusLine and
+permissions may differ). For these three, `shared migrate` merges accounts that already have their own
+directories: identical files are kept once, of two different files the newest stays in the store and the other
+is set aside in `<backup_dir>/set-aside/`, and `--dry-run` prints one `report` line per such file.
+
 
 ### Native delivery to Claude sessions (contract 1.40.0)
 
