@@ -1080,3 +1080,171 @@ async fn approval_blocked_public_send_is_a_definite_refusal_never_dispatched_on_
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn open_wait_outlasts_a_brief_holder_then_reports_busy() {
+    let (_dir, paths, _, _) = fixture();
+    let holder = Ledger::open(&paths).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        drop(holder);
+    });
+    let started = std::time::Instant::now();
+    let waited = Ledger::open_wait(&paths, std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_millis(100));
+    // Budget exhausted: only then adapter_busy.
+    let busy = Ledger::open_wait(&paths, std::time::Duration::from_millis(80)).await;
+    assert_eq!(busy.err().unwrap().0, "adapter_busy");
+    drop(waited);
+    release.join().unwrap();
+}
+
+/// A slow native add must not hold the ledger lease: concurrent receipt reads
+/// proceed, a second sender of the same id waits and then submits nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_delivery_releases_lease_and_one_id_is_delivered_once() {
+    let (_dir, paths, mut input, now) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    bind(&paths, &mut a);
+    TEST_WAIT
+        .lock()
+        .unwrap()
+        .push((paths.root.clone(), std::time::Duration::from_secs(10)));
+    let adds = Arc::new(Mutex::new(0usize));
+    let lease_free_during_add = Arc::new(Mutex::new(None::<(bool, String)>));
+    let (counter, probe, p, message) = (
+        adds.clone(),
+        lease_free_during_add.clone(),
+        paths.clone(),
+        input.message_id.clone(),
+    );
+    let server = scripted_connections(
+        &a.endpoint(),
+        move |req| match req["method"].as_str().unwrap() {
+            "thread/read" => {
+                Some(json!({"thread":{"id":req["params"]["threadId"],"status":{"type":"idle"}}}))
+            }
+            "thread/queue/add" => {
+                *counter.lock().unwrap() += 1;
+                let state = Ledger::open(&p)
+                    .ok()
+                    .and_then(|db| db.get(&message).ok().flatten())
+                    .map(|r| r.state);
+                *probe.lock().unwrap() = Some((state.is_some(), state.unwrap_or_default()));
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                Some(
+                    json!({"queuedSubmission":{"id":"q1","clientUserMessageId":req["params"]["clientUserMessageId"]}}),
+                )
+            }
+            other => panic!("unexpected {other}"),
+        },
+        2,
+    )
+    .await;
+    input.expected_generation = a.generation();
+    let first = {
+        let (paths, input) = (paths.clone(), input.clone());
+        tokio::spawn(async move {
+            let mut db = Ledger::open(&paths).unwrap();
+            let mut receipt = db.accept(&input, now).unwrap();
+            deliver(&paths, &mut db, &mut receipt, Some(&input))
+                .await
+                .unwrap();
+            receipt
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    // A receipt read while the add is outstanding is not blocked and sees the journal.
+    let started = std::time::Instant::now();
+    let mut reader = Ledger::open_wait(&paths, std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_millis(300));
+    let mut seen = reader.lookup(&input.message_id).unwrap();
+    assert_eq!(seen.state, "unknown");
+    // A second sender of the same id waits for session ownership, then finds the
+    // first process's result and does not submit again.
+    let second = {
+        let (paths, input) = (paths.clone(), input.clone());
+        tokio::spawn(async move {
+            let mut db = Ledger::open_wait(&paths, std::time::Duration::from_secs(10))
+                .await
+                .unwrap();
+            let mut receipt = db.accept(&input, now).unwrap();
+            // Normally still `unknown`; under heavy load the first may already be done.
+            assert!(matches!(
+                receipt.state.as_str(),
+                "unknown" | "native_accepted"
+            ));
+            deliver(&paths, &mut db, &mut receipt, Some(&input))
+                .await
+                .unwrap();
+            receipt
+        })
+    };
+    // Status-style observation of the in-flight receipt must not regress anything.
+    reader.expire(&mut seen, crate::daemon::now()).unwrap();
+    drop(reader);
+    let first = first.await.unwrap();
+    let second = second.await.unwrap();
+    assert_eq!(first.state, "native_accepted");
+    assert_eq!(second.state, "native_accepted");
+    assert_eq!(*adds.lock().unwrap(), 1);
+    assert_eq!(
+        lease_free_during_add.lock().unwrap().clone(),
+        Some((true, "unknown".to_string()))
+    );
+    server.abort();
+}
+
+/// Receipt observation reads Codex without the ledger lease and never regresses a
+/// state another process recorded meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn observation_io_is_lease_free_and_does_not_regress_terminal_state() {
+    let (_dir, paths, mut input, now) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    bind(&paths, &mut a);
+    TEST_WAIT
+        .lock()
+        .unwrap()
+        .push((paths.root.clone(), std::time::Duration::from_secs(10)));
+    let p = paths.clone();
+    let message = input.message_id.clone();
+    let free = Arc::new(Mutex::new(false));
+    let seen_free = free.clone();
+    let server = scripted_connections(
+        &a.endpoint(),
+        move |req| {
+            assert_eq!(req["method"], "thread/turns/list");
+            // Another process records a terminal state while the read is outstanding.
+            let mut db = Ledger::open(&p).unwrap();
+            *seen_free.lock().unwrap() = true;
+            let mut r = db.get(&message).unwrap().unwrap();
+            r.state = "failed".into();
+            r.reason = Some("native_turn_failed".into());
+            db.save(&r).unwrap();
+            Some(json!({"data":[],"nextCursor":null}))
+        },
+        1,
+    )
+    .await;
+    input.expected_generation = a.generation();
+    let mut db = Ledger::open(&paths).unwrap();
+    let mut receipt = db.accept(&input, now).unwrap();
+    receipt.state = "native_accepted".into();
+    receipt.native_queue_id = Some("q1".into());
+    db.save(&receipt).unwrap();
+    let out = observe::result(&paths, &mut db, &mut receipt)
+        .await
+        .unwrap();
+    assert!(*free.lock().unwrap());
+    assert_eq!(out["state"], "failed");
+    assert_eq!(
+        out["observation"]["code"],
+        "receipt_changed_during_observation"
+    );
+    assert_eq!(db.get(&input.message_id).unwrap().unwrap().state, "failed");
+    server.abort();
+}

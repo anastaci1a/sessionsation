@@ -218,12 +218,9 @@ pub(super) fn commit(ledger: &mut Ledger, receipt: &mut Receipt, observed: Recei
     }
     Ok(())
 }
-async fn refresh(
-    paths: &Paths,
-    ledger: &mut Ledger,
-    receipt: &mut Receipt,
-) -> Result<&'static str> {
-    let _guard = mutation_lock(paths, &receipt.session_id)?;
+/// Native read for a legacy receipt observation, run without the ledger lease.
+async fn refresh_io(paths: &Paths, receipt: &Receipt, budget: Duration) -> Result<Option<Receipt>> {
+    let _guard = mutation_lock_waiting(paths, &receipt.session_id, budget).await?;
     let selected = attachment(paths, &receipt.session_id)?;
     let generation = selected.generation();
     let mut control = selected.connect().await?;
@@ -231,14 +228,8 @@ async fn refresh(
     if attachment(paths, &receipt.session_id)?.generation() != generation {
         return Err(Fault("generation_mismatch"));
     }
-    if let Some(observed) = observed {
-        commit(ledger, receipt, observed)?;
-        Ok("observed")
-    } else {
-        Ok("uncorrelated")
-    }
+    Ok(observed)
 }
-
 /// Public receipt observation must not hold the root-wide writer lease during
 /// provider I/O. The caller reacquires it and commits only if the snapshot still
 /// matches; cancellation and concurrent delivery always win that comparison.
@@ -264,10 +255,26 @@ pub(super) async fn result(
 ) -> Result<Value> {
     let observation = match receipt.state.as_str() {
         "unknown" | "native_accepted" | "execution_started" => {
-            match refresh(paths, ledger, receipt).await {
-                Ok(state) => json!({"state":state}),
-                Err(Fault("storage_error")) => return Err(Fault("storage_error")),
-                Err(error) => json!({"state":"unavailable","code":error.0}),
+            // Provider I/O never holds the root-wide lease. The snapshot is
+            // committed only if the receipt is unchanged and never regresses a
+            // terminal state (see `commit`).
+            let budget = wait_budget(paths, Wait::Read);
+            let stored: &Receipt = receipt;
+            let io = ledger
+                .during(budget, refresh_io(paths, stored, budget))
+                .await?;
+            if !ledger.unchanged(receipt)? {
+                json!({"state":"unavailable","code":"receipt_changed_during_observation"})
+            } else {
+                match io {
+                    Ok(Some(observed)) => {
+                        commit(ledger, receipt, observed)?;
+                        json!({"state":"observed"})
+                    }
+                    Ok(None) => json!({"state":"uncorrelated"}),
+                    Err(Fault("storage_error")) => return Err(Fault("storage_error")),
+                    Err(error) => json!({"state":"unavailable","code":error.0}),
+                }
             }
         }
         "completed_with_reply" | "failed" => json!({"state":"cached"}),

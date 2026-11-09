@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.46.3`
+so revision N maps to contract `1.N.0` and the current contract is `1.46.4`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3173,3 +3173,22 @@ native (peer) frame now carries
 - `native_sender_registration` is now a documented no-op (the config key still loads; nothing is registered
   and the worker writes no registry entry). Receipts no longer gain `sender_registration`; records written
   by 1.45.2 keep any value they have.
+
+### Codex messaging waits for the ledger (1.46.4)
+
+PATCH. No request or result shape changes.
+
+Since 1.46.3 agent sends to Codex sessions go through the public messaging path, so several agents sending and
+polling receipts at once collided on the single messaging ledger lease and failed at once with `ADAPTER_BUSY`
+(`ok:false`, retryable) before acceptance. Now:
+
+- `api send` (Codex), `api receipt`, `api cancel` and the legacy `messaging` enqueue/status/observe/events/cancel
+  wait for the lease: up to 20 s for sends and 10 s for reads, and for the per-session ownership lock
+  (otherwise `OPERATION_BUSY`). `ADAPTER_BUSY` is returned only after that budget runs out.
+- The lease is no longer held across Codex app-server I/O (status read, `thread/queue/add`, queue reconciliation,
+  reply observation). A submission is journalled `unknown` under the lease before the add is sent, so exactly one
+  process delivers a message id; every other process only reconciles. After the I/O the lease is re-taken and
+  the result is saved only if the receipt is unchanged, so a stale result never regresses a state recorded
+  meanwhile (cancelled, observed, terminal).
+- A send to a busy (mid-turn) target is unchanged: `queue` queues natively, `submit` is refused with
+  `target_busy`, `steer` steers.

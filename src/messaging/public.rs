@@ -169,7 +169,7 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
     // moments ago can acknowledge input it is not yet reading.
     if !delivery::timing(paths).ready.is_zero() && request.mode != PublicMode::Steer {
         // A busy ledger refuses before any catalog or native work.
-        drop(Ledger::open(paths)?);
+        drop(Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?);
         if let Ok(session) =
             crate::catalog::resolve(paths, &request.session_id, &request.expected_generation)
         {
@@ -178,7 +178,7 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
             }
         }
     }
-    let mut ledger = Ledger::open(paths)?;
+    let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
     initialize(&ledger)?;
     let binding =
         if let Some(b) = get(&ledger, &request.message_id)? {
@@ -330,7 +330,7 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
     if super::headless::exists(paths, id) {
         return super::headless::receipt(paths, id, cancelling);
     }
-    let mut ledger = Ledger::open(paths)?;
+    let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
     initialize(&ledger)?;
     let Some(mut binding) = get(&ledger, id)? else {
         if super::recovery::exists(paths, id) {
@@ -400,7 +400,7 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
         let original = receipt.clone();
         drop(ledger);
         let observation = steering::snapshot(paths, &original).await;
-        let mut ledger = Ledger::open(paths)?;
+        let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
         binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
         receipt = ledger.get(id)?.ok_or(Fault("receipt_not_found"))?;
         let status = if receipt != original {
@@ -435,7 +435,7 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
         let original = receipt.clone();
         drop(ledger);
         let observation = observe::snapshot(paths, &original).await;
-        ledger = Ledger::open(paths)?;
+        ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
         binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
         receipt = ledger.get(id)?.ok_or(Fault("receipt_not_found"))?;
         let status = if receipt != original || binding.cancelled {

@@ -65,7 +65,7 @@ fn wrap(delivery: Value) -> Value {
 }
 pub(super) async fn request(paths: &Paths, r: Request) -> Result<Value> {
     r.validate()?;
-    let mut ledger = Ledger::open(paths)?;
+    let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
     let hash = r.fingerprint()?;
     if let Some(old) = ledger.get(&r.request_id)? {
         let stored: String = ledger.db.query_row(
@@ -142,7 +142,7 @@ pub(super) async fn request(paths: &Paths, r: Request) -> Result<Value> {
     Ok(wrap(json!(receipt)))
 }
 pub(super) async fn status(paths: &Paths, id: &str) -> Result<Value> {
-    let mut ledger = Ledger::open(paths)?;
+    let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
     let mut receipt = receipt(&ledger, id)?;
     if receipt.submit.is_some() {
         return Ok(wrap(json!(receipt)));
@@ -172,7 +172,7 @@ pub(super) fn events(paths: &Paths, cursor: Option<&str>) -> Result<Value> {
     Ok(page)
 }
 pub(super) async fn cancel_request(paths: &Paths, id: &str) -> Result<Value> {
-    let mut ledger = Ledger::open(paths)?;
+    let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
     let mut receipt = receipt(&ledger, id)?;
     if receipt.submit.is_some() {
         return Err(Fault(if receipt.state == "native_accepted" {

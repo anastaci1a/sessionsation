@@ -356,7 +356,56 @@ fn capabilities() -> Value {
 struct Ledger {
     db: Connection,
     paths: Paths,
-    _lock: fs::File,
+    _lock: Option<fs::File>,
+    /// True while the writer lease is released around provider I/O.
+    suspended: bool,
+}
+/// How long a public path waits for the root-wide ledger lease before it reports
+/// `adapter_busy`. Sends may wait longer than reads.
+#[derive(Clone, Copy)]
+enum Wait {
+    Send,
+    Read,
+}
+#[cfg(test)]
+pub(super) static TEST_WAIT: std::sync::Mutex<Vec<(PathBuf, std::time::Duration)>> =
+    std::sync::Mutex::new(Vec::new());
+fn wait_budget(paths: &Paths, wait: Wait) -> std::time::Duration {
+    #[cfg(test)]
+    {
+        // Unit tests keep the fail-fast behaviour unless a test registers its root.
+        let _ = wait;
+        TEST_WAIT
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(root, _)| *root == paths.root)
+            .map_or(std::time::Duration::ZERO, |(_, d)| *d)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = paths;
+        std::time::Duration::from_secs(match wait {
+            Wait::Send => 20,
+            Wait::Read => 10,
+        })
+    }
+}
+/// Like `mutation_lock`, but waits (bounded, async) for a concurrent holder.
+async fn mutation_lock_waiting(
+    paths: &Paths,
+    id: &str,
+    budget: std::time::Duration,
+) -> Result<(fs::File, fs::File)> {
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        match mutation_lock(paths, id) {
+            Err(Fault("operation_busy")) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            other => return other,
+        }
+    }
 }
 /// Unthrottled receipt-retention pass (part of the data-root retention sweep);
 /// returns the number of retired message ids.
@@ -388,8 +437,51 @@ impl Ledger {
         Ok(Self {
             db,
             paths: paths.clone(),
-            _lock: lock,
+            _lock: Some(lock),
+            suspended: false,
         })
+    }
+    /// Like `open`, but waits asynchronously up to `budget` for a concurrent holder.
+    async fn open_wait(paths: &Paths, budget: std::time::Duration) -> Result<Self> {
+        let deadline = tokio::time::Instant::now() + budget;
+        loop {
+            match Self::open(paths) {
+                Err(Fault("adapter_busy")) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                other => return other,
+            }
+        }
+    }
+    /// Run provider I/O without the root-wide lease. The lease is always taken
+    /// again (waiting up to `budget`) before returning, so the caller must treat
+    /// every ledger read made before the call as stale and re-verify it.
+    async fn during<T>(
+        &mut self,
+        budget: std::time::Duration,
+        io: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        // Close the connection before releasing the lock.
+        self.db = Connection::open_in_memory()?;
+        self._lock = None;
+        self.suspended = true;
+        let out = io.await;
+        let paths = self.paths.clone();
+        *self = Self::open_wait(&paths, budget).await?;
+        Ok(out)
+    }
+    /// After `during`, tell whether another writer changed this receipt. When it
+    /// did, adopt the stored record and report `false`: our stale result must not
+    /// regress it.
+    fn unchanged(&self, receipt: &mut Receipt) -> Result<bool> {
+        match self.get(&receipt.message_id)? {
+            Some(current) if current == *receipt => Ok(true),
+            Some(current) => {
+                *receipt = current;
+                Ok(false)
+            }
+            None => Ok(false),
+        }
     }
     /// Like `open`, but waits up to `budget` for a concurrent holder. Only for
     /// local id checks of other stores, never to bypass the lock.
@@ -405,6 +497,9 @@ impl Ledger {
         }
     }
     fn get(&self, id: &str) -> Result<Option<Receipt>> {
+        if self.suspended {
+            return Err(Fault("adapter_busy"));
+        }
         let text: Option<String> = self
             .db
             .query_row("SELECT receipt FROM receipts WHERE id=?", [id], |r| {
@@ -423,6 +518,9 @@ impl Ledger {
         }
     }
     fn save(&mut self, receipt: &Receipt) -> Result<()> {
+        if self.suspended {
+            return Err(Fault("adapter_busy"));
+        }
         let data = serde_json::to_string(receipt).map_err(|_| Fault("storage_error"))?;
         let tx = self.db.transaction()?;
         tx.execute(
@@ -630,19 +728,31 @@ async fn reconcile(
     ledger: &mut Ledger,
     receipt: &mut Receipt,
 ) -> Result<()> {
-    // Do not hold movement ownership across an unbounded paginated read.
-    tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        reconcile_pages(control, ledger, receipt),
-    )
-    .await
-    .map_err(|_| Fault("reconciliation_incomplete"))?
+    // Do not hold movement ownership across an unbounded paginated read, nor the
+    // root-wide ledger lease across any native I/O.
+    let budget = wait_budget(&ledger.paths, Wait::Send);
+    let found = ledger
+        .during(budget, async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                reconcile_pages(control, receipt),
+            )
+            .await
+            .map_err(|_| Fault("reconciliation_incomplete"))?
+        })
+        .await??;
+    if let Some(id) = found {
+        // Another process may have recorded a later state meanwhile: never regress it.
+        if ledger.unchanged(receipt)? {
+            receipt.state = "native_accepted".into();
+            receipt.native_queue_id = Some(id);
+            receipt.reason = None;
+            ledger.save(receipt)?;
+        }
+    }
+    Ok(())
 }
-async fn reconcile_pages(
-    control: &mut Transport,
-    ledger: &mut Ledger,
-    receipt: &mut Receipt,
-) -> Result<()> {
+async fn reconcile_pages(control: &mut Transport, receipt: &Receipt) -> Result<Option<String>> {
     let mut cursor: Option<String> = None;
     let mut match_id: Option<String> = None;
     // Bounded, complete search. A client ID is not a native uniqueness constraint.
@@ -667,15 +777,7 @@ async fn reconcile_pages(
             match_id = Some(item.id);
         }
         match page.next {
-            None => {
-                if let Some(id) = match_id {
-                    receipt.state = "native_accepted".into();
-                    receipt.native_queue_id = Some(id);
-                    receipt.reason = None;
-                    ledger.save(receipt)?;
-                }
-                return Ok(());
-            }
+            None => return Ok(match_id),
             Some(next) => {
                 if cursor.as_ref() == Some(&next) {
                     return Err(Fault("malformed_response"));
@@ -692,21 +794,27 @@ async fn submit(
     receipt: &mut Receipt,
     input: &Enqueue,
 ) -> Result<()> {
-    // Persist uncertainty before touching the socket. No automatic replay, even on crash.
+    // Persist uncertainty before touching the socket, under the lease. No automatic
+    // replay, even on crash. Every other process now sees `unknown` and can only
+    // reconcile, so exactly one process ever reaches the add below for an id.
     receipt.state = "unknown".into();
     receipt.reason = Some("submission_uncertain".into());
     ledger.save(receipt)?;
-    let result:Result<Added>=control.request("thread/queue/add",json!({"threadId":receipt.session_id,"clientUserMessageId":receipt.message_id,"input":[{"type":"text","text":input.text,"text_elements":[]}]})).await;
+    let budget = wait_budget(&ledger.paths, Wait::Send);
+    let result:Result<Added>=ledger.during(budget, control.request("thread/queue/add",json!({"threadId":receipt.session_id,"clientUserMessageId":receipt.message_id,"input":[{"type":"text","text":input.text,"text_elements":[]}]}))).await?;
     match result {
         Ok(response) => {
             if response.item.client_id == receipt.message_id
                 && !response.item.id.is_empty()
                 && response.item.id.len() <= 256
             {
-                receipt.state = "native_accepted".into();
-                receipt.native_queue_id = Some(response.item.id);
-                receipt.reason = None;
-                ledger.save(receipt)?;
+                // A concurrent reconcile/observe may already have advanced it.
+                if ledger.unchanged(receipt)? {
+                    receipt.state = "native_accepted".into();
+                    receipt.native_queue_id = Some(response.item.id);
+                    receipt.reason = None;
+                    ledger.save(receipt)?;
+                }
             }
         }
         // A late acknowledgement (a session still starting) leaves the entry in the
@@ -734,30 +842,46 @@ async fn deliver_with_policy(
     input: Option<&Enqueue>,
     public_mode: Option<PublicMode>,
 ) -> Result<bool> {
-    let _guard = mutation_lock(paths, &receipt.session_id)?;
-    let selected = attachment(paths, &receipt.session_id)?;
-    if selected.generation() != receipt.generation {
-        return Err(Fault("generation_mismatch"));
+    // All provider I/O below runs without the root-wide ledger lease so concurrent
+    // sends and receipt polls are not blocked behind a busy target. Lock order is
+    // always session ownership first, ledger second.
+    let budget = wait_budget(paths, Wait::Send);
+    let stored: &Receipt = receipt;
+    let (_guard, mut control, current) = ledger
+        .during(budget, async {
+            let guard = mutation_lock_waiting(paths, &stored.session_id, budget).await?;
+            let selected = attachment(paths, &stored.session_id)?;
+            if selected.generation() != stored.generation {
+                return Err(Fault("generation_mismatch"));
+            }
+            let mut control = selected.connect().await?;
+            let current = if public_mode.is_some() && stored.state == "pending_local" {
+                let o =
+                    modes::session_status::observe_fresh_public(&mut control, &stored.session_id)
+                        .await?;
+                if let Some(reason) = o.reason {
+                    return Err(Fault(reason));
+                }
+                match o.state.as_str() {
+                    // A failed turn (capacity, quota) leaves a live idle session; only an
+                    // interrupted turn needs explicit Resume.
+                    "idle" | "errored" => "idle",
+                    "working" => "busy",
+                    "interrupted" => return Err(Fault("explicit_resume_required")),
+                    "disconnected" => return Err(Fault("unavailable")),
+                    _ => return Err(Fault("state_unverified")),
+                }
+            } else {
+                activity(&mut control, &stored.session_id).await?
+            };
+            Ok((guard, control, current))
+        })
+        .await??;
+    // Another process may have delivered, cancelled or observed this id while the
+    // lease was released. Its record wins; this call never resubmits over it.
+    if !ledger.unchanged(receipt)? {
+        return Ok(false);
     }
-    let mut control = selected.connect().await?;
-    let current = if public_mode.is_some() && receipt.state == "pending_local" {
-        let o =
-            modes::session_status::observe_fresh_public(&mut control, &receipt.session_id).await?;
-        if let Some(reason) = o.reason {
-            return Err(Fault(reason));
-        }
-        match o.state.as_str() {
-            // A failed turn (capacity, quota) leaves a live idle session; only an
-            // interrupted turn needs explicit Resume.
-            "idle" | "errored" => "idle",
-            "working" => "busy",
-            "interrupted" => return Err(Fault("explicit_resume_required")),
-            "disconnected" => return Err(Fault("unavailable")),
-            _ => return Err(Fault("state_unverified")),
-        }
-    } else {
-        activity(&mut control, &receipt.session_id).await?
-    };
     if public_mode == Some(PublicMode::Submit)
         && current != "idle"
         && receipt.state == "pending_local"
@@ -863,7 +987,7 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
             }
             let input: Enqueue =
                 serde_json::from_slice(&bytes).map_err(|_| Fault("invalid_request"))?;
-            let mut ledger = Ledger::open(paths)?;
+            let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
             let mut receipt = ledger.accept(&input, crate::daemon::now())?;
             ledger.expire(&mut receipt, crate::daemon::now())?;
             if matches!(receipt.state.as_str(), "pending_local" | "unknown") {
@@ -878,7 +1002,7 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
         }
         Command::Status { message } | Command::Observe { message } => {
             uuid(&message)?;
-            let mut ledger = Ledger::open(paths)?;
+            let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
             let mut receipt = ledger.lookup(&message)?;
             if receipt.submit.is_some() {
                 return Err(Fault("mode_receipt_requires_modes_status"));
@@ -890,7 +1014,9 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
             observe::result(paths, &mut ledger, &mut receipt).await
         }
         Command::Events { cursor } => {
-            let mut page = Ledger::open(paths)?.events(cursor.as_deref())?;
+            let mut page = Ledger::open_wait(paths, wait_budget(paths, Wait::Read))
+                .await?
+                .events(cursor.as_deref())?;
             page["events"]
                 .as_array_mut()
                 .ok_or(Fault("storage_error"))?
@@ -899,7 +1025,7 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
         }
         Command::Cancel { message } => {
             uuid(&message)?;
-            let mut ledger = Ledger::open(paths)?;
+            let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
             let mut receipt = ledger.lookup(&message)?;
             if receipt.submit.is_some() {
                 return Err(Fault("mode_receipt_requires_modes_cancel"));
