@@ -18,8 +18,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 46;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.46.1";
+pub const CONTRACT_PATCH: u32 = 2;
+pub const CONTRACT_VERSION: &str = "1.46.2";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -323,7 +323,7 @@ pub enum Command {
     Recover {
         operation: String,
     },
-    /// Operator-only: abandon an uncertain or stuck resume-launch (terminal; sends nothing).
+    /// Operator-only: abandon an uncertain or stuck resume-launch or an uncertain new launch (terminal; sends nothing).
     AbandonOperation {
         #[arg(long)]
         operation: String,
@@ -1516,7 +1516,7 @@ pub fn capabilities() -> Value {
             "errors":["ACCOUNT_SESSIONS_RUNNING","ACCOUNT_NAME_EXISTS","ACCOUNT_NAME_UNCHANGED","ACCOUNT_HOME_EXISTS","ACCOUNT_HOME_ADOPTED","ACCOUNT_REMOVED","ACCOUNT_RENAME_UNRESOLVED","ACCOUNT_DELETION_IN_PROGRESS","ACCOUNT_POLL_IN_PROGRESS","ACCOUNT_BUSY","STALE_TARGET","ACCOUNT_AMBIGUOUS","ACCOUNT_HOME_MOVE_FAILED","INVALID_ARGUMENT"]}});
     value["claude_default_statusline"] = json!({"since_contract":"1.27.0","setting":"claude_default_statusline_command","built_in_default":crate::config::Config::default().claude_default_statusline_command,"empty":"disabled","config_file":"CLAUDE_CONFIG_DIR/settings.json","key":"statusLine","value":{"type":"command","command":"<setting>"},"applies_to":"new_managed_homes_only","existing_key":"kept","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.28.0: operator abandon of uncertain/stuck resume-launch operations.
-    value["abandon_operation"] = json!({"since_contract":"1.28.0","command":"abandon-operation","requires":["operation","confirm"],"applies_to":"resume_launch","phases":["uncertain","stuck"],"terminal_phase":"abandoned","replays":false,"sends":false,"refused_while_session_process_live":true});
+    value["abandon_operation"] = json!({"since_contract":"1.28.0","command":"abandon-operation","requires":["operation","confirm"],"applies_to":["resume_launch","launch"],"launch_phases":["uncertain"],"phases":["uncertain","stuck"],"terminal_phase":"abandoned","replays":false,"sends":false,"refused_while_session_process_live":true});
     value["account_reorder"] = json!(true);
     value["session_identity"] = json!({"version":1,"native_id_reattachment":true,"switched_process_released":true,"claude_registry_field":"sessionId","gemini_process_source":"cmdline_session_id_argument","antigravity_process_source":"open_presence_lock_or_conversation_argument","codex_thread_source":"open_rollout_or_resume_argv","claude_continuation_marker":"continued-in","claude_fork_marker":"forkedFrom","continuation_link":"automatic_same_account","previous_conversation_ids":true,"merged_alias_error":"SESSION_MERGED","persisted_identity_record":true,"repair_command":"session repair-identity"});
     value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session"],"requires_one_of":["space","new_space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","antigravity":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
@@ -2903,6 +2903,8 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 crate::claude_switch::abandon(paths, &operation, &confirm)?
             } else if crate::account_rename::exists(paths, &operation) {
                 crate::account_rename::abandon(paths, &operation, &confirm)?
+            } else if crate::launch::status(paths, &operation).is_ok() {
+                crate::launch::abandon(paths, &operation, &confirm).await?
             } else {
                 crate::resume::abandon(paths, &operation, &confirm).await?
             }

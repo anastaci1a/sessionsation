@@ -1504,3 +1504,12 @@ Both commands are journaled as launch/resumption receipts marked `inline`
 `failed` and frees the name; anything unclear is `uncertain` and is never replayed
 (`api abandon-operation` ends an uncertain resumption). Account/conversation locks are the
 ones `api resume-launch` takes. Gate on `capabilities.inline_launch`.
+
+### Abandoning an uncertain new launch (contract 1.46.2)
+
+`api abandon-operation --operation REQUEST-ID --confirm REQUEST-ID` also accepts a new `api launch` request whose
+receipt is `uncertain` and whose worker has stopped. It marks the receipt `abandoned`, releases the reserved
+name and sends nothing. It is refused with `SESSION_EXISTS` (a session with that id is in the catalog) or
+`SESSION_PROCESS_LIVE` (the launch pane still runs a program other than an idle shell). Since 1.46.2 a launch
+whose `launch-run` never started within 120 s ends `failed` (`LAUNCH_RUN_NEVER_STARTED`) with the name
+released, so this is only needed for receipts stuck by older builds.

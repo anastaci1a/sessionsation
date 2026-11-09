@@ -619,7 +619,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     })?;
     host_call(&r.host, &["pane", "run", &pane, &command]).await?;
     // launch-run confirms exact pane identity before touching a provider.
-    for _ in 0..300 {
+    for _ in 0..ACK_WAIT_TICKS {
         let status = status(paths, id)?;
         if status.phase == "running" {
             return Ok(());
@@ -639,10 +639,37 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
         ensure!(status.phase != "failed", "PROVIDER_LAUNCH_FAILED");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    expire_ack(paths, id)
+}
+/// Wait (100 ms ticks) for launch-run to acknowledge: 120 s, tolerant of a loaded host.
+const ACK_WAIT_TICKS: u32 = 1200;
+/// The ack wait ran out, decided atomically against `run()`'s claim. While the phase is still
+/// `dispatching`, launch-run never claimed it and (it requires `dispatching`) can never start
+/// the provider: certain failure, name released. Otherwise the outcome stays uncertain.
+fn expire_ack(paths: &Paths, id: &str) -> Result<()> {
+    let mut never_started = false;
+    change(paths, id, |r| {
+        if r.phase == "dispatching" {
+            catalog::release_reservation(paths, id, &r.request.name)?;
+            r.phase = "failed".into();
+            r.detail = Some("LAUNCH_RUN_NEVER_STARTED: provider was not started".into());
+            never_started = true;
+        }
+        Ok(())
+    })?;
+    if never_started {
+        anyhow::bail!("LAUNCH_RUN_NEVER_STARTED: provider was not started");
+    }
     anyhow::bail!("LAUNCH_ACK_UNCERTAIN")
 }
 pub async fn run(paths: &Paths, id: &str) -> Result<()> {
     let receipt = change(paths, id, |r| {
+        if r.phase != "dispatching" {
+            eprintln!(
+                "sessionsation: launch {id} is in phase '{}', not 'dispatching'; the provider was NOT started by this command (LAUNCH_ALREADY_DISPATCHED)",
+                r.phase
+            );
+        }
         ensure!(r.phase == "dispatching", "LAUNCH_ALREADY_DISPATCHED");
         ensure!(
             std::env::var("HERDR_PANE_ID").ok().as_ref() == r.pane_id.as_ref(),
@@ -747,6 +774,66 @@ pub fn attached(
         Ok(())
     })?;
     Ok(session)
+}
+/// Operator abandon of a launch left `uncertain` whose worker has stopped (terminal; starts and
+/// sends nothing). Refused while a catalog session with the request id exists or the launch's
+/// pane still hosts anything but an idle shell. Releases the reserved name.
+pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
+    ensure!(id == confirm, "CONFIRMATION_MISMATCH");
+    let r = status(paths, id)?;
+    ensure!(
+        !matches!(
+            r.phase.as_str(),
+            "running" | "complete" | "failed" | "recovered" | "abandoned"
+        ),
+        "OPERATION_ALREADY_TERMINAL"
+    );
+    ensure!(r.phase == "uncertain", "OPERATION_NOT_STUCK");
+    ensure!(
+        crate::background::worker_stopped(&location(paths, id)?.with_extension("worker.lock"))?,
+        "OPERATION_WORKER_ACTIVE"
+    );
+    ensure!(
+        !catalog::list(paths)?.iter().any(|s| s.id == id),
+        "SESSION_EXISTS"
+    );
+    if let Some(pane) = &r.pane_id {
+        match host_call(&r.request.host, &["pane", "process-info", "--pane", pane]).await {
+            Ok(info) => {
+                let i = &info["process_info"];
+                let idle = i["foreground_processes"].as_array().is_some_and(|p| {
+                    p.is_empty()
+                        || (p.len() == 1
+                            && p[0]["pid"] == i["shell_pid"]
+                            && matches!(
+                                p[0]["name"].as_str(),
+                                Some("bash" | "sh" | "zsh" | "fish")
+                            ))
+                });
+                ensure!(idle, "SESSION_PROCESS_LIVE");
+            }
+            Err(e) => {
+                let m = format!("{e:#}").to_lowercase();
+                ensure!(
+                    m.contains("not found") || m.contains("no such"),
+                    "SESSION_STATE_UNVERIFIED"
+                );
+            }
+        }
+    }
+    let done = change(paths, id, |c| {
+        ensure!(c.phase == "uncertain", "OPERATION_NOT_STUCK");
+        catalog::release_reservation(paths, id, &c.request.name)?;
+        c.phase = "abandoned".into();
+        c.detail = Some(
+            "Abandoned by the operator from 'uncertain'. Nothing was started or sent by this step."
+                .into(),
+        );
+        Ok(())
+    })?;
+    let mut v = serde_json::to_value(done)?;
+    v["abandoned_from"] = json!("uncertain");
+    Ok(v)
 }
 /// Positive provider-specific evidence that the recorded process runs the session.
 pub(crate) fn launch_observed(paths: &Paths, s: &catalog::Session) -> bool {
@@ -967,5 +1054,92 @@ mod tests {
         for n in ["../x", ".", "..", " x", "x/y"] {
             assert!(validate_name(n).is_err());
         }
+    }
+    fn fixture(paths: &Paths, phase: &str) -> String {
+        fixture_named(paths, phase, "stuck-name")
+    }
+    fn fixture_named(paths: &Paths, phase: &str, name: &str) -> String {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/contract/fixtures.json")).unwrap();
+        let mut r: Receipt = serde_json::from_value(fixtures["launch_receipt"].clone()).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        r.request.request_id = id.clone();
+        r.request.name = name.into();
+        r.phase = phase.into();
+        r.pane_id = None;
+        save(paths, &mut r).unwrap();
+        catalog::reserve_name(paths, name, &id).unwrap();
+        id
+    }
+    #[test]
+    fn ack_timeout_while_still_dispatching_fails_and_releases_the_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let id = fixture(&paths, "dispatching");
+        let e = expire_ack(&paths, &id).unwrap_err().to_string();
+        assert!(e.starts_with("LAUNCH_RUN_NEVER_STARTED"));
+        let r = status(&paths, &id).unwrap();
+        assert_eq!(r.phase, "failed");
+        assert!(r.detail.unwrap().contains("LAUNCH_RUN_NEVER_STARTED"));
+        catalog::reserve_name(&paths, "stuck-name", "other").unwrap();
+    }
+    #[test]
+    fn ack_timeout_after_launch_run_claimed_stays_uncertain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let id = fixture(&paths, "starting_provider");
+        assert_eq!(
+            expire_ack(&paths, &id).unwrap_err().to_string(),
+            "LAUNCH_ACK_UNCERTAIN"
+        );
+        assert_eq!(status(&paths, &id).unwrap().phase, "starting_provider");
+        assert!(catalog::reserve_name(&paths, "stuck-name", "other").is_err());
+    }
+    #[tokio::test]
+    async fn run_refuses_after_the_ack_timeout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let id = fixture(&paths, "dispatching");
+        let _ = expire_ack(&paths, &id);
+        let e = run(&paths, &id).await.unwrap_err().to_string();
+        assert_eq!(e, "LAUNCH_ALREADY_DISPATCHED");
+        assert_eq!(status(&paths, &id).unwrap().phase, "failed");
+    }
+    #[tokio::test]
+    async fn abandon_uncertain_launch_releases_name_and_refuses_when_a_session_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let e = |r: Result<Value>| r.unwrap_err().to_string();
+        let blocked = fixture_named(&paths, "uncertain", "blocked-name");
+        catalog::complete_reserved(
+            &paths,
+            &blocked,
+            "blocked-name",
+            ProviderId::Codex,
+            "fixture",
+            "conv",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            e(abandon(&paths, &blocked, &blocked).await),
+            "SESSION_EXISTS"
+        );
+        let fresh = fixture_named(&paths, "dispatching", "fresh-name");
+        assert_eq!(
+            e(abandon(&paths, &fresh, &fresh).await),
+            "OPERATION_NOT_STUCK"
+        );
+        let id = fixture(&paths, "uncertain");
+        assert_eq!(e(abandon(&paths, &id, "x").await), "CONFIRMATION_MISMATCH");
+        let done = abandon(&paths, &id, &id).await.unwrap();
+        assert_eq!(done["phase"], "abandoned");
+        assert_eq!(done["abandoned_from"], "uncertain");
+        assert_eq!(
+            e(abandon(&paths, &id, &id).await),
+            "OPERATION_ALREADY_TERMINAL"
+        );
+        catalog::reserve_name(&paths, "stuck-name", "other").unwrap();
     }
 }

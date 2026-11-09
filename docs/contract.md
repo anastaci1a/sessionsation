@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.46.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.46.2`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3114,3 +3114,22 @@ PATCH. No request or result shape changes except the lists noted below.
   `linked` is true when those six are links. `skills` is never linked, migrated or reported as `unmigrated`.
   A `skills/` that an earlier 1.46.x run linked is left as it is. A migration journal from 1.46.0 that listed
   `skills` without having moved it is resumed with that entry dropped; nothing in `skills/` is touched.
+
+### Launch ack timeout and abandoning an uncertain launch (1.46.2)
+
+PATCH. No request or result shape changes except `api capabilities.abandon_operation.applies_to`,
+which is now `["resume_launch","launch"]` (plus `launch_phases: ["uncertain"]`).
+
+- **Ack timeout is decided atomically.** `api launch` waits up to 120 s (was 30 s) for `launch-run` to
+  acknowledge. When the wait expires while the receipt is still `dispatching`, `launch-run` never claimed it
+  and can no longer start (it requires `dispatching`), so the receipt becomes `failed` with detail
+  `LAUNCH_RUN_NEVER_STARTED: provider was not started` and the name reservation is released. Only a launch
+  that `launch-run` did claim stays `uncertain` (`LAUNCH_ACK_UNCERTAIN`).
+- **`launch-run` is loud.** Started after the receipt left `dispatching`, it prints the phase and
+  `LAUNCH_ALREADY_DISPATCHED` to stderr in the pane and starts nothing.
+- **Recovery.** `api abandon-operation --operation REQUEST-ID --confirm REQUEST-ID` now also ends a new launch stuck in
+  `uncertain` whose worker has stopped: terminal `abandoned` (`abandoned_from: "uncertain"`), name released,
+  nothing sent. Refused with `SESSION_EXISTS` when a catalog session with that id exists,
+  `SESSION_PROCESS_LIVE` when the launch pane still runs something other than an idle shell,
+  `SESSION_STATE_UNVERIFIED` when the pane state cannot be read, `OPERATION_NOT_STUCK` for any phase other
+  than `uncertain`.
