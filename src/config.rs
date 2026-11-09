@@ -66,9 +66,9 @@ pub struct Config {
     /// Days a finished operation journal is kept (unfinished or uncertain ones
     /// and tombstones are never removed).
     pub operation_retention_days: u32,
-    /// Opt-in (contract 1.45.2): the native-message worker registers its own pid in the receiving
-    /// Claude account's session registry under the sending session's name, so Claude renders the
-    /// message as a collapsed `@name` entry. Removed on every exit path; default off.
+    /// Deprecated no-op since contract 1.46.3 (kept so existing config files still load). It once made
+    /// the native-message worker register a sender entry; native frames now carry a sender envelope in
+    /// their content instead, always, so Claude renders the collapsed `@name` row without it.
     pub native_sender_registration: bool,
 }
 impl Default for Config {

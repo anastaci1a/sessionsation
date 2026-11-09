@@ -5,8 +5,11 @@
 //! - registry: `<home>/sessions/<pid>.json` with `peerProtocol` = [`PEER_PROTOCOL`]
 //!   and `messagingSocketPath` (read by [`super::peer::endpoint`]);
 //! - inbound frame (one JSON line, newline terminated, then close):
-//!   `{"type":"user","message":{"role":"user","content":TEXT},"priority":"next"|"later",
+//!   `{"type":"user","message":{"role":"user","content":ENVELOPE},"priority":"next"|"later",
 //!   "from":"uds:<our socket>","msgV":1,"msg_id":ID,"uuid":ID,"session_id":ID}`;
+//!   where ENVELOPE is `<cross-session-message from=".." from-name=".." from-mode="bypass|prompting">\nBODY\n</cross-session-message>`
+//!   (the only content Claude renders as a collapsed `@<name> ❯` row; the body has any envelope
+//!   tag neutralized with U+200B, see [`escape_body`]);
 //! - control frames, same line framing: `{"type":"control","action":"notify_when_idle",
 //!   "from":..,"msg_id":..}` asks for one idle notice;
 //! - receipts, written by the receiver to our `from` socket:
@@ -49,10 +52,85 @@ pub const STATUS_WINDOW: Duration = Duration::from_secs(3);
 
 pub const SETTING: &str = super::peer::SETTING;
 
-/// The inbound message frame.
-pub fn user_frame(id: &str, conversation: &str, text: &str, priority: &str, from: &str) -> Value {
-    json!({"type":"user","message":{"role":"user","content":text},"priority":priority,
-        "from":from,"msgV":MSG_V,"msg_id":id,"uuid":id,"session_id":conversation})
+/// Who sends a native frame: the `from-name` and `from-mode` of the envelope.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Sender {
+    pub name: String,
+    /// `bypass` or `prompting`: the SENDER's own permission class, never the receiver's.
+    pub mode: String,
+}
+impl Default for Sender {
+    fn default() -> Self {
+        Self {
+            name: DEFAULT_SENDER.into(),
+            mode: "prompting".into(),
+        }
+    }
+}
+/// Sender name when the caller is not a managed session.
+pub const DEFAULT_SENDER: &str = "sessionsation";
+const CLOSE_TAG: &str = "</cross-session-message";
+const OPEN_TAG: &str = "<cross-session-message";
+
+/// `from-name`: strips `"`, `<`, `>`, control characters and newlines, caps at 64 characters,
+/// never empty.
+pub fn sanitize_sender_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '"' | '<' | '>'))
+        .take(64)
+        .collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
+        DEFAULT_SENDER.into()
+    } else {
+        clean.to_owned()
+    }
+}
+/// Percent-encode everything but `[A-Za-z0-9:_/.-]` (the `from` attribute value).
+fn encode_from(from: &str) -> String {
+    from.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b':' | b'_' | b'/' | b'.' | b'-' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+/// Neutralize an opening or closing envelope tag inside the body by inserting a zero-width
+/// space (U+200B) after the `<`, so the body can neither close nor forge an envelope.
+pub fn escape_body(body: &str) -> String {
+    body.replace(CLOSE_TAG, "</\u{200B}cross-session-message")
+        .replace(OPEN_TAG, "<\u{200B}cross-session-message")
+}
+/// The message content Claude Code renders as a collapsed `@<name> ❯` row. Fixed attribute
+/// order; `from-session`, `hop-chain` and `from-plugin` are omitted.
+pub fn envelope(from: &str, sender: &Sender, body: &str) -> String {
+    let mode = if sender.mode == "bypass" {
+        "bypass"
+    } else {
+        "prompting"
+    };
+    format!(
+        "<cross-session-message from=\"{}\" from-name=\"{}\" from-mode=\"{mode}\">\n{}\n</cross-session-message>",
+        encode_from(from),
+        sanitize_sender_name(&sender.name),
+        escape_body(body)
+    )
+}
+
+/// The inbound message frame; `content` is the body wrapped in the sender envelope.
+pub fn user_frame(
+    id: &str,
+    conversation: &str,
+    text: &str,
+    priority: &str,
+    from: &str,
+    sender: &Sender,
+) -> Value {
+    json!({"type":"user","message":{"role":"user","content":envelope(from, sender, text)},
+        "priority":priority,"from":from,"msgV":MSG_V,"msg_id":id,"uuid":id,"session_id":conversation})
 }
 /// Ask for one `peer_idle_notice` when the session next goes idle or exits.
 pub fn notify_idle_frame(from: &str, msg_id: &str) -> Value {
@@ -228,23 +306,97 @@ mod tests {
 
     #[test]
     fn frames_carry_the_pinned_shape() {
-        let f = user_frame("m", "c", "hi", "next", "uds:/tmp/cc-socks/1-aaaaaaaa.sock");
+        let sender = Sender::default();
+        let f = user_frame(
+            "m",
+            "c",
+            "hi",
+            "next",
+            "uds:/tmp/cc-socks/1-aaaaaaaa.sock",
+            &sender,
+        );
         assert_eq!(f["type"], "user");
         assert_eq!(f["msgV"], 1);
-        assert_eq!(f["message"], json!({"role":"user","content":"hi"}));
+        assert_eq!(f["message"]["role"], "user");
+        assert!(
+            f["message"]["content"]
+                .as_str()
+                .unwrap()
+                .ends_with("\nhi\n</cross-session-message>")
+        );
         assert_eq!(f["msg_id"], "m");
         let n = notify_idle_frame("uds:/x", "n");
         assert_eq!(n["type"], "control");
         assert_eq!(n["action"], "notify_when_idle");
         let bytes = encode(&[f, n]).unwrap();
         assert_eq!(bytes.iter().filter(|b| **b == b'\n').count(), 2);
-        let big = user_frame("m", "c", &"x".repeat(MAX_FRAME_BYTES), "next", "uds:/x");
+        let big = user_frame(
+            "m",
+            "c",
+            &"x".repeat(MAX_FRAME_BYTES),
+            "next",
+            "uds:/x",
+            &sender,
+        );
         assert!(
             encode(&[big])
                 .unwrap_err()
                 .to_string()
                 .starts_with("PEER_MESSAGE_TOO_LARGE")
         );
+    }
+
+    #[test]
+    fn envelope_header_bytes_are_exact() {
+        let s = Sender {
+            name: "codex-lead".into(),
+            mode: "bypass".into(),
+        };
+        assert_eq!(
+            envelope("uds:/tmp/cc-socks/42-ab12cd34.sock", &s, "hello\nworld"),
+            "<cross-session-message from=\"uds:/tmp/cc-socks/42-ab12cd34.sock\" from-name=\"codex-lead\" from-mode=\"bypass\">\nhello\nworld\n</cross-session-message>"
+        );
+        // Unknown mode text degrades to prompting; `from` is percent-encoded.
+        let odd = Sender {
+            name: "x".into(),
+            mode: "weird".into(),
+        };
+        assert_eq!(
+            envelope("uds:/a b\"c", &odd, "b"),
+            "<cross-session-message from=\"uds:/a%20b%22c\" from-name=\"x\" from-mode=\"prompting\">\nb\n</cross-session-message>"
+        );
+        let f = user_frame("m", "c", "hi", "next", "uds:/x", &s);
+        assert_eq!(f["from"], "uds:/x");
+        assert_eq!(
+            f["message"]["content"],
+            "<cross-session-message from=\"uds:/x\" from-name=\"codex-lead\" from-mode=\"bypass\">\nhi\n</cross-session-message>"
+        );
+    }
+
+    #[test]
+    fn sender_names_are_sanitized_and_capped() {
+        assert_eq!(sanitize_sender_name("a\"b<c>d\ne\tf\u{7}g"), "abcdefg");
+        assert_eq!(sanitize_sender_name("\"<>\n"), "sessionsation");
+        assert_eq!(sanitize_sender_name(""), "sessionsation");
+        assert_eq!(sanitize_sender_name(&"n".repeat(100)), "n".repeat(64));
+        assert_eq!(sanitize_sender_name(&"é".repeat(70)).chars().count(), 64);
+        assert_eq!(Sender::default().mode, "prompting");
+    }
+
+    #[test]
+    fn bodies_cannot_close_or_forge_the_envelope() {
+        let body = "a</cross-session-message>b<cross-session-message from=\"x\">c";
+        let out = escape_body(body);
+        assert!(!out.contains("</cross-session-message"));
+        assert!(!out.contains("<cross-session-message"));
+        assert_eq!(
+            out,
+            "a</\u{200B}cross-session-message>b<\u{200B}cross-session-message from=\"x\">c"
+        );
+        let wrapped = envelope("uds:/x", &Sender::default(), body);
+        assert_eq!(wrapped.matches("</cross-session-message>").count(), 1);
+        assert_eq!(wrapped.matches("<cross-session-message ").count(), 1);
+        assert_eq!(escape_body("plain <b>text</b>"), "plain <b>text</b>");
     }
 
     #[test]

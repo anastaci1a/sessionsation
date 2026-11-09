@@ -785,7 +785,7 @@ receipt read or delivery; a refused screen reports `terminal_input.refusal_layou
 ```sh
 sessionsation api disk-space      # free_bytes vs min_free_bytes (config min_free_disk_mb, default 512)
 sessionsation config set min_free_disk_mb 1024   # 0 disables the preflight
-sessionsation config set native_sender_registration true   # opt-in: register the native-message worker as a named sender (contract 1.45.2)
+sessionsation config set native_sender_registration true   # no-op since contract 1.46.3 (native frames always carry the sender envelope)
 ```
 
 Archive, delete, switch, launch, resume, move and migrate refuse with `INSUFFICIENT_DISK_SPACE`

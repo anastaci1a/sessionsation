@@ -174,10 +174,13 @@ pub struct Record {
     pub origin_resolved: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_source: Option<String>,
-    /// Native sender registration (contract 1.45.2): `{"name":..,"registered":bool,"reason":..}`;
-    /// absent unless `native_sender_registration` was on at send time.
+    /// Legacy (contract 1.45.2 sender registration; a no-op since 1.46.3, never written).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender_registration: Option<Value>,
+    /// Envelope sender (contract 1.46.3), resolved from the caller at send time; the detached
+    /// worker is not the caller's descendant. Absent in older records (`sessionsation`, `prompting`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<native_peer::Sender>,
     pub observation_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -557,9 +560,8 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         fallback_allowed,
         origin_resolved: Some(origin),
         origin_source: Some(origin_source.to_owned()),
-        sender_registration: crate::store::load_config(paths)
-            .is_ok_and(|c| c.native_sender_registration)
-            .then(|| json!({"name":crate::caller_origin::sender_name(paths),"registered":false})),
+        sender_registration: None,
+        sender: Some(crate::caller_origin::sender(paths)),
         observation_error: None,
         created_at: now,
         updated_at: now,
@@ -911,60 +913,6 @@ pub fn hosted_exited(paths: &Paths, c: &str, epoch: u64, reason: &str) -> Result
 
 // ------------------------------------------------------------- peer worker
 
-/// Opt-in sender registration for one peer worker (see `claude::sender_registry`). Records
-/// the outcome on the receipt; any failure leaves the delivery unregistered. The returned
-/// guard removes the entry on drop; SIGTERM/SIGINT remove it (and the reply socket) too.
-fn register_sender(
-    paths: &Paths,
-    r: &Record,
-    reply_socket: &Path,
-) -> Option<std::sync::Arc<claude::sender_registry::Registration>> {
-    let name = r.sender_registration.as_ref()?["name"].as_str()?.to_owned();
-    let outcome =
-        super::headless::usable_account(paths, ProviderId::Claude, &r.account).and_then(|a| {
-            claude::sender_registry::sweep(&a.home);
-            claude::sender_registry::register(&a.home, &name, reply_socket)
-        });
-    let (guard, note) = match outcome {
-        Ok(g) => (
-            Some(std::sync::Arc::new(g)),
-            json!({"name":name,"registered":true}),
-        ),
-        Err(e) => {
-            let reason = e
-                .to_string()
-                .split(':')
-                .next()
-                .unwrap_or("ERROR")
-                .to_owned();
-            (
-                None,
-                json!({"name":name,"registered":false,"reason":reason}),
-            )
-        }
-    };
-    let _ = change(paths, &r.request.message_id, |r| {
-        r.sender_registration = Some(note);
-        Ok(())
-    });
-    if let Some(g) = &guard {
-        use tokio::signal::unix::{SignalKind, signal};
-        if let (Ok(mut term), Ok(mut int)) = (
-            signal(SignalKind::terminate()),
-            signal(SignalKind::interrupt()),
-        ) {
-            let (g, socket) = (g.clone(), reply_socket.to_owned());
-            tokio::spawn(async move {
-                tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
-                g.remove();
-                let _ = fs::remove_file(socket);
-                std::process::exit(143);
-            });
-        }
-    }
-    guard
-}
-
 /// Detached worker for one peer message: owns the listening socket, sends the
 /// frame once and records the session's status/idle frames.
 pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
@@ -1000,12 +948,14 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
             return abandon_unsent(paths, id, &reason);
         }
     };
+    let sender = r.sender.clone().unwrap_or_default();
     let mut frames = vec![native_peer::user_frame(
         id,
         &r.conversation_id,
         &r.request.text,
         &r.priority,
         "uds:/placeholder",
+        &sender,
     )];
     if r.request.await_reply {
         frames.push(native_peer::notify_idle_frame(
@@ -1024,7 +974,6 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
     }
     let reply = native_peer::bind_reply(&peer.socket, &paths.runtime.join("peer"))?;
     let from = reply.address();
-    let _registration = register_sender(paths, &r, &reply.path);
     // Anchor: transcript size before the write; the injected record follows it.
     let anchor = peer
         .transcript
@@ -1069,8 +1018,14 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
         }
     };
     let (read_half, mut write_half) = stream.into_split();
-    let frame =
-        native_peer::user_frame(id, &r.conversation_id, &r.request.text, &r.priority, &from);
+    let frame = native_peer::user_frame(
+        id,
+        &r.conversation_id,
+        &r.request.text,
+        &r.priority,
+        &from,
+        &sender,
+    );
     let await_reply = r.request.await_reply;
     let mut frames = vec![frame];
     if await_reply {

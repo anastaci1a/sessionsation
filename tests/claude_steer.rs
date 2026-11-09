@@ -879,7 +879,12 @@ async fn peer_messages_need_opt_in_and_claim_replies_only_with_transcript_proof(
     );
     let r = f.settled(&m);
     assert_eq!(r["state"], "completed_with_reply", "{r}");
-    assert_eq!(r["reply"]["text"], "peer reply to: status please");
+    let reply = r["reply"]["text"].as_str().unwrap();
+    assert!(
+        reply.starts_with("peer reply to: <cross-session-message from=\"uds:/"),
+        "{reply}"
+    );
+    assert!(reply.ends_with("\" from-name=\"sessionsation\" from-mode=\"prompting\">\nstatus please\n</cross-session-message>"), "{reply}");
     assert_eq!(r["correlation"]["anchor_found"], true);
     assert_eq!(r["facts"]["peer_status"][0]["status"], "delivered");
     assert_eq!(r["facts"]["idle_notice"], true);
@@ -1166,7 +1171,12 @@ async fn agent_sends_use_the_native_peer_protocol_and_report_every_receipt_hones
     assert_eq!(r["native_fallback"], Value::Null);
     let user = frames().into_iter().find(|x| x["type"] == "user").unwrap();
     assert_eq!(user["msgV"], 1);
-    assert_eq!(user["message"]["content"], "agent hello");
+    let content = user["message"]["content"].as_str().unwrap();
+    assert!(
+        content.starts_with("<cross-session-message from=\"uds:/"),
+        "{content}"
+    );
+    assert!(content.ends_with("\" from-name=\"sessionsation\" from-mode=\"prompting\">\nagent hello\n</cross-session-message>"), "{content}");
     assert_eq!(users(), 1);
 
     // Real-receiver success is silent: the transcript anchor upgrades it.

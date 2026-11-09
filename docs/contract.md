@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.46.2`
+so revision N maps to contract `1.N.0` and the current contract is `1.46.3`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3133,3 +3133,43 @@ which is now `["resume_launch","launch"]` (plus `launch_phases: ["uncertain"]`).
   `SESSION_PROCESS_LIVE` when the launch pane still runs something other than an idle shell,
   `SESSION_STATE_UNVERIFIED` when the pane state cannot be read, `OPERATION_NOT_STUCK` for any phase other
   than `uncertain`.
+
+### Codex sender and origin detection (1.46.3)
+
+PATCH. No request or result shape changes.
+
+Codex tool commands run under the daemon-owned app-server, not under the TUI attachment process, so the
+process-ancestry match missed Codex sessions: native sender registration fell back to `sessionsation` and an
+omitted `origin` was detected as `operator`. After the ancestry match fails, the caller's own `CODEX_THREAD_ID`,
+then that of each ancestor (read from `/proc/<pid>/environ`, only that one variable, bounded hops, so it also
+works under `env -i`), is mapped to the catalog session with provider `codex` and that `conversation_id`. The
+ancestry match still wins when both apply. An unknown thread id resolves as before (`sessionsation` sender,
+`operator` origin).
+
+#### Native frame sender envelope (1.46.3)
+
+Claude Code renders a native peer frame as the collapsed `@<name> ❯` row only when
+`message.content` is a well-formed envelope (the sender registry entry is never used for rendering). Every
+native (peer) frame now carries
+
+```
+<cross-session-message from="<from>" from-name="<name>" from-mode="bypass|prompting">\n<body>\n</cross-session-message>
+```
+
+- Fixed attribute order; `from-session`, `hop-chain` and `from-plugin` are omitted. `from` is the frame's
+  own `from` value (the reply socket address), percent-encoded except `[A-Za-z0-9:_/.-]`.
+- `from-name` is the sender's session name (`caller_origin::sender`, resolved in the calling process when the
+  message is admitted, since the detached worker is not the caller's descendant), with `"`, `<`, `>`, control
+  characters and newlines removed, capped at 64 characters, `sessionsation` when empty or when the caller is
+  not a managed session.
+- `from-mode` is the SENDER's permission class, never the receiver's: Claude sender, `bypass` when its
+  attachment process was launched with `--dangerously-skip-permissions` or `--permission-mode
+  bypassPermissions`; Codex sender, `bypass` when the latest `turn_context` in its rollout records approval
+  `never` with sandbox `danger-full-access`; everything else (operator, system, unknown, any read failure, a
+  mode changed mid-session) is `prompting`. A mismatch with the receiver's permission class makes Claude hold
+  the message for approval; that is intended and is not worked around.
+- The body is escaped so it cannot close or forge an envelope: every `</cross-session-message` and
+  `<cross-session-message` inside it gets a zero-width space (U+200B) after the `<`.
+- `native_sender_registration` is now a documented no-op (the config key still loads; nothing is registered
+  and the worker writes no registry entry). Receipts no longer gain `sender_registration`; records written
+  by 1.45.2 keep any value they have.
