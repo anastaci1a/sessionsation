@@ -335,6 +335,7 @@ mod tests {
             origin: None,
             delivery: None,
             await_reply: false,
+            if_busy: None,
             steering: None,
             recovery: None,
             api_version: 1,

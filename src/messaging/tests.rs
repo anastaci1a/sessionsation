@@ -863,10 +863,12 @@ async fn session_labels_are_bounded_metadata_not_identity_or_credentials() {
 
 #[tokio::test]
 async fn public_requests_deduplicate_without_retargeting_or_steering() {
-    for (mode, busy, lost) in [
-        (PublicMode::Submit, true, false),
-        (PublicMode::Queue, true, false),
-        (PublicMode::Submit, false, true),
+    for (mode, busy, lost, if_busy) in [
+        (PublicMode::Submit, true, false, None),
+        // Opt-in: a submit that lost the race with a starting turn is queued.
+        (PublicMode::Submit, true, false, Some("queue")),
+        (PublicMode::Queue, true, false, None),
+        (PublicMode::Submit, false, true, None),
     ] {
         let (_dir, paths, mut input, _) = fixture();
         input.expires_at = crate::daemon::now() + 120;
@@ -908,6 +910,7 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
             origin: None,
             delivery: None,
             await_reply: false,
+            if_busy: if_busy.map(String::from),
             steering: None,
             recovery: None,
             api_version: 1,
@@ -956,7 +959,7 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
         }
         let first = send_public(&paths, request.clone()).await.unwrap();
         assert_eq!(first["session_id"], session.id);
-        if mode == PublicMode::Submit && busy {
+        if mode == PublicMode::Submit && busy && if_busy.is_none() {
             assert_eq!(first["state"], "rejected");
             assert_eq!(first["reason"], "target_busy");
         } else if lost {
@@ -979,7 +982,7 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
         let calls = fake.methods.lock().unwrap();
         assert_eq!(
             calls.iter().filter(|m| *m == "thread/queue/add").count(),
-            usize::from(!(mode == PublicMode::Submit && busy))
+            usize::from(!(mode == PublicMode::Submit && busy && if_busy.is_none()))
         );
         assert!(!calls.iter().any(|m| m == "turn/steer" || m == "turn/start"));
     }
@@ -1009,6 +1012,7 @@ async fn ordinary_public_send_requires_explicit_recovery_for_interrupted_turns()
                 origin: None,
                 delivery: None,
                 await_reply: false,
+                if_busy: None,
                 steering: None,
                 api_version: 1,
                 message_id: input.message_id,
@@ -1058,6 +1062,7 @@ async fn approval_blocked_public_send_is_a_definite_refusal_never_dispatched_on_
             origin: None,
             delivery: None,
             await_reply: false,
+            if_busy: None,
             steering: None,
             api_version: 1,
             message_id: input.message_id,
@@ -1247,4 +1252,61 @@ async fn observation_io_is_lease_free_and_does_not_regress_terminal_state() {
     );
     assert_eq!(db.get(&input.message_id).unwrap().unwrap().state, "failed");
     server.abort();
+}
+
+#[tokio::test]
+async fn if_busy_is_validated_and_only_valid_with_submit() {
+    let (_dir, paths, input, _) = fixture();
+    for (mode, value) in [
+        (PublicMode::Queue, "queue"),
+        (PublicMode::Submit, "steer"),
+        (PublicMode::Steer, "queue"),
+    ] {
+        let request = PublicRequest {
+            origin: None,
+            delivery: None,
+            await_reply: false,
+            if_busy: Some(value.into()),
+            steering: None,
+            recovery: None,
+            api_version: 1,
+            message_id: input.message_id.clone(),
+            session_id: input.session_id.clone(),
+            expected_generation: input.expected_generation.clone(),
+            mode,
+            text: "hello".into(),
+            expires_at: input.expires_at,
+        };
+        let error = send_public(&paths, request).await.unwrap_err().to_string();
+        assert!(error.contains("INVALID_REQUEST: if_busy"), "{error}");
+    }
+}
+
+#[test]
+fn a_stale_error_never_overwrites_a_receipt_another_sender_settled() {
+    let (_dir, paths, input, now) = fixture();
+    let mut db = Ledger::open(&paths).unwrap();
+    let mut stale = db.accept(&input, now).unwrap();
+    let mut settled = stale.clone();
+    settled.state = "native_accepted".into();
+    settled.native_queue_id = Some("q1".into());
+    db.save(&settled).unwrap();
+    db.amend(&mut stale, |r| {
+        r.state = "rejected".into();
+        r.reason = Some("target_busy".into());
+    })
+    .unwrap();
+    assert_eq!(stale, settled, "the stored record is adopted");
+    assert_eq!(db.get(&input.message_id).unwrap().unwrap(), settled);
+    // Unchanged receipts are amended and saved.
+    db.amend(&mut stale, |r| r.reason = Some("note".into()))
+        .unwrap();
+    assert_eq!(
+        db.get(&input.message_id)
+            .unwrap()
+            .unwrap()
+            .reason
+            .as_deref(),
+        Some("note")
+    );
 }

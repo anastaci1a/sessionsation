@@ -39,6 +39,10 @@ pub struct PublicRequest {
     /// Accepted and ignored for Codex targets (no idle subscription).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub await_reply: bool,
+    /// Opt-in fallback for `submit` (contract 1.46.5): `"queue"` queues the input when a turn
+    /// started before delivery instead of refusing with `target_busy`. Valid only with `submit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_busy: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -100,7 +104,7 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         "message_id":binding.request.message_id,"session_id":binding.request.session_id,
         "accepted_generation":binding.request.expected_generation,"provider":"codex",
         "accepted_runtime_generation":binding.native.expected_generation,
-        "provider_conversation_id":binding.native.session_id,"mode":binding.request.mode,
+        "provider_conversation_id":binding.native.session_id,"mode":binding.request.mode,"if_busy":binding.request.if_busy,
         "delivery_semantics":"non_steering_native_queue",
         "state":if value["state"]=="unknown" {json!("delivery_unknown")} else {value["state"].clone()},
         "reason":value["reason"],"reason_detail":if value["reason"]=="unsupported_native_version" {Some("The account app-server version is not supported by this Sessionsation build. Use api observe to inspect its native_protocol version and supported_versions; no native input was attempted.")} else {None},"facts":{"accepted_local":true,"accepted_native":accepted,
@@ -126,13 +130,21 @@ fn check_codex_options(request: &PublicRequest) -> anyhow::Result<()> {
         "INVALID_REQUEST: origin must be operator or agent"
     );
     match request.delivery.as_deref() {
-        None | Some("auto") => Ok(()),
+        None | Some("auto") => Ok::<(), anyhow::Error>(()),
         Some(d @ ("native" | "terminal_input" | "peer_message" | "hosted_stream_json")) => {
             anyhow::bail!(
                 "PROVIDER_DELIVERY_UNSUPPORTED: delivery {d} is a Claude path; Codex targets accept only auto"
             )
         }
         Some(_) => anyhow::bail!("INVALID_REQUEST: unknown delivery value"),
+    }?;
+    match request.if_busy.as_deref() {
+        None => Ok(()),
+        Some("queue") if request.mode == PublicMode::Submit => Ok(()),
+        Some("queue") => {
+            anyhow::bail!("INVALID_REQUEST: if_busy is only valid with mode submit")
+        }
+        Some(_) => anyhow::bail!("INVALID_REQUEST: if_busy must be queue"),
     }
 }
 
@@ -247,11 +259,14 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
     ledger.expire(&mut receipt, crate::daemon::now())?;
     if binding.request.mode == PublicMode::Steer {
         if let Err(error) = steering::deliver(paths, &binding, &mut ledger, &mut receipt).await {
-            if receipt.state == "pending_local" {
-                receipt.state = "rejected".into();
-            }
-            receipt.reason = Some(error.to_string());
-            ledger.save(&receipt)?;
+            let reason = error.to_string();
+            // A concurrent sender of this id may already have settled it: its record wins.
+            ledger.amend(&mut receipt, |r| {
+                if r.state == "pending_local" {
+                    r.state = "rejected".into();
+                }
+                r.reason = Some(reason);
+            })?;
         }
         return Ok(steering::receipt(&binding, &receipt));
     }
@@ -262,25 +277,36 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
             &mut ledger,
             &mut receipt,
             Some(&binding.native),
-            Some(binding.request.mode.clone()),
+            // `if_busy: queue` lets a submit that lost the race with a starting turn
+            // queue natively (an idle target still dispatches it at once).
+            Some(
+                if binding.request.mode == PublicMode::Submit
+                    && binding.request.if_busy.as_deref() == Some("queue")
+                {
+                    PublicMode::Queue
+                } else {
+                    binding.request.mode.clone()
+                },
+            ),
         )
         .await
         {
             Ok(from_idle) => accepted_from_idle = from_idle,
             Err(error) => {
-                if receipt.state == "pending_local"
-                    && matches!(
-                        error.0,
-                        "target_busy"
-                            | "generation_mismatch"
-                            | "explicit_resume_required"
-                            | "approval_or_user_input_required"
-                    )
-                {
-                    receipt.state = "rejected".into();
-                }
-                receipt.reason = Some(error.0.into());
-                ledger.save(&receipt)?;
+                ledger.amend(&mut receipt, |r| {
+                    if r.state == "pending_local"
+                        && matches!(
+                            error.0,
+                            "target_busy"
+                                | "generation_mismatch"
+                                | "explicit_resume_required"
+                                | "approval_or_user_input_required"
+                        )
+                    {
+                        r.state = "rejected".into();
+                    }
+                    r.reason = Some(error.0.into());
+                })?;
             }
         }
     }
@@ -533,6 +559,7 @@ mod tests {
                 origin: None,
                 delivery: None,
                 await_reply: false,
+                if_busy: None,
                 steering: None,
                 api_version: 1,
                 message_id: uuid::Uuid::new_v4().to_string(),
@@ -628,6 +655,7 @@ mod evidence_tests {
                 origin: None,
                 delivery: None,
                 await_reply: false,
+                if_busy: None,
                 steering: None,
                 api_version: 1,
                 message_id: input.message_id.clone(),

@@ -842,6 +842,7 @@ pub async fn answer(paths: &Paths, request: AnswerRequest) -> Result<Value> {
                 origin: None,
                 delivery: None,
                 await_reply: false,
+                if_busy: None,
                 api_version: crate::api::VERSION,
                 message_id: uuid::Uuid::new_v4().to_string(),
                 session_id: s.id.clone(),

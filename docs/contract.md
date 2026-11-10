@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.46.4`
+so revision N maps to contract `1.N.0` and the current contract is `1.46.5`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3192,3 +3192,31 @@ polling receipts at once collided on the single messaging ledger lease and faile
   meanwhile (cancelled, observed, terminal).
 - A send to a busy (mid-turn) target is unchanged: `queue` queues natively, `submit` is refused with
   `target_busy`, `steer` steers.
+
+### Codex steer waits, cancel waits, `if_busy` (1.46.5)
+
+PATCH, plus one optional request field. Defaults are unchanged.
+
+- **Steer no longer fails fast.** A `steer` that overlapped another send was rejected with reason
+  `operation_busy` (the session or jobs queue lock was held for a moment). It now waits for session ownership
+  (up to 20 s) and for the messaging ledger, and releases the ledger lease during the Codex status read, the
+  steer RPC and the anchor read. The `unknown` / `steer_dispatch_intent` journal is still saved under the lease
+  before the steer is sent, and the result is saved only if the receipt is unchanged, so one message id is
+  never steered twice and a state recorded meanwhile is never regressed. `api steer-target` waits up to 10 s for
+  the session lock instead of reporting it unavailable.
+- **Cancel waits.** `api cancel` of a `native_accepted` message waits for the ledger and session lock, and runs
+  the native delete without the ledger lease (`cancellation_uncertain` is journalled first; a concurrent
+  writer's record wins).
+- **Recovery and legacy `messaging` commands** wait for the ledger too (`resume` send and recovery
+  reconciliation, `modes sending`, `modes events`).
+- **Stale errors cannot overwrite a settled receipt.** When a delivery error is recorded on a receipt that another
+  sender of the same id already advanced, the stored record is returned and kept.
+- **`if_busy` on `submit` (new, optional).** `submit` refuses with `target_busy` when a turn is active; a sender
+  that checked `steer-target`, saw no turn and lost the race to a starting turn got that rejection. The mode
+  `queue` already means "dispatch now when idle, queue behind the active turn when busy", so a new optional
+  request field `"if_busy":"queue"` on a Codex `submit` applies exactly that policy: an idle target takes it at
+  once as before, a target whose turn started meanwhile gets it queued natively (`native_accepted`,
+  non-steering) instead of `rejected`/`target_busy`. Any other value, or `if_busy` with another mode, is
+  `INVALID_REQUEST`. The receipt echoes `if_busy`. `"steer"` is deliberately not offered: a steer needs the
+  exact `expected_turn_id` and runtime generation of the turn it targets, which a submit does not have. For
+  Claude and Gemini targets the field is accepted and ignored. Omitted, behaviour is unchanged.

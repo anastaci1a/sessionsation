@@ -93,6 +93,9 @@ pub struct Request {
     /// (upgraded from the transcript anchor) and the worker exits within seconds.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub await_reply: bool,
+    /// Codex-only opt-in (`if_busy`); accepted and ignored for native providers.
+    #[serde(default, skip_serializing)]
+    pub if_busy: Option<String>,
     /// Codex recovery intents do not apply; accepted only as absent/null.
     #[serde(default, skip_serializing)]
     pub recovery: Option<Value>,

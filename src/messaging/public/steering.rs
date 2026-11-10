@@ -123,7 +123,7 @@ pub async fn target(paths: &Paths, id: &str, generation: &str) -> anyhow::Result
     let a = readiness::recorded(paths, &s)?.ok_or(Fault("no_live_attachment"))?;
     let runtime = a.generation();
     let checked = async {
-        let _guard = mutation_lock(paths, &a.id)?;
+        let _guard = mutation_lock_waiting(paths, &a.id, wait_budget(paths, Wait::Read)).await?;
         permitted(paths, &a.id)?;
         let (_, turn) = connect_active(&a).await?;
         Ok::<_, Fault>(turn)
@@ -184,30 +184,50 @@ pub(super) async fn deliver(
         .steering
         .as_ref()
         .context("STEERING_INTENT_REQUIRED")?;
-    let _guard = mutation_lock(paths, &b.native.session_id)?;
-    let session =
-        crate::catalog::resolve(paths, &b.request.session_id, &b.request.expected_generation)?;
-    anyhow::ensure!(
-        !matches!(session.account.as_str(), "external" | "unknown")
-            && !crate::accounts::removed_session(paths, &session.provider, &session.account)?,
-        "ACCOUNT_UNAVAILABLE"
-    );
-    let a = attachment(paths, &b.native.session_id)?;
-    anyhow::ensure!(
-        a.generation() == b.native.expected_generation
-            && a.generation() == intent.expected_runtime_generation,
-        "RUNTIME_GENERATION_MISMATCH"
-    );
-    permitted(paths, &a.id)?;
-    let (mut c, turn) = connect_active(&a).await?;
-    anyhow::ensure!(turn == intent.expected_turn_id, "ACTIVE_TURN_CHANGED");
-    // Item positions before the steer; a failed read is still provably unsent.
-    let anchor = reply::anchor(&mut c, &a.id, &turn, &b.request.message_id).await?;
-    crate::catalog::resolve(paths, &b.request.session_id, &b.request.expected_generation)?;
-    anyhow::ensure!(
-        attachment(paths, &a.id)?.generation() == intent.expected_runtime_generation,
-        "RUNTIME_GENERATION_MISMATCH"
-    );
+    // Provider I/O runs without the root-wide lease. Session ownership is awaited
+    // (bounded) instead of rejecting with `operation_busy`; lock order is session
+    // first, ledger second.
+    let budget = wait_budget(paths, Wait::Send);
+    let (_guard, a, mut c, turn, anchor) = db
+        .during(budget, async {
+            let guard = mutation_lock_waiting(paths, &b.native.session_id, budget).await?;
+            let session = crate::catalog::resolve(
+                paths,
+                &b.request.session_id,
+                &b.request.expected_generation,
+            )?;
+            anyhow::ensure!(
+                !matches!(session.account.as_str(), "external" | "unknown")
+                    && !crate::accounts::removed_session(
+                        paths,
+                        &session.provider,
+                        &session.account
+                    )?,
+                "ACCOUNT_UNAVAILABLE"
+            );
+            let a = attachment(paths, &b.native.session_id)?;
+            anyhow::ensure!(
+                a.generation() == b.native.expected_generation
+                    && a.generation() == intent.expected_runtime_generation,
+                "RUNTIME_GENERATION_MISMATCH"
+            );
+            permitted(paths, &a.id)?;
+            let (mut c, turn) = connect_active(&a).await?;
+            anyhow::ensure!(turn == intent.expected_turn_id, "ACTIVE_TURN_CHANGED");
+            // Item positions before the steer; a failed read is still provably unsent.
+            let anchor = reply::anchor(&mut c, &a.id, &turn, &b.request.message_id).await?;
+            crate::catalog::resolve(paths, &b.request.session_id, &b.request.expected_generation)?;
+            anyhow::ensure!(
+                attachment(paths, &a.id)?.generation() == intent.expected_runtime_generation,
+                "RUNTIME_GENERATION_MISMATCH"
+            );
+            anyhow::Ok((guard, a, c, turn, anchor))
+        })
+        .await??;
+    // Another process may have settled this id while the lease was released.
+    if !db.unchanged(r)? {
+        return Ok(());
+    }
     db.expire(r, crate::daemon::now())?;
     if r.state != "pending_local" {
         return Ok(());
@@ -224,11 +244,20 @@ pub(super) async fn deliver(
         anchor: Some(anchor),
         ..Default::default()
     });
-    db.save(r)?; // Durable uncertainty precedes the first possible native write.
-    match c
-        .steer(&a.id, &b.request.message_id, &turn, &b.request.text)
-        .await
-    {
+    // Durable uncertainty, saved under the lease, precedes the first possible
+    // native write: every other process sees `unknown` and never steers this id.
+    db.save(r)?;
+    let outcome = db
+        .during(
+            budget,
+            c.steer(&a.id, &b.request.message_id, &turn, &b.request.text),
+        )
+        .await?;
+    // A concurrent observation may already have advanced the receipt: never regress it.
+    if !db.unchanged(r)? {
+        return Ok(());
+    }
+    match outcome {
         Ok(ack) => {
             r.state = "native_accepted".into();
             r.reason = None;
@@ -451,6 +480,7 @@ mod tests {
                     origin: None,
                     delivery: None,
                     await_reply: false,
+                    if_busy: None,
                     api_version: 1,
                     message_id: input.message_id.clone(),
                     session_id: s.id.clone(),
@@ -769,6 +799,7 @@ mod tests {
                 origin: None,
                 delivery: None,
                 await_reply: false,
+                if_busy: None,
                 api_version: 1,
                 message_id: input.message_id.clone(),
                 session_id: s.id.clone(),
@@ -843,5 +874,138 @@ mod tests {
             assert_eq!(*steers.lock().unwrap(), 1, "observation never resends");
             server.abort();
         }
+    }
+
+    /// A steer that overlaps another send waits for session ownership and the
+    /// ledger instead of being rejected `operation_busy`, runs its native I/O
+    /// without the ledger lease, and two processes never steer one id twice.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn steer_waits_releases_the_lease_and_never_steers_twice() {
+        let (_tmp, paths, mut input, _) = fixture();
+        input.expires_at = crate::daemon::now() + 120;
+        let mut a = attachment_fixture(&paths, &input);
+        bind(&paths, &mut a);
+        crate::messaging::TEST_WAIT
+            .lock()
+            .unwrap()
+            .push((paths.root.clone(), Duration::from_secs(10)));
+        let steers = Arc::new(Mutex::new(0usize));
+        let lease_free = Arc::new(Mutex::new(None::<String>));
+        let (counter, probe, p) = (steers.clone(), lease_free.clone(), paths.clone());
+        let native = a.id.clone();
+        let client = input.message_id.clone();
+        let steered = Arc::new(Mutex::new(false));
+        let server = scripted_server(&a.endpoint(), move |req| {
+            let method = req["method"].as_str().unwrap();
+            if method == "thread/turns/list" && req["params"]["itemsView"] == "full" {
+                let recorded = *steered.lock().unwrap();
+                return Some(json!({"data":[full_turn("turn-active", "inProgress", recorded.then_some(client.as_str()))],"nextCursor":null}));
+            }
+            match method {
+                "thread/read" => Some(json!({"thread":{"id":native,"status":{"type":"active"}}})),
+                "thread/turns/list" => Some(json!({"data":[{"id":"turn-active","status":"inProgress"}]})),
+                "turn/steer" => {
+                    *counter.lock().unwrap() += 1;
+                    *probe.lock().unwrap() = Ledger::open(&p)
+                        .ok()
+                        .and_then(|db| db.get(&client).ok().flatten())
+                        .map(|r| r.state);
+                    std::thread::sleep(Duration::from_millis(500));
+                    *steered.lock().unwrap() = true;
+                    Some(json!({"turnId":"turn-active"}))
+                }
+                _ => panic!("Forbidden RPC {method}"),
+            }
+        })
+        .await;
+        let source: external::Instance = serde_json::from_value(json!({"pane":"%1","tmux_session":"fixture","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
+        let s = crate::catalog::reconcile(&paths, &[source])
+            .unwrap()
+            .remove(0);
+        let request = PublicRequest {
+            origin: None,
+            delivery: None,
+            await_reply: false,
+            if_busy: None,
+            api_version: 1,
+            message_id: input.message_id.clone(),
+            session_id: s.id.clone(),
+            expected_generation: s.generation(),
+            mode: PublicMode::Steer,
+            text: input.text.clone(),
+            expires_at: input.expires_at,
+            recovery: None,
+            steering: Some(Intent {
+                version: 1,
+                expected_turn_id: "turn-active".into(),
+                expected_runtime_generation: a.generation(),
+            }),
+        };
+        let binding = Binding {
+            cancelled: false,
+            origin: None,
+            origin_source: None,
+            evidence_observed_at: None,
+            request: request.clone(),
+            native: Enqueue {
+                expected_generation: a.generation(),
+                ..input.clone()
+            },
+        };
+        {
+            let db = Ledger::open(&paths).unwrap();
+            initialize(&db).unwrap();
+            db.db
+                .execute(
+                    "INSERT INTO public_messages VALUES (?,?)",
+                    params![request.message_id, serde_json::to_string(&binding).unwrap()],
+                )
+                .unwrap();
+        }
+        let binding = Arc::new(binding);
+        // Another send holds the session briefly: the steer waits, then proceeds.
+        let held = mutation_lock(&paths, &a.id).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(held);
+        });
+        let run = |paths: Paths, binding: Arc<Binding>| {
+            tokio::spawn(async move {
+                let mut db = Ledger::open_wait(&paths, Duration::from_secs(10))
+                    .await
+                    .unwrap();
+                initialize(&db).unwrap();
+                let mut r = accept(&mut db, &binding).unwrap();
+                let outcome = deliver(&paths, &binding, &mut db, &mut r).await;
+                (r, outcome.map_err(|e| e.to_string()))
+            })
+        };
+        let first = run(paths.clone(), binding.clone());
+        let second = run(paths.clone(), binding.clone());
+        let (first, second) = (first.await.unwrap(), second.await.unwrap());
+        release.join().unwrap();
+        // One call steers. The other either adopts that result or, finding its own
+        // input already recorded in the turn, refuses; it never waits out as busy.
+        let mut accepted = 0;
+        for (r, outcome) in [&first, &second] {
+            match outcome {
+                Ok(()) => {
+                    assert_eq!(r.state, "native_accepted");
+                    accepted += 1;
+                }
+                Err(e) => assert_ne!(e, "operation_busy"),
+            }
+        }
+        assert!(accepted >= 1);
+        let stored = Ledger::open(&paths)
+            .unwrap()
+            .get(&input.message_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, "native_accepted");
+        assert_eq!(*steers.lock().unwrap(), 1, "one id is never steered twice");
+        // The ledger lease was free, with the journal durable, during the native steer.
+        assert_eq!(lease_free.lock().unwrap().as_deref(), Some("unknown"));
+        server.abort();
     }
 }

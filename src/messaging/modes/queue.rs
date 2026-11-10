@@ -17,7 +17,7 @@ pub(in crate::messaging) fn sending_enabled(paths: &Paths) -> Result<bool> {
 }
 pub(super) fn sending(paths: &Paths, enable: bool, disable: bool) -> Result<Value> {
     // Same exclusive lock as all native enqueue calls: toggles cannot race dispatch.
-    let _ledger = Ledger::open(paths)?;
+    let _ledger = Ledger::open_waiting(paths, wait_budget(paths, Wait::Send))?;
     let marker = paths.root.join("messaging/native-send.disabled");
     if disable && sending_enabled(paths)? {
         use std::os::unix::fs::OpenOptionsExt;
@@ -156,7 +156,7 @@ pub(super) async fn status(paths: &Paths, id: &str) -> Result<Value> {
     ))
 }
 pub(super) fn events(paths: &Paths, cursor: Option<&str>) -> Result<Value> {
-    let ledger = Ledger::open(paths)?;
+    let ledger = Ledger::open_waiting(paths, wait_budget(paths, Wait::Read))?;
     let mut page = ledger.events(cursor)?;
     let mut out = Vec::new();
     for event in page["events"].as_array().ok_or(Fault("storage_error"))? {

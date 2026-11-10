@@ -473,6 +473,13 @@ impl Ledger {
     /// After `during`, tell whether another writer changed this receipt. When it
     /// did, adopt the stored record and report `false`: our stale result must not
     /// regress it.
+    fn amend(&mut self, receipt: &mut Receipt, edit: impl FnOnce(&mut Receipt)) -> Result<()> {
+        if self.unchanged(receipt)? {
+            edit(receipt);
+            self.save(receipt)?;
+        }
+        Ok(())
+    }
     fn unchanged(&self, receipt: &mut Receipt) -> Result<bool> {
         match self.get(&receipt.message_id)? {
             Some(current) if current == *receipt => Ok(true),
@@ -483,8 +490,8 @@ impl Ledger {
             None => Ok(false),
         }
     }
-    /// Like `open`, but waits up to `budget` for a concurrent holder. Only for
-    /// local id checks of other stores, never to bypass the lock.
+    /// Blocking `open` that waits up to `budget` for a concurrent holder; for sync
+    /// callers only (async paths use `open_wait`). Never bypasses the lock.
     fn open_waiting(paths: &Paths, budget: std::time::Duration) -> Result<Self> {
         let deadline = std::time::Instant::now() + budget;
         loop {
@@ -927,14 +934,26 @@ async fn cancel(paths: &Paths, ledger: &mut Ledger, receipt: &mut Receipt) -> Re
         "native_accepted" => {}
         _ => return Err(Fault("already_submitted")),
     }
-    let _guard = mutation_lock(paths, &receipt.session_id)?;
-    let selected = attachment(paths, &receipt.session_id)?;
-    if selected.generation() != receipt.generation {
-        return Err(Fault("generation_mismatch"));
-    }
-    let mut control = selected.connect().await?;
-    if attachment(paths, &receipt.session_id)?.generation() != receipt.generation {
-        return Err(Fault("generation_mismatch"));
+    // Native I/O runs without the root-wide lease; session ownership is awaited
+    // (bounded) instead of rejecting a cancel that merely overlaps another send.
+    let budget = wait_budget(paths, Wait::Send);
+    let stored: &Receipt = receipt;
+    let (_guard, mut control) = ledger
+        .during(budget, async {
+            let guard = mutation_lock_waiting(paths, &stored.session_id, budget).await?;
+            let selected = attachment(paths, &stored.session_id)?;
+            if selected.generation() != stored.generation {
+                return Err(Fault("generation_mismatch"));
+            }
+            let control = selected.connect().await?;
+            if attachment(paths, &stored.session_id)?.generation() != stored.generation {
+                return Err(Fault("generation_mismatch"));
+            }
+            Ok((guard, control))
+        })
+        .await??;
+    if !ledger.unchanged(receipt)? {
+        return changed_during_cancel(receipt);
     }
     #[derive(Deserialize)]
     struct Deleted {
@@ -943,12 +962,19 @@ async fn cancel(paths: &Paths, ledger: &mut Ledger, receipt: &mut Receipt) -> Re
     receipt.state = "unknown".into();
     receipt.reason = Some("cancellation_uncertain".into());
     ledger.save(receipt)?;
-    let result: Result<Deleted> = control
-        .request(
-            "thread/queue/delete",
-            json!({"threadId":receipt.session_id,"queuedSubmissionId":receipt.native_queue_id}),
+    let result: Result<Deleted> = ledger
+        .during(
+            budget,
+            control.request(
+                "thread/queue/delete",
+                json!({"threadId":receipt.session_id,"queuedSubmissionId":receipt.native_queue_id}),
+            ),
         )
-        .await;
+        .await?;
+    // Another process may have recorded the outcome meanwhile: its record wins.
+    if !ledger.unchanged(receipt)? {
+        return changed_during_cancel(receipt);
+    }
     match result {
         Ok(result) if result.deleted => {
             receipt.state = "cancelled".into();
@@ -962,6 +988,15 @@ async fn cancel(paths: &Paths, ledger: &mut Ledger, receipt: &mut Receipt) -> Re
             Err(Fault("already_submitted"))
         }
         Err(_) => Err(Fault("unknown")),
+    }
+}
+/// A concurrent writer settled the receipt while a cancel was in flight.
+fn changed_during_cancel(receipt: &Receipt) -> Result<()> {
+    match receipt.state.as_str() {
+        "cancelled" => Ok(()),
+        "execution_started" | "completed_with_reply" => Err(Fault("already_started")),
+        "unknown" => Err(Fault("unknown")),
+        _ => Err(Fault("already_submitted")),
     }
 }
 async fn execute(paths: &Paths, command: Command) -> Result<Value> {
@@ -993,8 +1028,7 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
             if matches!(receipt.state.as_str(), "pending_local" | "unknown") {
                 if let Err(error) = deliver(paths, &mut ledger, &mut receipt, Some(&input)).await {
                     if receipt.reason.as_deref() != Some(error.0) {
-                        receipt.reason = Some(error.0.into());
-                        ledger.save(&receipt)?;
+                        ledger.amend(&mut receipt, |r| r.reason = Some(error.0.into()))?;
                     }
                 }
             }
