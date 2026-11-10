@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.46.5`
+so revision N maps to contract `1.N.0` and the current contract is `1.46.6`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3220,3 +3220,15 @@ PATCH, plus one optional request field. Defaults are unchanged.
   `INVALID_REQUEST`. The receipt echoes `if_busy`. `"steer"` is deliberately not offered: a steer needs the
   exact `expected_turn_id` and runtime generation of the turn it targets, which a submit does not have. For
   Claude and Gemini targets the field is accepted and ignored. Omitted, behaviour is unchanged.
+
+### Launch status and validate no longer rescan state (1.46.6)
+
+PATCH, no schema change. `api launch status|list|validate` and `api resume-launch status|list|validate` only
+read receipts, but each ended with a full refresh of the cached state snapshots (Active, Archived and All, three
+scans), so a status poll or the "Checking choices" validate took tens of seconds to minutes on a large archive.
+They no longer rescan anything and return as soon as the receipt is read. Mutating lifecycle calls (`resume`,
+`stop`, `restart`, `switch`, `move-space`, `launch start`, `resume-launch start`) patch the session generation in
+the snapshots at once and refresh only the Active snapshot (in line for a named session, in a detached background process for `launch start`, `resume-launch start` and `move-space`); the launch,
+resume, switch and move workers likewise refresh only Active when they finish. Archive, restore and delete
+workers still refresh all three. `state --cached` after a launch may show the new session in the Active view
+before the All view, until the next full `state`.

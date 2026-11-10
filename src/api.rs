@@ -18,8 +18,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 46;
-pub const CONTRACT_PATCH: u32 = 5;
-pub const CONTRACT_VERSION: &str = "1.46.5";
+pub const CONTRACT_PATCH: u32 = 6;
+pub const CONTRACT_VERSION: &str = "1.46.6";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -2961,7 +2961,15 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         if let Some(id) = &subject {
             patch_snapshot_generation(paths, id);
         }
-        refresh_snapshots(paths).await;
+        // Only the Active snapshot (1.46.6): a full three-scan refresh made every lifecycle call
+        // cost minutes on a large archive. A named session is refreshed in line so `state
+        // --cached` shows its new availability at once; start/move requests (no subject) are
+        // finished by their detached worker, which refreshes Active itself.
+        if subject.is_some() {
+            refresh_active_snapshot(paths).await;
+        } else {
+            refresh_active_snapshot_detached(paths);
+        }
         if let Some(id) = subject
             && result.is_object()
             && result.get("generation").is_none()
@@ -2981,6 +2989,19 @@ fn lifecycle_subject(paths: &Paths, command: &Command) -> Option<Option<String>>
         | Command::Stop { session, .. }
         | Command::Restart { session, .. }
         | Command::Switch { session, .. } => Some(catalog::find(paths, session).ok().map(|s| s.id)),
+        // Status, list and validate only read receipts: no lifecycle refresh (1.46.6).
+        Command::Launch {
+            command:
+                crate::launch::Command::List
+                | crate::launch::Command::Validate
+                | crate::launch::Command::Status { .. },
+        }
+        | Command::ResumeLaunch {
+            command:
+                crate::resume::Command::List
+                | crate::resume::Command::Validate
+                | crate::resume::Command::Status { .. },
+        } => None,
         Command::MoveSpace { .. } | Command::ResumeLaunch { .. } | Command::Launch { .. } => {
             Some(None)
         }
@@ -3016,7 +3037,27 @@ pub(crate) fn patch_snapshot_generation(paths: &Paths, id: &str) {
     }
 }
 
-/// Rewrite the cached state snapshots from the current catalog.
+/// Rewrite only the Active cached snapshot (one scan). Workers that start, resume, switch or
+/// move a session use this: none of them changes archive membership.
+pub async fn refresh_active_snapshot(paths: &Paths) {
+    let _ = state_filtered(paths, ArchiveFilter::Active).await;
+}
+
+/// Refresh the Active snapshot in a detached `snapshot-refresh` process so the caller never
+/// waits for the scan. Best effort.
+pub(crate) fn refresh_active_snapshot_detached(paths: &Paths) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let _ = crate::background::detach(&mut std::process::Command::new(exe))
+        .arg("--data-dir")
+        .arg(&paths.root)
+        .arg("snapshot-refresh")
+        .spawn();
+}
+
+/// Rewrite every cached state snapshot (Active, Archived, All) from the current catalog.
+/// Three full scans: only for operations that can change archive membership.
 pub(crate) async fn refresh_snapshots(paths: &Paths) {
     for filter in [
         ArchiveFilter::Active,
@@ -3711,6 +3752,46 @@ mod disk_full_state_tests {
 
     fn enospc() -> anyhow::Error {
         anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ENOSPC)).context("refresh state")
+    }
+
+    #[test]
+    fn read_only_launch_commands_do_not_refresh_lifecycle_snapshots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        for command in [
+            Command::Launch {
+                command: crate::launch::Command::List,
+            },
+            Command::Launch {
+                command: crate::launch::Command::Validate,
+            },
+            Command::Launch {
+                command: crate::launch::Command::Status {
+                    request_id: "r".into(),
+                },
+            },
+            Command::ResumeLaunch {
+                command: crate::resume::Command::List,
+            },
+            Command::ResumeLaunch {
+                command: crate::resume::Command::Validate,
+            },
+            Command::ResumeLaunch {
+                command: crate::resume::Command::Status {
+                    request_id: "r".into(),
+                },
+            },
+        ] {
+            assert!(lifecycle_subject(&paths, &command).is_none());
+        }
+        let start = Command::Launch {
+            command: crate::launch::Command::Start,
+        };
+        assert_eq!(lifecycle_subject(&paths, &start), Some(None));
+        let resume_start = Command::ResumeLaunch {
+            command: crate::resume::Command::Start,
+        };
+        assert_eq!(lifecycle_subject(&paths, &resume_start), Some(None));
     }
 
     #[test]

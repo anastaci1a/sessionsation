@@ -48,6 +48,9 @@ enum Commands {
     /// One auto-recover pass (the supervisor runs this loop itself); prints the recoveries it ran.
     #[command(hide = true)]
     AutoRecoverTick,
+    /// Rewrite the Active `state --cached` snapshot (spawned detached after lifecycle calls).
+    #[command(hide = true)]
+    SnapshotRefresh,
     #[command(hide = true)]
     LaunchWorker { request_id: String },
     #[command(hide = true)]
@@ -810,6 +813,7 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::ResumeRun { request_id } => {
             sessionsation::resume::run(&paths, &request_id).await?
         }
+        Commands::SnapshotRefresh => sessionsation::api::refresh_active_snapshot(&paths).await,
         Commands::LaunchWorker { request_id } => {
             sessionsation::launch::worker(&paths, &request_id).await?
         }

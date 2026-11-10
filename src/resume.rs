@@ -328,7 +328,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
             Ok(())
         })?;
     }
-    crate::api::refresh_snapshots(paths).await;
+    crate::api::refresh_active_snapshot(paths).await;
     Ok(())
 }
 fn saved_directory(receipt: &Receipt) -> &std::path::Path {

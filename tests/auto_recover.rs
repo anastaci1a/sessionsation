@@ -254,7 +254,16 @@ impl Setup {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        let running = self.session(id);
+        // The fake pane starts the session in the background; wait for it to register
+        // (the removed three-scan refresh used to hide this race).
+        let mut running = self.session(id);
+        for _ in 0..100 {
+            if running["availability"] == "running" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            running = self.session(id);
+        }
         assert_eq!(running["availability"], "running", "{running}");
         assert_eq!(running["attachment"]["target"], "herdr/fixture/w1:p2");
         running["pid"].as_u64().unwrap() as i32
@@ -374,7 +383,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.46.5");
+    assert_eq!(caps["contract_version"], "1.46.6");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
