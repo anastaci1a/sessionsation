@@ -81,6 +81,9 @@ pub const HANDOFF_JOBS: &str = "operations/handoff-jobs";
 pub const SPACE_MOVES: &str = "operations/space-moves";
 pub const LIFECYCLE_ADMISSION: &str = "operations/lifecycle-admission";
 pub const MESSAGE_RECOVERIES: &str = "operations/message-recoveries";
+/// Codex compactions queued for the next idle point (contract 1.47.0).
+pub const COMPACTIONS: &str = "operations/compactions";
+pub const COMPACTIONS_LOCK: &str = "operations/compactions.lock";
 pub const MOVE_BACKUPS: &str = "operations/move-backups";
 pub const PROJECT_RELOCATION_LOCK: &str = "operations/project-relocation.lock";
 
@@ -114,6 +117,7 @@ pub const OPERATION_DIRS: &[&str] = &[
     SPACE_MOVES,
     LIFECYCLE_ADMISSION,
     MESSAGE_RECOVERIES,
+    COMPACTIONS,
     MOVE_BACKUPS,
 ];
 

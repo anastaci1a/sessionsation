@@ -46,6 +46,10 @@ pub const PRUNABLE: &[(&str, &[&str])] = &[
         &["complete", "failed", "abandoned"],
     ),
     (layout::MESSAGE_RECOVERIES, &["complete", "failed"]),
+    (
+        layout::COMPACTIONS,
+        &["complete", "failed", "cancelled", "expired"],
+    ),
 ];
 
 #[derive(Clone, Copy, Debug)]

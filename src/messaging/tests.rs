@@ -315,10 +315,14 @@ async fn server(
                     "thread/queue/delete" => json!({"deleted":delete}),
                     _ => panic!("forbidden method: {method}"),
                 };
+                // A handler reply of {"__error":true} answers with a JSON-RPC error.
+                let frame = if result.get("__error").is_some() {
+                    json!({"id":req["id"],"error":{"code":-32600,"message":"rejected"}})
+                } else {
+                    json!({"id":req["id"],"result":result})
+                };
                 if socket
-                    .send(Message::Text(
-                        json!({"id":req["id"],"result":result}).to_string().into(),
-                    ))
+                    .send(Message::Text(frame.to_string().into()))
                     .await
                     .is_err()
                 {
@@ -573,10 +577,14 @@ pub(super) async fn scripted_connections(
                 let Some(result) = result else {
                     break;
                 };
+                // A handler reply of {"__error":true} answers with a JSON-RPC error.
+                let frame = if result.get("__error").is_some() {
+                    json!({"id":req["id"],"error":{"code":-32600,"message":"rejected"}})
+                } else {
+                    json!({"id":req["id"],"result":result})
+                };
                 if socket
-                    .send(Message::Text(
-                        json!({"id":req["id"],"result":result}).to_string().into(),
-                    ))
+                    .send(Message::Text(frame.to_string().into()))
                     .await
                     .is_err()
                 {

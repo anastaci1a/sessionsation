@@ -2,6 +2,7 @@
 mod batch;
 pub mod checkpoints;
 pub mod claude_steer;
+pub mod compaction;
 mod delivery;
 pub mod headless;
 mod modes;
@@ -857,6 +858,15 @@ async fn deliver_with_policy(
     let (_guard, mut control, current) = ledger
         .during(budget, async {
             let guard = mutation_lock_waiting(paths, &stored.session_id, budget).await?;
+            // A queued compaction holds new input for its session (contract 1.47.0). Checked
+            // under session ownership, which the compaction start also takes, so an input is
+            // either in the native queue before the start (the start then waits) or held.
+            if input.is_some()
+                && stored.state == "pending_local"
+                && compaction::hold_active(paths, &stored.session_id)
+            {
+                return Err(Fault("compaction_hold"));
+            }
             let selected = attachment(paths, &stored.session_id)?;
             if selected.generation() != stored.generation {
                 return Err(Fault("generation_mismatch"));

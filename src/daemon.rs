@@ -434,6 +434,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     });
     let automatic_task = tokio::spawn(crate::automatic::monitor(paths.clone()));
     let auto_recover_task = tokio::spawn(crate::auto_recover::monitor(paths.clone()));
+    let compaction_task = tokio::spawn(crate::messaging::compaction::monitor(paths.clone()));
     let turn_notify_task = tokio::spawn(crate::turn_notify::monitor(paths.clone()));
     let (history_tx, mut history_rx) = mpsc::channel(1);
     let history_task = tokio::spawn(crate::usage_history::monitor(paths.clone(), history_tx));
@@ -992,6 +993,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     }
     automatic_task.abort();
     auto_recover_task.abort();
+    compaction_task.abort();
     turn_notify_task.abort();
     history_task.abort();
     accept_task.abort();

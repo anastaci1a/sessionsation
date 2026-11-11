@@ -277,6 +277,19 @@ impl Transport {
         }
         Ok(ack.turn.id)
     }
+    /// Starts a manual compaction turn (`thread/compact/start`, contract 1.47.0). Like
+    /// `turn/start` it has no atomic idle guard: the caller verifies idle and an empty native
+    /// queue under session ownership first. The response is empty; the turn is observed.
+    pub(super) async fn compact_start(&mut self, session: &str) -> Result<()> {
+        super::uuid(session)?;
+        if !self.verified_profile {
+            return Err(Fault("unsupported"));
+        }
+        let _: Value = self
+            .rpc("thread/compact/start", json!({"threadId":session}))
+            .await?;
+        Ok(())
+    }
     /// Explicit recovery only. Stock queue/start atomically requires idle and
     /// consumes this exact queued item; it never steers or selects the queue head.
     pub(super) async fn start_queued(&mut self, session: &str, queued: &str) -> Result<String> {

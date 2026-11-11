@@ -585,6 +585,22 @@ read-only (answer them there); hosted Claude sessions can be answered. Gemini
 repeat the same command to read its receipt. Semantics and errors are in the
 [contract](contract.md#pending-questions-revision-23).
 
+## Compact a Codex agent at the next idle point
+
+```sh
+sessionsation api session compact --session SESSION-ID --expected-generation GENERATION --when-idle [--expires-at UNIX] [--operation UUID]
+sessionsation api session compact-status --operation UUID      # or --session SESSION-ID
+sessionsation api session compact-cancel --operation UUID      # or: api cancel-operation UUID
+```
+
+Typing `/compact` into a Codex TUI is refused while a task runs. This queues the compaction instead and starts it
+through the app-server protocol (`thread/compact/start`) at the next true idle point: no active turn and an empty
+native queue. Until it completes, fails, expires or is cancelled, new `submit`/`queue` messages to that session
+stay local (`pending_local`, reason `compaction_hold`) and are then delivered in order, after the compaction. One
+compaction may be pending per session; asking again returns it. Codex only: Claude sessions refuse with
+`COMPACT_UNSUPPORTED` (they compact themselves). The supervisor must be running. Details, phases and refusal codes
+are in the [contract](contract.md#codex-compaction-at-the-next-idle-point-1470).
+
 ## Explicit in-turn steering
 
 For a deliberate message to a busy turn, use `api steer-target --session ID --expected-generation GENERATION`, then `api send` with `mode:"steer"` and the

@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 46;
-pub const CONTRACT_PATCH: u32 = 8;
-pub const CONTRACT_VERSION: &str = "1.46.8";
+pub const CONTRACT_MINOR: u32 = 47;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.47.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -390,6 +390,34 @@ pub enum SessionAction {
     /// the identity record holds but the catalog lost, then reconcile. Idempotent;
     /// never deletes, recreates or renames an entry.
     RepairIdentity,
+    /// Codex: queue a compaction that starts at the next idle point, before any held input (1.47.0).
+    Compact {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        /// Start only when the thread has no active turn and an empty native queue (required).
+        #[arg(long, required = true)]
+        when_idle: bool,
+        /// Unix time after which a not yet started compaction expires (default: one hour).
+        #[arg(long)]
+        expires_at: Option<i64>,
+        /// Idempotency/operation id (a UUID); generated when omitted.
+        #[arg(long)]
+        operation: Option<String>,
+    },
+    /// Status of a queued compaction, by operation id or by session (the latest one).
+    CompactStatus {
+        #[arg(long, required_unless_present = "session", conflicts_with = "session")]
+        operation: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Cancel a compaction that has not started; held input is released.
+    CompactCancel {
+        #[arg(long)]
+        operation: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1525,6 +1553,7 @@ pub fn capabilities() -> Value {
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
     value["auto_recover"] = crate::auto_recover::capability();
     value["auto_start"] = crate::auto_recover::capability_start();
+    value["session_compact"] = crate::messaging::compaction::capability();
     value["stop_closes_pane"] = json!(true);
     value["stop_keep_pane"] = json!(true);
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
@@ -2459,6 +2488,39 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             ..
         } => repair_identity(paths)?,
         Command::Session {
+            action:
+                Some(SessionAction::Compact {
+                    session,
+                    expected_generation,
+                    when_idle,
+                    expires_at,
+                    operation,
+                }),
+            ..
+        } => {
+            ensure!(when_idle, "INVALID_REQUEST: --when-idle is required");
+            crate::messaging::compaction::request(
+                paths,
+                crate::messaging::compaction::Request {
+                    session: &session,
+                    expected_generation: &expected_generation,
+                    expires_at,
+                    operation: operation.as_deref(),
+                },
+            )?
+        }
+        Command::Session {
+            action: Some(SessionAction::CompactStatus { operation, session }),
+            ..
+        } => {
+            crate::messaging::compaction::status(paths, operation.as_deref(), session.as_deref())
+                .await?
+        }
+        Command::Session {
+            action: Some(SessionAction::CompactCancel { operation }),
+            ..
+        } => crate::messaging::compaction::cancel(paths, &operation).await?,
+        Command::Session {
             session,
             expected_generation,
             action: None,
@@ -2896,6 +2958,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             ops.extend(external::archiving::operations(paths)?);
             ops.extend(external::spaces::operations(paths)?);
             ops.extend(crate::inline::operations(paths)?);
+            ops.extend(crate::messaging::compaction::operations(paths)?);
             json!(ops)
         }
         Command::Respond {
@@ -2919,6 +2982,11 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             } else {
                 crate::resume::abandon(paths, &operation, &confirm).await?
             }
+        }
+        Command::CancelOperation { operation: id }
+            if crate::messaging::compaction::exists(paths, &id) =>
+        {
+            crate::messaging::compaction::cancel(paths, &id).await?
         }
         Command::CancelOperation { operation: id } => {
             managed_operation(paths, &id)?;

@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.46.8`
+so revision N maps to contract `1.N.0` and the current contract is `1.47.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3268,3 +3268,91 @@ after the session was started some other way; start refuses `SESSION_ALREADY_RUN
 and never contributes to `max_per_hour` (`rate_limited`), and it does not suppress the session. The boot or array
 epoch is still marked handled, so it is not retried within the same boot. The deprecated `auto_recover` projection
 reads it as `waiting`. Capabilities `auto_start.last_result_states` lists `already_running`.
+
+### Codex compaction at the next idle point (1.47.0)
+
+MINOR, new action. Leads compact Codex agents at phase boundaries, but typing `/compact` into the Codex TUI
+is refused while a task is in progress, and incoming native messages keep starting new turns. Sessionsation
+speaks the app-server protocol the TUIs already run against, so it queues the compaction and fires the
+protocol request (`thread/compact/start`, empty response; the work is an ordinary turn with a
+`contextCompaction` item) at the first true idle point. Nothing is typed into a terminal.
+
+```sh
+api session compact --session ID --expected-generation G --when-idle [--expires-at UNIX] [--operation UUID]
+api session compact-status (--operation UUID | --session ID)
+api session compact-cancel --operation UUID        # or: api cancel-operation UUID
+```
+
+`--when-idle` is required (the only mode; it reserves room for an immediate mode later). `--expires-at` is a
+unix time like `api send`, default one hour from now, at most 24 hours (`INVALID_EXPIRY`). `--operation` is a
+caller-chosen UUID (generated when omitted).
+
+**Result** (all three commands; `api operations` lists the same rows with `kind:"compaction"` while pending
+and for an hour after they finish):
+
+```json
+{"id":"UUID","kind":"compaction","provider":"codex","when":"idle","session_id":"...","accepted_generation":"...",
+ "provider_conversation_id":"...","phase":"waiting","terminal":false,"reason":"turn_active",
+ "detail":"A turn is active; the compaction starts when it ends.",
+ "hold":{"active":true,"released":false,"scope":"new native input for this session"},
+ "created_at":0,"updated_at":0,"expires_at":0,"started_at":null,"finished_at":null,"attempts":0,
+ "compaction_turn_id":null,"can_cancel":true,"can_respond":false,"can_recover":false,
+ "non_steering":true,"replays":false,"existing":false,"held_messages":["message ids"]}
+```
+
+`existing` is returned by `compact` (true when the call returned an operation that was already pending);
+`held_messages` (ids, arrival order, null when the ledger is busy) by `compact-status`.
+
+- **Phases.** `waiting` (journaled, not started), `starting` (journaled just before the app-server call),
+  `running` (the app-server accepted it), then `complete`, `failed`, `cancelled` or `expired`. `reason` says
+  why a `waiting` operation has not started: `turn_active`, `native_queue_not_empty`,
+  `approval_or_user_input_required`, `session_not_running`, `session_busy`, `native_sending_disabled`,
+  `explicit_resume_required`, `provider_unavailable`, `state_unverified`, `provider_rejected`; and why a
+  finished one ended: `completed`, `cancelled`, `expired`, or a failure code (`generation_changed`,
+  `provider_rejected`, `unsupported_native_version`, `compaction_failed`, `compaction_interrupted`,
+  `compaction_not_observed`, `compaction_timeout`).
+- **True idle.** The supervisor starts it only when the thread has no active turn (the same fresh native
+  status the Codex send path uses: `idle`, or a settled `errored`/`interrupted` last turn), is not waiting on an
+  approval or question, and its native queue is empty, all checked under the session ownership lock every send
+  takes, so no input can begin between the check and the start. Input that was already accepted into the native
+  queue before the request cannot be paused (the native queue has no pause) and runs first; the compaction waits
+  until it has drained, which new input no longer prevents because of the hold below. `--when-idle` does not wait
+  forever: it expires at `expires_at`.
+- **Hold.** While an operation is non-terminal, a `submit` or `queue` send to that Codex session is not added to
+  the native queue: the receipt stays `pending_local` with `reason:"compaction_hold"` (and a `reason_detail`) and the
+  message is bound to its id as usual. When the operation completes, fails, expires or is cancelled, the held
+  messages are delivered in arrival order through the ordinary send path (the original request, same message
+  id), strictly after the compaction. A failed compaction releases the hold the same way. A held message's own
+  `expires_at` still applies (it becomes `expired` and is not delivered), `api cancel` on it works, and nothing
+  is lost or sent twice (one message id reaches the native queue at most once; an uncertain add is never
+  replayed). `steer` and `resume` are not held. Held input is recovered after a supervisor restart: the release is
+  journaled (`hold.released`) and re-run by the supervisor until done.
+- **One per session.** A second `compact` for a session with a pending operation (or the same `--operation` id)
+  returns that operation with `existing:true` and creates nothing, whatever its expiry.
+- **Cancel.** Only while `waiting`: the operation becomes `cancelled`, held input is released, and a repeat is a
+  no-op. Once the start was attempted it is `COMPACTION_ALREADY_STARTED`; after it finished,
+  `COMPACTION_ALREADY_FINISHED`. `api cancel-operation` accepts the id too.
+- **Background terminals and rejected starts.** A thread with only background terminals and no active turn is
+  idle by the rule above. If the app-server nevertheless answers `thread/compact/start` with an error (for
+  example because it counts background work as in progress), the operation returns to `waiting` with
+  `reason:"provider_rejected"` and is retried at the next check, at most 3 attempts in all, then `failed`
+  (`provider_rejected`) with the hold released. Nothing was started in that case, so no turn is repeated. An
+  unanswered start (timeout, dropped connection) stays `starting`: it is resolved only from the thread's own
+  turns (a compaction turn appeared: `running`/`complete`; none after the idle grace: back to `waiting`) and is never
+  repeated on a guess.
+- **Completion** is observed from the thread's recent turns: the first turn that was not in the baseline taken
+  just before the start and carries a `contextCompaction` item (or no user message). `completed` is `complete`;
+  `failed` or `interrupted` is `failed`; a run that is still going after 30 minutes, or that never shows as a turn
+  once the thread is idle again, is `failed` (`compaction_timeout`, `compaction_not_observed`) and releases the hold.
+- **Restarts.** The operation is bound to the native runtime generation at request time. If the session process
+  was replaced before the start, it fails `generation_changed` and releases the hold. A pending operation does
+  not block `stop`, `restart` or `switch`.
+- **Refusals.** `COMPACT_UNSUPPORTED` for Claude (Claude agents compact themselves with `/compact`), Gemini and
+  Antigravity sessions; `STALE_TARGET` or the usual session errors for a bad generation; `SESSION_NOT_RUNNING`
+  when the Codex session has no live app-server attachment; `INVALID_EXPIRY`; `INVALID_OPERATION_ID`;
+  `OPERATION_ID_CONFLICT` (the id belongs to another session); `OPERATION_NOT_FOUND`.
+- **Journal and capability.** Records are `operations/compactions/ID.json` (retained like other finished
+  operations). `api capabilities` advertises `session_compact` (providers, phases, reasons, expiry bounds, hold
+  semantics). The supervisor must be running for a queued compaction to start
+  (`SESSIONSATION_COMPACTION_SECONDS`, default 2, 0 disables the loop). The native app-server profile is the one
+  messaging already requires (`unsupported_native_version` otherwise).
