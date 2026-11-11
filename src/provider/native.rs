@@ -116,10 +116,13 @@ pub async fn probe(
             (s.problem().map(str::to_owned), s.mode())
         }
         ProviderId::Claude | ProviderId::Codex => match claude::auth_status(config, home).await {
-            Ok(s) => (
-                s.problem().map(str::to_owned),
-                serde_json::json!({"logged_in":s.logged_in,"auth_method":s.auth_method,"api_provider":s.api_provider,"subscription_type":s.subscription_type}),
-            ),
+            Ok(s) => {
+                let mut mode = serde_json::json!({"logged_in":s.logged_in,"auth_method":s.auth_method,"api_provider":s.api_provider,"subscription_type":s.subscription_type});
+                if let Some(tier) = &s.rate_limit_tier {
+                    mode["rate_limit_tier"] = serde_json::json!(tier);
+                }
+                (s.problem().map(str::to_owned), mode)
+            }
             Err(e) => (
                 Some(
                     e.to_string()

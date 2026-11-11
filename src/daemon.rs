@@ -154,6 +154,7 @@ pub const CLAUDE_AUTH_REQUIRED_POLL_SECONDS: i64 = 3;
 struct ClaudePoll {
     name: String,
     problem: Option<String>,
+    plan: Option<crate::plan::PlanObservation>,
 }
 
 fn monitoring_pause_reason(paths: &Paths, name: &str) -> Option<&'static str> {
@@ -177,6 +178,43 @@ fn monitoring_pause_reason(paths: &Paths, name: &str) -> Option<&'static str> {
     }
     let _ = FileExt::unlock(&lease);
     None
+}
+
+/// Stores a plan observation; true when the saved record should be rewritten (the
+/// value changed, or the stored observation time is an hour old). Otherwise only
+/// the in-memory observation time advances.
+fn record_plan(
+    slot: &mut Option<crate::plan::PlanObservation>,
+    new: &crate::plan::PlanObservation,
+) -> bool {
+    match slot {
+        Some(old)
+            if old.raw == new.raw
+                && old.rate_limit_tier == new.rate_limit_tier
+                && new.verified_at - old.verified_at < 3600 =>
+        {
+            old.verified_at = old.verified_at.max(new.verified_at);
+            false
+        }
+        _ => {
+            *slot = Some(new.clone());
+            true
+        }
+    }
+}
+
+/// Public `plan` object of an account (contract 1.46.7): Claude's last `auth status`
+/// observation, Codex's last usage snapshot, null for Gemini and Antigravity.
+pub fn account_plan(a: &Account, at: i64) -> Value {
+    match a.provider {
+        ProviderId::Claude => crate::plan::project(a.provider, a.plan.as_ref(), "auth_status"),
+        ProviderId::Codex => crate::plan::project(
+            a.provider,
+            crate::plan::from_codex_usage(&a.usage, at).as_ref(),
+            "usage_snapshot",
+        ),
+        _ => Value::Null,
+    }
 }
 
 /// Provider usage in the shared account shape plus `source`/`semantics`.
@@ -240,7 +278,7 @@ pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> V
         "order":a.order,"display_name":a.display_name,"provider":a.provider,"config_home":a.config_home,
         "enabled":a.enabled,"auth_required":a.auth_required,"auth_detail":a.auth_detail,"deletion_id":a.deletion_id,
         "switch_thresholds":a.switch_thresholds,
-        "usage":usage,"usage_fresh":fresh,"usage_state":usage_state,
+        "usage":usage,"usage_fresh":fresh,"usage_state":usage_state,"plan":account_plan(a,at),
         "credit_fresh":a.provider == ProviderId::Codex && a.usage.credits.is_some() && a.usage.observed_fresh(at,config.stale_seconds),
         "monitoring_pause_reason":(a.provider == ProviderId::Codex).then(||monitoring_pause_reason(paths,&a.name)).flatten(),
         "eligible":a.provider == ProviderId::Codex && crate::scheduler::eligible(a,config,at),
@@ -574,6 +612,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 let mut account = Account::with_provider(ProviderId::Claude,name.into(),String::new());
                                 account.config_home = adopted; account.auth_required = !auth["problem"].is_null();
                                 account.auth_detail = auth["problem"].as_str().map(str::to_owned);
+                                if auth["problem"].is_null() { account.plan = crate::plan::from_claude_auth(&auth, now()); }
                                 state.insert_account(account); last_poll.remove(&key);
                                 store.save(&state,now(),"account_added",name)?;
                                 return Ok(json!({"name":name,"provider":"claude","account_id":format!("claude:{name}"),"home":home,"adopted":params["config_dir"].is_string(),"existing_home":existing,"auth":auth,"shared_state":shared_state,
@@ -710,7 +749,9 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             let key = crate::model::account_key(provider,&name);
                             last_poll.insert(key.clone(), now());
                             let a = state.accounts.get_mut(&key).context("unknown account")?;
-                            if a.auth_required != problem.is_some() || a.auth_detail != problem {
+                            let plan_changed = provider == ProviderId::Claude && problem.is_none()
+                                && crate::plan::from_claude_auth(&mode, now()).is_some_and(|p| record_plan(&mut a.plan, &p));
+                            if a.auth_required != problem.is_some() || a.auth_detail != problem || plan_changed {
                                 a.auth_required = problem.is_some(); a.auth_detail = problem.clone();
                                 store.save(&state,now(),"account_observed",&name)?;
                             }
@@ -873,7 +914,8 @@ pub async fn serve(paths: Paths) -> Result<()> {
                     && crate::provider::native::is_native(a.provider)
                 {
                     let required = result.problem.is_some();
-                    if a.auth_required != required || a.auth_detail != result.problem {
+                    let plan_changed = result.plan.as_ref().is_some_and(|p| record_plan(&mut a.plan, p));
+                    if a.auth_required != required || a.auth_detail != result.problem || plan_changed {
                         a.auth_required = required;
                         a.auth_detail = result.problem;
                         store.save(&state,now(),"account_observed",&result.name)?;
@@ -908,8 +950,9 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         pending.insert(akey.clone());
                         let (name, key, config, tx, provider, owned) = (a.name.clone(), akey.clone(), config.clone(), claude_tx.clone(), a.provider, paths.clone());
                         tokio::spawn(async move {
-                            let problem = crate::provider::native::probe(&owned,&name,provider,&config,&home).await.0;
-                            let _ = tx.send(ClaudePoll{name:key,problem}).await;
+                            let (problem, mode) = crate::provider::native::probe(&owned,&name,provider,&config,&home).await;
+                            let plan = (provider == ProviderId::Claude && problem.is_none()).then(|| crate::plan::from_claude_auth(&mode, now())).flatten();
+                            let _ = tx.send(ClaudePoll{name:key,problem,plan}).await;
                         });
                         continue;
                     }
@@ -1027,6 +1070,66 @@ pub async fn ensure_started(paths: &Paths) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn account_rows_carry_the_observed_plan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        let mut state = State::default();
+        let mut cx = Account::new("cx".into(), "fixture".into());
+        cx.usage.plan_type = Some("prolite".into());
+        cx.usage.observed_at = 1234;
+        state.accounts.insert("cx".into(), cx);
+        let mut cl = Account::with_provider(ProviderId::Claude, "cl".into(), String::new());
+        cl.plan = Some(crate::plan::PlanObservation {
+            raw: "max".into(),
+            rate_limit_tier: None,
+            verified_at: 77,
+        });
+        state.insert_account(cl);
+        state.insert_account(Account::with_provider(
+            ProviderId::Gemini,
+            "gm".into(),
+            String::new(),
+        ));
+        let v = status(&paths, &state, &Config::default(), "fixture");
+        let plan = |n: &str| {
+            v["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["name"] == n)
+                .unwrap()["plan"]
+                .clone()
+        };
+        assert_eq!(
+            plan("cx"),
+            json!({"provider":"codex","raw":"prolite","name":null,"rate_limit_tier":null,"source":"usage_snapshot","verified_at":1234})
+        );
+        assert_eq!(
+            plan("cl"),
+            json!({"provider":"claude","raw":"max","name":"Claude Max","rate_limit_tier":null,"source":"auth_status","verified_at":77})
+        );
+        assert!(plan("gm").is_null());
+        let mut p = Some(crate::plan::PlanObservation {
+            raw: "max".into(),
+            rate_limit_tier: None,
+            verified_at: 10,
+        });
+        let same = |at| crate::plan::PlanObservation {
+            raw: "max".into(),
+            rate_limit_tier: None,
+            verified_at: at,
+        };
+        assert!(!record_plan(&mut p, &same(20)) && p.as_ref().unwrap().verified_at == 20);
+        assert!(record_plan(&mut p, &same(20 + 3600)));
+        assert!(record_plan(
+            &mut p,
+            &crate::plan::PlanObservation {
+                raw: "pro".into(),
+                ..same(20 + 3601)
+            }
+        ));
+    }
     use super::*;
     #[test]
     fn unobserved_usage_reports_null_observed_at_never_zero() {

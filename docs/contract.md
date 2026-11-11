@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.46.6`
+so revision N maps to contract `1.N.0` and the current contract is `1.46.7`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -1150,7 +1150,7 @@ Login: `api account add claude:NAME` returns `login` equal to
 credentials_in_client:false,argv}`) plus `login_required` (boolean). `api account
 refresh claude:NAME` probes `claude auth status` now and returns
 `{account_id,provider:"claude",auth_required,auth_detail,auth_mode,observed_at}`
-where `auth_mode` is `{logged_in,auth_method,api_provider,subscription_type}` or
+where `auth_mode` is `{logged_in,auth_method,api_provider,subscription_type}` (plus `rate_limit_tier` only when `claude auth status` reports one) or
 null when the probe failed. The supervisor also re-probes every 3 seconds while a
 Claude account is `auth_required`.
 
@@ -3232,3 +3232,27 @@ the snapshots at once and refresh only the Active snapshot (in line for a named 
 resume, switch and move workers likewise refresh only Active when they finish. Archive, restore and delete
 workers still refresh all three. `state --cached` after a launch may show the new session in the Active view
 before the All view, until the next full `state`.
+
+### Account plan (1.46.7)
+
+PATCH, additive field. Every account row of `api state` (live and `--cached`), `api account list` and the
+supervisor status carries `accounts[].plan`, the subscription plan the provider last reported, so tools stop
+hand-maintaining it. It is read-only and non-secret; capabilities advertises it as `account_plan`.
+
+```json
+"plan": {"provider":"codex","raw":"prolite","name":null,"rate_limit_tier":null,"source":"usage_snapshot","verified_at":1762790000}
+```
+
+- `raw` is the provider value exactly as reported (never normalised or guessed). `name` is a human label only
+  where the meaning is certain (Claude `pro` "Claude Pro", `max` "Claude Max"; Codex `free`, `plus`, `pro`,
+  `team`, `business`, `enterprise` as "ChatGPT <Plan>"); any other value, such as `prolite`, has `name: null`
+  with `raw` kept. A Max 5x/20x multiplier is never inferred: `rate_limit_tier` is the string `claude auth status`
+  reports as `rateLimitTier` when it reports one, otherwise null. Codex has no tier (null).
+- `source` is `auth_status` (Claude: the supervisor's own `claude auth status --json` probe, run on its account
+  poll, `account refresh` and enrollment) or `usage_snapshot` (Codex: `planType` of the last rate-limit
+  snapshot). `verified_at` is the unix time of that observation (Codex: the usage `observed_at`), not of the read.
+- The last Claude observation is kept in the account registry, so it survives restarts and shows in
+  `state --cached` without a probe; the stored time is refreshed at most hourly while the value is unchanged.
+  A failed or logged-out probe keeps the previous observation. Codex `plan` follows the supervisor's usage
+  snapshot in cached state like `usage`. Gemini and Antigravity report `plan: null`. A not yet observed plan is null.
+- `usage.json` (the Claude statusline recorder) is unchanged; it carries no plan.

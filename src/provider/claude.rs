@@ -293,8 +293,12 @@ pub async fn check_managed_home(
 pub async fn auth_report(config: &Config, home: &Path) -> Value {
     match auth_status(config, home).await {
         Ok(s) => {
-            json!({"logged_in":s.logged_in,"auth_method":s.auth_method,"api_provider":s.api_provider,
-            "subscription_type":s.subscription_type,"problem":s.problem()})
+            let mut v = json!({"logged_in":s.logged_in,"auth_method":s.auth_method,"api_provider":s.api_provider,
+            "subscription_type":s.subscription_type,"problem":s.problem()});
+            if let Some(tier) = &s.rate_limit_tier {
+                v["rate_limit_tier"] = json!(tier);
+            }
+            v
         }
         Err(e) => {
             json!({"problem":e.to_string().split(':').next().unwrap_or("AUTH_STATUS_UNAVAILABLE")})
@@ -361,6 +365,8 @@ pub struct AuthStatus {
     pub auth_method: Option<String>,
     pub api_provider: Option<String>,
     pub subscription_type: Option<String>,
+    /// Only when `auth status` itself reports one (`rateLimitTier`); never inferred.
+    pub rate_limit_tier: Option<String>,
     /// sha256 over (loggedIn, authMethod, apiProvider, orgId, email); the raw
     /// identity fields are never retained, logged or serialized.
     #[serde(skip)]
@@ -385,6 +391,7 @@ impl AuthStatus {
             auth_method: text("authMethod"),
             api_provider: text("apiProvider"),
             subscription_type: text("subscriptionType"),
+            rate_limit_tier: text("rateLimitTier"),
         })
     }
     /// None when a subscription login on the first-party API is confirmed.

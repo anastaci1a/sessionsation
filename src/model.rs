@@ -101,6 +101,9 @@ pub struct Account {
     /// Persistent display order shared by CLI and UI (0-based, unique; None until migrated).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<u32>,
+    /// Last observed Claude subscription plan (non-secret; contract 1.46.7). Codex derives its plan from `usage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<crate::plan::PlanObservation>,
 }
 /// The registry key of an account. Names are unique per provider only, so the
 /// key is the bare name for Codex (the original, unambiguous enrollment kind;
@@ -226,6 +229,7 @@ impl Account {
             auth_detail: None,
             display_name: None,
             order: None,
+            plan: None,
             deletion_id: None,
             switch_thresholds: crate::automatic::Thresholds::default(),
             name,

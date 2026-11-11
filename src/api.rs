@@ -18,8 +18,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 46;
-pub const CONTRACT_PATCH: u32 = 6;
-pub const CONTRACT_VERSION: &str = "1.46.6";
+pub const CONTRACT_PATCH: u32 = 7;
+pub const CONTRACT_VERSION: &str = "1.46.7";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1534,6 +1534,11 @@ pub fn capabilities() -> Value {
     value["claude_idle_notify"] = crate::claude_idle::capability();
     value["disk_space"] = json!({"since_contract":"1.41.0","command":"disk-space","config":"min_free_disk_mb","default_mb":crate::disk_space::DEFAULT_MIN_FREE_MB,"refusal":"INSUFFICIENT_DISK_SPACE","write_failure":"DISK_FULL","state_fallback":"cached_snapshot_with_warning"});
     value["shared_claude_state"] = crate::shared_state::capability();
+    value["account_plan"] = json!({"since_contract":"1.46.7","field":"accounts[].plan","read_only":true,"secret":false,"null_when":"not_observed_or_provider_has_none",
+        "shape":{"provider":"claude|codex|gemini|antigravity","raw":"provider value as reported","name":"human label or null","rate_limit_tier":"string or null","source":"auth_status|usage_snapshot","verified_at":"unix seconds of the observation"},
+        "sources":{"claude":"auth_status","codex":"usage_snapshot"},"persisted":{"claude":"account registry (last auth status observation)","codex":"account registry usage snapshot"},
+        "names":{"claude":{"pro":"Claude Pro","max":"Claude Max"},"codex":{"free":"ChatGPT Free","plus":"ChatGPT Plus","pro":"ChatGPT Pro","team":"ChatGPT Team","business":"ChatGPT Business","enterprise":"ChatGPT Enterprise"},"unknown_raw":"name null, raw kept"},
+        "gemini":null,"antigravity":null,"cached_state":true,"credentials_read":false});
     value["usage_read"] = json!({"since_contract":"1.42.0","command":"usage","args":["--account"],"providers":["claude"],"fields":["observed_at","age_seconds","short.observed_at","weekly.observed_at"],"windows_carried_until_own_reset":true});
     value["live_activity"] = json!({"since_revision":37,"version":1,"field":"sessions[].live_activity","providers":["codex","claude","gemini","antigravity"],"claude_gemini_antigravity_since_contract":"1.42.0","states":["working","idle","turn_ended","blocked","error","unknown"],"native_sources":{"claude":["native_registry","transcript_tail"],"gemini":["transcript_tail"],"antigravity":["transcript_tail"]},"error_text":"provider turn-error text, bounded to 300 characters, only with state error","cached_state":true,"source":"app_server_thread_status_else_rollout_tail"});
     value["pending_operations"] = json!({"since_revision":37,"field":"sessions[].pending_operations","kinds":["stop","pause","switch","restart"],"stop_wait_expiry_seconds":external::TERMINATE_WAIT_SECONDS});
@@ -1872,7 +1877,13 @@ fn overlay_codex_usage(value: &mut Value, status: Option<&Value>, now: i64, stal
                 .find(|l| l["name"] == a["name"] && l["provider"] == "codex")
         });
         if let Some(l) = live {
-            for k in ["usage", "usage_fresh", "usage_state", "credit_fresh"] {
+            for k in [
+                "usage",
+                "usage_fresh",
+                "usage_state",
+                "credit_fresh",
+                "plan",
+            ] {
                 a[k] = l[k].clone();
             }
         } else if let Some(at) = a["usage"]["observed_at"].as_i64() {

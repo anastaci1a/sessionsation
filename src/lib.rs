@@ -19,6 +19,7 @@ pub mod messaging;
 pub mod model;
 pub mod native_activity;
 pub mod paths;
+pub mod plan;
 pub mod provider;
 pub mod questions;
 pub mod rpc;
