@@ -3532,12 +3532,13 @@ async fn resume_into(
         &target,
         s.space.as_deref(),
     )?;
-    let wanted = name.as_deref().unwrap_or(&s.name).to_owned();
-    ensure!(
-        !catalog::space_taken(paths, Some(&destination.label), &wanted, &s.id)?,
-        "SESSION_NAME_EXISTS: \"{wanted}\" is already used in this Space"
-    );
-    let s = named(paths, s, expected_generation, name.as_deref(), None)?;
+    let s = resume_named(
+        paths,
+        s,
+        expected_generation,
+        name.as_deref(),
+        &destination.label,
+    )?;
     std::env::set_current_dir(directory)?;
     let result = external::hosting::launch_placed(
         paths,
@@ -3552,8 +3553,36 @@ async fn resume_into(
         ),
     )
     .await?;
-    catalog::record_space(paths, &s.id, &destination.label, "launch")?;
+    // The pane is confirmed running: recording the Space is best effort.
+    catalog::record_space_best_effort(paths, &s.id, &destination.label, "launch");
     Ok(result)
+}
+/// Apply a resume's `--name`, unique only in the destination Space (not the old
+/// one); the Space itself is recorded after a verified start.
+fn resume_named(
+    paths: &Paths,
+    s: catalog::Session,
+    generation: &str,
+    name: Option<&str>,
+    destination: &str,
+) -> Result<catalog::Session> {
+    let wanted = name.unwrap_or(&s.name);
+    ensure!(
+        !catalog::space_taken(paths, Some(destination), wanted, &s.id)?,
+        "SESSION_NAME_EXISTS: \"{wanted}\" is already used in this Space"
+    );
+    if wanted == s.name {
+        return Ok(s);
+    }
+    catalog::rename_checked(
+        paths,
+        &s.id,
+        generation,
+        wanted,
+        None,
+        Some(destination),
+        "launch",
+    )
 }
 /// Apply an optional (bare) name and the destination Space before a resume
 /// (generation-checked, unique in the destination Space).
@@ -3948,6 +3977,29 @@ mod prefill_tests {
             ..s
         };
         assert_eq!(resume_placement(Some("w1"), None, &unnamed).label, None);
+    }
+    #[test]
+    fn a_resume_name_is_unique_only_in_the_destination_space() {
+        let t = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+        let mk = |name: &str, space: &str, conv: &str| {
+            let s = catalog::record_launch(&paths, "fixture", conv, name, None).unwrap();
+            catalog::set_space(&paths, &s.id, &s.generation(), Some(space)).unwrap()
+        };
+        let old = mk("src", "old", "c1");
+        mk("foo", "old", "c2"); // exists only in the old space
+        mk("bar", "x", "c3"); // exists in the destination
+        // foo is free in X: renaming succeeds (not blocked by the old space's foo).
+        let r = resume_named(&paths, old.clone(), &old.generation(), Some("foo"), "x").unwrap();
+        assert_eq!(r.name, "foo");
+        assert_eq!(
+            r.space.as_deref(),
+            Some("old"),
+            "the Space is recorded after the start"
+        );
+        // bar exists in X (case-insensitive): refused.
+        let e = resume_named(&paths, r.clone(), &r.generation(), Some("BAR"), "x").unwrap_err();
+        assert!(format!("{e:#}").starts_with("SESSION_NAME_EXISTS"), "{e:#}");
     }
     #[test]
     fn an_unobserved_attachment_is_not_an_inactive_history_source() {

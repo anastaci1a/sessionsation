@@ -186,6 +186,13 @@ pub(super) fn taken(
         .any(|(key, r)| Some(r.as_str()) != request && reservation_claims(key, space, name))
 }
 
+/// Whether any entry (in any Space) or reservation uses `name`: automatic
+/// names for a row whose Space is not yet known avoid every Space it could land in.
+pub(super) fn taken_anywhere(c: &Catalog, name: &str) -> bool {
+    let folded = fold(name);
+    c.sessions.values().any(|s| fold(&s.name) == folded) || taken(c, None, name, None, None)
+}
+
 /// Whether `name` is used by another entry (or reserved) in `space`.
 pub fn space_taken(paths: &Paths, space: Option<&str>, name: &str, except: &str) -> Result<bool> {
     transaction(paths, |c| Ok(taken(c, space, name, Some(except), None)))
@@ -304,19 +311,25 @@ pub fn resolve_target(paths: &Paths, target: &str) -> Result<Session> {
     })
 }
 
-/// Set (or clear) an entry's space in a transaction, noting why; a change
-/// increments the revision.
+/// Set (or clear) an entry's space in a transaction, noting why. A change
+/// increments the revision, except that recording a Space where none was known
+/// (`unscoped_bumps` false) is not a generation change (rule R1); explicit
+/// set-space/move-space pass true.
 pub(super) fn assign(
     s: &mut Session,
     notes: &mut BTreeMap<String, &'static str>,
     space: Option<String>,
     source: &'static str,
+    unscoped_bumps: bool,
 ) -> bool {
     if s.space == space {
         return false;
     }
+    let first = s.space.is_none() && space.is_some();
     s.space = space;
-    s.revision += 1;
+    if unscoped_bumps || !first {
+        s.revision += 1;
+    }
     notes.insert(s.id.clone(), source);
     true
 }
@@ -344,20 +357,47 @@ pub fn set_space(
             "SESSION_NAME_EXISTS: \"{name}\" is already used in this Space"
         );
         let s = c.sessions.get_mut(id).context("SESSION_NOT_FOUND")?;
-        assign(s, &mut c.space_notes, space.map(str::to_owned), "set_space");
+        assign(
+            s,
+            &mut c.space_notes,
+            space.map(str::to_owned),
+            "set_space",
+            true,
+        );
         Ok(s.clone())
     })
 }
 
 /// Record a verified destination Space (launch/resume/add-to-herdr completion)
-/// without a generation check; a change increments the revision.
+/// without a generation check; a change between two Spaces increments the
+/// revision, recording a first Space does not.
 pub fn record_space(paths: &Paths, id: &str, space: &str, source: &'static str) -> Result<Session> {
     transaction(paths, |c| {
         live(c, id)?;
         let s = c.sessions.get_mut(id).context("SESSION_NOT_FOUND")?;
-        assign(s, &mut c.space_notes, Some(space.to_owned()), source);
+        assign(s, &mut c.space_notes, Some(space.to_owned()), source, false);
         Ok(s.clone())
     })
+}
+
+/// `record_space` after a verified start: a failure (merged id, I/O, lock) must
+/// not turn the successful start into an error, so it is logged and `None` is
+/// returned; the next live refresh records the Space.
+pub fn record_space_best_effort(
+    paths: &Paths,
+    id: &str,
+    space: &str,
+    source: &'static str,
+) -> Option<Session> {
+    match record_space(paths, id, space, source) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!(
+                "space not recorded for {id} ({space}); the next refresh will record it: {e:#}"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -786,6 +826,47 @@ mod tests {
             moved.generation(),
             "recording the same Space is no change"
         );
+    }
+
+    #[test]
+    fn recording_a_first_space_keeps_the_generation_but_a_move_changes_it() {
+        let (_t, p) = paths();
+        let s = row("x", None);
+        insert(&p, &s);
+        let first = record_space(&p, &s.id, "A", "launch").unwrap();
+        assert_eq!(first.space.as_deref(), Some("A"));
+        assert_eq!(
+            first.generation(),
+            s.generation(),
+            "null -> Space is R1-neutral"
+        );
+        let moved = record_space(&p, &s.id, "B", "launch").unwrap();
+        assert_eq!(moved.space.as_deref(), Some("B"));
+        assert_ne!(moved.generation(), first.generation(), "A -> B changes it");
+        // Explicit set-space from no Space still changes the generation.
+        let u = row("u", None);
+        insert(&p, &u);
+        let set = set_space(&p, &u.id, &u.generation(), Some("A")).unwrap();
+        assert_ne!(set.generation(), u.generation());
+    }
+
+    #[test]
+    fn a_failed_space_record_after_a_start_is_not_an_error() {
+        let (_t, p) = paths();
+        // Unknown id: record_space fails; the best-effort form logs and returns None.
+        assert!(record_space(&p, "missing", "A", "launch").is_err());
+        assert!(record_space_best_effort(&p, "missing", "A", "launch").is_none());
+        let s = row("x", None);
+        insert(&p, &s);
+        assert!(record_space_best_effort(&p, &s.id, "A", "launch").is_some());
+    }
+
+    #[test]
+    fn automatic_names_avoid_every_space() {
+        let (_t, p) = paths();
+        insert(&p, &row("Work", Some("A")));
+        let made = record_launch(&p, "fixture", "thread-auto", "work", None).unwrap();
+        assert_eq!(made.name, "work-2");
     }
 
     #[test]

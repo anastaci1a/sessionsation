@@ -3455,6 +3455,13 @@ byte-identical to 1.47.0).
 - **`api session set-space --session T --expected-generation G (--space LABEL | --clear)`.** Catalog only;
   refused with `ALREADY_IN_HERDR` for a verified-live HERDR terminal (use `move-space`). The Space need not
   exist. Unique in the new Space.
+- **Generation and Space.** Storing a Space where none was known (backfill, host observation, the Space
+  recorded after a verified `resume`/`add-to-herdr`/launch) never changes the generation. A change between two
+  different Spaces (host move, recorded destination) and explicit `session set-space` / `move-space` do. The
+  Space recording after a verified start is best effort: a failure is logged, the start still reports
+  success, and the next live refresh records the Space. A `resume --name` is checked for uniqueness only in the
+  destination Space (case-insensitive, excluding the session itself), never in the old Space. Automatic names
+  (discovery, first launch record) avoid the same folded name in every Space.
 - **Message sender.** `from-name` of native messages is the canonical name when it fits 64 characters, else
   the bare name.
 - **Storage and rollback.** `space` is stored in `catalog.json` (omitted when null) and mirrored in

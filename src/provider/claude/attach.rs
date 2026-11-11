@@ -291,7 +291,10 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         {
             let attachment = json!(a);
             let current = match &space_label {
-                Some(label) => catalog::record_space(paths, &current.id, label, "launch")?,
+                Some(label) => {
+                    catalog::record_space_best_effort(paths, &current.id, label, "launch")
+                        .unwrap_or_else(|| current.clone())
+                }
                 None => current.clone(),
             };
             let mut value = base;

@@ -3380,10 +3380,10 @@ async fn space_scoped_names_resolve_rename_and_set_space() {
     assert_eq!(set["canonical"], "Main:fixture");
     assert_eq!(set["name"], "fixture");
     assert_ne!(set["generation"], json!(a.generation()));
-    // The same bare name is free in the unscoped bucket and in another Space.
+    // An automatic name avoids the same name in every Space (the new row's Space is unknown).
     let b = launch("fixture", None);
-    assert_eq!(b.name, "fixture");
-    let b_set = f.api(&[
+    assert_eq!(b.name, "fixture-2");
+    let b_in = f.api(&[
         "session",
         "set-space",
         "--session",
@@ -3392,6 +3392,16 @@ async fn space_scoped_names_resolve_rename_and_set_space() {
         &b.generation(),
         "--space",
         "Other",
+    ]);
+    // The same bare name is free in another Space for an explicit rename.
+    let b_set = f.api(&[
+        "rename",
+        "--session",
+        &b.id,
+        "--expected-generation",
+        b_in["generation"].as_str().unwrap(),
+        "--name",
+        "fixture",
     ]);
     assert_eq!(b_set["canonical"], "Other:fixture");
     // Resolution: canonical (case-insensitive fallback), ambiguous bare name.

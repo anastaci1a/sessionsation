@@ -7,7 +7,8 @@ use crate::provider::ProviderId;
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 pub use scope::{
-    ParsedName, parse_name, record_space, resolve_target, same_space, set_space, space_taken,
+    ParsedName, parse_name, record_space, record_space_best_effort, resolve_target, same_space,
+    set_space, space_taken,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -296,7 +297,7 @@ pub fn record_provider_launch(
         let base = if base.is_empty() { "session" } else { base };
         let mut name = base.to_owned();
         let mut suffix = 2;
-        while scope::taken(c, None, &name, None, None) {
+        while scope::taken_anywhere(c, &name) {
             let tail = format!("-{suffix}");
             let prefix: String = base
                 .chars()
@@ -356,7 +357,7 @@ pub fn register_discovered(
             let base = if base.is_empty() { "session" } else { base };
             let mut name = base.to_owned();
             let mut suffix = 2;
-            while scope::taken(c, None, &name, None, None) {
+            while scope::taken_anywhere(c, &name) {
                 let tail = format!("-{suffix}");
                 let prefix: String = base
                     .chars()
@@ -640,7 +641,7 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
                 let base = if base.is_empty() { "session" } else { base };
                 let mut name = base.to_owned();
                 let mut suffix = 2;
-                while scope::taken(c, None, &name, None, None) {
+                while scope::taken_anywhere(c, &name) {
                     name = format!("{base}-{suffix}");
                     suffix += 1;
                 }
@@ -840,6 +841,21 @@ pub(crate) fn rename_in_space(
     space: Option<&str>,
     source: &'static str,
 ) -> Result<Session> {
+    rename_checked(paths, id, generation, name, space, None, source)
+}
+
+/// Like `rename_in_space`; `unique_in` (when given) is the Space the name must
+/// be unique in instead of the entry's resulting Space (a resume that will land
+/// in a destination Space but records it only on a verified start).
+pub(crate) fn rename_checked(
+    paths: &Paths,
+    id: &str,
+    generation: &str,
+    name: &str,
+    space: Option<&str>,
+    unique_in: Option<&str>,
+    source: &'static str,
+) -> Result<Session> {
     transaction(paths, |c| {
         let current = live(c, id)?;
         ensure!(current.generation() == generation, "STALE_TARGET");
@@ -852,8 +868,9 @@ pub(crate) fn rename_in_space(
         if current.name == name && current.space == space {
             return Ok(current.clone());
         }
+        let check = unique_in.or(space.as_deref());
         ensure!(
-            !scope::taken(c, space.as_deref(), name, Some(id), None),
+            !scope::taken(c, check, name, Some(id), None),
             "SESSION_NAME_EXISTS: \"{name}\" is already used in this Space"
         );
         let s = c.sessions.get_mut(id).context("SESSION_NOT_FOUND")?;
@@ -861,7 +878,7 @@ pub(crate) fn rename_in_space(
             s.name = name.into();
             s.revision += 1;
         }
-        scope::assign(s, &mut c.space_notes, space, source);
+        scope::assign(s, &mut c.space_notes, space, source, false);
         Ok(s.clone())
     })
 }
@@ -898,7 +915,7 @@ pub(crate) fn move_attachment(
             .get_mut(&before.id)
             .context("SESSION_NOT_FOUND")?;
         if space.is_some() {
-            scope::assign(s, &mut c.space_notes, space, "move_space");
+            scope::assign(s, &mut c.space_notes, space, "move_space", true);
         }
         Ok(s.clone())
     })

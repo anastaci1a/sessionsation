@@ -148,7 +148,13 @@ fn apply(paths: &Paths, observations: Vec<Observation>) -> Result<()> {
                     current.space = Some(space);
                     c.space_notes.insert(current.id.clone(), "host_observed");
                 } else {
-                    scope::assign(current, &mut c.space_notes, Some(space), "host_observed");
+                    scope::assign(
+                        current,
+                        &mut c.space_notes,
+                        Some(space),
+                        "host_observed",
+                        true,
+                    );
                 }
             }
         }
