@@ -21,7 +21,6 @@ pub struct PlanObservation {
 pub fn name(provider: ProviderId, raw: &str) -> Option<&'static str> {
     match (provider, raw.to_ascii_lowercase().as_str()) {
         (ProviderId::Claude, "pro") => Some("Claude Pro"),
-        (ProviderId::Claude, "max") => Some("Claude Max"),
         (ProviderId::Codex, "free") => Some("ChatGPT Free"),
         (ProviderId::Codex, "plus") => Some("ChatGPT Plus"),
         (ProviderId::Codex, "pro") => Some("ChatGPT Pro"),
@@ -73,7 +72,9 @@ mod tests {
     use super::*;
     #[test]
     fn names_only_known_values_and_keeps_raw() {
-        assert_eq!(name(ProviderId::Claude, "max"), Some("Claude Max"));
+        assert_eq!(name(ProviderId::Claude, "pro"), Some("Claude Pro"));
+        // `auth status` reports "max" for both Max and Ultra: no name, raw kept.
+        assert_eq!(name(ProviderId::Claude, "max"), None);
         assert_eq!(name(ProviderId::Codex, "prolite"), None);
         let o = PlanObservation {
             raw: "prolite".into(),

@@ -269,7 +269,12 @@ fn legacy_result(result: Option<&Value>) -> Value {
             r["code"] = json!("PROMPT_NOT_DELIVERED");
         }
         // Nothing was started and nothing failed: an old client sees a pending wait.
-        Some("skipped_clean_exit" | "exit_unclassified" | "skipped_explicit_stop") => {
+        Some(
+            "skipped_clean_exit"
+            | "exit_unclassified"
+            | "skipped_explicit_stop"
+            | "already_running",
+        ) => {
             r["state"] = json!("waiting");
         }
         _ => {}
@@ -585,7 +590,7 @@ pub fn capability_start() -> Value {
         "max_per_hour":MAX_PER_HOUR,"operation_kind":"auto_recover","operation_dir":crate::layout::AUTO_RECOVERIES,
         "phases":["admitted","pane_ready","resuming","resumed","prompting","complete","failed","uncertain","abandoned"],
         "replays":false,"recover":"recover","abandon":"abandon-operation",
-        "last_result_states":["started_after_array_start","started_after_array_start_with_prompt","started_after_boot","started_after_boot_with_prompt","started_after_crash","started_after_crash_with_prompt","skipped_clean_exit","exit_unclassified","skipped_explicit_stop","failed","uncertain","rate_limited","waiting","disabled","abandoned"],
+        "last_result_states":["started_after_array_start","started_after_array_start_with_prompt","started_after_boot","started_after_boot_with_prompt","started_after_crash","started_after_crash_with_prompt","skipped_clean_exit","exit_unclassified","skipped_explicit_stop","failed","already_running","uncertain","rate_limited","waiting","disabled","abandoned"],
         "refusal_codes":["AUTO_RECOVER_UNSUPPORTED","STALE_TARGET","SESSION_OPERATION_IN_PROGRESS","INVALID_ARGUMENT","ACCOUNT_UNAVAILABLE","AMBIGUOUS_SESSION"]})
 }
 
@@ -1484,6 +1489,11 @@ fn fail(paths: &Paths, r: &mut Record, error: &anyhow::Error) {
     };
 }
 
+/// A recovery that found the session already running (it failed before anything was dispatched).
+fn already_running(detail: &str) -> bool {
+    detail.starts_with("SESSION_ALREADY_RUNNING")
+}
+
 /// Record the outcome on the setting (`last_result`, `last_recovered_at`, `last_pane`).
 /// A start names its trigger (`started_after_boot`, `started_after_crash`, each with an
 /// optional `_with_prompt`); operations from before 1.44.0 have none and keep the old names.
@@ -1523,11 +1533,21 @@ fn finish(paths: &Paths, r: &Record) {
             "RECOVERY_UNCERTAIN".into(),
             r.detail.clone(),
         ),
+        "failed" if already_running(&r.detail) => (
+            "already_running".into(),
+            "ALREADY_RUNNING".into(),
+            r.detail.clone(),
+        ),
         "failed" => ("failed".into(), "RECOVERY_FAILED".into(), r.detail.clone()),
         _ => return,
     };
     let confirmed = r.resume == "confirmed";
+    let benign = state == "already_running";
     update(paths, &r.session_id, |s| {
+        if benign && let Some(i) = s.recoveries.iter().rposition(|t| *t == r.created_at) {
+            // Nothing was started: the attempt does not count against max_per_hour.
+            s.recoveries.remove(i);
+        }
         s.last_result = Some(result(&state, &code, &detail, Some(&r.id)));
         s.misses = 0;
         if confirmed {

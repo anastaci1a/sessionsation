@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.46.7`
+so revision N maps to contract `1.N.0` and the current contract is `1.46.8`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2941,7 +2941,7 @@ never-replayed operations, the 3 per hour rate limit, `RECOVERY_UNRESOLVED`, sup
     read. A hard kill the kernel did not log is deliberately not started.
 - **`last_result.state`** is `started_after_boot`, `started_after_boot_with_prompt`,
   `started_after_crash`, `started_after_crash_with_prompt`, `skipped_clean_exit`, `exit_unclassified`,
-  `skipped_explicit_stop`, `failed`, `uncertain`, `rate_limited`, `waiting`, `disabled` or `abandoned`
+  `skipped_explicit_stop`, `failed`, `already_running`, `uncertain`, `rate_limited`, `waiting`, `disabled` or `abandoned`
   (codes `STARTED_AFTER_BOOT[_WITH_PROMPT]`, `STARTED_AFTER_CRASH[_WITH_PROMPT]`, `CLEAN_EXIT`,
   `EXIT_UNCLASSIFIED`, `EXPLICIT_STOP`, `PROMPT_NOT_DELIVERED`, ...). Records from 1.43.0 may still read
   `started` / `started_with_prompt`.
@@ -3244,10 +3244,12 @@ hand-maintaining it. It is read-only and non-secret; capabilities advertises it 
 ```
 
 - `raw` is the provider value exactly as reported (never normalised or guessed). `name` is a human label only
-  where the meaning is certain (Claude `pro` "Claude Pro", `max` "Claude Max"; Codex `free`, `plus`, `pro`,
+  where the meaning is certain (Claude `pro` "Claude Pro" only; Codex `free`, `plus`, `pro`,
   `team`, `business`, `enterprise` as "ChatGPT <Plan>"); any other value, such as `prolite`, has `name: null`
   with `raw` kept. A Max 5x/20x multiplier is never inferred: `rate_limit_tier` is the string `claude auth status`
   reports as `rateLimitTier` when it reports one, otherwise null. Codex has no tier (null).
+  Claude `auth status` reports `subscriptionType` `max` for both the Claude Max and the Claude Ultra plans, so raw
+  `max` covers both and `name` stays null for it (since 1.46.8; earlier 1.46.7 labelled it "Claude Max").
 - `source` is `auth_status` (Claude: the supervisor's own `claude auth status --json` probe, run on its account
   poll, `account refresh` and enrollment) or `usage_snapshot` (Codex: `planType` of the last rate-limit
   snapshot). `verified_at` is the unix time of that observation (Codex: the usage `observed_at`), not of the read.
@@ -3256,3 +3258,13 @@ hand-maintaining it. It is read-only and non-secret; capabilities advertises it 
   A failed or logged-out probe keeps the previous observation. Codex `plan` follows the supervisor's usage
   snapshot in cached state like `usage`. Gemini and Antigravity report `plan: null`. A not yet observed plan is null.
 - `usage.json` (the Claude statusline recorder) is unchanged; it carries no plan.
+
+### Auto Start already running (1.46.8)
+
+PATCH. When an Auto Start or Auto Recover attempt finds the session already running (a boot or array turn arrives
+after the session was started some other way; start refuses `SESSION_ALREADY_RUNNING`), `last_result` is now
+`state: "already_running"`, `code: "ALREADY_RUNNING"` (detail keeps the refusal text) instead of `failed` /
+`RECOVERY_FAILED`. Nothing was started, so the attempt is not counted in `recoveries_last_hour` / `starts_last_hour`
+and never contributes to `max_per_hour` (`rate_limited`), and it does not suppress the session. The boot or array
+epoch is still marked handled, so it is not retried within the same boot. The deprecated `auto_recover` projection
+reads it as `waiting`. Capabilities `auto_start.last_result_states` lists `already_running`.

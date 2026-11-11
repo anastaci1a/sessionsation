@@ -624,3 +624,55 @@ fn the_array_epoch_is_the_user_mount_id_and_only_a_new_mount_makes_a_session_due
         "started_after_array_start_with_prompt"
     );
 }
+
+#[test]
+fn an_already_running_session_is_a_non_failure_that_does_not_count_against_the_hourly_limit() {
+    let (_d, paths, s) = fixture();
+    let now = daemon::now();
+    with_store(&paths, |st| {
+        let mut x = Setting::default();
+        x.set_mode(Mode::Start);
+        x.recoveries = vec![now - 100];
+        st.sessions.insert(s.id.clone(), x);
+    })
+    .unwrap();
+    let admit = |paths: &Paths, r: &Record| {
+        update(paths, &s.id, |x| x.recoveries.push(r.created_at));
+    };
+    // Already running: state already_running, not failed; the admission is not counted.
+    let mut r = record(&paths, &s);
+    r.mode = "start".into();
+    r.trigger = "boot".into();
+    r.created_at = now;
+    r.phase = "pane_ready".into();
+    admit(&paths, &r);
+    fail(
+        &paths,
+        &mut r,
+        &anyhow::anyhow!("SESSION_ALREADY_RUNNING: already running; focus it"),
+    );
+    finish(&paths, &r);
+    let x = all(&paths)[&s.id].clone();
+    let last = x.last_result.clone().unwrap();
+    assert_eq!(last["state"], "already_running");
+    assert_eq!(last["code"], "ALREADY_RUNNING");
+    assert!(
+        last["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("SESSION_ALREADY_RUNNING")
+    );
+    assert_eq!(x.recoveries, vec![now - 100]);
+    assert!(!x.suppressed);
+    // A real failure still counts.
+    let mut f = record(&paths, &s);
+    f.mode = "start".into();
+    f.created_at = now + 1;
+    f.phase = "pane_ready".into();
+    admit(&paths, &f);
+    fail(&paths, &mut f, &anyhow::anyhow!("PANE_NOT_AVAILABLE"));
+    finish(&paths, &f);
+    let x = all(&paths)[&s.id].clone();
+    assert_eq!(x.last_result.unwrap()["state"], "failed");
+    assert_eq!(x.recoveries.len(), 2);
+}

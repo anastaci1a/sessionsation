@@ -1107,7 +1107,7 @@ mod tests {
         );
         assert_eq!(
             plan("cl"),
-            json!({"provider":"claude","raw":"max","name":"Claude Max","rate_limit_tier":null,"source":"auth_status","verified_at":77})
+            json!({"provider":"claude","raw":"max","name":null,"rate_limit_tier":null,"source":"auth_status","verified_at":77})
         );
         assert!(plan("gm").is_null());
         let mut p = Some(crate::plan::PlanObservation {
