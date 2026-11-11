@@ -452,6 +452,26 @@ impl Transport {
         )
         .await
     }
+    /// Compaction follow-up (contract 1.47.1): one full turn, newest first, after a server cursor.
+    /// The summary view never lists a `contextCompaction` item and `thread/items/list` is
+    /// refused (-32601) for legacy-history threads, so this is how a compaction turn is
+    /// identified. The caller verifies the exact turn ID and reads only item types.
+    pub(super) async fn compaction_turn_page<T: serde::de::DeserializeOwned>(
+        &mut self,
+        id: &str,
+        cursor: Option<&str>,
+    ) -> Result<T> {
+        super::uuid(id)?;
+        if !self.verified_profile || cursor.is_some_and(|s| s.is_empty() || s.len() > 4096) {
+            return Err(Fault("unsupported"));
+        }
+        self.rpc_budget(
+            "thread/turns/list",
+            json!({"threadId":id,"itemsView":"full","sortDirection":"desc","limit":1,"cursor":cursor}),
+            frame_budget(Duration::from_secs(3), self.max_bytes),
+        )
+        .await
+    }
     /// Only the checkpoint projection may request one full latest legacy turn.
     /// The caller verifies its exact turn ID and discards non-public items.
     pub(super) async fn checkpoint_legacy_turn<T: serde::de::DeserializeOwned>(

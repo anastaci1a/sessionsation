@@ -19,7 +19,7 @@ struct Fake {
     add_busy: bool,
     /// Thread reads fail (the connection drops): a transient provider error.
     fail_reads: bool,
-    /// `thread/turns/list` omits item lists, like a summary view without them.
+    /// The summary view also omits user and agent messages.
     hide_summary_items: bool,
     turns: Vec<Value>,
     /// Every method received, in order, with the client id of an add.
@@ -69,27 +69,45 @@ async fn world() -> World {
             let mut s = shared.lock().unwrap();
             let method = r["method"].as_str().unwrap().to_owned();
             s.log.push(method.clone());
+            if r["params"]["itemsView"] == "full" {
+                s.log.push("full-turn-read".into());
+            }
             match method.as_str() {
                 "thread/read" if s.fail_reads => None,
                 "thread/read" => Some(
                     json!({"thread":{"id":id,"status":{"type":if s.busy {"active"} else {"idle"}}}}),
                 ),
                 "thread/turns/list" => {
+                    // Real app-server 0.163-0.166 shape (checked against 0.166.0 on a copy of the
+                    // incident thread): newest first, an opaque `nextCursor` after the last turn;
+                    // the summary view keeps only user and agent messages (a compaction turn is
+                    // `items: []`), the full view lists `contextCompaction` once it completed.
                     let mut data = s.turns.clone();
                     data.reverse();
-                    data.truncate(r["params"]["limit"].as_u64().unwrap_or(50) as usize);
-                    if s.hide_summary_items {
-                        for turn in data.iter_mut() {
-                            turn["items"] = json!([]);
-                        }
+                    if let Some(cursor) = r["params"]["cursor"].as_str() {
+                        let anchor: Value = serde_json::from_str(cursor).unwrap();
+                        let at = data.iter().position(|t| t["id"] == anchor["turnId"]).unwrap();
+                        let skip = if anchor["includeAnchor"] == true { at } else { at + 1 };
+                        data.drain(..skip);
                     }
-                    Some(json!({"data":data,"nextCursor":null}))
+                    let limit = r["params"]["limit"].as_u64().unwrap_or(50) as usize;
+                    let more = data.len() > limit;
+                    data.truncate(limit);
+                    let full = r["params"]["itemsView"] == "full";
+                    for turn in data.iter_mut() {
+                        let running = turn["status"] == "inProgress";
+                        let items: Vec<Value> = turn["items"].as_array().cloned().unwrap_or_default().into_iter()
+                            .filter(|i| if full { !(running && i["type"] == "contextCompaction") }
+                                else { !s.hide_summary_items && matches!(i["type"].as_str(), Some("userMessage" | "agentMessage")) })
+                            .collect();
+                        turn["items"] = json!(items);
+                        turn["itemsView"] = json!(if full { "full" } else { "summary" });
+                    }
+                    let next = more.then(|| json!({"turnId":data.last().unwrap()["id"],"includeAnchor":false}).to_string());
+                    Some(json!({"data":data,"nextCursor":next}))
                 }
-                "thread/items/list" => {
-                    let turn = s.turns.iter().find(|t| t["id"] == r["params"]["turnId"]).cloned();
-                    let items = turn.map(|t| t["items"].as_array().cloned().unwrap_or_default()).unwrap_or_default();
-                    Some(json!({"data":items.into_iter().map(|i| json!({"turnId":r["params"]["turnId"],"item":i})).collect::<Vec<_>>(),"nextCursor":null}))
-                }
+                // "thread/items/list is not supported yet" for legacy-history threads.
+                "thread/items/list" => Some(json!({"__error":-32601})),
                 "thread/queue/list" => Some(json!({"data":s.queue.iter().map(|q|
                     json!({"id":format!("q-{q}"),"clientUserMessageId":q})).collect::<Vec<_>>(),"nextCursor":null})),
                 "thread/queue/add" => {
@@ -707,8 +725,8 @@ async fn only_a_positive_compaction_item_counts_as_the_compaction_turn() {
     tick(&w.paths).await;
     assert_eq!(w.phase(&id), "starting");
     assert!(
-        w.fake.lock().unwrap().count("thread/items/list") >= 2,
-        "the items were fetched"
+        w.fake.lock().unwrap().count("full-turn-read") >= 2,
+        "each new turn without a visible user message was read in full"
     );
     w.fake.lock().unwrap().turns.push(
         json!({"id":"real","status":"completed","items":[{"type":"contextCompaction","id":"c"}]}),
@@ -752,4 +770,138 @@ async fn the_legacy_enqueue_path_is_not_held() {
         .unwrap();
     assert_eq!(receipt.state, "native_accepted");
     assert_eq!(w.fake.lock().unwrap().count("thread/queue/add"), 1);
+}
+
+/// Move a started operation's start back by `seconds` (as if that much time had passed).
+fn backdate(w: &World, id: &str, seconds: i64) {
+    let mut r = w.record(id);
+    let now = crate::daemon::now();
+    r.started_at = r.started_at.map(|_| now - seconds);
+    r.updated_at = now - seconds;
+    save(&w.paths, &r).unwrap();
+}
+
+/// Regression for operation 55e40f43 (contract 1.47.1): the compaction is a new turn whose summary
+/// lists no items at all, `thread/items/list` is refused with -32601, and a human turn may already
+/// follow it. 1.47.0 returned silently on the refused item read every pass and never finished.
+#[tokio::test]
+async fn the_real_compaction_turn_shape_is_observed_and_completes() {
+    let w = world().await;
+    {
+        let mut fake = w.fake.lock().unwrap();
+        for n in 1..5 {
+            fake.turns
+                .push(json!({"id":format!("turn-{n}"),"status":"completed",
+                "items":[{"type":"userMessage","id":"u"},{"type":"agentMessage","id":"a"}]}));
+        }
+    }
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    assert_eq!(w.send(M1).await["reason"], "compaction_hold");
+    tick(&w.paths).await;
+    let r = w.record(&id);
+    assert_eq!((r.phase.as_str(), r.baseline.len()), ("running", 5));
+    // While it runs the full view does not show the item yet: still running, not failed.
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "running");
+    w.complete_compaction("completed");
+    // The pane is used right after: a newer human turn now precedes the compaction turn.
+    w.fake
+        .lock()
+        .unwrap()
+        .turns
+        .push(json!({"id":"turn-human","status":"completed",
+        "items":[{"type":"userMessage","id":"h"},{"type":"agentMessage","id":"ha"}]}));
+    tick(&w.paths).await;
+    let r = w.record(&id);
+    assert_eq!(
+        (r.phase.as_str(), r.compaction_turn_id.as_deref()),
+        ("complete", Some("turn-compact")),
+    );
+    tick(&w.paths).await;
+    let fake = w.fake.lock().unwrap();
+    assert_eq!(fake.count("thread/items/list"), 0, "{:?}", fake.log);
+    assert!(fake.count("full-turn-read") >= 2);
+    drop(fake);
+    assert!(w.record(&id).hold_released);
+    assert_eq!(w.receipt_state(M1).0, "native_accepted");
+}
+
+#[tokio::test]
+async fn a_compaction_that_cannot_be_read_fails_after_the_unobserved_limit_and_releases() {
+    let w = world().await;
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    assert_eq!(w.send(M1).await["reason"], "compaction_hold");
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "running");
+    w.fake.lock().unwrap().fail_reads = true;
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "running", "a transient read error is retried");
+    backdate(&w, &id, UNOBSERVED_LIMIT_SECONDS + 5);
+    tick(&w.paths).await;
+    let r = w.record(&id);
+    assert_eq!(
+        (r.phase.as_str(), r.reason.as_deref()),
+        ("failed", Some("compaction_not_observed"))
+    );
+    w.fake.lock().unwrap().fail_reads = false;
+    w.complete_compaction("completed");
+    tick(&w.paths).await;
+    assert!(w.record(&id).hold_released);
+    assert_eq!(w.receipt_state(M1).0, "native_accepted");
+    assert_eq!(w.fake.lock().unwrap().count("thread/compact/start"), 1);
+}
+
+#[tokio::test]
+async fn a_non_idle_thread_without_a_compaction_turn_fails_after_the_unobserved_limit() {
+    let w = world().await;
+    w.fake.lock().unwrap().drop_start = true;
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "starting");
+    {
+        // Background work keeps the thread active; no compaction turn ever shows.
+        let mut fake = w.fake.lock().unwrap();
+        fake.drop_start = false;
+        fake.busy = true;
+    }
+    backdate(&w, &id, 3 * OBSERVE_GRACE_SECONDS);
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "starting", "within the unobserved limit");
+    backdate(&w, &id, UNOBSERVED_LIMIT_SECONDS + 5);
+    tick(&w.paths).await;
+    let r = w.record(&id);
+    assert_eq!(
+        (r.phase.as_str(), r.reason.as_deref()),
+        ("failed", Some("compaction_not_observed"))
+    );
+    assert_eq!(w.fake.lock().unwrap().count("thread/compact/start"), 1);
+}
+
+#[tokio::test]
+async fn a_long_running_compaction_turn_is_not_cut_off_by_the_unobserved_limit() {
+    let w = world().await;
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "running");
+    backdate(&w, &id, UNOBSERVED_LIMIT_SECONDS + 60);
+    tick(&w.paths).await;
+    assert_eq!(
+        w.phase(&id),
+        "running",
+        "the compaction turn is still running"
+    );
+    w.complete_compaction("completed");
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "complete");
+}
+
+#[test]
+fn diagnostics_are_rate_limited_per_operation_and_reason() {
+    let op = "33333333-3333-4333-8333-333333333333";
+    assert!(log_due(op, "turn_read", 1000));
+    assert!(!log_due(op, "turn_read", 1000 + LOG_EVERY_SECONDS - 1));
+    assert!(log_due(op, "connect", 1001));
+    assert!(log_due(op, "turn_read", 1000 + LOG_EVERY_SECONDS));
+    prune(&[]);
+    assert!(log_due(op, "turn_read", 1000 + LOG_EVERY_SECONDS + 1));
 }

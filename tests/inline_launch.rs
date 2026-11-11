@@ -351,7 +351,7 @@ fn kill_ref(child: &mut Child) {
 async fn capabilities_advertise_named_journaled_inline_launches() {
     let f = fixture().await;
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.47.0");
+    assert_eq!(caps["contract_version"], "1.47.1");
     assert_eq!(caps["session_compact"]["command"], "session compact");
     assert_eq!(
         caps["session_compact"]["provider"],

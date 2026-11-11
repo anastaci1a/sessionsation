@@ -1,4 +1,4 @@
-//! Codex compaction queued for the next true idle point (contract 1.47.0).
+//! Codex compaction queued for the next true idle point (contract 1.47.0; follow-up 1.47.1).
 //!
 //! `api session compact --when-idle` journals one pending compaction per session. The supervisor
 //! fires `thread/compact/start` on the account app-server once the thread has no active turn
@@ -15,6 +15,8 @@
 use super::*;
 use anyhow::{Context, ensure};
 use futures_util::FutureExt;
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 /// Waiting attempts the app-server may refuse before the operation fails.
 const MAX_ATTEMPTS: u32 = 3;
@@ -25,6 +27,13 @@ pub const MAX_EXPIRY_SECONDS: i64 = 86400;
 const RUN_LIMIT_SECONDS: i64 = 1800;
 /// A compaction that never shows up as a turn although the thread is idle again.
 const OBSERVE_GRACE_SECONDS: i64 = 30;
+/// A started compaction with no observable progress this long (the thread cannot be read, or it
+/// stays non-idle with no new turn that could be the compaction) fails `compaction_not_observed`
+/// and releases the hold (contract 1.47.1). A running compaction turn counts as progress, so a long
+/// compaction is bounded by `RUN_LIMIT_SECONDS` only.
+const UNOBSERVED_LIMIT_SECONDS: i64 = 180;
+/// At most one daemon-log line per operation and reason this often.
+const LOG_EVERY_SECONDS: i64 = 60;
 /// Held messages delivered per release pass; the rest wait for the next tick.
 const MAX_RELEASE_PER_PASS: usize = 20;
 /// A just-released operation is re-swept this long for input that was held at the last moment.
@@ -466,27 +475,23 @@ async fn release(paths: &Paths, id: &str) {
 #[derive(Deserialize)]
 struct TurnsPage {
     data: Vec<CompactionTurn>,
+    #[serde(default, rename = "nextCursor")]
+    next_cursor: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CompactionTurn {
     id: String,
     status: String,
     #[serde(default)]
     items: Vec<ItemKind>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ItemKind {
     #[serde(rename = "type")]
     kind: String,
 }
-#[derive(Deserialize)]
-struct ItemsPage {
-    data: Vec<ItemEntry>,
-}
-#[derive(Deserialize)]
-struct ItemEntry {
-    item: ItemKind,
-}
+/// The item type of a compaction (app-server v2 `ThreadItem`, `ContextCompactionThreadItem`).
+const COMPACTION_ITEM: &str = "contextCompaction";
 impl CompactionTurn {
     fn has(&self, kind: &str) -> bool {
         self.items.iter().any(|i| i.kind == kind)
@@ -494,29 +499,67 @@ impl CompactionTurn {
 }
 /// The compaction turn among the turns that were not there before the start: one that carries a
 /// positive `contextCompaction` item. A turn whose summary shows a user message is somebody
-/// else's; a turn whose summary omits items is checked by reading that one turn's items. Never
-/// inferred from the absence of a user message.
-async fn compaction_turn<'a>(
+/// else's. Never inferred from the absence of a user message.
+///
+/// Real app-servers (0.163-0.166) list a compaction turn in the summary view with `items: []`
+/// (the summary keeps only user and agent messages), and refuse `thread/items/list` with -32601
+/// for legacy-history threads. So every other new turn is read once in the full view, exactly
+/// that turn (contract 1.47.1). The `contextCompaction` item appears there when it completes.
+async fn compaction_turn(
     control: &mut Transport,
     conversation: &str,
-    turns: &'a [CompactionTurn],
+    turns: &[CompactionTurn],
     baseline: &[String],
-) -> Result<Option<&'a CompactionTurn>> {
-    for turn in turns.iter().filter(|t| !baseline.contains(&t.id)) {
-        if turn.has("contextCompaction") {
-            return Ok(Some(turn));
+) -> Result<Option<CompactionTurn>> {
+    for (index, turn) in turns.iter().enumerate() {
+        if baseline.contains(&turn.id) {
+            continue;
+        }
+        if turn.has(COMPACTION_ITEM) {
+            return Ok(Some(turn.clone()));
         }
         if turn.has("userMessage") {
             continue;
         }
-        let page: ItemsPage = control
-            .checkpoint_items(conversation, &turn.id, None)
-            .await?;
-        if page.data.iter().any(|e| e.item.kind == "contextCompaction") {
-            return Ok(Some(turn));
+        if let Some(full) = full_turn(control, conversation, turns, index).await?
+            && full.has(COMPACTION_ITEM)
+        {
+            return Ok(Some(full));
         }
     }
     Ok(None)
+}
+/// Read `turns[index]` (of a newest-first summary page) in the full view. Positions it with the
+/// server's own cursor after the turn before it; a different turn there (the thread moved on
+/// between the reads) is `None`, retried on the next pass.
+async fn full_turn(
+    control: &mut Transport,
+    conversation: &str,
+    turns: &[CompactionTurn],
+    index: usize,
+) -> Result<Option<CompactionTurn>> {
+    let cursor = if index == 0 {
+        None
+    } else {
+        let before: TurnsPage = control
+            .passive_summary_page(conversation, None, index as u32)
+            .await?;
+        if before.data.last().map(|t| t.id.as_str()) != Some(turns[index - 1].id.as_str()) {
+            return Ok(None);
+        }
+        match before.next_cursor {
+            Some(cursor) => Some(cursor),
+            None => return Ok(None),
+        }
+    };
+    let page: TurnsPage = control
+        .compaction_turn_page(conversation, cursor.as_deref())
+        .await?;
+    Ok(page
+        .data
+        .into_iter()
+        .next()
+        .filter(|t| t.id == turns[index].id))
 }
 async fn recent_turns(control: &mut Transport, conversation: &str) -> Result<Vec<CompactionTurn>> {
     let page: TurnsPage = control.passive_summary_page(conversation, None, 5).await?;
@@ -527,6 +570,12 @@ async fn recent_turns(control: &mut Transport, conversation: &str) -> Result<Vec
 pub async fn tick(paths: &Paths) {
     let Ok(all) = list(paths) else { return };
     // Starts and follow-ups first, so a release backlog cannot stall another pending compaction.
+    prune(
+        &all.iter()
+            .filter(|r| !r.terminal())
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
+    );
     for r in all.iter().filter(|r| !r.terminal()) {
         advance(paths, &r.id).await;
     }
@@ -686,7 +735,93 @@ async fn try_start(paths: &Paths, r: Record) {
     }
 }
 
-/// Track a started (or possibly started) compaction to its end.
+/// Last pass (unix seconds) that saw a started compaction make observable progress: the thread
+/// was read and was idle, or a new turn that may be the compaction was still running. Process
+/// memory only; after a supervisor restart the start time counts instead.
+static PROGRESS: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
+/// Last daemon-log line per operation and reason, for `LOG_EVERY_SECONDS`.
+static LOGGED: Mutex<BTreeMap<(String, &'static str), i64>> = Mutex::new(BTreeMap::new());
+
+fn progressed(id: &str, now: i64) {
+    if let Ok(mut map) = PROGRESS.lock() {
+        map.insert(id.to_owned(), now);
+    }
+}
+fn last_progress(id: &str, since: i64) -> i64 {
+    PROGRESS
+        .lock()
+        .ok()
+        .and_then(|map| map.get(id).copied())
+        .map_or(since, |at| at.max(since))
+}
+/// Forget the in-memory state of operations that are no longer followed.
+fn prune(live: &[&str]) {
+    if let Ok(mut map) = PROGRESS.lock() {
+        map.retain(|id, _| live.contains(&id.as_str()));
+    }
+    if let Ok(mut map) = LOGGED.lock() {
+        map.retain(|(id, _), _| live.contains(&id.as_str()));
+    }
+}
+/// Whether a line for this operation and reason is due (at most one per `LOG_EVERY_SECONDS`).
+fn log_due(id: &str, reason: &'static str, now: i64) -> bool {
+    let Ok(mut map) = LOGGED.lock() else {
+        return true;
+    };
+    let key = (id.to_owned(), reason);
+    match map.get(&key) {
+        Some(at) if now - at < LOG_EVERY_SECONDS => false,
+        _ => {
+            map.insert(key, now);
+            true
+        }
+    }
+}
+/// One rate-limited daemon-log line (the supervisor's stderr is `logs/daemon.log`).
+fn note(id: &str, reason: &'static str, detail: &str, now: i64, since: i64) {
+    if log_due(id, reason, now) {
+        eprintln!(
+            "compaction {id}: not observed this pass: {reason} ({detail}); started {}s ago",
+            now - since
+        );
+    }
+}
+
+/// What one pass learned about a started compaction.
+struct Observation {
+    activity: &'static str,
+    found: Option<CompactionTurn>,
+    /// A new turn without a user message is still running: most likely the compaction itself.
+    compacting: bool,
+}
+async fn observe(
+    attached: &Attachment,
+    conversation: &str,
+    baseline: &[String],
+) -> std::result::Result<Observation, (&'static str, Fault)> {
+    let mut control = attached.connect().await.map_err(|e| ("connect", e))?;
+    let activity = activity(&mut control, conversation)
+        .await
+        .map_err(|e| ("thread_read", e))?;
+    let turns = recent_turns(&mut control, conversation)
+        .await
+        .map_err(|e| ("turns_list", e))?;
+    let found = compaction_turn(&mut control, conversation, &turns, baseline)
+        .await
+        .map_err(|e| ("turn_read", e))?;
+    let compacting = turns
+        .iter()
+        .any(|t| !baseline.contains(&t.id) && !t.has("userMessage") && t.status == "inProgress");
+    Ok(Observation {
+        activity,
+        found,
+        compacting,
+    })
+}
+
+/// Track a started (or possibly started) compaction to its end. Every pass that cannot decide
+/// says why in the daemon log (rate-limited), and a compaction that stays unobservable is failed
+/// after `UNOBSERVED_LIMIT_SECONDS` instead of holding input until `RUN_LIMIT_SECONDS`.
 async fn follow(paths: &Paths, r: Record) {
     let id = r.id.clone();
     let conversation = r.conversation_id.clone();
@@ -725,20 +860,16 @@ async fn follow(paths: &Paths, r: Record) {
             "compaction_not_observed",
         );
     };
-    let Ok(mut control) = attached.connect().await else {
-        return;
+    let observed = match observe(&attached, &conversation, &r.baseline).await {
+        Ok(o) => o,
+        Err((step, fault)) => {
+            note(&id, step, fault.0, now, since);
+            return give_up_if_unobserved(paths, &id, now, since);
+        }
     };
-    let Ok(activity) = activity(&mut control, &conversation).await else {
-        return;
-    };
-    let Ok(turns) = recent_turns(&mut control, &conversation).await else {
-        return;
-    };
-    let Ok(found) = compaction_turn(&mut control, &conversation, &turns, &r.baseline).await else {
-        return;
-    };
-    match found {
+    match observed.found {
         Some(turn) => {
+            progressed(&id, now);
             let turn_id = turn.id.clone();
             match turn.status.as_str() {
                 "completed" => {
@@ -786,7 +917,8 @@ async fn follow(paths: &Paths, r: Record) {
         }
         // Idle again and no compaction turn after the window: report it, release the hold. A start
         // that was sent is never sent again (a slow app-server could compact twice).
-        None if activity == "idle" && now - since > OBSERVE_GRACE_SECONDS => {
+        None if observed.activity == "idle" && now - since > OBSERVE_GRACE_SECONDS => {
+            note(&id, "idle_without_compaction_turn", "failing", now, since);
             finish(
                 paths,
                 &id,
@@ -795,8 +927,41 @@ async fn follow(paths: &Paths, r: Record) {
                 "compaction_not_observed",
             );
         }
-        None => {}
+        None if observed.activity == "idle" || observed.compacting => progressed(&id, now),
+        // Not idle and no new turn that could be the compaction (for example background work
+        // keeps the thread active, or another status): bounded, never silent.
+        None => {
+            note(
+                &id,
+                "no_compaction_turn",
+                &format!("thread {}", observed.activity),
+                now,
+                since,
+            );
+            give_up_if_unobserved(paths, &id, now, since);
+        }
     }
+}
+
+/// Fail `compaction_not_observed` (which releases the hold) once no pass has seen progress for
+/// `UNOBSERVED_LIMIT_SECONDS`.
+fn give_up_if_unobserved(paths: &Paths, id: &str, now: i64, since: i64) {
+    let last = last_progress(id, since);
+    if now - last <= UNOBSERVED_LIMIT_SECONDS {
+        return;
+    }
+    eprintln!(
+        "compaction {id}: no observable progress for {}s (started {}s ago); failing compaction_not_observed and releasing the hold",
+        now - last,
+        now - since
+    );
+    finish(
+        paths,
+        id,
+        &["starting", "running"],
+        "failed",
+        "compaction_not_observed",
+    );
 }
 
 /// Supervisor loop (`SESSIONSATION_COMPACTION_SECONDS`, 0 disables).

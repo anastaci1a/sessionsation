@@ -17,8 +17,8 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.47.0`
-(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401)).
+so revision N maps to contract `1.N.0` and the current contract is `1.47.1`
+(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -3348,14 +3348,15 @@ and for an hour after they finish):
   (`provider_rejected`) with the hold released. Nothing was started in that case, so no turn is repeated. An
   unanswered start (timeout, dropped connection) stays `starting`: it is resolved only from the thread's own
   turns (a compaction turn appeared: `running`/`complete`) and is never issued again, since a slow app-server could
-  then compact twice. If none appears within 30 seconds of the thread being idle, it fails `compaction_not_observed`
-  and releases the hold.
+  then compact twice. If none appears within 30 seconds of the thread being idle, or nothing is observable for
+  3 minutes (1.47.1), it fails `compaction_not_observed` and releases the hold.
 - **Completion** is observed from the thread's recent turns: the first turn that was not in the baseline taken
   just before the start and carries a positive `contextCompaction` item. A turn whose summary shows a user message
-  is never it; a turn whose summary omits items is identified by reading that one turn's items
-  (`thread/items/list`). `completed` is `complete`;
-  `failed` or `interrupted` is `failed`; a run that is still going after 30 minutes, or that never shows as a turn
-  once the thread is idle again, is `failed` (`compaction_timeout`, `compaction_not_observed`) and releases the hold.
+  is never it; any other new turn is read once in the full view, exactly that turn (`thread/turns/list`,
+  `itemsView:"full"`, `limit:1`, positioned with the server cursor; since 1.47.1, see below). `completed` is
+  `complete`; `failed` or `interrupted` is `failed`; a run that is still going after 30 minutes, that never shows
+  as a turn once the thread is idle again, or that shows no observable progress for 3 minutes (below), is `failed`
+  (`compaction_timeout`, `compaction_not_observed`) and releases the hold.
 - **Restarts.** The operation is bound to the native runtime generation at request time. If the session process
   was replaced before the start, it fails `generation_changed` and releases the hold. A pending operation does
   not block `stop`, `restart` or `switch`.
@@ -3368,3 +3369,30 @@ and for an hour after they finish):
   semantics). The supervisor must be running for a queued compaction to start
   (`SESSIONSATION_COMPACTION_SECONDS`, default 2, 0 disables the loop; a panic in one pass is caught, logged to the daemon log and retried). The native app-server profile is the one
   messaging already requires (`unsupported_native_version` otherwise).
+
+### Compaction follow-up observes real compaction turns (1.47.1)
+
+PATCH. 1.47.0 identified the compaction turn by a `contextCompaction` item in the `thread/turns/list` summary, or
+else by reading the turn with `thread/items/list`. Real app-servers (0.163.0-0.166.0) list a compaction turn in
+the summary view with no items at all (the summary keeps only user and agent messages) and refuse
+`thread/items/list` with -32601 ("not supported yet") for legacy-history threads. The follow-up then stopped at that
+error on every pass without recording anything: a started compaction stayed `running` and kept holding input until
+`compaction_timeout` (30 minutes), although the turn had completed minutes earlier.
+
+- **Detection.** Every new turn whose summary shows no user message is read once in the full view (one turn,
+  positioned with the server's own `nextCursor`, its id verified). The `contextCompaction` item is listed there
+  once the compaction completed; a still-running new turn without a user message is treated as the compaction in
+  progress. `thread/items/list` is no longer used.
+- **Bounded, never silent.** A started compaction that shows no observable progress for 180 seconds fails
+  `compaction_not_observed` and releases the hold (held input is then delivered with queue semantics, so it never
+  overtakes a compaction that is still running). Progress is a pass that read the thread and found it idle, or found
+  a running new turn without a user message; failing reads (connection, `thread/read`, `thread/turns/list`, the
+  full-turn read) and a thread that stays non-idle with no such turn (for example background work) are not. A long
+  compaction turn is therefore bounded by the 30-minute run limit only. The progress clock is process memory: after
+  a supervisor restart it starts from the operation's start time. The idle rule is unchanged (idle again with no
+  compaction turn after 30 seconds fails `compaction_not_observed`).
+- **Diagnostics.** Every pass that cannot decide writes one line to the daemon log naming the operation, the step
+  (`connect`, `thread_read`, `turns_list`, `turn_read`, `no_compaction_turn`, `idle_without_compaction_turn`) and
+  the error code, at most once a minute per operation and step; the give-up decision is logged too.
+
+No field, phase, reason or command changed.

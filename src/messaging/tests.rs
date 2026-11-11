@@ -577,9 +577,10 @@ pub(super) async fn scripted_connections(
                 let Some(result) = result else {
                     break;
                 };
-                // A handler reply of {"__error":true} answers with a JSON-RPC error.
-                let frame = if result.get("__error").is_some() {
-                    json!({"id":req["id"],"error":{"code":-32600,"message":"rejected"}})
+                // A handler reply of {"__error":true} (or {"__error":CODE}) answers with a JSON-RPC error.
+                let frame = if let Some(code) = result.get("__error") {
+                    let code = code.as_i64().unwrap_or(-32600);
+                    json!({"id":req["id"],"error":{"code":code,"message":"rejected"}})
                 } else {
                     json!({"id":req["id"],"result":result})
                 };
