@@ -12,15 +12,25 @@ pub struct Target {
     /// Existing destination Space id (exclusive with `--new-space`).
     #[arg(
         long,
-        conflicts_with = "new_space",
-        required_unless_present = "new_space"
+        conflicts_with_all = ["new_space", "create_space"],
+        required_unless_present_any = ["new_space", "create_space"]
     )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
     /// Label of a destination Space to create (exclusive with `--space`).
-    #[arg(long, conflicts_with = "space", required_unless_present = "space")]
+    #[arg(
+        long,
+        conflicts_with_all = ["space", "create_space"],
+        required_unless_present_any = ["space", "create_space"]
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_space: Option<String>,
+    /// Label of a destination Space that must not exist yet (1.48.0); unlike
+    /// `--new-space` an existing label is refused (`WORKSPACE_NAME_EXISTS`).
+    /// Admission turns it into a checked `new_space`, so journals stay 1.47-readable.
+    #[arg(long, conflicts_with_all = ["space", "new_space"])]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_space: Option<String>,
     #[arg(long)]
     pub request_id: String,
 }
@@ -108,7 +118,9 @@ fn fresh_label(available: &Value, label: &str) -> Result<()> {
     ensure!(
         !available["spaces"]
             .as_array()
-            .is_some_and(|ss| ss.iter().any(|s| s["name"] == label)),
+            .is_some_and(|ss| ss.iter().any(|s| s["name"].as_str().is_some_and(|n| {
+                crate::catalog::scope::fold(n) == crate::catalog::scope::fold(label)
+            }))),
         "WORKSPACE_NAME_EXISTS"
     );
     Ok(())
@@ -182,8 +194,18 @@ fn finish(paths: &Paths, op: &mut Operation, current: Value) -> Result<()> {
         .as_str()
         .context("INVALID_HOST_SPACE")?
         .to_owned();
-    match (&op.request.space, &op.request.new_space) {
-        (Some(wanted), _) => ensure!(*wanted == space, "SPACE_MOVE_IDENTITY_MISMATCH"),
+    let label = match (&op.request.space, &op.request.new_space) {
+        (Some(wanted), _) => {
+            ensure!(*wanted == space, "SPACE_MOVE_IDENTITY_MISMATCH");
+            // The verified destination's label becomes the session's Space.
+            host(op, &["workspace", "list"]).ok().and_then(|all| {
+                all["workspaces"]
+                    .as_array()?
+                    .iter()
+                    .find(|w| w["workspace_id"] == space.as_str())
+                    .and_then(|w| w["label"].as_str().map(str::to_owned))
+            })
+        }
         (None, Some(label)) => {
             // Only a Space absent before admission, carrying the requested label.
             ensure!(
@@ -198,9 +220,10 @@ fn finish(paths: &Paths, op: &mut Operation, current: Value) -> Result<()> {
                 "SPACE_MOVE_IDENTITY_MISMATCH"
             );
             op.created_space = Some(space);
+            Some(label.clone())
         }
         (None, None) => bail!("INVALID_SPACE_MOVE"),
-    }
+    };
     let id = current["pane_id"].as_str().context("INVALID_HOST_PANE")?;
     let (server, _) = crate::terminal::target(&op.source.pane)?;
     let target = hosting::herdr_target(server, id)?;
@@ -246,13 +269,32 @@ fn finish(paths: &Paths, op: &mut Operation, current: Value) -> Result<()> {
             thread: op.source.thread_id.clone(),
         },
     )?;
-    crate::catalog::move_attachment(paths, &op.session, attachment)?;
+    crate::catalog::move_attachment(paths, &op.session, attachment, label)?;
     save(
         paths,
         op,
         "complete",
         "Session moved to the selected Space. No agent was restarted and no message was sent.",
     )
+}
+/// The request as admission journals it: `--create-space` becomes a checked `new_space`.
+fn admitted(request: &Target) -> Target {
+    let mut r = request.clone();
+    if let Some(label) = r.create_space.take() {
+        r.new_space = Some(label);
+    }
+    r
+}
+/// The destination's label: the existing Space's label, or the new Space's.
+fn destination_label(request: &Target, available: &Value) -> Option<String> {
+    match (&request.space, &request.new_space) {
+        (Some(id), _) => available["spaces"]
+            .as_array()?
+            .iter()
+            .find(|s| s["id"] == id.as_str())
+            .and_then(|s| s["name"].as_str().map(str::to_owned)),
+        (None, label) => label.clone(),
+    }
 }
 /// Visible-name fallback: a Space id that is gone (HERDR or array restart) is found by
 /// its name, and a new-Space name that already exists is that Space.
@@ -292,7 +334,7 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
     let record = file(paths, &request.request_id)?;
     if record.exists() {
         let op = read(paths, &request.request_id)?;
-        ensure!(op.request == request, "REQUEST_ID_CONFLICT");
+        ensure!(op.request == admitted(&request), "REQUEST_ID_CONFLICT");
         return public(paths, &op);
     }
     let request_lock = crate::paths::lock_file(&record.with_extension("lock"))?;
@@ -301,7 +343,7 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         .context("SESSION_OPERATION_IN_PROGRESS")?;
     if record.exists() {
         let op = read(paths, &request.request_id)?;
-        ensure!(op.request == request, "REQUEST_ID_CONFLICT");
+        ensure!(op.request == admitted(&request), "REQUEST_ID_CONFLICT");
         return public(paths, &op);
     }
     let (session, source) =
@@ -317,8 +359,23 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
     let socket = hosting::socket_for(paths, &source.pane)?.context("MISSING_HOST_SOCKET")?;
     let available = choices(&session, &source, &socket)?;
     let mut request = request;
+    if let Some(label) = request.create_space.take() {
+        crate::paths::validate_space_label(&label)?;
+        fresh_label(&available, &label)?;
+        request.new_space = Some(label);
+    }
     normalize_target(&mut request, &available);
     check_destination(&request, &available)?;
+    // Unique in the destination Space (contract 1.48.0).
+    if request.space.as_deref() != available["current_space_id"].as_str()
+        && let Some(label) = destination_label(&request, &available)
+    {
+        ensure!(
+            !crate::catalog::space_taken(paths, Some(&label), &session.name, &session.id)?,
+            "SESSION_NAME_EXISTS: \"{}\" is already used in the destination Space",
+            session.name
+        );
+    }
     crate::catalog::resolve(paths, &request.session, &request.expected_generation)?;
     let epoch = receipt_location(paths, &session.id)?.map(|(id, _)| id);
     let mut op = Operation {
@@ -776,6 +833,7 @@ mod tests {
                 expected_generation: session.generation(),
                 space: Some("w2".into()),
                 new_space: None,
+                create_space: None,
                 request_id: uuid::Uuid::new_v4().to_string(),
             },
             session,

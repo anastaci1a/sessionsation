@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.47.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.48.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -398,6 +398,7 @@ the containing HERDR tab, then reads it back before reporting success. A lost
 acknowledgement is reconciled by that read, never automatically replayed. Failed
 verification returns `HOST_RENAME_UNCONFIRMED` or `HOST_RENAME_NOT_APPLIED`;
 refresh state before retrying. Concurrent host edits win on subsequent observation.
+Since 1.48.0 names are scoped to a HERDR Space; see [Space-scoped session names](#space-scoped-session-names-1480).
 The UI contains no naming/synchronization operations of its own. Inactive and
 non-HERDR sessions retain catalog naming behavior. Host labels are neither
 truncated nor given synthetic suffixes; explicit CLI input keeps the 30-character
@@ -937,6 +938,9 @@ than treating a rejected RPC as empty.
 `SpaceChoices`: stable session ID, captured generation, current Space ID,
 existing Spaces with `id/name/current`, and positive pane/terminal identity.
 The bound host socket is authoritative even in an unrelated caller environment.
+Since 1.48.0 `move-space` also takes `--create-space LABEL` (a label that must not exist), checks the
+session name's uniqueness in the destination Space at admission, and writes the verified destination
+label to the session's `space`; see [Space-scoped session names](#space-scoped-session-names-1480).
 
 `api move-space --session ID --expected-generation GENERATION --space SPACE-ID
 --request-id UUID` returns `SpaceMoveOperation`, also listed by `api operations`.
@@ -2995,6 +2999,8 @@ reboot or an array restart.
   as the HERDR workspace id, then the visible name (exact, then case-insensitive). `--new-space <label>`
   whose name already exists reuses that Space instead of `WORKSPACE_NAME_EXISTS`. Auto Start already falls
   back from the recorded id to the recorded Space label.
+  Since 1.48.0 these reuse semantics are retained for `--new-space`; `--create-space` is strict
+  (`WORKSPACE_NAME_EXISTS` when the label exists).
 - **No stale generation.** After `resume`, `stop`, `restart`, `switch`, `move-space`, `launch` the cached
   snapshots are refreshed at once (the session's `generation` is patched immediately, then a full
   refresh), and the `resume`/`stop`/`restart`/`switch` result carries the new `generation`.
@@ -3396,3 +3402,66 @@ error on every pass without recording anything: a started compaction stayed `run
   the error code, at most once a minute per operation and step; the give-up decision is logged too.
 
 No field, phase, reason or command changed.
+### Space-scoped session names (1.48.0)
+
+MINOR, additive. A session belongs to a HERDR Space (workspace) and its name is unique only within that
+Space. Negotiate `capabilities.session_spaces.version == 1`; `session_names` is unchanged (`version:1`,
+byte-identical to 1.47.0).
+
+- **Row fields.** Every session row (`api state`, `api session`, `rename`, `session resolve`,
+  `session set-space`) carries `space` (the Space label, or `null` for an unscoped legacy entry), `name`
+  (the bare name, unchanged field) and `canonical` (`<space>:<name>`, `null` when unscoped or when the Space
+  label itself contains `:`). Clients display `canonical` when present and never re-derive it by splitting.
+- **Inactive sessions keep their Space.** A stopped, saved or detached session keeps its stored `space` and
+  `canonical`, whether or not the HERDR Space still exists or was renamed. Nothing clears it as a side
+  effect (refresh, an unobserved or missing workspace, detach, stop, a backfill rerun). Only `move-space`,
+  `session set-space` (including `--clear`), a resume/add-to-herdr into another Space, or a host observation
+  of a live attached session placed in a different Space changes it.
+- **Generation.** `space` is not part of the generation hash. Recording a Space where none was known (the
+  one-time backfill, healing after a rollback, the first host observation of a live session) changes no
+  generation. Every explicit change (set-space, move-space, resume into another Space, a live session seen in
+  a different Space) also increments `revision`, so it changes the generation like any other mutation.
+  Deploying 1.48.0 changes no generation and renames nothing.
+- **Grammar.** Bare name: the session-name rules (non-empty, no surrounding spaces, no control characters, no
+  `/`, not `.`/`..`, at most 64 characters) and no `:`. Canonical: exactly one `:`, a valid Space label before
+  it and a valid bare name after it; anything else (`a:b:c`, `:x`, `x:`, `x: y`) is `INVALID_SESSION_NAME`.
+  `#` is allowed. Case is preserved; uniqueness is case-insensitive within one Space (unscoped entries form
+  their own bucket). Host observations may still create duplicates (HERDR owns live labels).
+- **Targets.** Every `api … --session` (and `--notify-session`) accepts the session id, `<space>:<name>` or a
+  bare name: id, then merged id (`SESSION_MERGED`), then canonical, then bare; an exact (case-sensitive)
+  match wins over a case-insensitive one; several matches are `AMBIGUOUS_SESSION` (`AMBIGUOUS_SESSION: N
+  sessions match "…" (…); use the canonical <space>:<name> or the session id`). A target matching nothing is
+  passed on unchanged, so every command keeps its own refusal. JSON request ids (`session_id`) stay ids.
+  `api session resolve --session TARGET [--expected-generation G]` returns the row without side effects.
+- **Rename.** `api rename --name` takes a bare name or a canonical name of the session's own Space; rename
+  never moves (`SPACE_MISMATCH`, also for an unscoped session: use `session set-space`). HERDR always
+  gets the bare name. The read-back accepts a tab label `<own space>:<name>` as `<name>`. When the pane has a
+  pane label equal to the old name, it is renamed too; the result's `pane_label` is `confirmed`,
+  `unconfirmed` (presentation only, not a failure) or `null` (nothing sent).
+- **Host observation.** A live HERDR tab label becomes `name` (as before) and the pane's workspace label
+  becomes `space`. A label `<space>:<name>` whose prefix is the pane's own Space (case-insensitive) is read as
+  `<name>`; any other label with `:` is `INVALID_HOST_NAME` and leaves the cached name unchanged.
+- **Placement.** `api resume` places the session, in order: `--space`, `--new-space` (1.45 reuse),
+  `--create-space` (the Space of a canonical `--name`, which must not exist: `WORKSPACE_NAME_EXISTS`), else
+  the session's stored Space (an existing Space with that label, or a new Space with exactly that label when
+  it no longer exists), else the Space of a canonical `--name` (`SPACE_NOT_FOUND`), else a new Space labelled
+  `sessionsation` (unchanged). A canonical `--name` must agree with the destination (`SPACE_MISMATCH`), and
+  the name must be free there (`SESSION_NAME_EXISTS`); the destination label is stored on a verified start.
+  `session add-to-herdr` takes `--space | --new-space | --create-space` the same way. `api launch` and
+  `api resume-launch` accept a canonical `name` that must agree with `space` (`SPACE_MISMATCH`); the receipt
+  stores the bare name, and the launch receipt records `space_label`. `create_space` is a CLI flag only:
+  the JSON requests have no new field, so 1.47 can read every receipt. Inline `run`/`resume --name` take a
+  canonical name of the pane's own Space; outside HERDR a canonical name is `INVALID_ARGUMENT`.
+- **`api session set-space --session T --expected-generation G (--space LABEL | --clear)`.** Catalog only;
+  refused with `ALREADY_IN_HERDR` for a verified-live HERDR terminal (use `move-space`). The Space need not
+  exist. Unique in the new Space.
+- **Message sender.** `from-name` of native messages is the canonical name when it fits 64 characters, else
+  the bare name.
+- **Storage and rollback.** `space` is stored in `catalog.json` (omitted when null) and mirrored in
+  `registry/session-catalog/spaces.json`, which older releases never touch. A 1.47 binary reads and rewrites
+  `catalog.json` without `space`; the next 1.48 transaction restores it from the sidecar (reported as
+  `restored_spaces` by `session repair-identity`). The first 1.48 transaction backfills `space` once from
+  placement evidence, else the Auto Start workspace label, else null. Name reservations are keyed by
+  `space/name`; a 1.47 binary cannot see them during a rollback (launch admission transients only).
+- **New refusal code.** `SPACE_MISMATCH`. Reused: `AMBIGUOUS_SESSION`, `SESSION_NAME_EXISTS`,
+  `INVALID_SESSION_NAME`, `WORKSPACE_NAME_EXISTS`, `SPACE_NOT_FOUND`, `ALREADY_IN_HERDR`.

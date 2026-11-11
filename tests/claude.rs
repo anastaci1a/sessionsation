@@ -1292,7 +1292,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 47);
+    assert_eq!(caps["contract_revision"], 48);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1887,7 +1887,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 47);
+    assert_eq!(caps["contract_revision"], 48);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2755,7 +2755,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 47);
+    assert_eq!(caps["contract_revision"], 48);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()
@@ -3345,4 +3345,151 @@ async fn new_managed_home_gets_default_statusline_but_adopted_and_existing_do_no
         settings["statusLine"],
         json!({"type":"command","command":"bash /x/y.sh"})
     );
+}
+
+/// Contract 1.48.0: `--session` accepts `<space>:<name>` and bare names, names are
+/// unique per Space, `rename` never moves, `set-space` is refused for live HERDR rows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_scoped_names_resolve_rename_and_set_space() {
+    use sessionsation::{catalog, provider::ProviderId};
+    let f = fixture().await;
+    let launch = |label: &str, attachment| {
+        catalog::record_provider_launch(
+            &f.paths,
+            ProviderId::Claude,
+            "personal",
+            &uuid::Uuid::new_v4().to_string(),
+            label,
+            Some(f.project.to_str().unwrap()),
+            attachment,
+        )
+        .unwrap()
+    };
+    let a = launch("fixture", None);
+    let set = f.api(&[
+        "session",
+        "set-space",
+        "--session",
+        &a.id,
+        "--expected-generation",
+        &a.generation(),
+        "--space",
+        "Main",
+    ]);
+    assert_eq!(set["space"], "Main");
+    assert_eq!(set["canonical"], "Main:fixture");
+    assert_eq!(set["name"], "fixture");
+    assert_ne!(set["generation"], json!(a.generation()));
+    // The same bare name is free in the unscoped bucket and in another Space.
+    let b = launch("fixture", None);
+    assert_eq!(b.name, "fixture");
+    let b_set = f.api(&[
+        "session",
+        "set-space",
+        "--session",
+        &b.id,
+        "--expected-generation",
+        &b.generation(),
+        "--space",
+        "Other",
+    ]);
+    assert_eq!(b_set["canonical"], "Other:fixture");
+    // Resolution: canonical (case-insensitive fallback), ambiguous bare name.
+    let resolved = f.api(&["session", "resolve", "--session", "main:FIXTURE"]);
+    assert_eq!(resolved["id"], json!(a.id));
+    assert_eq!(resolved["generation"], set["generation"]);
+    let ambiguous = f.api_error(&["session", "resolve", "--session", "fixture"]);
+    assert!(ambiguous.contains("AMBIGUOUS_SESSION"), "{ambiguous}");
+    assert!(
+        f.api_error(&[
+            "session",
+            "resolve",
+            "--session",
+            "Main:fixture",
+            "--expected-generation",
+            "stale"
+        ])
+        .contains("STALE_TARGET")
+    );
+    // A command's --session takes the canonical form too; rename keeps the Space.
+    let g = set["generation"].as_str().unwrap();
+    let renamed = f.api(&[
+        "rename",
+        "--session",
+        "Main:fixture",
+        "--expected-generation",
+        g,
+        "--name",
+        "Main:LEAD",
+    ]);
+    assert_eq!(renamed["id"], json!(a.id));
+    assert_eq!(renamed["canonical"], "Main:LEAD");
+    let g = renamed["generation"].as_str().unwrap();
+    let mismatch = f.api_error(&[
+        "rename",
+        "--session",
+        &a.id,
+        "--expected-generation",
+        g,
+        "--name",
+        "Other:LEAD",
+    ]);
+    assert!(mismatch.contains("SPACE_MISMATCH"), "{mismatch}");
+    let bg = b_set["generation"].as_str().unwrap();
+    // "lead" is free in Other even though Main has "LEAD".
+    let other = f.api(&[
+        "rename",
+        "--session",
+        "Other:fixture",
+        "--expected-generation",
+        bg,
+        "--name",
+        "lead",
+    ]);
+    assert_eq!(other["canonical"], "Other:lead");
+    // Own name with a case change is not a collision.
+    let cased = f.api(&[
+        "rename",
+        "--session",
+        "Other:lead",
+        "--expected-generation",
+        other["generation"].as_str().unwrap(),
+        "--name",
+        "LEAD",
+    ]);
+    assert_eq!(cased["canonical"], "Other:LEAD");
+    // State rows carry the fields; an inactive session keeps its Space.
+    let row = f.session(&a.id);
+    assert_eq!(row["space"], "Main");
+    assert_eq!(row["canonical"], "Main:LEAD");
+    // A live HERDR terminal is moved with move-space, never set-space.
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", std::process::id())).unwrap();
+    let start: u64 = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let live = launch(
+        "live",
+        Some(catalog::Attachment {
+            host: "herdr".into(),
+            target: "herdr/test/w1:p1".into(),
+            pid: std::process::id(),
+            process_start: start,
+        }),
+    );
+    let refused = f.api_error(&[
+        "session",
+        "set-space",
+        "--session",
+        &live.id,
+        "--expected-generation",
+        &live.generation(),
+        "--clear",
+    ]);
+    assert!(refused.contains("ALREADY_IN_HERDR"), "{refused}");
 }

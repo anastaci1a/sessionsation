@@ -2047,7 +2047,8 @@ async fn attempt<S: Sender>(
         name: s.name.clone(),
         herdr_session: hs,
         recorded_pane: setting.last_pane.clone(),
-        workspace_label: setting.workspace_label.clone(),
+        // 1.48.0: the session's stored Space when no workspace was recorded.
+        workspace_label: setting.workspace_label.clone().or_else(|| s.space.clone()),
         directory: s.directory.clone(),
         pane: None,
         pane_reused: None,

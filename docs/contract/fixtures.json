@@ -61,6 +61,8 @@
     "id": "22222222-2222-4222-8222-222222222222",
     "active_since": 1800000000,
     "name": "example",
+    "space": "Main",
+    "canonical": "Main:example",
     "provider": "codex",
     "account": "fixture",
     "account_id": "codex:fixture",

@@ -115,6 +115,15 @@
           "type": "string",
           "minLength": 1
         },
+        "space": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Since 1.48.0: HERDR Space label the session belongs to; null = unscoped. Kept while the session is inactive, whether or not the Space still exists."
+        },
+        "canonical": {
+          "type": ["string", "null"],
+          "description": "Since 1.48.0: <space>:<name>; null when unscoped or the Space label contains ':'."
+        },
         "provider": {
           "type": "string"
         },

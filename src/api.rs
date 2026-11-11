@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 47;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.47.1";
+pub const CONTRACT_MINOR: u32 = 48;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.48.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -283,12 +283,17 @@ pub enum Command {
         herdr_session: String,
         /// Open in a new tab of this existing Space instead of a new Space.
         #[arg(long)]
-        #[arg(long, conflicts_with = "new_space")]
+        #[arg(long, conflicts_with_all = ["new_space", "create_space"])]
         space: Option<String>,
-        /// Create a new Space with this label (exclusive with `--space`).
-        #[arg(long, conflicts_with = "space")]
+        /// Create a new Space with this label (exclusive with `--space`); an
+        /// existing Space with this label is reused.
+        #[arg(long, conflicts_with_all = ["space", "create_space"])]
         new_space: Option<String>,
-        /// Tab and catalog name (default: the current session name).
+        /// Create the Space named by a `<space>:<name>` `--name`; refused when it
+        /// exists (1.48.0). Without any placement the session reopens in its stored Space.
+        #[arg(long, conflicts_with_all = ["space", "new_space"])]
+        create_space: bool,
+        /// Tab and catalog name: bare or `<space>:<name>` (default: the current name).
         #[arg(long)]
         name: Option<String>,
     },
@@ -375,16 +380,43 @@ pub enum SessionAction {
         /// Existing Space (workspace) id from `api spaces`.
         #[arg(
             long,
-            conflicts_with = "new_space",
-            required_unless_present = "new_space"
+            conflicts_with_all = ["new_space", "create_space"],
+            required_unless_present_any = ["new_space", "create_space"]
         )]
         space: Option<String>,
         /// Label of a Space to create (exclusive with `--space`).
-        #[arg(long, conflicts_with = "space", required_unless_present = "space")]
+        #[arg(
+            long,
+            conflicts_with_all = ["space", "create_space"],
+            required_unless_present_any = ["space", "create_space"]
+        )]
         new_space: Option<String>,
-        /// Tab name; defaults to the current session name.
+        /// Create the Space named by a `<space>:<name>` `--name`; refused when it exists (1.48.0).
+        #[arg(long, conflicts_with_all = ["space", "new_space"])]
+        create_space: bool,
+        /// Tab name, bare or `<space>:<name>`; defaults to the current session name.
         #[arg(long)]
         name: Option<String>,
+    },
+    /// Resolve `--session` (id, `<space>:<name>` or bare name) to its public row
+    /// without side effects (1.48.0). `AMBIGUOUS_SESSION` when a name matches several.
+    Resolve {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: Option<String>,
+    },
+    /// Set (or `--clear`) the stored Space of a session without a live HERDR
+    /// terminal; catalog only (1.48.0). A live HERDR session moves with `move-space`.
+    SetSpace {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        #[arg(long, conflicts_with = "clear", required_unless_present = "clear")]
+        space: Option<String>,
+        #[arg(long)]
+        clear: bool,
     },
     /// Restore stable session identity (merged ids, continuation lineage) that
     /// the identity record holds but the catalog lost, then reconcile. Idempotent;
@@ -490,9 +522,11 @@ pub async fn resume_current(
     confirm_unfinished: bool,
     name: Option<&str>,
 ) -> Result<()> {
-    if let Some(name) = name {
-        crate::launch::validate_session_name(name)?;
-    }
+    // Contract 1.48.0: inside a HERDR pane the session resumes into the pane's Space.
+    let pane_space = crate::inline::pane_space();
+    let name = name
+        .map(|n| crate::inline::bare_name(n, pane_space.as_deref()))
+        .transpose()?;
     let native = catalog::resolve(paths, id, generation)
         .ok()
         .and_then(|s| native::of(&s.provider));
@@ -516,15 +550,17 @@ pub async fn resume_current(
         );
         (s, std::env::current_dir()?)
     };
-    if let Some(name) = name
-        && name != s.name
-    {
-        catalog::check_name(paths, name, id)?;
+    let destination = pane_space.clone().or_else(|| s.space.clone());
+    let wanted = name.unwrap_or(&s.name);
+    if wanted != s.name || !catalog::same_space(destination.as_deref(), s.space.as_deref()) {
+        ensure!(
+            !catalog::space_taken(paths, destination.as_deref(), wanted, &s.id)?,
+            "SESSION_NAME_EXISTS: \"{wanted}\" is already used in this Space"
+        );
     }
-    let request =
-        crate::inline::begin_resume(paths, &s, name.unwrap_or(&s.name), confirm_unfinished, &cwd)?;
+    let request = crate::inline::begin_resume(paths, &s, wanted, confirm_unfinished, &cwd)?;
     let result = async {
-        let s = named(paths, s, generation, name)?;
+        let s = named(paths, s, generation, name, pane_space.as_deref())?;
         crate::inline::renamed(paths, &request, &s);
         if name.is_some() {
             crate::inline::label_tab(&s.name);
@@ -1473,6 +1509,22 @@ fn antigravity_provider() -> Value {
         "operations":crate::provider::capabilities(ProviderId::Antigravity)})
 }
 
+/// `capabilities.session_spaces` (contract 1.48.0). `session_names` is unchanged.
+fn session_spaces_capability() -> Value {
+    json!({"since_contract":"1.48.0","version":1,"id_format":"<space>:<name>","separator":":",
+        "space_source":"herdr_workspace_label","row_fields":["space","name","canonical"],
+        "unique_within_space":true,"case_insensitive":true,"host_shows":"bare_name",
+        "target_forms":["id","canonical","bare"],"ambiguous_error":"AMBIGUOUS_SESSION",
+        "name_exists_error":"SESSION_NAME_EXISTS","mismatch_error":"SPACE_MISMATCH",
+        "create_space":{"flag":"--create-space","commands":["resume","session add-to-herdr","move-space"],
+            "request_field":null,"exists_error":"WORKSPACE_NAME_EXISTS"},
+        "rename_moves":false,"set_space":{"command":"session set-space","refused_live":"ALREADY_IN_HERDR"},
+        "resolve":{"command":"session resolve"},"from_name":"canonical_when_fits_64",
+        "backfill":"placement_then_auto_recover_then_null","generation_includes_space":false,
+        "inactive_keeps_space":true,
+        "resume_default":"stored_space_reused_or_recreated_with_its_label"})
+}
+
 pub fn capabilities() -> Value {
     let mut value = json!({"api_version":VERSION,"package_version":env!("CARGO_PKG_VERSION"),"contract_revision":CONTRACT_MINOR,"version_discovery":true,"archive_filter":{"values":["active","archived","all"],"default":"active","unknown_retained":true},"providers":[
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
@@ -1502,6 +1554,7 @@ pub fn capabilities() -> Value {
         provider["account_display_name_max"] = json!(crate::paths::ACCOUNT_DISPLAY_NAME_MAX);
     }
     value["contract_version"] = json!(CONTRACT_VERSION);
+    value["session_spaces"] = session_spaces_capability();
     value["state_cached"] = json!(true);
     // Revision 17: Claude and Gemini archive/restore/delete (moved native files).
     value["conversation_archive"]["providers"] =
@@ -1619,10 +1672,25 @@ fn claude_input_delivery() -> Value {
         "timeout_seconds":{"default":claude_steer::DEFAULT_TIMEOUT_SECONDS,"max":3600},"automatic_replay":false,"cancellation":"before_delivery_only"})
 }
 
+/// A verified-live HERDR attachment (set-space refuses these).
+fn live_in_herdr(s: &catalog::Session) -> bool {
+    s.attachment.as_ref().is_some_and(|a| {
+        a.host == "herdr" && !external::attachment_definitely_gone(a.pid, a.process_start)
+    })
+}
+
+/// Contract 1.48.0 row fields: `space` (always present, null when unscoped) and
+/// `canonical` (`<space>:<name>`, null when unscoped or the label has a `:`).
+fn scope_fields(value: &mut Value, s: &catalog::Session) {
+    value["space"] = json!(s.space);
+    value["canonical"] = json!(s.canonical());
+}
+
 fn public_session(s: catalog::Session) -> Value {
     let generation = s.generation();
     let account_id = format!("{}:{}", s.provider, s.account);
     let mut value = json!(s);
+    scope_fields(&mut value, &s);
     value["account_id"] = json!(account_id);
     value["generation"] = json!(generation);
     value["name_source"] = json!(if value["attachment"]["host"] == "herdr" {
@@ -2300,6 +2368,7 @@ pub fn repair_identity(paths: &Paths) -> Result<Value> {
     Ok(json!({
         "restored_aliases": healed.restored_aliases,
         "restored_lineage": healed.restored_lineage,
+        "restored_spaces": healed.restored_spaces,
         "merged": merged,
         "aliases": after.len(),
         "lineages": sessions.iter().filter(|s| !s.previous_conversation_ids.is_empty()).count(),
@@ -2432,7 +2501,87 @@ fn space_hungry(command: &Command) -> Option<&'static str> {
     })
 }
 
+/// Contract 1.48.0: every `--session` (and `--notify-session`) accepts a session id,
+/// `<space>:<name>` or a bare name. A name resolves to its id here
+/// (`AMBIGUOUS_SESSION` when several rows match); an id, a merged id or a target
+/// that matches nothing is passed on unchanged, so every command keeps its own
+/// refusals (`SESSION_NOT_FOUND`, `SESSION_MERGED`, ...). JSON request ids stay ids.
+fn resolve_session_args(paths: &Paths, command: &mut Command) -> Result<()> {
+    let mut targets: Vec<&mut String> = vec![];
+    match command {
+        Command::Archive { target }
+        | Command::RestoreSession { target }
+        | Command::DeleteSession { target } => targets.push(&mut target.session),
+        Command::MoveSpace { target } => targets.push(&mut target.session),
+        Command::Session {
+            session, action, ..
+        } => {
+            targets.extend(session.as_mut());
+            match action {
+                Some(
+                    SessionAction::AddToHerdr { session, .. }
+                    | SessionAction::Compact { session, .. }
+                    | SessionAction::SetSpace { session, .. },
+                ) => targets.push(session),
+                Some(SessionAction::CompactStatus { session, .. }) => {
+                    targets.extend(session.as_mut())
+                }
+                _ => {}
+            }
+        }
+        Command::AutoStart { session, .. } => targets.extend(session.as_mut()),
+        Command::TurnNotify {
+            session,
+            notify_session,
+            ..
+        }
+        | Command::IdleNotify {
+            session,
+            notify_session,
+            ..
+        } => {
+            targets.push(session);
+            targets.extend(notify_session.as_mut());
+        }
+        Command::Attachment { session, .. }
+        | Command::Observe { session, .. }
+        | Command::TurnTarget { session, .. }
+        | Command::SteerTarget { session, .. }
+        | Command::Rename { session, .. }
+        | Command::Switch { session, .. }
+        | Command::AutoRecover { session, .. }
+        | Command::Relocate { session, .. }
+        | Command::Restart { session, .. }
+        | Command::Stop { session, .. }
+        | Command::Resume { session, .. }
+        | Command::Spaces { session, .. }
+        | Command::Answer { session, .. } => targets.push(session),
+        Command::Launcher {
+            command: Launcher::Resume { session, .. },
+        } => targets.push(session),
+        _ => {}
+    }
+    for target in targets {
+        resolve_session_arg(paths, target)?;
+    }
+    Ok(())
+}
+/// One `--session` value (see [`resolve_session_args`]).
+pub(crate) fn resolve_session_arg(paths: &Paths, target: &mut String) -> Result<()> {
+    if uuid::Uuid::parse_str(target).is_ok() {
+        return Ok(());
+    }
+    match catalog::resolve_target(paths, target) {
+        Ok(s) => *target = s.id,
+        Err(e) if format!("{e:#}").starts_with("AMBIGUOUS_SESSION") => return Err(e),
+        Err(_) => {}
+    }
+    Ok(())
+}
+
 pub async fn run(paths: &Paths, command: Command) -> Result<()> {
+    let mut command = command;
+    resolve_session_args(paths, &mut command)?;
     if let Some(operation) = space_hungry(&command) {
         crate::disk_space::preflight(paths, operation)?;
     }
@@ -2449,6 +2598,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     herdr_socket,
                     space,
                     new_space,
+                    create_space,
                     name,
                 }),
             ..
@@ -2478,6 +2628,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     herdr_socket: herdr_socket.as_deref(),
                     space: space.as_deref(),
                     new_space: new_space.as_deref(),
+                    create_space,
                     name: name.as_deref(),
                 },
             )
@@ -2487,6 +2638,43 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             action: Some(SessionAction::RepairIdentity),
             ..
         } => repair_identity(paths)?,
+        Command::Session {
+            action:
+                Some(SessionAction::Resolve {
+                    session,
+                    expected_generation,
+                }),
+            ..
+        } => {
+            let s = catalog::resolve_target(paths, &session)?;
+            if let Some(generation) = &expected_generation {
+                ensure!(s.generation() == *generation, "STALE_TARGET");
+            }
+            public_session(s)
+        }
+        Command::Session {
+            action:
+                Some(SessionAction::SetSpace {
+                    session,
+                    expected_generation,
+                    space,
+                    clear,
+                }),
+            ..
+        } => {
+            let s = catalog::resolve(paths, &session, &expected_generation)?;
+            ensure!(
+                !live_in_herdr(&s),
+                "ALREADY_IN_HERDR: the session runs in a HERDR terminal; use `api move-space`"
+            );
+            let space = if clear { None } else { space.as_deref() };
+            public_session(catalog::set_space(
+                paths,
+                &s.id,
+                &expected_generation,
+                space,
+            )?)
+        }
         Command::Session {
             action:
                 Some(SessionAction::Compact {
@@ -2661,16 +2849,21 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 // The same path as Codex: a HERDR-attached session renames its tab
                 // (name_source herdr_last_observed); otherwise the catalog label.
                 // Claude applies the label as --name on the next launch/resume; Gemini has no native title.
-                let mut value = public_session(
-                    catalog::names::rename(paths, &session, &expected_generation, &name).await?,
-                );
+                let (renamed, pane_label) =
+                    catalog::names::rename_reported(paths, &session, &expected_generation, &name)
+                        .await?;
+                let mut value = public_session(renamed);
+                value["pane_label"] = json!(pane_label);
                 value["native_rename"] =
                     json!({"supported":false,"reason":native::label_only(provider)});
                 value
             } else {
-                public_session(
-                    catalog::names::rename(paths, &session, &expected_generation, &name).await?,
-                )
+                let (renamed, pane_label) =
+                    catalog::names::rename_reported(paths, &session, &expected_generation, &name)
+                        .await?;
+                let mut value = public_session(renamed);
+                value["pane_label"] = json!(pane_label);
+                value
             }
         }
         Command::TurnNotify {
@@ -2868,6 +3061,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             space,
             new_space,
             name,
+            create_space,
         } if catalog::resolve(paths, &session, &expected_generation)
             .is_ok_and(|s| native::of(&s.provider).is_some()) =>
         {
@@ -2875,15 +3069,20 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             native::ensure_resumable(&s, &observation)?;
             crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
             let directory = native::resume_directory(&s, &observation)?;
-            let s = named(paths, s, &expected_generation, name.as_deref())?;
-            std::env::set_current_dir(&directory)?;
-            external::hosting::launch_placed(
+            let account = format!("{}:{}", s.provider, s.account);
+            resume_into(
                 paths,
+                s,
+                &expected_generation,
                 &herdr_session,
-                &format!("{}:{}", s.provider, s.account),
-                Some(&s.conversation_id),
-                (&session, &s.generation()),
-                resume_placement(space.as_deref(), new_space.as_deref(), &s),
+                &account,
+                ResumeTarget {
+                    space: space.as_deref(),
+                    new_space: new_space.as_deref(),
+                    create_space,
+                    name: name.as_deref(),
+                },
+                &directory,
             )
             .await?
         }
@@ -2894,6 +3093,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             space,
             new_space,
             name,
+            create_space,
         } => {
             let (s, source) = selected(paths, &session, &expected_generation).await?;
             ensure!(
@@ -2907,15 +3107,20 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 "ACCOUNT_UNAVAILABLE"
             );
             let directory = resume_cwd(&source.cwd)?;
-            let s = named(paths, s, &expected_generation, name.as_deref())?;
-            std::env::set_current_dir(&directory)?;
-            external::hosting::launch_placed(
+            let account = s.account.clone();
+            resume_into(
                 paths,
+                s,
+                &expected_generation,
                 &herdr_session,
-                &s.account,
-                Some(&s.conversation_id),
-                (&session, &s.generation()),
-                resume_placement(space.as_deref(), new_space.as_deref(), &s),
+                &account,
+                ResumeTarget {
+                    space: space.as_deref(),
+                    new_space: new_space.as_deref(),
+                    create_space,
+                    name: name.as_deref(),
+                },
+                &directory,
             )
             .await?
         }
@@ -3192,6 +3397,106 @@ fn note_deliberate_action(paths: &Paths, command: &Command) {
     }
 }
 
+/// Where `api resume` opens a session (contract 1.48.0).
+struct ResumeTarget<'a> {
+    space: Option<&'a str>,
+    new_space: Option<&'a str>,
+    create_space: bool,
+    name: Option<&'a str>,
+}
+/// The resolved destination: an existing Space id or a Space to create, and the
+/// label the session will live in.
+#[derive(Debug, PartialEq)]
+struct Destination {
+    space: Option<String>,
+    new_space: Option<String>,
+    label: String,
+}
+/// Destination order: `--space`, `--new-space` (1.45 reuse), `--create-space`
+/// (the canonical name's Space, which must not exist), else the session's stored
+/// Space (an existing Space with that label, or a new Space with exactly that
+/// label when it no longer exists), else a canonical name's Space, else a new
+/// Space labelled `sessionsation` (unchanged default). A canonical `--name` must
+/// agree with the destination (`SPACE_MISMATCH`).
+fn resume_destination(
+    list: impl FnOnce() -> Result<Vec<Value>>,
+    target: &ResumeTarget<'_>,
+    stored: Option<&str>,
+) -> Result<(Destination, Option<String>)> {
+    let parsed = target.name.map(catalog::parse_name).transpose()?;
+    let part = parsed.and_then(|p| p.space);
+    ensure!(
+        !target.create_space || part.is_some(),
+        "INVALID_ARGUMENT: --create-space takes the new Space's label from a <space>:<name> --name"
+    );
+    let needs_list = target.space.is_some()
+        || target.new_space.is_some()
+        || target.create_space
+        || stored.is_some()
+        || part.is_some();
+    let list = if needs_list { list()? } else { vec![] };
+    let label_of = |id: &str| {
+        list.iter()
+            .find(|w| w["workspace_id"] == id)
+            .and_then(|w| w["label"].as_str())
+            .unwrap_or(id)
+            .to_owned()
+    };
+    let existing = |id: String| Destination {
+        label: label_of(&id),
+        space: Some(id),
+        new_space: None,
+    };
+    let fresh = |label: &str| Destination {
+        space: None,
+        new_space: Some(label.to_owned()),
+        label: label.to_owned(),
+    };
+    let resolve = |w: &str| external::hosting::resolve_space(&list, w);
+    let destination = if let Some(wanted) = target.space {
+        existing(resolve(wanted).context("SPACE_NOT_FOUND")?)
+    } else if let Some(label) = target.new_space {
+        crate::paths::validate_space_label(label)?;
+        resolve(label).map_or_else(|| fresh(label), existing)
+    } else if target.create_space {
+        let label = part.expect("checked");
+        crate::paths::validate_space_label(label)?;
+        ensure!(
+            !list.iter().any(|w| w["label"]
+                .as_str()
+                .is_some_and(|l| catalog::scope::fold(l) == catalog::scope::fold(label))),
+            "WORKSPACE_NAME_EXISTS"
+        );
+        fresh(label)
+    } else if let Some(stored) = stored {
+        // An inactive session keeps its Space: reopen it, or recreate a Space
+        // with exactly that label.
+        let folded = catalog::scope::fold(stored);
+        list.iter()
+            .find(|w| w["label"] == stored)
+            .or_else(|| {
+                list.iter().find(|w| {
+                    w["label"]
+                        .as_str()
+                        .is_some_and(|l| catalog::scope::fold(l) == folded)
+                })
+            })
+            .and_then(|w| w["workspace_id"].as_str().map(str::to_owned))
+            .map_or_else(|| fresh(stored), existing)
+    } else if let Some(part) = part {
+        existing(resolve(part).context("SPACE_NOT_FOUND")?)
+    } else {
+        fresh("sessionsation")
+    };
+    if let Some(p) = parsed {
+        catalog::scope::ensure_agrees(
+            p,
+            Some(&destination.label),
+            "pass a matching --space or a bare --name",
+        )?;
+    }
+    Ok((destination, parsed.map(|p| p.name.to_owned())))
+}
 fn resume_placement<'a>(
     space: Option<&'a str>,
     new_space: Option<&'a str>,
@@ -3204,19 +3509,67 @@ fn resume_placement<'a>(
         strict: true,
     }
 }
+/// `api resume` into HERDR: resolve the destination, apply the name (unique in
+/// the destination Space), launch, and record the Space on a verified start.
+#[allow(clippy::too_many_arguments)]
+async fn resume_into(
+    paths: &Paths,
+    s: catalog::Session,
+    expected_generation: &str,
+    herdr_session: &str,
+    account: &str,
+    target: ResumeTarget<'_>,
+    directory: impl AsRef<std::path::Path>,
+) -> Result<Value> {
+    let (destination, name) = resume_destination(
+        || {
+            let spaces = crate::terminal::call(herdr_session, &["workspace", "list"])?;
+            Ok(spaces["workspaces"]
+                .as_array()
+                .context("INVALID_HOST_SPACES")?
+                .clone())
+        },
+        &target,
+        s.space.as_deref(),
+    )?;
+    let wanted = name.as_deref().unwrap_or(&s.name).to_owned();
+    ensure!(
+        !catalog::space_taken(paths, Some(&destination.label), &wanted, &s.id)?,
+        "SESSION_NAME_EXISTS: \"{wanted}\" is already used in this Space"
+    );
+    let s = named(paths, s, expected_generation, name.as_deref(), None)?;
+    std::env::set_current_dir(directory)?;
+    let result = external::hosting::launch_placed(
+        paths,
+        herdr_session,
+        account,
+        Some(&s.conversation_id),
+        (&s.id, &s.generation()),
+        resume_placement(
+            destination.space.as_deref(),
+            destination.new_space.as_deref(),
+            &s,
+        ),
+    )
+    .await?;
+    catalog::record_space(paths, &s.id, &destination.label, "launch")?;
+    Ok(result)
+}
+/// Apply an optional (bare) name and the destination Space before a resume
+/// (generation-checked, unique in the destination Space).
 fn named(
     paths: &Paths,
     s: catalog::Session,
     generation: &str,
     name: Option<&str>,
+    space: Option<&str>,
 ) -> Result<catalog::Session> {
-    match name {
-        Some(name) if name != s.name => {
-            crate::launch::validate_session_name(name)?;
-            catalog::rename(paths, &s.id, generation, name)
-        }
-        _ => Ok(s),
+    let wanted = name.unwrap_or(&s.name);
+    let moved = space.is_some_and(|sp| s.space.as_deref() != Some(sp));
+    if wanted == s.name && !moved {
+        return Ok(s);
     }
+    catalog::rename_in_space(paths, &s.id, generation, wanted, space, "launch")
 }
 
 /// Stop one running Antigravity session: SIGTERM to its exact verified agy
@@ -3439,6 +3792,136 @@ mod prefill_tests {
         assert!(!p.root.join(crate::layout::LAUNCHES).exists());
     }
     #[test]
+    fn rows_and_capabilities_carry_the_space_scoped_names() {
+        let c = capabilities();
+        assert_eq!(
+            c["session_names"],
+            json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
+        );
+        assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
+        assert_eq!(c["contract_version"], "1.48.0");
+        let mut s = catalog::Session {
+            id: "stable".into(),
+            name: "LEAD".into(),
+            provider: "codex".into(),
+            account: "selected".into(),
+            conversation_id: "thread".into(),
+            revision: 1,
+            attachment: None,
+            directory: None,
+            previous_conversation_ids: vec![],
+            space: None,
+        };
+        let unscoped = public_session(s.clone());
+        assert!(unscoped.get("space").is_some_and(Value::is_null));
+        assert!(unscoped["canonical"].is_null());
+        s.space = Some("localica".into());
+        let scoped = public_session(s.clone());
+        assert_eq!(
+            (
+                scoped["space"].as_str(),
+                scoped["canonical"].as_str(),
+                scoped["name"].as_str()
+            ),
+            (Some("localica"), Some("localica:LEAD"), Some("LEAD"))
+        );
+        assert_eq!(
+            scoped["generation"], unscoped["generation"],
+            "space is not part of the generation"
+        );
+        s.space = Some("a:b".into());
+        assert!(public_session(s)["canonical"].is_null());
+    }
+    #[test]
+    fn resume_destination_defaults_to_the_stored_space_and_recreates_it() {
+        let list = || {
+            Ok(vec![
+                json!({"workspace_id":"w1","label":"Main"}),
+                json!({"workspace_id":"w2","label":"localica"}),
+            ])
+        };
+        let t = |space, new_space, create_space, name| ResumeTarget {
+            space,
+            new_space,
+            create_space,
+            name,
+        };
+        let dest = |target: ResumeTarget<'_>, stored| resume_destination(list, &target, stored);
+        let existing = |id: &str, label: &str| Destination {
+            space: Some(id.into()),
+            new_space: None,
+            label: label.into(),
+        };
+        let fresh = |label: &str| Destination {
+            space: None,
+            new_space: Some(label.into()),
+            label: label.into(),
+        };
+        // Stored Space exists: reopen it (case-insensitive label match).
+        assert_eq!(
+            dest(t(None, None, false, None), Some("LOCALICA"))
+                .unwrap()
+                .0,
+            existing("w2", "localica")
+        );
+        // Stored Space is gone: recreate exactly that label, no --create-space needed.
+        assert_eq!(
+            dest(t(None, None, false, None), Some("liq-glass"))
+                .unwrap()
+                .0,
+            fresh("liq-glass")
+        );
+        // An explicit placement wins.
+        assert_eq!(
+            dest(t(Some("w1"), None, false, None), Some("liq-glass"))
+                .unwrap()
+                .0,
+            existing("w1", "Main")
+        );
+        assert_eq!(
+            dest(t(None, Some("Main"), false, None), Some("x"))
+                .unwrap()
+                .0,
+            existing("w1", "Main")
+        );
+        // Unscoped and unnamed: the unchanged default.
+        assert_eq!(
+            dest(t(None, None, false, None), None).unwrap().0,
+            fresh("sessionsation")
+        );
+        // A canonical name: its Space when nothing else is given, else it must agree.
+        let (d, n) = dest(t(None, None, false, Some("main:x")), None).unwrap();
+        assert_eq!((d, n.as_deref()), (existing("w1", "Main"), Some("x")));
+        let e = format!(
+            "{:#}",
+            dest(t(None, None, false, Some("Other:x")), Some("Main")).unwrap_err()
+        );
+        assert!(e.starts_with("SPACE_MISMATCH"), "{e}");
+        let e = format!(
+            "{:#}",
+            dest(t(None, None, false, Some("nowhere:x")), None).unwrap_err()
+        );
+        assert!(e.starts_with("SPACE_NOT_FOUND"), "{e}");
+        // --create-space: the name's Space, which must not exist.
+        assert_eq!(
+            dest(t(None, None, true, Some("newspace:LEAD")), None)
+                .unwrap()
+                .0,
+            fresh("newspace")
+        );
+        let e = format!(
+            "{:#}",
+            dest(t(None, None, true, Some("Localica:LEAD")), None).unwrap_err()
+        );
+        assert!(e.starts_with("WORKSPACE_NAME_EXISTS"), "{e}");
+        let e = format!(
+            "{:#}",
+            dest(t(None, None, true, Some("LEAD")), None).unwrap_err()
+        );
+        assert!(e.starts_with("INVALID_ARGUMENT"), "{e}");
+        assert!(dest(t(None, None, false, Some("a:b:c")), None).is_err());
+    }
+    #[test]
     fn resume_into_a_space_keeps_the_session_name_as_the_tab_label() {
         let s = catalog::Session {
             id: "stable".into(),
@@ -3450,6 +3933,7 @@ mod prefill_tests {
             attachment: None,
             directory: None,
             previous_conversation_ids: vec![],
+            space: None,
         };
         // Without --name the existing name labels the tab (live HERDR names follow the
         // tab label), never the "sessionsation" default.
@@ -3482,6 +3966,7 @@ mod prefill_tests {
             }),
             directory: None,
             previous_conversation_ids: vec![],
+            space: None,
         };
         let mut source: external::Instance = serde_json::from_value(json!({"inactive":true,"account":"selected","pane":"","tmux_session":"","pid":0,"cwd":"/tmp","thread_id":"thread","rollout":"/tmp/fixture","home":"/tmp/home","binary":"codex","resume_options":[]})).unwrap();
         assert!(!source_matches(&s, &source));

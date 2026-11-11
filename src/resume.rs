@@ -127,13 +127,7 @@ fn shape(r: &Request) -> Result<()> {
     ensure!(r.version == 1, "UNSUPPORTED_RESUME_VERSION");
     uuid::Uuid::parse_str(&r.request_id).context("INVALID_REQUEST_ID")?;
     uuid::Uuid::parse_str(&r.session_id).context("INVALID_SESSION_ID")?;
-    ensure!(
-        !r.name.is_empty()
-            && r.name.chars().count() <= crate::model::SESSION_NAME_MAX
-            && r.name.trim() == r.name
-            && !r.name.chars().any(char::is_control),
-        "INVALID_SESSION_NAME"
-    );
+    catalog::parse_name(&r.name)?;
     codex_account(r)?;
     crate::paths::validate_name(&r.host.session)?;
     ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
@@ -162,7 +156,11 @@ fn validate_saved_history(source: &external::Instance, confirmed: bool) -> Resul
     }
     Ok(())
 }
-async fn validate(paths: &Paths, r: &Request) -> Result<(catalog::Session, external::Instance)> {
+/// Admission checks; also returns the destination Space label (the resumed row's `space`).
+async fn validate(
+    paths: &Paths,
+    r: &Request,
+) -> Result<(catalog::Session, external::Instance, Option<String>)> {
     shape(r)?;
     let (s, source) = api::selected(paths, &r.session_id, &r.expected_generation).await?;
     crate::lifecycle::ensure_available(paths, &s.conversation_id, Some(&r.request_id))?;
@@ -183,12 +181,6 @@ async fn validate(paths: &Paths, r: &Request) -> Result<(catalog::Session, exter
             "SAVED_DIRECTORY_UNAVAILABLE"
         );
     }
-    ensure!(
-        !catalog::list(paths)?
-            .iter()
-            .any(|other| other.id != s.id && other.name == r.name),
-        "SESSION_NAME_EXISTS"
-    );
     let target = codex_account(r)?;
     let target = target.as_str();
     crate::accounts::ensure_available(paths, crate::provider::ProviderId::Codex, target)?;
@@ -217,7 +209,14 @@ async fn validate(paths: &Paths, r: &Request) -> Result<(catalog::Session, exter
             );
         }
     }
-    Ok((s, source))
+    // Unique in the destination Space (contract 1.48.0).
+    let label = launch::space_label(spaces, &r.space);
+    ensure!(
+        !catalog::space_taken(paths, label.as_deref(), &r.name, &s.id)?,
+        "SESSION_NAME_EXISTS: \"{}\" is already used in this Space",
+        r.name
+    );
+    Ok((s, source, label))
 }
 pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     match command {
@@ -236,9 +235,11 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     ensure!(bytes.len() <= 65536, "REQUEST_TOO_LARGE");
     let mut r: Request = serde_json::from_slice(&bytes).context("INVALID_RESUME_REQUEST")?;
     shape(&r)?;
-    launch::resolve_space(&r.host, &mut r.space).await?;
+    let label = launch::resolve_space(&r.host, &mut r.space).await?;
+    let known = label.is_some();
+    launch::bare_request_name(&mut r.name, label.as_deref(), known)?;
     if matches!(command, Command::Validate) {
-        let (_, source) = validate(paths, &r).await?;
+        let (_, source, _) = validate(paths, &r).await?;
         return Ok(
             json!({"valid":true,"directory":r.directory.as_ref().map(|d|d.path.clone()).unwrap_or_else(||source.cwd.into()),"request_id":r.request_id}),
         );
@@ -263,7 +264,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     let _admission =
         crate::lifecycle::admit(paths, &selected.conversation_id, Some(&r.request_id))?;
     crate::lifecycle::ensure_no_handoff(paths, &selected.conversation_id, Some(&r.request_id))?;
-    let (s, source) = validate(paths, &r).await?;
+    let (s, source, _) = validate(paths, &r).await?;
     let mut receipt = Receipt {
         version: 1,
         directory: r
@@ -362,7 +363,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
         crate::config::override_launch_permissions(mode);
     }
     let id = &r.request_id;
-    let (_, source) = validate(paths, r).await?;
+    let (_, source, label) = validate(paths, r).await?;
     ensure!(
         std::path::Path::new(&source.cwd) == saved_directory(receipt),
         "SAVED_DIRECTORY_CHANGED"
@@ -424,7 +425,15 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
         r.phase = "renaming".into();
         Ok(())
     })?;
-    let renamed = catalog::rename(paths, &r.session_id, &r.expected_generation, &r.name)?;
+    // The tab exists in the destination Space: the row takes its name and Space.
+    let renamed = catalog::rename_in_space(
+        paths,
+        &r.session_id,
+        &r.expected_generation,
+        &r.name,
+        label.as_deref(),
+        "launch",
+    )?;
     change(paths, id, |r| {
         r.generation = renamed.generation();
         r.phase = "dispatching".into();

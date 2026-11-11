@@ -99,6 +99,10 @@ pub struct Receipt {
     pub updated_at: i64,
     /// Contract 1.32: set when the launch was typed into an existing terminal
     /// (`sessionsation run`) instead of dispatched to a HERDR host.
+    /// Contract 1.48.0: label of the Space the session is admitted into (the
+    /// new row's `space`); absent for unscoped launches and older receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline: Option<crate::inline::Info>,
 }
@@ -166,7 +170,7 @@ pub fn validate_session_name(name: &str) -> Result<()> {
 fn shape(r: &Request) -> Result<()> {
     ensure!(r.version == 1, "UNSUPPORTED_LAUNCH_VERSION");
     validate_id(&r.request_id)?;
-    validate_session_name(&r.name)?;
+    catalog::parse_name(&r.name)?;
     crate::paths::validate_name(&r.host.session)?;
     AccountRef::parse(&r.account_id)?;
     ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
@@ -304,7 +308,7 @@ fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
         return change(paths, id, |current| {
             if current.phase == r.phase && current.updated_at == r.updated_at {
                 if phase == "failed" {
-                    catalog::release_reservation(paths, id, &current.request.name)?;
+                    catalog::release_reservation(paths, id)?;
                 }
                 current.phase = phase.into();
                 current.detail = Some(detail.into());
@@ -359,12 +363,34 @@ pub(crate) fn normalize_space(list: &[Value], space: &Space) -> Space {
             .map_or_else(|| space.clone(), |id| Space::Existing { id }),
     }
 }
-pub(crate) async fn resolve_space(host: &Host, space: &mut Space) -> Result<()> {
+/// Normalize the requested Space (see [`normalize_space`]) and return the label the
+/// session will live in: an existing Space's HERDR label, or the new Space's label.
+/// None when an existing id is unknown (validation refuses it).
+pub(crate) async fn resolve_space(host: &Host, space: &mut Space) -> Result<Option<String>> {
     let spaces = host_call(host, &["workspace", "list"]).await?;
-    *space = normalize_space(
-        spaces["workspaces"].as_array().context("HOST_PROTOCOL")?,
-        space,
-    );
+    let list = spaces["workspaces"].as_array().context("HOST_PROTOCOL")?;
+    *space = normalize_space(list, space);
+    Ok(space_label(list, space))
+}
+/// The label of `space` in a HERDR `workspace list`.
+pub(crate) fn space_label(list: &[Value], space: &Space) -> Option<String> {
+    match space {
+        Space::Existing { id } => list
+            .iter()
+            .find(|w| w["workspace_id"] == id.as_str())
+            .and_then(|w| w["label"].as_str().map(str::to_owned)),
+        Space::New { label } => Some(label.clone()),
+    }
+}
+/// Contract 1.48.0: a canonical `<space>:<name>` must name the requested Space
+/// (`SPACE_MISMATCH`); the request then carries the bare name, so every later step
+/// (tab label, reservation, provider `--name`) and older readers see a bare name.
+pub(crate) fn bare_request_name(name: &mut String, label: Option<&str>, known: bool) -> Result<()> {
+    let parsed = catalog::parse_name(name)?;
+    if known {
+        catalog::scope::ensure_agrees(parsed, label, "pick that Space or use a bare name")?;
+    }
+    *name = parsed.name.to_owned();
     Ok(())
 }
 pub async fn host_call(host: &Host, args: &[&str]) -> Result<Value> {
@@ -401,10 +427,10 @@ pub async fn host_call(host: &Host, args: &[&str]) -> Result<Value> {
     ensure!(body.get("error").is_none(), "HOST_REJECTED");
     Ok(body.get("result").unwrap_or(&body).clone())
 }
-async fn validate(paths: &Paths, r: &Request) -> Result<()> {
+async fn validate(paths: &Paths, r: &Request, label: Option<&str>) -> Result<()> {
     shape(r)?;
     directory_check(&r.directory)?;
-    catalog::check_name(paths, &r.name, &r.request_id)?;
+    catalog::check_name(paths, label, &r.name, &r.request_id)?;
     let account = AccountRef::parse(&r.account_id)?;
     crate::accounts::ensure_available(paths, account.provider, &account.name)?;
     let state = daemon::call(paths, "status", json!({})).await?;
@@ -463,9 +489,11 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     ensure!(bytes.len() <= 65536, "REQUEST_TOO_LARGE");
     let mut r: Request = serde_json::from_slice(&bytes).context("INVALID_LAUNCH_REQUEST")?;
     shape(&r)?;
-    resolve_space(&r.host, &mut r.space).await?;
+    let label = resolve_space(&r.host, &mut r.space).await?;
+    let known = label.is_some();
+    bare_request_name(&mut r.name, label.as_deref(), known)?;
     if matches!(command, Command::Validate) {
-        validate(paths, &r).await?;
+        validate(paths, &r, label.as_deref()).await?;
         return Ok(json!({"valid":true,"request_id":r.request_id}));
     }
     // The same request is never dispatched twice, even after a timeout.
@@ -475,8 +503,8 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         ensure!(existing.request == r, "REQUEST_ID_CONFLICT");
         return Ok(serde_json::to_value(existing)?);
     }
-    validate(paths, &r).await?;
-    catalog::reserve_name(paths, &r.name, &r.request_id)?;
+    validate(paths, &r, label.as_deref()).await?;
+    catalog::reserve_name(paths, label.as_deref(), &r.name, &r.request_id)?;
     let mut receipt = Receipt {
         version: 1,
         request: r,
@@ -492,6 +520,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         created_at: Some(daemon::now()),
         updated_at: daemon::now(),
         inline: None,
+        space_label: label,
     };
     save(paths, &mut receipt)?;
     let spawned =
@@ -504,7 +533,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
             .stderr(Stdio::null())
             .spawn();
     if spawned.is_err() {
-        catalog::release_reservation(paths, &receipt.request.request_id, &receipt.request.name)?;
+        catalog::release_reservation(paths, &receipt.request.request_id)?;
         receipt.phase = "failed".into();
         receipt.detail = Some("Worker could not start; no resources created".into());
         save(paths, &mut receipt)?;
@@ -532,7 +561,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         change(paths, id, |r| {
             if !matches!(r.phase.as_str(), "running" | "complete" | "failed") {
                 if r.phase == "preparing" {
-                    catalog::release_reservation(paths, id, &r.request.name)?;
+                    catalog::release_reservation(paths, id)?;
                     r.phase = "failed".into();
                 } else {
                     r.phase = "uncertain".into();
@@ -548,7 +577,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
 async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     let r = &receipt.request;
     let id = &r.request_id;
-    validate(paths, r).await?;
+    validate(paths, r, receipt.space_label.as_deref()).await?;
     create_directories(&r.directory, |p| {
         change(paths, id, |r| {
             r.created_directories.push(p.to_path_buf());
@@ -650,7 +679,7 @@ fn expire_ack(paths: &Paths, id: &str) -> Result<()> {
     let mut never_started = false;
     change(paths, id, |r| {
         if r.phase == "dispatching" {
-            catalog::release_reservation(paths, id, &r.request.name)?;
+            catalog::release_reservation(paths, id)?;
             r.phase = "failed".into();
             r.detail = Some("LAUNCH_RUN_NEVER_STARTED: provider was not started".into());
             never_started = true;
@@ -759,6 +788,7 @@ pub fn attached(
     let session = catalog::complete_reserved(
         paths,
         id,
+        receipt.space_label.as_deref(),
         &receipt.request.name,
         account.provider,
         &account.name,
@@ -823,7 +853,7 @@ pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
     }
     let done = change(paths, id, |c| {
         ensure!(c.phase == "uncertain", "OPERATION_NOT_STUCK");
-        catalog::release_reservation(paths, id, &c.request.name)?;
+        catalog::release_reservation(paths, id)?;
         c.phase = "abandoned".into();
         c.detail = Some(
             "Abandoned by the operator from 'uncertain'. Nothing was started or sent by this step."
@@ -1068,7 +1098,7 @@ mod tests {
         r.phase = phase.into();
         r.pane_id = None;
         save(paths, &mut r).unwrap();
-        catalog::reserve_name(paths, name, &id).unwrap();
+        catalog::reserve_name(paths, None, name, &id).unwrap();
         id
     }
     #[test]
@@ -1081,7 +1111,7 @@ mod tests {
         let r = status(&paths, &id).unwrap();
         assert_eq!(r.phase, "failed");
         assert!(r.detail.unwrap().contains("LAUNCH_RUN_NEVER_STARTED"));
-        catalog::reserve_name(&paths, "stuck-name", "other").unwrap();
+        catalog::reserve_name(&paths, None, "stuck-name", "other").unwrap();
     }
     #[test]
     fn ack_timeout_after_launch_run_claimed_stays_uncertain() {
@@ -1093,7 +1123,7 @@ mod tests {
             "LAUNCH_ACK_UNCERTAIN"
         );
         assert_eq!(status(&paths, &id).unwrap().phase, "starting_provider");
-        assert!(catalog::reserve_name(&paths, "stuck-name", "other").is_err());
+        assert!(catalog::reserve_name(&paths, None, "stuck-name", "other").is_err());
     }
     #[tokio::test]
     async fn run_refuses_after_the_ack_timeout() {
@@ -1114,6 +1144,7 @@ mod tests {
         catalog::complete_reserved(
             &paths,
             &blocked,
+            None,
             "blocked-name",
             ProviderId::Codex,
             "fixture",
@@ -1140,6 +1171,6 @@ mod tests {
             e(abandon(&paths, &id, &id).await),
             "OPERATION_ALREADY_TERMINAL"
         );
-        catalog::reserve_name(&paths, "stuck-name", "other").unwrap();
+        catalog::reserve_name(&paths, None, "stuck-name", "other").unwrap();
     }
 }

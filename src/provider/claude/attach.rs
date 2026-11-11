@@ -74,6 +74,8 @@ pub struct Request<'a> {
     pub space: Option<&'a str>,
     /// Label of a Space to create for the viewer.
     pub new_space: Option<&'a str>,
+    /// Create the Space named by a canonical `name`; refused when it exists (1.48.0).
+    pub create_space: bool,
     pub name: Option<&'a str>,
 }
 
@@ -87,9 +89,23 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         "INVALID_HOST_SOCKET"
     );
     ensure!(
-        r.space.is_some() != r.new_space.is_some(),
-        "INVALID_ARGUMENT: pass exactly one of --space and --new-space"
+        usize::from(r.space.is_some())
+            + usize::from(r.new_space.is_some())
+            + usize::from(r.create_space)
+            == 1,
+        "INVALID_ARGUMENT: pass exactly one of --space, --new-space and --create-space"
     );
+    let parsed = r.name.map(catalog::parse_name).transpose()?;
+    let created_label = if r.create_space {
+        Some(
+            parsed
+                .and_then(|p| p.space)
+                .context("INVALID_ARGUMENT: --create-space takes the new Space's label from a <space>:<name> --name")?,
+        )
+    } else {
+        None
+    };
+    let new_space = r.new_space.or(created_label);
     let s = catalog::resolve(paths, r.session, r.expected_generation)?;
     if s.provider == ProviderId::Codex.as_str() {
         bail!(
@@ -105,6 +121,7 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
     );
     let account = claude::account(paths, &s.account)?;
     let mut resolved: Option<String> = None;
+    let space_label: Option<String>;
     let (session, directory, job) = {
         // Serialize admission per conversation; released before the pane step,
         // which re-verifies identity itself (it cannot take this lock).
@@ -125,16 +142,44 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
                 crate::external::hosting::resolve_space(list, space).context("SPACE_NOT_FOUND")?,
             );
         }
-        if let Some(label) = r.new_space {
+        if let Some(label) = new_space {
             crate::paths::validate_space_label(label)?;
-            resolved = crate::external::hosting::resolve_space(list, label);
+            if r.create_space {
+                ensure!(
+                    !list.iter().any(|w| w["label"].as_str().is_some_and(|l| {
+                        catalog::scope::fold(l) == catalog::scope::fold(label)
+                    })),
+                    "WORKSPACE_NAME_EXISTS"
+                );
+            } else {
+                resolved = crate::external::hosting::resolve_space(list, label);
+            }
         }
-        let name = r.name.unwrap_or(&s.name);
-        crate::launch::validate_session_name(name)?;
+        // The destination Space label (contract 1.48.0): a canonical name must agree
+        // and the name must be unique there.
+        let label = match (resolved.as_deref(), new_space) {
+            (Some(id), _) => {
+                crate::launch::space_label(list, &crate::launch::Space::Existing { id: id.into() })
+            }
+            (None, label) => label.map(str::to_owned),
+        };
+        if let Some(p) = parsed {
+            catalog::scope::ensure_agrees(
+                p,
+                label.as_deref(),
+                "pass a matching Space or a bare --name",
+            )?;
+        }
+        space_label = label.clone();
+        let name = parsed.map_or(s.name.as_str(), |p| p.name);
+        ensure!(
+            !catalog::space_taken(paths, label.as_deref(), name, &s.id)?,
+            "SESSION_NAME_EXISTS: \"{name}\" is already used in this Space"
+        );
         let session = if name == s.name {
             s.clone()
         } else {
-            catalog::rename(paths, &s.id, r.expected_generation, name)?
+            catalog::rename_in_space(paths, &s.id, r.expected_generation, name, None, "launch")?
         };
         let usable = |d: &str| Path::new(d).is_absolute() && Path::new(d).is_dir();
         let directory = o
@@ -149,7 +194,7 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
     let dir = directory.to_str().context("INVALID_DIRECTORY")?;
     // A new Space is created with its own initial shell pane, which becomes the
     // viewer pane (as New session does): no extra pane is created or closed.
-    let created = match (resolved.as_deref(), r.new_space) {
+    let created = match (resolved.as_deref(), new_space) {
         (Some(space), _) => host(
             r.herdr_session,
             r.herdr_socket,
@@ -232,7 +277,7 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         &["pane", "run", &pane, &command],
     )?;
     let base = json!({"session_id":session.id,"host":"herdr","herdr_session":r.herdr_session,
-        "space_id":space_id,"new_space":r.new_space.is_some(),"tab_id":tab,"pane_id":pane,"target":key,"name":session.name,
+        "space_id":space_id,"new_space":new_space.is_some(),"tab_id":tab,"pane_id":pane,"target":key,"name":session.name,
         "job_id":job,"starts_agent":false,"sends_input":false});
     for _ in 0..150 {
         if let Some(current) = catalog::list(paths)?
@@ -244,10 +289,17 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
             && crate::terminal::state_at(&key, r.herdr_socket)
                 .is_ok_and(|(idle, pid)| !idle && pid == a.pid)
         {
+            let attachment = json!(a);
+            let current = match &space_label {
+                Some(label) => catalog::record_space(paths, &current.id, label, "launch")?,
+                None => current.clone(),
+            };
             let mut value = base;
             value["state"] = json!("attached");
             value["generation"] = json!(current.generation());
-            value["attachment"] = json!(a);
+            value["space"] = json!(current.space);
+            value["canonical"] = json!(current.canonical());
+            value["attachment"] = attachment;
             return Ok(value);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -298,7 +350,7 @@ pub fn exec_attach(paths: &Paths, id: &str, generation: &str) -> Result<()> {
         attachment.as_ref().is_some_and(|a| a.host == "herdr"),
         "SESSION_NOT_IN_HERDR: run from the HERDR pane created for this session"
     );
-    catalog::move_attachment(paths, &session, attachment)?;
+    catalog::move_attachment(paths, &session, attachment, None)?;
     let mut command = claude::command(&config, &account.home);
     command.args(["attach", &job]);
     Err(command.exec()).context("could not run claude attach")

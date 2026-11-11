@@ -138,7 +138,7 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
     let directory = resume_directory(&session, &observation)?;
     gemini::prelaunch_gate(&account.home)?;
     let attachment = crate::external::current_attachment(paths)?;
-    let current = catalog::move_attachment(paths, &session, attachment)?;
+    let current = catalog::move_attachment(paths, &session, attachment, None)?;
     crate::inline::mark_attached(paths);
     exec(
         &config,

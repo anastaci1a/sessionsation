@@ -1,10 +1,14 @@
 //! Stable backend identity, distinct from native conversations and attachments.
 pub mod names;
 pub mod placement;
+pub mod scope;
 use crate::paths::{Paths, atomic_write, lock_file, private_dir};
 use crate::provider::ProviderId;
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
+pub use scope::{
+    ParsedName, parse_name, record_space, resolve_target, same_space, set_space, space_taken,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs};
@@ -35,14 +39,35 @@ pub struct Session {
     /// so existing generations are unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previous_conversation_ids: Vec<String>,
+    /// HERDR Space (workspace) label the session belongs to (contract 1.48.0);
+    /// None = unscoped legacy entry. Omitted when None. Not part of the
+    /// generation hash (see [`Session::generation`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 impl Session {
+    /// sha256 of the serialized entry WITHOUT `space`: recording, backfilling or
+    /// healing a space never changes a generation by itself. Every explicit space
+    /// change (set-space, move-space, resume into another Space, a host observation
+    /// that moves a live session) also increments `revision`, so it does change
+    /// the generation, like every other mutation.
     pub fn generation(&self) -> String {
-        format!(
-            "{:x}",
+        let digest = if self.space.is_none() {
             Sha256::digest(serde_json::to_vec(self).expect("serializable session"))
-        )
+        } else {
+            let mut unscoped = self.clone();
+            unscoped.space = None;
+            Sha256::digest(serde_json::to_vec(&unscoped).expect("serializable session"))
+        };
+        format!("{digest:x}")
+    }
+    /// `<space>:<name>`; None for an unscoped entry or a Space label containing `:`.
+    pub fn canonical(&self) -> Option<String> {
+        self.space
+            .as_deref()
+            .filter(|space| !space.contains(':'))
+            .map(|space| format!("{space}:{}", self.name))
     }
 }
 
@@ -55,6 +80,9 @@ struct Catalog {
     /// Catalog ids merged into another entry by a verified continuation link.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     aliases: BTreeMap<String, String>,
+    /// Transient: why a transaction changed an entry's space (sidecar `source`).
+    #[serde(skip)]
+    space_notes: BTreeMap<String, &'static str>,
 }
 
 /// Identity facts mirrored outside `catalog.json`: merged ids and continuation
@@ -90,6 +118,8 @@ impl Identity {
 pub struct Healed {
     pub restored_aliases: Vec<String>,
     pub restored_lineage: Vec<String>,
+    /// Entries whose `space` was restored from `spaces.json` (contract 1.48.0).
+    pub restored_spaces: Vec<String>,
 }
 
 /// Restore merged ids and lineage the identity record holds but the catalog
@@ -165,10 +195,19 @@ fn healing_transaction<T>(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Identity::default(),
         Err(e) => return Err(e.into()),
     };
+    let spaces_file = dir.join(scope::SIDECAR);
+    let spaces = scope::read_sidecar(&spaces_file)?;
     let before = serde_json::to_vec(&catalog)?;
-    let healed = heal(&mut catalog, &identity);
+    let mut healed = heal(&mut catalog, &identity);
+    healed.restored_spaces = scope::heal(&mut catalog, &spaces);
+    let backfill = scope::backfill(paths, &mut catalog, &spaces);
     let result = change(&mut catalog, &healed)?;
     let after = serde_json::to_vec(&catalog)?;
+    // The space record is written first too (same crash ordering as identity).
+    let next = scope::next_sidecar(&mut catalog, &spaces, backfill);
+    if next != spaces || !spaces_file.exists() {
+        atomic_write(&spaces_file, &serde_json::to_vec(&next)?)?;
+    }
     // The identity record is written first: a crash between the two writes
     // leaves a record the next transaction restores from, never a loss.
     let next = Identity::of(&catalog);
@@ -257,7 +296,7 @@ pub fn record_provider_launch(
         let base = if base.is_empty() { "session" } else { base };
         let mut name = base.to_owned();
         let mut suffix = 2;
-        while c.sessions.values().any(|s| s.name == name) || c.reservations.contains_key(&name) {
+        while scope::taken(c, None, &name, None, None) {
             let tail = format!("-{suffix}");
             let prefix: String = base
                 .chars()
@@ -276,6 +315,7 @@ pub fn record_provider_launch(
             attachment,
             directory: directory.map(str::to_owned),
             previous_conversation_ids: vec![],
+            space: None,
         };
         c.sessions.insert(s.id.clone(), s.clone());
         Ok(s)
@@ -316,8 +356,7 @@ pub fn register_discovered(
             let base = if base.is_empty() { "session" } else { base };
             let mut name = base.to_owned();
             let mut suffix = 2;
-            while c.sessions.values().any(|s| s.name == name) || c.reservations.contains_key(&name)
-            {
+            while scope::taken(c, None, &name, None, None) {
                 let tail = format!("-{suffix}");
                 let prefix: String = base
                     .chars()
@@ -336,6 +375,7 @@ pub fn register_discovered(
                 attachment: None,
                 directory: d.directory.clone(),
                 previous_conversation_ids: vec![],
+                space: None,
             };
             c.sessions.insert(s.id.clone(), s);
         }
@@ -600,7 +640,7 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
                 let base = if base.is_empty() { "session" } else { base };
                 let mut name = base.to_owned();
                 let mut suffix = 2;
-                while c.sessions.values().any(|s| s.name == name) {
+                while scope::taken(c, None, &name, None, None) {
                     name = format!("{base}-{suffix}");
                     suffix += 1;
                 }
@@ -616,6 +656,7 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
                         attachment,
                         directory: None,
                         previous_conversation_ids: vec![],
+                        space: None,
                     },
                 );
             }
@@ -756,35 +797,83 @@ pub(crate) fn switch_account(
         Ok(s.clone())
     })
 }
+/// `api rename`: a bare name, or `<space>:<name>` naming the session's own Space
+/// (rename never moves: `SPACE_MISMATCH`). Unique within the session's Space,
+/// case-insensitive; a byte-equal name is a no-op with the same generation.
 pub fn rename(paths: &Paths, id: &str, generation: &str, name: &str) -> Result<Session> {
-    validate_name(name)?;
+    let parsed = parse_name(name)?;
     transaction(paths, |c| {
         let current = live(c, id)?;
         ensure!(current.generation() == generation, "STALE_TARGET");
-        if current.name == name {
+        let space = current.space.clone();
+        scope::ensure_agrees(
+            parsed,
+            space.as_deref(),
+            if space.is_none() {
+                "the session is unscoped; use `api session set-space`"
+            } else {
+                "rename never moves; use `api move-space`"
+            },
+        )?;
+        if current.name == parsed.name {
             return Ok(current.clone());
         }
         ensure!(
-            !c.sessions.values().any(|s| s.id != id && s.name == name)
-                && !c.reservations.contains_key(name),
-            "SESSION_NAME_EXISTS"
+            !scope::taken(c, space.as_deref(), parsed.name, Some(id), None),
+            "SESSION_NAME_EXISTS: \"{}\" is already used in this Space",
+            parsed.name
         );
         let s = c.sessions.get_mut(id).context("SESSION_NOT_FOUND")?;
-        ensure!(s.generation() == generation, "STALE_TARGET");
-        if s.name != name {
-            s.name = name.into();
-            s.revision += 1;
-        }
+        s.name = parsed.name.into();
+        s.revision += 1;
         Ok(s.clone())
     })
 }
 
-/// A verified presentation move changes only attachment metadata, preserving a
-/// concurrent rename. Another account/process can never be overwritten here.
+/// Rename (bare `name`) and place the entry in `space` in one generation-checked
+/// step: a resume into a Space. Unique in the destination Space.
+pub(crate) fn rename_in_space(
+    paths: &Paths,
+    id: &str,
+    generation: &str,
+    name: &str,
+    space: Option<&str>,
+    source: &'static str,
+) -> Result<Session> {
+    transaction(paths, |c| {
+        let current = live(c, id)?;
+        ensure!(current.generation() == generation, "STALE_TARGET");
+        // A kept legacy name (e.g. over 64 characters) is not re-validated.
+        if current.name != name {
+            crate::launch::validate_session_name(name)?;
+            ensure!(!name.contains(':'), "INVALID_SESSION_NAME");
+        }
+        let space = space.map(str::to_owned).or(current.space.clone());
+        if current.name == name && current.space == space {
+            return Ok(current.clone());
+        }
+        ensure!(
+            !scope::taken(c, space.as_deref(), name, Some(id), None),
+            "SESSION_NAME_EXISTS: \"{name}\" is already used in this Space"
+        );
+        let s = c.sessions.get_mut(id).context("SESSION_NOT_FOUND")?;
+        if s.name != name {
+            s.name = name.into();
+            s.revision += 1;
+        }
+        scope::assign(s, &mut c.space_notes, space, source);
+        Ok(s.clone())
+    })
+}
+
+/// A verified presentation move changes only attachment metadata (and, with
+/// `space`, the verified destination Space), preserving a concurrent rename.
+/// Another account/process can never be overwritten here.
 pub(crate) fn move_attachment(
     paths: &Paths,
     before: &Session,
     attachment: Option<Attachment>,
+    space: Option<String>,
 ) -> Result<Session> {
     transaction(paths, |c| {
         let current = live(c, &before.id)?;
@@ -804,7 +893,14 @@ pub(crate) fn move_attachment(
             current.attachment = attachment;
             current.revision += 1;
         }
-        Ok(current.clone())
+        let s = c
+            .sessions
+            .get_mut(&before.id)
+            .context("SESSION_NOT_FOUND")?;
+        if space.is_some() {
+            scope::assign(s, &mut c.space_notes, space, "move_space");
+        }
+        Ok(s.clone())
     })
 }
 
@@ -827,6 +923,7 @@ mod tests {
             }),
             directory: None,
             previous_conversation_ids: vec![],
+            space: None,
         };
         transaction(paths, |c| {
             c.sessions.insert(s.id.clone(), s.clone());
@@ -997,26 +1094,28 @@ mod tests {
     }
 }
 
-pub fn check_name(paths: &Paths, name: &str, request: &str) -> Result<()> {
+/// Admission check: `name` is free in `space` (unique per Space, case-insensitive)
+/// or reserved by this request.
+pub fn check_name(paths: &Paths, space: Option<&str>, name: &str, request: &str) -> Result<()> {
     validate_name(name)?;
     transaction(paths, |c| {
         ensure!(
-            !c.sessions.values().any(|s| s.name == name)
-                && c.reservations.get(name).is_none_or(|r| r == request),
-            "SESSION_NAME_EXISTS"
+            !scope::taken(c, space, name, None, Some(request)),
+            "SESSION_NAME_EXISTS: \"{name}\" is already used in this Space"
         );
         Ok(())
     })
 }
-pub fn reserve_name(paths: &Paths, name: &str, request: &str) -> Result<()> {
+pub fn reserve_name(paths: &Paths, space: Option<&str>, name: &str, request: &str) -> Result<()> {
     validate_name(name)?;
     transaction(paths, |c| {
         ensure!(
-            !c.sessions.values().any(|s| s.name == name)
-                && c.reservations.get(name).is_none_or(|r| r == request),
-            "SESSION_NAME_EXISTS"
+            !scope::taken(c, space, name, None, Some(request)),
+            "SESSION_NAME_EXISTS: \"{name}\" is already used in this Space"
         );
-        c.reservations.insert(name.into(), request.into());
+        c.reservations.retain(|_, r| r != request);
+        c.reservations
+            .insert(scope::scope_key(space, name), request.into());
         Ok(())
     })
 }
@@ -1024,6 +1123,7 @@ pub fn reserve_name(paths: &Paths, name: &str, request: &str) -> Result<()> {
 pub fn complete_reserved(
     paths: &Paths,
     request: &str,
+    space: Option<&str>,
     name: &str,
     provider: ProviderId,
     account: &str,
@@ -1033,13 +1133,15 @@ pub fn complete_reserved(
 ) -> Result<Session> {
     transaction(paths, |c| {
         ensure!(
-            c.reservations.get(name).is_some_and(|r| r == request),
+            c.reservations.values().any(|r| r == request),
             "NAME_RESERVATION_LOST"
         );
         ensure!(
-            !c.sessions
-                .values()
-                .any(|s| s.name == name || s.conversation_id == conversation),
+            !scope::taken(c, space, name, None, Some(request))
+                && !c
+                    .sessions
+                    .values()
+                    .any(|s| s.conversation_id == conversation),
             "SESSION_NAME_EXISTS"
         );
         let s = Session {
@@ -1052,15 +1154,18 @@ pub fn complete_reserved(
             attachment,
             directory: directory.map(str::to_owned),
             previous_conversation_ids: vec![],
+            space: space.map(str::to_owned),
         };
-        c.reservations.remove(name);
+        c.reservations.retain(|_, r| r != request);
+        c.space_notes.insert(s.id.clone(), "launch");
         c.sessions.insert(s.id.clone(), s.clone());
         Ok(s)
     })
 }
 
-/// First free session name: BASE, else BASE-2, BASE-3 ... (as unnamed launches record).
-pub fn free_name(paths: &Paths, label: &str) -> Result<String> {
+/// First free session name in `space`: BASE, else BASE-2, BASE-3 ... (as unnamed
+/// launches record).
+pub fn free_name(paths: &Paths, space: Option<&str>, label: &str) -> Result<String> {
     transaction(paths, |c| {
         let base: String = label
             .chars()
@@ -1071,7 +1176,7 @@ pub fn free_name(paths: &Paths, label: &str) -> Result<String> {
         let base = if base.is_empty() { "session" } else { base };
         let mut name = base.to_owned();
         let mut suffix = 2;
-        while c.sessions.values().any(|s| s.name == name) || c.reservations.contains_key(&name) {
+        while scope::taken(c, space, &name, None, None) {
             let tail = format!("-{suffix}");
             let prefix: String = base
                 .chars()
@@ -1083,11 +1188,10 @@ pub fn free_name(paths: &Paths, label: &str) -> Result<String> {
         Ok(name)
     })
 }
-pub fn release_reservation(paths: &Paths, request: &str, name: &str) -> Result<()> {
+/// Release whatever name `request` reserved (one request reserves one name).
+pub fn release_reservation(paths: &Paths, request: &str) -> Result<()> {
     transaction(paths, |c| {
-        if c.reservations.get(name).is_some_and(|r| r == request) {
-            c.reservations.remove(name);
-        }
+        c.reservations.retain(|_, r| r != request);
         Ok(())
     })
 }
@@ -1099,14 +1203,15 @@ mod reservation_tests {
     fn reserved_names_are_unique_and_convert_without_rename() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = Paths::new(Some(tmp.path().join("root"))).unwrap();
-        reserve_name(&paths, "chosen", "request-a").unwrap();
-        assert!(reserve_name(&paths, "chosen", "request-b").is_err());
+        reserve_name(&paths, None, "chosen", "request-a").unwrap();
+        assert!(reserve_name(&paths, None, "chosen", "request-b").is_err());
         let other = record_launch(&paths, "account", "conversation-b", "chosen", None).unwrap();
         assert_eq!(other.name, "chosen-2");
         assert!(rename(&paths, &other.id, &other.generation(), "chosen").is_err());
         let s = complete_reserved(
             &paths,
             "request-a",
+            None,
             "chosen",
             ProviderId::Codex,
             "account",
@@ -1118,7 +1223,7 @@ mod reservation_tests {
         assert_eq!(s.id, "request-a");
         assert_eq!(s.name, "chosen");
         assert_eq!(s.account, "account");
-        assert!(check_name(&paths, "chosen", "request-a").is_err());
+        assert!(check_name(&paths, None, "chosen", "request-a").is_err());
     }
 }
 
@@ -1148,11 +1253,11 @@ mod space_move_tests {
             target: "herdr/fixture/w2:p2".into(),
             ..old
         };
-        let moved = move_attachment(&p, &before, Some(new.clone())).unwrap();
+        let moved = move_attachment(&p, &before, Some(new.clone()), None).unwrap();
         assert_eq!(moved.name, "renamed");
         assert_eq!(moved.conversation_id, before.conversation_id);
         assert_eq!(
-            move_attachment(&p, &before, Some(new.clone()))
+            move_attachment(&p, &before, Some(new.clone()), None)
                 .unwrap()
                 .generation(),
             moved.generation()
@@ -1166,7 +1271,7 @@ mod space_move_tests {
         )
         .unwrap();
         assert!(
-            move_attachment(&p, &before, Some(new))
+            move_attachment(&p, &before, Some(new), None)
                 .unwrap_err()
                 .to_string()
                 .contains("STALE_TARGET")

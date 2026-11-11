@@ -58,12 +58,26 @@ pub struct Sender {
     pub name: String,
     /// `bypass` or `prompting`: the SENDER's own permission class, never the receiver's.
     pub mode: String,
+    /// `<space>:<name>` of the sending session (contract 1.48.0); omitted when unscoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical: Option<String>,
+}
+impl Sender {
+    /// The `from-name` shown to the receiver: the canonical `<space>:<name>` when it
+    /// fits the 64-character cap, else the bare name (never a truncated canonical).
+    pub fn display_name(&self) -> &str {
+        match &self.canonical {
+            Some(c) if c.chars().count() <= 64 => c,
+            _ => &self.name,
+        }
+    }
 }
 impl Default for Sender {
     fn default() -> Self {
         Self {
             name: DEFAULT_SENDER.into(),
             mode: "prompting".into(),
+            canonical: None,
         }
     }
 }
@@ -115,7 +129,7 @@ pub fn envelope(from: &str, sender: &Sender, body: &str) -> String {
     format!(
         "<cross-session-message from=\"{}\" from-name=\"{}\" from-mode=\"{mode}\">\n{}\n</cross-session-message>",
         encode_from(from),
-        sanitize_sender_name(&sender.name),
+        sanitize_sender_name(sender.display_name()),
         escape_body(body)
     )
 }
@@ -351,6 +365,7 @@ mod tests {
         let s = Sender {
             name: "codex-lead".into(),
             mode: "bypass".into(),
+            canonical: None,
         };
         assert_eq!(
             envelope("uds:/tmp/cc-socks/42-ab12cd34.sock", &s, "hello\nworld"),
@@ -360,6 +375,7 @@ mod tests {
         let odd = Sender {
             name: "x".into(),
             mode: "weird".into(),
+            canonical: None,
         };
         assert_eq!(
             envelope("uds:/a b\"c", &odd, "b"),
@@ -373,6 +389,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn from_name_is_the_canonical_name_when_it_fits() {
+        let mut s = Sender {
+            name: "opus-#1067".into(),
+            mode: "bypass".into(),
+            canonical: Some("localica:opus-#1067".into()),
+        };
+        assert!(envelope("uds:/x", &s, "b").contains("from-name=\"localica:opus-#1067\""));
+        // A canonical over 64 characters falls back to the bare name, never truncated.
+        s.canonical = Some(format!("{}:opus-#1067", "s".repeat(60)));
+        assert!(envelope("uds:/x", &s, "b").contains("from-name=\"opus-#1067\""));
+        assert_eq!(Sender::default().display_name(), DEFAULT_SENDER);
+        assert_eq!(sanitize_sender_name("localica:LEAD#1"), "localica:LEAD#1");
+    }
     #[test]
     fn sender_names_are_sanitized_and_capped() {
         assert_eq!(sanitize_sender_name("a\"b<c>d\ne\tf\u{7}g"), "abcdefg");

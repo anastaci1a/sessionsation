@@ -491,6 +491,53 @@ requested destination, the reservation blocks competing lifecycle actions;
 manual host inspection may be needed. Repeating the original request observes its
 record, including failure, rather than replaying it. See the
 [placement contract](contract.md#herdr-space-placement).
+## Space-scoped session names (contract 1.48.0)
+
+A session belongs to a HERDR Space and its name is unique only within that Space
+(case-insensitive). Rows carry `space`, `name` (bare) and `canonical`
+(`<space>:<name>`, null when unscoped). A stopped or saved session keeps its
+Space even after the HERDR Space is closed or renamed. Deploying 1.48.0 renames
+nothing and changes no generation: existing rows get their Space from placement
+evidence once.
+
+```sh
+# Any --session takes an id, <space>:<name> or a bare name (AMBIGUOUS_SESSION if several match).
+sessionsation api session resolve --session localica:LEAD [--expected-generation G]
+# Rename keeps the Space: a bare name, or a canonical name of the session's own Space.
+sessionsation api rename --session localica:LEAD --expected-generation G --name localica:opus-#1067
+# Set or clear the Space of a session without a live HERDR terminal (catalog only).
+sessionsation api session set-space --session ID --expected-generation G (--space LABEL | --clear)
+# Resume: default is the stored Space (reused, or recreated with that label).
+sessionsation api resume --session ID --expected-generation G --herdr-session S [--space ID|LABEL | --new-space LABEL | --create-space] [--name NAME]
+sessionsation api session add-to-herdr ... (--space ID | --new-space LABEL | --create-space) [--name NAME]
+sessionsation api move-space --session ID --expected-generation G (--space ID | --new-space LABEL | --create-space LABEL) --request-id UUID
+# Inline: inside a HERDR pane a canonical --name must name the pane's own Space.
+sessionsation run --account A --name localica:opus-#1067
+```
+
+`--create-space` creates a Space that must not exist yet (`WORKSPACE_NAME_EXISTS`);
+for `resume`/`add-to-herdr` its label is the Space part of a canonical `--name`.
+`--new-space` keeps reusing an existing label. `rename` never moves
+(`SPACE_MISMATCH`: use `move-space`, or `session set-space` for an unscoped or
+stopped session). `api launch` takes a canonical `name` in its JSON request when
+it agrees with `space`; there is no `create_space` request field.
+
+| `--name` | Typed Space | Result |
+|---|---|---|
+| `opus-#1067` | `--space wR` (localica) | `localica:opus-#1067` |
+| `localica:opus-#1067` | none | Space resolved by label `localica` |
+| `Localica:LEAD` | none | case-insensitive label match, stored as `localica:LEAD` |
+| `localica:opus-#1067` | `--space w21` (sessionstuffs) | `SPACE_MISMATCH` |
+| `newspace:LEAD` | none | `SPACE_NOT_FOUND` |
+| `newspace:LEAD --create-space` | none | Space `newspace` created |
+| `localica:LEAD --create-space` | none | `WORKSPACE_NAME_EXISTS` |
+| `a:b:c`, `:lead`, `localica:`, `localica: LEAD` | | `INVALID_SESSION_NAME` |
+| `LEAD` (rename, `lead` exists in the same Space) | | `SESSION_NAME_EXISTS` |
+| `LEAD` (rename, `LEAD` exists only in another Space) | | ok |
+| `localica:x` (rename of an unscoped session) | | `SPACE_MISMATCH` |
+
+See [the contract](contract.md#space-scoped-session-names-1480).
+
 ## Executable and archive discovery
 
 ```sh

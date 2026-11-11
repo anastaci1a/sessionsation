@@ -121,7 +121,7 @@ fn chain_match(
 /// Catalog name of the managed session this process runs under (a parent is its attachment);
 /// `sessionsation` when called from outside any session (operator, supervisor, system).
 pub fn sender_name(paths: &Paths) -> String {
-    sender(paths).name
+    sender(paths).display_name().to_owned()
 }
 
 /// The sender of a native message: the catalog session this process runs under (name and the
@@ -140,6 +140,7 @@ pub fn sender(paths: &Paths) -> Sender {
         Some(Sender {
             name: s.name.clone(),
             mode: mode.into(),
+            canonical: s.canonical(),
         })
     });
     match found {
@@ -413,6 +414,7 @@ mod mode_tests {
             }),
             directory: None,
             previous_conversation_ids: vec![],
+            space: None,
         }
     }
     fn args(v: &[&str]) -> Option<Vec<String>> {

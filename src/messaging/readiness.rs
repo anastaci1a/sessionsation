@@ -246,6 +246,7 @@ mod tests {
             attachment: None,
             directory: None,
             previous_conversation_ids: vec![],
+            space: None,
         }
     }
     #[test]

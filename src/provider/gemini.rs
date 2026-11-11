@@ -1203,6 +1203,7 @@ mod tests {
             attachment: Some(a),
             directory: None,
             previous_conversation_ids: vec![],
+            space: None,
         };
         assert!(launch_observed(&session(id, attachment(pid, start))));
         assert!(

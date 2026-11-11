@@ -138,7 +138,7 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
     let directory = resume_directory(&session, &observation)?;
     claude::prelaunch_gate(&config, &account.home).await?;
     let attachment = crate::external::current_attachment(paths)?;
-    let current = catalog::move_attachment(paths, &session, attachment)?;
+    let current = catalog::move_attachment(paths, &session, attachment, None)?;
     crate::inline::mark_attached(paths);
     let mode = config.effective_launch_permissions();
     let settings = claude::native_peer::with_inbound_accept(

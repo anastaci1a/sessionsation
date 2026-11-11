@@ -131,6 +131,11 @@ every command with `LAYOUT_MIGRATION_REQUIRED`, except `api version` and
 `LAYOUT_MIGRATION_IN_PROGRESS` until `layout migrate` (or `layout rollback`)
 is run again.
 
+Since contract 1.48.0 `registry/session-catalog/spaces.json` mirrors each session's
+Space (`space`); a rollback to 1.47 drops `space` from `catalog.json` on its next
+write, and the next 1.48 transaction restores it from this file (same scheme as
+`identity.json`; see [Space-scoped session names](contract.md#space-scoped-session-names-1480)).
+
 ### Migrate
 
 ```sh

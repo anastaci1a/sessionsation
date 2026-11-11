@@ -317,7 +317,11 @@ with tempfile.TemporaryDirectory() as directory:
             assert value["result"]["checkpoints"]["max_response_bytes"] == 786432
             assert value["result"]["checkpoints"]["history_modes"] == ["legacy", "paginated"]
             assert value["result"]["checkpoints"]["delivery_evidence"] is False
-            assert value["result"]["session_names"]["version"] == 1
+            assert value["result"]["session_names"] == {"version": 1, "live_herdr_source": "host_tab_label", "retained_when_unobserved": True, "host_labels_unique": False, "rename_updates_host": True}
+            spaces = value["result"]["session_spaces"]
+            assert spaces["since_contract"] == "1.48.0" and spaces["version"] == 1, spaces
+            assert spaces["row_fields"] == ["space", "name", "canonical"] and spaces["rename_moves"] is False
+            assert spaces["create_space"]["request_field"] is None and spaces["generation_includes_space"] is False
             assert value["result"]["steering"]["version"] == 1
             assert value["result"]["steering"]["acceptance_only"] is False
             assert value["result"]["steering"]["reply_correlation"] == "after_steer_item"

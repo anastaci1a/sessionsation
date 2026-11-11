@@ -422,7 +422,7 @@ pub async fn start(paths: &Paths, s: Start) -> Result<Host> {
             claude::launch::ensure_resumable(&session, &observation)?;
             let directory = claude::launch::resume_directory(&session, &observation)?;
             let session = if s.attachment.is_some() {
-                catalog::move_attachment(paths, &session, s.attachment.clone())?
+                catalog::move_attachment(paths, &session, s.attachment.clone(), None)?
             } else {
                 session
             };
@@ -1423,7 +1423,7 @@ pub async fn take_over(paths: &Paths, id: &str) -> Result<()> {
     let s = catalog::find(paths, &session)?;
     // This viewer may be the recorded terminal; the resumed client records it again.
     let s = match &s.attachment {
-        Some(a) if a.pid == std::process::id() => catalog::move_attachment(paths, &s, None)?,
+        Some(a) if a.pid == std::process::id() => catalog::move_attachment(paths, &s, None, None)?,
         _ => s,
     };
     claude::launch::exec_resume(paths, &s.id, &s.generation()).await

@@ -70,18 +70,52 @@ pub fn label_tab(name: &str) {
     }
 }
 
+/// Label of the Space (workspace) the invoking HERDR pane belongs to (contract
+/// 1.48.0): the pane id's workspace part, looked up in `workspace list`. None
+/// outside HERDR or when the host cannot be read.
+pub fn pane_space() -> Option<String> {
+    if std::env::var("HERDR_ENV").as_deref() != Ok("1") {
+        return None;
+    }
+    let session = crate::terminal::herdr_session_from(|k| std::env::var(k).ok())?;
+    let pane = std::env::var("HERDR_PANE_ID").ok()?;
+    let workspace = pane.split_once(':')?.0.to_owned();
+    let list = crate::terminal::call(&session, &["workspace", "list"]).ok()?;
+    list["workspaces"]
+        .as_array()?
+        .iter()
+        .find(|w| w["workspace_id"] == workspace.as_str())
+        .and_then(|w| w["label"].as_str().map(str::to_owned))
+}
+
+/// An inline `--name`: bare, or `<space>:<name>` of the pane's own Space
+/// (`SPACE_MISMATCH`); outside a HERDR pane a canonical name is `INVALID_ARGUMENT`.
+/// Returns the bare name.
+pub fn bare_name<'a>(name: &'a str, pane_space: Option<&str>) -> Result<&'a str> {
+    let parsed = catalog::parse_name(name)?;
+    if parsed.space.is_some() {
+        ensure!(
+            pane_space.is_some(),
+            "INVALID_ARGUMENT: a <space>:<name> needs a HERDR pane whose Space can be read; use a bare name"
+        );
+        catalog::scope::ensure_agrees(parsed, pane_space, "run it in a pane of that Space")?;
+    }
+    Ok(parsed.name)
+}
+
 /// Journal an inline new session. Returns the request (= future catalog session) id.
 pub fn begin_new(
     paths: &Paths,
     provider: ProviderId,
     account: &str,
     name: &str,
+    space: Option<&str>,
     cwd: &Path,
 ) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let info = info()?;
     let _lock = launch::lock(paths)?;
-    catalog::reserve_name(paths, name, &id)?;
+    catalog::reserve_name(paths, space, name, &id)?;
     let now = daemon::now();
     let mut receipt = launch::Receipt {
         version: 1,
@@ -116,9 +150,10 @@ pub fn begin_new(
         created_at: Some(now),
         updated_at: now,
         inline: Some(info),
+        space_label: space.map(str::to_owned),
     };
     if let Err(error) = launch::save(paths, &mut receipt) {
-        let _ = catalog::release_reservation(paths, &id, name);
+        let _ = catalog::release_reservation(paths, &id);
         return Err(error);
     }
     Ok(id)
@@ -221,7 +256,7 @@ pub fn fail_new(paths: &Paths, id: &str, error: &anyhow::Error) {
     let _ = launch::change(paths, id, |r| {
         if !terminal(&r.phase) && r.phase != "uncertain" {
             if r.phase == "starting_provider" {
-                catalog::release_reservation(paths, id, &r.request.name)?;
+                catalog::release_reservation(paths, id)?;
                 r.phase = "failed".into();
             } else {
                 r.phase = "uncertain".into();
@@ -427,7 +462,12 @@ pub fn capability() -> Value {
 }
 
 /// Default session name for an unnamed inline new session, unique in the catalog.
-pub fn default_name(paths: &Paths, provider: ProviderId, cwd: &Path) -> Result<String> {
+pub fn default_name(
+    paths: &Paths,
+    provider: ProviderId,
+    cwd: &Path,
+    space: Option<&str>,
+) -> Result<String> {
     let label = match provider {
         ProviderId::Codex => crate::external::default_new_name(cwd)?,
         other => cwd
@@ -440,7 +480,7 @@ pub fn default_name(paths: &Paths, provider: ProviderId, cwd: &Path) -> Result<S
             })
             .to_owned(),
     };
-    catalog::free_name(paths, &label)
+    catalog::free_name(paths, space, &label)
 }
 
 /// Journaled inline new session: optional `--name`, tab label, then the provider
@@ -452,9 +492,8 @@ pub async fn run_new(
     name: Option<&str>,
     options: &[String],
 ) -> Result<()> {
-    if let Some(name) = name {
-        launch::validate_session_name(name)?;
-    }
+    let space = pane_space();
+    let name = name.map(|n| bare_name(n, space.as_deref())).transpose()?;
     let cwd = std::env::current_dir()?;
     ensure!(cwd.is_dir(), "working directory is not a directory");
     let _account = crate::accounts::launch_lock(paths, provider, account)?;
@@ -462,9 +501,9 @@ pub async fn run_new(
     let (id, name) = loop {
         let chosen = match name {
             Some(name) => name.to_owned(),
-            None => default_name(paths, provider, &cwd)?,
+            None => default_name(paths, provider, &cwd, space.as_deref())?,
         };
-        match begin_new(paths, provider, account, &chosen, &cwd) {
+        match begin_new(paths, provider, account, &chosen, space.as_deref(), &cwd) {
             Ok(id) => break (id, chosen),
             // An unnamed launch races only other unnamed launches for the free name.
             Err(error)
