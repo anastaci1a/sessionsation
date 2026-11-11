@@ -3318,15 +3318,24 @@ and for an hour after they finish):
   queue before the request cannot be paused (the native queue has no pause) and runs first; the compaction waits
   until it has drained, which new input no longer prevents because of the hold below. `--when-idle` does not wait
   forever: it expires at `expires_at`.
-- **Hold.** While an operation is non-terminal, a `submit` or `queue` send to that Codex session is not added to
-  the native queue: the receipt stays `pending_local` with `reason:"compaction_hold"` (and a `reason_detail`) and the
-  message is bound to its id as usual. When the operation completes, fails, expires or is cancelled, the held
-  messages are delivered in arrival order through the ordinary send path (the original request, same message
-  id), strictly after the compaction. A failed compaction releases the hold the same way. A held message's own
-  `expires_at` still applies (it becomes `expired` and is not delivered), `api cancel` on it works, and nothing
-  is lost or sent twice (one message id reaches the native queue at most once; an uncertain add is never
-  replayed). `steer` and `resume` are not held. Held input is recovered after a supervisor restart: the release is
-  journaled (`hold.released`) and re-run by the supervisor until done.
+- **Hold.** While an operation is pending (a `waiting` one stops holding at its `expires_at`, even if the supervisor
+  is down), `starting` or `running`, a public `submit` or `queue` send to that Codex session is not added to the
+  native queue: the receipt stays `pending_local` with `reason:"compaction_hold"` (and a `reason_detail`) and the
+  message is bound to its id as usual. Held paths: `api send` modes `submit` and `queue` (also used by questions
+  and notices). Not held: `steer` and `resume`, the legacy `messaging enqueue` command and the `messaging modes`
+  commands (they have no public message row to release). The hold lasts until the held input is released, not just
+  until the operation ends, so a new send cannot overtake a held one (`hold.released` turns true when a release pass
+  found nothing left to deliver or retry).
+- **Release.** When the operation completes, fails, expires or is cancelled, the supervisor re-sends the held
+  messages through the ordinary idempotent send path (same message id), in arrival order, at most 20 per tick
+  and after all pending operations were advanced, so a backlog cannot stall another compaction. Every released
+  message is sent with **queue semantics**, including one that was a `submit`: after the first one starts a turn a
+  submit would be refused as `target_busy`, so the native queue runs them in order instead. The receipt stays honest:
+  `mode` is still `submit` and carries `hold_release:{from:"compaction",delivered_as:"queue"}`. A failed or
+  uncertain step stops the pass at that message (later ones never overtake it): the receipt keeps `pending_local`
+  with `reason:"compaction_release_retry"` and the next tick re-queries and retries, until the message's own
+  `expires_at` makes it `expired`. A held message's `expires_at` and `api cancel` work as for any unsent message,
+  nothing is lost or sent twice (an uncertain add is never replayed), and the release survives a supervisor restart.
 - **One per session.** A second `compact` for a session with a pending operation (or the same `--operation` id)
   returns that operation with `existing:true` and creates nothing, whatever its expiry.
 - **Cancel.** Only while `waiting`: the operation becomes `cancelled`, held input is released, and a repeat is a
@@ -3338,10 +3347,13 @@ and for an hour after they finish):
   `reason:"provider_rejected"` and is retried at the next check, at most 3 attempts in all, then `failed`
   (`provider_rejected`) with the hold released. Nothing was started in that case, so no turn is repeated. An
   unanswered start (timeout, dropped connection) stays `starting`: it is resolved only from the thread's own
-  turns (a compaction turn appeared: `running`/`complete`; none after the idle grace: back to `waiting`) and is never
-  repeated on a guess.
+  turns (a compaction turn appeared: `running`/`complete`) and is never issued again, since a slow app-server could
+  then compact twice. If none appears within 30 seconds of the thread being idle, it fails `compaction_not_observed`
+  and releases the hold.
 - **Completion** is observed from the thread's recent turns: the first turn that was not in the baseline taken
-  just before the start and carries a `contextCompaction` item (or no user message). `completed` is `complete`;
+  just before the start and carries a positive `contextCompaction` item. A turn whose summary shows a user message
+  is never it; a turn whose summary omits items is identified by reading that one turn's items
+  (`thread/items/list`). `completed` is `complete`;
   `failed` or `interrupted` is `failed`; a run that is still going after 30 minutes, or that never shows as a turn
   once the thread is idle again, is `failed` (`compaction_timeout`, `compaction_not_observed`) and releases the hold.
 - **Restarts.** The operation is bound to the native runtime generation at request time. If the session process
@@ -3354,5 +3366,5 @@ and for an hour after they finish):
 - **Journal and capability.** Records are `operations/compactions/ID.json` (retained like other finished
   operations). `api capabilities` advertises `session_compact` (providers, phases, reasons, expiry bounds, hold
   semantics). The supervisor must be running for a queued compaction to start
-  (`SESSIONSATION_COMPACTION_SECONDS`, default 2, 0 disables the loop). The native app-server profile is the one
+  (`SESSIONSATION_COMPACTION_SECONDS`, default 2, 0 disables the loop; a panic in one pass is caught, logged to the daemon log and retried). The native app-server profile is the one
   messaging already requires (`unsupported_native_version` otherwise).

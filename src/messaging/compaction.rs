@@ -14,6 +14,7 @@
 //! `send_public` of the original request, which is idempotent per message id).
 use super::*;
 use anyhow::{Context, ensure};
+use futures_util::FutureExt;
 
 /// Waiting attempts the app-server may refuse before the operation fails.
 const MAX_ATTEMPTS: u32 = 3;
@@ -24,7 +25,10 @@ pub const MAX_EXPIRY_SECONDS: i64 = 86400;
 const RUN_LIMIT_SECONDS: i64 = 1800;
 /// A compaction that never shows up as a turn although the thread is idle again.
 const OBSERVE_GRACE_SECONDS: i64 = 30;
-const STARTING_GRACE_SECONDS: i64 = 10;
+/// Held messages delivered per release pass; the rest wait for the next tick.
+const MAX_RELEASE_PER_PASS: usize = 20;
+/// A just-released operation is re-swept this long for input that was held at the last moment.
+const STRAY_SWEEP_SECONDS: i64 = 60;
 /// A release claim older than this is taken over (its process died).
 const RELEASE_CLAIM_SECONDS: i64 = 120;
 pub const POLL_SECONDS: u64 = 2;
@@ -143,12 +147,20 @@ fn waiting(paths: &Paths, id: &str, why: &str) {
     });
 }
 
-/// True while a compaction of this conversation is pending, starting or running: new native
-/// input for it is held. Reads the journal only; callable under any lock.
+/// True while new native input for this conversation must be held: a compaction is pending (not
+/// past its expiry), starting or running, or it finished but its held input has not been fully
+/// released yet (so a new send cannot overtake the held ones). Reads the journal only.
 pub fn hold_active(paths: &Paths, conversation: &str) -> bool {
+    let now = crate::daemon::now();
     list(paths).is_ok_and(|all| {
-        all.iter()
-            .any(|r| !r.terminal() && r.conversation_id == conversation)
+        all.iter().any(|r| {
+            r.conversation_id == conversation
+                && match r.phase.as_str() {
+                    "waiting" => now < r.expires_at,
+                    "starting" | "running" => true,
+                    _ => !r.hold_released,
+                }
+        })
     })
 }
 
@@ -296,7 +308,7 @@ async fn held_ids(paths: &Paths, conversation: &str) -> Option<Vec<String>> {
         .prepare(
             "SELECT r.id FROM receipts r JOIN public_messages p ON p.id=r.id \
              WHERE json_extract(r.receipt,'$.state')='pending_local' \
-             AND json_extract(r.receipt,'$.reason')='compaction_hold' \
+             AND json_extract(r.receipt,'$.reason') IN ('compaction_hold','compaction_release_retry') \
              AND json_extract(p.binding,'$.native.session_id')=? ORDER BY p.rowid",
         )
         .ok()?;
@@ -379,6 +391,56 @@ pub fn operations(paths: &Paths) -> anyhow::Result<Vec<Value>> {
 /// Deliver the input held for a finished compaction, once. Every message goes through the
 /// ordinary public send of its original request (same id, same bytes), which settles a
 /// concurrent delivery of the same id to exactly one native add.
+/// A transient failure left this message `pending_local` with some delivery error as its reason:
+/// mark it so the next release pass finds it again. The message's own expiry bounds the retries.
+async fn mark_retry(paths: &Paths, id: &str) {
+    let Ok(mut ledger) = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await else {
+        return;
+    };
+    if let Ok(Some(mut receipt)) = ledger.get(id)
+        && receipt.state == "pending_local"
+        && receipt.reason.as_deref() != Some("compaction_release_retry")
+    {
+        receipt.reason = Some("compaction_release_retry".into());
+        let _ = ledger.save(&receipt);
+    }
+}
+
+/// Deliver the input held for a conversation, in arrival order, each through the ordinary
+/// idempotent public send with queue semantics (`send_released`). Returns true only when nothing
+/// is left to retry: a ledger or delivery failure (including a receipt that is still
+/// `pending_local` afterwards) stops the pass at that message, so later ones never overtake it,
+/// and returns false so the next tick re-queries and retries. A pass handles at most
+/// `MAX_RELEASE_PER_PASS` messages; input that arrived while releasing is picked up by the next round.
+async fn deliver_held(paths: &Paths, conversation: &str) -> bool {
+    for _ in 0..3 {
+        let Some(ids) = held_ids(paths, conversation).await else {
+            return false;
+        };
+        if ids.is_empty() {
+            return true;
+        }
+        let more = ids.len() > MAX_RELEASE_PER_PASS;
+        for message in ids.into_iter().take(MAX_RELEASE_PER_PASS) {
+            match public::send_released(paths, &message).await {
+                Ok(v) if v["state"] != "pending_local" => {}
+                _ => {
+                    mark_retry(paths, &message).await;
+                    return false;
+                }
+            }
+        }
+        if more {
+            return false;
+        }
+    }
+    false
+}
+
+/// Release the input held for a finished compaction. `hold_released` is set only after a pass
+/// found nothing left to deliver or retry; until then the hold stays in force, so a new send
+/// cannot overtake held ones, and the next tick tries again. A concurrent release (another
+/// process) is skipped by a claim that lapses after `RELEASE_CLAIM_SECONDS`.
 async fn release(paths: &Paths, id: &str) {
     let claimed = update(paths, id, |r| {
         let now = crate::daemon::now();
@@ -393,29 +455,10 @@ async fn release(paths: &Paths, id: &str) {
         true
     });
     let Ok(Some(r)) = claimed else { return };
-    let Some(ids) = held_ids(paths, &r.conversation_id).await else {
-        // Ledger unavailable: leave the claim to lapse; the next check retries.
-        return;
-    };
-    for message in ids {
-        let request = async {
-            let ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read))
-                .await
-                .ok()?;
-            public::get(&ledger, &message)
-                .ok()
-                .flatten()
-                .map(public::Binding::into_request)
-        }
-        .await;
-        if let Some(request) = request {
-            // A failed delivery is recorded on its receipt like any send; it is not retried
-            // here, and never replayed (an uncertain add is only ever reconciled).
-            let _ = public::send_public(paths, request).await;
-        }
-    }
+    let done = deliver_held(paths, &r.conversation_id).await;
     let _ = update(paths, id, |r| {
-        r.hold_released = true;
+        r.hold_released |= done;
+        r.release_claimed_at = None;
         true
     });
 }
@@ -436,12 +479,44 @@ struct ItemKind {
     #[serde(rename = "type")]
     kind: String,
 }
+#[derive(Deserialize)]
+struct ItemsPage {
+    data: Vec<ItemEntry>,
+}
+#[derive(Deserialize)]
+struct ItemEntry {
+    item: ItemKind,
+}
 impl CompactionTurn {
-    /// A manual compaction turn carries a `contextCompaction` item and no user message.
-    fn is_compaction(&self) -> bool {
-        let has = |kind: &str| self.items.iter().any(|i| i.kind == kind);
-        has("contextCompaction") || !has("userMessage")
+    fn has(&self, kind: &str) -> bool {
+        self.items.iter().any(|i| i.kind == kind)
     }
+}
+/// The compaction turn among the turns that were not there before the start: one that carries a
+/// positive `contextCompaction` item. A turn whose summary shows a user message is somebody
+/// else's; a turn whose summary omits items is checked by reading that one turn's items. Never
+/// inferred from the absence of a user message.
+async fn compaction_turn<'a>(
+    control: &mut Transport,
+    conversation: &str,
+    turns: &'a [CompactionTurn],
+    baseline: &[String],
+) -> Result<Option<&'a CompactionTurn>> {
+    for turn in turns.iter().filter(|t| !baseline.contains(&t.id)) {
+        if turn.has("contextCompaction") {
+            return Ok(Some(turn));
+        }
+        if turn.has("userMessage") {
+            continue;
+        }
+        let page: ItemsPage = control
+            .checkpoint_items(conversation, &turn.id, None)
+            .await?;
+        if page.data.iter().any(|e| e.item.kind == "contextCompaction") {
+            return Ok(Some(turn));
+        }
+    }
+    Ok(None)
 }
 async fn recent_turns(control: &mut Transport, conversation: &str) -> Result<Vec<CompactionTurn>> {
     let page: TurnsPage = control.passive_summary_page(conversation, None, 5).await?;
@@ -451,17 +526,21 @@ async fn recent_turns(control: &mut Transport, conversation: &str) -> Result<Vec
 /// One supervisor pass over every journaled compaction.
 pub async fn tick(paths: &Paths) {
     let Ok(all) = list(paths) else { return };
-    for r in all {
-        if r.terminal() {
-            if !r.hold_released {
-                release(paths, &r.id).await;
-            }
-            continue;
-        }
+    // Starts and follow-ups first, so a release backlog cannot stall another pending compaction.
+    for r in all.iter().filter(|r| !r.terminal()) {
         advance(paths, &r.id).await;
-        // Finished by this very pass (or a concurrent one): release right away.
-        if read(paths, &r.id).is_ok_and(|r| r.terminal()) {
+    }
+    let now = crate::daemon::now();
+    let Ok(all) = list(paths) else { return };
+    for r in all.iter().filter(|r| r.terminal()) {
+        if !r.hold_released {
             release(paths, &r.id).await;
+        } else if r
+            .finished_at
+            .is_some_and(|at| now - at < STRAY_SWEEP_SECONDS)
+        {
+            // Input held at the very last moment, after the final query of the release.
+            deliver_held(paths, &r.conversation_id).await;
         }
     }
 }
@@ -626,8 +705,14 @@ async fn follow(paths: &Paths, r: Record) {
         Err(_) => None,
     };
     let since = r.started_at.unwrap_or(r.updated_at);
-    if r.phase == "running" && now - since > RUN_LIMIT_SECONDS {
-        return finish(paths, &id, &["running"], "failed", "compaction_timeout");
+    if now - since > RUN_LIMIT_SECONDS {
+        return finish(
+            paths,
+            &id,
+            &["starting", "running"],
+            "failed",
+            "compaction_timeout",
+        );
     }
     let Some(attached) = attached else {
         // No attachment: the process is gone. A starting one never started; a running one
@@ -637,11 +722,7 @@ async fn follow(paths: &Paths, r: Record) {
             &id,
             &["starting", "running"],
             "failed",
-            if r.phase == "starting" {
-                "session_not_running"
-            } else {
-                "compaction_not_observed"
-            },
+            "compaction_not_observed",
         );
     };
     let Ok(mut control) = attached.connect().await else {
@@ -653,9 +734,9 @@ async fn follow(paths: &Paths, r: Record) {
     let Ok(turns) = recent_turns(&mut control, &conversation).await else {
         return;
     };
-    let found = turns
-        .iter()
-        .find(|t| !r.baseline.contains(&t.id) && t.is_compaction());
+    let Ok(found) = compaction_turn(&mut control, &conversation, &turns, &r.baseline).await else {
+        return;
+    };
     match found {
         Some(turn) => {
             let turn_id = turn.id.clone();
@@ -703,29 +784,13 @@ async fn follow(paths: &Paths, r: Record) {
                 }
             }
         }
-        None if activity == "idle"
-            && r.phase == "starting"
-            && now - r.updated_at > STARTING_GRACE_SECONDS =>
-        {
-            // The unanswered start never produced a turn: it did not happen. Compacting
-            // twice is harmless, so wait for the next idle point instead of failing.
-            let _ = update(paths, &id, |r| {
-                if r.phase != "starting" {
-                    return false;
-                }
-                r.phase = "waiting".into();
-                r.reason = Some("provider_unavailable".into());
-                true
-            });
-        }
-        None if activity == "idle"
-            && r.phase == "running"
-            && now - since > OBSERVE_GRACE_SECONDS =>
-        {
+        // Idle again and no compaction turn after the window: report it, release the hold. A start
+        // that was sent is never sent again (a slow app-server could compact twice).
+        None if activity == "idle" && now - since > OBSERVE_GRACE_SECONDS => {
             finish(
                 paths,
                 &id,
-                &["running"],
+                &["starting", "running"],
                 "failed",
                 "compaction_not_observed",
             );
@@ -744,7 +809,18 @@ pub async fn monitor(paths: Paths) {
         return;
     }
     loop {
-        tick(&paths).await;
+        // A panic in one pass must not end the loop for good.
+        if let Err(panic) = std::panic::AssertUnwindSafe(tick(&paths))
+            .catch_unwind()
+            .await
+        {
+            let text = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown");
+            eprintln!("compaction monitor: a pass panicked and will be retried: {text}");
+        }
         tokio::time::sleep(crate::timing::secs(every)).await;
     }
 }
@@ -761,7 +837,7 @@ pub fn capability() -> Value {
         "failure_reasons":["generation_changed","provider_rejected","unsupported_native_version","compaction_failed","compaction_interrupted","compaction_not_observed","compaction_timeout"],
         "status":"session compact-status","cancel":"session compact-cancel","cancel_operation":"cancel-operation",
         "cancel_while":["waiting"],"max_attempts":MAX_ATTEMPTS,
-        "hold":{"scope":"new native input (submit, queue) to the session while pending","held_receipt":{"state":"pending_local","reason":"compaction_hold"},
+        "hold":{"scope":"new public submit and queue sends to the session until the held input is released","not_held":["steer","resume","legacy messaging enqueue","modes"],"held_receipt":{"state":"pending_local","reason":"compaction_hold"},"release_delivery":"queue semantics for every held message, in arrival order","release_retry_reason":"compaction_release_retry",
             "released":"in arrival order after complete, failed, cancelled or expired","already_native_queued":"runs first; the compaction waits for the native queue to drain"},
         "journal":crate::layout::COMPACTIONS,"replays":false})
 }

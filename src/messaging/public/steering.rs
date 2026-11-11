@@ -523,6 +523,7 @@ mod tests {
                     initialize(&db).unwrap();
                     let b = Binding {
                         cancelled: false,
+                        released_hold: false,
                         origin: None,
                         origin_source: None,
                         evidence_observed_at: None,
@@ -943,6 +944,7 @@ mod tests {
         };
         let binding = Binding {
             cancelled: false,
+            released_hold: false,
             origin: None,
             origin_source: None,
             evidence_observed_at: None,

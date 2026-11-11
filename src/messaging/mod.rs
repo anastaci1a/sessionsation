@@ -839,7 +839,7 @@ async fn deliver(
     receipt: &mut Receipt,
     input: Option<&Enqueue>,
 ) -> Result<()> {
-    deliver_with_policy(paths, ledger, receipt, input, None)
+    deliver_with_policy(paths, ledger, receipt, input, None, false)
         .await
         .map(|_| ())
 }
@@ -849,6 +849,8 @@ async fn deliver_with_policy(
     receipt: &mut Receipt,
     input: Option<&Enqueue>,
     public_mode: Option<PublicMode>,
+    // Delivering input a finished compaction held: the hold no longer applies to it.
+    released: bool,
 ) -> Result<bool> {
     // All provider I/O below runs without the root-wide ledger lease so concurrent
     // sends and receipt polls are not blocked behind a busy target. Lock order is
@@ -861,7 +863,11 @@ async fn deliver_with_policy(
             // A queued compaction holds new input for its session (contract 1.47.0). Checked
             // under session ownership, which the compaction start also takes, so an input is
             // either in the native queue before the start (the start then waits) or held.
+            // Only the public send path is held (it has a ledger binding the release can find);
+            // steer, resume, the legacy enqueue and modes never are.
             if input.is_some()
+                && public_mode.is_some()
+                && !released
                 && stored.state == "pending_local"
                 && compaction::hold_active(paths, &stored.session_id)
             {

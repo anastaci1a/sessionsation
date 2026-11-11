@@ -15,6 +15,12 @@ struct Fake {
     drop_start: bool,
     /// Status of the turn a start records (`inProgress` until a test completes it).
     compaction_status: Option<&'static str>,
+    /// A queue add leaves a running turn (thread `active`) instead of a finished one.
+    add_busy: bool,
+    /// Thread reads fail (the connection drops): a transient provider error.
+    fail_reads: bool,
+    /// `thread/turns/list` omits item lists, like a summary view without them.
+    hide_summary_items: bool,
     turns: Vec<Value>,
     /// Every method received, in order, with the client id of an add.
     log: Vec<String>,
@@ -33,6 +39,7 @@ struct World {
     paths: Paths,
     conversation: String,
     session: crate::catalog::Session,
+    input: Enqueue,
     fake: Arc<Mutex<Fake>>,
     server: tokio::task::JoinHandle<()>,
 }
@@ -63,6 +70,7 @@ async fn world() -> World {
             let method = r["method"].as_str().unwrap().to_owned();
             s.log.push(method.clone());
             match method.as_str() {
+                "thread/read" if s.fail_reads => None,
                 "thread/read" => Some(
                     json!({"thread":{"id":id,"status":{"type":if s.busy {"active"} else {"idle"}}}}),
                 ),
@@ -70,15 +78,27 @@ async fn world() -> World {
                     let mut data = s.turns.clone();
                     data.reverse();
                     data.truncate(r["params"]["limit"].as_u64().unwrap_or(50) as usize);
+                    if s.hide_summary_items {
+                        for turn in data.iter_mut() {
+                            turn["items"] = json!([]);
+                        }
+                    }
                     Some(json!({"data":data,"nextCursor":null}))
+                }
+                "thread/items/list" => {
+                    let turn = s.turns.iter().find(|t| t["id"] == r["params"]["turnId"]).cloned();
+                    let items = turn.map(|t| t["items"].as_array().cloned().unwrap_or_default()).unwrap_or_default();
+                    Some(json!({"data":items.into_iter().map(|i| json!({"turnId":r["params"]["turnId"],"item":i})).collect::<Vec<_>>(),"nextCursor":null}))
                 }
                 "thread/queue/list" => Some(json!({"data":s.queue.iter().map(|q|
                     json!({"id":format!("q-{q}"),"clientUserMessageId":q})).collect::<Vec<_>>(),"nextCursor":null})),
                 "thread/queue/add" => {
                     let client = r["params"]["clientUserMessageId"].as_str().unwrap().to_owned();
                     // The session is idle: the add is consumed at once as a finished turn.
-                    s.turns.push(json!({"id":format!("turn-{client}"),"status":"completed","itemsView":"summary",
+                    let add_status = if s.add_busy { "inProgress" } else { "completed" };
+                    s.turns.push(json!({"id":format!("turn-{client}"),"status":add_status,"itemsView":"summary",
                         "items":[{"type":"userMessage","id":"x","clientId":client}]}));
+                    s.busy = s.add_busy;
                     Some(json!({"queuedSubmission":{"id":format!("q-{client}"),"clientUserMessageId":client}}))
                 }
                 "thread/compact/start" => {
@@ -113,6 +133,11 @@ async fn world() -> World {
         paths,
         conversation: a.id.clone(),
         session,
+        input: Enqueue {
+            expected_generation: a.generation(),
+            expires_at: crate::daemon::now() + 300,
+            ..input
+        },
         fake,
         server,
     }
@@ -139,6 +164,9 @@ impl World {
     }
     /// A queue-mode send from another agent.
     async fn send(&self, id: &str) -> Value {
+        self.send_mode(id, PublicMode::Queue).await
+    }
+    async fn send_mode(&self, id: &str, mode: PublicMode) -> Value {
         send_public(
             &self.paths,
             PublicRequest {
@@ -152,7 +180,7 @@ impl World {
                 message_id: id.into(),
                 session_id: self.session.id.clone(),
                 expected_generation: self.session.generation(),
-                mode: PublicMode::Queue,
+                mode,
                 text: format!("message {id}"),
                 expires_at: crate::daemon::now() + 300,
             },
@@ -523,4 +551,205 @@ async fn sessions_of_other_providers_are_refused_with_a_clear_code() {
     assert!(error.contains("compact themselves"), "{error}");
     assert!(list(&w.paths).unwrap().is_empty());
     assert!(!hold_active(&w.paths, &w.conversation));
+}
+
+/// Start, complete and leave the operation just before its release.
+async fn run_to_complete(w: &World, id: &str) {
+    w.fake.lock().unwrap().compaction_status = Some("completed");
+    tick(&w.paths).await;
+    assert_eq!(w.phase(id), "running");
+}
+
+#[tokio::test]
+async fn an_unavailable_ledger_keeps_the_hold_and_a_new_send_cannot_overtake() {
+    let w = world().await;
+    w.fake.lock().unwrap().busy = true;
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    assert_eq!(w.send(M1).await["reason"], "compaction_hold");
+    w.fake.lock().unwrap().busy = false;
+    run_to_complete(&w, &id).await;
+    // The release cannot read the ledger: the operation finishes but the hold stays.
+    let blocker = Ledger::open(&w.paths).unwrap();
+    tick(&w.paths).await;
+    drop(blocker);
+    let r = w.record(&id);
+    assert_eq!(r.phase, "complete");
+    assert!(
+        !r.hold_released,
+        "nothing was released, so it is not marked released"
+    );
+    assert!(hold_active(&w.paths, &w.conversation));
+    assert_eq!(w.fake.lock().unwrap().count("thread/queue/add"), 0);
+    // A send arriving now is held behind M1, not delivered ahead of it.
+    assert_eq!(w.send(M2).await["reason"], "compaction_hold");
+    assert_eq!(w.fake.lock().unwrap().count("thread/queue/add"), 0);
+    tick(&w.paths).await;
+    assert!(w.record(&id).hold_released);
+    assert!(!hold_active(&w.paths, &w.conversation));
+    let fake = w.fake.lock().unwrap();
+    let order: Vec<_> = fake
+        .turns
+        .iter()
+        .filter_map(|t| t["items"][0]["clientId"].as_str())
+        .collect();
+    assert_eq!(order, [M1, M2]);
+}
+
+#[tokio::test]
+async fn a_delivery_that_fails_transiently_is_retried_and_blocks_the_hold_release() {
+    let w = world().await;
+    w.fake.lock().unwrap().busy = true;
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    for m in [M1, M2] {
+        assert_eq!(w.send(m).await["reason"], "compaction_hold");
+    }
+    w.fake.lock().unwrap().busy = false;
+    run_to_complete(&w, &id).await;
+    // The owner's native-send switch is off: delivery is refused, the receipts stay local.
+    let marker = w.paths.root.join("messaging/native-send.disabled");
+    fs::write(&marker, "").unwrap();
+    tick(&w.paths).await;
+    assert!(!w.record(&id).hold_released);
+    assert_eq!(
+        w.receipt_state(M1),
+        (
+            "pending_local".to_string(),
+            Some("compaction_release_retry".to_string())
+        )
+    );
+    assert_eq!(w.receipt_state(M2).0, "pending_local");
+    assert_eq!(w.fake.lock().unwrap().count("thread/queue/add"), 0);
+    // Repaired: the next tick re-queries, delivers both in order and only then releases.
+    fs::remove_file(&marker).unwrap();
+    tick(&w.paths).await;
+    assert!(w.record(&id).hold_released);
+    assert_eq!(w.receipt_state(M1).0, "native_accepted");
+    assert_eq!(w.receipt_state(M2).0, "native_accepted");
+    assert_eq!(w.fake.lock().unwrap().count("thread/queue/add"), 2);
+}
+
+#[tokio::test]
+async fn held_submit_messages_are_all_released_with_queue_semantics() {
+    let w = world().await;
+    w.fake.lock().unwrap().busy = true;
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    for m in [M1, M2] {
+        assert_eq!(
+            w.send_mode(m, PublicMode::Submit).await["reason"],
+            "compaction_hold"
+        );
+    }
+    {
+        // Every add starts a turn that is still running when the next one is delivered.
+        let mut fake = w.fake.lock().unwrap();
+        fake.busy = false;
+        fake.add_busy = true;
+    }
+    run_to_complete(&w, &id).await;
+    tick(&w.paths).await;
+    assert!(w.record(&id).hold_released);
+    for m in [M1, M2] {
+        assert_eq!(w.receipt_state(m).0, "native_accepted", "{m}");
+    }
+    assert_eq!(w.fake.lock().unwrap().count("thread/queue/add"), 2);
+    // The receipt says how it was delivered.
+    let receipt = w.send_mode(M2, PublicMode::Submit).await;
+    assert_eq!(receipt["mode"], "submit");
+    assert_eq!(receipt["hold_release"]["delivered_as"], "queue");
+}
+
+#[tokio::test]
+async fn an_unobserved_start_fails_without_being_issued_again_and_releases_the_hold() {
+    let w = world().await;
+    w.fake.lock().unwrap().drop_start = true;
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    assert_eq!(w.send(M1).await["reason"], "compaction_hold");
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "starting");
+    w.fake.lock().unwrap().drop_start = false;
+    // Long past the window, idle, no compaction turn: failed, never started a second time.
+    let mut r = w.record(&id);
+    r.updated_at = crate::daemon::now() - 3 * OBSERVE_GRACE_SECONDS;
+    save(&w.paths, &r).unwrap();
+    tick(&w.paths).await;
+    let r = w.record(&id);
+    assert_eq!(
+        (r.phase.as_str(), r.reason.as_deref()),
+        ("failed", Some("compaction_not_observed"))
+    );
+    assert_eq!(w.fake.lock().unwrap().count("thread/compact/start"), 1);
+    assert!(r.hold_released);
+    assert_eq!(w.receipt_state(M1).0, "native_accepted");
+}
+
+#[tokio::test]
+async fn only_a_positive_compaction_item_counts_as_the_compaction_turn() {
+    let w = world().await;
+    {
+        let mut fake = w.fake.lock().unwrap();
+        fake.drop_start = true;
+        // The summary omits item lists: each new turn is read item by item.
+        fake.hide_summary_items = true;
+    }
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "starting");
+    // A human-typed turn and a turn with only an agent message are not the compaction.
+    {
+        let mut fake = w.fake.lock().unwrap();
+        fake.turns.push(
+            json!({"id":"human","status":"completed","items":[{"type":"userMessage","id":"u"}]}),
+        );
+        fake.turns.push(
+            json!({"id":"other","status":"completed","items":[{"type":"agentMessage","id":"a"}]}),
+        );
+    }
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "starting");
+    assert!(
+        w.fake.lock().unwrap().count("thread/items/list") >= 2,
+        "the items were fetched"
+    );
+    w.fake.lock().unwrap().turns.push(
+        json!({"id":"real","status":"completed","items":[{"type":"contextCompaction","id":"c"}]}),
+    );
+    tick(&w.paths).await;
+    let r = w.record(&id);
+    assert_eq!(
+        (r.phase.as_str(), r.compaction_turn_id.as_deref()),
+        ("complete", Some("real"))
+    );
+}
+
+#[tokio::test]
+async fn a_waiting_operation_past_its_expiry_no_longer_holds_input() {
+    let w = world().await;
+    w.fake.lock().unwrap().busy = true;
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    assert!(hold_active(&w.paths, &w.conversation));
+    // The daemon is down: nobody marked it expired.
+    update(&w.paths, &id, |r| {
+        r.expires_at = crate::daemon::now() - 1;
+        true
+    })
+    .unwrap();
+    assert_eq!(w.phase(&id), "waiting");
+    assert!(!hold_active(&w.paths, &w.conversation));
+    let receipt = w.send(M1).await;
+    assert_ne!(receipt["reason"], "compaction_hold", "{receipt}");
+    assert_eq!(w.receipt_state(M1).0, "native_accepted");
+}
+
+#[tokio::test]
+async fn the_legacy_enqueue_path_is_not_held() {
+    let w = world().await;
+    w.fake.lock().unwrap().busy = true;
+    w.compact();
+    let mut ledger = Ledger::open(&w.paths).unwrap();
+    let mut receipt = ledger.accept(&w.input, crate::daemon::now()).unwrap();
+    deliver(&w.paths, &mut ledger, &mut receipt, Some(&w.input))
+        .await
+        .unwrap();
+    assert_eq!(receipt.state, "native_accepted");
+    assert_eq!(w.fake.lock().unwrap().count("thread/queue/add"), 1);
 }

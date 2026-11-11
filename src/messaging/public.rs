@@ -49,6 +49,10 @@ pub struct PublicRequest {
 pub(super) struct Binding {
     #[serde(default)]
     cancelled: bool,
+    /// Delivered by the release of a finished compaction (contract 1.47.0): always with queue
+    /// semantics, so several held messages line up in the native queue in arrival order.
+    #[serde(default)]
+    released_hold: bool,
     /// Resolved caller origin and its source (`explicit`, `detected`, `default`);
     /// absent on bindings written before contract 1.42.0.
     #[serde(default)]
@@ -111,7 +115,7 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         "message_id":binding.request.message_id,"session_id":binding.request.session_id,
         "accepted_generation":binding.request.expected_generation,"provider":"codex",
         "accepted_runtime_generation":binding.native.expected_generation,
-        "provider_conversation_id":binding.native.session_id,"mode":binding.request.mode,"if_busy":binding.request.if_busy,
+        "provider_conversation_id":binding.native.session_id,"mode":binding.request.mode,"if_busy":binding.request.if_busy,"hold_release":if binding.released_hold {json!({"from":"compaction","delivered_as":"queue","note":"held while a compaction ran; delivered with queue semantics (native queue, arrival order) after it"})} else {Value::Null},
         "delivery_semantics":"non_steering_native_queue",
         "state":if value["state"]=="unknown" {json!("delivery_unknown")} else {value["state"].clone()},
         "reason":value["reason"],"reason_detail":if value["reason"]=="unsupported_native_version" {Some("The account app-server version is not supported by this Sessionsation build. Use api observe to inspect its native_protocol version and supported_versions; no native input was attempted.")} else if value["reason"]=="compaction_hold" {Some("A compaction is queued for this session. The message is held locally (nothing is in the native queue) and is delivered once the compaction completes, fails, expires or is cancelled; cancel it or let it expire to drop it.")} else {None},"facts":{"accepted_local":true,"accepted_native":accepted,
@@ -153,6 +157,24 @@ fn check_codex_options(request: &PublicRequest) -> anyhow::Result<()> {
         }
         Some(_) => anyhow::bail!("INVALID_REQUEST: if_busy must be queue"),
     }
+}
+
+/// Deliver a message a compaction held: marks its binding so it is sent with queue semantics
+/// (it may not be the first to start a turn), then runs the ordinary idempotent send.
+pub(super) async fn send_released(paths: &Paths, id: &str) -> anyhow::Result<Value> {
+    let ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
+    initialize(&ledger)?;
+    let mut binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
+    if !binding.released_hold {
+        binding.released_hold = true;
+        ledger.db.execute(
+            "UPDATE public_messages SET binding=? WHERE id=?",
+            params![serde_json::to_string(&binding)?, id],
+        )?;
+    }
+    let request = binding.into_request();
+    drop(ledger);
+    send_public(paths, request).await
 }
 
 pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Result<Value> {
@@ -237,6 +259,7 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
                 request,
                 native,
                 cancelled: false,
+                released_hold: false,
                 origin: Some(origin),
                 origin_source: Some(origin_source.to_owned()),
                 evidence_observed_at: None,
@@ -287,14 +310,16 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
             // `if_busy: queue` lets a submit that lost the race with a starting turn
             // queue natively (an idle target still dispatches it at once).
             Some(
-                if binding.request.mode == PublicMode::Submit
-                    && binding.request.if_busy.as_deref() == Some("queue")
+                if binding.released_hold
+                    || (binding.request.mode == PublicMode::Submit
+                        && binding.request.if_busy.as_deref() == Some("queue"))
                 {
                     PublicMode::Queue
                 } else {
                     binding.request.mode.clone()
                 },
             ),
+            binding.released_hold,
         )
         .await
         {
@@ -559,6 +584,7 @@ mod tests {
     fn public_receipt_distinguishes_native_acceptance_and_completion() {
         let b = Binding {
             cancelled: false,
+            released_hold: false,
             origin: None,
             origin_source: None,
             evidence_observed_at: None,
@@ -655,6 +681,7 @@ mod evidence_tests {
     fn binding(input: Enqueue) -> Binding {
         Binding {
             cancelled: false,
+            released_hold: false,
             origin: None,
             origin_source: None,
             evidence_observed_at: None,
@@ -1025,6 +1052,7 @@ pub(super) async fn deliver_recovered(
             },
             request,
             cancelled: false,
+            released_hold: false,
             origin: Some(origin),
             origin_source: Some(origin_source.to_owned()),
             evidence_observed_at: None,
