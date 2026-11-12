@@ -17,8 +17,8 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.48.0`
-(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471)).
+so revision N maps to contract `1.N.0` and the current contract is `1.48.1`
+(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -3328,7 +3328,7 @@ and for an hour after they finish):
   is down), `starting` or `running`, a public `submit` or `queue` send to that Codex session is not added to the
   native queue: the receipt stays `pending_local` with `reason:"compaction_hold"` (and a `reason_detail`) and the
   message is bound to its id as usual. Held paths: `api send` modes `submit` and `queue` (also used by questions
-  and notices). Not held: `steer` and `resume`, the legacy `messaging enqueue` command and the `messaging modes`
+  and notices). Not held: `steer` (refused with `target_compacting` since 1.48.1, see below) and `resume`, the legacy `messaging enqueue` command and the `messaging modes`
   commands (they have no public message row to release). The hold lasts until the held input is released, not just
   until the operation ends, so a new send cannot overtake a held one (`hold.released` turns true when a release pass
   found nothing left to deliver or retry).
@@ -3472,3 +3472,31 @@ byte-identical to 1.47.0).
   `space/name`; a 1.47 binary cannot see them during a rollback (launch admission transients only).
 - **New refusal code.** `SPACE_MISMATCH`. Reused: `AMBIGUOUS_SESSION`, `SESSION_NAME_EXISTS`,
   `INVALID_SESSION_NAME`, `WORKSPACE_NAME_EXISTS`, `SPACE_NOT_FOUND`, `ALREADY_IN_HERDR`.
+
+### No steering while a compaction is pending (1.48.1)
+
+PATCH. Up to 1.48.0 a queued `session compact --when-idle` held `submit` and `queue` sends but not `steer`, and
+`api steer-target` kept advertising the running turn, including the dedicated compaction turn. Two losses
+followed in practice: a note meant for after the compaction was steered into the turn before it, so it landed
+ahead of the compaction and was summarized away; and a steer into the compaction turn itself was refused by the
+app-server (`compact_turn_not_steerable`), leaving the agent idle after the compaction with nothing to run.
+
+- **Rule.** While a compaction operation holds input for the session (the hold window above: `waiting` before its
+  `expires_at`, `starting`, `running`, and a finished operation until its held input is released), steering is not
+  used. `api steer-target` returns `available:false`, `active_turn_id:null` and `reason:"target_compacting"`; a
+  `mode:"steer"` send is refused before any native call and becomes a terminal `rejected` receipt with
+  `reason:"target_compacting"` (`facts.accepted_native:false`, nothing was sent, the id is not reusable).
+- **What to do instead.** Send with `mode:"submit"` (Codex: `if_busy:"queue"`) or `mode:"queue"`. That input is held
+  (`pending_local`, `compaction_hold`) and delivered as a queued turn after the compaction, in arrival order.
+- **Compactions Sessionsation did not start** (a `/compact` typed in the TUI) are still recognised only by the
+  app-server's structured refusal: a terminal `rejected` receipt with `compact_turn_not_steerable`, nothing
+  delivered. Automatic compaction inside a regular turn keeps accepted steer input (unchanged).
+- **Receipts.** A steer receipt is `native_accepted` only on the app-server's matching acknowledgement and
+  `execution_started` only once the steer's own `userMessage` item is observed in the turn; a generic native
+  rejection or a lost acknowledgement stays `delivery_unknown` (reason `native_rejected` or the transport code),
+  which is not a delivery.
+- **Envelope.** `ok:true` from `api send` means the request was processed and a receipt exists, not that the input
+  was delivered. Read `result.state` (and `facts`): `rejected`, `failed`, `expired` and `delivery_unknown` were not
+  delivered (or not provably so). A client that only checks `ok` reports dropped input as sent.
+
+`target_compacting` is a new reason value in existing fields; no field, command or state changed.

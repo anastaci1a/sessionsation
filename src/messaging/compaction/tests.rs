@@ -877,6 +877,149 @@ async fn a_non_idle_thread_without_a_compaction_turn_fails_after_the_unobserved_
     assert_eq!(w.fake.lock().unwrap().count("thread/compact/start"), 1);
 }
 
+impl World {
+    /// The steer a busy-target sender issues after `api steer-target` named `turn`.
+    async fn steer(&self, id: &str, turn: &str) -> Value {
+        send_public(
+            &self.paths,
+            PublicRequest {
+                origin: None,
+                delivery: None,
+                await_reply: false,
+                if_busy: None,
+                steering: Some(crate::messaging::public::SteeringIntent {
+                    version: 1,
+                    expected_turn_id: turn.into(),
+                    expected_runtime_generation: self.input.expected_generation.clone(),
+                }),
+                recovery: None,
+                api_version: 1,
+                message_id: id.into(),
+                session_id: self.session.id.clone(),
+                expected_generation: self.session.generation(),
+                mode: PublicMode::Steer,
+                text: format!("message {id}"),
+                expires_at: crate::daemon::now() + 300,
+            },
+        )
+        .await
+        .unwrap()
+    }
+    async fn steer_target(&self) -> Value {
+        crate::messaging::public::steering_target(
+            &self.paths,
+            &self.session.id,
+            &self.session.generation(),
+        )
+        .await
+        .unwrap()
+    }
+}
+
+/// Incident 2026-11-12 (contract 1.48.1): an agent queued its own compaction and a resume note
+/// for after it. The note was steered into the running turn (delivered before the compaction,
+/// which then summarized it away) and a later message was steered into the compaction turn
+/// itself (refused natively); after the compaction the agent sat idle with nothing to run.
+/// While a compaction is queued or running, steering is refused before any native call with
+/// `target_compacting`, `steer-target` says so, and a submit is held and delivered as a queued
+/// turn after the compaction.
+#[tokio::test]
+async fn no_steering_while_a_compaction_is_pending_and_the_submit_lands_after_it() {
+    const STEER_BEFORE: &str = "66666666-6666-4666-8666-666666666666";
+    const STEER_INTO: &str = "77777777-7777-4777-8777-777777777777";
+    const SUBMIT: &str = "88888888-8888-4888-8888-888888888888";
+    let w = world().await;
+    {
+        // The agent's own turn is running: the real summary shape, a user message first.
+        let mut s = w.fake.lock().unwrap();
+        s.busy = true;
+        s.turns.push(
+            json!({"id":"turn-busy","status":"inProgress","itemsView":"summary",
+            "items":[{"type":"userMessage","id":"u1"}]}),
+        );
+    }
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    let target = w.steer_target().await;
+    assert_eq!(
+        (target["available"].as_bool(), target["reason"].as_str()),
+        (Some(false), Some("target_compacting")),
+        "{target}"
+    );
+    assert!(target["active_turn_id"].is_null());
+    let before = w.steer(STEER_BEFORE, "turn-busy").await;
+    assert_eq!(
+        (before["state"].as_str(), before["reason"].as_str()),
+        (Some("rejected"), Some("target_compacting")),
+        "{before}"
+    );
+    assert_eq!(before["facts"]["accepted_native"], false);
+    // A submit with if_busy queue (what a sender falls back to) is held, not steered.
+    let held = send_public(
+        &w.paths,
+        PublicRequest {
+            origin: None,
+            delivery: None,
+            await_reply: false,
+            if_busy: Some("queue".into()),
+            steering: None,
+            recovery: None,
+            api_version: 1,
+            message_id: SUBMIT.into(),
+            session_id: w.session.id.clone(),
+            expected_generation: w.session.generation(),
+            mode: PublicMode::Submit,
+            text: "resume note".into(),
+            expires_at: crate::daemon::now() + 300,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (held["state"].as_str(), held["reason"].as_str()),
+        (Some("pending_local"), Some("compaction_hold")),
+        "{held}"
+    );
+    // The turn ends; the compaction turn runs (summary `items: []`, as real app-servers list it).
+    {
+        let mut s = w.fake.lock().unwrap();
+        s.busy = false;
+        for turn in s.turns.iter_mut() {
+            if turn["id"] == "turn-busy" {
+                turn["status"] = json!("completed");
+            }
+        }
+    }
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "running");
+    let target = w.steer_target().await;
+    assert_eq!(target["reason"], "target_compacting", "{target}");
+    let into = w.steer(STEER_INTO, "turn-compact").await;
+    assert_eq!(
+        (into["state"].as_str(), into["reason"].as_str()),
+        (Some("rejected"), Some("target_compacting")),
+        "{into}"
+    );
+    assert_eq!(w.fake.lock().unwrap().count("thread/queue/add"), 0);
+    // Completed: the held submit starts its own turn after the compaction.
+    w.complete_compaction("completed");
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "complete");
+    assert!(w.record(&id).hold_released);
+    let fake = w.fake.lock().unwrap();
+    assert_eq!(fake.count("turn/steer"), 0, "{:?}", fake.log);
+    assert_eq!(fake.count("thread/queue/add"), 1, "{:?}", fake.log);
+    assert!(fake.position("thread/compact/start") < fake.position("thread/queue/add"));
+    assert_eq!(fake.turns.last().unwrap()["items"][0]["clientId"], SUBMIT);
+    drop(fake);
+    assert_eq!(w.receipt_state(SUBMIT).0, "native_accepted");
+    for steered in [STEER_BEFORE, STEER_INTO] {
+        assert_eq!(
+            w.receipt_state(steered),
+            ("rejected".into(), Some("target_compacting".into()))
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_long_running_compaction_turn_is_not_cut_off_by_the_unobserved_limit() {
     let w = world().await;

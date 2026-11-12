@@ -109,6 +109,14 @@ fn permitted(paths: &Paths, id: &str) -> Result<()> {
     {
         return Err(Fault("explicit_resume_required"));
     }
+    // Contract 1.48.1: no steering while a compaction is queued or running for the thread. A
+    // steer into the dedicated compaction turn is refused by the app-server, and one into the
+    // turn before it lands ahead of the compaction that then summarizes it away, so a sender
+    // must submit instead (held, then delivered as a queued turn after the compaction).
+    // Checked under session ownership, which the compaction start also takes.
+    if crate::messaging::compaction::hold_active(paths, id) {
+        return Err(Fault("target_compacting"));
+    }
     Ok(())
 }
 /// Explicit, bounded read-only lookup. Ordinary polling does not reconstruct busy history.

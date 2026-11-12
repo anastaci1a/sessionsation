@@ -383,7 +383,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.48.0");
+    assert_eq!(caps["contract_version"], "1.48.1");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
