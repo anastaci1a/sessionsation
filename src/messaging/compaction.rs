@@ -173,8 +173,27 @@ pub fn hold_active(paths: &Paths, conversation: &str) -> bool {
     })
 }
 
+/// Any non-terminal compaction of the conversation (contract 1.49.0 release precondition).
+pub(super) fn pending(paths: &Paths, conversation: &str) -> bool {
+    list(paths).is_ok_and(|all| {
+        all.iter()
+            .any(|r| !r.terminal() && r.conversation_id == conversation)
+    })
+}
+/// A non-terminal compaction of the conversation requested before `(created_at, id)`.
+pub(super) fn pending_before(paths: &Paths, conversation: &str, key: (i64, &str)) -> bool {
+    list(paths).is_ok_and(|all| {
+        all.iter().any(|r| {
+            !r.terminal()
+                && r.conversation_id == conversation
+                && (r.created_at, r.id.as_str()) < key
+        })
+    })
+}
+
 fn explain(reason: &str) -> &'static str {
     match reason {
+        "model_change_pending" => "A model change requested earlier is applied first.",
         "turn_active" => "A turn is active; the compaction starts when it ends.",
         "native_queue_not_empty" => "Input already accepted into the native queue runs first.",
         "approval_or_user_input_required" => "The session waits for an approval or an answer.",
@@ -307,7 +326,7 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
 
 /// Held message ids of a conversation, in arrival order (best effort; `None` when the
 /// ledger is unavailable).
-async fn held_ids(paths: &Paths, conversation: &str) -> Option<Vec<String>> {
+pub(super) async fn held_ids(paths: &Paths, conversation: &str) -> Option<Vec<String>> {
     let ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read))
         .await
         .ok()?;
@@ -317,7 +336,7 @@ async fn held_ids(paths: &Paths, conversation: &str) -> Option<Vec<String>> {
         .prepare(
             "SELECT r.id FROM receipts r JOIN public_messages p ON p.id=r.id \
              WHERE json_extract(r.receipt,'$.state')='pending_local' \
-             AND json_extract(r.receipt,'$.reason') IN ('compaction_hold','compaction_release_retry') \
+             AND json_extract(r.receipt,'$.reason') IN ('compaction_hold','compaction_release_retry','model_change_hold') \
              AND json_extract(p.binding,'$.native.session_id')=? ORDER BY p.rowid",
         )
         .ok()?;
@@ -421,7 +440,12 @@ async fn mark_retry(paths: &Paths, id: &str) {
 /// `pending_local` afterwards) stops the pass at that message, so later ones never overtake it,
 /// and returns false so the next tick re-queries and retries. A pass handles at most
 /// `MAX_RELEASE_PER_PASS` messages; input that arrived while releasing is picked up by the next round.
-async fn deliver_held(paths: &Paths, conversation: &str) -> bool {
+pub(super) async fn deliver_held(paths: &Paths, conversation: &str) -> bool {
+    // Contract 1.49.0: held input is released once, after every idle-point operation of the
+    // conversation (compactions and model changes) has ended.
+    if pending(paths, conversation) || super::model_change::pending(paths, conversation) {
+        return false;
+    }
     for _ in 0..3 {
         let Some(ids) = held_ids(paths, conversation).await else {
             return false;
@@ -610,6 +634,10 @@ async fn advance(paths: &Paths, id: &str) {
 async fn try_start(paths: &Paths, r: Record) {
     let id = r.id.clone();
     let conversation = r.conversation_id.clone();
+    // Contract 1.49.0: idle-point operations of one conversation run in request order.
+    if super::model_change::pending_before(paths, &conversation, (r.created_at, &r.id)) {
+        return waiting(paths, &id, "model_change_pending");
+    }
     let attached = match attachment(paths, &conversation) {
         Ok(a) => a,
         Err(Fault("unavailable")) => return waiting(paths, &id, "session_not_running"),

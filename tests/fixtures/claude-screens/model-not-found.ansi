@@ -1,0 +1,40 @@
+
+[0m[38;2;215;119;87m ▐[0m[38;2;215;119;87m[48;2;0;0;0m▛███▛█   [0m[1mClaude Code [0m[38;2;153;153;153mv2.1.314[0m
+[0m[38;2;215;119;87m▝▜[0m[38;2;215;119;87m[48;2;0;0;0m█████[0m[38;2;215;119;87m█▀  [0m[38;2;153;153;153mOpus 5.5 with medium effort · Claude Max[0m
+[0m[38;2;215;119;87m ▝▝   ▝▝   [0m[38;2;153;153;153m/mnt/disk1/appdata/claude/coordinator/cutovers/scratch-149/fixture-cwd[0m
+
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯[0m[48;2;55;55;55m [0m[38;2;255;255;255m[48;2;55;55;55m/model claude-fable-5-2[0m[48;2;55;55;55m                                                                                              [0m
+[0m[38;2;153;153;153m  ⎿  [0mSet model to [0m[38;2;177;185;249mFable 5.2 [0mand saved as your default for new sessions
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯[0m[48;2;55;55;55m [0m[38;2;255;255;255m[48;2;55;55;55m/effort high[0m[48;2;55;55;55m                                                                                                         [0m
+[0m[38;2;153;153;153m  ⎿  [0mSet effort level to high (saved as your default for new sessions): Comprehensive implementation with extensive
+     testing and documentation
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mReply with just the word ok.[0m[48;2;55;55;55m                                                                                         [0m
+
+[0m[38;2;255;255;255m● [0mok
+
+[0m[38;2;153;153;153m✻ Cogitated for 1s · done 10:58 AM[0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯[0m[48;2;55;55;55m [0m[38;2;255;255;255m[48;2;55;55;55m/model claude-opus-5-5[0m[48;2;55;55;55m                                                                                               [0m
+[0m[38;2;153;153;153m  ⎿  [0mSet model to [0m[38;2;177;185;249mOpus 5.5 [0mand saved as your default for new sessions
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯[0m[48;2;55;55;55m [0m[38;2;255;255;255m[48;2;55;55;55m/effort medium[0m[48;2;55;55;55m                                                                                                       [0m
+[0m[38;2;153;153;153m  ⎿  [0mSet effort level to medium (saved as your default for new sessions): Balanced approach with standard
+     implementation and testing
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯[0m[48;2;55;55;55m [0m[38;2;255;255;255m[48;2;55;55;55m/model claude-nonexistent-9-9[0m[48;2;55;55;55m [0m
+[0m[38;2;153;153;153m  ⎿  [0mModel 'claude-nonexistent-9-9' not found
+
+
+
+
+
+                                                                                                   [0m[38;2;153;153;153m◐ medium · /effort[0m
+[0m[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────── fixture-claude ─[0m
+❯ 
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [0m[1m[38;5;2mroot@Satellite[0m[38;2;153;153;153m:[0m[1m[38;5;4m/mnt/…/scratch-149/fixture-cwd[0m
+  [0m[38;5;209mopus-5.5-medium[0m[38;2;153;153;153m [0m[38;5;8m│[0m[38;2;153;153;153m [0m[38;5;15m5h: 70%[0m[38;2;153;153;153m | [0m[38;5;15mwk: 40%[0m
+  [0m[38;2;255;107;128m⏵⏵ bypass permissions on[0m[38;2;153;153;153m (shift+tab to cycle)[0m

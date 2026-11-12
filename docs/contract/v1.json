@@ -124,6 +124,17 @@
           "type": ["string", "null"],
           "description": "Since 1.48.0: <space>:<name>; null when unscoped or the Space label contains ':'."
         },
+        "model": {
+          "type": ["object", "null"],
+          "description": "Since 1.49.0: the model and effort the session was last observed running with (Claude status-line hook, Codex thread, or a verified set-model); null when never observed. Not part of the generation.",
+          "required": ["id", "effort", "observed_at", "source"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "effort": {"type": ["string", "null"]},
+            "observed_at": {"type": "integer"},
+            "source": {"enum": ["claude_statusline", "codex_thread", "set_model"]}
+          }
+        },
         "provider": {
           "type": "string"
         },

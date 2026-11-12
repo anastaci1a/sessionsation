@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 48;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.48.1";
+pub const CONTRACT_MINOR: u32 = 49;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.49.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -60,6 +60,8 @@ pub fn version() -> Result<Value> {
     )
 }
 
+// Parsed once per process; boxing the one-pass launch flags would only add noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum Command {
     Capabilities,
@@ -449,6 +451,101 @@ pub enum SessionAction {
     CompactCancel {
         #[arg(long)]
         operation: String,
+    },
+    /// Change the model (exact id, required) and effort of a running Codex or Claude session at
+    /// its next idle point, verified from the session itself (1.49.0).
+    SetModel {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        /// Exact model id (e.g. claude-fable-5-2, gpt-6-astra); aliases are refused.
+        #[arg(long)]
+        model: String,
+        /// Effort applied after the model; omitted re-applies the effort in force before.
+        #[arg(long)]
+        effort: Option<String>,
+        /// Wait for an idle point up to --expires-at (default one hour) instead of 60 seconds.
+        #[arg(long)]
+        when_idle: bool,
+        #[arg(long, requires = "when_idle")]
+        expires_at: Option<i64>,
+        /// Idempotency/operation id (a UUID); generated when omitted.
+        #[arg(long)]
+        operation: Option<String>,
+        /// Block until the change ends, at most this many seconds (default 90, 0 with --when-idle;
+        /// max 600). Not confirmed by then: MODEL_NOT_CONFIRMED with the record.
+        #[arg(long)]
+        wait: Option<u64>,
+    },
+    /// Status of a model change, by operation id or by session (the latest one).
+    SetModelStatus {
+        #[arg(long, required_unless_present = "session", conflicts_with = "session")]
+        operation: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Cancel a model change that has not started applying.
+    SetModelCancel {
+        #[arg(long)]
+        operation: String,
+    },
+    /// One pass: start a Codex or Claude session with an exact model and effort, verify both,
+    /// then deliver the brief; one record keyed by the request id (1.49.0).
+    Launch {
+        /// Existing Space id or label (with --create-space: the label of a new Space).
+        #[arg(long)]
+        space: String,
+        #[arg(long)]
+        create_space: bool,
+        /// Session name, bare or <space>:<name>.
+        #[arg(long)]
+        name: String,
+        /// provider:name, e.g. claude:work.
+        #[arg(long)]
+        account: String,
+        /// Exact model id (required): an unspecified start would take the account default, which
+        /// a Claude /model or /effort in any session of that account changes.
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        effort: Option<String>,
+        /// The brief (a regular file, or - for stdin).
+        #[arg(long)]
+        brief_file: std::path::PathBuf,
+        /// Hold the brief until the model and effort are verified (the default; explicit form).
+        #[arg(long)]
+        when_ready: bool,
+        /// Claude only: `held` (default) or `initial-prompt` (opt-in: handed to Claude at start,
+        /// before the model can be verified).
+        #[arg(long, value_parser = ["held", "initial-prompt"])]
+        brief_delivery: Option<String>,
+        /// Working directory (default: the current directory).
+        #[arg(long)]
+        directory: Option<std::path::PathBuf>,
+        #[arg(long)]
+        create_directory: bool,
+        #[arg(long)]
+        permissions: Option<crate::config::LaunchPermissions>,
+        #[arg(long)]
+        herdr_session: Option<String>,
+        #[arg(long)]
+        herdr_socket: Option<std::path::PathBuf>,
+        #[arg(long)]
+        request_id: Option<String>,
+        /// Seconds from admission to a delivered brief (default 300, 30..1800).
+        #[arg(long)]
+        deadline: Option<i64>,
+        /// Block until complete or failed, at most this many seconds (default 0, max 1800).
+        #[arg(long)]
+        wait: Option<u64>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Status of a one-pass launch.
+    LaunchStatus {
+        #[arg(long)]
+        request_id: String,
     },
 }
 
@@ -1607,6 +1704,7 @@ pub fn capabilities() -> Value {
     value["auto_recover"] = crate::auto_recover::capability();
     value["auto_start"] = crate::auto_recover::capability_start();
     value["session_compact"] = crate::messaging::compaction::capability();
+    value["session_model"] = crate::messaging::model_change::capability();
     value["stop_closes_pane"] = json!(true);
     value["stop_keep_pane"] = json!(true);
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
@@ -1698,6 +1796,9 @@ fn public_session(s: catalog::Session) -> Value {
     } else {
         "catalog"
     });
+    // Contract 1.49.0: observed model and effort (filled by session_model::annotate; outside
+    // the generation hash).
+    value["model"] = Value::Null;
     value
 }
 
@@ -1958,6 +2059,10 @@ pub async fn state_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value>
     overlay_codex_usage(&mut value, status.as_ref(), daemon::now(), stale);
     value["capabilities"] = capabilities();
     refresh_cached_accounts(paths, &mut value);
+    // Model facts are local file reads: always current, even on a cached snapshot.
+    if let Some(rows) = value["sessions"].as_array_mut() {
+        crate::session_model::annotate(paths, rows);
+    }
     Ok(value)
 }
 /// Codex usage in a cached snapshot is frozen at the last full `state`, which can be hours
@@ -2194,6 +2299,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
     }
     let settings = crate::auto_recover::all(paths);
     let turn_settings = crate::turn_notify::all(paths);
+    crate::session_model::annotate(paths, &mut sessions);
     for session in &mut sessions {
         let setting = settings.get(session["id"].as_str().unwrap_or_default());
         let enabled = setting.is_some_and(|s| s.enabled);
@@ -2491,6 +2597,10 @@ fn space_hungry(command: &Command) -> Option<&'static str> {
         Command::Launch {
             command: crate::launch::Command::Start,
         } => "launch",
+        Command::Session {
+            action: Some(SessionAction::Launch { dry_run: false, .. }),
+            ..
+        } => "session launch",
         Command::ResumeLaunch {
             command: crate::resume::Command::Start,
         } => "resume",
@@ -2521,11 +2631,13 @@ fn resolve_session_args(paths: &Paths, command: &mut Command) -> Result<()> {
                 Some(
                     SessionAction::AddToHerdr { session, .. }
                     | SessionAction::Compact { session, .. }
+                    | SessionAction::SetModel { session, .. }
                     | SessionAction::SetSpace { session, .. },
                 ) => targets.push(session),
-                Some(SessionAction::CompactStatus { session, .. }) => {
-                    targets.extend(session.as_mut())
-                }
+                Some(
+                    SessionAction::CompactStatus { session, .. }
+                    | SessionAction::SetModelStatus { session, .. },
+                ) => targets.extend(session.as_mut()),
                 _ => {}
             }
         }
@@ -2650,7 +2762,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             if let Some(generation) = &expected_generation {
                 ensure!(s.generation() == *generation, "STALE_TARGET");
             }
-            public_session(s)
+            let mut row = public_session(s);
+            crate::session_model::annotate(paths, std::slice::from_mut(&mut row));
+            row
         }
         Command::Session {
             action:
@@ -2709,11 +2823,114 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             ..
         } => crate::messaging::compaction::cancel(paths, &operation).await?,
         Command::Session {
+            action:
+                Some(SessionAction::SetModel {
+                    session,
+                    expected_generation,
+                    model,
+                    effort,
+                    when_idle,
+                    expires_at,
+                    operation,
+                    wait,
+                }),
+            ..
+        } => {
+            use crate::messaging::model_change as mc;
+            let wait = wait.unwrap_or(if when_idle { 0 } else { mc::DEFAULT_WAIT_NOW });
+            ensure!(
+                wait <= mc::MAX_WAIT_SECONDS,
+                "INVALID_ARGUMENT: --wait is at most {} seconds",
+                mc::MAX_WAIT_SECONDS
+            );
+            let v = mc::request(
+                paths,
+                mc::Request {
+                    session: &session,
+                    expected_generation: &expected_generation,
+                    model: &model,
+                    effort: effort.as_deref(),
+                    when_idle,
+                    expires_at,
+                    operation: operation.as_deref(),
+                },
+            )?;
+            if wait > 0 {
+                mc::wait(paths, v["id"].as_str().unwrap_or_default(), wait).await?
+            } else {
+                v
+            }
+        }
+        Command::Session {
+            action: Some(SessionAction::SetModelStatus { operation, session }),
+            ..
+        } => {
+            crate::messaging::model_change::status(paths, operation.as_deref(), session.as_deref())
+                .await?
+        }
+        Command::Session {
+            action: Some(SessionAction::SetModelCancel { operation }),
+            ..
+        } => crate::messaging::model_change::cancel(paths, &operation).await?,
+        Command::Session {
+            action:
+                Some(SessionAction::Launch {
+                    space,
+                    create_space,
+                    name,
+                    account,
+                    model,
+                    effort,
+                    brief_file,
+                    when_ready,
+                    brief_delivery,
+                    directory,
+                    create_directory,
+                    permissions,
+                    herdr_session,
+                    herdr_socket,
+                    request_id,
+                    deadline,
+                    wait,
+                    dry_run,
+                }),
+            ..
+        } => {
+            crate::session_launch::launch(
+                paths,
+                crate::session_launch::Args {
+                    space,
+                    create_space,
+                    name,
+                    account,
+                    model,
+                    effort,
+                    brief_file,
+                    when_ready,
+                    initial_prompt: brief_delivery.as_deref() == Some("initial-prompt"),
+                    directory,
+                    create_directory,
+                    permissions,
+                    herdr_session,
+                    herdr_socket,
+                    request_id,
+                    deadline,
+                    wait,
+                    dry_run,
+                },
+            )
+            .await?
+        }
+        Command::Session {
+            action: Some(SessionAction::LaunchStatus { request_id }),
+            ..
+        } => crate::session_launch::status(paths, &request_id)?,
+        Command::Session {
             session,
             expected_generation,
             action: None,
         } => {
-            session_details(
+            let mut details = session_details(
                 paths,
                 session
                     .as_deref()
@@ -2722,7 +2939,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     .as_deref()
                     .context("INVALID_ARGUMENT: --expected-generation is required")?,
             )
-            .await?
+            .await?;
+            crate::session_model::annotate(paths, std::slice::from_mut(&mut details));
+            details
         }
         Command::Attachment {
             session,
@@ -3164,6 +3383,8 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             ops.extend(external::spaces::operations(paths)?);
             ops.extend(crate::inline::operations(paths)?);
             ops.extend(crate::messaging::compaction::operations(paths)?);
+            ops.extend(crate::messaging::model_change::operations(paths)?);
+            ops.extend(crate::session_launch::operations(paths)?);
             json!(ops)
         }
         Command::Respond {
@@ -3192,6 +3413,14 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             if crate::messaging::compaction::exists(paths, &id) =>
         {
             crate::messaging::compaction::cancel(paths, &id).await?
+        }
+        Command::CancelOperation { operation: id }
+            if crate::messaging::model_change::exists(paths, &id) =>
+        {
+            crate::messaging::model_change::cancel(paths, &id).await?
+        }
+        Command::CancelOperation { operation: id } if crate::session_launch::exists(paths, &id) => {
+            crate::session_launch::cancel(paths, &id)?
         }
         Command::CancelOperation { operation: id } => {
             managed_operation(paths, &id)?;
@@ -3828,7 +4057,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.48.1");
+        assert_eq!(c["contract_version"], "1.49.0");
         let mut s = catalog::Session {
             id: "stable".into(),
             name: "LEAD".into(),

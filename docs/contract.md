@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.48.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.49.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3500,3 +3500,71 @@ app-server (`compact_turn_not_steerable`), leaving the agent idle after the comp
   delivered (or not provably so). A client that only checks `ok` reports dropped input as sent.
 
 `target_compacting` is a new reason value in existing fields; no field, command or state changed.
+
+### Session model, set-model and one-pass launch (1.49.0)
+
+MINOR. Adds the observed model of a session, `api session set-model` and the one-pass `api session launch`.
+Capability `session_model` (version 1); every existing capability object is unchanged (`launch_model` still
+lists `codex` for the JSON `api launch`, which since 1.49.0 also accepts `model`/`reasoning_effort` for Claude
+terminal launches: exact Claude id, efforts `low|medium|high|xhigh|max`; hosted + model is
+`UNSUPPORTED_PROVIDER_OPERATION`; still not checked against the account).
+
+- **Exact ids only.** Claude: `claude-` followed by lower-case letters, digits, dots and dashes, optional `[1m]`;
+  aliases never match (`INVALID_MODEL`). Codex: the launch-request model grammar, and for `set-model` the
+  account's `model/list`. Applied values are always the ones the session reports; a substituted model or a
+  capped effort is a failure carrying the observed value, never "close enough" (ASCII case-insensitive equality).
+- **Callers must always pass a model.** `session launch` and `set-model` require `--model`. A Claude `/model` or
+  `/effort` (including the ones `set-model` types) saves the value as the account's default for later starts
+  without a model; Sessionsation does not restore it. Starts without a model (plain `api launch`, `run`,
+  resume, Auto Start) get the last switched-to value.
+- **Row field `model`** (`state`, `state --cached`, `session`, `session resolve`): `{"id","effort","observed_at",
+  "source"}` or null. Sources: `claude_statusline` (Sessionsation's status-line hook records the payload's
+  `model.id` and `effort.level` per conversation in `<account home>/.sessionsation/model/<session_id>.json`),
+  `codex_thread` (`thread/read` during inventory, kept in `registry/session-catalog/models.json`) and
+  `set_model`. Not part of the generation: a model change never makes a target stale. Claude sessions started by
+  an older release run that release's hook and report `model:null` until stopped and resumed.
+- **`session set-model`** journals `operations/model-changes/<id>.json`: `waiting → applying → complete | failed |
+  cancelled | expired`; one pending change per session (same values: `existing:true`; other values:
+  `SESSION_OPERATION_IN_PROGRESS`; same `--operation` with other values: `OPERATION_ID_CONFLICT`). Admission
+  refusals: `SESSION_NOT_FOUND`, `AMBIGUOUS_SESSION`, `STALE_TARGET`, `UNSUPPORTED_PROVIDER_OPERATION` (gemini,
+  antigravity, hosted Claude), `INVALID_MODEL`, `INVALID_REASONING_EFFORT`, `INVALID_OPERATION_ID`,
+  `INVALID_EXPIRY`, `INVALID_ARGUMENT`, `SESSION_NOT_RUNNING`, `TERMINAL_NOT_ATTACHED`, `TERMINAL_INPUT_DISABLED`,
+  `SESSION_STATE_UNVERIFIED` (Claude: no status-line record from the running process), and the lifecycle codes.
+  Already running the requested values: journaled `complete`, `already_applied`, nothing sent. Cancel while
+  `waiting` (`applying`: `OPERATION_WORKER_ACTIVE`; ended: `OPERATION_ALREADY_TERMINAL`). Listed by
+  `api operations` (`kind:"model_change"`).
+- **Codex.** At an idle point (no active turn, empty native queue, under session ownership):
+  `thread/settings/update {model}`, then `{effort}`, verified with `thread/read`. Model not offered:
+  `model_not_available`; effort not offered: `effort_unsupported`; JSON-RPC error: `provider_rejected`; never
+  visible after three attempts: `model_not_confirmed` / `effort_not_confirmed`. New public `submit`/`queue` input
+  is held (`pending_local`, `model_change_hold`) and released in arrival order through the compaction release
+  path. Compactions and model changes of one session run in request order (waiting reasons
+  `compaction_pending`, `model_change_pending`), and held input is released only when neither remains.
+  Steering is not held by a model change.
+- **Claude.** A detached worker types `/model <id>` and `/effort <level>` into the verified HERDR pane when HERDR
+  reports the agent idle and the prompt is the main view and **empty** (a draft is never cleared: waiting reason
+  `draft_present`). The typed command must read back exactly with no menu; then Enter. A `Switch model?` /
+  `Change effort level?` dialog is answered by moving the pointer with up/down to `Yes` and Enter (a
+  `PreModelSwitch` hook prompt is declined: `blocked_by_hook`); never Esc, Ctrl+C, Ctrl+D or digit keys.
+  Confirmation comes only from the status-line record (the footer text is never parsed). An empty prompt with no
+  change for 8 s is `model_not_confirmed` (for example `Model '<id>' not found`); an unidentified screen ends the
+  operation with `TERMINAL_OVERLAY_UNIDENTIFIED` and `refusal_layout` instead of waiting. Claude input is not held;
+  terminal deliveries wait for the pane lock the worker holds. Screens: `tests/fixtures/claude-screens/model-*`,
+  `effort-*` (Claude Code 2.1.314).
+- **`session launch`** admits an ordinary launch request (`model`, `reasoning_effort`; nothing new in the request
+  or receipt, so 1.48 binaries read both) and journals `operations/session-launches/<request_id>.json` plus the
+  brief (`.brief`, 0600, removed when the record ends): `admitted → launching → verifying_model →
+  delivering_brief → complete | failed | cancelled`. The brief is **held until the model (and requested effort) is
+  verified** (`brief.delivery`: Claude `held`, Codex `first_turn`), then sent as an ordinary message (Claude
+  `terminal_input` submit; Codex submit with `if_busy:"queue"`), a new message id journaled before each attempt,
+  pre-submit refusals retried every 5 s up to 5 times, `delivery_unknown` never retried. Opt-in
+  `--brief-delivery initial-prompt` (Claude) passes the brief as Claude's start-up prompt (`handed_to_provider`,
+  `delivered` once the transcript holds it) and cannot be gated on the model. Mismatch: `failed`
+  `model_not_confirmed` / `effort_not_confirmed` / `effort_unsupported`, brief `not_sent`, session left running.
+  Deadline: `ready_timeout`. Brief limits: Claude held 8192 bytes and terminal-input rules, initial prompt 32768
+  bytes and not starting with `/ ! #`, Codex 16384 bytes. `--wait` ends without `complete` as
+  `MODEL_NOT_CONFIRMED`, `PROMPT_NOT_DELIVERED`, `PROVIDER_LAUNCH_FAILED` or `LAUNCH_ACK_UNCERTAIN` with
+  `error.operation`. New error code: `MODEL_NOT_CONFIRMED`.
+
+Rollback: an older binary ignores `models.json`, the hook records and both journal directories; pending
+one-pass launches freeze and end `ready_timeout` (brief unsent) after re-upgrade.

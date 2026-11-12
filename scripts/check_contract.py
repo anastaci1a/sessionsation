@@ -322,6 +322,12 @@ with tempfile.TemporaryDirectory() as directory:
             assert spaces["since_contract"] == "1.48.0" and spaces["version"] == 1, spaces
             assert spaces["row_fields"] == ["space", "name", "canonical"] and spaces["rename_moves"] is False
             assert spaces["create_space"]["request_field"] is None and spaces["generation_includes_space"] is False
+            model = value["result"]["session_model"]
+            assert model["since_contract"] == "1.49.0" and model["version"] == 1, model
+            assert model["row_field"] == "model" and model["exact_ids_only"] is True and model["effort_after_model"] is True
+            assert model["set"]["model_required"] is True and model["set"]["not_confirmed_error"] == "MODEL_NOT_CONFIRMED"
+            assert model["launch"]["model_required"] is True and model["launch"]["brief"]["claude"]["default"] == "held"
+            assert value["result"]["launch_model"]["providers"] == ["codex"]
             assert value["result"]["steering"]["version"] == 1
             assert value["result"]["steering"]["acceptance_only"] is False
             assert value["result"]["steering"]["reply_correlation"] == "after_steer_item"

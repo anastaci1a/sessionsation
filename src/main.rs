@@ -87,6 +87,9 @@ enum Commands {
     GeminiTerminalWorker { message_id: String },
     #[command(hide = true)]
     AntigravityTerminalWorker { message_id: String },
+    /// Contract 1.49.0: apply one Claude model change in its HERDR pane.
+    #[command(hide = true)]
+    ModelChangeWorker { id: String },
     /// Render a Sessionsation-hosted Claude session live (t + Enter takes it over).
     View {
         /// Catalog session id or hosted conversation id.
@@ -780,6 +783,9 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::AntigravityTerminalWorker { message_id } => {
             sessionsation::messaging::claude_steer::antigravity::worker(&paths, &message_id).await?
+        }
+        Commands::ModelChangeWorker { id } => {
+            sessionsation::messaging::model_change::claude::worker(&paths, &id).await?
         }
         Commands::View { session, once } => {
             sessionsation::provider::claude::hosted::view(&paths, &session, once).await?
@@ -1919,6 +1925,10 @@ fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
         envelope["error"]["free_bytes"] = json!(space.free_bytes);
         envelope["error"]["needed_bytes"] = json!(space.needed_bytes);
         envelope["error"]["operation"] = json!(space.operation);
+    }
+    // Contract 1.49.0: a --wait that ended unconfirmed carries the operation record.
+    if let Some(n) = error.downcast_ref::<sessionsation::session_model::NotConfirmed>() {
+        envelope["error"]["operation"] = n.operation.clone();
     }
     envelope
 }

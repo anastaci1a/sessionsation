@@ -84,6 +84,11 @@ pub const MESSAGE_RECOVERIES: &str = "operations/message-recoveries";
 /// Codex compactions queued for the next idle point (contract 1.47.0).
 pub const COMPACTIONS: &str = "operations/compactions";
 pub const COMPACTIONS_LOCK: &str = "operations/compactions.lock";
+/// Model changes of running sessions (contract 1.49.0).
+pub const MODEL_CHANGES: &str = "operations/model-changes";
+pub const MODEL_CHANGES_LOCK: &str = "operations/model-changes.lock";
+/// One-pass session launches: brief, verification, delivery (contract 1.49.0).
+pub const SESSION_LAUNCHES: &str = "operations/session-launches";
 pub const MOVE_BACKUPS: &str = "operations/move-backups";
 pub const PROJECT_RELOCATION_LOCK: &str = "operations/project-relocation.lock";
 
@@ -118,6 +123,8 @@ pub const OPERATION_DIRS: &[&str] = &[
     LIFECYCLE_ADMISSION,
     MESSAGE_RECOVERIES,
     COMPACTIONS,
+    MODEL_CHANGES,
+    SESSION_LAUNCHES,
     MOVE_BACKUPS,
 ];
 

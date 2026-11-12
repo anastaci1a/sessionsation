@@ -238,7 +238,7 @@ async fn discover_mode(
         // positively discovered process/history facts if a provider is slow.
         if tokio::time::timeout(
             crate::timing::budget(std::time::Duration::from_secs(5)),
-            enrich_native(&mut result),
+            enrich_native(paths, &mut result),
         )
         .await
         .is_err()
@@ -248,7 +248,7 @@ async fn discover_mode(
             }
         }
     } else {
-        enrich_native(&mut result).await;
+        enrich_native(paths, &mut result).await;
     }
     let live: std::collections::BTreeSet<_> = result
         .iter()
@@ -274,7 +274,7 @@ fn warn_native(result: &mut [Instance], home: &Path, error: &anyhow::Error) {
     }
 }
 
-async fn enrich_native(result: &mut [Instance]) {
+async fn enrich_native(paths: &Paths, result: &mut [Instance]) {
     let homes: std::collections::BTreeSet<_> = result
         .iter()
         .filter(|i| !i.inactive)
@@ -297,7 +297,11 @@ async fn enrich_native(result: &mut [Instance]) {
             .all(|i| !i.thread_id.is_empty())
             .then(|| candidates.iter().map(|i| i.thread_id.clone()).collect());
         let threads = match control.loaded_matching(selected.as_ref()).await {
-            Ok(threads) => threads,
+            Ok(threads) => {
+                // Contract 1.49.0: the loaded threads carry their model and effort.
+                crate::session_model::record_codex_threads(paths, &threads);
+                threads
+            }
             Err(error) => {
                 warn_native(result, &home, &error);
                 continue;

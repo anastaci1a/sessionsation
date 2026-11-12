@@ -5,6 +5,7 @@ pub mod claude_steer;
 pub mod compaction;
 mod delivery;
 pub mod headless;
+pub mod model_change;
 mod modes;
 mod public;
 mod readiness;
@@ -869,9 +870,15 @@ async fn deliver_with_policy(
                 && public_mode.is_some()
                 && !released
                 && stored.state == "pending_local"
-                && compaction::hold_active(paths, &stored.session_id)
             {
-                return Err(Fault("compaction_hold"));
+                if compaction::hold_active(paths, &stored.session_id) {
+                    return Err(Fault("compaction_hold"));
+                }
+                // Contract 1.49.0: a pending model change holds new input the same way, so
+                // input sent after the request runs on the new model.
+                if model_change::hold_active(paths, &stored.session_id) {
+                    return Err(Fault("model_change_hold"));
+                }
             }
             let selected = attachment(paths, &stored.session_id)?;
             if selected.generation() != stored.generation {

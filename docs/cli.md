@@ -648,6 +648,55 @@ compaction may be pending per session; asking again returns it. Codex only: Clau
 `COMPACT_UNSUPPORTED` (they compact themselves). The supervisor must be running. Details, phases and refusal codes
 are in the [contract](contract.md#codex-compaction-at-the-next-idle-point-1470).
 
+## Session model: one-pass launch and set-model (contract 1.49.0)
+
+```sh
+sessionsation api session launch --space SPACE --name NAME --account PROVIDER:ACCOUNT \
+    --model EXACT-MODEL-ID [--effort EFFORT] --brief-file FILE|- [--when-ready] [--wait SECONDS] \
+    [--brief-delivery held|initial-prompt] [--create-space] [--directory DIR [--create-directory]] \
+    [--permissions yolo|default] [--herdr-session H] [--herdr-socket PATH] [--request-id UUID] \
+    [--deadline SECONDS] [--dry-run]
+sessionsation api session launch-status --request-id UUID     # cancel: api cancel-operation UUID
+sessionsation api session set-model --session S --expected-generation G --model EXACT-MODEL-ID \
+    [--effort EFFORT] [--when-idle [--expires-at UNIX]] [--operation UUID] [--wait SECONDS]
+sessionsation api session set-model-status --operation UUID    # or --session S
+sessionsation api session set-model-cancel --operation UUID    # or: api cancel-operation UUID
+```
+
+**Always pass an exact model.** `--model` is required by both commands and only exact ids are accepted
+(`claude-fable-5-2`, `claude-opus-5-5`, a Codex id such as `gpt-6-astra`); Claude Code aliases (`fable`, `opus`,
+`sonnet`, `default`, ...) are refused with `INVALID_MODEL` because an alias can resolve to an older release.
+A Claude `/model` or `/effort` (typed by anyone, or applied by `set-model`) also **saves that model and effort as
+the account's default for later starts that do not name one**. Sessionsation does not restore the previous
+default; a caller that starts sessions without a model (plain `api launch`, `run`, a resume) gets whatever was
+switched to last. Pass a model every time.
+
+`session launch` replaces the "launch, sleep, type `/model` and `/effort`, retry the send" script. It starts the
+session through the same machinery as `api launch` (Claude with its own `--model`/`--effort` flags, so no dialog;
+Codex with the model and effort in `thread/start`), verifies the model (and the effort when `--effort` is given)
+**from the session itself** (Claude: the status-line payload recorded by Sessionsation's hook; Codex:
+`thread/read`), and only then sends the brief as an ordinary message. A session that reports another model never
+receives the brief (`failed`, `model_not_confirmed`, `brief.state:"not_sent"`; the session keeps running).
+`--when-ready` names this default explicitly. `--brief-delivery initial-prompt` (Claude only) is an opt-in that
+hands the brief to Claude as its start-up prompt: faster, but it is given before the model can be verified.
+
+`--wait N` blocks until the record is `complete` or `failed`, at most N seconds (launch: default 0, max 1800;
+set-model: default 90, or 0 with `--when-idle`, max 600). Ending without `complete` exits 1 with
+`MODEL_NOT_CONFIRMED` (model/effort not as requested), `PROMPT_NOT_DELIVERED` (brief not delivered, deadline),
+`PROVIDER_LAUNCH_FAILED` or `LAUNCH_ACK_UNCERTAIN`, and `error.operation` holds the record. Without `--wait` an
+`ok:true` result is only the admission: poll `launch-status` / `set-model-status`. `--deadline` (default 300 s)
+bounds launch-to-delivered-brief. The same `--request-id` with the same request and brief returns the existing
+record (`existing:true`); different input is `REQUEST_ID_CONFLICT`.
+
+`set-model` changes a running session at its next idle point (`--when-idle`: up to `--expires-at`, default one hour;
+otherwise within 60 seconds). Codex: `thread/settings/update` through the app-server, new `submit`/`queue` input
+held meanwhile (`model_change_hold`) and delivered on the new model. Claude (HERDR terminal sessions started by
+1.49 or later): Sessionsation types `/model ID` and `/effort LEVEL` into an idle, **empty** prompt, answers the
+`Switch model?` confirmation, and confirms only from the status-line record; a draft in the prompt makes it wait
+(`draft_present`), and an unknown screen ends it at once with the screen layout instead of stalling. Effort is
+always applied after the model; without `--effort` the effort in force before is re-applied. Refusals and reasons
+are in the [contract](contract.md#session-model-set-model-and-one-pass-launch-1490).
+
 ## Explicit in-turn steering
 
 For a deliberate message to a busy turn, use `api steer-target --session ID --expected-generation GENERATION`, then `api send` with `mode:"steer"` and the

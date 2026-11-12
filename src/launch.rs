@@ -187,15 +187,30 @@ fn shape(r: &Request) -> Result<()> {
         );
     }
     if r.model.is_some() || r.reasoning_effort.is_some() {
+        // Contract 1.49.0: Claude (terminal) launches take an exact model id and effort too.
+        let provider = AccountRef::parse(&r.account_id)?.provider;
         ensure!(
-            AccountRef::parse(&r.account_id)?.provider == ProviderId::Codex,
-            "UNSUPPORTED_PROVIDER_OPERATION: model and reasoning_effort are Codex-only"
+            provider == ProviderId::Codex || (provider == ProviderId::Claude && r.hosted.is_none()),
+            "UNSUPPORTED_PROVIDER_OPERATION: model and reasoning_effort are for Codex and Claude terminal launches"
         );
+        if provider == ProviderId::Claude {
+            if let Some(model) = &r.model {
+                crate::session_model::validate_claude_model(model)?;
+            }
+            if let Some(effort) = &r.reasoning_effort {
+                ensure!(
+                    crate::session_model::CLAUDE_EFFORTS.contains(&effort.as_str()),
+                    "INVALID_REASONING_EFFORT"
+                );
+            }
+        }
     }
     if let Some(model) = &r.model {
         validate_model(model)?;
     }
-    if let Some(effort) = &r.reasoning_effort {
+    if let Some(effort) = &r.reasoning_effort
+        && AccountRef::parse(&r.account_id)?.provider == ProviderId::Codex
+    {
         ensure!(
             REASONING_EFFORTS.contains(&effort.as_str()),
             "INVALID_REASONING_EFFORT"
@@ -295,7 +310,7 @@ pub fn status(paths: &Paths, id: &str) -> Result<Receipt> {
     ensure!(file.is_file(), "LAUNCH_NOT_FOUND");
     Ok(serde_json::from_slice(&fs::read(file)?)?)
 }
-fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
+pub(crate) fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
     let r = status(paths, id)?;
     if r.inline.is_some() {
         crate::inline::settle_launch(paths, &r.request.request_id)?;
@@ -487,12 +502,19 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     let mut bytes = Vec::new();
     std::io::stdin().take(65537).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 65536, "REQUEST_TOO_LARGE");
-    let mut r: Request = serde_json::from_slice(&bytes).context("INVALID_LAUNCH_REQUEST")?;
+    let r: Request = serde_json::from_slice(&bytes).context("INVALID_LAUNCH_REQUEST")?;
+    let validate_only = matches!(command, Command::Validate);
+    Ok(serde_json::to_value(admit(paths, r, validate_only).await?)?)
+}
+/// Admit (or with `validate_only`, only validate) a parsed request: the `api launch start`
+/// path, shared by the one-pass `session launch` (contract 1.49.0). Returns the receipt, or
+/// `{"valid":true,...}` when validating.
+pub(crate) async fn admit(paths: &Paths, mut r: Request, validate_only: bool) -> Result<Value> {
     shape(&r)?;
     let label = resolve_space(&r.host, &mut r.space).await?;
     let known = label.is_some();
     bare_request_name(&mut r.name, label.as_deref(), known)?;
-    if matches!(command, Command::Validate) {
+    if validate_only {
         validate(paths, &r, label.as_deref()).await?;
         return Ok(json!({"valid":true,"request_id":r.request_id}));
     }
@@ -1067,13 +1089,44 @@ mod tests {
             );
         }
         r.reasoning_effort = Some("high".into());
+        // Contract 1.49.0: Claude terminal launches take an exact id and a Claude effort.
         r.account_id = "claude:work".into();
+        shape(&r).unwrap();
+        r.model = Some("claude-fable-5-2".into());
+        r.reasoning_effort = Some("max".into());
+        shape(&r).unwrap();
+        r.model = Some("fable".into());
+        assert!(shape(&r).unwrap_err().to_string().contains("INVALID_MODEL"));
+        r.model = Some("claude-fable-5-2".into());
+        r.reasoning_effort = Some("minimal".into());
+        assert!(
+            shape(&r)
+                .unwrap_err()
+                .to_string()
+                .contains("INVALID_REASONING_EFFORT")
+        );
+        r.reasoning_effort = Some("high".into());
+        r.hosted = Some(Hosted {
+            permission_mode: None,
+        });
         assert!(
             shape(&r)
                 .unwrap_err()
                 .to_string()
                 .contains("UNSUPPORTED_PROVIDER_OPERATION")
         );
+        r.hosted = None;
+        r.account_id = "gemini:g".into();
+        assert!(
+            shape(&r)
+                .unwrap_err()
+                .to_string()
+                .contains("UNSUPPORTED_PROVIDER_OPERATION")
+        );
+        // A request with a model still reads as a 1.48-shaped request (same fields).
+        r.account_id = "claude:work".into();
+        let bytes = serde_json::to_value(&r).unwrap();
+        assert_eq!(serde_json::from_value::<Request>(bytes).unwrap(), r);
         let mut v = fixtures["launch_request"].clone();
         v["model"] = serde_json::json!(5);
         assert!(serde_json::from_value::<Request>(v).is_err());

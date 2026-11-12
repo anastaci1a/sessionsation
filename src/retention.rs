@@ -50,6 +50,14 @@ pub const PRUNABLE: &[(&str, &[&str])] = &[
         layout::COMPACTIONS,
         &["complete", "failed", "cancelled", "expired"],
     ),
+    (
+        layout::MODEL_CHANGES,
+        &["complete", "failed", "cancelled", "expired"],
+    ),
+    (
+        layout::SESSION_LAUNCHES,
+        &["complete", "failed", "cancelled"],
+    ),
 ];
 
 #[derive(Clone, Copy, Debug)]

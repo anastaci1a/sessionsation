@@ -117,7 +117,8 @@ DATA_ROOT/
                preserved-conversations/), hosted/ (was claude-hosted/)
   operations/  launches/, resumptions/, deletions/, account-deletions/,
                conversation-operations/, handoff-jobs/, space-moves/,
-               lifecycle-admission/, message-recoveries/, move-backups/
+               lifecycle-admission/, message-recoveries/, compactions/,
+               model-changes/, session-launches/, move-backups/
   messaging/   receipts.db, checkpoints/, observations/, claude-steer/,
                claude-deliveries/, questions/
   cache/       state-snapshot-*.json, observations/, compatibility-report.json
@@ -135,6 +136,13 @@ Since contract 1.48.0 `registry/session-catalog/spaces.json` mirrors each sessio
 Space (`space`); a rollback to 1.47 drops `space` from `catalog.json` on its next
 write, and the next 1.48 transaction restores it from this file (same scheme as
 `identity.json`; see [Space-scoped session names](contract.md#space-scoped-session-names-1480)).
+
+Since contract 1.49.0 `registry/session-catalog/models.json` holds observed Codex (and set-model) model and
+effort values per conversation, each Claude account home has `.sessionsation/model/<session_id>.json` written by
+the status-line hook, and `operations/model-changes/` and `operations/session-launches/` (brief files 0600,
+removed when the record ends) journal `set-model` and the one-pass `session launch`. Older binaries ignore all of
+them. A Claude `/model` or `/effort` saves the account default; callers must always pass `--model` (see
+[Session model](contract.md#session-model-set-model-and-one-pass-launch-1490)).
 
 ### Migrate
 

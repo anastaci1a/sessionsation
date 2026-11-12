@@ -242,6 +242,8 @@ const TEMP_SWEEP_DIRS: &[&str] = &[
     crate::layout::HANDOFF_JOBS,
     crate::layout::MESSAGE_RECOVERIES,
     crate::layout::COMPACTIONS,
+    crate::layout::MODEL_CHANGES,
+    crate::layout::SESSION_LAUNCHES,
     crate::layout::RESUMPTIONS,
     crate::layout::THREAD_LOCATIONS,
     crate::layout::MANAGED_PANES,

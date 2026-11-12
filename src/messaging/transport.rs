@@ -290,6 +290,40 @@ impl Transport {
             .await?;
         Ok(())
     }
+    /// Contract 1.49.0: change the thread's model or reasoning effort for subsequent turns
+    /// (`thread/settings/update`, one field per call). The caller holds session ownership
+    /// and verified idle; the result is verified with `thread/read`, never assumed.
+    pub(super) async fn settings_update(
+        &mut self,
+        session: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<()> {
+        super::uuid(session)?;
+        if !self.verified_profile {
+            return Err(Fault("unsupported"));
+        }
+        let mut params = json!({"threadId":session});
+        if let Some(m) = model {
+            params["model"] = json!(m);
+        }
+        if let Some(e) = effort {
+            params["effort"] = json!(e);
+        }
+        let _: Value = self.rpc("thread/settings/update", params).await?;
+        Ok(())
+    }
+    /// One page of `model/list` (hidden models included).
+    pub(super) async fn model_list_page(&mut self, cursor: Option<&str>) -> Result<Value> {
+        if !self.verified_profile {
+            return Err(Fault("unsupported"));
+        }
+        self.rpc(
+            "model/list",
+            json!({"cursor":cursor,"includeHidden":true,"limit":100}),
+        )
+        .await
+    }
     /// Explicit recovery only. Stock queue/start atomically requires idle and
     /// consumes this exact queued item; it never steers or selects the queue head.
     pub(super) async fn start_queued(&mut self, session: &str, queued: &str) -> Result<String> {

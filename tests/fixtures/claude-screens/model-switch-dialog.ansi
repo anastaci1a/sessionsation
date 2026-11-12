@@ -1,0 +1,39 @@
+
+[0m[38;2;215;119;87m ▐[0m[38;2;215;119;87m[48;2;0;0;0m▛███▛█   [0m[1mClaude Code [0m[38;2;153;153;153mv2.1.314[0m
+[0m[38;2;215;119;87m▝▜[0m[38;2;215;119;87m[48;2;0;0;0m█████[0m[38;2;215;119;87m█▀  [0m[38;2;153;153;153mFable 5.2 with high effort · Claude Max[0m
+[0m[38;2;215;119;87m ▝▝   ▝▝   [0m[38;2;153;153;153m/mnt/disk1/appdata/claude/coordinator/cutovers/scratch-149/fixture-cwd[0m
+
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯[0m[48;2;55;55;55m [0m[38;2;255;255;255m[48;2;55;55;55m/model claude-fable-5-2[0m[48;2;55;55;55m                                                                                              [0m
+[0m[38;2;153;153;153m  ⎿  [0mSet model to [0m[38;2;177;185;249mFable 5.2 [0mand saved as your default for new sessions
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯[0m[48;2;55;55;55m [0m[38;2;255;255;255m[48;2;55;55;55m/effort high[0m[48;2;55;55;55m                                                                                                         [0m
+[0m[38;2;153;153;153m  ⎿  [0mSet effort level to high (saved as your default for new sessions): Comprehensive implementation with extensive
+     testing and documentation
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mReply with just the word ok.[0m[48;2;55;55;55m                                                                                         [0m
+
+[0m[38;2;255;255;255m● [0mok
+
+[0m[38;2;153;153;153m✻ Cogitated for 1s · done 10:58 AM[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+[0m[38;2;177;185;249m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔[0m
+   [0m[1m[38;2;255;193;7mSwitch model?[0m
+   [0m[38;2;153;153;153mYour next response will be slower and use more tokens[0m
+
+   This conversation is cached for the current model. Switching to [0m[1mOpus 5.5 [0mmeans the full history gets re-read.
+
+   [0m[38;2;177;185;249m❯ [0m[38;2;153;153;153m1. [0m[38;2;177;185;249mYes, switch to Opus 5.5[0m
+     [0m[38;2;153;153;153m2. [0mNo, go back

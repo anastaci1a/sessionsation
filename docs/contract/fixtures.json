@@ -63,6 +63,7 @@
     "name": "example",
     "space": "Main",
     "canonical": "Main:example",
+    "model": {"id": "gpt-6-astra", "effort": "high", "observed_at": 1800000000, "source": "codex_thread"},
     "provider": "codex",
     "account": "fixture",
     "account_id": "codex:fixture",

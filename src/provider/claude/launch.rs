@@ -114,7 +114,21 @@ pub async fn exec_new(
         ),
         &account.home,
     );
-    let argv = claude::new_argv(&config, &id, &session.name, &settings, mode);
+    // Contract 1.49.0: an admitted launch carries its exact model and effort; a one-pass
+    // `session launch` that asked for initial-prompt delivery hands the brief over here.
+    let mut options = claude::StartOptions::default();
+    if let Some(request) = creation
+        && let Ok(receipt) = crate::launch::status(paths, request)
+    {
+        options.model = receipt.request.model.clone();
+        options.effort = receipt.request.reasoning_effort.clone();
+        // Never fails the start: an unreadable brief stays undelivered and the one-pass
+        // record ends `ready_timeout` instead.
+        options.prompt = crate::session_launch::initial_prompt(paths, request)
+            .ok()
+            .flatten();
+    }
+    let argv = claude::new_argv_with(&config, &id, &session.name, &settings, mode, &options);
     exec(&config, &account.home, &cwd, &argv)
 }
 

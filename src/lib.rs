@@ -25,6 +25,8 @@ pub mod questions;
 pub mod rpc;
 pub mod scheduler;
 mod self_executable;
+pub mod session_launch;
+pub mod session_model;
 pub mod shared_state;
 pub mod simulation;
 pub mod store;

@@ -492,6 +492,35 @@ pub fn new_argv(
     .to_vec();
     with_permissions(argv, mode)
 }
+/// Contract 1.49.0: exact model and effort for a new session (no `/model` dialog is ever
+/// needed), and an explicitly requested initial prompt, always after `--` so a brief that
+/// starts with `-` stays one positional argument.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StartOptions {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub prompt: Option<String>,
+}
+pub fn new_argv_with(
+    config: &Config,
+    session_id: &str,
+    name: &str,
+    settings: &str,
+    mode: LaunchPermissions,
+    options: &StartOptions,
+) -> Vec<String> {
+    let mut argv = new_argv(config, session_id, name, settings, mode);
+    if let Some(model) = &options.model {
+        argv.extend(["--model".to_owned(), model.clone()]);
+    }
+    if let Some(effort) = &options.effort {
+        argv.extend(["--effort".to_owned(), effort.clone()]);
+    }
+    if let Some(prompt) = &options.prompt {
+        argv.extend(["--".to_owned(), prompt.clone()]);
+    }
+    argv
+}
 pub fn resume_argv(
     config: &Config,
     session_id: &str,
@@ -1532,6 +1561,12 @@ pub fn statusline_hook(record_only: bool) -> i32 {
         && home.is_absolute()
     {
         let _ = record_statusline(home, &value, crate::daemon::now());
+        // Contract 1.49.0: the session's runtime model and effort, for set-model and rows.
+        let _ = crate::session_model::record_hook(
+            home,
+            &value,
+            crate::messaging::claude_steer::terminal::now_ms(),
+        );
     }
     if record_only {
         return 0;
@@ -2008,6 +2043,42 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&yolo).unwrap()["skipDangerousModePermissionPrompt"],
             true
+        );
+        let options = StartOptions {
+            model: Some("claude-fable-5-2".into()),
+            effort: Some("high".into()),
+            prompt: Some("-brief text".into()),
+        };
+        let argv = new_argv_with(
+            &config,
+            id,
+            "label",
+            &yolo,
+            LaunchPermissions::Yolo,
+            &options,
+        );
+        assert_eq!(
+            argv[7..],
+            [
+                "--dangerously-skip-permissions",
+                "--model",
+                "claude-fable-5-2",
+                "--effort",
+                "high",
+                "--",
+                "-brief text"
+            ]
+        );
+        assert_eq!(
+            new_argv_with(
+                &config,
+                id,
+                "label",
+                &yolo,
+                LaunchPermissions::Default,
+                &StartOptions::default()
+            ),
+            new_argv(&config, id, "label", &yolo, LaunchPermissions::Default)
         );
         for argv in [
             new_argv(&config, id, "label", &yolo, LaunchPermissions::Yolo),
