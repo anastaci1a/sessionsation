@@ -594,6 +594,14 @@ pub async fn worker(paths: &Paths, c: &str) -> Result<()> {
     let mut command = tokio::process::Command::from(std_command);
     command
         .args(worker_args(&h))
+        // Contract 1.49.0: a resumed conversation keeps its last recorded model and effort.
+        .args(if h.origin == "resume" {
+            claude::resume_model_args(
+                crate::session_model::current(paths, &h.conversation_id, Some(&home)).as_ref(),
+            )
+        } else {
+            vec![]
+        })
         .current_dir(&h.directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

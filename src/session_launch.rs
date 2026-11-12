@@ -38,6 +38,8 @@ pub const MAX_DEADLINE: i64 = 1800;
 pub const MAX_WAIT: u64 = 1800;
 const MAX_BRIEF_ATTEMPTS: u32 = 5;
 const RETRY_SECONDS: i64 = 5;
+/// A record still `admitted` with no launch receipt after this long was never admitted.
+const ADMIT_GRACE_SECONDS: i64 = 120;
 pub const CLAUDE_INITIAL_MAX: usize = 32768;
 pub const CLAUDE_HELD_MAX: usize = 8192;
 pub const CODEX_MAX: usize = 16384;
@@ -587,6 +589,26 @@ async fn advance(paths: &Paths, id: &str) {
     }
     let now = crate::daemon::now();
     if now >= r.deadline_at {
+        if r.brief.state == "sending" {
+            // A send is in flight: one last read; never reported as not sent.
+            if r.phase == "delivering_brief" {
+                deliver(paths, &r).await;
+                match read(paths, id) {
+                    Ok(x) if x.terminal() => return,
+                    // The read proved nothing was written: an ordinary timeout.
+                    Ok(x) if x.brief.state != "sending" => {
+                        return end(paths, id, "failed", "ready_timeout", None);
+                    }
+                    _ => {}
+                }
+            }
+            let _ = update(paths, id, |x| {
+                x.brief.state = "delivery_unknown".into();
+                x.brief.reason = Some("brief_delivery_unknown".into());
+                true
+            });
+            return end(paths, id, "failed", "ready_timeout", None);
+        }
         let reason = match r.phase.as_str() {
             "launching" if r.reason.as_deref() == Some("launch_uncertain") => "launch_uncertain",
             _ => "ready_timeout",
@@ -600,7 +622,10 @@ async fn advance(paths: &Paths, id: &str) {
                     r.phase = "launching".into();
                     true
                 });
-            } else if now - r.created_at > 30 {
+            } else if now - r.created_at > ADMIT_GRACE_SECONDS {
+                // `launch::admit` runs in the admitting process and writes the receipt
+                // before dispatching anything; no receipt this long after admission means it
+                // never got that far (same bound as the launch ack).
                 end(
                     paths,
                     id,
@@ -680,7 +705,7 @@ async fn verify(paths: &Paths, r: &Record) {
         return;
     };
     let _ = session_model::store(paths, &conversation, o.clone());
-    let model_ok = session_model::same(&o.model, &r.model_requested);
+    let model_ok = session_model::same_model(&o.model, &r.model_requested);
     let effort_ok = match (&r.effort_requested, &o.effort) {
         (None, _) => true,
         (Some(want), Some(got)) => session_model::same(want, got),
@@ -744,7 +769,10 @@ async fn deliver(paths: &Paths, r: &Record) {
                 v["state"].as_str().unwrap_or("unknown").to_owned(),
                 v["facts"]["accepted_native"] == true,
             ),
-            Err(_) => ("rejected".to_owned(), false),
+            // Only a receipt that provably does not exist means the send never happened.
+            // Any other read error is unknown: read again later, never resend.
+            Err(e) if not_found(e) => ("not_found".to_owned(), false),
+            Err(_) => return,
         };
         if accepted {
             let _ = update(paths, &r.id, |x| {
@@ -768,7 +796,9 @@ async fn deliver(paths: &Paths, r: &Record) {
                 });
                 return end(paths, &r.id, "failed", "brief_delivery_unknown", None);
             }
-            "rejected" | "failed" | "expired" | "cancelled" => {
+            // Resent only when nothing was written to the session (a pre-submit refusal or a
+            // send that never created its receipt): the brief goes out at most once.
+            s if resend_allowed(s, receipt.as_ref().ok()) => {
                 let reason = receipt
                     .as_ref()
                     .ok()
@@ -845,6 +875,20 @@ async fn deliver(paths: &Paths, r: &Record) {
             true
         });
     }
+}
+
+/// The brief may be sent again under a new id only when the attempt provably wrote nothing:
+/// a pre-submit refusal, or a receipt that does not exist.
+fn resend_allowed(state: &str, receipt: Option<&Value>) -> bool {
+    matches!(
+        state,
+        "rejected" | "failed" | "expired" | "cancelled" | "not_found"
+    ) && receipt
+        .is_none_or(|v| v["facts"]["written"] != true && v["facts"]["accepted_native"] != true)
+}
+fn not_found(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<crate::messaging::Fault>()
+        .is_some_and(|f| f.0 == "receipt_not_found")
 }
 
 /// `api capabilities.session_model.launch`.
@@ -1006,6 +1050,149 @@ mod tests {
                 .join("root")
                 .join(crate::layout::SESSION_LAUNCHES)
                 .exists()
+        );
+    }
+
+    fn sending(paths: &Paths, deadline_in: i64) -> (String, String) {
+        let id = uuid::Uuid::new_v4().to_string();
+        let mid = uuid::Uuid::new_v4().to_string();
+        let dir = tempfile::tempdir().unwrap();
+        let now = crate::daemon::now();
+        let r = Record {
+            schema_version: 1,
+            id: id.clone(),
+            request: request(&args(dir.path()), &id).unwrap(),
+            provider: "codex".into(),
+            brief: Brief {
+                delivery: "first_turn".into(),
+                state: "sending".into(),
+                sha256: "x".into(),
+                bytes: 5,
+                attempts: 1,
+                message_id: Some(mid.clone()),
+                message_ids: vec![mid.clone()],
+                receipt_state: None,
+                reason: None,
+                next_attempt_at: 0,
+            },
+            model_requested: "gpt-6".into(),
+            effort_requested: None,
+            observed: None,
+            model_confirmed: true,
+            effort_confirmed: false,
+            phase: "delivering_brief".into(),
+            reason: None,
+            detail: None,
+            session_id: Some("s".into()),
+            conversation_id: Some("c".into()),
+            created_at: now,
+            updated_at: now,
+            deadline_at: now + deadline_in,
+        };
+        save(paths, &r).unwrap();
+        fs::write(brief_file(paths, &id).unwrap(), "brief").unwrap();
+        (id, mid)
+    }
+
+    #[test]
+    fn a_brief_is_resent_only_when_provably_nothing_was_written() {
+        for s in ["rejected", "failed", "expired", "cancelled"] {
+            assert!(resend_allowed(
+                s,
+                Some(&json!({"state":s,"facts":{"written":false}}))
+            ));
+            assert!(!resend_allowed(
+                s,
+                Some(&json!({"state":s,"facts":{"written":true}}))
+            ));
+            assert!(!resend_allowed(
+                s,
+                Some(&json!({"state":s,"facts":{"accepted_native":true}}))
+            ));
+        }
+        assert!(resend_allowed("not_found", None));
+        for s in [
+            "pending_local",
+            "dispatching",
+            "delivery_unknown",
+            "unknown",
+        ] {
+            assert!(!resend_allowed(s, Some(&json!({"state":s}))));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_receipt_is_read_again_never_resent() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(dir.path().join("root"))).unwrap();
+        let (id, mid) = sending(&paths, 300);
+        // The ledger cannot be opened: the read fails for a reason other than "not found".
+        fs::create_dir_all(&paths.root).unwrap();
+        fs::write(paths.root.join("messaging"), "not a directory").unwrap();
+        advance(&paths, &id).await;
+        let r = read(&paths, &id).unwrap();
+        assert_eq!(r.brief.message_id.as_deref(), Some(mid.as_str()));
+        assert_eq!((r.brief.state.as_str(), r.brief.attempts), ("sending", 1));
+        assert_eq!(r.brief.message_ids.len(), 1, "no second send");
+        assert_eq!(r.phase, "delivering_brief");
+    }
+
+    #[tokio::test]
+    async fn a_receipt_that_does_not_exist_allows_one_new_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(dir.path().join("root"))).unwrap();
+        let (id, _) = sending(&paths, 300);
+        advance(&paths, &id).await;
+        let r = read(&paths, &id).unwrap();
+        assert_eq!(r.brief.message_id, None);
+        assert_eq!(r.brief.state, "held");
+        assert_eq!(r.brief.receipt_state.as_deref(), Some("not_found"));
+        assert!(r.brief.next_attempt_at > 0);
+    }
+
+    #[tokio::test]
+    async fn a_deadline_during_a_send_is_delivery_unknown_not_unsent() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(dir.path().join("root"))).unwrap();
+        let (id, _) = sending(&paths, -1);
+        fs::create_dir_all(&paths.root).unwrap();
+        fs::write(paths.root.join("messaging"), "not a directory").unwrap();
+        advance(&paths, &id).await;
+        let r = read(&paths, &id).unwrap();
+        assert_eq!(
+            (r.phase.as_str(), r.reason.as_deref()),
+            ("failed", Some("ready_timeout"))
+        );
+        assert_eq!(r.brief.state, "delivery_unknown");
+        assert_eq!(r.brief.reason.as_deref(), Some("brief_delivery_unknown"));
+        // Provably unsent at the deadline: an ordinary timeout with the brief not sent.
+        let dir2 = tempfile::tempdir().unwrap();
+        let paths2 = Paths::new(Some(dir2.path().join("root"))).unwrap();
+        let (id2, _) = sending(&paths2, -1);
+        advance(&paths2, &id2).await;
+        let r2 = read(&paths2, &id2).unwrap();
+        assert_eq!(r2.reason.as_deref(), Some("ready_timeout"));
+        assert_eq!(r2.brief.state, "not_sent");
+    }
+
+    #[tokio::test]
+    async fn an_admitted_record_waits_for_the_launch_ack_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(dir.path().join("root"))).unwrap();
+        let (id, _) = sending(&paths, 300);
+        let mut r = read(&paths, &id).unwrap();
+        r.phase = "admitted".into();
+        r.created_at = crate::daemon::now() - 60;
+        save(&paths, &r).unwrap();
+        advance(&paths, &id).await;
+        assert_eq!(read(&paths, &id).unwrap().phase, "admitted");
+        r.created_at = crate::daemon::now() - ADMIT_GRACE_SECONDS - 1;
+        save(&paths, &r).unwrap();
+        advance(&paths, &id).await;
+        let r = read(&paths, &id).unwrap();
+        assert_eq!(
+            (r.phase.as_str(), r.reason.as_deref()),
+            ("failed", Some("launch_failed"))
         );
     }
 }

@@ -246,6 +246,19 @@ fn all(paths: &Paths) -> Vec<Record> {
 fn is_terminal(r: &Record) -> bool {
     r.phase == "complete"
 }
+/// Contract 1.49.0 (set-model): a terminal delivery to this conversation is typing or
+/// submitting right now (past `admitted`, not finished), or touched the pane within
+/// `quiet_seconds`. A model change never types while this holds.
+pub(crate) fn terminal_activity(paths: &Paths, conversation: &str, quiet_seconds: i64) -> bool {
+    let now = crate::daemon::now();
+    all(paths).iter().any(|r| {
+        r.kind == "terminal"
+            && r.conversation_id == conversation
+            // A record stuck past `admitted` (a dead worker) counts for two minutes only.
+            && ((!is_terminal(r) && r.phase != "admitted" && now - r.updated_at < 120)
+                || (r.dispatched_at.is_some() && now - r.updated_at < quiet_seconds))
+    })
+}
 fn finish(r: &mut Record, state: &str, reason: Option<&str>) {
     if is_terminal(r) {
         return;

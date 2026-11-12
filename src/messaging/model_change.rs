@@ -38,8 +38,13 @@ pub const MAX_WAIT_SECONDS: u64 = 600;
 const MAX_ATTEMPTS: u32 = 3;
 const RELEASE_CLAIM_SECONDS: i64 = 120;
 pub const POLL_SECONDS: u64 = 2;
-/// A Claude worker is started at most this often per waiting operation.
-const SPAWN_EVERY_SECONDS: i64 = 4;
+/// Retry schedule of a waiting change: first interval, doubling up to the maximum.
+const CLAUDE_FIRST_BACKOFF_SECONDS: i64 = 4;
+const CODEX_FIRST_BACKOFF_SECONDS: i64 = 2;
+const MAX_BACKOFF_SECONDS: i64 = 30;
+/// A Codex change in `applying` with no recorded progress this long fails
+/// (`apply_not_observed`) and releases its hold (same bound as compaction 1.47.1).
+pub const APPLY_UNOBSERVED_SECONDS: i64 = 180;
 
 const TERMINAL: &[&str] = &["complete", "failed", "cancelled", "expired"];
 
@@ -235,7 +240,7 @@ pub(crate) fn step(paths: &Paths, id: &str, name: &str) {
 
 /// Whether `observed` shows the requested model and (when one is targeted) the effort.
 pub(crate) fn matches(r: &Record, target_effort: Option<&str>, o: &Observed) -> bool {
-    session_model::same(&o.model, &r.requested_model)
+    session_model::same_model(&o.model, &r.requested_model)
         && target_effort.is_none_or(|e| {
             o.effort
                 .as_deref()
@@ -319,6 +324,17 @@ fn explain(reason: &str) -> &'static str {
         "worker_interrupted" => {
             "The Claude worker stopped mid-procedure and the pane was not in a known state."
         }
+
+        "apply_not_observed" => {
+            "No progress could be observed for 3 minutes while applying; held input was released."
+        }
+        "prompt_not_owned" => "The prompt held text the worker did not type; nothing was cleared.",
+        "pane_left_in_dialog" => {
+            "A confirmation dialog could not be closed; the pane needs attention (see detail)."
+        }
+        "terminal_delivery_active" => {
+            "A message is being typed into or was just delivered to this pane; retried."
+        }
         _ => "",
     }
 }
@@ -331,7 +347,7 @@ pub(crate) fn public(r: &Record) -> Value {
         "requested":{"model":r.requested_model,"effort":r.requested_effort},"target_effort":target,"effort_source":r.effort_source,
         "before":r.before.as_ref().map(Observed::public),"observed":r.observed.as_ref().map(Observed::public),
         "applied":r.applied.as_ref().map(Observed::public),
-        "changed":r.before.as_ref().map(|b| json!({"model":!session_model::same(&b.model,&r.requested_model),"effort":b.effort != target})),
+        "changed":r.before.as_ref().map(|b| json!({"model":!session_model::same_model(&b.model,&r.requested_model),"effort":b.effort != target})),
         "hold":{"active":r.holds(crate::daemon::now()),"released":r.hold_released,"scope":if r.provider == "codex" {"new public submit and queue sends to this session"} else {"none (Claude terminal deliveries wait for the pane lock instead)"}},
         "steps":r.steps,"refusal_layout":r.refusal_layout,
         "attempts":r.attempts,"created_at":r.created_at,"updated_at":r.updated_at,"expires_at":r.expires_at,
@@ -618,7 +634,26 @@ async fn release(paths: &Paths, id: &str) {
     });
 }
 
-static SPAWNED: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
+/// Per-operation retry schedule of a waiting change: `(next attempt, current interval)`.
+/// Process memory only; a supervisor restart starts over at the first interval.
+static BACKOFF: Mutex<BTreeMap<String, (i64, i64)>> = Mutex::new(BTreeMap::new());
+
+/// Whether a waiting operation is due for another attempt.
+pub(crate) fn due(id: &str, now: i64) -> bool {
+    BACKOFF
+        .lock()
+        .map(|b| b.get(id).is_none_or(|(next, _)| now >= *next))
+        .unwrap_or(true)
+}
+/// Schedule the next attempt: `first` seconds, doubling up to `MAX_BACKOFF_SECONDS`.
+pub(crate) fn back_off(id: &str, now: i64, first: i64) {
+    if let Ok(mut b) = BACKOFF.lock() {
+        let interval = b
+            .get(id)
+            .map_or(first, |(_, i)| (*i * 2).min(MAX_BACKOFF_SECONDS));
+        b.insert(id.to_owned(), (now + interval, interval));
+    }
+}
 
 pub async fn tick(paths: &Paths) {
     let Ok(all) = list(paths) else { return };
@@ -628,8 +663,14 @@ pub async fn tick(paths: &Paths) {
             finish(paths, &r.id, &["waiting"], "expired", "expired");
             continue;
         }
+        if r.phase == "waiting" && !due(&r.id, now) {
+            continue;
+        }
         if r.provider == "codex" {
             codex_advance(paths, r.clone()).await;
+            if read(paths, &r.id).is_ok_and(|x| x.phase == "waiting") {
+                back_off(&r.id, now, CODEX_FIRST_BACKOFF_SECONDS);
+            }
         } else {
             spawn_claude_worker(paths, r, now);
         }
@@ -638,8 +679,8 @@ pub async fn tick(paths: &Paths) {
     for r in all.iter().filter(|r| r.terminal() && !r.hold_released) {
         release(paths, &r.id).await;
     }
-    if let Ok(mut s) = SPAWNED.lock() {
-        s.retain(|id, _| all.iter().any(|r| &r.id == id && !r.terminal()));
+    if let Ok(mut b) = BACKOFF.lock() {
+        b.retain(|id, _| all.iter().any(|r| &r.id == id && !r.terminal()));
     }
 }
 
@@ -652,14 +693,8 @@ fn spawn_claude_worker(paths: &Paths, r: &Record, now: i64) {
     if !crate::background::worker_stopped(&lock_path).unwrap_or(false) {
         return;
     }
-    if let Ok(mut s) = SPAWNED.lock() {
-        if s.get(&r.id)
-            .is_some_and(|at| now - at < SPAWN_EVERY_SECONDS)
-        {
-            return;
-        }
-        s.insert(r.id.clone(), now);
-    }
+    // Idle polling backs off (4 s doubling to 30 s) while the session stays busy.
+    back_off(&r.id, now, CLAUDE_FIRST_BACKOFF_SECONDS);
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
@@ -759,6 +794,13 @@ async fn offered(
 async fn codex_advance(paths: &Paths, r: Record) {
     let id = r.id.clone();
     let conversation = r.conversation_id.clone();
+    if r.phase == "applying" && crate::daemon::now() - r.updated_at > APPLY_UNOBSERVED_SECONDS {
+        // No progress could be observed: never hold input for ever. The tick releases it.
+        eprintln!(
+            "model change {id}: no progress for {APPLY_UNOBSERVED_SECONDS} s while applying; failed apply_not_observed, held input released"
+        );
+        return fail(paths, &id, "apply_not_observed", None);
+    }
     if r.phase == "waiting"
         && super::compaction::pending_before(paths, &conversation, (r.created_at, &r.id))
     {
@@ -797,7 +839,12 @@ async fn codex_advance(paths: &Paths, r: Record) {
     let _guard = match mutation_lock_waiting(paths, &conversation, budget).await {
         Ok(g) => g,
         Err(_) if r.phase == "waiting" => return waiting(paths, &id, "session_busy"),
-        Err(_) => return,
+        Err(_) => {
+            eprintln!(
+                "model change {id}: applying, session ownership busy; retried (bounded by {APPLY_UNOBSERVED_SECONDS} s)"
+            );
+            return;
+        }
     };
     let mut control = match attached.connect().await {
         Ok(c) => c,
@@ -811,7 +858,13 @@ async fn codex_advance(paths: &Paths, r: Record) {
             );
         }
         Err(_) if r.phase == "waiting" => return waiting(paths, &id, "provider_unavailable"),
-        Err(_) => return,
+        Err(e) => {
+            eprintln!(
+                "model change {id}: applying, app-server unreachable ({}); retried (bounded by {APPLY_UNOBSERVED_SECONDS} s)",
+                e.0
+            );
+            return;
+        }
     };
     if r.phase == "applying" {
         // A supervisor stopped mid-change: never resend blindly; the thread decides.
@@ -885,7 +938,7 @@ async fn codex_advance(paths: &Paths, r: Record) {
     let Ok(Some(r)) = started else { return };
     let model_due = before
         .as_ref()
-        .is_none_or(|b| !session_model::same(&b.model, &r.requested_model));
+        .is_none_or(|b| !session_model::same_model(&b.model, &r.requested_model));
     if model_due {
         step(paths, &id, "model");
         if let Err(e) = control
@@ -919,6 +972,7 @@ async fn codex_verify(paths: &Paths, r: &Record, control: &mut Transport, reads:
     step(paths, &r.id, "verify");
     let effort = target_effort(r);
     let mut last = None;
+    let mut read_any = false;
     for i in 0..reads.max(1) {
         if i > 0 {
             tokio::time::sleep(crate::timing::secs(1)).await;
@@ -927,14 +981,25 @@ async fn codex_verify(paths: &Paths, r: &Record, control: &mut Transport, reads:
             Ok(Some(o)) if matches(r, effort.as_deref(), &o) => {
                 return complete(paths, &r.id, "completed", o);
             }
-            Ok(o) => last = o,
+            Ok(o) => {
+                read_any = true;
+                last = o;
+            }
             Err(_) => {}
         }
     }
-    let unchanged = last
-        .as_ref()
-        .zip(r.before.as_ref())
-        .is_some_and(|(l, b)| session_model::same(&l.model, &b.model) && l.effort == b.effort);
+    if !read_any {
+        // Nothing could be read: no verdict; the next pass reads again (bounded by
+        // APPLY_UNOBSERVED_SECONDS).
+        eprintln!(
+            "model change {}: applying, thread/read failed; retried",
+            r.id
+        );
+        return;
+    }
+    let unchanged = last.as_ref().zip(r.before.as_ref()).is_some_and(|(l, b)| {
+        session_model::same_model(&l.model, &b.model) && l.effort == b.effort
+    });
     if unchanged && r.attempts < MAX_ATTEMPTS && reads > 1 {
         // Positively not applied: wait for the next idle point and try again.
         let _ = update(paths, &r.id, |x| {
@@ -948,7 +1013,9 @@ async fn codex_verify(paths: &Paths, r: &Record, control: &mut Transport, reads:
         return;
     }
     let reason = match &last {
-        Some(l) if session_model::same(&l.model, &r.requested_model) => "effort_not_confirmed",
+        Some(l) if session_model::same_model(&l.model, &r.requested_model) => {
+            "effort_not_confirmed"
+        }
         _ => "model_not_confirmed",
     };
     fail(paths, &r.id, reason, last);
@@ -996,7 +1063,7 @@ pub fn capability() -> Value {
             "providers":{"codex":{"native_methods":["thread/settings/update","thread/read","model/list"],"types_into_terminal":false},
                 "claude":{"commands":["/model <id>","/effort <level>"],"types_into_terminal":true,
                     "requires":["herdr_terminal","terminal_input_enabled","statusline_record","empty_prompt"],"verified_from":"statusline_hook_payload",
-                    "dialogs":["Switch model?","Change effort level?"],"never":["esc","ctrl+c","ctrl+d","digit keys"],
+                    "dialogs":["Switch model?","Change effort level?"],"never":["ctrl+c","ctrl+d","digit keys"],"esc":"only to close its own confirmation dialog when its No option cannot be chosen","dialog_left_open":"never (pane_left_in_dialog names the pane)","idle_checks":{"reads":2,"gap_ms":1500,"delivery_quiet_seconds":5},"backoff_seconds":{"claude":[4,30],"codex":[2,30]},"applying_unobserved_seconds":APPLY_UNOBSERVED_SECONDS,"resume_passes_recorded_model":true,
                     "side_effect":"Claude Code saves the model and effort as the account default for later starts without --model"}},
             "unsupported":{"gemini":"UNSUPPORTED_PROVIDER_OPERATION","antigravity":"UNSUPPORTED_PROVIDER_OPERATION","claude_hosted":"UNSUPPORTED_PROVIDER_OPERATION"},
             "hold":{"codex":{"scope":"new public submit and queue sends","held_receipt":{"state":"pending_local","reason":"model_change_hold"},"released":"in arrival order when no compaction or model change of the session remains"},

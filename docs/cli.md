@@ -669,7 +669,8 @@ sessionsation api session set-model-cancel --operation UUID    # or: api cancel-
 A Claude `/model` or `/effort` (typed by anyone, or applied by `set-model`) also **saves that model and effort as
 the account's default for later starts that do not name one**. Sessionsation does not restore the previous
 default; a caller that starts sessions without a model (plain `api launch`, `run`, a resume) gets whatever was
-switched to last. Pass a model every time.
+switched to last. Pass a model every time. Resumes pass the conversation's last recorded model and effort
+(when one was recorded).
 
 `session launch` replaces the "launch, sleep, type `/model` and `/effort`, retry the send" script. It starts the
 session through the same machinery as `api launch` (Claude with its own `--model`/`--effort` flags, so no dialog;

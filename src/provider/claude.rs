@@ -541,6 +541,26 @@ pub fn resume_argv(
     .to_vec();
     with_permissions(argv, mode)
 }
+/// Contract 1.49.0: a Claude `/model` or `/effort` changes the account default, so a resume
+/// passes the conversation's last recorded model (and effort, when recorded) explicitly.
+/// Nothing recorded (or not an exact id): no flags, as before.
+pub fn resume_model_args(recorded: Option<&crate::session_model::Observed>) -> Vec<String> {
+    let Some(o) = recorded else {
+        return vec![];
+    };
+    if crate::session_model::validate_claude_model(&o.model).is_err() {
+        return vec![];
+    }
+    let mut args = vec!["--model".to_owned(), o.model.clone()];
+    if let Some(e) = o
+        .effort
+        .as_deref()
+        .filter(|e| crate::session_model::CLAUDE_EFFORTS.contains(e))
+    {
+        args.extend(["--effort".to_owned(), e.to_owned()]);
+    }
+    args
+}
 pub fn login_argv(config: &Config) -> Vec<String> {
     vec![
         config.claude_binary.clone(),

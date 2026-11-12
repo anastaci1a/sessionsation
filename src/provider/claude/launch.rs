@@ -163,12 +163,17 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
         ),
         &account.home,
     );
-    let argv = claude::resume_argv(
+    let mut argv = claude::resume_argv(
         &config,
         &current.conversation_id,
         &current.name,
         &settings,
         mode,
     );
+    // Contract 1.49.0: the last recorded model and effort, never the account default.
+    argv.extend(claude::resume_model_args(
+        crate::session_model::current(paths, &current.conversation_id, Some(&account.home))
+            .as_ref(),
+    ));
     exec(&config, &account.home, Path::new(&directory), &argv)
 }

@@ -3515,8 +3515,10 @@ terminal launches: exact Claude id, efforts `low|medium|high|xhigh|max`; hosted 
   capped effort is a failure carrying the observed value, never "close enough" (ASCII case-insensitive equality).
 - **Callers must always pass a model.** `session launch` and `set-model` require `--model`. A Claude `/model` or
   `/effort` (including the ones `set-model` types) saves the value as the account's default for later starts
-  without a model; Sessionsation does not restore it. Starts without a model (plain `api launch`, `run`,
-  resume, Auto Start) get the last switched-to value.
+  without a model; Sessionsation does not restore it. New starts without a model (plain `api launch`, `run`)
+  get the last switched-to value. **Resumes** (`api resume`, inline `resume`, Auto Start/auto-recover, account
+  switch, hosted resume) pass the conversation's last recorded model and effort as `--model`/`--effort`
+  (the row's `model`); with nothing recorded they start as before. Headless `-p` sends do not pass one.
 - **Row field `model`** (`state`, `state --cached`, `session`, `session resolve`): `{"id","effort","observed_at",
   "source"}` or null. Sources: `claude_statusline` (Sessionsation's status-line hook records the payload's
   `model.id` and `effort.level` per conversation in `<account home>/.sessionsation/model/<session_id>.json`),
@@ -3539,11 +3541,20 @@ terminal launches: exact Claude id, efforts `low|medium|high|xhigh|max`; hosted 
   visible after three attempts: `model_not_confirmed` / `effort_not_confirmed`. New public `submit`/`queue` input
   is held (`pending_local`, `model_change_hold`) and released in arrival order through the compaction release
   path. Compactions and model changes of one session run in request order (waiting reasons
-  `compaction_pending`, `model_change_pending`), and held input is released only when neither remains.
+  `compaction_pending`, `model_change_pending`), and held input is released only when neither remains. A change
+  stuck in `applying` with no observable progress for 180 s fails `apply_not_observed` and releases its hold.
   Steering is not held by a model change.
-- **Claude.** A detached worker types `/model <id>` and `/effort <level>` into the verified HERDR pane when HERDR
-  reports the agent idle and the prompt is the main view and **empty** (a draft is never cleared: waiting reason
-  `draft_present`). The typed command must read back exactly with no menu; then Enter. A `Switch model?` /
+- **Claude.** A detached worker types `/model <id>` and `/effort <level>` into the verified HERDR pane only after
+  **two** idle observations at least 1.5 s apart (HERDR agent `idle`/`done` and an **empty** main prompt; a draft
+  is never cleared: waiting reason `draft_present`) and while no terminal delivery to the conversation is in
+  flight or touched the pane in the last 5 s (`terminal_delivery_active`). Waiting changes are retried with
+  back-off (Claude 4 s doubling to 30 s, Codex 2 s to 30 s). Text it must remove is only its own command, by
+  backspaces after verifying the prompt holds exactly a prefix of it (otherwise `prompt_not_owned`, nothing
+  cleared); a command left typed by a dead worker of the same operation is recognized exactly and cleared. A
+  dialog is never left open: on every failure the worker chooses `No` (or Esc when the options cannot be read)
+  and verifies the main prompt; if that cannot be verified the operation fails `pane_left_in_dialog` and
+  `detail` names the pane. Dialog options must match the captured format (`❯ 1. Yes, switch to …`,
+  `2. No, go back`). Model ids compare ignoring a trailing `[1m]`. The typed command must read back exactly with no menu; then Enter. A `Switch model?` /
   `Change effort level?` dialog is answered by moving the pointer with up/down to `Yes` and Enter (a
   `PreModelSwitch` hook prompt is declined: `blocked_by_hook`); never Esc, Ctrl+C, Ctrl+D or digit keys.
   Confirmation comes only from the status-line record (the footer text is never parsed). An empty prompt with no
@@ -3557,7 +3568,11 @@ terminal launches: exact Claude id, efforts `low|medium|high|xhigh|max`; hosted 
   delivering_brief → complete | failed | cancelled`. The brief is **held until the model (and requested effort) is
   verified** (`brief.delivery`: Claude `held`, Codex `first_turn`), then sent as an ordinary message (Claude
   `terminal_input` submit; Codex submit with `if_busy:"queue"`), a new message id journaled before each attempt,
-  pre-submit refusals retried every 5 s up to 5 times, `delivery_unknown` never retried. Opt-in
+  pre-submit refusals retried every 5 s up to 5 times (only when the receipt shows nothing was written, or
+  provably does not exist; any other read error is retried as a read, never as a send, so the brief goes out at
+  most once), `delivery_unknown` never retried. A deadline that passes while a send is in flight ends the record
+  `failed`/`ready_timeout` with `brief.state:"delivery_unknown"`, never `not_sent`. A record with no launch
+  receipt 120 s after admission ends `launch_failed`. Opt-in
   `--brief-delivery initial-prompt` (Claude) passes the brief as Claude's start-up prompt (`handed_to_provider`,
   `delivered` once the transcript holds it) and cannot be gated on the model. Mismatch: `failed`
   `model_not_confirmed` / `effort_not_confirmed` / `effort_unsupported`, brief `not_sent`, session left running.
@@ -3566,5 +3581,5 @@ terminal launches: exact Claude id, efforts `low|medium|high|xhigh|max`; hosted 
   `MODEL_NOT_CONFIRMED`, `PROMPT_NOT_DELIVERED`, `PROVIDER_LAUNCH_FAILED` or `LAUNCH_ACK_UNCERTAIN` with
   `error.operation`. New error code: `MODEL_NOT_CONFIRMED`.
 
-Rollback: an older binary ignores `models.json`, the hook records and both journal directories; pending
+Rollback: drain first (see [operations](operations.md#data-root-layout-contract-1290)). An older binary ignores `models.json`, the hook records and both journal directories; pending
 one-pass launches freeze and end `ready_timeout` (brief unsent) after re-upgrade.

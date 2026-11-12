@@ -88,6 +88,13 @@ pub fn validate(provider: ProviderId, model: &str, effort: Option<&str>) -> Resu
 pub fn same(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
+/// Model ids compare like [`same`], ignoring a trailing `[1m]` context suffix on either side:
+/// Claude Code reports its main-loop model setting in the status line, and whether that keeps
+/// the suffix is not part of any documented contract.
+pub fn same_model(a: &str, b: &str) -> bool {
+    let base = |s: &str| s.strip_suffix("[1m]").unwrap_or(s).to_ascii_lowercase();
+    base(a) == base(b)
+}
 
 // ---------------------------------------------------------------- Claude hook record
 

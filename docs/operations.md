@@ -144,6 +144,20 @@ removed when the record ends) journal `set-model` and the one-pass `session laun
 them. A Claude `/model` or `/effort` saves the account default; callers must always pass `--model` (see
 [Session model](contract.md#session-model-set-model-and-one-pass-launch-1490)).
 
+**Before rolling back to 1.48.x**, drain these operations, because 1.48 does not run them and a pending Codex
+change keeps holding new input:
+
+1. `sessionsation api operations`, rows with `kind:"model_change"`. For each with `terminal:false`: if `phase`
+   is `waiting`, cancel it (`api cancel-operation ID`); if `applying`, wait until it ends (bounded: Claude
+   about a minute, Codex at most 180 s without progress).
+2. Then wait until every `model_change` row shows `hold.released:true` (the supervisor delivers held Codex input
+   within seconds of the end); `released:false` means held messages are still undelivered: see
+   `held_messages` in `api session set-model-status --operation ID`.
+3. Rows with `kind:"session_launch"` and `terminal:false`: wait for them to end, or cancel those whose brief is
+   still `held`/`pending` (`api cancel-operation REQUEST-ID`); a brief in `sending` must be allowed to finish.
+4. Only then install the older release. Claude sessions started by 1.49 call the 1.49 status-line hook by path;
+   keep that release directory until they are restarted.
+
 ### Migrate
 
 ```sh

@@ -10,8 +10,10 @@
 //!
 //! Rules: the prompt must be empty (a user draft is never cleared for a model change; the change
 //! waits with reason `draft_present`); a key is sent only on a screen that was identified;
-//! never Esc, Ctrl+C, Ctrl+D or a digit key; an unidentified screen after Enter ends the
-//! operation (`TERMINAL_OVERLAY_UNIDENTIFIED`) with the screen layout, instead of stalling.
+//! never Ctrl+C, Ctrl+D or a digit key (Esc only to close its own confirmation dialog when its
+//! `No` option cannot be chosen); an unidentified screen after Enter ends the operation
+//! (`TERMINAL_OVERLAY_UNIDENTIFIED`) with the screen layout, instead of stalling, and a dialog is
+//! never left open (`pane_left_in_dialog` names the pane when closing it cannot be verified).
 use super::*;
 use crate::messaging::claude_steer::terminal::{self as term, Cell, Host, View, classify, squash};
 use crate::provider::claude;
@@ -89,6 +91,29 @@ fn target(paths: &Paths, r: &Record) -> std::result::Result<(term::Terminal, Pat
     Ok((t, account.home))
 }
 
+/// The pane operations the procedure needs; HERDR in production, a scripted fake in tests.
+pub(crate) trait Pane {
+    fn agent_status(&self) -> anyhow::Result<Option<String>>;
+    fn screen(&self) -> anyhow::Result<Vec<Vec<Cell>>>;
+    fn keys(&self, keys: &[&str]) -> anyhow::Result<()>;
+    fn text(&self, s: &str) -> anyhow::Result<()>;
+}
+struct Herdr(Host);
+impl Pane for Herdr {
+    fn agent_status(&self) -> anyhow::Result<Option<String>> {
+        self.0.agent_status()
+    }
+    fn screen(&self) -> anyhow::Result<Vec<Vec<Cell>>> {
+        self.0.screen()
+    }
+    fn keys(&self, keys: &[&str]) -> anyhow::Result<()> {
+        self.0.keys(keys)
+    }
+    fn text(&self, s: &str) -> anyhow::Result<()> {
+        self.0.text(s)
+    }
+}
+
 pub async fn worker(paths: &Paths, id: &str) -> anyhow::Result<()> {
     let lock = lock_file(&worker_lock(paths, id)?)?;
     if lock.try_lock_exclusive().is_err() {
@@ -138,9 +163,23 @@ pub async fn worker(paths: &Paths, id: &str) -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    let host = Host::for_agent(&t, "claude")?;
+    let pane = Herdr(Host::for_agent(&t, "claude")?);
+    procedure(paths, id, &pane, &home, &t.target).await?;
+    drop(pane_lock);
+    Ok(())
+}
+
+/// Everything after the target and pane lock are verified (testable with a fake pane).
+pub(crate) async fn procedure(
+    paths: &Paths,
+    id: &str,
+    pane: &dyn Pane,
+    home: &Path,
+    target: &str,
+) -> anyhow::Result<()> {
+    let r = read(paths, id)?;
     if r.phase == "waiting" {
-        if let Err(why) = gates(&host) {
+        if let Err(why) = ready_twice(paths, &r, pane).await {
             waiting(paths, id, why);
             return Ok(());
         }
@@ -158,45 +197,62 @@ pub async fn worker(paths: &Paths, id: &str) -> anyhow::Result<()> {
             return Ok(());
         }
     } else {
-        // A worker stopped mid-procedure: continue only from a screen that is understood.
-        let rows = host.screen()?;
+        // A worker stopped mid-procedure: continue only from a screen that is understood (an
+        // empty prompt, its own confirmation dialog, or its own command left typed).
+        let rows = pane.screen()?;
         let clean = matches!(classify(&rows, true), Ok(View::Main(ref d)) if d.is_empty());
-        if !clean && dialog(&rows).is_none() {
+        let own = own_command(&rows, &r).is_some();
+        if !clean && !own && dialog_title(&rows).is_none() {
             refuse(paths, id, "worker_interrupted", &rows);
             return Ok(());
         }
     }
     let r = read(paths, id)?;
-    match apply(paths, &r, &host, &home).await {
-        Ok(done) => complete(paths, id, "completed", done),
-        Err((reason, rows)) => {
-            let observed = crate::session_model::hook_record(&home, &r.conversation_id)
-                .as_ref()
-                .and_then(Observed::from_hook);
-            if let Some(rows) = rows {
-                let layout = term::layout(&rows);
-                let _ = update(paths, id, |x| {
-                    x.refusal_layout = Some(layout);
-                    true
-                });
-            }
-            let retry = matches!(reason, "TERMINAL_TYPED_TEXT_MISMATCH" | "session_busy")
-                && r.attempts < MAX_ATTEMPTS;
-            if retry {
-                let _ = update(paths, id, |x| {
-                    if x.phase != "applying" {
-                        return false;
-                    }
-                    x.phase = "waiting".into();
-                    x.reason = Some(reason.into());
-                    true
-                });
-            } else {
-                fail(paths, id, reason, observed);
-            }
+    let outcome = apply(paths, &r, pane, home).await;
+    let Err((reason, rows)) = outcome else {
+        let Ok(done) = outcome else { unreachable!() };
+        complete(paths, id, "completed", done);
+        return Ok(());
+    };
+    // Never leave a confirmation dialog open on a failure.
+    let (reason, detail) = match close_dialog(pane).await {
+        Ok(()) => (reason, None),
+        Err(()) => (
+            "pane_left_in_dialog",
+            Some(format!(
+                "pane {target} may still show a confirmation dialog after {reason}; answer it there (No) before typing"
+            )),
+        ),
+    };
+    let observed = crate::session_model::hook_record(home, &r.conversation_id)
+        .as_ref()
+        .and_then(Observed::from_hook);
+    let layout = rows.map(|rows| term::layout(&rows));
+    let _ = update(paths, id, |x| {
+        if layout.is_some() {
+            x.refusal_layout = layout;
         }
+        if detail.is_some() {
+            x.detail = detail;
+        }
+        true
+    });
+    let retry = matches!(
+        reason,
+        "TERMINAL_TYPED_TEXT_MISMATCH" | "session_busy" | "terminal_delivery_active"
+    ) && r.attempts < MAX_ATTEMPTS;
+    if retry {
+        let _ = update(paths, id, |x| {
+            if x.phase != "applying" {
+                return false;
+            }
+            x.phase = "waiting".into();
+            x.reason = Some(reason.into());
+            true
+        });
+    } else {
+        fail(paths, id, reason, observed);
     }
-    drop(pane_lock);
     Ok(())
 }
 
@@ -209,16 +265,46 @@ fn refuse(paths: &Paths, id: &str, reason: &str, rows: &[Vec<Cell>]) {
     fail(paths, id, reason, None);
 }
 
+/// Seconds after a terminal delivery touched the pane before a model change may type.
+const DELIVERY_QUIET_SECONDS: i64 = 5;
+/// Two idle observations at least this far apart.
+const IDLE_GAP: Duration = Duration::from_millis(1500);
+
+/// Idle twice, at least `IDLE_GAP` apart, with no terminal delivery in flight or just done:
+/// closes the race with a delivery that has just pressed Enter.
+async fn ready_twice(
+    paths: &Paths,
+    r: &Record,
+    pane: &dyn Pane,
+) -> std::result::Result<(), &'static str> {
+    let quiet = || {
+        if crate::messaging::claude_steer::terminal_activity(
+            paths,
+            &r.conversation_id,
+            DELIVERY_QUIET_SECONDS,
+        ) {
+            Err("terminal_delivery_active")
+        } else {
+            Ok(())
+        }
+    };
+    quiet()?;
+    gates(pane)?;
+    tokio::time::sleep(crate::timing::scaled(IDLE_GAP)).await;
+    quiet()?;
+    gates(pane)
+}
+
 /// Idle with an empty main prompt.
-fn gates(host: &Host) -> std::result::Result<(), &'static str> {
-    match host.agent_status() {
+fn gates(pane: &dyn Pane) -> std::result::Result<(), &'static str> {
+    match pane.agent_status() {
         Ok(Some(s)) if s == "idle" || s == "done" => {}
         Ok(Some(s)) if s == "working" => return Err("turn_active"),
         Ok(Some(s)) if s == "blocked" => return Err("approval_or_user_input_required"),
         Ok(_) => return Err("state_unverified"),
         Err(_) => return Err("TERMINAL_HOST_UNAVAILABLE"),
     }
-    let rows = host.screen().map_err(|_| "TERMINAL_HOST_UNAVAILABLE")?;
+    let rows = pane.screen().map_err(|_| "TERMINAL_HOST_UNAVAILABLE")?;
     match classify(&rows, true) {
         Ok(View::Main(d)) if d.is_empty() => Ok(()),
         Ok(View::Main(_)) => Err("draft_present"),
@@ -235,10 +321,24 @@ pub(crate) enum Kind {
     Effort,
 }
 
-async fn apply(
+fn commands(r: &Record) -> [Option<String>; 2] {
+    [
+        Some(format!("/model {}", r.requested_model)),
+        target_effort(r).map(|e| format!("/effort {e}")),
+    ]
+}
+/// A command of this operation left typed (unsubmitted) by a worker that died: exact match.
+fn own_command(rows: &[Vec<Cell>], r: &Record) -> Option<String> {
+    let Ok(View::Main(d)) = classify(rows, false) else {
+        return None;
+    };
+    commands(r).into_iter().flatten().find(|c| *c == d)
+}
+
+pub(crate) async fn apply(
     paths: &Paths,
     r: &Record,
-    host: &Host,
+    pane: &dyn Pane,
     home: &Path,
 ) -> std::result::Result<Observed, Failure> {
     let hook = || crate::session_model::hook_record(home, &r.conversation_id);
@@ -246,15 +346,22 @@ async fn apply(
     let model_ok = |h: &HookRecord| {
         h.model_id
             .as_deref()
-            .is_some_and(|m| crate::session_model::same(m, &r.requested_model))
+            .is_some_and(|m| crate::session_model::same_model(m, &r.requested_model))
     };
+    // A command a dead worker typed but never submitted: clear exactly that.
+    if let Ok(rows) = pane.screen()
+        && let Some(c) = own_command(&rows, r)
+    {
+        withdraw(pane, &c).await.map_err(|why| (why, None))?;
+    }
     // 1. Model (skipped when the session already reports it).
     if !hook().is_some_and(|h| model_ok(&h)) {
         step(paths, &r.id, "model_typed");
         run_command(
             paths,
             r,
-            host,
+            pane,
+            home,
             &format!("/model {}", r.requested_model),
             Kind::Model,
             &|h| model_ok(h),
@@ -287,7 +394,8 @@ async fn apply(
             run_command(
                 paths,
                 r,
-                host,
+                pane,
+                home,
                 &format!("/effort {effort}"),
                 Kind::Effort,
                 &|h| effort_ok(h),
@@ -307,24 +415,21 @@ async fn apply(
 async fn run_command(
     paths: &Paths,
     r: &Record,
-    host: &Host,
+    pane: &dyn Pane,
+    home: &Path,
     command: &str,
     kind: Kind,
     done: &dyn Fn(&HookRecord) -> bool,
 ) -> std::result::Result<(), Failure> {
-    let home_hook = || {
-        claude::account(paths, &r.account)
-            .ok()
-            .and_then(|a| crate::session_model::hook_record(&a.home, &r.conversation_id))
-    };
-    let screen = |host: &Host| {
-        host.screen()
+    let home_hook = || crate::session_model::hook_record(home, &r.conversation_id);
+    let screen = |pane: &dyn Pane| {
+        pane.screen()
             .map_err(|_| ("TERMINAL_HOST_UNAVAILABLE", None))
     };
-    let rows = screen(host)?;
+    let rows = screen(pane)?;
     if let Some(d) = dialog(&rows) {
         // A dialog left open by a stopped worker: answer it and go on confirming.
-        answer(host, d, kind).await?;
+        answer(pane, d, kind).await?;
     } else {
         match classify(&rows, true) {
             Ok(View::Main(d)) if d.is_empty() => {}
@@ -332,18 +437,21 @@ async fn run_command(
             Ok(_) => return Err(("TERMINAL_VIEW_NOT_MAIN", Some(rows))),
             Err(code) => return Err((code, Some(rows))),
         }
-        host.text(command)
+        pane.text(command)
             .map_err(|_| ("TERMINAL_HOST_UNAVAILABLE", None))?;
         let deadline = Instant::now() + crate::timing::scaled(TYPED_WAIT);
         let mut last;
         loop {
             tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
-            last = screen(host)?;
+            last = screen(pane)?;
             if command_view(&last, command) {
                 break;
             }
             if Instant::now() >= deadline {
-                withdraw(host).await;
+                // Clear only what this worker typed; anything else is left untouched.
+                if let Err(why) = withdraw(pane, command).await {
+                    return Err((why, Some(last)));
+                }
                 return Err(("TERMINAL_TYPED_TEXT_MISMATCH", Some(last)));
             }
         }
@@ -356,7 +464,7 @@ async fn run_command(
                 "effort_submitted"
             },
         );
-        host.keys(&["enter"])
+        pane.keys(&["enter"])
             .map_err(|_| ("TERMINAL_SUBMIT_UNCERTAIN", None))?;
     }
     let submitted = Instant::now();
@@ -377,7 +485,7 @@ async fn run_command(
             );
             return Ok(());
         }
-        last = screen(host)?;
+        last = screen(pane)?;
         if let Some(d) = dialog(&last) {
             if answered >= 2 {
                 return Err(("TERMINAL_OVERLAY_UNIDENTIFIED", Some(last)));
@@ -392,7 +500,7 @@ async fn run_command(
                     "effort_confirm"
                 },
             );
-            answer(host, d, kind).await?;
+            answer(pane, d, kind).await?;
             continue;
         }
         let clean = matches!(classify(&last, true), Ok(View::Main(ref d)) if d.is_empty());
@@ -416,12 +524,37 @@ async fn run_command(
     ))
 }
 
-/// Remove the text this worker typed (it is the only content of the prompt).
-async fn withdraw(host: &Host) {
-    for _ in 0..4 {
-        let _ = host.keys(&["ctrl+k", "ctrl+u"]);
+/// Remove `command` (or the prefix of it this worker managed to type) with backspaces, only
+/// after verifying that the prompt holds exactly such a prefix. Anything else in the prompt
+/// is not this worker's: nothing is cleared (`prompt_not_owned`).
+pub(crate) async fn withdraw(
+    pane: &dyn Pane,
+    command: &str,
+) -> std::result::Result<(), &'static str> {
+    let rows = pane.screen().map_err(|_| "TERMINAL_HOST_UNAVAILABLE")?;
+    let typed = match classify(&rows, false) {
+        Ok(View::Main(d)) => d,
+        _ => return Err("prompt_not_owned"),
+    };
+    if typed.is_empty() {
+        return Ok(());
     }
-    tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
+    if typed.contains('\n') || !command.starts_with(typed.as_str()) {
+        return Err("prompt_not_owned");
+    }
+    let keys = vec!["backspace"; typed.chars().count()];
+    pane.keys(&keys).map_err(|_| "TERMINAL_HOST_UNAVAILABLE")?;
+    let deadline = Instant::now() + crate::timing::scaled(TYPED_WAIT);
+    loop {
+        tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
+        let rows = pane.screen().map_err(|_| "TERMINAL_HOST_UNAVAILABLE")?;
+        if matches!(classify(&rows, true), Ok(View::Main(ref d)) if d.is_empty()) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("TERMINAL_CLEAR_UNVERIFIED");
+        }
+    }
 }
 
 /// The prompt holds exactly `command`, with no menu or overlay drawn (the screen classifier
@@ -443,45 +576,55 @@ pub(crate) struct Dialog {
     pub hook_asked: bool,
 }
 
-/// A `Switch model?` / `Change effort level?` confirmation: exactly one title row, one `Yes…`
-/// option and one `No…` option below it (an optional `❯` pointer and `N.` index before each).
-pub(crate) fn dialog(rows: &[Vec<Cell>]) -> Option<Dialog> {
-    let lines: Vec<String> = rows.iter().map(|r| term::row_text(r)).collect();
-    let titles: Vec<(usize, Kind)> = lines
+/// The title row of a model or effort confirmation, if exactly one is on screen.
+pub(crate) fn dialog_title(rows: &[Vec<Cell>]) -> Option<(usize, Kind)> {
+    let titles: Vec<(usize, Kind)> = rows
         .iter()
         .enumerate()
-        .filter_map(|(i, l)| match l.trim() {
+        .filter_map(|(i, r)| match term::row_text(r).trim() {
             "Switch model?" => Some((i, Kind::Model)),
             "Change effort level?" => Some((i, Kind::Effort)),
             _ => None,
         })
         .collect();
-    let [(title, kind)] = titles.as_slice() else {
+    match titles.as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    }
+}
+
+/// One option row: optional `❯` pointer, a number, `. `, then `Yes, …` or exactly `No` /
+/// `No, …` (Claude Code 2.1.314: `❯ 1. Yes, switch to Opus 5.5`, `  2. No, go back`).
+fn option_row(line: &str) -> Option<(bool, bool)> {
+    let t = line.trim_start();
+    let pointed = t.starts_with('❯');
+    let rest = t.trim_start_matches('❯').trim_start();
+    let (n, text) = rest.split_once(". ")?;
+    if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
         return None;
-    };
-    let option = |l: &str| -> Option<(bool, bool)> {
-        let t = l.trim_start();
-        let pointed = t.starts_with('❯');
-        let rest = t.trim_start_matches('❯').trim_start();
-        let rest = match rest.split_once(". ") {
-            Some((n, r)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => r,
-            _ => rest,
-        };
-        if rest.starts_with("Yes") {
-            Some((true, pointed))
-        } else if rest.starts_with("No") {
-            Some((false, pointed))
-        } else {
-            None
-        }
-    };
-    let below: Vec<(bool, bool)> = lines[title + 1..]
+    }
+    let text = text.trim_end();
+    if text.starts_with("Yes, ") {
+        Some((true, pointed))
+    } else if text == "No" || text.starts_with("No, ") {
+        Some((false, pointed))
+    } else {
+        None
+    }
+}
+
+/// A `Switch model?` / `Change effort level?` confirmation in the exact captured format:
+/// one title row, then exactly one numbered `Yes, …` and one numbered `No…` option.
+pub(crate) fn dialog(rows: &[Vec<Cell>]) -> Option<Dialog> {
+    let (title, kind) = dialog_title(rows)?;
+    let lines: Vec<String> = rows[title + 1..]
         .iter()
         .take(16)
-        .filter_map(|l| option(l))
+        .map(|r| term::row_text(r))
         .collect();
-    let yes: Vec<&(bool, bool)> = below.iter().filter(|o| o.0).collect();
-    let no: Vec<&(bool, bool)> = below.iter().filter(|o| !o.0).collect();
+    let options: Vec<(bool, bool)> = lines.iter().filter_map(|l| option_row(l)).collect();
+    let yes: Vec<&(bool, bool)> = options.iter().filter(|o| o.0).collect();
+    let no: Vec<&(bool, bool)> = options.iter().filter(|o| !o.0).collect();
     if yes.len() != 1 || no.len() != 1 {
         return None;
     }
@@ -490,52 +633,92 @@ pub(crate) fn dialog(rows: &[Vec<Cell>]) -> Option<Dialog> {
         (false, true) => Pointer::No,
         _ => Pointer::None,
     };
-    let hook_asked = lines[title + 1..]
-        .iter()
-        .take(16)
-        .any(|l| l.contains("PreModelSwitch hook"));
+    let hook_asked = lines.iter().any(|l| l.contains("PreModelSwitch hook"));
     Some(Dialog {
-        kind: *kind,
+        kind,
         pointer,
         hook_asked,
     })
 }
 
-/// Answer a dialog: Yes (moving the pointer with up/down only), or No when a hook asked.
-async fn answer(host: &Host, d: Dialog, kind: Kind) -> std::result::Result<(), Failure> {
+/// Answer a dialog: Yes (moving the pointer with up/down only), or No when a hook asked. Any
+/// failure is returned with the dialog still open; the caller closes it ([`close_dialog`]).
+async fn answer(pane: &dyn Pane, d: Dialog, kind: Kind) -> std::result::Result<(), Failure> {
     let reread = || async {
         tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
-        host.screen().ok().and_then(|rows| dialog(&rows))
+        pane.screen().ok().and_then(|rows| dialog(&rows))
     };
     if d.kind != kind {
-        return Err(("TERMINAL_OVERLAY_UNIDENTIFIED", host.screen().ok()));
+        return Err(("TERMINAL_OVERLAY_UNIDENTIFIED", pane.screen().ok()));
     }
     let key = |k: &str| {
-        host.keys(&[k])
+        pane.keys(&[k])
             .map_err(|_| ("TERMINAL_HOST_UNAVAILABLE", None::<Vec<Vec<Cell>>>))
     };
     if d.hook_asked {
-        if d.pointer == Pointer::Yes {
-            key("down")?;
-            if reread().await.map(|d| d.pointer) != Some(Pointer::No) {
-                return Err(("TERMINAL_OVERLAY_UNIDENTIFIED", host.screen().ok()));
-            }
-        } else if d.pointer != Pointer::No {
-            return Err(("TERMINAL_OVERLAY_UNIDENTIFIED", host.screen().ok()));
-        }
-        key("enter")?;
-        return Err(("blocked_by_hook", None));
+        return Err(("blocked_by_hook", pane.screen().ok()));
     }
     match d.pointer {
         Pointer::Yes => {}
         Pointer::No => {
             key("up")?;
             if reread().await.map(|d| d.pointer) != Some(Pointer::Yes) {
-                return Err(("TERMINAL_OVERLAY_UNIDENTIFIED", host.screen().ok()));
+                return Err(("TERMINAL_OVERLAY_UNIDENTIFIED", pane.screen().ok()));
             }
         }
-        Pointer::None => return Err(("TERMINAL_OVERLAY_UNIDENTIFIED", host.screen().ok())),
+        Pointer::None => return Err(("TERMINAL_OVERLAY_UNIDENTIFIED", pane.screen().ok())),
     }
     key("enter")?;
     Ok(())
+}
+
+/// Close a model or effort confirmation left on screen: choose its `No` option (moving the
+/// pointer down when it is on Yes), or Esc when the options cannot be read; then verify that
+/// the main prompt is back. `Err` when that cannot be confirmed.
+pub(crate) async fn close_dialog(pane: &dyn Pane) -> std::result::Result<(), ()> {
+    match pane.screen() {
+        // No dialog of ours: nothing to close (the failure reason stands as it is).
+        Ok(rows) if dialog_title(&rows).is_none() => return Ok(()),
+        Ok(_) => {}
+        Err(_) => return Err(()),
+    }
+    for _ in 0..3 {
+        let Ok(rows) = pane.screen() else {
+            return Err(());
+        };
+        if dialog_title(&rows).is_none() {
+            break;
+        }
+        let sent = match dialog(&rows) {
+            Some(d) if d.pointer == Pointer::No => pane.keys(&["enter"]),
+            Some(d) if d.pointer == Pointer::Yes => {
+                let moved = pane.keys(&["down"]);
+                tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
+                match (moved, pane.screen().ok().and_then(|r| dialog(&r))) {
+                    (Ok(()), Some(d)) if d.pointer == Pointer::No => pane.keys(&["enter"]),
+                    _ => pane.keys(&["esc"]),
+                }
+            }
+            _ => pane.keys(&["esc"]),
+        };
+        if sent.is_err() {
+            return Err(());
+        }
+        let deadline = Instant::now() + crate::timing::scaled(TYPED_WAIT);
+        while Instant::now() < deadline {
+            tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
+            if pane.screen().is_ok_and(|r| dialog_title(&r).is_none()) {
+                break;
+            }
+        }
+    }
+    match pane.screen() {
+        Ok(rows)
+            if dialog_title(&rows).is_none()
+                && matches!(classify(&rows, false), Ok(View::Main(_))) =>
+        {
+            Ok(())
+        }
+        _ => Err(()),
+    }
 }
