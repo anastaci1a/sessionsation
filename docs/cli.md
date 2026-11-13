@@ -698,6 +698,14 @@ held meanwhile (`model_change_hold`) and delivered on the new model. Claude (HER
 always applied after the model; without `--effort` the effort in force before is re-applied. Refusals and reasons
 are in the [contract](contract.md#session-model-set-model-and-one-pass-launch-1490).
 
+## Launches wait for account operations (contract 1.49.1)
+
+A Codex launch (`api launch` / `session launch` → `launch-run`, or inline `run`) that meets an account operation
+such as an archive now waits up to 120 s for it instead of failing at once; `api launch status` shows the wait in
+`detail`. A refusal before the provider is started (for example `ACCOUNT_BUSY` after 120 s) ends the launch
+`failed` with the name released, not `uncertain`, and `launch-run` prints `sessionsation launch failed: <reason>`
+in the pane before exiting non-zero. Details: [contract](contract.md#launches-wait-for-account-operations-1491).
+
 ## Explicit in-turn steering
 
 For a deliberate message to a busy turn, use `api steer-target --session ID --expected-generation GENERATION`, then `api send` with `mode:"steer"` and the

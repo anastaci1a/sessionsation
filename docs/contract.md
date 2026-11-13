@@ -17,8 +17,8 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.49.0`
-(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481)).
+so revision N maps to contract `1.N.0` and the current contract is `1.49.1`
+(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -3583,3 +3583,25 @@ terminal launches: exact Claude id, efforts `low|medium|high|xhigh|max`; hosted 
 
 Rollback: drain first (see [operations](operations.md#data-root-layout-contract-1290)). An older binary ignores `models.json`, the hook records and both journal directories; pending
 one-pass launches freeze and end `ready_timeout` (brief unsent) after re-upgrade.
+
+### Launches wait for account operations (1.49.1)
+
+PATCH. Up to 1.49.0 a launch tried the shared account lock once. While an account operation held it exclusively
+(an archive holds it for its whole run, often 15 s or more), a `launch-run` refused at once with `ACCOUNT_BUSY`,
+the launch record ended `uncertain` although nothing had been started, and `launch-run` returned to the pane's
+shell with no output.
+
+- **Wait.** Codex `launch-run` and inline `run` launches now wait for the account lock (backoff 50 ms doubling to
+  1 s) for up to **120 s**. While waiting, the launch stays `starting_provider` with `detail` "waiting for an
+  account operation (such as an archive) to finish; nothing has been started (ACCOUNT_BUSY wait)"; the worker's
+  acknowledgement wait does not count that time. An inline launch prints a waiting line to its terminal. The
+  exclusive side (archive, rename, removal) is unchanged and still refuses at once while a launch holds the lock.
+- **Pre-start refusals are certain failures.** A `launch-run` error before the first provider mutation (Codex:
+  before the app-server thread start), including `ACCOUNT_BUSY: an account operation held the lock for 120s`,
+  ends the launch `failed` with the error in `detail` and releases the reserved name. `uncertain` is kept for
+  failures after a provider start may have happened (and for Claude, Gemini and Antigravity terminal launches,
+  which do not mark that point).
+- **Never silent.** On any error `launch-run` prints `sessionsation launch failed: <CODE>: <reason>` to the pane's
+  stderr (the same text as the record's `detail`) and exits 1.
+
+No field, phase, command or error code is new.

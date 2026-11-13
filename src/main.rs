@@ -824,7 +824,11 @@ async fn run(cli: Cli) -> Result<()> {
             sessionsation::launch::worker(&paths, &request_id).await?
         }
         Commands::LaunchRun { request_id } => {
-            sessionsation::launch::run(&paths, &request_id).await?
+            // Contract 1.49.1: never return to the pane's shell silently.
+            if let Err(error) = sessionsation::launch::run(&paths, &request_id).await {
+                eprintln!("{}", sessionsation::launch::failure_line(&error));
+                std::process::exit(1);
+            }
         }
         Commands::Api { command, .. } => sessionsation::api::run(&paths, command).await?,
         Commands::Session { session } => {

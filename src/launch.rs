@@ -670,8 +670,19 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     })?;
     host_call(&r.host, &["pane", "run", &pane, &command]).await?;
     // launch-run confirms exact pane identity before touching a provider.
-    for _ in 0..ACK_WAIT_TICKS {
+    // Contract 1.49.1: time launch-run spends waiting for an account operation (bounded
+    // by its own lock wait) does not use up the ack budget.
+    let waiting_cap = u32::try_from(crate::accounts::launch_lock_wait().as_millis() / 100)
+        .unwrap_or(u32::MAX)
+        .saturating_add(300);
+    let (mut ticks, mut waiting_ticks) = (0, 0);
+    while ticks < ACK_WAIT_TICKS {
         let status = status(paths, id)?;
+        if status.detail.as_deref() == Some(ACCOUNT_WAIT_DETAIL) && waiting_ticks < waiting_cap {
+            waiting_ticks += 1;
+        } else {
+            ticks += 1;
+        }
         if status.phase == "running" {
             return Ok(());
         }
@@ -713,6 +724,63 @@ fn expire_ack(paths: &Paths, id: &str) -> Result<()> {
     }
     anyhow::bail!("LAUNCH_ACK_UNCERTAIN")
 }
+/// Detail of a launch waiting in `starting_provider` for an account operation (1.49.1).
+pub const ACCOUNT_WAIT_DETAIL: &str = "waiting for an account operation (such as an archive) to finish; nothing has been started (ACCOUNT_BUSY wait)";
+
+/// Record why the launch is waiting (best effort; never fails the launch).
+pub(crate) fn note_account_wait(paths: &Paths, id: &str) {
+    let _ = change(paths, id, |r| {
+        if r.phase == "starting_provider" {
+            r.detail = Some(ACCOUNT_WAIT_DETAIL.into());
+        }
+        Ok(())
+    });
+}
+pub(crate) fn clear_account_wait(paths: &Paths, id: &str) {
+    let _ = change(paths, id, |r| {
+        if r.detail.as_deref() == Some(ACCOUNT_WAIT_DETAIL) {
+            r.detail = None;
+        }
+        Ok(())
+    });
+}
+
+tokio::task_local! {
+    /// Within `launch-run`: whether the provider path has reached its first external
+    /// mutation (true) or proved it is still before it (false).
+    static PROVIDER_MAY_START: std::cell::Cell<bool>;
+}
+/// Called by a provider path right before its first external mutation.
+pub(crate) fn provider_may_start() {
+    let _ = PROVIDER_MAY_START.try_with(|c| c.set(true));
+}
+
+/// The one stderr line launch-run prints before exiting non-zero.
+pub fn failure_line(error: &anyhow::Error) -> String {
+    format!("sessionsation launch failed: {error:#}")
+}
+
+/// A launch-run failure. Before any provider mutation it is certain: `failed`, name
+/// released. Once a provider start may have happened it stays `uncertain`.
+fn settle_run_failure(
+    paths: &Paths,
+    id: &str,
+    error: &anyhow::Error,
+    may_have_started: bool,
+) -> Result<()> {
+    change(paths, id, |r| {
+        if !may_have_started && r.phase == "starting_provider" && r.session_id.is_none() {
+            catalog::release_reservation(paths, id)?;
+            r.phase = "failed".into();
+        } else {
+            r.phase = "uncertain".into();
+        }
+        r.detail = Some(format!("{error:#}"));
+        Ok(())
+    })?;
+    Ok(())
+}
+
 pub async fn run(paths: &Paths, id: &str) -> Result<()> {
     let receipt = change(paths, id, |r| {
         if r.phase != "dispatching" {
@@ -737,12 +805,40 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
     if let Some(mode) = receipt.request.permissions {
         crate::config::override_launch_permissions(mode);
     }
-    let result = match AccountRef::parse(&receipt.request.account_id) {
-        Err(error) => Err(error),
-        Ok(AccountRef {
+    let account = match AccountRef::parse(&receipt.request.account_id) {
+        Ok(account) => account,
+        Err(error) => {
+            settle_run_failure(paths, id, &error, false)?;
+            return Err(error);
+        }
+    };
+    // Codex marks its first provider mutation (`provider_may_start`); other providers
+    // do not, so any failure of theirs stays `uncertain` as before.
+    let marks_start = account.provider == ProviderId::Codex;
+    let started = std::cell::Cell::new(!marks_start);
+    let (result, started) = PROVIDER_MAY_START
+        .scope(started, async {
+            let result = start_provider(paths, id, &receipt, account).await;
+            (result, PROVIDER_MAY_START.with(|c| c.get()))
+        })
+        .await;
+    if let Err(error) = result {
+        settle_run_failure(paths, id, &error, started)?;
+        return Err(error);
+    }
+    Ok(())
+}
+async fn start_provider(
+    paths: &Paths,
+    id: &str,
+    receipt: &Receipt,
+    account: AccountRef,
+) -> Result<()> {
+    match account {
+        AccountRef {
             provider: ProviderId::Codex,
             name,
-        }) => {
+        } => {
             let options = model_options(
                 receipt.request.model.as_deref(),
                 receipt.request.reasoning_effort.as_deref(),
@@ -756,10 +852,10 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
             )
             .await
         }
-        Ok(AccountRef {
+        AccountRef {
             provider: ProviderId::Claude,
             name,
-        }) if receipt.request.hosted.is_some() => {
+        } if receipt.request.hosted.is_some() => {
             crate::provider::claude::hosted::run_in_terminal(
                 paths,
                 &name,
@@ -773,27 +869,19 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
             )
             .await
         }
-        Ok(AccountRef {
+        AccountRef {
             provider: ProviderId::Claude,
             name,
-        }) => crate::provider::claude::launch::exec_new(paths, &name, None, Some(id)).await,
-        Ok(AccountRef {
+        } => crate::provider::claude::launch::exec_new(paths, &name, None, Some(id)).await,
+        AccountRef {
             provider: ProviderId::Gemini,
             name,
-        }) => crate::provider::gemini::launch::exec_new(paths, &name, None, Some(id)).await,
-        Ok(AccountRef {
+        } => crate::provider::gemini::launch::exec_new(paths, &name, None, Some(id)).await,
+        AccountRef {
             provider: ProviderId::Antigravity,
             name,
-        }) => crate::provider::antigravity::launch::exec_new(paths, &name, None, Some(id)).await,
-    };
-    if let Err(error) = result {
-        change(paths, id, |r| {
-            r.phase = "uncertain".into();
-            r.detail = Some(format!("{error:#}"));
-            Ok(())
-        })?;
+        } => crate::provider::antigravity::launch::exec_new(paths, &name, None, Some(id)).await,
     }
-    Ok(())
 }
 pub fn attached(
     paths: &Paths,
@@ -1177,6 +1265,31 @@ mod tests {
         );
         assert_eq!(status(&paths, &id).unwrap().phase, "starting_provider");
         assert!(catalog::reserve_name(&paths, None, "stuck-name", "other").is_err());
+    }
+    #[test]
+    fn a_pre_start_refusal_is_failed_but_a_possible_start_stays_uncertain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let error = anyhow::anyhow!("ACCOUNT_BUSY: an account operation held the lock for 120s");
+        assert_eq!(
+            failure_line(&error),
+            "sessionsation launch failed: ACCOUNT_BUSY: an account operation held the lock for 120s"
+        );
+        let id = fixture_named(&paths, "starting_provider", "pre-start");
+        note_account_wait(&paths, &id);
+        assert_eq!(
+            status(&paths, &id).unwrap().detail.as_deref(),
+            Some(ACCOUNT_WAIT_DETAIL)
+        );
+        settle_run_failure(&paths, &id, &error, false).unwrap();
+        let r = status(&paths, &id).unwrap();
+        assert_eq!(r.phase, "failed");
+        assert!(r.detail.unwrap().starts_with("ACCOUNT_BUSY"));
+        catalog::reserve_name(&paths, None, "pre-start", "other").unwrap();
+        let id = fixture_named(&paths, "starting_provider", "maybe-started");
+        settle_run_failure(&paths, &id, &anyhow::anyhow!("lost reply"), true).unwrap();
+        assert_eq!(status(&paths, &id).unwrap().phase, "uncertain");
+        assert!(catalog::reserve_name(&paths, None, "maybe-started", "other").is_err());
     }
     #[tokio::test]
     async fn run_refuses_after_the_ack_timeout() {

@@ -1371,8 +1371,20 @@ async fn run_account_thread_inner(
         .transpose()?;
     let options = material.as_ref().map_or(options, |(_, o)| o.as_slice());
     validate_name(account)?;
+    // Contract 1.49.1: wait (bounded) for an account operation such as an archive; the
+    // launch record says why while it waits. Nothing is started before this succeeds.
+    let mut waited = false;
     let _account_operation =
-        crate::accounts::launch_lock(paths, crate::provider::ProviderId::Codex, account)?;
+        crate::accounts::launch_lock(paths, crate::provider::ProviderId::Codex, account, || {
+            if let Some((request, _)) = creation {
+                waited = true;
+                crate::launch::note_account_wait(paths, request);
+            }
+        })
+        .await?;
+    if let (true, Some((request, _))) = (waited, creation) {
+        crate::launch::clear_account_wait(paths, request);
+    }
     crate::accounts::ensure_available(paths, crate::provider::ProviderId::Codex, account)?;
     if recovery.is_none() {
         daemon::ensure_started(paths).await?;
@@ -1516,6 +1528,9 @@ async fn run_account_thread_inner(
             }
         }
     }
+    // First provider mutation (a lost reply may still have started a thread): from here a
+    // failed launch is `uncertain`, before it a certain `failed` (contract 1.49.1).
+    crate::launch::provider_may_start();
     let response = if requested.is_some() {
         control.resume_with_permissions(params.clone()).await?
     } else {

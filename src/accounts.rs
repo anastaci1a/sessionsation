@@ -73,7 +73,40 @@ pub fn operation_lock(paths: &Paths, provider: ProviderId, name: &str) -> Result
     crate::paths::try_lock_brief(&lock).context("ACCOUNT_BUSY")?;
     Ok(lock)
 }
-pub fn launch_lock(paths: &Paths, provider: ProviderId, name: &str) -> Result<fs::File> {
+/// Contract 1.49.1: how long a launch waits for an account operation (archive, rename,
+/// removal, ...) holding [`operation_lock`] before it fails with `ACCOUNT_BUSY`.
+pub const LAUNCH_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+const LAUNCH_LOCK_FIRST_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
+const LAUNCH_LOCK_MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// [`LAUNCH_LOCK_WAIT`], or `SESSIONSATION_ACCOUNT_WAIT_MS` (tests use a short window).
+pub fn launch_lock_wait() -> std::time::Duration {
+    std::env::var("SESSIONSATION_ACCOUNT_WAIT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(LAUNCH_LOCK_WAIT, std::time::Duration::from_millis)
+}
+
+/// Shared account lock for a launch. An account operation holds the exclusive side
+/// (seconds, e.g. an archive); the launch waits for it with backoff (50 ms doubling to
+/// 1 s) for [`launch_lock_wait`], calling `on_wait` once when it first has to wait, and
+/// then fails with `ACCOUNT_BUSY`. Nothing is started or changed while waiting.
+pub async fn launch_lock(
+    paths: &Paths,
+    provider: ProviderId,
+    name: &str,
+    on_wait: impl FnOnce(),
+) -> Result<fs::File> {
+    launch_lock_within(paths, provider, name, launch_lock_wait(), on_wait).await
+}
+
+pub(crate) async fn launch_lock_within(
+    paths: &Paths,
+    provider: ProviderId,
+    name: &str,
+    wait: std::time::Duration,
+    on_wait: impl FnOnce(),
+) -> Result<fs::File> {
     validate_name(name)?;
     let dir = paths
         .root
@@ -81,8 +114,36 @@ pub fn launch_lock(paths: &Paths, provider: ProviderId, name: &str) -> Result<fs
         .join("locks");
     private_dir(&dir)?;
     let lock = lock_file(&dir.join(format!("{provider}-{name}.lock")))?;
-    FileExt::try_lock_shared(&lock).context("ACCOUNT_BUSY")?;
-    Ok(lock)
+    let started = std::time::Instant::now();
+    let mut delay = LAUNCH_LOCK_FIRST_RETRY;
+    let mut on_wait = Some(on_wait);
+    loop {
+        match FileExt::try_lock_shared(&lock) {
+            Ok(()) => return Ok(lock),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e).context("ACCOUNT_BUSY"),
+        }
+        let left = wait.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            anyhow::bail!(
+                "ACCOUNT_BUSY: an account operation held the lock for {}",
+                describe_wait(wait)
+            );
+        }
+        if let Some(f) = on_wait.take() {
+            f();
+        }
+        tokio::time::sleep(delay.min(left)).await;
+        delay = (delay * 2).min(LAUNCH_LOCK_MAX_RETRY);
+    }
+}
+
+fn describe_wait(wait: std::time::Duration) -> String {
+    if wait.subsec_millis() == 0 {
+        format!("{}s", wait.as_secs())
+    } else {
+        format!("{}ms", wait.as_millis())
+    }
 }
 
 fn files(root: &Path, path: &Path, output: &mut Vec<Value>) -> Result<()> {
@@ -363,21 +424,34 @@ mod tests {
         files(&root, &root, &mut changed).unwrap();
         assert_ne!(first, changed);
     }
-    #[test]
-    fn concurrent_launches_share_membership_but_exclude_removal() {
+    #[tokio::test]
+    async fn concurrent_launches_share_membership_but_exclude_removal() {
         let d = tempfile::tempdir().unwrap();
         let p = Paths::new(Some(d.path().join("state"))).unwrap();
-        let a = launch_lock(&p, ProviderId::Codex, "test").unwrap();
-        let b = launch_lock(&p, ProviderId::Codex, "test").unwrap();
+        let a = launch_lock(&p, ProviderId::Codex, "test", || {})
+            .await
+            .unwrap();
+        let b = launch_lock(&p, ProviderId::Codex, "test", || {})
+            .await
+            .unwrap();
         assert!(operation_lock(&p, ProviderId::Codex, "test").is_err());
         FileExt::unlock(&a).unwrap();
         FileExt::unlock(&b).unwrap();
         drop(a);
         drop(b);
         let removal = operation_lock(&p, ProviderId::Codex, "test").unwrap();
-        assert!(launch_lock(&p, ProviderId::Codex, "test").is_err());
+        let short = std::time::Duration::from_millis(100);
+        assert!(
+            launch_lock_within(&p, ProviderId::Codex, "test", short, || {})
+                .await
+                .is_err()
+        );
         drop(removal);
-        assert!(launch_lock(&p, ProviderId::Codex, "test").is_ok());
+        assert!(
+            launch_lock_within(&p, ProviderId::Codex, "test", short, || {})
+                .await
+                .is_ok()
+        );
     }
     #[test]
     fn removal_membership_never_erases_or_disables_provider_data() {
@@ -395,5 +469,81 @@ mod tests {
             fs::read(home.join("history.jsonl")).unwrap(),
             b"recoverable fixture"
         );
+    }
+
+    #[tokio::test]
+    async fn launch_lock_waits_for_an_account_operation_and_times_out_busy() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(d.path().join("data"))).unwrap();
+        // Uncontended: immediate, no wait notice.
+        let mut waited = false;
+        let free = launch_lock_within(
+            &paths,
+            ProviderId::Codex,
+            "acct",
+            std::time::Duration::from_millis(200),
+            || waited = true,
+        )
+        .await
+        .unwrap();
+        assert!(!waited);
+        drop(free);
+        // The exclusive side is unchanged: it refuses while a launch holds the shared lock.
+        let shared = launch_lock_within(
+            &paths,
+            ProviderId::Codex,
+            "acct",
+            std::time::Duration::ZERO,
+            || {},
+        )
+        .await
+        .unwrap();
+        assert!(
+            format!(
+                "{:#}",
+                operation_lock(&paths, ProviderId::Codex, "acct").unwrap_err()
+            )
+            .starts_with("ACCOUNT_BUSY")
+        );
+        drop(shared);
+        // Held past the window: certain ACCOUNT_BUSY after waiting the whole window.
+        let held = operation_lock(&paths, ProviderId::Codex, "acct").unwrap();
+        let start = std::time::Instant::now();
+        let mut notices = 0;
+        let error = launch_lock_within(
+            &paths,
+            ProviderId::Codex,
+            "acct",
+            std::time::Duration::from_millis(300),
+            || notices += 1,
+        )
+        .await
+        .unwrap_err();
+        assert!(start.elapsed() >= std::time::Duration::from_millis(300));
+        assert_eq!(notices, 1);
+        assert_eq!(
+            format!("{error:#}"),
+            "ACCOUNT_BUSY: an account operation held the lock for 300ms"
+        );
+        // Released within the window: the launch proceeds.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            drop(held);
+        });
+        let start = std::time::Instant::now();
+        let mut notices = 0;
+        launch_lock_within(
+            &paths,
+            ProviderId::Codex,
+            "acct",
+            std::time::Duration::from_secs(20),
+            || notices += 1,
+        )
+        .await
+        .unwrap();
+        assert!(start.elapsed() >= std::time::Duration::from_millis(350));
+        assert_eq!(notices, 1);
+        release.join().unwrap();
+        assert_eq!(describe_wait(LAUNCH_LOCK_WAIT), "120s");
     }
 }

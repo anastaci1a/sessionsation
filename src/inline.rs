@@ -496,7 +496,14 @@ pub async fn run_new(
     let name = name.map(|n| bare_name(n, space.as_deref())).transpose()?;
     let cwd = std::env::current_dir()?;
     ensure!(cwd.is_dir(), "working directory is not a directory");
-    let _account = crate::accounts::launch_lock(paths, provider, account)?;
+    // Contract 1.49.1: wait (bounded) for an account operation such as an archive.
+    let _account = crate::accounts::launch_lock(paths, provider, account, || {
+        eprintln!(
+            "sessionsation: waiting for an account operation (such as an archive) on {account} to finish (up to {}s)...",
+            crate::accounts::launch_lock_wait().as_secs()
+        )
+    })
+    .await?;
     let mut attempt = 0;
     let (id, name) = loop {
         let chosen = match name {
