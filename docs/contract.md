@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.49.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.50.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3605,3 +3605,34 @@ shell with no output.
   stderr (the same text as the record's `detail`) and exits 1.
 
 No field, phase, command or error code is new.
+
+### Named outside-session senders: `from_component` (1.50.0)
+
+MINOR. A native Claude message from a process that is not inside a managed session carries
+`from-name="sessionsation"`. Monitors and relays run from cron or scripts can now name the component behind
+them, so the receiver sees for example `from-name="sessionsation:resource-guard"`.
+
+- **Request field.** `api send` accepts an optional `from_component` (string or `null`) on every request shape
+  (`submit`, `queue`, `steer`, `resume`, `new`; Claude, Gemini, Antigravity and Codex targets).
+- **Env var.** When the request has no `from_component`, `SESSIONSATION_SENDER_COMPONENT` in the environment of
+  the `api send` process is used. The request field always wins over the env var. Only the `api send` command
+  reads it: messages Sessionsation sends itself (daemon, workers, auto-recover, launch briefs) never do, even when
+  the daemon was started from a script that set it.
+- **Validation.** A component must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`. An invalid request field (or a
+  non-string) is refused with `INVALID_ARGUMENT` before anything is admitted or sent. An invalid env var is
+  ignored with a warning line on stderr
+  (`sessionsation: warning: ignoring SESSIONSATION_SENDER_COMPONENT=...`) and the send proceeds as before.
+- **Only for outside-session callers.** When the caller is not a managed session (the same detection as the
+  default sender since 1.46.3), the envelope says `from-name="sessionsation:<component>"` with
+  `from-mode="prompting"`. The longest name is 54 characters, under the 64-character `from-name` cap, so it is never
+  truncated. A caller inside a managed session keeps its own canonical name (no spoofing); when such a caller
+  supplied the request field, the Claude receipt reports `facts.from_component_ignored: "caller_is_session"`.
+  The env var is ignored the same way and is not reported.
+- **Codex.** Codex targets receive plain text with no envelope; the field is validated and otherwise has no effect,
+  and Codex receipts are unchanged. Headless (`resume`/`new`) sends likewise validate and ignore it.
+- **Storage.** The component is not part of the stored request (idempotent re-sends match with or without it; the
+  sender of the first admission stands). The sender record stores the computed name in its existing `name`
+  field, so records stay readable by older binaries.
+
+Capability: `session_spaces.from_component` (`since_contract` `1.50.0`, `request_field`, `env`, `pattern`,
+`from_name: "sessionsation:<component>"`, `applies_when: "caller_not_a_managed_session"`).

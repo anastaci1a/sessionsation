@@ -1116,9 +1116,26 @@ pub fn unsupported(provider: ProviderId, mode: &str) -> anyhow::Error {
 }
 
 /// Route one raw `api send` request: Claude and Gemini headless modes, or the existing
-/// Codex contract unchanged.
+/// Codex contract unchanged. Internal senders (daemon, workers, launches) use this and never
+/// read `SESSIONSATION_SENDER_COMPONENT`: a daemon started from a script inherits its
+/// environment, and that must not rename every daemon-originated message.
 pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
-    let v: Value = serde_json::from_slice(bytes).context("INVALID_REQUEST")?;
+    dispatch_as(paths, bytes, None).await
+}
+
+/// [`dispatch`] for the `api send` command: `env_component` is its own
+/// `SESSIONSATION_SENDER_COMPONENT` (contract 1.50.0), the fallback for `from_component`.
+pub async fn dispatch_as(
+    paths: &Paths,
+    bytes: &[u8],
+    env_component: Option<String>,
+) -> Result<Value> {
+    let mut v: Value = serde_json::from_slice(bytes).context("INVALID_REQUEST")?;
+    // Taken out before any typed request sees it: it is a property of the caller, not of
+    // the stored request (records stay readable by older binaries and idempotent re-sends
+    // match). Only native Claude envelopes use it; Codex and headless sends validate and
+    // ignore it.
+    let component = take_component(&mut v)?;
     let id = v["message_id"].as_str().unwrap_or_default();
     let headless =
         |v: Value| -> Result<Request> { serde_json::from_value(v).context("INVALID_REQUEST") };
@@ -1126,7 +1143,7 @@ pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
         return send(paths, headless(v)?).await;
     }
     if super::claude_steer::exists(paths, id) {
-        return super::claude_steer::send(paths, v).await;
+        return super::claude_steer::send(paths, v, component, env_component).await;
     }
     if exists(paths, id) {
         let request = headless(v).map_err(|_| anyhow::anyhow!("MESSAGE_ID_CONFLICT"))?;
@@ -1140,7 +1157,7 @@ pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
         match v["mode"].as_str() {
             Some("resume") => return send(paths, headless(v)?).await,
             Some("submit" | "queue" | "steer") => {
-                return super::claude_steer::send(paths, v).await;
+                return super::claude_steer::send(paths, v, component, env_component).await;
             }
             _ => bail!("INVALID_REQUEST"),
         }
@@ -1149,6 +1166,22 @@ pub async fn dispatch(paths: &Paths, bytes: &[u8]) -> Result<Value> {
         serde_json::from_value(v).map_err(|e| anyhow::anyhow!("INVALID_REQUEST: {e}"))?;
     super::send_public(paths, request).await
 }
+/// Remove and validate the optional `from_component` field (contract 1.50.0); `null` is absent.
+pub fn take_component(v: &mut Value) -> Result<Option<String>> {
+    let Some(raw) = v.as_object_mut().and_then(|o| o.remove("from_component")) else {
+        return Ok(None);
+    };
+    match raw {
+        Value::Null => Ok(None),
+        Value::String(c) if crate::provider::claude::native_peer::valid_component(&c) => {
+            Ok(Some(c))
+        }
+        _ => bail!(
+            "INVALID_ARGUMENT: from_component must be a string matching ^[A-Za-z0-9][A-Za-z0-9._-]{{0,39}}$"
+        ),
+    }
+}
+
 fn catalog_provider(paths: &Paths, id: &str) -> Option<String> {
     uuid::Uuid::parse_str(id).ok()?;
     let file = paths
@@ -1162,6 +1195,30 @@ fn catalog_provider(paths: &Paths, id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn from_component_is_taken_out_and_validated() {
+        let mut v = json!({"mode":"submit","from_component":"resource-guard"});
+        assert_eq!(
+            take_component(&mut v).unwrap().as_deref(),
+            Some("resource-guard")
+        );
+        assert_eq!(v, json!({"mode":"submit"}), "typed requests never see it");
+        let mut v = json!({"mode":"submit","from_component":null});
+        assert_eq!(take_component(&mut v).unwrap(), None);
+        assert_eq!(take_component(&mut json!({"mode":"submit"})).unwrap(), None);
+        for bad in [
+            json!("bad name"),
+            json!(""),
+            json!("-x"),
+            json!("a".repeat(41)),
+            json!(7),
+        ] {
+            let e = take_component(&mut json!({"from_component":bad}))
+                .unwrap_err()
+                .to_string();
+            assert!(e.starts_with("INVALID_ARGUMENT: from_component"), "{e}");
+        }
+    }
     #[test]
     fn print_args_never_carry_the_message_and_select_the_session_flag() {
         let id = "11111111-1111-4111-8111-111111111111";

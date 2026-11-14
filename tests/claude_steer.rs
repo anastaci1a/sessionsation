@@ -135,6 +135,7 @@ impl Fixture {
             .env_remove("TMUX_PANE")
             .env_remove("HERDR_ENV")
             .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("SESSIONSATION_SENDER_COMPONENT")
             .env("ANTHROPIC_API_KEY", "sk-test-must-not-reach-claude")
             .stdin(Stdio::null());
         c
@@ -1178,6 +1179,77 @@ async fn agent_sends_use_the_native_peer_protocol_and_report_every_receipt_hones
     );
     assert!(content.ends_with("\" from-name=\"sessionsation\" from-mode=\"prompting\">\nagent hello\n</cross-session-message>"), "{content}");
     assert_eq!(users(), 1);
+
+    // Contract 1.50.0: an outside-session caller names its component; the request field wins
+    // over SESSIONSATION_SENDER_COMPONENT; an invalid env var is ignored with a warning.
+    let last_content = || -> String {
+        frames()
+            .into_iter()
+            .rev()
+            .find(|x| x["type"] == "user")
+            .unwrap()["message"]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let send_env = |b: &Value, env: Option<&str>| -> Output {
+        let mut c = f.command(&["api", "send"]);
+        if let Some(e) = env {
+            c.env("SESSIONSATION_SENDER_COMPONENT", e);
+        }
+        let mut child = c
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b.to_string().as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    for (field, env, from_name, warned) in [
+        (
+            Some("resource-guard"),
+            Some("env-guard"),
+            "sessionsation:resource-guard",
+            false,
+        ),
+        (None, Some("env-guard"), "sessionsation:env-guard", false),
+        (None, Some("bad name"), "sessionsation", true),
+    ] {
+        let mut b = agent("submit", "component hello", "native");
+        if let Some(c) = field {
+            b["from_component"] = json!(c);
+        }
+        let out = send_env(&b, env);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(out.status.success(), "{stderr}");
+        assert_eq!(
+            stderr.contains("ignoring SESSIONSATION_SENDER_COMPONENT"),
+            warned,
+            "{stderr}"
+        );
+        let r = f.settled(b["message_id"].as_str().unwrap());
+        assert_eq!(r["state"], "completed_with_reply", "{r}");
+        assert!(r["facts"].get("from_component_ignored").is_none(), "{r}");
+        let content = last_content();
+        assert!(
+            content.ends_with(&format!("\" from-name=\"{from_name}\" from-mode=\"prompting\">\ncomponent hello\n</cross-session-message>")),
+            "{content}"
+        );
+    }
+    // An invalid request field is refused before anything is sent.
+    let before = users();
+    let mut b = agent("submit", "never sent", "native");
+    b["from_component"] = json!("not ok!");
+    let err = f.send_err(&b);
+    assert!(err.contains("INVALID_ARGUMENT"), "{err}");
+    assert!(err.contains("from_component"), "{err}");
+    assert_eq!(users(), before);
 
     // Real-receiver success is silent: the transcript anchor upgrades it.
     std::fs::write(home.join("fake-peer-mode"), "quiet").unwrap();

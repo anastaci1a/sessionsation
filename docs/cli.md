@@ -706,6 +706,17 @@ such as an archive now waits up to 120 s for it instead of failing at once; `api
 `failed` with the name released, not `uncertain`, and `launch-run` prints `sessionsation launch failed: <reason>`
 in the pane before exiting non-zero. Details: [contract](contract.md#launches-wait-for-account-operations-1491).
 
+## Naming a script or monitor as sender (contract 1.50.0)
+
+A native Claude message sent from outside any managed session shows `from-name="sessionsation"`. A monitor or
+relay can name itself: add `"from_component":"resource-guard"` to the `api send` request, or set
+`SESSIONSATION_SENDER_COMPONENT=resource-guard` in the script's environment (the request field wins). The receiver
+then sees `from-name="sessionsation:resource-guard"` (`from-mode="prompting"`). The component must match
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`: an invalid request field is refused with `INVALID_ARGUMENT`, an invalid env
+var is ignored with a warning on stderr. A caller inside a managed session always keeps its own name; a request
+field it supplied is reported as `facts.from_component_ignored: "caller_is_session"`. Codex targets get plain text
+as before. Details: [contract](contract.md#named-outside-session-senders-from_component-1500).
+
 ## Explicit in-turn steering
 
 For a deliberate message to a busy turn, use `api steer-target --session ID --expected-generation GENERATION`, then `api send` with `mode:"steer"` and the

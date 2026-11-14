@@ -83,6 +83,33 @@ impl Default for Sender {
 }
 /// Sender name when the caller is not a managed session.
 pub const DEFAULT_SENDER: &str = "sessionsation";
+/// Script fallback for `from_component` (contract 1.50.0).
+pub const COMPONENT_ENV: &str = "SESSIONSATION_SENDER_COMPONENT";
+/// Longest accepted component (`sessionsation:` + 40 = 54, under the 64-character cap).
+pub const COMPONENT_MAX: usize = 40;
+
+/// `^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`.
+pub fn valid_component(c: &str) -> bool {
+    let b = c.as_bytes();
+    !b.is_empty()
+        && b.len() <= COMPONENT_MAX
+        && b[0].is_ascii_alphanumeric()
+        && b[1..]
+            .iter()
+            .all(|x| x.is_ascii_alphanumeric() || matches!(x, b'.' | b'_' | b'-'))
+}
+
+impl Sender {
+    /// The default sender naming the component behind it: `sessionsation:<component>`,
+    /// `prompting`. The name is computed into `name` (no new stored field), so records stay
+    /// readable by older binaries and the worker needs no change.
+    pub fn component(component: &str) -> Self {
+        Self {
+            name: format!("{DEFAULT_SENDER}:{component}"),
+            ..Self::default()
+        }
+    }
+}
 const CLOSE_TAG: &str = "</cross-session-message";
 const OPEN_TAG: &str = "<cross-session-message";
 
@@ -411,6 +438,50 @@ mod tests {
         assert_eq!(sanitize_sender_name(&"n".repeat(100)), "n".repeat(64));
         assert_eq!(sanitize_sender_name(&"é".repeat(70)).chars().count(), 64);
         assert_eq!(Sender::default().mode, "prompting");
+    }
+
+    #[test]
+    fn a_component_names_the_default_sender() {
+        let s = Sender::component("resource-guard");
+        assert_eq!(s.mode, "prompting");
+        assert_eq!(s.canonical, None);
+        assert!(
+            envelope("uds:/x", &s, "b")
+                .contains("from-name=\"sessionsation:resource-guard\" from-mode=\"prompting\">")
+        );
+        // The longest component fits the 64-character cap untruncated.
+        let long = format!("a{}", "b".repeat(COMPONENT_MAX - 1));
+        assert!(valid_component(&long));
+        let name = Sender::component(&long).display_name().to_owned();
+        assert_eq!(name.chars().count(), 54);
+        assert_eq!(sanitize_sender_name(&name), name);
+        // Older binaries read the stored sender unchanged (no new field).
+        let stored = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            stored,
+            serde_json::json!({"name":"sessionsation:resource-guard","mode":"prompting"})
+        );
+    }
+
+    #[test]
+    fn components_are_validated() {
+        for ok in ["a", "A9", "resource-guard", "x.y_z-1", &"a".repeat(40)] {
+            assert!(valid_component(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "-x",
+            ".x",
+            "_x",
+            "a b",
+            "a:b",
+            "a/b",
+            "a\"b",
+            "é",
+            &"a".repeat(41),
+        ] {
+            assert!(!valid_component(bad), "{bad}");
+        }
     }
 
     #[test]

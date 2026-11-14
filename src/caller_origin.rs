@@ -7,7 +7,10 @@
 use crate::{
     catalog,
     paths::Paths,
-    provider::{ProviderId, claude::native_peer::Sender},
+    provider::{
+        ProviderId,
+        claude::native_peer::{self, Sender},
+    },
 };
 
 /// How many parents are followed before giving up (guards against pid-reuse loops).
@@ -128,24 +131,70 @@ pub fn sender_name(paths: &Paths) -> String {
 /// session's own permission class), or the default `sessionsation` / `prompting` for an
 /// operator, supervisor or unknown caller. Never the receiver's mode.
 pub fn sender(paths: &Paths) -> Sender {
-    let found = catalog::list(paths).ok().and_then(|sessions| {
-        let s = find_session(
-            &sessions,
-            std::process::id(),
-            proc_stat,
-            std::env::var(CODEX_THREAD_VAR).ok(),
-            proc_codex_thread,
-        )?;
-        let mode = session_mode(s, proc_args, |s| codex_permissions(paths, s));
-        Some(Sender {
-            name: s.name.clone(),
-            mode: mode.into(),
-            canonical: s.canonical(),
-        })
-    });
-    match found {
-        Some(s) if !s.name.is_empty() => s,
-        _ => Sender::default(),
+    managed_sender(paths).unwrap_or_default()
+}
+
+/// The managed session this process runs under, as a sender; `None` outside any session.
+fn managed_sender(paths: &Paths) -> Option<Sender> {
+    let sessions = catalog::list(paths).ok()?;
+    let s = find_session(
+        &sessions,
+        std::process::id(),
+        proc_stat,
+        std::env::var(CODEX_THREAD_VAR).ok(),
+        proc_codex_thread,
+    )?;
+    let mode = session_mode(s, proc_args, |s| codex_permissions(paths, s));
+    Some(Sender {
+        name: s.name.clone(),
+        mode: mode.into(),
+        canonical: s.canonical(),
+    })
+    .filter(|s| !s.name.is_empty())
+}
+
+/// Facts value when a request's `from_component` was not used because the caller is a session.
+pub const COMPONENT_IGNORED_SESSION: &str = "caller_is_session";
+
+/// [`sender`] naming the component behind an outside-session caller (contract 1.50.0): the
+/// request's `from_component`, else `env` (the `SESSIONSATION_SENDER_COMPONENT` of an
+/// `api send` process; an invalid value is ignored with a stderr warning). A managed-session
+/// caller keeps its own name (no spoofing); the second value is then
+/// [`COMPONENT_IGNORED_SESSION`] when a request field was given.
+pub fn sender_for(
+    paths: &Paths,
+    field: Option<&str>,
+    env: Option<&str>,
+) -> (Sender, Option<&'static str>) {
+    choose_sender(managed_sender(paths), field, env, |v| {
+        eprintln!(
+            "sessionsation: warning: ignoring {}={v:?}: a component must match ^[A-Za-z0-9][A-Za-z0-9._-]{{0,39}}$",
+            native_peer::COMPONENT_ENV
+        )
+    })
+}
+
+fn choose_sender(
+    managed: Option<Sender>,
+    field: Option<&str>,
+    env: Option<&str>,
+    warn: impl FnOnce(&str),
+) -> (Sender, Option<&'static str>) {
+    let component = match field {
+        Some(f) => Some(f).filter(|f| native_peer::valid_component(f)),
+        None => match env.filter(|e| !e.is_empty()) {
+            Some(e) if native_peer::valid_component(e) => Some(e),
+            Some(e) => {
+                warn(e);
+                None
+            }
+            None => None,
+        },
+    };
+    match (managed, component) {
+        (Some(s), _) => (s, field.is_some().then_some(COMPONENT_IGNORED_SESSION)),
+        (None, Some(c)) => (Sender::component(c), None),
+        (None, None) => (Sender::default(), None),
     }
 }
 
@@ -305,6 +354,78 @@ mod catalog_tests {
             ("operator".into(), "explicit")
         );
         assert_eq!(resolve(&paths, Some("agent")), ("agent".into(), "explicit"));
+    }
+
+    #[test]
+    fn a_managed_session_caller_ignores_the_component() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(dir.path().join("state"))).unwrap();
+        let me = std::process::id();
+        let (_, start) = proc_stat(me).unwrap();
+        fn no_warn(v: &str) {
+            panic!("unexpected warning for {v}")
+        }
+        // Outside any session: the component names the sender.
+        assert_eq!(managed_sender(&paths), None);
+        let (s, ignored) = choose_sender(managed_sender(&paths), Some("guard"), None, no_warn);
+        assert_eq!(
+            (s.display_name(), s.mode.as_str(), ignored),
+            ("sessionsation:guard", "prompting", None)
+        );
+        // Inside a managed session: its own name, never the component.
+        register(&paths, me, start);
+        let session = managed_sender(&paths).expect("this process is the attachment");
+        assert!(!session.name.starts_with("sessionsation"));
+        let (s, ignored) = choose_sender(
+            managed_sender(&paths),
+            Some("guard"),
+            Some("env-guard"),
+            no_warn,
+        );
+        assert_eq!(s, session);
+        assert_eq!(ignored, Some(COMPONENT_IGNORED_SESSION));
+        // The env var alone is ignored too, and not reported as an ignored request field.
+        let (s, ignored) = choose_sender(managed_sender(&paths), None, Some("env-guard"), no_warn);
+        assert_eq!((s, ignored), (session, None));
+    }
+}
+
+#[cfg(test)]
+mod component_tests {
+    use super::*;
+
+    fn pick(field: Option<&str>, env: Option<&str>) -> (String, Vec<String>) {
+        let mut warned = vec![];
+        let (s, ignored) = choose_sender(None, field, env, |v| warned.push(v.to_owned()));
+        assert_eq!(ignored, None);
+        assert_eq!(s.mode, "prompting");
+        (s.display_name().to_owned(), warned)
+    }
+
+    #[test]
+    fn the_request_field_beats_the_env_var() {
+        assert_eq!(
+            pick(Some("resource-guard"), Some("env-guard")).0,
+            "sessionsation:resource-guard"
+        );
+        // A field given wins even over an invalid env var, which is then not consulted.
+        assert_eq!(
+            pick(Some("resource-guard"), Some("bad name")),
+            ("sessionsation:resource-guard".into(), vec![])
+        );
+        assert_eq!(pick(None, Some("env-guard")).0, "sessionsation:env-guard");
+        assert_eq!(pick(None, None).0, "sessionsation");
+        assert_eq!(pick(None, Some("")).0, "sessionsation");
+    }
+
+    #[test]
+    fn an_invalid_env_var_is_ignored_with_a_warning() {
+        for bad in ["bad name", "-x", "a:b", &"a".repeat(41)] {
+            assert_eq!(
+                pick(None, Some(bad)),
+                ("sessionsation".into(), vec![bad.to_owned()])
+            );
+        }
     }
 }
 

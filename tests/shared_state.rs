@@ -86,7 +86,7 @@ fn exchange_supported(dir: &Path) -> bool {
 fn capabilities_advertise_shared_claude_state() {
     let f = fixture(&[]);
     let caps = f.json(&["api", "capabilities"]);
-    assert_eq!(caps["result"]["contract_version"], "1.49.1");
+    assert_eq!(caps["result"]["contract_version"], "1.50.0");
     let shared = &caps["result"]["shared_claude_state"];
     assert_eq!(shared["version"], 1);
     assert_eq!(

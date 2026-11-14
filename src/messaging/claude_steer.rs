@@ -121,6 +121,10 @@ pub struct Facts {
     /// An interrupt was requested while the consuming turn ran.
     #[serde(default)]
     pub turn_interrupted: bool,
+    /// Contract 1.50.0: why a request's `from_component` did not name the sender
+    /// (`caller_is_session`). Older binaries ignore it (no `deny_unknown_fields` on facts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_component_ignored: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -340,8 +344,15 @@ fn shape(r: &Request) -> Result<()> {
     Ok(())
 }
 
-/// Admit one Claude submit/queue/steer request (raw `api send` JSON).
-pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
+/// Admit one Claude submit/queue/steer request (raw `api send` JSON, `from_component`
+/// already taken out and validated by the dispatcher; `env_component` is the caller's
+/// `SESSIONSATION_SENDER_COMPONENT`, only ever passed by the `api send` command).
+pub async fn send(
+    paths: &Paths,
+    v: Value,
+    from_component: Option<String>,
+    env_component: Option<String>,
+) -> Result<Value> {
     let request: Request = serde_json::from_value(v.clone()).map_err(|e| {
         if v["steering"].get("expected_turn_id").is_some() {
             anyhow::anyhow!("INVALID_REQUEST: Claude steering takes {{\"version\":1,\"interrupt\":bool}}, not a Codex turn target")
@@ -544,6 +555,11 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
             }
         }
     };
+    let (sender, component_ignored) = crate::caller_origin::sender_for(
+        paths,
+        from_component.as_deref(),
+        env_component.as_deref(),
+    );
     let mut record = Record {
         schema_version: 1,
         kind: kind.into(),
@@ -558,6 +574,7 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         reason: None,
         facts: Facts {
             interrupt_requested: interrupt,
+            from_component_ignored: component_ignored.map(str::to_owned),
             ..Default::default()
         },
         reply_text: String::new(),
@@ -577,7 +594,7 @@ pub async fn send(paths: &Paths, v: Value) -> Result<Value> {
         origin_resolved: Some(origin),
         origin_source: Some(origin_source.to_owned()),
         sender_registration: None,
-        sender: Some(crate::caller_origin::sender(paths)),
+        sender: Some(sender),
         observation_error: None,
         created_at: now,
         updated_at: now,
@@ -1608,6 +1625,9 @@ pub fn receipt_value(r: &Record) -> Value {
         }
     ));
     v["native_fallback"] = r.fallback.clone().unwrap_or(Value::Null);
+    if let Some(why) = &r.facts.from_component_ignored {
+        v["facts"]["from_component_ignored"] = json!(why);
+    }
     if r.kind == "terminal" {
         terminal::receipt_fields(r, &mut v);
         if gemini::is_gemini(r) {

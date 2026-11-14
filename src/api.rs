@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 49;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.49.1";
+pub const CONTRACT_MINOR: u32 = 50;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.50.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1617,6 +1617,13 @@ fn session_spaces_capability() -> Value {
             "request_field":null,"exists_error":"WORKSPACE_NAME_EXISTS"},
         "rename_moves":false,"set_space":{"command":"session set-space","refused_live":"ALREADY_IN_HERDR"},
         "resolve":{"command":"session resolve"},"from_name":"canonical_when_fits_64",
+        "from_component":{"since_contract":"1.50.0","version":1,"command":"send","request_field":"from_component",
+            "env":crate::provider::claude::native_peer::COMPONENT_ENV,"field_wins_over_env":true,
+            "pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$","invalid_field_error":"INVALID_ARGUMENT",
+            "invalid_env":"ignored_with_stderr_warning","from_name":"sessionsation:<component>","from_mode":"prompting",
+            "applies_when":"caller_not_a_managed_session","session_caller":"own_name_kept",
+            "ignored_fact":{"field":"from_component_ignored","value":crate::caller_origin::COMPONENT_IGNORED_SESSION},
+            "providers_enveloped":["claude"],"codex_text_unchanged":true},
         "backfill":"placement_then_auto_recover_then_null","generation_includes_space":false,
         "inactive_keeps_space":true,
         "resume_default":"stored_space_reused_or_recreated_with_its_label"})
@@ -3458,7 +3465,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             let mut bytes = Vec::new();
             std::io::stdin().take(32769).read_to_end(&mut bytes)?;
             ensure!(bytes.len() <= 32768, "INPUT_TOO_LARGE");
-            crate::messaging::headless::dispatch(paths, &bytes).await?
+            let env_component =
+                std::env::var(crate::provider::claude::native_peer::COMPONENT_ENV).ok();
+            crate::messaging::headless::dispatch_as(paths, &bytes, env_component).await?
         }
         Command::Receipt { message } => {
             crate::messaging::receipt_public(paths, &message, false).await?
@@ -4057,7 +4066,10 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.49.1");
+        assert_eq!(c["contract_version"], "1.50.0");
+        let from = &c["session_spaces"]["from_component"];
+        assert_eq!(from["since_contract"], "1.50.0");
+        assert_eq!(from["from_name"], "sessionsation:<component>");
         let mut s = catalog::Session {
             id: "stable".into(),
             name: "LEAD".into(),
