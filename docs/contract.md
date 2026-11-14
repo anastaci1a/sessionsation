@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.50.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.51.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3635,4 +3635,34 @@ them, so the receiver sees for example `from-name="sessionsation:resource-guard"
   field, so records stay readable by older binaries.
 
 Capability: `session_spaces.from_component` (`since_contract` `1.50.0`, `request_field`, `env`, `pattern`,
-`from_name: "sessionsation:<component>"`, `applies_when: "caller_not_a_managed_session"`).
+`from_name: "sessionsation:<component>"`, `applies_when: "caller_not_a_managed_session"`). Since 1.51.0 the
+default rendering is the bare component; see below.
+
+### Bare component sender names (1.51.0)
+
+MINOR (changed rendering of an existing field). An outside-session caller with a valid component (request
+`from_component` or `SESSIONSATION_SENDER_COMPONENT`) is now shown by the bare component, for example
+`from-name="resource-guard"`, `from-name="gated-run"`, `from-name="opus-simplicity-popup"` (`from-mode="prompting"`).
+Before 1.51.0 it was `from-name="sessionsation:<component>"`.
+
+- **Collision fallback.** When the component equals, case-insensitively (Unicode lowercase, the same folding as
+  session names), the name of any session in the catalog, in any Space and whether or not it is running, or
+  equals `sessionsation`, it is not rendered bare: the envelope says `from-name="sessionsation:<component>"`
+  (the 1.50.0 form). Nothing is refused. When the component came from the request field, the Claude receipt
+  reports `facts.from_component_prefixed: "collides_with_session"`. When it came from the env var, a warning
+  line goes to stderr (`sessionsation: warning: SESSIONSATION_SENDER_COMPONENT=... collides ...`) and no fact
+  is recorded.
+- **When checked.** At admission, where the sender is resolved; the stored sender stands for retries and
+  idempotent re-sends. If the catalog cannot be read, the fallback is used (fail safe).
+- **No canonical look-alikes.** A component cannot contain `:`, so neither form can look like a canonical
+  `<space>:<name>`.
+- **Unchanged.** A managed-session caller keeps its own canonical name and ignores the component
+  (`facts.from_component_ignored: "caller_is_session"` when the request field was given). Codex text, headless
+  sends and validation are unchanged.
+- **Storage.** The rendered name goes into the existing `Sender.name`; no stored field is added, so records stay
+  readable by older binaries. The new fact is omitted when absent.
+
+Capability: `session_spaces.from_component` keeps `since_contract` `1.50.0` and now says
+`from_name: "<component>"`, `collision_fallback: "sessionsation:<component>"`,
+`changed_in: {"contract":"1.51.0",...}`, a `collision_rule` object and
+`prefixed_fact: {"field":"from_component_prefixed","value":"collides_with_session"}`.

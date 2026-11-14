@@ -568,7 +568,7 @@
           ]
         },
         "from_component": {
-          "description": "Since 1.50.0: names the component behind a caller that is not a managed session; the native Claude envelope then says from-name=\"sessionsation:<component>\". Ignored for a managed-session caller and for Codex text.",
+          "description": "Since 1.50.0: names the component behind a caller that is not a managed session. Since 1.51.0 the native Claude envelope says the bare from-name=\"<component>\"; a component equal (case-insensitively) to any catalog session name or to sessionsation falls back to from-name=\"sessionsation:<component>\" with facts.from_component_prefixed=\"collides_with_session\". Ignored for a managed-session caller and for Codex text.",
           "oneOf": [
             {
               "type": "string",

@@ -125,6 +125,10 @@ pub struct Facts {
     /// (`caller_is_session`). Older binaries ignore it (no `deny_unknown_fields` on facts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_component_ignored: Option<String>,
+    /// Contract 1.51.0: why a request's `from_component` was rendered
+    /// `sessionsation:<component>` instead of bare (`collides_with_session`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_component_prefixed: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -555,7 +559,8 @@ pub async fn send(
             }
         }
     };
-    let (sender, component_ignored) = crate::caller_origin::sender_for(
+    // Resolved at admission: the collision check sees the catalog as it is now.
+    let chosen = crate::caller_origin::sender_for(
         paths,
         from_component.as_deref(),
         env_component.as_deref(),
@@ -574,7 +579,8 @@ pub async fn send(
         reason: None,
         facts: Facts {
             interrupt_requested: interrupt,
-            from_component_ignored: component_ignored.map(str::to_owned),
+            from_component_ignored: chosen.ignored.map(str::to_owned),
+            from_component_prefixed: chosen.prefixed.map(str::to_owned),
             ..Default::default()
         },
         reply_text: String::new(),
@@ -594,7 +600,7 @@ pub async fn send(
         origin_resolved: Some(origin),
         origin_source: Some(origin_source.to_owned()),
         sender_registration: None,
-        sender: Some(sender),
+        sender: Some(chosen.sender),
         observation_error: None,
         created_at: now,
         updated_at: now,
@@ -1627,6 +1633,9 @@ pub fn receipt_value(r: &Record) -> Value {
     v["native_fallback"] = r.fallback.clone().unwrap_or(Value::Null);
     if let Some(why) = &r.facts.from_component_ignored {
         v["facts"]["from_component_ignored"] = json!(why);
+    }
+    if let Some(why) = &r.facts.from_component_prefixed {
+        v["facts"]["from_component_prefixed"] = json!(why);
     }
     if r.kind == "terminal" {
         terminal::receipt_fields(r, &mut v);

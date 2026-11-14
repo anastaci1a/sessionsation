@@ -706,16 +706,21 @@ such as an archive now waits up to 120 s for it instead of failing at once; `api
 `failed` with the name released, not `uncertain`, and `launch-run` prints `sessionsation launch failed: <reason>`
 in the pane before exiting non-zero. Details: [contract](contract.md#launches-wait-for-account-operations-1491).
 
-## Naming a script or monitor as sender (contract 1.50.0)
+## Naming a script or monitor as sender (contract 1.50.0, bare since 1.51.0)
 
 A native Claude message sent from outside any managed session shows `from-name="sessionsation"`. A monitor or
 relay can name itself: add `"from_component":"resource-guard"` to the `api send` request, or set
 `SESSIONSATION_SENDER_COMPONENT=resource-guard` in the script's environment (the request field wins). The receiver
-then sees `from-name="sessionsation:resource-guard"` (`from-mode="prompting"`). The component must match
+then sees `from-name="resource-guard"` (`from-mode="prompting"`; 1.50.0 showed `sessionsation:resource-guard`).
+If the component equals, ignoring case, the name of any session in the catalog (any Space) or `sessionsation`,
+it is shown as `from-name="sessionsation:<component>"` instead, so it cannot pass for a session; the send still
+goes through. A request field that fell back is reported as `facts.from_component_prefixed:
+"collides_with_session"`; an env var that fell back prints a warning on stderr. The component must match
 `^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`: an invalid request field is refused with `INVALID_ARGUMENT`, an invalid env
 var is ignored with a warning on stderr. A caller inside a managed session always keeps its own name; a request
 field it supplied is reported as `facts.from_component_ignored: "caller_is_session"`. Codex targets get plain text
-as before. Details: [contract](contract.md#named-outside-session-senders-from_component-1500).
+as before. Details: [contract](contract.md#named-outside-session-senders-from_component-1500) and
+[bare component sender names](contract.md#bare-component-sender-names-1510).
 
 ## Explicit in-turn steering
 

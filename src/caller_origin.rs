@@ -136,9 +136,12 @@ pub fn sender(paths: &Paths) -> Sender {
 
 /// The managed session this process runs under, as a sender; `None` outside any session.
 fn managed_sender(paths: &Paths) -> Option<Sender> {
-    let sessions = catalog::list(paths).ok()?;
+    managed_in(paths, &catalog::list(paths).ok()?)
+}
+
+fn managed_in(paths: &Paths, sessions: &[catalog::Session]) -> Option<Sender> {
     let s = find_session(
-        &sessions,
+        sessions,
         std::process::id(),
         proc_stat,
         std::env::var(CODEX_THREAD_VAR).ok(),
@@ -156,45 +159,93 @@ fn managed_sender(paths: &Paths) -> Option<Sender> {
 /// Facts value when a request's `from_component` was not used because the caller is a session.
 pub const COMPONENT_IGNORED_SESSION: &str = "caller_is_session";
 
-/// [`sender`] naming the component behind an outside-session caller (contract 1.50.0): the
-/// request's `from_component`, else `env` (the `SESSIONSATION_SENDER_COMPONENT` of an
-/// `api send` process; an invalid value is ignored with a stderr warning). A managed-session
-/// caller keeps its own name (no spoofing); the second value is then
-/// [`COMPONENT_IGNORED_SESSION`] when a request field was given.
-pub fn sender_for(
-    paths: &Paths,
-    field: Option<&str>,
-    env: Option<&str>,
-) -> (Sender, Option<&'static str>) {
-    choose_sender(managed_sender(paths), field, env, |v| {
-        eprintln!(
-            "sessionsation: warning: ignoring {}={v:?}: a component must match ^[A-Za-z0-9][A-Za-z0-9._-]{{0,39}}$",
-            native_peer::COMPONENT_ENV
-        )
+/// Facts value when a component was rendered `sessionsation:<component>` because its bare
+/// form would collide with a session name or `sessionsation` (contract 1.51.0).
+pub const COMPONENT_PREFIXED_COLLISION: &str = "collides_with_session";
+
+/// The sender chosen at admission, plus the receipt facts explaining it.
+#[derive(Debug, PartialEq)]
+pub struct SenderChoice {
+    pub sender: Sender,
+    /// [`COMPONENT_IGNORED_SESSION`] when a request field was given by a session caller.
+    pub ignored: Option<&'static str>,
+    /// [`COMPONENT_PREFIXED_COLLISION`] when a request field fell back to the prefixed form.
+    pub prefixed: Option<&'static str>,
+}
+
+/// [`sender`] naming the component behind an outside-session caller: the request's
+/// `from_component`, else `env` (the `SESSIONSATION_SENDER_COMPONENT` of an `api send`
+/// process; an invalid value is ignored with a stderr warning). Contract 1.51.0 renders the
+/// bare component, unless it equals (case-insensitively) the name of any catalog session, in
+/// any space, or `sessionsation`; it then falls back to `sessionsation:<component>` (never
+/// refused). A catalog that cannot be read counts as a collision (fail safe). A
+/// managed-session caller keeps its own name (no spoofing).
+pub fn sender_for(paths: &Paths, field: Option<&str>, env: Option<&str>) -> SenderChoice {
+    let sessions = catalog::list(paths).ok();
+    let managed = sessions.as_deref().and_then(|s| managed_in(paths, s));
+    let names = sessions.map(|s| s.into_iter().map(|s| s.name).collect::<Vec<_>>());
+    choose_sender(managed, names.as_deref(), field, env, |m| {
+        eprintln!("sessionsation: warning: {m}")
     })
+}
+
+/// Whether the bare `component` could be mistaken for a session (or Sessionsation itself).
+/// `names` is `None` when the catalog could not be read: then always a collision.
+fn collides(component: &str, names: Option<&[String]>) -> bool {
+    // The catalog's own name folding (Unicode lowercase), so a component matches exactly
+    // the names a session could not take next to that one.
+    let fold = catalog::scope::fold;
+    let c = fold(component);
+    c == native_peer::DEFAULT_SENDER || names.is_none_or(|names| names.iter().any(|n| fold(n) == c))
 }
 
 fn choose_sender(
     managed: Option<Sender>,
+    names: Option<&[String]>,
     field: Option<&str>,
     env: Option<&str>,
-    warn: impl FnOnce(&str),
-) -> (Sender, Option<&'static str>) {
+    mut warn: impl FnMut(String),
+) -> SenderChoice {
     let component = match field {
         Some(f) => Some(f).filter(|f| native_peer::valid_component(f)),
         None => match env.filter(|e| !e.is_empty()) {
             Some(e) if native_peer::valid_component(e) => Some(e),
             Some(e) => {
-                warn(e);
+                warn(format!(
+                    "ignoring {}={e:?}: a component must match ^[A-Za-z0-9][A-Za-z0-9._-]{{0,39}}$",
+                    native_peer::COMPONENT_ENV
+                ));
                 None
             }
             None => None,
         },
     };
-    match (managed, component) {
-        (Some(s), _) => (s, field.is_some().then_some(COMPONENT_IGNORED_SESSION)),
-        (None, Some(c)) => (Sender::component(c), None),
-        (None, None) => (Sender::default(), None),
+    let (sender, ignored, prefixed) = match (managed, component) {
+        (Some(s), _) => (
+            s,
+            field.is_some().then_some(COMPONENT_IGNORED_SESSION),
+            None,
+        ),
+        (None, Some(c)) if collides(c, names) => {
+            if field.is_none() {
+                warn(format!(
+                    "{}={c:?} collides with a session name or \"sessionsation\" (or the catalog is unreadable); sending as \"sessionsation:{c}\"",
+                    native_peer::COMPONENT_ENV
+                ));
+            }
+            (
+                Sender::prefixed_component(c),
+                None,
+                field.is_some().then_some(COMPONENT_PREFIXED_COLLISION),
+            )
+        }
+        (None, Some(c)) => (Sender::component(c), None, None),
+        (None, None) => (Sender::default(), None, None),
+    };
+    SenderChoice {
+        sender,
+        ignored,
+        prefixed,
     }
 }
 
@@ -362,31 +413,74 @@ mod catalog_tests {
         let paths = Paths::new(Some(dir.path().join("state"))).unwrap();
         let me = std::process::id();
         let (_, start) = proc_stat(me).unwrap();
-        fn no_warn(v: &str) {
-            panic!("unexpected warning for {v}")
-        }
-        // Outside any session: the component names the sender.
+        // Outside any session: the bare component names the sender.
         assert_eq!(managed_sender(&paths), None);
-        let (s, ignored) = choose_sender(managed_sender(&paths), Some("guard"), None, no_warn);
+        let c = sender_for(&paths, Some("guard"), None);
         assert_eq!(
-            (s.display_name(), s.mode.as_str(), ignored),
-            ("sessionsation:guard", "prompting", None)
+            (
+                c.sender.display_name(),
+                c.sender.mode.as_str(),
+                c.ignored,
+                c.prefixed
+            ),
+            ("guard", "prompting", None, None)
         );
-        // Inside a managed session: its own name, never the component.
+        // Inside a managed session: its own name, never the component (bare or prefixed).
         register(&paths, me, start);
         let session = managed_sender(&paths).expect("this process is the attachment");
         assert!(!session.name.starts_with("sessionsation"));
-        let (s, ignored) = choose_sender(
-            managed_sender(&paths),
-            Some("guard"),
-            Some("env-guard"),
-            no_warn,
+        let c = sender_for(&paths, Some("guard"), Some("env-guard"));
+        assert_eq!(
+            (c.sender, c.ignored, c.prefixed),
+            (session.clone(), Some(COMPONENT_IGNORED_SESSION), None)
         );
-        assert_eq!(s, session);
-        assert_eq!(ignored, Some(COMPONENT_IGNORED_SESSION));
+        // Even a component equal to its own name: still the session, reported as ignored.
+        let own = session.name.to_uppercase();
+        let c = sender_for(&paths, Some(&own), None);
+        assert_eq!(
+            (c.sender, c.ignored, c.prefixed),
+            (session.clone(), Some(COMPONENT_IGNORED_SESSION), None)
+        );
         // The env var alone is ignored too, and not reported as an ignored request field.
-        let (s, ignored) = choose_sender(managed_sender(&paths), None, Some("env-guard"), no_warn);
-        assert_eq!((s, ignored), (session, None));
+        let c = sender_for(&paths, None, Some("env-guard"));
+        assert_eq!((c.sender, c.ignored, c.prefixed), (session, None, None));
+    }
+
+    #[test]
+    fn a_component_naming_a_catalog_session_falls_back_to_the_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(dir.path().join("state"))).unwrap();
+        // Not this process: an outside caller, and a session in another Space.
+        let other = catalog::record_provider_launch(
+            &paths,
+            ProviderId::Claude,
+            "personal",
+            &uuid::Uuid::new_v4().to_string(),
+            "Watcher",
+            None,
+            None,
+        )
+        .unwrap();
+        catalog::scope::set_space(&paths, &other.id, &other.generation(), Some("ops")).unwrap();
+        assert_eq!(
+            catalog::list(&paths).unwrap()[0].space.as_deref(),
+            Some("ops")
+        );
+        assert_eq!(managed_sender(&paths), None);
+        for spoof in ["watcher", "WATCHER", "Watcher"] {
+            let c = sender_for(&paths, Some(spoof), None);
+            assert_eq!(
+                (c.sender.display_name(), c.ignored, c.prefixed),
+                (
+                    format!("sessionsation:{spoof}").as_str(),
+                    None,
+                    Some(COMPONENT_PREFIXED_COLLISION)
+                )
+            );
+        }
+        // A unique component stays bare.
+        let c = sender_for(&paths, Some("watcher-2"), None);
+        assert_eq!((c.sender.display_name(), c.prefixed), ("watcher-2", None));
     }
 }
 
@@ -394,26 +488,42 @@ mod catalog_tests {
 mod component_tests {
     use super::*;
 
-    fn pick(field: Option<&str>, env: Option<&str>) -> (String, Vec<String>) {
+    /// Session names across every Space of a fake catalog (names are bare in the catalog).
+    const NAMES: &[&str] = &["LEAD", "Résumé", "watcher"];
+
+    fn pick_in(
+        names: Option<&[String]>,
+        field: Option<&str>,
+        env: Option<&str>,
+    ) -> (String, Option<&'static str>, Vec<String>) {
         let mut warned = vec![];
-        let (s, ignored) = choose_sender(None, field, env, |v| warned.push(v.to_owned()));
-        assert_eq!(ignored, None);
-        assert_eq!(s.mode, "prompting");
-        (s.display_name().to_owned(), warned)
+        let c = choose_sender(None, names, field, env, |m| warned.push(m));
+        assert_eq!(c.ignored, None);
+        assert_eq!(c.sender.mode, "prompting");
+        assert_eq!(c.sender.canonical, None);
+        (c.sender.display_name().to_owned(), c.prefixed, warned)
+    }
+
+    fn pick(field: Option<&str>, env: Option<&str>) -> (String, Option<&'static str>, Vec<String>) {
+        let names: Vec<String> = NAMES.iter().map(|&n| n.into()).collect();
+        pick_in(Some(&names), field, env)
     }
 
     #[test]
     fn the_request_field_beats_the_env_var() {
         assert_eq!(
-            pick(Some("resource-guard"), Some("env-guard")).0,
-            "sessionsation:resource-guard"
+            pick(Some("resource-guard"), Some("env-guard")),
+            ("resource-guard".into(), None, vec![])
         );
         // A field given wins even over an invalid env var, which is then not consulted.
         assert_eq!(
             pick(Some("resource-guard"), Some("bad name")),
-            ("sessionsation:resource-guard".into(), vec![])
+            ("resource-guard".into(), None, vec![])
         );
-        assert_eq!(pick(None, Some("env-guard")).0, "sessionsation:env-guard");
+        assert_eq!(
+            pick(None, Some("env-guard")),
+            ("env-guard".into(), None, vec![])
+        );
         assert_eq!(pick(None, None).0, "sessionsation");
         assert_eq!(pick(None, Some("")).0, "sessionsation");
     }
@@ -421,11 +531,77 @@ mod component_tests {
     #[test]
     fn an_invalid_env_var_is_ignored_with_a_warning() {
         for bad in ["bad name", "-x", "a:b", &"a".repeat(41)] {
-            assert_eq!(
-                pick(None, Some(bad)),
-                ("sessionsation".into(), vec![bad.to_owned()])
+            let (name, prefixed, warned) = pick(None, Some(bad));
+            assert_eq!((name.as_str(), prefixed), ("sessionsation", None));
+            assert_eq!(warned.len(), 1);
+            assert!(
+                warned[0].starts_with("ignoring SESSIONSATION_SENDER_COMPONENT="),
+                "{warned:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_component_colliding_with_a_session_name_is_prefixed() {
+        for (component, display) in [
+            ("lead", "sessionsation:lead"),
+            ("LEAD", "sessionsation:LEAD"),
+            ("Watcher", "sessionsation:Watcher"),
+            // Not a collision: only whole names count.
+            ("lead-2", "lead-2"),
+            ("watch", "watch"),
+        ] {
+            let collides = display.starts_with("sessionsation:");
+            // From the request field: the fallback is reported as a fact, no warning.
+            assert_eq!(
+                pick(Some(component), None),
+                (
+                    display.into(),
+                    collides.then_some(COMPONENT_PREFIXED_COLLISION),
+                    vec![]
+                ),
+                "{component}"
+            );
+            // From the env var: a stderr warning, no fact.
+            let (name, prefixed, warned) = pick(None, Some(component));
+            assert_eq!((name.as_str(), prefixed), (display, None));
+            assert_eq!(warned.len(), usize::from(collides), "{warned:?}");
+            if collides {
+                assert!(warned[0].contains("collides"), "{warned:?}");
+                assert!(warned[0].contains(&format!("\"{display}\"")), "{warned:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn sessionsation_itself_is_prefixed() {
+        for component in ["sessionsation", "SessionSation"] {
+            assert_eq!(
+                pick_in(Some(&[]), Some(component), None),
+                (
+                    format!("sessionsation:{component}"),
+                    Some(COMPONENT_PREFIXED_COLLISION),
+                    vec![]
+                )
+            );
+        }
+        // An empty catalog renders anything else bare.
+        assert_eq!(pick_in(Some(&[]), Some("lead"), None).0, "lead");
+    }
+
+    #[test]
+    fn an_unreadable_catalog_fails_safe_to_the_prefix() {
+        assert_eq!(
+            pick_in(None, Some("resource-guard"), None),
+            (
+                "sessionsation:resource-guard".into(),
+                Some(COMPONENT_PREFIXED_COLLISION),
+                vec![]
+            )
+        );
+        let (name, _, warned) = pick_in(None, None, Some("resource-guard"));
+        assert_eq!(name, "sessionsation:resource-guard");
+        assert_eq!(warned.len(), 1);
     }
 }
 

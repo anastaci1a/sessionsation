@@ -100,10 +100,22 @@ pub fn valid_component(c: &str) -> bool {
 }
 
 impl Sender {
-    /// The default sender naming the component behind it: `sessionsation:<component>`,
-    /// `prompting`. The name is computed into `name` (no new stored field), so records stay
-    /// readable by older binaries and the worker needs no change.
+    /// The default sender named by the component behind it (contract 1.51.0): the bare
+    /// `<component>`, `prompting`. The caller must first rule out a collision with a session
+    /// name or `sessionsation` (see [`Sender::prefixed_component`]). The name is computed into
+    /// `name` (no new stored field), so records stay readable by older binaries and the
+    /// worker needs no change.
     pub fn component(component: &str) -> Self {
+        Self {
+            name: component.into(),
+            ..Self::default()
+        }
+    }
+
+    /// The collision fallback: `sessionsation:<component>` (the 1.50.0 rendering). A
+    /// component cannot contain `:`, so neither form ever looks like a canonical
+    /// `<space>:<name>` of another session.
+    pub fn prefixed_component(component: &str) -> Self {
         Self {
             name: format!("{DEFAULT_SENDER}:{component}"),
             ..Self::default()
@@ -442,23 +454,35 @@ mod tests {
 
     #[test]
     fn a_component_names_the_default_sender() {
+        // Contract 1.51.0: the bare component by default.
         let s = Sender::component("resource-guard");
         assert_eq!(s.mode, "prompting");
         assert_eq!(s.canonical, None);
         assert!(
             envelope("uds:/x", &s, "b")
+                .contains(" from-name=\"resource-guard\" from-mode=\"prompting\">")
+        );
+        // The collision fallback keeps the 1.50.0 prefix.
+        let p = Sender::prefixed_component("resource-guard");
+        assert_eq!((p.mode.as_str(), &p.canonical), ("prompting", &None));
+        assert!(
+            envelope("uds:/x", &p, "b")
                 .contains("from-name=\"sessionsation:resource-guard\" from-mode=\"prompting\">")
         );
-        // The longest component fits the 64-character cap untruncated.
+        // The longest component fits the 64-character cap untruncated in either form.
         let long = format!("a{}", "b".repeat(COMPONENT_MAX - 1));
         assert!(valid_component(&long));
-        let name = Sender::component(&long).display_name().to_owned();
+        let name = Sender::prefixed_component(&long).display_name().to_owned();
         assert_eq!(name.chars().count(), 54);
         assert_eq!(sanitize_sender_name(&name), name);
+        assert_eq!(Sender::component(&long).display_name(), long);
         // Older binaries read the stored sender unchanged (no new field).
-        let stored = serde_json::to_value(&s).unwrap();
         assert_eq!(
-            stored,
+            serde_json::to_value(&s).unwrap(),
+            serde_json::json!({"name":"resource-guard","mode":"prompting"})
+        );
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
             serde_json::json!({"name":"sessionsation:resource-guard","mode":"prompting"})
         );
     }

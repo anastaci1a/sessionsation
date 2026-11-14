@@ -325,7 +325,10 @@ with tempfile.TemporaryDirectory() as directory:
             component = spaces["from_component"]
             assert component["since_contract"] == "1.50.0" and component["version"] == 1, component
             assert component["request_field"] == "from_component" and component["env"] == "SESSIONSATION_SENDER_COMPONENT"
-            assert component["from_name"] == "sessionsation:<component>" and component["field_wins_over_env"] is True
+            assert component["from_name"] == "<component>" and component["field_wins_over_env"] is True
+            assert component["changed_in"]["contract"] == "1.51.0", component
+            assert component["collision_fallback"] == "sessionsation:<component>", component
+            assert component["prefixed_fact"] == {"field": "from_component_prefixed", "value": "collides_with_session"}, component
             model = value["result"]["session_model"]
             assert model["since_contract"] == "1.49.0" and model["version"] == 1, model
             assert model["row_field"] == "model" and model["exact_ids_only"] is True and model["effort_after_model"] is True

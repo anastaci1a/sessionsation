@@ -1180,7 +1180,7 @@ async fn agent_sends_use_the_native_peer_protocol_and_report_every_receipt_hones
     assert!(content.ends_with("\" from-name=\"sessionsation\" from-mode=\"prompting\">\nagent hello\n</cross-session-message>"), "{content}");
     assert_eq!(users(), 1);
 
-    // Contract 1.50.0: an outside-session caller names its component; the request field wins
+    // Contract 1.50.0/1.51.0: an outside-session caller names its component; the request field wins
     // over SESSIONSATION_SENDER_COMPONENT; an invalid env var is ignored with a warning.
     let last_content = || -> String {
         frames()
@@ -1211,15 +1211,46 @@ async fn agent_sends_use_the_native_peer_protocol_and_report_every_receipt_hones
             .unwrap();
         child.wait_with_output().unwrap()
     };
-    for (field, env, from_name, warned) in [
+    // Contract 1.51.0: the component is rendered bare, unless it names a catalog session
+    // (case-insensitively) or is `sessionsation`; then the prefixed form, never refused.
+    let own = s["name"].as_str().unwrap().to_uppercase();
+    assert!(
+        own.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')),
+        "the fixture session name must be a valid component: {own}"
+    );
+    let own_prefixed = format!("sessionsation:{own}");
+    for (field, env, from_name, warning, prefixed) in [
         (
             Some("resource-guard"),
             Some("env-guard"),
-            "sessionsation:resource-guard",
+            "resource-guard",
+            None,
             false,
         ),
-        (None, Some("env-guard"), "sessionsation:env-guard", false),
-        (None, Some("bad name"), "sessionsation", true),
+        (None, Some("env-guard"), "env-guard", None, false),
+        (
+            None,
+            Some("bad name"),
+            "sessionsation",
+            Some("ignoring SESSIONSATION_SENDER_COMPONENT"),
+            false,
+        ),
+        (Some(own.as_str()), None, own_prefixed.as_str(), None, true),
+        (
+            Some("Sessionsation"),
+            None,
+            "sessionsation:Sessionsation",
+            None,
+            true,
+        ),
+        (
+            None,
+            Some(own.as_str()),
+            own_prefixed.as_str(),
+            Some("collides"),
+            false,
+        ),
     ] {
         let mut b = agent("submit", "component hello", "native");
         if let Some(c) = field {
@@ -1229,13 +1260,21 @@ async fn agent_sends_use_the_native_peer_protocol_and_report_every_receipt_hones
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         assert!(out.status.success(), "{stderr}");
         assert_eq!(
-            stderr.contains("ignoring SESSIONSATION_SENDER_COMPONENT"),
-            warned,
+            stderr.contains("sessionsation: warning:"),
+            warning.is_some(),
             "{stderr}"
         );
+        if let Some(w) = warning {
+            assert!(stderr.contains(w), "{stderr}");
+        }
         let r = f.settled(b["message_id"].as_str().unwrap());
         assert_eq!(r["state"], "completed_with_reply", "{r}");
         assert!(r["facts"].get("from_component_ignored").is_none(), "{r}");
+        assert_eq!(
+            r["facts"].get("from_component_prefixed"),
+            prefixed.then(|| json!("collides_with_session")).as_ref(),
+            "{r}"
+        );
         let content = last_content();
         assert!(
             content.ends_with(&format!("\" from-name=\"{from_name}\" from-mode=\"prompting\">\ncomponent hello\n</cross-session-message>")),
