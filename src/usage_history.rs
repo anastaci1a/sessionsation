@@ -205,6 +205,9 @@ pub struct History {
     pub short_absent: bool,
     pub weekly_absent: bool,
     pub bins: Vec<Bin>,
+    /// The account's current stored reset credits (Codex, contract 1.53.0), else null.
+    #[serde(default)]
+    pub reset_credits: Option<crate::model::ResetCredits>,
 }
 
 pub(crate) fn query(
@@ -311,6 +314,7 @@ pub(crate) fn query(
         short_absent: usage.window_absent(300),
         weekly_absent: usage.window_absent(10080),
         bins,
+        reset_credits: usage.reset_credits.clone(),
     })
 }
 

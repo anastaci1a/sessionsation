@@ -74,6 +74,8 @@ pub const RESUMPTIONS: &str = "operations/resumptions";
 pub const DELETIONS: &str = "operations/deletions";
 pub const ACCOUNT_DELETIONS: &str = "operations/account-deletions";
 pub const ACCOUNT_RENAMES: &str = "operations/account-renames";
+/// Codex rate-limit reset credit redemptions (contract 1.53.0); never pruned.
+pub const ACCOUNT_RESET_CREDITS: &str = "operations/account-reset-credits";
 pub const CLAUDE_SWITCHES: &str = "operations/claude-switches";
 /// Native Claude idle-notice subscriptions (contract 1.40.0).
 pub const CLAUDE_IDLE_NOTIFY: &str = "operations/claude-idle-notify";
@@ -119,6 +121,7 @@ pub const OPERATION_DIRS: &[&str] = &[
     DELETIONS,
     ACCOUNT_DELETIONS,
     ACCOUNT_RENAMES,
+    ACCOUNT_RESET_CREDITS,
     CLAUDE_SWITCHES,
     AUTO_RECOVERIES,
     CONVERSATION_OPERATIONS,

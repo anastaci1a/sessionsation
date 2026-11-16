@@ -737,6 +737,35 @@ sessionsation config set reuse_idle_tabs false
 
 Details: [contract](contract.md#idle-tab-reuse-for-starts-and-resumes-1520).
 
+## Codex reset credits (contract 1.53.0)
+
+Codex accounts can hold rate-limit reset credits. The count is in the account's usage as `reset_credits`
+(`{available, observed_at, credits}`, or `null` when Codex did not report it):
+
+```sh
+sessionsation api account limits codex:work      # usage.reset_credits.available
+sessionsation api account list --platform codex  # same field in each row's usage
+```
+
+To use one:
+
+```sh
+sessionsation api account reset-credit codex:work
+sessionsation api account reset-credit codex:work --credit-id ID --request-id 3f0c...   # a specific credit
+```
+
+**This spends a stored reset credit and cannot be undone.** Run it only when you mean to reset the account's
+current limits. The result's `outcome` is `reset` (a credit was spent; `rate_limits_after` shows the new usage,
+and `account list`/`state` show it immediately), `nothingToReset` (nothing to reset, nothing spent), `noCredit`
+(no credit left) or `alreadyRedeemed` (this request already succeeded).
+
+If the command fails with `RESET_CREDIT_OUTCOME_UNKNOWN` or `RESET_CREDIT_FAILED`, retry with the
+`request_id` from the message (`--request-id <id>`). The same request id is the same attempt, so it cannot spend
+a second credit; a new request id is a new attempt and can. Sessionsation never retries by itself. Each attempt is
+recorded under `operations/account-reset-credits/` and shown by `api operations`. Claude, Gemini and Antigravity
+accounts get `UNSUPPORTED_PROVIDER_OPERATION`, as does a Codex version without the feature (the message names the
+version). Details: [contract](contract.md#codex-rate-limit-reset-credits-1530).
+
 ## Explicit in-turn steering
 
 For a deliberate message to a busy turn, use `api steer-target --session ID --expected-generation GENERATION`, then `api send` with `mode:"steer"` and the

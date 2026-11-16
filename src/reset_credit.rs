@@ -1,0 +1,322 @@
+//! Redeem a stored Codex rate-limit reset credit (contract 1.53.0).
+//!
+//! `api account reset-credit codex:NAME [--credit-id ID] [--request-id UUID]` asks
+//! the account's app-server (`account/rateLimitResetCredit/consume`) to spend one
+//! earned reset credit. Spending is not reversible, so every attempt is journaled in
+//! `operations/account-reset-credits/<request_id>.json` before the request is sent,
+//! and the request id IS the backend idempotency key: a retry with the same
+//! `--request-id` sends the same key (the backend answers `alreadyRedeemed` when that
+//! attempt already succeeded). Nothing here ever retries with a new key.
+//!
+//! ```text
+//! requesting -> complete (outcome)
+//!            \-> failed     (the app-server answered with an error; nothing to replay)
+//!            \-> uncertain  (no answer; retry with the same request id)
+//! ```
+use crate::{
+    model::{ResetCredit, ResetCredits},
+    paths::{Paths, atomic_write, private_dir},
+    provider::ProviderId,
+};
+use anyhow::{Context, Result, bail, ensure};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{fs, path::PathBuf};
+
+pub const METHOD: &str = "account/rateLimitResetCredit/consume";
+/// Every `ConsumeAccountRateLimitResetCreditOutcome` of Codex app-server 0.165.0.
+pub const OUTCOMES: &[&str] = &["reset", "nothingToReset", "noCredit", "alreadyRedeemed"];
+pub const KIND: &str = "account_reset_credit";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Record {
+    pub schema_version: u32,
+    /// The request id, also sent as the backend `idempotencyKey`.
+    pub id: String,
+    pub kind: String,
+    pub provider: ProviderId,
+    pub account_id: String,
+    pub credit_id: Option<String>,
+    pub idempotency_key: String,
+    pub phase: String,
+    pub outcome: Option<String>,
+    /// Requests sent with this key (1 + retries with the same request id).
+    pub attempts: u32,
+    pub detail: String,
+    pub codex_version: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+fn dir(paths: &Paths) -> PathBuf {
+    paths.root.join(crate::layout::ACCOUNT_RESET_CREDITS)
+}
+fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
+    validate_request_id(id)?;
+    Ok(dir(paths).join(format!("{id}.json")))
+}
+pub fn validate_request_id(id: &str) -> Result<()> {
+    uuid::Uuid::parse_str(id)
+        .ok()
+        .filter(|u| u.hyphenated().to_string() == id)
+        .context("INVALID_REQUEST_ID: --request-id must be a lowercase hyphenated UUID")?;
+    Ok(())
+}
+fn save(paths: &Paths, r: &mut Record) -> Result<()> {
+    r.updated_at = crate::daemon::now();
+    private_dir(&dir(paths))?;
+    atomic_write(&file(paths, &r.id)?, &serde_json::to_vec_pretty(r)?)
+}
+pub fn exists(paths: &Paths, id: &str) -> bool {
+    file(paths, id).is_ok_and(|f| f.is_file())
+}
+pub fn read(paths: &Paths, id: &str) -> Result<Record> {
+    let bytes = fs::read(file(paths, id)?).context("OPERATION_NOT_FOUND")?;
+    serde_json::from_slice(&bytes).context("UNREADABLE_OPERATION_RECORD")
+}
+pub fn list(paths: &Paths) -> Result<Vec<Record>> {
+    let mut all = vec![];
+    let Ok(entries) = fs::read_dir(dir(paths)) else {
+        return Ok(all);
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(id) = name.to_str().and_then(|n| n.strip_suffix(".json")) else {
+            continue;
+        };
+        if let Ok(r) = read(paths, id) {
+            all.push(r);
+        }
+    }
+    all.sort_by_key(|r| (r.created_at, r.id.clone()));
+    Ok(all)
+}
+/// Operation row for `api operations`.
+pub fn public(r: &Record) -> Value {
+    json!({"id":r.id,"kind":KIND,"phase":r.phase,"detail":r.detail,
+    "account_id":r.account_id,"credit_id":r.credit_id,"request_id":r.id,
+    "outcome":r.outcome,"attempts":r.attempts,
+    "uncertain":r.phase == "uncertain","terminal":matches!(r.phase.as_str(),"complete"|"failed"),
+    "created_at":r.created_at,"updated_at":r.updated_at,
+    "replays":false,
+    "next":match r.phase.as_str() {
+        "complete" | "failed" => "none",
+        _ => "retry api account reset-credit with the same --request-id (same idempotency key)",
+    }})
+}
+
+/// Journal one attempt BEFORE its request is sent: a new record, or the existing
+/// record of this request id (same account and credit) with one more attempt.
+pub fn admit(
+    paths: &Paths,
+    account_id: &str,
+    credit_id: Option<&str>,
+    request_id: &str,
+    codex_version: &str,
+) -> Result<Record> {
+    validate_request_id(request_id)?;
+    let mut record = if exists(paths, request_id) {
+        let r = read(paths, request_id)?;
+        ensure!(
+            r.account_id == account_id && r.credit_id.as_deref() == credit_id,
+            "REQUEST_ID_CONFLICT: request {request_id} was used for {} (credit {}); use a new request id for a different attempt",
+            r.account_id,
+            r.credit_id.as_deref().unwrap_or("any")
+        );
+        Record {
+            phase: "requesting".into(),
+            attempts: r.attempts + 1,
+            detail: "retrying with the same idempotency key".into(),
+            codex_version: codex_version.into(),
+            ..r
+        }
+    } else {
+        let now = crate::daemon::now();
+        Record {
+            schema_version: 1,
+            id: request_id.into(),
+            kind: KIND.into(),
+            provider: ProviderId::Codex,
+            account_id: account_id.into(),
+            credit_id: credit_id.map(str::to_owned),
+            idempotency_key: request_id.into(),
+            phase: "requesting".into(),
+            outcome: None,
+            attempts: 1,
+            detail: "request sent to the account app-server".into(),
+            codex_version: codex_version.into(),
+            created_at: now,
+            updated_at: now,
+        }
+    };
+    save(paths, &mut record)?;
+    Ok(record)
+}
+
+pub fn finish(
+    paths: &Paths,
+    record: &mut Record,
+    phase: &str,
+    outcome: Option<&str>,
+    detail: &str,
+) -> Result<()> {
+    record.phase = phase.into();
+    if outcome.is_some() {
+        record.outcome = outcome.map(str::to_owned);
+    }
+    record.detail = detail.into();
+    save(paths, record)
+}
+
+/// The `outcome` of a consume response; anything else is not trusted.
+pub fn parse_outcome(result: &Value) -> Result<String> {
+    match result["outcome"].as_str() {
+        Some(o) if OUTCOMES.contains(&o) => Ok(o.into()),
+        _ => bail!("unexpected consume result (no known outcome)"),
+    }
+}
+
+/// `rateLimitResetCredits` of an `account/rateLimits/read` response.
+pub fn parse_summary(summary: &Value, at: i64) -> Option<ResetCredits> {
+    let available = summary["availableCount"].as_i64()?.max(0) as u64;
+    let credits = summary["credits"].as_array().map(|rows| {
+        rows.iter()
+            .filter_map(|c| {
+                Some(ResetCredit {
+                    id: c["id"].as_str()?.to_owned(),
+                    status: c["status"].as_str().map(str::to_owned),
+                    expires_at: c["expiresAt"].as_i64(),
+                })
+            })
+            .collect()
+    });
+    Some(ResetCredits {
+        available,
+        observed_at: at,
+        credits,
+    })
+}
+
+/// The error for a consume request that did not produce an outcome. The record is
+/// already finished; the message names the codex version and how to retry.
+pub fn failure(error: &anyhow::Error, version: &str, request_id: &str) -> (&'static str, String) {
+    if crate::rpc::unknown_method(error) {
+        (
+            "failed",
+            format!(
+                "UNSUPPORTED_PROVIDER_OPERATION: codex {version} does not support {METHOD} (method not found); update Codex (0.165.0 has it). No credit was spent"
+            ),
+        )
+    } else if crate::rpc::rejected(error) {
+        (
+            "failed",
+            format!(
+                "RESET_CREDIT_FAILED: codex {version} rejected {METHOD}: {error}; not retried. Retry this same attempt with --request-id {request_id}"
+            ),
+        )
+    } else {
+        (
+            "uncertain",
+            format!(
+                "RESET_CREDIT_OUTCOME_UNKNOWN: {METHOD} on codex {version} got no answer ({error}); not retried. Retry with --request-id {request_id}: the same idempotency key cannot spend a second credit"
+            ),
+        )
+    }
+}
+
+/// Capability `account_reset_credit` (contract 1.53.0).
+pub fn capability() -> Value {
+    json!({"since_contract":"1.53.0","providers":["codex"],"method":METHOD,
+        "command":"api account reset-credit codex:NAME [--credit-id ID] [--request-id UUID]",
+        "idempotent_by":"request_id","idempotency_key":"request_id",
+        "request_id_generated_when_omitted":true,"journaled_before_request":true,
+        "journal":crate::layout::ACCOUNT_RESET_CREDITS,"auto_retry":false,"retry":"same_request_id_only",
+        "outcomes":OUTCOMES,"result_fields":["account_id","request_id","outcome","rate_limits_after","attempts","operation"],
+        "rate_limits_refreshed_after":["reset","alreadyRedeemed"],
+        "lock":"account_operation_lock","reversible":false,
+        "usage_field":{"field":"usage.reset_credits","shape":{"available":"integer","observed_at":"unix_seconds","credits":"array|null"},"absent":null},
+        "errors":["UNSUPPORTED_PROVIDER_OPERATION","INVALID_REQUEST_ID","REQUEST_ID_CONFLICT","ACCOUNT_BUSY","AUTH_REQUIRED","RESET_CREDIT_FAILED","RESET_CREDIT_OUTCOME_UNKNOWN"]})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summary_and_outcomes_parse() {
+        let s = parse_summary(
+            &json!({"availableCount":2,"credits":[{"id":"c1","status":"available","expiresAt":99,"grantedAt":1,"resetType":"codexRateLimits"},{"bad":1}]}),
+            7,
+        )
+        .unwrap();
+        assert_eq!(s.available, 2);
+        assert_eq!(s.observed_at, 7);
+        assert_eq!(
+            s.credits.unwrap(),
+            vec![ResetCredit {
+                id: "c1".into(),
+                status: Some("available".into()),
+                expires_at: Some(99)
+            }]
+        );
+        assert!(
+            parse_summary(&json!({"availableCount":0}), 1)
+                .unwrap()
+                .credits
+                .is_none()
+        );
+        assert!(parse_summary(&Value::Null, 1).is_none());
+        for o in OUTCOMES {
+            assert_eq!(parse_outcome(&json!({ "outcome": o })).unwrap(), *o);
+        }
+        assert!(parse_outcome(&json!({"outcome":"maybe"})).is_err());
+        assert!(validate_request_id("not-a-uuid").is_err());
+        assert!(validate_request_id(&uuid::Uuid::new_v4().to_string()).is_ok());
+    }
+
+    #[test]
+    fn retry_reuses_the_record_and_key_and_refuses_another_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut r = admit(&paths, "codex:a", None, &id, "v").unwrap();
+        assert_eq!((r.phase.as_str(), r.attempts), ("requesting", 1));
+        assert_eq!(read(&paths, &id).unwrap().idempotency_key, id);
+        finish(&paths, &mut r, "uncertain", None, "x").unwrap();
+        let again = admit(&paths, "codex:a", None, &id, "v").unwrap();
+        assert_eq!((again.phase.as_str(), again.attempts), ("requesting", 2));
+        assert_eq!(again.idempotency_key, id);
+        assert_eq!(again.created_at, r.created_at);
+        for (account, credit) in [("codex:b", None), ("codex:a", Some("c1"))] {
+            let e = admit(&paths, account, credit, &id, "v").unwrap_err();
+            assert!(e.to_string().starts_with("REQUEST_ID_CONFLICT"), "{e}");
+        }
+        assert_eq!(list(&paths).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn failures_are_classified_without_the_provider_message() {
+        let unknown = anyhow::Error::new(crate::rpc::Rejected::new(
+            "app-server rejected request (code -32600)".into(),
+            &json!({"code":-32600,"message":"Invalid request: unknown variant `account/rateLimitResetCredit/consume`"}),
+        ));
+        let (phase, msg) = failure(&unknown, "codex-cli 0.1.0", "r");
+        assert_eq!(phase, "failed");
+        assert!(msg.starts_with("UNSUPPORTED_PROVIDER_OPERATION: codex codex-cli 0.1.0"));
+        let missing = anyhow::Error::new(crate::rpc::Rejected::new(
+            "x".into(),
+            &json!({"code":-32601,"message":"Method not found"}),
+        ));
+        assert!(failure(&missing, "v", "r").1.starts_with("UNSUPPORTED_"));
+        let backend = anyhow::Error::new(crate::rpc::Rejected::new(
+            "app-server rejected request (code -32603)".into(),
+            &json!({"code":-32603,"message":"secret text"}),
+        ));
+        let (phase, msg) = failure(&backend, "v", "r");
+        assert_eq!(phase, "failed");
+        assert!(msg.starts_with("RESET_CREDIT_FAILED") && !msg.contains("secret"));
+        let (phase, msg) = failure(&anyhow::anyhow!("timed out"), "v", "r");
+        assert_eq!(phase, "uncertain");
+        assert!(msg.starts_with("RESET_CREDIT_OUTCOME_UNKNOWN") && msg.contains("--request-id r"));
+    }
+}

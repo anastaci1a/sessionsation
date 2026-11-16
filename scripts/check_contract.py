@@ -332,6 +332,11 @@ with tempfile.TemporaryDirectory() as directory:
             retention = value["result"]["receipt_retention"]
             assert retention["delivered_journal_states_retire_as_terminal"] == ["execution_started", "native_accepted"], retention
             assert retention["delivered_requires"]["worker"] == "stopped" and retention["delivered_requires"]["since_contract"] == "1.52.0", retention
+            reset = value["result"]["account_reset_credit"]
+            assert reset["since_contract"] == "1.53.0" and reset["providers"] == ["codex"], reset
+            assert reset["method"] == "account/rateLimitResetCredit/consume" and reset["idempotent_by"] == "request_id", reset
+            assert reset["outcomes"] == ["reset", "nothingToReset", "noCredit", "alreadyRedeemed"], reset
+            assert reset["auto_retry"] is False and reset["reversible"] is False, reset
             reuse = value["result"]["pane_reuse"]
             assert reuse["since_contract"] == "1.52.0" and reuse["version"] == 1, reuse
             assert reuse["order"] == ["recorded_pane_if_idle_shell", "same_name_single_pane_idle_tab_in_space", "new_tab"], reuse

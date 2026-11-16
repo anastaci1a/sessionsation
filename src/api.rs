@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 52;
+pub const CONTRACT_MINOR: u32 = 53;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.52.0";
+pub const CONTRACT_VERSION: &str = "1.53.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -867,6 +867,22 @@ pub enum AccountCommand {
         #[arg(long)]
         request_id: Option<String>,
     },
+    /// Codex: spend one stored rate-limit reset credit (not reversible). Journaled; the
+    /// request id is the idempotency key, so a retry with the same --request-id can
+    /// never spend a second credit. Never retried automatically.
+    ResetCredit {
+        /// codex:NAME (or pass --account).
+        #[arg(required_unless_present = "account", conflicts_with = "account")]
+        id: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        /// A specific credit to redeem; the backend picks the next one when omitted.
+        #[arg(long)]
+        credit_id: Option<String>,
+        /// Idempotency key (a UUID); generated when omitted. Reuse it to retry.
+        #[arg(long)]
+        request_id: Option<String>,
+    },
     /// Claude: switch an adopted account to its managed home (no files are moved).
     ManagedHome {
         id: String,
@@ -1487,6 +1503,46 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             )
             .await
         }
+        AccountCommand::ResetCredit {
+            id,
+            account,
+            credit_id,
+            request_id,
+        } => {
+            let id = id
+                .or(account)
+                .context("INVALID_ARGUMENT: pass codex:NAME")?;
+            let account = account_ref(paths, &id)?;
+            ensure!(
+                account.provider == ProviderId::Codex,
+                "UNSUPPORTED_PROVIDER_OPERATION: rate-limit reset credits are a Codex account feature; {} accounts have none",
+                account.provider
+            );
+            if let Some(credit) = &credit_id {
+                ensure!(
+                    !credit.trim().is_empty() && credit.len() <= 256,
+                    "INVALID_ARGUMENT: --credit-id must be 1-256 characters"
+                );
+            }
+            let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            crate::reset_credit::validate_request_id(&request_id)?;
+            crate::accounts::ensure_available(paths, account.provider, &account.name)?;
+            daemon::ensure_started(paths).await?;
+            daemon::call(
+                paths,
+                "account/reset-credit",
+                json!({"name":account.name,"provider":account.provider,"credit_id":credit_id,"request_id":request_id}),
+            )
+            .await
+            // The supervisor's own code (UNSUPPORTED_PROVIDER_OPERATION, ...), not REQUEST_FAILED.
+            .map_err(|e| {
+                let text = e.to_string();
+                anyhow::anyhow!(
+                    "{}",
+                    text.strip_prefix("REQUEST_FAILED: ").unwrap_or(&text)
+                )
+            })
+        }
         AccountCommand::LiveSteering {
             id,
             enable,
@@ -1717,6 +1773,8 @@ pub fn capabilities() -> Value {
     value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session"],"requires_one_of":["space","new_space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","antigravity":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
     // Revision 20: create a new Space by label on resume, add-to-HERDR and move.
     value["pane_reuse"] = crate::pane_reuse::capability();
+    // Contract 1.53.0: redeem a stored Codex rate-limit reset credit.
+    value["account_reset_credit"] = crate::reset_credit::capability();
     value["new_space"] = json!({"since_revision":20,"version":1,"resume":true,"add_to_herdr":true,"move_space":true,"label_validation":"space_label","exists_error":"WORKSPACE_NAME_EXISTS"});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
     value["auto_recover"] = crate::auto_recover::capability();
@@ -3395,6 +3453,11 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     .iter()
                     .map(crate::account_rename::public),
             );
+            ops.extend(
+                crate::reset_credit::list(paths)?
+                    .iter()
+                    .map(crate::reset_credit::public),
+            );
             ops.extend(crate::claude_switch::operations(paths)?);
             ops.extend(crate::auto_recover::operations(paths)?);
             ops.extend(external::archiving::operations(paths)?);
@@ -4077,7 +4140,16 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.52.0");
+        assert_eq!(c["contract_version"], "1.53.0");
+        let reset = &c["account_reset_credit"];
+        assert_eq!(reset["since_contract"], "1.53.0");
+        assert_eq!(reset["providers"], json!(["codex"]));
+        assert_eq!(reset["method"], "account/rateLimitResetCredit/consume");
+        assert_eq!(reset["idempotent_by"], "request_id");
+        assert_eq!(
+            reset["outcomes"],
+            json!(["reset", "nothingToReset", "noCredit", "alreadyRedeemed"])
+        );
         let from = &c["session_spaces"]["from_component"];
         assert_eq!(from["since_contract"], "1.50.0");
         assert_eq!(from["changed_in"]["contract"], "1.51.0");

@@ -51,3 +51,4 @@ pub mod auto_recover;
 pub mod claude_idle;
 pub mod claude_switch;
 pub mod inline;
+pub mod reset_credit;

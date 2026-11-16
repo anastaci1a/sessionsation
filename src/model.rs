@@ -39,6 +39,29 @@ pub struct Usage {
     pub spend_control_reached: Option<bool>,
     #[serde(default)]
     pub ordinary_usage_allowed: Option<bool>,
+    /// Codex rate-limit reset credits (contract 1.53.0); null when the app-server
+    /// did not report them.
+    #[serde(default)]
+    pub reset_credits: Option<ResetCredits>,
+}
+/// Stored Codex rate-limit reset credits, from `account/rateLimits/read`
+/// `rateLimitResetCredits` (contract 1.53.0).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResetCredits {
+    pub available: u64,
+    pub observed_at: i64,
+    /// Detail rows when the backend sent them (null: only the count is known; the
+    /// list can be shorter than `available`).
+    #[serde(default)]
+    pub credits: Option<Vec<ResetCredit>>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResetCredit {
+    pub id: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<i64>,
 }
 impl Usage {
     pub fn window_absent(&self, duration: u64) -> bool {

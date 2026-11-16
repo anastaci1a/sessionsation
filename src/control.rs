@@ -170,11 +170,13 @@ impl Control {
                 if value["id"] != id {
                     continue;
                 }
-                ensure!(
-                    value.get("error").is_none(),
-                    "Codex rejected {method} (code {})",
-                    value["error"]["code"]
-                );
+                if let Some(error) = value.get("error") {
+                    return Err(crate::rpc::Rejected::new(
+                        format!("Codex rejected {method} (code {})", error["code"]),
+                        error,
+                    )
+                    .into());
+                }
                 return Ok(value["result"].clone());
             }
             bail!("Codex disconnected during {method}; outcome may be unknown")

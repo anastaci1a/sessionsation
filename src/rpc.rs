@@ -19,7 +19,54 @@ use tokio::{
 };
 
 const FRAME_LIMIT: usize = 16 * 1024 * 1024;
-type Reply = oneshot::Sender<Result<Value, String>>;
+type Reply = oneshot::Sender<Result<Value, anyhow::Error>>;
+
+/// A JSON-RPC error response from an app-server. Its text is the same as before
+/// ("... (code N)"); the provider's message is never kept, since it can quote
+/// request data, only whether it says the method is unknown to this version.
+#[derive(Debug)]
+pub struct Rejected {
+    pub code: Value,
+    /// JSON-RPC "method not found" (-32601), or an invalid request (-32600) whose
+    /// message says the method is an unknown variant or needs an experimental opt-in.
+    pub unknown_method: bool,
+    text: String,
+}
+impl Rejected {
+    pub fn new(text: String, error: &Value) -> Self {
+        let message = error["message"].as_str().unwrap_or_default();
+        let unknown_method = match error["code"].as_i64() {
+            Some(-32601) => true,
+            Some(-32600) => {
+                message.contains("unknown variant")
+                    || message.contains("experimentalApi")
+                    || message.contains("method not found")
+            }
+            _ => false,
+        };
+        Self {
+            code: error["code"].clone(),
+            unknown_method,
+            text,
+        }
+    }
+}
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+impl std::error::Error for Rejected {}
+/// True when `error` is an app-server reply saying it does not know the method.
+pub fn unknown_method(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<Rejected>()
+        .is_some_and(|r| r.unknown_method)
+}
+/// True when `error` is an app-server error reply (the request was answered).
+pub fn rejected(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<Rejected>().is_some()
+}
 #[derive(Clone)]
 pub struct Rpc {
     input: mpsc::Sender<Option<Value>>,
@@ -86,10 +133,13 @@ impl Rpc {
                     if let Some(id) = line["id"].as_u64() {
                         if let Some(reply) = p.lock().await.remove(&id) {
                             let result = if line.get("error").is_some() {
-                                Err(format!(
-                                    "app-server rejected request (code {})",
-                                    line["error"]["code"]
-                                ))
+                                Err(anyhow::Error::new(Rejected::new(
+                                    format!(
+                                        "app-server rejected request (code {})",
+                                        line["error"]["code"]
+                                    ),
+                                    &line["error"],
+                                )))
                             } else {
                                 Ok(line["result"].clone())
                             };
@@ -101,9 +151,9 @@ impl Rpc {
                 let _ = e.send(line);
             }
             for (_, reply) in p.lock().await.drain() {
-                let _ = reply.send(Err(
-                    "app-server disconnected; request outcome may be unknown".into(),
-                ));
+                let _ = reply.send(Err(anyhow!(
+                    "app-server disconnected; request outcome may be unknown"
+                )));
             }
             let _ = e.send(json!({"method":"switcher/disconnected"}));
         });
@@ -139,6 +189,24 @@ impl Rpc {
         if let Some(control) = &self.shared {
             return control.lock().await.request(method, params).await;
         }
+        self.request_timeout(method, params, Duration::from_secs(30))
+            .await
+    }
+    /// [`Rpc::request`] with an explicit timeout, also on a shared app-server
+    /// (whose default control timeout is 3 s).
+    pub async fn request_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
+        if let Some(control) = &self.shared {
+            return control
+                .lock()
+                .await
+                .request_timeout(method, params, timeout)
+                .await;
+        }
         let id = self.sequence.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
@@ -150,11 +218,11 @@ impl Rpc {
             self.pending.lock().await.remove(&id);
             bail!("app-server input closed");
         }
-        let result = tokio::time::timeout(Duration::from_secs(30), rx).await;
+        let result = tokio::time::timeout(timeout, rx).await;
         self.pending.lock().await.remove(&id);
         match result {
             Ok(Ok(Ok(value))) => Ok(value),
-            Ok(Ok(Err(error))) => Err(anyhow!(error)),
+            Ok(Ok(Err(error))) => Err(error),
             _ => bail!("app-server request timed out or disconnected; outcome may be unknown"),
         }
     }

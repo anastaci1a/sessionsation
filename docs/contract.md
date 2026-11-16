@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.52.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.53.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3721,3 +3721,55 @@ Capability: `pane_reuse` (`since_contract` `1.52.0`, `order: ["recorded_pane_if_
 "same_name_single_pane_idle_tab_in_space", "new_tab"]`, `setting: "reuse_idle_tabs"`, `built_in_default`,
 `receipt_field: "pane_reused"`, `rechecked_before_typing: true`). The deprecated `auto_recover` capability adds
 `same_name_tab_reuse`.
+
+### Codex rate-limit reset credits (1.53.0)
+
+MINOR (additive). Codex accounts can earn rate-limit reset credits. Sessionsation shows how many are stored and
+can spend one.
+
+```sh
+sessionsation api account reset-credit codex:NAME [--credit-id ID] [--request-id UUID]
+# or: sessionsation api account reset-credit --account codex:NAME ...
+```
+
+- **What it does.** Sends `account/rateLimitResetCredit/consume` (`{creditId, idempotencyKey}`) to the account's
+  app-server through the supervisor: the supervisor's own worker for that account, or the account's shared
+  app-server when one runs (never a second one). Without `--credit-id` the backend picks the next available
+  credit. **Spending a credit is not reversible.** It is never sent on its own: only this command sends it.
+- **Result.** `{account_id, request_id, outcome, rate_limits_after, attempts, operation}`. `outcome` is the
+  backend's answer, each one `ok:true`: `reset` (a credit was spent and the eligible windows were reset),
+  `nothingToReset` (no current window can be reset; nothing spent), `noCredit` (no credit available) or
+  `alreadyRedeemed` (this request id already completed a reset). After `reset` and `alreadyRedeemed` the
+  supervisor reads the rate limits again and updates its cached usage at once, so `api account limits`,
+  `api account list`, `api account usage` and `api state` show the reset without waiting for the next poll;
+  `rate_limits_after` is that account usage object, else `null`.
+- **Idempotency.** `--request-id` (a lowercase UUID; generated when omitted and returned) is the backend
+  `idempotencyKey`. It is journaled in `operations/account-reset-credits/<request_id>.json` (phase
+  `requesting`) **before** the request is sent, then ends `complete` (with `outcome`), `failed` (the
+  app-server answered with an error) or `uncertain` (no answer). Retrying with the same `--request-id` sends
+  the same key (`attempts` counts the sends), so it can never spend a second credit; the backend answers
+  `alreadyRedeemed` when the first attempt succeeded. Sessionsation never retries on its own and never with a
+  new key. The same request id for another account or another `--credit-id` is `REQUEST_ID_CONFLICT`. The
+  records are listed by `api operations` (`kind: "account_reset_credit"`) and are not pruned by retention.
+- **Locking.** The account's operation lock is held for the whole request, so it cannot race a backend rename,
+  removal or archive (`ACCOUNT_BUSY`, nothing sent). It is also `ACCOUNT_BUSY` while a direct Codex terminal
+  holds the account without a shared app-server (the case where account monitoring pauses).
+- **Errors.** Other providers: `UNSUPPORTED_PROVIDER_OPERATION`. A codex whose app-server does not know the
+  method (JSON-RPC method not found, or an invalid request naming an unknown method):
+  `UNSUPPORTED_PROVIDER_OPERATION` with a message naming the codex version (no credit spent). Any other
+  error answer: `RESET_CREDIT_FAILED`; no answer (timeout or disconnect): `RESET_CREDIT_OUTCOME_UNKNOWN`. Both
+  messages give the request id to retry with. Also `INVALID_REQUEST_ID`, `AUTH_REQUIRED`,
+  `ACCOUNT_DELETION_IN_PROGRESS`, `ACCOUNT_REMOVED`. The provider's error text is never echoed.
+- **Stored credits.** A Codex account's `usage` object (account rows of `api account list`, `api state`,
+  `api account limits`) gains `reset_credits`: `{available, observed_at, credits}` from the app-server's
+  `rateLimitResetCredits` (`available` is its `availableCount`; `credits` is `null` or `[{id, status,
+  expires_at}]`, possibly shorter than `available`), or `null` when the app-server did not report it. `api
+  account usage` (history) has the same `reset_credits` at the top level. The field is optional: older
+  records read as `null`.
+- **Codex.** The method is in Codex app-server 0.165.0. Sessionsation's app-server connections already
+  initialize with `capabilities.experimentalApi: true`; no other opt-in is sent.
+
+Capability: `account_reset_credit` (`since_contract` `1.53.0`, `providers: ["codex"]`,
+`method: "account/rateLimitResetCredit/consume"`, `idempotent_by: "request_id"`, `outcomes: ["reset",
+"nothingToReset", "noCredit", "alreadyRedeemed"]`, `auto_retry: false`, `reversible: false`, `journal`,
+`usage_field`, `errors`).

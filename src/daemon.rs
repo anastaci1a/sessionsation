@@ -60,6 +60,7 @@ pub fn parse_usage(value: &Value, at: i64) -> Result<Usage> {
         reached_type: limits["rateLimitReachedType"].as_str().map(str::to_owned),
         spend_control_reached: limits["spendControlReached"].as_bool(),
         ordinary_usage_allowed: value["ordinaryUsageAllowed"].as_bool(),
+        reset_credits: crate::reset_credit::parse_summary(&value["rateLimitResetCredits"], at),
         ..Default::default()
     };
     if let Some(raw) = limits["credits"].as_object() {
@@ -760,6 +761,61 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             }
                             Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"auth_required":problem.is_some(),"auth_detail":problem,"auth_mode":mode,"observed_at":now()}))
                         }
+                        "account/reset-credit" => {
+                            // Contract 1.53.0: spend one stored rate-limit reset credit. Journaled
+                            // before the request; the request id is the idempotency key; never
+                            // retried here, and never with a new key.
+                            let account = codex_named(&state,params)?;
+                            let (name, key) = (account.name.clone(), account.key());
+                            ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
+                            ensure!(!account.auth_required,"AUTH_REQUIRED: log in to codex:{name} before redeeming a reset credit");
+                            let request_id = params["request_id"].as_str().context("INVALID_REQUEST_ID: request_id is required")?.to_owned();
+                            crate::reset_credit::validate_request_id(&request_id)?;
+                            let credit_id = params["credit_id"].as_str().map(str::to_owned);
+                            let _lock = crate::accounts::operation_lock(&paths,ProviderId::Codex,&name)?;
+                            if let Some(reason) = monitoring_pause_reason(&paths,&name) {
+                                bail!("ACCOUNT_BUSY: a Codex terminal holds codex:{name} without a shared app-server ({reason}); nothing was sent");
+                            }
+                            let account_id = format!("codex:{name}");
+                            let mut record = crate::reset_credit::admit(&paths,&account_id,credit_id.as_deref(),&request_id,&version)?;
+                            if let Some(helper) = helpers.get(&name) && !helper.is_alive().await { helpers.remove(&name); }
+                            if !helpers.contains_key(&name) {
+                                // Adopts the account's shared app-server when it runs (Rpc::spawn).
+                                match Rpc::spawn(&config.codex_binary,&paths.account(&name)?,&paths.root).await {
+                                    Ok(rpc) => {helpers.insert(name.clone(),rpc);}
+                                    Err(e) => {
+                                        crate::reset_credit::finish(&paths,&mut record,"failed",None,"the account app-server could not start; nothing was sent")?;
+                                        bail!("RESET_CREDIT_FAILED: the codex:{name} app-server could not start ({e}); nothing was sent");
+                                    }
+                                }
+                            }
+                            let rpc = helpers[&name].clone();
+                            let sent = rpc.request_timeout(crate::reset_credit::METHOD,json!({"creditId":credit_id,"idempotencyKey":request_id}),Duration::from_secs(30)).await
+                                .and_then(|v| crate::reset_credit::parse_outcome(&v));
+                            let outcome = match sent {
+                                Ok(outcome) => outcome,
+                                Err(e) => {
+                                    let (phase, message) = crate::reset_credit::failure(&e,&version,&request_id);
+                                    crate::reset_credit::finish(&paths,&mut record,phase,None,&message)?;
+                                    bail!("{message}");
+                                }
+                            };
+                            crate::reset_credit::finish(&paths,&mut record,"complete",Some(&outcome),&format!("app-server answered {outcome}"))?;
+                            let mut refreshed = false;
+                            if matches!(outcome.as_str(),"reset"|"alreadyRedeemed") {
+                                // Update the cached usage now, so usage, list and state show the reset.
+                                if let Ok(usage) = rpc.request("account/rateLimits/read",json!({})).await.and_then(|v| parse_usage(&v,now())) {
+                                    if let Some(a) = state.accounts.get_mut(&key) { a.observe(usage); refreshed = true; }
+                                    last_poll.insert(name.clone(),now());
+                                }
+                            }
+                            store.save(&state,now(),"account.reset_credit",&name)?;
+                            let after = if refreshed {
+                                state.accounts.get(&key).map(|a| account_usage(&paths,a,&config,now()).0).unwrap_or(Value::Null)
+                            } else { Value::Null };
+                            Ok(json!({"account_id":account_id,"request_id":request_id,"outcome":outcome,"rate_limits_after":after,
+                                "attempts":record.attempts,"operation":crate::reset_credit::public(&record)}))
+                        }
                         "account/rename" => {
                             let account = named(&state,params)?;
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
@@ -1136,6 +1192,34 @@ mod tests {
         ));
     }
     use super::*;
+    #[test]
+    fn usage_carries_reset_credits_only_when_reported() {
+        let limits = json!({"limitId":"codex","primary":{"usedPercent":5,"windowDurationMins":300,"resetsAt":10}});
+        let plain = parse_usage(&json!({"rateLimits":limits}), 3).unwrap();
+        assert!(plain.reset_credits.is_none());
+        let mut a = Account::new("cx".into(), "fixture".into());
+        a.usage = plain;
+        let paths = Paths::new(Some(tempfile::tempdir().unwrap().keep().join("s"))).unwrap();
+        let (usage, _, _) = account_usage(&paths, &a, &Config::default(), 5);
+        assert!(usage["reset_credits"].is_null());
+        let with = parse_usage(
+            &json!({"rateLimits":limits,"rateLimitResetCredits":{"availableCount":4}}),
+            3,
+        )
+        .unwrap();
+        a.usage = with;
+        let (usage, _, _) = account_usage(&paths, &a, &Config::default(), 5);
+        assert_eq!(
+            usage["reset_credits"],
+            json!({"available":4,"observed_at":3,"credits":null})
+        );
+        // Older stored usage without the field still loads.
+        let old: Usage = serde_json::from_value(
+            json!({"short":null,"weekly":null,"observed_at":1,"exhausted":false}),
+        )
+        .unwrap();
+        assert!(old.reset_credits.is_none());
+    }
     #[test]
     fn unobserved_usage_reports_null_observed_at_never_zero() {
         let tmp = tempfile::tempdir().unwrap();
