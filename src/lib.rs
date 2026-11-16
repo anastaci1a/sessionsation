@@ -36,6 +36,8 @@ pub mod usage_history;
 
 mod terminal;
 
+pub mod pane_reuse;
+
 pub mod launch;
 pub mod layout;
 pub mod login;

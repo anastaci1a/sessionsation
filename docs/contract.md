@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.51.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.52.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3666,3 +3666,42 @@ Capability: `session_spaces.from_component` keeps `since_contract` `1.50.0` and 
 `from_name: "<component>"`, `collision_fallback: "sessionsation:<component>"`,
 `changed_in: {"contract":"1.51.0",...}`, a `collision_rule` object and
 `prefixed_fact: {"field":"from_component_prefixed","value":"collides_with_session"}`.
+
+### Idle-tab reuse for starts and resumes (1.52.0)
+
+MINOR (additive). A HERDR start or resume into an existing Space no longer always opens a new tab. Before it
+creates one, it picks a pane in this order:
+
+1. **The session's recorded pane** (resumes only): the catalog attachment, else the pane auto-start last saw
+   the session in (`auto_recover.last_pane`). It must still exist, be in the destination Space, and be
+   reusable: the foreground process group is the shell and a single idle shell (`bash`, `sh`, `zsh`, `fish`)
+   is all that runs in it (the test auto-recover has used since 1.35.0).
+2. **A same-named tab in the destination Space.** Its label equals, case-sensitively, the label a new tab
+   would get (the bare session name, or the requested name); it has exactly one pane; that pane is reusable
+   by the same test; and it is not the recorded attachment of any other catalog session. Several qualify:
+   the first in HERDR's tab order.
+3. **Otherwise a new tab**, as before.
+
+- **Paths.** `api launch start` (and the one-pass `session launch`), `api resume-launch start`, `api resume
+  --space/--new-space` when the Space exists, and auto-start (which keeps its recorded-pane-first rule and now
+  tries step 2 before opening a new tab in the old workspace). A new Space uses its own first shell, as before.
+  `session add-to-herdr` (which attaches a running session) is unchanged.
+- **Same command.** A reused pane gets exactly the command a new tab would get (`cd -- <directory> && ...`, the
+  same environment, including `SESSIONSATION_LAUNCHER_BYPASS=1`); no other keys are sent and the screen is not
+  cleared. A reused recorded pane's tab is renamed to the new tab's label; a same-named tab already has it.
+- **Re-check.** Right before the command is typed the pane is tested again; if it is no longer reusable, it is
+  left alone and a new tab is opened instead. Picked panes are claimed for two minutes
+  (`registry/pane-claims.json`) so two concurrent starts never pick the same one. Any uncertainty (a HERDR
+  without `tab list`, an unreadable catalog) means a new tab.
+- **Receipts.** The launch receipt and the resume-launch receipt gain `pane_reused: true` and the `api resume`
+  result gains `pane_reused: true` with `detail` (`"Reused an idle tab with the same name."` or
+  `"Reused the session's previous pane (an idle shell)."`); receipts also carry that `detail` until the
+  launch reports progress in it. The field is omitted when false, so older binaries read the records.
+  Auto-start operations keep `resume.pane_reused`, now also true for a same-named tab.
+- **Setting.** `reuse_idle_tabs` in `config.json` (boolean, default `true`). `false` restores the pre-1.52.0
+  behaviour (auto-start keeps its recorded-pane reuse).
+
+Capability: `pane_reuse` (`since_contract` `1.52.0`, `order: ["recorded_pane_if_idle_shell",
+"same_name_single_pane_idle_tab_in_space", "new_tab"]`, `setting: "reuse_idle_tabs"`, `built_in_default`,
+`receipt_field: "pane_reused"`, `rechecked_before_typing: true`). The deprecated `auto_recover` capability adds
+`same_name_tab_reuse`.

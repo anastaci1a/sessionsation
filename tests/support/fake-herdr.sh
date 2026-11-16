@@ -46,9 +46,31 @@ case "$1 $2" in
   "tab rename")
     printf '%s\n' "$4" > "$dir/renamed-$3"
     printf '%s\n' '{"result":{}}' ;;
+  "tab list")
+    # Opt-in (file tab-list): tabs w1:tN from label-w1:pN (a tab rename wins), in tab
+    # order; extra-pane-w1:tN names a second pane in that tab. Otherwise unsupported,
+    # like an older HERDR.
+    [ -f "$dir/tab-list" ] || { printf '%s\n' '{"error":{"code":"unsupported_fake_command"}}'; exit 1; }
+    out=''
+    for n in $(ls "$dir" | sed -n 's/^label-w1:p\([0-9]*\)$/\1/p' | sort -n); do
+      [ -f "$dir/closed-w1:p$n" ] && continue
+      label=$(cat "$dir/label-w1:p$n")
+      [ -f "$dir/renamed-w1:t$n" ] && label=$(cat "$dir/renamed-w1:t$n")
+      count=1; [ -f "$dir/extra-pane-w1:t$n" ] && count=2
+      out="$out{\"tab_id\":\"w1:t$n\",\"workspace_id\":\"w1\",\"label\":\"$label\",\"pane_count\":$count},"
+    done
+    printf '{"result":{"tabs":[%s]}}\n' "${out%,}" ;;
   "pane process-info")
     pane=$4
     if [ -f "$dir/closed-$pane" ]; then printf '%s\n' '{"error":{"code":"pane_not_found"}}'; exit 1; fi
+    # busy-after-<pane> N: idle for the first N queries, then busy (a race).
+    if [ -f "$dir/busy-after-$pane" ]; then
+      seen=0; [ -f "$dir/queries-$pane" ] && seen=$(cat "$dir/queries-$pane")
+      seen=$((seen + 1)); printf '%s\n' "$seen" > "$dir/queries-$pane"
+      [ "$seen" -gt "$(cat "$dir/busy-after-$pane")" ] && : > "$dir/busy-$pane"
+    fi
+    # fg-group-<pane>: another process group owns the terminal (the shell is still listed).
+    if [ -f "$dir/fg-group-$pane" ]; then printf '{"result":{"process_info":{"shell_pid":1,"foreground_process_group_id":%s,"foreground_processes":[{"pid":1,"name":"sh"}]}}}\n' "$(cat "$dir/fg-group-$pane")"; exit 0; fi
     if [ -f "$dir/busy-$pane" ]; then printf '%s\n' '{"result":{"process_info":{"shell_pid":1,"foreground_processes":[{"pid":4242,"name":"vim"}]}}}'; exit 0; fi
     if [ -f "$dir/missing-$pane" ]; then printf '%s\n' '{"error":{"code":"pane_not_found"}}'; exit 1; fi
     if alive "$pane"; then
@@ -75,6 +97,19 @@ case "$1 $2" in
       p=${f##*/pid-}; n=${p#*:p}
       out="$out{\"pane_id\":\"$p\",\"tab_id\":\"${p%%:*}:t$n\"},"
     done
+    if [ -f "$dir/tab-list" ]; then
+      # With tabs listed: every tab's pane (with or without a run), and extra panes.
+      for f in "$dir"/label-*; do
+        [ -e "$f" ] || continue
+        p=${f##*/label-}; n=${p#*:p}
+        [ -f "$dir/pid-$p" ] || [ -f "$dir/closed-$p" ] && continue
+        out="$out{\"pane_id\":\"$p\",\"tab_id\":\"${p%%:*}:t$n\",\"workspace_id\":\"${p%%:*}\"},"
+      done
+      for f in "$dir"/extra-pane-*; do
+        [ -e "$f" ] || continue
+        out="$out{\"pane_id\":\"$(cat "$f")\",\"tab_id\":\"${f##*/extra-pane-}\"},"
+      done
+    fi
     printf '{"result":{"panes":[%s]}}\n' "${out%,}" ;;
   "pane run")
     pane=$3

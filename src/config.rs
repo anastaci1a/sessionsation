@@ -70,6 +70,10 @@ pub struct Config {
     /// the native-message worker register a sender entry; native frames now carry a sender envelope in
     /// their content instead, always, so Claude renders the collapsed `@name` row without it.
     pub native_sender_registration: bool,
+    /// Contract 1.52.0: a HERDR start or resume into an existing Space first reuses an idle
+    /// pane (the session's recorded pane, then a same-named single-pane tab) instead of
+    /// opening a new tab. Off: always a new tab, as before 1.52.0.
+    pub reuse_idle_tabs: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -103,6 +107,7 @@ impl Default for Config {
             cache_retention_days: 14,
             operation_retention_days: 90,
             native_sender_registration: false,
+            reuse_idle_tabs: true,
         }
     }
 }
@@ -249,6 +254,18 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Config::default()).unwrap()["launch_permissions"],
             "yolo"
+        );
+    }
+    #[test]
+    fn reuse_idle_tabs_defaults_on_and_is_a_strict_boolean() {
+        assert!(Config::default().reuse_idle_tabs);
+        let legacy: Config = serde_json::from_str("{}").unwrap();
+        assert!(legacy.reuse_idle_tabs);
+        let off: Config =
+            serde_json::from_value(serde_json::json!({"reuse_idle_tabs":false})).unwrap();
+        assert!(!off.reuse_idle_tabs);
+        assert!(
+            serde_json::from_value::<Config>(serde_json::json!({"reuse_idle_tabs":"no"})).is_err()
         );
     }
 }

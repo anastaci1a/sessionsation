@@ -105,6 +105,10 @@ pub struct Receipt {
     pub space_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline: Option<crate::inline::Info>,
+    /// Contract 1.52.0: the launch runs in an existing idle pane (a same-named tab)
+    /// instead of a new tab; `detail` says which. Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pane_reused: bool,
 }
 fn validate_id(id: &str) -> Result<()> {
     ensure!(uuid::Uuid::parse_str(id).is_ok(), "INVALID_REQUEST_ID");
@@ -543,6 +547,7 @@ pub(crate) async fn admit(paths: &Paths, mut r: Request, validate_only: bool) ->
         updated_at: daemon::now(),
         inline: None,
         space_label: label,
+        pane_reused: false,
     };
     save(paths, &mut receipt)?;
     let spawned =
@@ -612,48 +617,58 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
         r.phase = "creating_terminal".into();
         Ok(())
     })?;
-    let created = create_terminal(&r.host, &r.space, &r.directory.path, &r.name).await?;
-    let pane = created["root_pane"]["pane_id"]
-        .as_str()
-        .context("HOST_PANE_ID_MISSING")?
-        .to_owned();
-    let tab = created["tab"]["tab_id"]
-        .as_str()
-        .context("HOST_TAB_ID_MISSING")?
-        .to_owned();
-    let workspace = created["tab"]["workspace_id"]
-        .as_str()
-        .or_else(|| created["workspace"]["workspace_id"].as_str())
-        .context("HOST_WORKSPACE_ID_MISSING")?
-        .to_owned();
-    if let Space::Existing { id } = &r.space {
-        ensure!(*id == workspace, "HOST_WRONG_WORKSPACE");
-    }
-    change(paths, id, |r| {
-        r.workspace_id = Some(workspace.clone());
-        r.tab_id = Some(tab.clone());
-        r.pane_id = Some(pane.clone());
-        Ok(())
-    })?;
+    // Contract 1.52.0: a same-named idle tab in the Space before a new one.
+    let terminal = open_terminal(
+        paths,
+        &r.host,
+        &r.space,
+        &r.directory.path,
+        &r.name,
+        None,
+        id,
+    )
+    .await?;
+    let record = |t: &Terminal| {
+        change(paths, id, |r| {
+            r.workspace_id = Some(t.workspace.clone());
+            r.tab_id = Some(t.tab.clone());
+            r.pane_id = Some(t.pane.clone());
+            r.pane_reused = t.reused.is_some();
+            r.detail = t.reused.as_ref().map(|x| x.detail().to_owned());
+            Ok(())
+        })
+    };
+    record(&terminal)?;
     if matches!(r.space, Space::New { .. }) {
-        host_call(&r.host, &["tab", "rename", &tab, &r.name]).await?;
+        host_call(&r.host, &["tab", "rename", &terminal.tab, &r.name]).await?;
     }
-    // Wait for the newly created shell only, never inspect/control an existing pane.
-    let mut ready = false;
-    for _ in 0..50 {
-        let info = host_call(&r.host, &["pane", "process-info", "--pane", &pane]).await?;
-        let i = &info["process_info"];
-        if i["foreground_processes"].as_array().is_some_and(|p| {
-            p.len() == 1
-                && p[0]["pid"] == i["shell_pid"]
-                && matches!(p[0]["name"].as_str(), Some("bash" | "sh" | "zsh" | "fish"))
-        }) {
-            ready = true;
-            break;
+    // Wait for the chosen shell only (a new tab, or an idle pane picked for reuse).
+    let ready = |pane: String| async move {
+        for _ in 0..50 {
+            let info = host_call(&r.host, &["pane", "process-info", "--pane", &pane]).await?;
+            let i = &info["process_info"];
+            if i["foreground_processes"].as_array().is_some_and(|p| {
+                p.len() == 1
+                    && p[0]["pid"] == i["shell_pid"]
+                    && matches!(p[0]["name"].as_str(), Some("bash" | "sh" | "zsh" | "fish"))
+            }) {
+                return Ok(pane);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        anyhow::bail!("NEW_TERMINAL_NOT_READY")
+    };
+    // A reused pane was just seen idle; the re-check below is right before typing.
+    let mut pane = terminal.pane.clone();
+    if terminal.reused.is_none() {
+        pane = ready(pane).await?;
     }
-    ensure!(ready, "NEW_TERMINAL_NOT_READY");
+    // Re-checked right before typing: a reused pane that stopped being an idle shell
+    // is left alone and a new tab opened instead.
+    if let Some(fresh) = recheck(&r.host, &r.space, &r.directory.path, &r.name, &terminal).await? {
+        record(&fresh)?;
+        pane = ready(fresh.pane.clone()).await?;
+    }
     let quote = crate::terminal::shell_quote;
     let exe = std::env::current_exe()?;
     let command = format!(
@@ -986,6 +1001,87 @@ pub(crate) fn launch_observed(paths: &Paths, s: &catalog::Session) -> bool {
     }
 }
 
+/// The terminal a start or resume runs in: a new tab (or new Space's shell), or an idle
+/// pane picked for reuse (contract 1.52.0).
+pub(crate) struct Terminal {
+    pub pane: String,
+    pub tab: String,
+    pub workspace: String,
+    pub reused: Option<crate::pane_reuse::Reuse>,
+}
+pub(crate) fn herdr(host: &Host) -> crate::pane_reuse::Herdr<'_> {
+    crate::pane_reuse::Herdr {
+        session: &host.session,
+        socket: Some(&host.socket),
+    }
+}
+/// An idle pane in an existing Space (see `pane_reuse`: the resumed `session`'s recorded
+/// pane, then a same-named single-pane tab), claimed for `owner`; else a new terminal.
+pub(crate) async fn open_terminal(
+    paths: &Paths,
+    host: &Host,
+    space: &Space,
+    directory: &Path,
+    name: &str,
+    session: Option<&str>,
+    owner: &str,
+) -> Result<Terminal> {
+    if let Space::Existing { id } = space
+        && let Some(reuse) = crate::pane_reuse::find(paths, &herdr(host), id, name, session, owner)
+        && let Some(tab) = reuse.tab.clone()
+    {
+        crate::pane_reuse::label(&herdr(host), &reuse, name);
+        return Ok(Terminal {
+            pane: reuse.pane.clone(),
+            tab,
+            workspace: reuse.workspace.clone(),
+            reused: Some(reuse),
+        });
+    }
+    new_terminal(host, space, directory, name).await
+}
+pub(crate) async fn new_terminal(
+    host: &Host,
+    space: &Space,
+    directory: &Path,
+    name: &str,
+) -> Result<Terminal> {
+    let created = create_terminal(host, space, directory, name).await?;
+    let text = |v: &Value, code: &'static str| v.as_str().map(str::to_owned).context(code);
+    let pane = text(&created["root_pane"]["pane_id"], "HOST_PANE_ID_MISSING")?;
+    let tab = text(&created["tab"]["tab_id"], "HOST_TAB_ID_MISSING")?;
+    let workspace =
+        text(&created["tab"]["workspace_id"], "HOST_WORKSPACE_ID_MISSING").or_else(|_| {
+            text(
+                &created["workspace"]["workspace_id"],
+                "HOST_WORKSPACE_ID_MISSING",
+            )
+        })?;
+    if let Space::Existing { id } = space {
+        ensure!(*id == workspace, "HOST_WRONG_WORKSPACE");
+    }
+    Ok(Terminal {
+        pane,
+        tab,
+        workspace,
+        reused: None,
+    })
+}
+/// Right before typing: a reused pane that is no longer an idle shell (the same test as
+/// at selection) is left alone and replaced by a new terminal. `None`: keep `terminal`.
+pub(crate) async fn recheck(
+    host: &Host,
+    space: &Space,
+    directory: &Path,
+    name: &str,
+    terminal: &Terminal,
+) -> Result<Option<Terminal>> {
+    if terminal.reused.is_none() || crate::pane_reuse::pane_idle(&herdr(host), &terminal.pane) {
+        return Ok(None);
+    }
+    Ok(Some(new_terminal(host, space, directory, name).await?))
+}
+
 pub(crate) async fn create_terminal(
     host: &Host,
     space: &Space,
@@ -1037,6 +1133,28 @@ pub(crate) async fn create_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pane_reused_defaults_false_and_is_omitted_while_false() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/contract/fixtures.json")).unwrap();
+        let mut receipt: Receipt =
+            serde_json::from_value(fixtures["launch_receipt"].clone()).unwrap();
+        assert!(!receipt.pane_reused);
+        assert!(
+            serde_json::to_value(&receipt)
+                .unwrap()
+                .get("pane_reused")
+                .is_none()
+        );
+        receipt.pane_reused = true;
+        let stored = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(stored["pane_reused"], true);
+        assert!(
+            serde_json::from_value::<Receipt>(stored)
+                .unwrap()
+                .pane_reused
+        );
+    }
     #[test]
     fn legacy_creation_time_stays_unknown_and_admission_time_is_immutable() {
         let fixtures: serde_json::Value =

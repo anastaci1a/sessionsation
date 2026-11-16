@@ -722,6 +722,21 @@ field it supplied is reported as `facts.from_component_ignored: "caller_is_sessi
 as before. Details: [contract](contract.md#named-outside-session-senders-from_component-1500) and
 [bare component sender names](contract.md#bare-component-sender-names-1510).
 
+## Idle tabs are reused (contract 1.52.0)
+
+Starting or resuming a session into an existing HERDR Space (popup Start/Resume, `api resume --space`,
+auto-start) first looks for a pane it can reuse instead of opening another tab: the session's own previous pane
+(resumes), else a tab with exactly the same name that has a single pane sitting at an idle shell prompt and is no
+other session's pane. The command runs there exactly as in a new tab; nothing else is typed and the old output
+stays. A pane that starts running something before the command goes in is left alone and a new tab opens.
+Receipts say `pane_reused: true`. To always open a new tab:
+
+```sh
+sessionsation config set reuse_idle_tabs false
+```
+
+Details: [contract](contract.md#idle-tab-reuse-for-starts-and-resumes-1520).
+
 ## Explicit in-turn steering
 
 For a deliberate message to a busy turn, use `api steer-target --session ID --expected-generation GENERATION`, then `api send` with `mode:"steer"` and the

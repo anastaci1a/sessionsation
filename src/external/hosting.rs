@@ -405,30 +405,55 @@ async fn launch_inner(
             }
         }
     };
-    let created = match existing.as_deref() {
-        Some(space) => {
-            let created = call(
-                session,
-                &[
-                    "tab",
-                    "create",
-                    "--workspace",
-                    space,
-                    "--cwd",
-                    dir,
-                    "--label",
-                    placement.label.unwrap_or("sessionsation"),
-                    "--env",
-                    "SESSIONSATION_LAUNCHER_BYPASS=1",
-                    "--no-focus",
-                ],
-            )?;
-            if let Some(actual) = created["tab"]["workspace_id"].as_str() {
-                ensure!(actual == space, "HOST_WRONG_WORKSPACE");
-            }
-            created
+    let tab_label = placement.label.unwrap_or("sessionsation");
+    let new_tab = |space: &str| -> Result<String> {
+        let created = call(
+            session,
+            &[
+                "tab",
+                "create",
+                "--workspace",
+                space,
+                "--cwd",
+                dir,
+                "--label",
+                tab_label,
+                "--env",
+                "SESSIONSATION_LAUNCHER_BYPASS=1",
+                "--no-focus",
+            ],
+        )?;
+        if let Some(actual) = created["tab"]["workspace_id"].as_str() {
+            ensure!(actual == space, "HOST_WRONG_WORKSPACE");
         }
-        None => {
+        Ok(created["root_pane"]["pane_id"]
+            .as_str()
+            .context("HERDR pane ID missing")?
+            .to_owned())
+    };
+    // Contract 1.52.0: an idle pane in the destination Space before a new tab.
+    let herdr = crate::pane_reuse::Herdr {
+        session,
+        socket: None,
+    };
+    let owner = uuid::Uuid::new_v4().to_string();
+    let mut reused = existing.as_deref().and_then(|space| {
+        crate::pane_reuse::find(
+            paths,
+            &herdr,
+            space,
+            tab_label,
+            expected.map(|(id, _)| id),
+            &owner,
+        )
+    });
+    let pane = match (existing.as_deref(), &reused) {
+        (_, Some(r)) => {
+            crate::pane_reuse::label(&herdr, r, tab_label);
+            r.pane.clone()
+        }
+        (Some(space), None) => new_tab(space)?,
+        (None, None) => {
             if let Some(label) = placement.new_space {
                 crate::paths::validate_space_label(label)?;
             }
@@ -452,22 +477,26 @@ async fn launch_inner(
                 // Naming the tab is presentation only; the launch does not depend on it.
                 let _ = call(session, &["tab", "rename", tab, label]);
             }
-            created
+            created["root_pane"]["pane_id"]
+                .as_str()
+                .context("HERDR pane ID missing")?
+                .to_owned()
         }
     };
-    let pane = created["root_pane"]["pane_id"]
-        .as_str()
-        .context("HERDR pane ID missing")?;
-    let key = herdr_target(session, pane)?;
-    let mut ready = false;
-    for _ in 0..50 {
-        if state(paths, &key).is_ok_and(|(idle, _)| idle) {
-            ready = true;
-            break;
+    let ready = |key: String| async move {
+        for _ in 0..50 {
+            if state(paths, &key).is_ok_and(|(idle, _)| idle) {
+                return Ok(key);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        bail!("HERDR_SHELL_UNAVAILABLE: {key}")
+    };
+    // A reused pane was just seen idle; the re-check below is right before typing.
+    let mut key = herdr_target(session, &pane)?;
+    if reused.is_none() {
+        key = ready(key).await?;
     }
-    ensure!(ready, "HERDR_SHELL_UNAVAILABLE: {key}");
     let exe = std::env::current_exe()?;
     let mut args = vec![
         exe.to_string_lossy().into_owned(),
@@ -495,8 +524,10 @@ async fn launch_inner(
         args.push("--".into());
         args.extend_from_slice(options);
     }
+    // The launcher bypass is the new tab's own environment; set here too so a
+    // reused shell runs the command exactly as a new tab would.
     let command = format!(
-        "cd -- {} && env -u TMUX -u TMUX_PANE SESSIONSATION_HERDR_SESSION={} {}",
+        "cd -- {} && env -u TMUX -u TMUX_PANE SESSIONSATION_LAUNCHER_BYPASS=1 SESSIONSATION_HERDR_SESSION={} {}",
         shell_quote(&cwd.to_string_lossy()),
         shell_quote(session),
         args.iter()
@@ -504,13 +535,30 @@ async fn launch_inner(
             .collect::<Vec<_>>()
             .join(" ")
     );
+    // Re-check a reused pane right before typing; a pane that stopped being an idle
+    // shell gets a new tab instead.
+    if let Some(r) = &reused
+        && !crate::pane_reuse::pane_idle(&herdr, &r.pane)
+    {
+        let space = r.workspace.clone();
+        reused = None;
+        key = ready(herdr_target(session, &new_tab(&space)?)?).await?;
+    }
+    let (_, pane) = crate::terminal::target(&key)?;
     call(session, &["pane", "run", pane, &command])?;
+    let mark = |mut v: Value| {
+        if let Some(r) = &reused {
+            v["pane_reused"] = json!(true);
+            v["detail"] = json!(r.detail());
+        }
+        v
+    };
     let mut busy_seen = false;
     for _ in 0..150 {
         if let Some(i) = instances(paths)?.into_iter().find(|i| i.pane == key) {
-            return Ok(
+            return Ok(mark(
                 json!({"schema_version":1,"state":"running","host":"herdr", "target":key,"account":account,"thread_id":i.thread_id,"viewer_attach":["herdr","session","attach",session]}),
-            );
+            ));
         }
         // Providers without a Codex binding record their exact process in the
         // catalog before exec; require that PID to run the expected session.
@@ -521,9 +569,9 @@ async fn launch_inner(
                 && s.attachment.as_ref().is_some_and(|a| a.target == key)
                 && crate::provider::native::launch_observed(s)
         }) {
-            return Ok(
+            return Ok(mark(
                 json!({"schema_version":1,"state":"running","host":"herdr","target":key,"account":account,"thread_id":s.conversation_id,"provider":s.provider,"viewer_attach":["herdr","session","attach",session]}),
-            );
+            ));
         }
         if placement.strict {
             if let Ok((idle, _)) = state(paths, &key) {
@@ -538,11 +586,11 @@ async fn launch_inner(
     if placement.strict {
         bail!("{}", unconfirmed_error(&key, false));
     }
-    Ok(
+    Ok(mark(
         json!({"schema_version":1,"state":"launch_unconfirmed","host":"herdr",
         "target":key,"account":account,"thread_id":thread,
         "viewer_attach":["herdr","session","attach",session]}),
-    )
+    ))
 }
 
 /// Publish one verified binding even if a previous caller died between write/rename.

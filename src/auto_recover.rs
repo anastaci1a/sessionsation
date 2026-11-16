@@ -548,6 +548,7 @@ pub fn capability() -> Value {
         "phases":["admitted","pane_ready","resuming","resumed","prompting","complete","failed","uncertain","abandoned"],
         "replays":false,"recover":"recover","abandon":"abandon-operation",
         "pane_reuse":"recorded_pane_only_if_idle_shell","fallback":["new_tab_in_workspace_by_id_and_label","new_workspace"],
+        "same_name_tab_reuse":{"since_contract":"1.52.0","before":"new_tab_in_workspace_by_id_and_label","setting":"reuse_idle_tabs"},
         "prompt_delivery":"api_send_submit_once",
         "explicit_stop_disables":["archive","delete"],"explicit_stop":"marks_only","switch_or_restart":"suppressed_until_live_again",
         "refusal_codes":["AUTO_RECOVER_UNSUPPORTED","STALE_TARGET","SESSION_OPERATION_IN_PROGRESS","INVALID_ARGUMENT","ACCOUNT_UNAVAILABLE","AMBIGUOUS_SESSION"],
@@ -759,21 +760,19 @@ pub fn pick_workspace(
         .and_then(|w| w["workspace_id"].as_str().map(str::to_owned))
 }
 /// The recorded pane may be reused only while it exists and an idle shell is all
-/// that runs in it (foreground group is the shell, a single shell process).
+/// that runs in it (foreground group is the shell, a single shell process). The
+/// same test serves manual starts and resumes (`pane_reuse`, contract 1.52.0).
 fn reusable(target: &str) -> bool {
-    let Ok((session, pane)) = terminal::target(target) else {
-        return false;
-    };
-    let Ok(info) = terminal::call(session, &["pane", "process-info", "--pane", pane]) else {
-        return false;
-    };
-    let info = &info["process_info"];
-    if let Some(group) = info["foreground_process_group_id"].as_u64()
-        && info["shell_pid"].as_u64() != Some(group)
-    {
-        return false;
-    }
-    terminal::process_state(info).is_ok_and(|(idle, _)| idle)
+    crate::pane_reuse::reusable(target)
+}
+/// How the resume pane was found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Chosen {
+    /// The candidate (recorded) pane, still an idle shell.
+    Candidate,
+    /// A same-named single-pane idle tab in the workspace (contract 1.52.0).
+    SameNameTab,
+    New,
 }
 fn created_pane(created: &Value) -> Result<String> {
     created["root_pane"]["pane_id"]
@@ -781,27 +780,59 @@ fn created_pane(created: &Value) -> Result<String> {
         .map(str::to_owned)
         .context("HERDR pane ID missing")
 }
-/// A pane to resume into: the old one when reusable, else a new tab in the old
-/// workspace (found by label if ids changed), else a new workspace.
-/// Returns the HERDR target and whether it is the recorded pane.
+/// What `choose_pane` needs to look for a same-named idle tab (contract 1.52.0).
+struct ReuseScope<'a> {
+    paths: &'a Paths,
+    session_id: &'a str,
+    /// Claim owner: the operation id.
+    owner: &'a str,
+}
+/// A pane to resume into: the old one when reusable, else (contract 1.52.0, setting
+/// `reuse_idle_tabs`) a same-named single-pane idle tab in the old workspace, else a
+/// new tab there (found by label if ids changed), else a new workspace.
+/// Returns the HERDR target and how it was found.
 fn choose_pane(
     hs: &str,
     recorded: Option<&str>,
     label: Option<&str>,
     cwd: &str,
     name: &str,
-) -> Result<(String, bool)> {
+    scope: &ReuseScope,
+) -> Result<(String, Chosen)> {
     if let Some(old) = recorded
         && reusable(old)
     {
         label_pane(old, name);
-        return Ok((old.to_owned(), true));
+        return Ok((old.to_owned(), Chosen::Candidate));
     }
     let list = terminal::call(hs, &["workspace", "list"])?;
     let recorded_ws = recorded
         .and_then(|t| terminal::target(t).ok())
         .and_then(|(_, p)| workspace_of_pane(p));
-    let created = match pick_workspace(&list, recorded_ws, label) {
+    let picked = pick_workspace(&list, recorded_ws, label);
+    if let Some(ws) = picked.as_deref()
+        && crate::pane_reuse::enabled(scope.paths)
+        && let Ok(excluded) =
+            crate::pane_reuse::attached_panes(scope.paths, hs, Some(scope.session_id))
+        && let Some(found) = crate::pane_reuse::select(
+            &crate::pane_reuse::Herdr {
+                session: hs,
+                socket: None,
+            },
+            &crate::pane_reuse::Want {
+                workspace: ws,
+                name,
+                recorded: None,
+                excluded: &excluded,
+            },
+        )
+        && let Ok(target) = terminal::herdr_target(hs, &found.pane)
+        && crate::pane_reuse::claim(scope.paths, &target, scope.owner)
+    {
+        label_pane(&target, name);
+        return Ok((target, Chosen::SameNameTab));
+    }
+    let created = match picked {
         Some(ws) => terminal::call(
             hs,
             &[
@@ -840,7 +871,7 @@ fn choose_pane(
         }
     };
     let target = terminal::herdr_target(hs, &created_pane(&created)?)?;
-    Ok((target, false))
+    Ok((target, Chosen::New))
 }
 /// Presentation only: name the pane and its tab after the session.
 fn label_pane(target: &str, name: &str) {
@@ -1363,23 +1394,34 @@ async fn prepare(paths: &Paths, r: &mut Record) -> Result<()> {
     let cwd = r.directory.clone().context("SAVED_DIRECTORY_UNAVAILABLE")?;
     // A pane chosen by an earlier attempt of this operation is tried first.
     let candidate = r.pane.clone().or(r.recorded_pane.clone());
-    let (pane, reused) = choose_pane(
+    let (pane, chosen) = choose_pane(
         &r.herdr_session,
         candidate.as_deref(),
         r.workspace_label.as_deref(),
         &cwd,
         &s.name,
+        &ReuseScope {
+            paths,
+            session_id: &r.session_id,
+            owner: &r.id,
+        },
     )?;
+    // A retry keeps an earlier attempt's same-name reuse (its candidate is that pane).
+    let earlier_reuse = r.pane_reused == Some(true) && r.pane.as_deref() == Some(pane.as_str());
+    r.pane_reused = Some(match chosen {
+        Chosen::Candidate => candidate == r.recorded_pane || earlier_reuse,
+        Chosen::SameNameTab => true,
+        Chosen::New => false,
+    });
     r.pane = Some(pane);
-    r.pane_reused = Some(reused && candidate == r.recorded_pane);
     phase(
         paths,
         r,
         "pane_ready",
-        if reused {
-            "The previous pane is an idle shell and will be reused."
-        } else {
-            "A new tab was opened for the resume."
+        match chosen {
+            Chosen::Candidate => "The previous pane is an idle shell and will be reused.",
+            Chosen::SameNameTab => crate::pane_reuse::SAME_NAME_DETAIL,
+            Chosen::New => "A new tab was opened for the resume.",
         },
     )
 }

@@ -72,6 +72,10 @@ pub struct Receipt {
     /// Contract 1.32: set for a `sessionsation resume` typed into an existing terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline: Option<crate::inline::Info>,
+    /// Contract 1.52.0: the resume runs in an existing idle pane (the session's recorded
+    /// pane or a same-named tab) instead of a new tab; `detail` says which. Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pane_reused: bool,
 }
 pub(crate) fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id).context("INVALID_REQUEST_ID")?;
@@ -289,6 +293,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         created_at: Some(daemon::now()),
         updated_at: daemon::now(),
         inline: None,
+        pane_reused: false,
     };
     save(paths, &mut receipt)?;
     let child = crate::background::detach(&mut std::process::Command::new(
@@ -381,39 +386,49 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
         r.phase = "creating_terminal".into();
         Ok(())
     })?;
-    let created = launch::create_terminal(&r.host, &r.space, &receipt.directory, &r.name).await?;
-    let pane = created["root_pane"]["pane_id"]
-        .as_str()
-        .context("HOST_PANE_ID_MISSING")?;
-    let tab = created["tab"]["tab_id"]
-        .as_str()
-        .context("HOST_TAB_ID_MISSING")?;
-    let space = created["tab"]["workspace_id"]
-        .as_str()
-        .or_else(|| created["workspace"]["workspace_id"].as_str())
-        .context("HOST_WORKSPACE_ID_MISSING")?;
-    if let Space::Existing { id } = &r.space {
-        ensure!(id == space, "HOST_WRONG_WORKSPACE");
-    }
-    change(paths, id, |r| {
-        r.pane_id = Some(pane.into());
-        r.tab_id = Some(tab.into());
-        r.workspace_id = Some(space.into());
-        Ok(())
-    })?;
+    // Contract 1.52.0: the session's recorded idle pane, then a same-named idle tab in
+    // the Space, before a new tab.
+    let terminal = launch::open_terminal(
+        paths,
+        &r.host,
+        &r.space,
+        &receipt.directory,
+        &r.name,
+        Some(&r.session_id),
+        id,
+    )
+    .await?;
+    let record = |t: &launch::Terminal| {
+        change(paths, id, |r| {
+            r.pane_id = Some(t.pane.clone());
+            r.tab_id = Some(t.tab.clone());
+            r.workspace_id = Some(t.workspace.clone());
+            r.pane_reused = t.reused.is_some();
+            r.detail = t.reused.as_ref().map(|x| x.detail().to_owned());
+            Ok(())
+        })
+    };
+    record(&terminal)?;
     if matches!(r.space, Space::New { .. }) {
-        launch::host_call(&r.host, &["tab", "rename", tab, &r.name]).await?;
+        launch::host_call(&r.host, &["tab", "rename", &terminal.tab, &r.name]).await?;
     }
-    let target = crate::terminal::herdr_target(&r.host.session, pane)?;
-    let mut ready = false;
-    for _ in 0..50 {
-        if crate::terminal::state_at(&target, Some(&r.host.socket)).is_ok_and(|s| s.0) {
-            ready = true;
-            break;
+    let ready = |pane: String| async move {
+        let target = crate::terminal::herdr_target(&r.host.session, &pane)?;
+        for _ in 0..50 {
+            if crate::terminal::state_at(&target, Some(&r.host.socket)).is_ok_and(|s| s.0) {
+                return Ok((pane, target));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    ensure!(ready, "NEW_TERMINAL_NOT_READY");
+        anyhow::bail!("NEW_TERMINAL_NOT_READY")
+    };
+    // A reused pane was just seen idle; the re-check before dispatch is right before typing.
+    let (mut pane, mut target) = if terminal.reused.is_some() {
+        let target = crate::terminal::herdr_target(&r.host.session, &terminal.pane)?;
+        (terminal.pane.clone(), target)
+    } else {
+        ready(terminal.pane.clone()).await?
+    };
     let (current, source) = api::selected(paths, &r.session_id, &r.expected_generation).await?;
     ensure!(
         source.inactive
@@ -439,6 +454,14 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
         r.phase = "dispatching".into();
         Ok(())
     })?;
+    // Re-checked right before the command goes in: a reused pane that stopped being an
+    // idle shell is left alone and a new tab opened instead (resume-run checks the pane).
+    if let Some(fresh) =
+        launch::recheck(&r.host, &r.space, &receipt.directory, &r.name, &terminal).await?
+    {
+        record(&fresh)?;
+        (pane, target) = ready(fresh.pane.clone()).await?;
+    }
     let account = codex_account(r)?;
     let account = account.as_str();
     if account != source.account
@@ -476,7 +499,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
             q(paths.root.to_str().context("INVALID_DATA_ROOT")?),
             q(id)
         );
-        launch::host_call(&r.host, &["pane", "run", pane, &command]).await?;
+        launch::host_call(&r.host, &["pane", "run", &pane, &command]).await?;
         for _ in 0..300 {
             let receipt = status(paths, id).await?;
             if receipt.phase == "running" {
@@ -904,6 +927,19 @@ mod tests {
         let receipt: Receipt = serde_json::from_value(json!({"version":1,"request":request,"directory":"/original","previous_name":"Old","conversation_id":"thread","generation":"g","phase":"running","updated_at":1})).unwrap();
         assert_eq!(saved_directory(&receipt), std::path::Path::new("/original"));
         assert!(receipt.created_directories.is_empty());
+        // Contract 1.52.0: pane_reused defaults to false and is omitted while false.
+        assert!(!receipt.pane_reused);
+        let mut stored = serde_json::to_value(&receipt).unwrap();
+        assert!(stored.get("pane_reused").is_none());
+        let mut reused = receipt.clone();
+        reused.pane_reused = true;
+        assert_eq!(serde_json::to_value(&reused).unwrap()["pane_reused"], true);
+        stored["pane_reused"] = json!(true);
+        assert!(
+            serde_json::from_value::<Receipt>(stored)
+                .unwrap()
+                .pane_reused
+        );
         assert_eq!(
             serde_json::to_value(&receipt.request).unwrap()["directory"],
             Value::Null

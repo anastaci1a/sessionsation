@@ -329,6 +329,11 @@ with tempfile.TemporaryDirectory() as directory:
             assert component["changed_in"]["contract"] == "1.51.0", component
             assert component["collision_fallback"] == "sessionsation:<component>", component
             assert component["prefixed_fact"] == {"field": "from_component_prefixed", "value": "collides_with_session"}, component
+            reuse = value["result"]["pane_reuse"]
+            assert reuse["since_contract"] == "1.52.0" and reuse["version"] == 1, reuse
+            assert reuse["order"] == ["recorded_pane_if_idle_shell", "same_name_single_pane_idle_tab_in_space", "new_tab"], reuse
+            assert reuse["setting"] == "reuse_idle_tabs" and reuse["built_in_default"] is True, reuse
+            assert reuse["receipt_field"] == "pane_reused" and reuse["rechecked_before_typing"] is True, reuse
             model = value["result"]["session_model"]
             assert model["since_contract"] == "1.49.0" and model["version"] == 1, model
             assert model["row_field"] == "model" and model["exact_ids_only"] is True and model["effort_after_model"] is True

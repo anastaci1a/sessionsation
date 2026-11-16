@@ -60,6 +60,10 @@ pub const AUTO_RECOVER_TICK_LOCK: &str = "registry/auto-recover-tick.lock";
 /// Per-session turn-end notification settings and event journal (contract 1.38.0).
 pub const TURN_NOTIFY: &str = "registry/turn-notify.json";
 pub const TURN_NOTIFY_LOCK: &str = "registry/turn-notify.lock";
+/// Short-lived claims on idle HERDR panes picked for reuse (contract 1.52.0), so two
+/// concurrent starts never type into the same pane. Regenerable; entries expire.
+pub const PANE_CLAIMS: &str = "registry/pane-claims.json";
+pub const PANE_CLAIMS_LOCK: &str = "registry/pane-claims.lock";
 
 pub const ARCHIVED_SESSIONS: &str = "sessions/archived";
 pub const PRESERVED_CONVERSATIONS: &str = "sessions/preserved";

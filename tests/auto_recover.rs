@@ -383,7 +383,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.51.0");
+    assert_eq!(caps["contract_version"], "1.52.0");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
@@ -972,4 +972,301 @@ async fn crash_signals_start_and_an_unknown_exit_does_not() {
     );
     assert_eq!(t.session(&id)["auto_start"]["mode"], "start");
     assert!(t.recoveries().is_empty());
+}
+
+// ------------------------------------------------- idle-tab reuse (contract 1.52.0)
+
+impl Setup {
+    /// HERDR lists tabs (opt-in in the fake; without it `tab list` is unsupported).
+    fn list_tabs(&self) {
+        std::fs::create_dir_all(&self.herdr_state).unwrap();
+        std::fs::write(self.herdr_state.join("tab-list"), "").unwrap();
+    }
+    /// An existing tab w1:t<n> with one idle shell pane w1:p<n>.
+    fn idle_tab(&self, n: u32, label: &str) {
+        std::fs::create_dir_all(&self.herdr_state).unwrap();
+        std::fs::write(self.herdr_state.join(format!("label-w1:p{n}")), label).unwrap();
+    }
+    fn mark(&self, file: &str, body: &str) {
+        std::fs::create_dir_all(&self.herdr_state).unwrap();
+        std::fs::write(self.herdr_state.join(file), body).unwrap();
+    }
+    fn name(&self, id: &str) -> String {
+        self.session(id)["name"].as_str().unwrap().to_owned()
+    }
+    /// `api resume --space w1`, then wait until the session runs.
+    fn resume_w1(&self, id: &str) -> Value {
+        let s = self.session(id);
+        let result = self.api(&[
+            "resume",
+            "--session",
+            id,
+            "--expected-generation",
+            s["generation"].as_str().unwrap(),
+            "--herdr-session",
+            "fixture",
+            "--space",
+            "w1",
+        ]);
+        wait_for("resumed session", || {
+            self.session(id)["availability"] == "running"
+        });
+        result
+    }
+    fn set_reuse(&self, on: bool) {
+        let mut config = sessionsation::store::load_config(&self.paths).unwrap();
+        config.reuse_idle_tabs = on;
+        sessionsation::store::save_config(&self.paths, &config).unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_resume_reuses_a_same_named_single_pane_idle_tab() {
+    let t = Setup::new().await;
+    let (id, _) = t.stopped_session("a");
+    let name = t.name(&id);
+    t.list_tabs();
+    t.idle_tab(6, &format!("{name} 2"));
+    t.idle_tab(7, &name);
+    t.idle_tab(8, &name);
+    let result = t.resume_w1(&id);
+    assert_eq!(result["target"], "herdr/fixture/w1:p7", "{result}");
+    assert_eq!(result["pane_reused"], true);
+    assert_eq!(result["detail"], "Reused an idle tab with the same name.");
+    assert_eq!(t.herdr_calls("tab create"), 0);
+    assert_eq!(
+        t.herdr_calls("pane send-keys"),
+        0,
+        "only the command is typed"
+    );
+    let log = read(&t.herdr_state.join("calls"));
+    let run = log.lines().find(|l| l.contains("pane run w1:p7 ")).unwrap();
+    assert!(
+        run.contains("cd -- ") && run.contains("SESSIONSATION_LAUNCHER_BYPASS=1"),
+        "{run}"
+    );
+    assert_eq!(
+        t.session(&id)["attachment"]["target"],
+        "herdr/fixture/w1:p7"
+    );
+    cleanup(&t, &id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_resume_reuses_the_sessions_recorded_idle_pane_first() {
+    let t = Setup::new().await;
+    let (id, _) = t.stopped_session("a");
+    let name = t.name(&id);
+    let pid = t.live_session(&id);
+    // Auto-start records the pane; a clean exit starts nothing.
+    t.enable(&id, &[]).unwrap();
+    assert_eq!(t.setting(&id)["last_pane"], "herdr/fixture/w1:p2");
+    t.end(pid, Ending::Clean);
+    assert_eq!(t.session(&id)["availability"], "stopped");
+    // Its tab was renamed meanwhile, and a same-named idle tab exists too.
+    t.mark("renamed-w1:t2", "elsewhere");
+    t.list_tabs();
+    t.idle_tab(7, &name);
+    let result = t.resume_w1(&id);
+    assert_eq!(result["target"], "herdr/fixture/w1:p2", "{result}");
+    assert_eq!(result["pane_reused"], true);
+    assert_eq!(
+        result["detail"],
+        "Reused the session's previous pane (an idle shell)."
+    );
+    assert_eq!(t.herdr_calls("tab create"), 1, "only the first start");
+    // The tab takes the name a new tab would get.
+    assert_eq!(read(&t.herdr_state.join("renamed-w1:t2")).trim(), name);
+    cleanup(&t, &id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_resume_opens_a_new_tab_when_no_idle_tab_qualifies() {
+    for case in [
+        "busy",
+        "two_panes",
+        "other_label",
+        "setting_off",
+        "older_herdr",
+    ] {
+        let t = Setup::new().await;
+        let (id, _) = t.stopped_session("a");
+        let name = t.name(&id);
+        t.list_tabs();
+        t.idle_tab(7, &name);
+        match case {
+            // The shell is listed, but another process group owns the terminal.
+            "busy" => t.mark("fg-group-w1:p7", "4242"),
+            "two_panes" => t.mark("extra-pane-w1:t7", "w1:p70"),
+            "other_label" => t.idle_tab(7, &format!("{name}x")),
+            "setting_off" => t.set_reuse(false),
+            _ => {
+                let _ = std::fs::remove_file(t.herdr_state.join("tab-list"));
+            }
+        }
+        let result = t.resume_w1(&id);
+        assert_eq!(result["target"], "herdr/fixture/w1:p2", "{case}: {result}");
+        assert!(result.get("pane_reused").is_none(), "{case}: {result}");
+        assert_eq!(t.herdr_calls("tab create"), 1, "{case}");
+        assert_eq!(t.herdr_calls("pane run w1:p7"), 0, "{case}");
+        cleanup(&t, &id);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_resume_never_takes_another_running_sessions_pane() {
+    let t = Setup::new().await;
+    let (a, _) = t.stopped_session("a");
+    let (b, _) = t.stopped_session("a");
+    let name = t.name(&a);
+    // B runs in w1:p2; that tab now carries A's name and its pane looks idle.
+    t.live_session(&b);
+    t.mark("renamed-w1:t2", &name);
+    std::fs::remove_file(t.herdr_state.join("pid-w1:p2")).unwrap();
+    t.list_tabs();
+    assert_eq!(t.session(&b)["attachment"]["target"], "herdr/fixture/w1:p2");
+    let result = t.resume_w1(&a);
+    assert_eq!(result["target"], "herdr/fixture/w1:p3", "{result}");
+    assert!(result.get("pane_reused").is_none());
+    cleanup(&t, &a);
+    cleanup(&t, &b);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pane_that_turns_busy_before_typing_gets_a_new_tab() {
+    let t = Setup::new().await;
+    let (id, _) = t.stopped_session("a");
+    let name = t.name(&id);
+    t.list_tabs();
+    t.idle_tab(7, &name);
+    // Idle when picked; busy at the re-check right before typing.
+    t.mark("busy-after-w1:p7", "1");
+    let result = t.resume_w1(&id);
+    assert_eq!(result["target"], "herdr/fixture/w1:p2", "{result}");
+    assert!(result.get("pane_reused").is_none());
+    assert_eq!(t.herdr_calls("tab create"), 1);
+    assert_eq!(t.herdr_calls("pane run w1:p7"), 0);
+    cleanup(&t, &id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_launch_start_reuses_a_same_named_idle_tab_and_says_so() {
+    launch_into_same_named_tab(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_launch_start_opens_a_new_tab_when_the_pane_turns_busy_before_typing() {
+    launch_into_same_named_tab(true).await;
+}
+
+async fn launch_into_same_named_tab(race: bool) {
+    let t = Setup::new().await;
+    if race {
+        // Idle when picked; busy at the re-check right before typing.
+        t.mark("busy-after-w1:p7", "1");
+    }
+    let socket_dir = t.paths.root.parent().unwrap().join("host");
+    std::fs::create_dir_all(&socket_dir).unwrap();
+    let socket = socket_dir.join("host.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    t.list_tabs();
+    t.idle_tab(7, "Fresh");
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let request = json!({"version":1,"request_id":request_id,"account_id":"claude:a","name":"Fresh",
+        "host":{"session":"fixture","socket":socket},"space":{"kind":"existing","id":"w1"},
+        "directory":{"path":t.project,"create":[],"confirmed_existing":true}});
+    let mut child = t
+        .command(&["api", "launch", "start"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(request.to_string().as_bytes())
+            .unwrap();
+    }
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut receipt = Value::Null;
+    wait_for("launch dispatched into the reused pane", || {
+        receipt = t.api(&["launch", "status", "--request-id", &request_id]);
+        matches!(
+            receipt["phase"].as_str(),
+            Some("starting_provider" | "attached" | "running")
+        )
+    });
+    let pane = if race { "w1:p2" } else { "w1:p7" };
+    assert_eq!(receipt["pane_id"], pane, "{receipt}");
+    if race {
+        assert!(receipt.get("pane_reused").is_none(), "{receipt}");
+        assert_eq!(t.herdr_calls("tab create"), 1);
+        assert_eq!(t.herdr_calls("pane run w1:p7"), 0);
+    } else {
+        assert_eq!(receipt["tab_id"], "w1:t7");
+        // `detail` says "Reused an idle tab with the same name." until launch-run
+        // reports progress in it; pane_reused stays.
+        assert_eq!(receipt["pane_reused"], true);
+        assert_eq!(t.herdr_calls("tab create"), 0);
+    }
+    assert_eq!(t.herdr_calls("pane send-keys"), 0);
+    wait_for("launched session", || {
+        t.api(&["state"])["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "Fresh" && s["availability"] == "running")
+    });
+    let launched = t.api(&["state"])["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "Fresh")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        t.session(&launched)["attachment"]["target"],
+        format!("herdr/fixture/{pane}")
+    );
+    cleanup(&t, &launched);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_start_takes_a_same_named_idle_tab_before_a_new_one() {
+    let mut t = Setup::new().await;
+    let (id, _) = t.stopped_session("a");
+    let name = t.name(&id);
+    let pid = t.live_session(&id);
+    t.enable(&id, &[]).unwrap();
+    t.crash(pid);
+    // The recorded pane is busy; a same-named idle tab exists.
+    let sleeper = Command::new("sleep").arg("600").spawn().unwrap();
+    std::fs::write(t.herdr_state.join("pid-w1:p2"), sleeper.id().to_string()).unwrap();
+    t.spare.push(sleeper);
+    t.list_tabs();
+    t.idle_tab(7, &name);
+    let done = t.ticks(3);
+    assert_eq!(done.len(), 1, "{done:?}");
+    let op = &done[0];
+    assert_eq!(op["phase"], "complete", "{op}");
+    assert_eq!(op["resume"]["pane"], "herdr/fixture/w1:p7", "{op}");
+    assert_eq!(op["resume"]["pane_reused"], true);
+    assert_eq!(op["resume"]["recorded_pane"], "herdr/fixture/w1:p2");
+    assert_eq!(t.herdr_calls("tab create"), 1, "only the first start");
+    assert_eq!(
+        t.session(&id)["attachment"]["target"],
+        "herdr/fixture/w1:p7"
+    );
+    cleanup(&t, &id);
 }
