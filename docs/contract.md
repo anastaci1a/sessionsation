@@ -1930,6 +1930,22 @@ the same or different content: `api send` and `api receipt` return
 the retention window. Both settings are `sessionsation config set` keys
 (1..=3650 days; the horizon must not be shorter than the retention).
 
+**1.52.0: delivered journal records retire as terminal.** A Claude/Gemini/Antigravity journal record
+whose `phase` is `written` (or `complete`), whose worker lock is free (its worker has exited), and whose
+state is `execution_started` (the message is in the transcript or the turn started), or `native_accepted`
+backed by positive evidence (the receiver's `delivered` status, a native queue or screen evidence), is
+retired after `receipt_retention_days` like a terminal receipt, not after the unknown horizon. Its
+tombstone keeps its real state (for example `execution_started`) with no horizon reason; the record and
+`api receipt` are unchanged while it exists. A Claude peer message that only got a silent transport
+acceptance (`native_accepted` with `facts.silent_accept`, reported as
+`peer_message.evidence:"transport_accepted_silent"`), and every `unknown`, `delivery_unknown` or
+`pending_local` record or record with a live worker, still follows the horizon rule. `retention run` (and
+the daemon's hourly `retention:` log line) now reports `policy`, the values actually used, and
+`config_error`: `null`, or the message when `config.json` failed to load or validate (for example a
+horizon shorter than the retention) and the built-in defaults were used instead; `retention run` also
+prints a warning on stderr then. Capability: `receipt_retention.delivered_journal_states_retire_as_terminal`
+`["execution_started","native_accepted"]` with `delivered_requires`.
+
 ### Launch permissions (revision 19)
 
 Additive; negotiate `contract_revision >= 19` (`api capabilities.launch_permissions`:

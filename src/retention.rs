@@ -72,6 +72,15 @@ impl Policy {
         Self::from(&crate::store::load_config(paths).unwrap_or_default())
     }
 }
+
+/// The configuration retention runs with: `config.json`, or the built-in defaults
+/// plus the load/validation error (contract 1.52.0 reports it instead of hiding it).
+pub fn config_checked(paths: &Paths) -> (crate::config::Config, Option<String>) {
+    match crate::store::load_config(paths) {
+        Ok(c) => (c, None),
+        Err(e) => (crate::config::Config::default(), Some(format!("{e:#}"))),
+    }
+}
 impl From<&crate::config::Config> for Policy {
     fn from(c: &crate::config::Config) -> Self {
         Self {
@@ -230,8 +239,21 @@ fn prune_operations(
 
 /// Full pass, receipts included; `last_run` throttling is the caller's.
 pub fn run(paths: &Paths, dry_run: bool) -> Result<Value> {
-    let policy = Policy::load(paths);
+    // Bad config never stops housekeeping: defaults are used and the error reported
+    // (the daemon logs this result as its `retention:` line).
+    let (config, config_error) = config_checked(paths);
+    if let Some(e) = &config_error {
+        eprintln!(
+            "sessionsation: warning: config.json is invalid ({e}); retention uses the built-in defaults"
+        );
+    }
+    let policy = Policy::from(&config);
     let mut result = sweep(&paths.root, policy, SystemTime::now(), dry_run)?;
+    result["config_error"] = json!(config_error);
+    result["policy"] = json!({"log_retention_days":policy.log_days,"log_max_bytes":policy.log_max_bytes,
+        "cache_retention_days":policy.cache_days,"operation_retention_days":policy.operation_days,
+        "receipt_retention_days":config.receipt_retention_days,
+        "receipt_unknown_horizon_days":config.receipt_unknown_horizon_days});
     result["receipts_retired"] = if dry_run {
         Value::Null
     } else {
@@ -343,5 +365,37 @@ mod tests {
         );
         assert!(!root.join("logs/handoff.log.1").exists());
         drop(busy);
+    }
+
+    #[test]
+    fn an_invalid_config_is_reported_and_the_defaults_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("data"))).unwrap();
+        let ok = run(&paths, true).unwrap();
+        assert_eq!(ok["config_error"], Value::Null);
+        assert_eq!(ok["policy"]["receipt_unknown_horizon_days"], 90);
+        // A horizon shorter than the retention fails validation.
+        fs::write(
+            paths.root.join("config.json"),
+            r#"{"receipt_retention_days":30,"receipt_unknown_horizon_days":7}"#,
+        )
+        .unwrap();
+        let bad = run(&paths, true).unwrap();
+        assert!(
+            bad["config_error"]
+                .as_str()
+                .is_some_and(|e| e.contains("receipt_unknown_horizon_days")),
+            "{bad}"
+        );
+        let d = crate::config::Config::default();
+        assert_eq!(
+            bad["policy"]["receipt_retention_days"],
+            d.receipt_retention_days
+        );
+        assert_eq!(
+            bad["policy"]["receipt_unknown_horizon_days"],
+            d.receipt_unknown_horizon_days
+        );
+        assert_eq!(bad["policy"]["log_retention_days"], d.log_retention_days);
     }
 }

@@ -16,6 +16,7 @@ pub use public::{
     PublicMode, PublicRequest, SteeringIntent, receipt_public, send_public, steering_target,
 };
 pub use readiness::observe_public;
+pub(crate) use retention::DELIVERED_JOURNAL_STATES;
 mod observe;
 mod transport;
 use crate::{

@@ -1681,7 +1681,11 @@ pub fn capabilities() -> Value {
     let retention = crate::config::Config::default();
     // Revision 32: journaled inline run/resume with --name.
     value["inline_launch"] = crate::inline::capability();
-    value["receipt_retention"] = json!({"since_revision":18,"capacity_per_store":10000,"default_terminal_retention_days":retention.receipt_retention_days,"default_unknown_horizon_days":retention.receipt_unknown_horizon_days,"age_from":"expires_at_or_last_update","horizon_state":"expired","horizon_reason":"outcome_unknown_at_retention_horizon","retired_ids":"tombstoned_never_reaccepted","retired_error":"RECEIPT_RETIRED","settings":["receipt_retention_days","receipt_unknown_horizon_days"],"recovery_journals_retained":true});
+    value["receipt_retention"] = json!({"since_revision":18,"capacity_per_store":10000,"default_terminal_retention_days":retention.receipt_retention_days,"default_unknown_horizon_days":retention.receipt_unknown_horizon_days,"age_from":"expires_at_or_last_update","horizon_state":"expired","horizon_reason":"outcome_unknown_at_retention_horizon","retired_ids":"tombstoned_never_reaccepted","retired_error":"RECEIPT_RETIRED","settings":["receipt_retention_days","receipt_unknown_horizon_days"],"recovery_journals_retained":true,
+        "delivered_journal_states_retire_as_terminal":crate::messaging::DELIVERED_JOURNAL_STATES,
+        "delivered_requires":{"since_contract":"1.52.0","phase":["written","complete"],"worker":"stopped",
+            "native_accepted_excludes":"claude_peer_silent_transport_accept","tombstone_state":"real_state"},
+        "config_error_reported":{"since_contract":"1.52.0","command":"retention run","fields":["config_error","policy"],"fallback":"built_in_defaults"}});
     // Revision 19: permission mode of newly started provider processes.
     value["launch_permissions"] = json!({"since_revision":19,"values":["yolo","default"],"built_in_default":crate::config::Config::default().launch_permissions.as_str(),"setting":"launch_permissions","request_field":"permissions","requests":["launch","resume-launch"],"cli_option":"--permissions","codex":{"yolo":{"approval_policy":"never","sandbox":"danger-full-access"}},"claude":{"yolo":"--dangerously-skip-permissions"},"gemini":{"yolo":"--approval-mode yolo"},"antigravity":{"yolo":"--dangerously-skip-permissions"},"applies_to":["new","resume","restart","account_switch","hosted"],"headless_delivery":"unchanged"});
     // Revision 20: folder trust pre-accepted for yolo Claude starts.

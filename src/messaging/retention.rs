@@ -11,7 +11,11 @@
 //!   `delivery_unknown`) before `receipt_unknown_horizon_days` (default 90).
 //!   Past that horizon it is first recorded as terminal `expired` with reason
 //!   `outcome_unknown_at_retention_horizon`: Sessionsation stopped observing,
-//!   the native outcome stays unknown and the message must never be resent;
+//!   the native outcome stays unknown and the message must never be resent.
+//!   Since 1.52.0 a Claude/Gemini journal record that is written, whose worker has
+//!   exited and whose state is `execution_started` (or a positively evidenced
+//!   `native_accepted`) counts as delivered and retires with the terminal window,
+//!   keeping its real state;
 //! - keeps a compact tombstone (id, final state, reason, retirement time) for
 //!   every retired id in `retired_messages`. A retired id is never accepted
 //!   again: send and receipt both return `RECEIPT_RETIRED` with the final state.
@@ -31,14 +35,24 @@ pub(super) struct Policy {
     pub horizon_seconds: i64,
 }
 impl Policy {
+    /// The configured policy; built-in defaults when `config.json` does not load
+    /// (`crate::retention::run` reports that error).
     pub(super) fn load(paths: &crate::paths::Paths) -> Self {
-        let c = crate::store::load_config(paths).unwrap_or_default();
+        Self::from(&crate::store::load_config(paths).unwrap_or_default())
+    }
+}
+impl From<&crate::config::Config> for Policy {
+    fn from(c: &crate::config::Config) -> Self {
         Self {
             terminal_seconds: i64::from(c.receipt_retention_days) * DAY,
             horizon_seconds: i64::from(c.receipt_unknown_horizon_days) * DAY,
         }
     }
 }
+
+/// Journal states that count as delivered once the record is written and its worker
+/// has exited (contract 1.52.0): retired after the terminal window with their real state.
+pub(crate) const DELIVERED_JOURNAL_STATES: [&str; 2] = ["execution_started", "native_accepted"];
 
 /// Codex ledger states that are final and certain.
 pub(super) fn certain_terminal(state: &str) -> bool {
@@ -235,6 +249,23 @@ struct Journal {
     reason: Option<String>,
     updated_at: i64,
     request: JournalRequest,
+    /// Only `silent_accept` is read; any shape is accepted.
+    #[serde(default)]
+    facts: serde_json::Value,
+}
+impl Journal {
+    /// Delivered for retention (contract 1.52.0): written (or complete), the message is
+    /// in the transcript/turn (`execution_started`) or positively accepted natively
+    /// (`native_accepted`, but not a Claude peer frame that only met a silent transport
+    /// acceptance, which is not proof the receiver read it). The caller checks the worker.
+    fn delivered(&self) -> bool {
+        matches!(self.phase.as_str(), "written" | "complete")
+            && match self.state.as_str() {
+                "execution_started" => true,
+                "native_accepted" => self.facts["silent_accept"] != true,
+                _ => false,
+            }
+    }
 }
 #[derive(Deserialize)]
 struct JournalRequest {
@@ -269,18 +300,21 @@ fn files(ledger: &mut Ledger, dir: &Path, now: i64, policy: Policy) -> Result<us
         }
         let certain =
             j.phase == "complete" && !matches!(j.state.as_str(), "delivery_unknown" | "unknown");
+        // A worker still holding its lock is never retired, and its record is not final.
+        let lock = path.with_extension("worker.lock");
+        let worker_live =
+            || lock.exists() && !crate::background::worker_stopped(&lock).unwrap_or(false);
+        let terminal_window = j.updated_at < now - policy.terminal_seconds;
         let (state, reason) = if certain {
-            if j.updated_at >= now - policy.terminal_seconds {
+            if !terminal_window {
                 continue;
             }
             (j.state, j.reason)
+        } else if terminal_window && j.delivered() && !worker_live() {
+            // Delivered (1.52.0): its real state, never the horizon's `expired`.
+            (j.state, j.reason)
         } else {
-            if j.updated_at >= now - policy.horizon_seconds {
-                continue;
-            }
-            // A worker still holding its lock is never retired.
-            let lock = path.with_extension("worker.lock");
-            if lock.exists() && !crate::background::worker_stopped(&lock).unwrap_or(false) {
+            if j.updated_at >= now - policy.horizon_seconds || worker_live() {
                 continue;
             }
             ("expired".to_owned(), Some(HORIZON_REASON.to_owned()))
@@ -447,5 +481,69 @@ mod tests {
         // A retired journal id cannot be reused by any delivery path.
         let e = super::super::headless::ensure_unused_elsewhere(&paths, &done).unwrap_err();
         assert!(e.to_string().starts_with("RECEIPT_RETIRED"), "{e}");
+    }
+    #[test]
+    fn delivered_journal_records_retire_after_the_terminal_window_with_their_state() {
+        use fs2::FileExt;
+        let (_dir, paths, _input, now) = fixture();
+        let dir = paths.root.join(crate::layout::CLAUDE_DELIVERIES);
+        fs::create_dir_all(&dir).unwrap();
+        let write = |phase: &str, state: &str, age: i64, facts: serde_json::Value| {
+            let id = uuid::Uuid::new_v4().to_string();
+            fs::write(
+                dir.join(format!("{id}.json")),
+                serde_json::json!({"phase":phase,"state":state,"reason":null,"facts":facts,
+                    "updated_at":now - age * DAY,"request":{"message_id":id}})
+                .to_string(),
+            )
+            .unwrap();
+            id
+        };
+        let none = serde_json::json!({});
+        let started = write("written", "execution_started", 20, none.clone());
+        let accepted = write("written", "native_accepted", 20, none.clone());
+        let young = write("written", "execution_started", 5, none.clone());
+        let silent = write(
+            "written",
+            "native_accepted",
+            20,
+            serde_json::json!({"silent_accept":true}),
+        );
+        let unknown = write("written", "unknown", 20, none.clone());
+        let delivery_unknown = write("complete", "delivery_unknown", 20, none.clone());
+        let local = write("dispatching", "pending_local", 20, none.clone());
+        let busy = write("written", "execution_started", 20, none.clone());
+        let ancient_unknown = write("written", "unknown", 100, none.clone());
+        // A worker still runs for `busy`: it holds its lock.
+        let lock = crate::paths::lock_file(&dir.join(format!("{busy}.worker.lock"))).unwrap();
+        lock.lock_exclusive().unwrap();
+        // A stopped worker left its (free) lock behind for `started`.
+        fs::write(dir.join(format!("{started}.worker.lock")), "").unwrap();
+        let mut db = Ledger::open(&paths).unwrap();
+        assert_eq!(run(&mut db, now, POLICY).unwrap(), 3);
+        for id in [&young, &silent, &unknown, &delivery_unknown, &local, &busy] {
+            assert!(dir.join(format!("{id}.json")).exists(), "{id} kept");
+            assert!(retired(&db, id).unwrap().is_none());
+        }
+        // Retired with the real state, no horizon reason, lock removed.
+        for (id, state) in [
+            (&started, "execution_started"),
+            (&accepted, "native_accepted"),
+        ] {
+            assert!(!dir.join(format!("{id}.json")).exists());
+            let (s, r, _) = retired(&db, id).unwrap().unwrap();
+            assert_eq!((s.as_str(), r), (state, None));
+        }
+        assert!(!dir.join(format!("{started}.worker.lock")).exists());
+        // Unknown still follows the horizon.
+        let (s, r, _) = retired(&db, &ancient_unknown).unwrap().unwrap();
+        assert_eq!(
+            (s.as_str(), r.as_deref()),
+            ("expired", Some(HORIZON_REASON))
+        );
+        // The live worker's record goes once its worker has exited.
+        drop(lock);
+        assert_eq!(run(&mut db, now, POLICY).unwrap(), 1);
+        assert_eq!(retired(&db, &busy).unwrap().unwrap().0, "execution_started");
     }
 }

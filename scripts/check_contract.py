@@ -329,6 +329,9 @@ with tempfile.TemporaryDirectory() as directory:
             assert component["changed_in"]["contract"] == "1.51.0", component
             assert component["collision_fallback"] == "sessionsation:<component>", component
             assert component["prefixed_fact"] == {"field": "from_component_prefixed", "value": "collides_with_session"}, component
+            retention = value["result"]["receipt_retention"]
+            assert retention["delivered_journal_states_retire_as_terminal"] == ["execution_started", "native_accepted"], retention
+            assert retention["delivered_requires"]["worker"] == "stopped" and retention["delivered_requires"]["since_contract"] == "1.52.0", retention
             reuse = value["result"]["pane_reuse"]
             assert reuse["since_contract"] == "1.52.0" and reuse["version"] == 1, reuse
             assert reuse["order"] == ["recorded_pane_if_idle_shell", "same_name_single_pane_idle_tab_in_space", "new_tab"], reuse
