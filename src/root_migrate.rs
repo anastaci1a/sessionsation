@@ -637,11 +637,14 @@ fn blocking_operations(paths: &Paths) -> Vec<Value> {
         .collect();
     dirs.push(layout::SHARED_MIGRATIONS);
     for d in dirs {
-        let terminal: Vec<&str> = crate::retention::PRUNABLE
+        // Retention's final phases for this directory plus the generic ones: retention
+        // lists only what it may prune (launches omit `abandoned`, which is final).
+        let mut terminal: Vec<&str> = crate::retention::PRUNABLE
             .iter()
             .find(|(p, _)| *p == d)
             .map(|(_, f)| f.to_vec())
-            .unwrap_or_else(|| GENERIC.to_vec());
+            .unwrap_or_default();
+        terminal.extend_from_slice(GENERIC);
         let Ok(entries) = fs::read_dir(paths.root.join(d)) else {
             continue;
         };
@@ -660,6 +663,11 @@ fn blocking_operations(paths: &Paths) -> Vec<Value> {
                 }
             };
             let phase = v["phase"].as_str().or_else(|| v["state"].as_str());
+            // `deletions/<thread>.json` are permanent deletion tombstones (never pruned,
+            // no phase); the deletion operation itself is journaled elsewhere.
+            if d == layout::DELETIONS && phase.is_none() {
+                continue;
+            }
             let done = phase.is_some_and(|ph| {
                 terminal.contains(&ph) || (d == layout::SHARED_MIGRATIONS && ph == "incomplete")
             });

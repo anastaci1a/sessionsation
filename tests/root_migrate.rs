@@ -558,6 +558,28 @@ async fn tier_r_is_blocked_by_an_operation_in_flight_and_needs_the_supervisor_st
         String::from_utf8_lossy(&out.stderr)
     );
     f.stop_daemon();
+    // Final journals never block P4: an abandoned launch and a phase-less deletion
+    // tombstone (`deletions/<thread>.json`). The non-terminal switch below is then
+    // the only blocker named.
+    let launches = f.paths.root.join("operations/launches");
+    std::fs::create_dir_all(&launches).unwrap();
+    let abandoned = uuid::Uuid::new_v4().to_string();
+    std::fs::write(
+        launches.join(format!("{abandoned}.json")),
+        serde_json::to_vec(
+            &json!({"version":1,"phase":"abandoned","request":{"request_id":abandoned}}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let deletions = f.paths.root.join("operations/deletions");
+    std::fs::create_dir_all(&deletions).unwrap();
+    let tomb = uuid::Uuid::new_v4().to_string();
+    std::fs::write(
+        deletions.join(format!("{tomb}.json")),
+        serde_json::to_vec(&json!({"confirmation":"x","copies":[],"thread_ids":[tomb]})).unwrap(),
+    )
+    .unwrap();
     // A non-terminal Claude switch journal blocks Tier R (P4).
     let dir = f.paths.root.join("operations/claude-switches");
     std::fs::create_dir_all(&dir).unwrap();
@@ -577,6 +599,7 @@ async fn tier_r_is_blocked_by_an_operation_in_flight_and_needs_the_supervisor_st
         err.contains("ROOT_MIGRATION_BLOCKED") && err.contains(&op),
         "{err}"
     );
+    assert!(!err.contains(&abandoned) && !err.contains(&tomb), "{err}");
     assert!(!t.join("bk").exists());
     let layout: Value =
         serde_json::from_slice(&std::fs::read(f.paths.root.join("layout.json")).unwrap()).unwrap();
