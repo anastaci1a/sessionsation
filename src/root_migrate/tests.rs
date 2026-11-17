@@ -1305,3 +1305,435 @@ fn s6_rollback_moves_back_lineage_names_created_after_the_resume_and_remaps_reco
     // Not part of the change log, so a second rollback never undoes the remap.
     assert!(read_changes(&f.paths, &run.id).is_empty());
 }
+
+// ------------------------------------------------------------- review 3
+
+fn enroll_claude(paths: &Paths, name: &str) {
+    use crate::model::Account;
+    use crate::store::Store;
+    let mut store = Store::open(paths).unwrap();
+    let mut state = crate::model::State::default();
+    state.insert_account(Account::with_provider(
+        ProviderId::Claude,
+        name.into(),
+        String::new(),
+    ));
+    store.save(&state, 1, "test", name).unwrap();
+}
+
+/// REVIEW-3 repro (B1): the F2 gate must report `fail` when the supervisor's own
+/// recognition (claude::observe) no longer sees a running session. The registry
+/// entry is missing (as if environ_matches had missed a spelling), so observe
+/// says "stopped", but a process names the conversation on its command line (as
+/// every `claude --resume <id>` does).
+#[tokio::test]
+async fn review3_gate_is_masked_by_the_cmdline_fallback() {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+    enroll_claude(&paths, "a");
+    let home = layout::target_home(&paths.root, ProviderId::Claude, "a");
+    let conv = uuid::Uuid::new_v4().to_string();
+    let dir = t.path().join("p");
+    fs::create_dir_all(&dir).unwrap();
+    write(
+        &home
+            .join("projects")
+            .join(keys::key(&dir.to_string_lossy()))
+            .join(format!("{conv}.jsonl")),
+        "{\"type\":\"user\"}\n",
+    );
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    let s = catalog::record_provider_launch(
+        &paths,
+        ProviderId::Claude,
+        "a",
+        &conv,
+        "n",
+        Some(&dir.to_string_lossy()),
+        None,
+    )
+    .unwrap();
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "sleep 30", "sh", "--resume", &conv])
+        .spawn()
+        .unwrap();
+    wait_cmdline(child.id(), &conv);
+    let supervisor_view = claude::observe(&home, &conv, None).availability;
+    let row = GateRow {
+        session_id: s.id.clone(),
+        name: "n".into(),
+        space: None,
+        provider: "claude".into(),
+        account: "a".into(),
+        conversation_id: conv.clone(),
+        pane: None,
+        pid: None,
+        running_before: true,
+        probe_error: None,
+    };
+    let run = Run {
+        id: uuid::Uuid::new_v4().to_string(),
+        activated_at: Some(1),
+        state: "complete".into(),
+        gate_before: vec![row],
+        ..Default::default()
+    };
+    let g = gate(&paths, Some(&run)).await;
+    // The plan and quiet check keep the command-line fallback (more "running").
+    let plan_view = recognition(&paths, &s, &Ok(vec![]));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(supervisor_view, "stopped");
+    assert_eq!(
+        g["gate"], "fail",
+        "the gate passes although the supervisor sees the session stopped: {g}"
+    );
+    assert_eq!(plan_view, Ok(true));
+}
+
+#[test]
+fn s1_a_backup_interrupted_by_a_crash_is_completed_and_verified_on_rerun() {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+    for (rel, text) in [
+        ("operations/launches/a.json", "{\"phase\":\"running\"}"),
+        ("operations/launches/b.json", "{\"phase\":\"failed\"}"),
+        ("messaging/claude-steer/c.json", "{}"),
+        ("registry/conversations/d.json", "{\"owner\":\"/x\"}"),
+        ("shared/claude/projects/-k/s.jsonl", "line\n"),
+    ] {
+        write(&paths.root.join(rel), text);
+    }
+    let run = Run {
+        id: uuid::Uuid::new_v4().to_string(),
+        backup: t.path().join("bk"),
+        allow_full_copy: true,
+        ..Default::default()
+    };
+    for point in ["backup:operations", "backup:shared"] {
+        let bk = t.path().join(format!("bk-{}", point.replace(':', "-")));
+        let r = Run {
+            backup: bk.clone(),
+            ..run.clone()
+        };
+        die_at(Some(point));
+        let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| backup(&paths, &r)));
+        die_at(None);
+        assert!(died.is_err(), "{point}");
+        // The interrupted entry is not taken for done: the rerun copies it fully.
+        backup(&paths, &r).unwrap_or_else(|e| panic!("{point}: {e:#}"));
+        assert!(
+            bk.join("root/operations/launches/a.json").is_file(),
+            "{point}"
+        );
+        assert!(
+            bk.join("root/operations/launches/b.json").is_file(),
+            "{point}"
+        );
+        assert!(
+            bk.join("shared-claude-projects/-k/s.jsonl").is_file(),
+            "{point}"
+        );
+        let doc: Value =
+            serde_json::from_slice(&fs::read(bk.join("root-backup.json")).unwrap()).unwrap();
+        assert!(doc["file_count"].as_u64().unwrap() >= 5, "{point}: {doc}");
+    }
+    // A copy that lost a file is completed by the source-side verification.
+    let bk = t.path().join("bk-ok");
+    let r = Run {
+        backup: bk.clone(),
+        ..run.clone()
+    };
+    backup(&paths, &r).unwrap();
+    fs::remove_file(bk.join("root/operations/launches/b.json")).unwrap();
+    verify_complete(
+        &paths.root.join("operations"),
+        &bk.join("root/operations"),
+        Path::new("operations"),
+        true,
+    )
+    .unwrap();
+    assert!(bk.join("root/operations/launches/b.json").is_file());
+}
+
+#[test]
+fn s3_move_back_refuses_when_both_names_exist_and_the_old_one_is_not_ours() {
+    let f = one();
+    let mut rec = f.rec.clone();
+    session::rekey_stopped(&mut f.ctx(), &mut rec, &f.s).unwrap();
+    // Something re-created the transcript in the old key after the rename.
+    write(&f.old_transcript(), "{\"type\":\"someone else\"}\n");
+    let e = session::rollback_stopped(&f.paths, &mut rec)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("ROOT_REKEY_REVERT_CONFLICT"), "{e}");
+    let saved = read_session(&f.paths, &f.s.id).unwrap();
+    assert_eq!(saved.state, "uncertain");
+    assert!(f.new_transcript().is_file(), "the moved transcript stays");
+    assert_eq!(
+        fs::read_to_string(f.old_transcript()).unwrap(),
+        "{\"type\":\"someone else\"}\n"
+    );
+}
+
+#[test]
+fn s5_an_old_spelling_app_server_thread_matches_its_pane_only_through_the_alias() {
+    let t = tempfile::tempdir().unwrap();
+    let new_home = t.path().join("disk/appdata/root/accounts/codex/c");
+    let old_home = t.path().join("user/appdata/root/accounts/codex/c");
+    let new_cwd = t.path().join("disk/live/q");
+    let old_cwd = t.path().join("user/live/q");
+    for d in [&new_home, &old_home, &new_cwd, &old_cwd] {
+        fs::create_dir_all(d).unwrap();
+    }
+    let thread = uuid::Uuid::new_v4().to_string();
+    let rollout_old = old_home.join(format!("sessions/2026/rollout-{thread}.jsonl"));
+    // The pane: its process cwd and home as the supervisor sees them (new spelling).
+    let pane: crate::external::Instance = serde_json::from_value(json!({
+        "pane":"%1","tmux_session":"s","pid":1,"cwd":new_cwd,"thread_id":"","rollout":"",
+        "home":new_home,"binary":"codex","resume_options":[]}))
+    .unwrap();
+    // The long-lived app-server reports the old spelling for path and cwd.
+    let threads = vec![json!({"id":thread,"cwd":old_cwd,"path":rollout_old,"parentThreadId":null})];
+    let panes = vec![pane];
+    assert!(
+        crate::external::match_app_server_thread(&panes, 0, &new_home, &threads).is_none(),
+        "without the alias the two spellings differ"
+    );
+    let e = entries(t.path());
+    alias::install(&e);
+    let matched = crate::external::match_app_server_thread(&panes, 0, &new_home, &threads)
+        .map(|(_, id, path)| (id, path));
+    // By exact id as well.
+    let mut known = panes.clone();
+    known[0].thread_id = thread.clone();
+    let exact = crate::external::match_app_server_thread(&known, 0, &new_home, &threads)
+        .map(|(_, id, _)| id);
+    alias::uninstall(&e);
+    assert_eq!(matched, Some((thread.clone(), rollout_old)));
+    assert_eq!(exact, Some(thread));
+}
+
+/// Review 3 S6: Tier R with real data (links, registry records, one stopped
+/// Claude session, one Codex thread) and a non-identity alias; a death before
+/// and after each step's journal save, then a rerun or a rollback, each ends
+/// consistent.
+#[test]
+fn s6_tier_r_crash_before_and_after_each_step_reruns_and_rolls_back() {
+    struct R {
+        t: tempfile::TempDir,
+        paths: Paths,
+        conv: String,
+        claude_id: String,
+        thread: String,
+        alias: Alias,
+    }
+    impl R {
+        fn old_dir(&self) -> PathBuf {
+            self.t.path().join("user/live/p")
+        }
+        fn new_dir(&self) -> PathBuf {
+            self.t.path().join("disk/live/p")
+        }
+        fn store(&self) -> PathBuf {
+            crate::shared_state::target(&self.paths.root, "projects")
+        }
+        fn transcript(&self, dir: &Path) -> PathBuf {
+            self.store()
+                .join(keys::key(&dir.to_string_lossy()))
+                .join(format!("{}.jsonl", self.conv))
+        }
+        fn link(&self) -> PathBuf {
+            layout::target_home(&self.paths.root, ProviderId::Claude, "a").join("projects")
+        }
+        fn pane(&self) -> Value {
+            serde_json::from_slice(
+                &fs::read(self.paths.root.join(layout::MANAGED_PANES).join("p.json")).unwrap(),
+            )
+            .unwrap()
+        }
+        fn location(&self) -> Option<String> {
+            crate::external::relocation::saved_location(&self.paths, &self.thread)
+        }
+        fn dir_now(&self) -> Option<String> {
+            catalog::find(&self.paths, &self.claude_id)
+                .unwrap()
+                .directory
+        }
+    }
+    fn fixture() -> R {
+        let t = tempfile::tempdir().unwrap();
+        let tp = t.path();
+        fs::create_dir_all(tp.join("disk/appdata")).unwrap();
+        fs::create_dir_all(tp.join("disk/live/p")).unwrap();
+        fs::create_dir_all(tp.join("disk/live/q")).unwrap();
+        fs::create_dir_all(tp.join("user")).unwrap();
+        std::os::unix::fs::symlink(tp.join("disk/appdata"), tp.join("user/appdata")).unwrap();
+        std::os::unix::fs::symlink(tp.join("disk/live"), tp.join("user/live")).unwrap();
+        let paths = Paths::new(Some(tp.join("disk/appdata/root"))).unwrap();
+        enroll_claude(&paths, "a");
+        crate::shared_state::enable(&paths.root).unwrap();
+        let home = layout::target_home(&paths.root, ProviderId::Claude, "a");
+        fs::create_dir_all(&home).unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+        let store = crate::shared_state::target(&paths.root, "projects");
+        // The account links name the old spelling of the store (as on the live root).
+        for name in crate::shared_state::NAMES {
+            crate::paths::private_dir(&crate::shared_state::target(&paths.root, name)).unwrap();
+            std::os::unix::fs::symlink(
+                tp.join("user/appdata/root/shared/claude").join(name),
+                home.join(name),
+            )
+            .unwrap();
+        }
+        let conv = uuid::Uuid::new_v4().to_string();
+        let old = tp.join("user/live/p");
+        write(
+            &store
+                .join(keys::key(&old.to_string_lossy()))
+                .join(format!("{conv}.jsonl")),
+            "{\"type\":\"user\"}\n",
+        );
+        let s = catalog::record_provider_launch(
+            &paths,
+            ProviderId::Claude,
+            "a",
+            &conv,
+            "n",
+            Some(&old.to_string_lossy()),
+            None,
+        )
+        .unwrap();
+        let thread = uuid::Uuid::new_v4().to_string();
+        catalog::record_launch(&paths, "c", &thread, "q", None).unwrap();
+        crate::external::relocation::save_location(&paths, &thread, &tp.join("user/live/q"))
+            .unwrap();
+        write(
+            &paths.root.join(layout::MANAGED_PANES).join("p.json"),
+            &serde_json::to_string(&json!({"home": tp.join("user/appdata/root/accounts/codex/c")}))
+                .unwrap(),
+        );
+        let alias = Alias::new(entries(tp));
+        R {
+            claude_id: s.id,
+            t,
+            paths,
+            conv,
+            thread,
+            alias,
+        }
+    }
+    fn start(r: &R) -> Run {
+        let layout_bytes = fs::read(r.paths.root.join(layout::LAYOUT_FILE)).unwrap();
+        let mut run = Run {
+            schema_version: 1,
+            id: uuid::Uuid::new_v4().to_string(),
+            from: r.t.path().join("user"),
+            to: r.t.path().join("disk"),
+            backup: r.t.path().join("bk"),
+            allow_full_copy: true,
+            entries: r.alias.entries.clone(),
+            step: "admitted".into(),
+            state: "running".into(),
+            root_id: "r".into(),
+            canonical_root: r.paths.root.clone(),
+            previous_root: r.paths.root.clone(),
+            layout_before: serde_json::to_value(
+                layout::read_record(&r.paths.root).unwrap().unwrap(),
+            )
+            .unwrap(),
+            layout_before_sha256: sha(&layout_bytes),
+            created_at: now(),
+            ..Default::default()
+        };
+        save_run(&r.paths, &mut run).unwrap();
+        run
+    }
+    fn plan(r: &R) -> Plan {
+        build_plan(&r.paths, &r.alias, &Ok(vec![])).unwrap()
+    }
+    let steps = [
+        "backup", "mark", "links", "registry", "claude", "codex", "activate", "verify",
+    ];
+    let mut points = vec![];
+    for s in steps {
+        points.push(format!("before:{s}"));
+        points.push(s.to_string());
+    }
+    for point in points {
+        let point: &'static str = Box::leak(point.into_boxed_str());
+        for rollback_after in [false, true] {
+            let r = fixture();
+            let mut run = start(&r);
+            let p = plan(&r);
+            die_at(Some(point));
+            let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = drive(&r.paths, &mut run, &p);
+            }));
+            die_at(None);
+            assert!(died.is_err(), "{point}: no death");
+            if rollback_after {
+                let out = rollback(&r.paths, false).unwrap_or_else(|e| panic!("{point}: {e:#}"));
+                assert_eq!(out["rolled_back"], true, "{point}: {out}");
+                assert!(r.transcript(&r.old_dir()).is_file(), "{point}");
+                assert!(!r.transcript(&r.new_dir()).exists(), "{point}");
+                assert_eq!(
+                    r.dir_now().as_deref(),
+                    Some(&*r.old_dir().to_string_lossy()),
+                    "{point}"
+                );
+                assert_eq!(
+                    r.location().as_deref(),
+                    Some(&*r.t.path().join("user/live/q").to_string_lossy()),
+                    "{point}"
+                );
+                assert_eq!(
+                    r.pane()["home"],
+                    json!(r.t.path().join("user/appdata/root/accounts/codex/c")),
+                    "{point}"
+                );
+                assert_eq!(
+                    fs::read_link(r.link()).unwrap(),
+                    r.t.path().join("user/appdata/root/shared/claude/projects"),
+                    "{point}"
+                );
+                assert_eq!(
+                    layout::read_record(&r.paths.root).unwrap().unwrap().version,
+                    layout::VERSION,
+                    "{point}"
+                );
+            } else {
+                let mut again = latest_run(&r.paths).unwrap();
+                if step_index(&again.step) >= step_index("mark") {
+                    alias::install(&again.entries);
+                }
+                let p = plan(&r);
+                drive(&r.paths, &mut again, &p).unwrap_or_else(|e| panic!("{point}: {e:#}"));
+                assert_eq!(again.step, "complete", "{point}: {:?}", again.verify);
+                assert!(r.transcript(&r.new_dir()).is_file(), "{point}");
+                assert!(!r.transcript(&r.old_dir()).exists(), "{point}");
+                assert_eq!(
+                    r.dir_now().as_deref(),
+                    Some(&*r.new_dir().to_string_lossy()),
+                    "{point}"
+                );
+                assert_eq!(
+                    r.location().as_deref(),
+                    Some(&*r.t.path().join("disk/live/q").to_string_lossy()),
+                    "{point}"
+                );
+                assert_eq!(
+                    r.pane()["home"],
+                    json!(r.t.path().join("disk/appdata/root/accounts/codex/c")),
+                    "{point}"
+                );
+                assert_eq!(
+                    fs::read_link(r.link()).unwrap(),
+                    r.paths.root.join("shared/claude/projects"),
+                    "{point}"
+                );
+            }
+            alias::uninstall(&r.alias.entries);
+        }
+    }
+}

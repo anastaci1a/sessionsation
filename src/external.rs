@@ -277,6 +277,57 @@ fn warn_native(result: &mut [Instance], home: &Path, error: &anyhow::Error) {
     }
 }
 
+/// The app-server thread of the pane `result[index]` in `home`: its exact
+/// thread id, else the one top-level thread whose cwd equals the pane's (when no
+/// other pane of that home has the same cwd), with its rollout under
+/// `<home>/sessions`. Root alias: a long-lived app-server reports the old
+/// spelling of its home, rollout and cwd, so all three compare through the alias.
+pub(crate) fn match_app_server_thread<'a>(
+    result: &[Instance],
+    index: usize,
+    home: &Path,
+    threads: &'a [Value],
+) -> Option<(&'a Value, String, PathBuf)> {
+    let source = &result[index];
+    let exact = threads
+        .iter()
+        .find(|t| t["id"].as_str() == Some(source.thread_id.as_str()));
+    let matched = if exact.is_some() {
+        exact
+    } else if source.thread_id.is_empty() {
+        let same_panes = result
+            .iter()
+            .filter(|p| {
+                !p.inactive
+                    && crate::alias::same_path(&p.home, home)
+                    && crate::alias::same_str(&p.cwd, &source.cwd)
+            })
+            .count();
+        let matches: Vec<_> = threads
+            .iter()
+            .filter(|t| {
+                t["cwd"]
+                    .as_str()
+                    .is_some_and(|c| crate::alias::same_str(c, &source.cwd))
+                    && t["parentThreadId"].is_null()
+            })
+            .collect();
+        (same_panes == 1 && matches.len() == 1).then(|| matches[0])
+    } else {
+        None
+    }?;
+    let id = matched["id"]
+        .as_str()
+        .filter(|id| uuid::Uuid::parse_str(id).is_ok())?
+        .to_owned();
+    let path = matched["path"]
+        .as_str()
+        .map(PathBuf::from)
+        .or_else(|| rollout_by_thread(home, &id).ok().flatten())
+        .filter(|p| crate::alias::starts_with(p, &home.join("sessions")))?;
+    Some((matched, id, path))
+}
+
 async fn enrich_native(paths: &Paths, result: &mut [Instance]) {
     let homes: std::collections::BTreeSet<_> = result
         .iter()
@@ -314,54 +365,11 @@ async fn enrich_native(paths: &Paths, result: &mut [Instance]) {
             if result[index].inactive || !crate::alias::same_path(&result[index].home, &home) {
                 continue;
             }
-            let source = &result[index];
-            let exact = threads
-                .iter()
-                .find(|t| t["id"].as_str() == Some(source.thread_id.as_str()));
-            let matched = if exact.is_some() {
-                exact
-            } else if source.thread_id.is_empty() {
-                let same_panes = result
-                    .iter()
-                    .filter(|p| {
-                        !p.inactive
-                            && crate::alias::same_path(&p.home, &home)
-                            && crate::alias::same_str(&p.cwd, &source.cwd)
-                    })
-                    .count();
-                let matches: Vec<_> = threads
-                    .iter()
-                    .filter(|t| {
-                        t["cwd"]
-                            .as_str()
-                            .is_some_and(|c| crate::alias::same_str(c, &source.cwd))
-                            && t["parentThreadId"].is_null()
-                    })
-                    .collect();
-                if same_panes == 1 && matches.len() == 1 {
-                    Some(matches[0])
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            let Some(thread) = matched else { continue };
-            let Some(id) = thread["id"]
-                .as_str()
-                .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+            let Some((thread, id, path)) = match_app_server_thread(result, index, &home, &threads)
             else {
                 continue;
             };
-            let path = thread["path"]
-                .as_str()
-                .map(PathBuf::from)
-                .or_else(|| rollout_by_thread(&home, id).ok().flatten());
-            // Root alias: a long-lived app-server reports the old spelling of its home.
-            let Some(path) = path.filter(|p| crate::alias::starts_with(p, &home.join("sessions")))
-            else {
-                continue;
-            };
+            let id = id.as_str();
             let source = &mut result[index];
             if source.thread_id.is_empty() {
                 source.warnings.push("The server conversation was matched by its unique working directory. Check the conversation ID and directory before confirming the move.".into());

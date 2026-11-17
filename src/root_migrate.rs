@@ -182,9 +182,14 @@ fn save_run(paths: &Paths, r: &mut Run) -> Result<()> {
     atomic_write(&run_file(paths, &r.id)?, &serde_json::to_vec_pretty(r)?)
 }
 fn step(paths: &Paths, r: &mut Run, name: &str, detail: &str) -> Result<()> {
+    // Death after the step's work, before its journal save (tests).
+    #[cfg(test)]
+    tests::die_check(&format!("before:{name}"));
     r.step = name.into();
     r.detail = detail.into();
     save_run(paths, r)?;
+    #[cfg(test)]
+    tests::die_check(name);
     #[cfg(test)]
     tests::crash_check(name)?;
     Ok(())
@@ -921,6 +926,29 @@ pub(crate) fn recognition(
         })),
     }
 }
+/// The supervisor's own recognition, with no command-line fallback (review 3,
+/// B1): Claude by its registry and environment (`claude::observe`), Codex by the
+/// host inventory. The gate must see exactly what the supervisor sees, so a
+/// process that merely names the conversation never counts, and anything but
+/// `running` or `stopped`/`stale` is a probe error.
+pub(crate) fn supervisor_recognition(
+    paths: &Paths,
+    s: &Session,
+    codex: &CodexView,
+) -> std::result::Result<bool, String> {
+    match native::of(&s.provider) {
+        Some(ProviderId::Claude) => {
+            let home = claude_home(paths, &s.account)
+                .ok_or_else(|| format!("account claude:{} unavailable", s.account))?;
+            match claude::observe(&home, &s.conversation_id, s.attachment.as_ref()).availability {
+                "running" => Ok(true),
+                "stopped" | "stale" => Ok(false),
+                other => Err(format!("Claude state {other}")),
+            }
+        }
+        _ => recognition(paths, s, codex),
+    }
+}
 /// The F2 before-snapshot. `Err` refuses Tier R before anything changes.
 pub(crate) async fn gate_rows(paths: &Paths) -> Result<Vec<GateRow>> {
     let codex = codex_instances(paths).await;
@@ -928,7 +956,12 @@ pub(crate) async fn gate_rows(paths: &Paths) -> Result<Vec<GateRow>> {
         bail!("ROOT_MIGRATION_BLOCKED: the Codex inventory for the rollback gate failed: {e}");
     }
     let mut out = vec![];
-    for s in catalog::list(paths)? {
+    // Archived sessions cannot run (review 3, S2).
+    let archived = archived_ids(paths);
+    for s in catalog::list(paths)?
+        .into_iter()
+        .filter(|s| !archived.contains(&s.id))
+    {
         let r = recognition(paths, &s, &codex);
         if s.attachment.is_none() && r == Ok(false) {
             continue;
@@ -1648,6 +1681,13 @@ pub async fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
                 "reflink": if o.allow_full_copy {"full copies allowed"} else {"probed by the real run (refused without --allow-full-copy when unsupported)"}},
             "codex_inventory": {"ok": codex.is_ok(), "detail": codex.as_ref().err()},
         });
+        // Review 3 S2: the before-snapshot the real run takes (it refuses on any
+        // probe error), evaluated here so a refusal shows up days before the window.
+        v["preconditions"]["gate_snapshot"] = match gate_rows(paths).await {
+            Ok(rows) => json!({"ok": true, "sessions": rows.len(),
+                "running": rows.iter().filter(|r| r.running_before).count()}),
+            Err(e) => json!({"ok": false, "detail": format!("{e:#}")}),
+        };
         return Ok(v);
     }
     ensure!(
@@ -1875,7 +1915,9 @@ fn drive(paths: &Paths, run: &mut Run, plan: &Plan) -> Result<()> {
         let _ = runtime::ensure(paths);
         step(paths, run, "activate", "Root alias active.")?;
     }
-    if step_index(&run.step) < step_index("verify") {
+    // Verification runs again on every rerun until the run completes (a death
+    // after the `verify` save, or a fix forward after `verify_failed`).
+    if step_index(&run.step) < step_index("complete") {
         run.verify = verify(paths, run);
         run.state = if run.verify.is_empty() {
             "complete".into()
@@ -1937,13 +1979,22 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
                 .mode(0o700)
                 .create(p)?;
         }
+        // Review 3 S1: copied under a temporary name and renamed only when
+        // complete, so a rerun after a crash never takes a partial copy for done
+        // (an interrupted `.partial-*` copy is left in the backup, never counted).
+        let partial = dir
+            .join("root")
+            .join(format!(".partial-{name}-{}", uuid::Uuid::new_v4()));
         let status = std::process::Command::new("cp")
             .args(["-a", "--reflink=auto", "--"])
             .arg(entry.path())
-            .arg(&target)
+            .arg(&partial)
             .status()
             .context("BACKUP_FAILED: cp is unavailable")?;
         ensure!(status.success(), "BACKUP_FAILED: copying {name}");
+        #[cfg(test)]
+        tests::die_check(&format!("backup:{name}"));
+        fs::rename(&partial, &target)?;
     }
     // SQLite databases: consistent copies.
     for db in [layout::REGISTRY_DB, layout::RECEIPTS_DB] {
@@ -1966,20 +2017,29 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
         )?;
         c.busy_timeout(std::time::Duration::from_secs(10))?;
-        c.execute("VACUUM INTO ?1", [to.to_string_lossy()])
+        let partial = to.with_file_name(format!(".partial-vacuum-{}", uuid::Uuid::new_v4()));
+        c.execute("VACUUM INTO ?1", [partial.to_string_lossy()])
             .with_context(|| format!("BACKUP_FAILED: {db}"))?;
+        fs::rename(&partial, &to)?;
     }
     // The shared Claude projects store (reflink; full copy only when allowed).
     let projects = crate::shared_state::target(root, "projects");
     let shared_copy = dir.join("shared-claude-projects");
     if projects.is_dir() && fs::symlink_metadata(&shared_copy).is_err() {
         let mut stats = crate::shared_state::migrate::CopyStats::default();
+        let partial = dir.join(format!(
+            ".partial-shared-claude-projects-{}",
+            uuid::Uuid::new_v4()
+        ));
         crate::shared_state::migrate::copy_tree(
             &projects,
-            &shared_copy,
+            &partial,
             run.allow_full_copy,
             &mut stats,
         )?;
+        #[cfg(test)]
+        tests::die_check("backup:shared");
+        fs::rename(&partial, &shared_copy)?;
         manifest.push(json!({"class":"shared/claude/projects","files":stats.files,"bytes":stats.bytes,"full_copies":stats.full_copies}));
     }
     // Every managed Claude home's `.claude.json` and link targets.
@@ -2017,10 +2077,99 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
     if shared_copy.is_dir() {
         verify_tree(&shared_copy, &projects, run.allow_full_copy, &mut files)?;
     }
+    // Review 3 S1: the source side too: every file of every copied entry has a
+    // copy (taken once more if missing) of a size its source can have grown from.
+    let entries: Vec<String> = fs::read_dir(root)?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !skip(n))
+        .collect();
+    for name in entries {
+        verify_complete(
+            &root.join(&name),
+            &dir.join("root").join(&name),
+            Path::new(&name),
+            run.allow_full_copy,
+        )?;
+    }
+    if projects.is_dir() {
+        verify_complete(&projects, &shared_copy, Path::new(""), run.allow_full_copy)?;
+    }
     let total = files.len();
     let doc = json!({"version":1,"run":run.id,"root":root,"created_at":now(),"classes":manifest,"homes":homes,
         "file_count":total,"files":files});
     atomic_write(&dir.join("root-backup.json"), &serde_json::to_vec(&doc)?)?;
+    Ok(())
+}
+/// Walk the SOURCE: every regular file has a copy whose size is at most the
+/// source's (a live file can only have grown since; `verify_tree` checks the
+/// bytes). A missing copy is taken once more; still missing, or larger than its
+/// source, fails with `BACKUP_VERIFY_FAILED`. The file counts are compared too.
+/// Regenerable logs/cache, SQLite files (their consistent copies are `.vacuum`),
+/// this tool's own journals and atomic-write temp files are not required.
+fn verify_complete(source: &Path, copy: &Path, rel: &Path, allow_full: bool) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    let exempt = |rel: &Path| {
+        let name = rel.to_string_lossy();
+        rel.starts_with("logs")
+            || rel.starts_with("cache")
+            || rel.starts_with(layout::ROOT_MIGRATIONS)
+            || rel
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(".tmp"))
+            || [".db", ".db-wal", ".db-shm", ".db-journal", ".lock"]
+                .iter()
+                .any(|s| name.ends_with(s))
+    };
+    let mut failures = vec![];
+    let (mut sources, mut copies) = (0u64, 0u64);
+    let mut stack = vec![(source.to_path_buf(), copy.to_path_buf(), rel.to_path_buf())];
+    while let Some((s, c, r)) = stack.pop() {
+        let Ok(m) = fs::symlink_metadata(&s) else {
+            continue; // gone since the listing: verify_tree reports a copy without source
+        };
+        if m.is_dir() {
+            for e in fs::read_dir(&s)?.flatten() {
+                stack.push((e.path(), c.join(e.file_name()), r.join(e.file_name())));
+            }
+            continue;
+        }
+        if !m.is_file() || exempt(&r) {
+            continue;
+        }
+        sources += 1;
+        if fs::symlink_metadata(&c).is_err() {
+            if let Some(p) = c.parent() {
+                fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(p)?;
+            }
+            let mut stats = crate::shared_state::migrate::CopyStats::default();
+            let _ = crate::shared_state::migrate::copy_tree(&s, &c, allow_full, &mut stats);
+        }
+        match fs::symlink_metadata(&c) {
+            Ok(cm)
+                if cm.len() <= m.len() || fs::metadata(&s).is_ok_and(|x| cm.len() <= x.len()) =>
+            {
+                copies += 1
+            }
+            Ok(_) => failures.push(format!("{} (copy larger than its source)", r.display())),
+            Err(_) => failures.push(format!("{} (missing in the backup)", r.display())),
+        }
+    }
+    ensure!(
+        failures.is_empty() && sources == copies,
+        "BACKUP_VERIFY_FAILED: {} of {} source file(s) are not in the backup: {}",
+        sources - copies,
+        sources,
+        failures
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     Ok(())
 }
 /// Hash every file of the copy and compare it with its source: exact for quiet
@@ -2066,6 +2215,13 @@ fn verify_tree(copy: &Path, source: &Path, allow_full: bool, out: &mut Vec<Value
                 continue;
             }
             let rel = p.strip_prefix(copy).unwrap_or(&p).to_path_buf();
+            // Interrupted copies of an earlier attempt (kept, never counted).
+            if rel
+                .components()
+                .any(|c| c.as_os_str().to_string_lossy().starts_with(".partial-"))
+            {
+                continue;
+            }
             let src = source.join(&rel);
             let (mut bytes, mut digest, mut check) = classify(&p, &src, &rel)?;
             if check == "changed" {
@@ -2592,7 +2748,7 @@ pub async fn gate(paths: &Paths, run: Option<&Run>) -> Value {
             // A probe that cannot decide counts as "not recognised" (fail closed).
             let probe = catalog::find(paths, &g.session_id)
                 .map_err(|e| format!("{e:#}"))
-                .and_then(|s| recognition(paths, &s, &codex));
+                .and_then(|s| supervisor_recognition(paths, &s, &codex));
             let now = probe.clone().unwrap_or(false);
             let before_known = g.probe_error.is_none();
             let rec = read_session(paths, &g.session_id);

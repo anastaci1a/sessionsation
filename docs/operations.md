@@ -278,6 +278,15 @@ it opens the root (catalog identity healing, a hosted-worker record whose worker
 fast-forwards use an atomic exchange; a write landing in the same memory file within milliseconds of the
 exchange can end in the saved previous version instead of the live file (a narrow, accepted race).
 
+Release gate: the real bind-mount test (old-spelling Claude and Codex homes recognised through a bind) is
+`#[ignore]` in the default suite because it needs a user and mount namespace. Run it in the check image with:
+
+```sh
+docker run --rm --security-opt seccomp=unconfined -v "$PWD:/work" -w /work \
+  sessionsation-public-check:local \
+  cargo test --locked --test root_migrate bind_namespace -- --ignored
+```
+
 Before the window also stop every hosted (stream-json) Claude worker: `root migrate` refuses while one is
 live, because its socket is in the runtime directory, which moves with the root spelling.
 

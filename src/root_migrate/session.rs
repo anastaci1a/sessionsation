@@ -475,6 +475,20 @@ pub(crate) fn untracked_moves(projects: &Path, r: &SessionRec) -> Vec<Moved> {
 fn undo_session(paths: &Paths, r: &mut SessionRec) -> Result<()> {
     match native::of(&r.provider) {
         Some(ProviderId::Claude) => {
+            // Review 3 S7: conversation ids continued after the resume belong to
+            // the session too (current catalog lineage), for the sweep and the
+            // quiet check.
+            if let Ok(s) = catalog::find(paths, &r.session_id) {
+                for id in s
+                    .previous_conversation_ids
+                    .iter()
+                    .chain(std::iter::once(&s.conversation_id))
+                {
+                    if !r.conversation_ids.contains(id) {
+                        r.conversation_ids.push(id.clone());
+                    }
+                }
+            }
             if let Ok(projects) = projects_of(paths, r) {
                 let extra = untracked_moves(&projects, r);
                 if !extra.is_empty() {
@@ -492,7 +506,14 @@ fn undo_session(paths: &Paths, r: &mut SessionRec) -> Result<()> {
                 let projects = projects_of(paths, r)?;
                 let found: Vec<Found> = vec![];
                 ensure_quiet(paths, r, &found)?;
-                keys::move_back(&r.moved)?;
+                if let Err(e) = keys::move_back(&r.moved) {
+                    // Never a reported success: the session needs a person.
+                    r.state = "uncertain".into();
+                    r.phase = "uncertain".into();
+                    r.reason = Some(format!("{e:#}"));
+                    save_session(paths, r)?;
+                    return Err(e);
+                }
                 r.moved.clear();
                 save_session(paths, r)?;
                 if let (Some(km), Some(kt)) = (r.memory_key.clone(), r.key_to.clone())

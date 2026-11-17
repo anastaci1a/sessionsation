@@ -87,7 +87,22 @@ pub(crate) fn pending_detail(
             if entry.extension().is_none_or(|e| e != "json") {
                 continue;
             }
-            let r: Value = serde_json::from_slice(&fs::read(&entry)?)?;
+            let r: Value = match fs::read(&entry).map(|b| serde_json::from_slice(&b)) {
+                Ok(Ok(v)) => v,
+                // Root re-key records are written atomically, so an unparseable
+                // file there is not one of them: log it, never block every admission.
+                // raw-path: a journal directory constant, not a filesystem path
+                _ if directory == crate::layout::ROOT_MIGRATIONS => {
+                    eprintln!(
+                        "lifecycle: ignoring unreadable file {} in {}",
+                        entry.display(),
+                        crate::layout::ROOT_MIGRATIONS
+                    );
+                    continue;
+                }
+                Ok(Err(e)) => return Err(e.into()),
+                Err(e) => return Err(e.into()),
+            };
             let id = r["id"]
                 .as_str()
                 .or_else(|| r["request"]["request_id"].as_str())

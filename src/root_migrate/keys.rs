@@ -338,9 +338,25 @@ pub fn move_names(
 /// Move names back to where they came from (never overwriting).
 pub fn move_back(moved: &[Moved]) -> Result<()> {
     for m in moved.iter().rev() {
-        if fs::symlink_metadata(&m.from).is_ok() {
-            // Already back, or a journaled intent whose rename never happened
-            // (then anything at `to` is not ours and is never touched).
+        if let Ok(meta) = fs::symlink_metadata(&m.from) {
+            if fs::symlink_metadata(&m.to).is_err() {
+                continue; // already back
+            }
+            // Both exist (review 3, S3): `from` is ours only if it still holds the
+            // recorded bytes (a journaled intent whose rename never happened; then
+            // `to` is someone else's and is never touched). Anything else, e.g. a
+            // file re-created in the old key after the rename, is a conflict.
+            let digest = if meta.is_dir() {
+                tree_digest(&m.from).map(|d| d.1)
+            } else {
+                sha256_file(&m.from).map(|d| d.1)
+            };
+            ensure!(
+                !m.digest.is_empty() && digest.is_ok_and(|d| d == m.digest),
+                "ROOT_REKEY_REVERT_CONFLICT: both {} and {} exist and the old one is not the moved file; nothing was overwritten",
+                m.from.display(),
+                m.to.display()
+            );
             continue;
         }
         crate::shared_state::rename_noreplace(&m.to, &m.from).with_context(|| {
