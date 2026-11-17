@@ -30,7 +30,14 @@ use std::{
 
 pub mod migrate;
 
+/// The version a new root is stamped with (and every root before a root alias).
 pub const VERSION: u32 = 2;
+/// Version 3 (contract 1.54.0): version 2 plus an active root alias (see
+/// [`crate::alias`] and `sessionsation root migrate`). Builds that cannot
+/// compare paths through the alias refuse it (`LAYOUT_UNSUPPORTED`).
+pub const ALIAS_VERSION: u32 = 3;
+/// The newest layout this build admits.
+pub const MAX_VERSION: u32 = ALIAS_VERSION;
 pub const LAYOUT_FILE: &str = "layout.json";
 pub const LAYOUT_LOCK: &str = "layout.lock";
 
@@ -96,6 +103,8 @@ pub const MODEL_CHANGES_LOCK: &str = "operations/model-changes.lock";
 /// One-pass session launches: brief, verification, delivery (contract 1.49.0).
 pub const SESSION_LAUNCHES: &str = "operations/session-launches";
 pub const MOVE_BACKUPS: &str = "operations/move-backups";
+/// `root migrate` run and per-session journals (contract 1.54.0); never pruned.
+pub const ROOT_MIGRATIONS: &str = "operations/root-migrations";
 pub const PROJECT_RELOCATION_LOCK: &str = "operations/project-relocation.lock";
 
 pub const RECEIPTS_DB: &str = "messaging/receipts.db";
@@ -133,6 +142,7 @@ pub const OPERATION_DIRS: &[&str] = &[
     MODEL_CHANGES,
     SESSION_LAUNCHES,
     MOVE_BACKUPS,
+    ROOT_MIGRATIONS,
 ];
 
 /// Every legacy (version 1) top-level entry and its version 2 location. The
@@ -266,18 +276,24 @@ pub fn codex_homes(root: &Path) -> Vec<(String, PathBuf)> {
 }
 
 /// Whether two home paths name the same directory: equal as given, or equal
-/// after resolving symlinks (a legacy compatibility path and its target).
+/// after resolving symlinks (a legacy compatibility path and its target) and
+/// mapping both through the root alias ([`crate::alias::logical`]).
 pub fn same_home(a: &Path, b: &Path) -> bool {
-    a == b || resolve_path(a) == resolve_path(b)
+    a == b || resolve_path(a) == resolve_path(b) // raw-path: both sides resolved
 }
 
 /// Resolve symlinks of the longest existing ancestor and re-append the rest,
 /// so a path under a legacy compatibility symlink equals its canonical form
-/// even when the final components do not exist yet.
+/// even when the final components do not exist yet. The result is in logical
+/// form: with an active root alias both spellings resolve to the same path.
 pub fn resolve_path(path: &Path) -> PathBuf {
+    crate::alias::logical(&resolve_physical(path))
+}
+fn resolve_physical(path: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut cur = path;
     loop {
+        // raw-path: resolve_path applies logical() to the result
         if let Ok(real) = fs::canonicalize(cur) {
             return rest.iter().rev().fold(real, |p, c| p.join(c));
         }
@@ -372,6 +388,35 @@ pub struct Record {
     pub deferred: Vec<Deferred>,
     #[serde(default)]
     pub history: Vec<serde_json::Value>,
+    /// Root alias (contract 1.54.0); required by version 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_alias: Option<RootAlias>,
+}
+
+/// The `root_alias` block of `layout.json` (written by `root migrate`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RootAlias {
+    pub version: u32,
+    /// pending | active | inactive
+    pub state: String,
+    /// Written once; `Paths::resolve` accepts a redirect when both spellings show it.
+    pub root_id: String,
+    pub canonical_root: PathBuf,
+    pub previous_root: PathBuf,
+    pub entries: Vec<crate::alias::Entry>,
+    #[serde(default)]
+    pub normalize_requests: bool,
+    #[serde(default)]
+    pub run: String,
+    #[serde(default)]
+    pub backup: PathBuf,
+    #[serde(default)]
+    pub activated_at: Option<i64>,
+}
+impl RootAlias {
+    pub fn is_active(&self) -> bool {
+        self.state == "active"
+    }
 }
 
 pub fn read_record(root: &Path) -> Result<Option<Record>> {
@@ -431,16 +476,36 @@ fn ensure_store_dirs(root: &Path) -> Result<()> {
 /// no legacy content (a new root); a legacy root fails closed until migrated.
 pub fn admit(root: &Path) -> Result<()> {
     match read_record(root)? {
-        Some(r) if r.version > VERSION => bail!(
-            "LAYOUT_UNSUPPORTED: data root layout version {} is newer than this build supports ({VERSION})",
+        Some(r) if r.version > MAX_VERSION => bail!(
+            "LAYOUT_UNSUPPORTED: data root layout version {} is newer than this build supports ({MAX_VERSION})",
             r.version
         ),
-        Some(r) if r.version == VERSION && r.state == State::Complete => {
+        Some(r)
+            if r.version == ALIAS_VERSION
+                && r.state == State::Complete
+                && !r.root_alias.as_ref().is_some_and(RootAlias::is_active) =>
+        {
+            bail!(
+                "LAYOUT_INVALID: layout version {ALIAS_VERSION} requires an active root_alias block; run `sessionsation root status`"
+            )
+        }
+        Some(r)
+            if (r.version == VERSION || r.version == ALIAS_VERSION)
+                && r.state == State::Complete =>
+        {
             if !root.join(LOGS).is_dir() {
                 ensure_store_dirs(root)?;
             }
             Ok(())
         }
+        Some(r) if r.state != State::Complete && r.root_alias.is_some() => bail!(
+            "LAYOUT_MIGRATION_IN_PROGRESS: a `root {}` did not finish; rerun it (or `sessionsation root rollback`) with the supervisor stopped",
+            if r.state == State::Migrating {
+                "migrate"
+            } else {
+                "rollback"
+            }
+        ),
         Some(r) if r.state != State::Complete => bail!(
             "LAYOUT_MIGRATION_IN_PROGRESS: a data-root layout {} did not finish; run `sessionsation layout migrate` (or `layout rollback`) with the supervisor stopped",
             if r.state == State::Migrating {

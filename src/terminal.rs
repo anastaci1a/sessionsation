@@ -16,6 +16,7 @@ pub fn herdr_session_from(get: impl Fn(&str) -> Option<String>) -> Option<String
     herdr_session_from_socket(Path::new(&get("HERDR_SOCKET_PATH")?))
 }
 pub fn herdr_session_from_socket(socket: &Path) -> Option<String> {
+    // raw-path: only the file and directory names of the socket are read
     let socket = std::fs::canonicalize(socket).unwrap_or_else(|_| socket.to_path_buf());
     if socket.file_name()? != "herdr.sock" {
         return None;

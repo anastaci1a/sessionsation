@@ -514,7 +514,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             ensure!(record.account_id==format!("{provider}:{name}"),"ACCOUNT_DELETION_IDENTITY_MISMATCH");
                             let account=state.account(provider,name).context("ACCOUNT_NOT_FOUND")?;
                             ensure!(account.deletion_id.as_deref().is_none_or(|current|current==id),"ACCOUNT_DELETION_IN_PROGRESS");
-                            ensure!(account.config_home==record.external_home,"ACCOUNT_DELETION_IDENTITY_MISMATCH");
+                            ensure!(account.config_home==record.external_home,"ACCOUNT_DELETION_IDENTITY_MISMATCH"); // raw-path: the record copies config_home verbatim
                             let home=crate::provider::account_home(&paths,account)?;
                             crate::account_deletion::native_idle(&paths,provider,name,&home)?;
                             let account=state.account_mut(provider,name).unwrap();account.deletion_id=Some(id.into());account.enabled=false;
@@ -609,7 +609,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 // The managed home is the normal layout; an operator-populated one is registered as is.
                                 let (home, existing) = match &adopted { Some(dir) => (dir.clone(), true), None => crate::provider::claude::create_home(&paths,name)? };
                                 if adopted.is_none() && !existing { if let Err(e) = crate::provider::claude::bypass::default_new(&home) { eprintln!("bypass-warning default not set: {e}"); } }
-                                if adopted.is_none() && !existing { if let Err(e) = crate::provider::claude::statusline_seed::default_new(&home,&config.claude_default_statusline_command) { eprintln!("statusLine default not set: {e}"); } }
+                                if adopted.is_none() && !existing { if let Err(e) = crate::provider::claude::statusline_seed::default_new(&home,&crate::alias::logical_words(&config.claude_default_statusline_command)) { eprintln!("statusLine default not set: {e}"); } }
                                 // Shared Claude state (1.39.0): link a managed home to the shared store when the store is enabled.
                                 let shared_state = match &adopted { Some(_) => crate::shared_state::Ensure::NotApplicable.public(), None => match crate::shared_state::ensure_links(&paths,&home) { Ok(e) => e.public(), Err(e) => json!({"state":"error","error":format!("{e:#}")}) } };
                                 let auth = crate::provider::claude::auth_report(&config,&home).await;
@@ -918,7 +918,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             if restarting {
                                 let mut control=crate::control::Control::connect(&home).await?;
                                 ensure!(control.loaded().await?.is_empty(), "account backend is still serving conversations; source retained for recovery");
-                                ensure!(!crate::external::host_instances(&paths)?.iter().any(|i|i.home==home), "another Codex terminal is using the account backend");
+                                ensure!(!crate::external::host_instances(&paths)?.iter().any(|i|crate::layout::same_home(&i.home,&home)), "another Codex terminal is using the account backend");
                             }
                             if let Some(helper) = helpers.remove(name) { helper.stop_idle().await?; }
                             if let Err(e) = crate::provider::codex::pin_daemon_release(&home) { eprintln!("codex daemon release not pinned for {name}: {e:#}"); }

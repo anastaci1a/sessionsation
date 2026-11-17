@@ -55,6 +55,7 @@ fn kind_of(directory: &str) -> &'static str {
         d if d == crate::layout::SPACE_MOVES => "space_move",
         d if d == crate::layout::CLAUDE_SWITCHES => "switch",
         d if d == crate::layout::AUTO_RECOVERIES => "auto_recover",
+        d if d == crate::layout::ROOT_MIGRATIONS => "root_rekey",
         _ => "message_recovery",
     }
 }
@@ -76,6 +77,7 @@ pub(crate) fn pending_detail(
         crate::layout::CLAUDE_SWITCHES,
         crate::layout::AUTO_RECOVERIES,
         crate::layout::MESSAGE_RECOVERIES,
+        crate::layout::ROOT_MIGRATIONS,
     ] {
         let root = paths.root.join(directory);
         if !root.is_dir() {
@@ -94,6 +96,7 @@ pub(crate) fn pending_detail(
                 .as_str()
                 .or_else(|| r["session"]["conversation_id"].as_str())
                 .or_else(|| r["source"]["thread_id"].as_str());
+            // raw-path: a journal directory constant, not a filesystem path
             if directory == crate::layout::HANDOFF_JOBS {
                 if source == Some(thread)
                     && id != own

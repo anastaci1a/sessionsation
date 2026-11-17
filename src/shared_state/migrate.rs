@@ -188,6 +188,7 @@ fn mkdir_private(path: &Path) -> Result<()> {
 impl Fs {
     /// Prove that `base` is the same tree as `root` (it cannot be trusted by name).
     fn prove_alias(&self, dry_run: bool) -> Result<&'static str> {
+        // raw-path: --fs-path names an I/O spelling; equality is the literal case
         if self.base == self.root {
             return Ok("same_path");
         }
@@ -300,13 +301,18 @@ fn probe_reflink(dir: &Path) -> Result<()> {
 }
 
 #[derive(Default)]
-struct CopyStats {
-    files: u64,
-    bytes: u64,
-    full_copies: u64,
+pub(crate) struct CopyStats {
+    pub(crate) files: u64,
+    pub(crate) bytes: u64,
+    pub(crate) full_copies: u64,
 }
 /// Reflink copy of a tree (symlinks inside are recreated as symlinks, never followed).
-fn copy_tree(src: &Path, dst: &Path, allow_full: bool, stats: &mut CopyStats) -> Result<()> {
+pub(crate) fn copy_tree(
+    src: &Path,
+    dst: &Path,
+    allow_full: bool,
+    stats: &mut CopyStats,
+) -> Result<()> {
     let meta = fs::symlink_metadata(src)?;
     if meta.file_type().is_symlink() {
         symlink(fs::read_link(src)?, dst)?;
@@ -742,7 +748,10 @@ pub fn migrate(paths: &Paths, opts: &Options) -> Result<Value> {
             "SHARED_STATE_NOT_APPLICABLE: claude:{name} uses an adopted config directory, which is never linked"
         );
     };
-    ensure!(root == paths.root, "SHARED_STATE_NOT_APPLICABLE");
+    ensure!(
+        crate::alias::same_path(&root, &paths.root),
+        "SHARED_STATE_NOT_APPLICABLE"
+    );
     ensure!(
         fs::symlink_metadata(&home).is_ok_and(|m| m.file_type().is_dir()),
         "UNSAFE_ACCOUNT_HOME: {} is not a directory",

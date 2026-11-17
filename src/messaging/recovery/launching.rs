@@ -236,8 +236,10 @@ pub(crate) fn launch_material(paths: &Paths, id: &str) -> anyhow::Result<(PathBu
         "RECOVERY_NATIVE_OWNER_CHANGED_REVALIDATE"
     );
     ensure!(
-        fs::canonicalize(std::env::current_exe()?)? == p.launcher_executable
-            && hash(fs::read(&p.launcher_executable)?) == p.launcher_sha256,
+        crate::alias::same_path(
+            &crate::alias::canonical(&std::env::current_exe()?)?,
+            &p.launcher_executable
+        ) && hash(fs::read(&p.launcher_executable)?) == p.launcher_sha256,
         "RECOVERY_BACKEND_ARTIFACT_CHANGED_REVALIDATE"
     );
     let configured = crate::store::load_config(paths)?.codex_binary;
@@ -247,7 +249,8 @@ pub(crate) fn launch_material(paths: &Paths, id: &str) -> anyhow::Result<(PathBu
         "RECOVERY_EXECUTABLE_CHANGED_REVALIDATE"
     );
     ensure!(
-        identity(&p.directory)? == p.directory_identity && std::env::current_dir()? == p.directory,
+        identity(&p.directory)? == p.directory_identity
+            && crate::alias::same_path(&std::env::current_dir()?, &p.directory),
         "RECOVERY_DIRECTORY_CHANGED_REVALIDATE"
     );
     let home = paths.account(&r.session.account)?;

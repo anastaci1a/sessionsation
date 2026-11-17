@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 53;
+pub const CONTRACT_MINOR: u32 = 54;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.53.0";
+pub const CONTRACT_VERSION: &str = "1.54.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -58,6 +58,49 @@ pub fn version() -> Result<Value> {
     Ok(
         json!({"package":"sessionsation","package_version":env!("CARGO_PKG_VERSION"),"commit":env!("SESSIONSATION_BUILD_COMMIT"),"api_version":VERSION,"contract_revision":CONTRACT_MINOR,"contract_version":CONTRACT_VERSION,"executable":{"path":executable,"sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable)?))}}),
     )
+}
+/// `api version` with the data root (contract 1.54.0): the spelling requested
+/// and the canonical root it resolved to (they differ under an active root alias).
+pub fn version_for(paths: &Paths) -> Result<Value> {
+    let mut v = version()?;
+    v["requested_root"] = json!(crate::alias::requested_root(&paths.root));
+    v["root"] = json!(paths.root);
+    Ok(v)
+}
+
+/// Every operation row of `api operations` (also the `root migrate` P4 check).
+pub fn operations_list(paths: &Paths) -> Result<Vec<Value>> {
+    let mut ops = external::jobs(paths)?
+        .into_iter()
+        .filter(|j| j.non_steering)
+        .map(|j| operation(paths, j))
+        .collect::<Result<Vec<_>>>()?;
+    ops.extend(
+        crate::account_deletion::list(paths)?
+            .into_iter()
+            .map(|r| json!(r)),
+    );
+    ops.extend(
+        crate::account_rename::list(paths)?
+            .iter()
+            .map(crate::account_rename::public),
+    );
+    ops.extend(
+        crate::reset_credit::list(paths)?
+            .iter()
+            .map(crate::reset_credit::public),
+    );
+    ops.extend(crate::claude_switch::operations(paths)?);
+    ops.extend(crate::auto_recover::operations(paths)?);
+    ops.extend(external::archiving::operations(paths)?);
+    ops.extend(external::spaces::operations(paths)?);
+    ops.extend(crate::inline::operations(paths)?);
+    ops.extend(crate::messaging::compaction::operations(paths)?);
+    ops.extend(crate::messaging::model_change::operations(paths)?);
+    ops.extend(crate::session_launch::operations(paths)?);
+    // Contract 1.54.0: per-session root re-keys in flight.
+    ops.extend(crate::root_migrate::operations(paths));
+    Ok(ops)
 }
 
 // Parsed once per process; boxing the one-pass launch flags would only add noise.
@@ -1103,8 +1146,8 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
                 .filter(|h| !h.is_empty())
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| crate::layout::account_home(&paths.root, provider, name));
-            a["home_deferred"] =
-                json!(a["config_home"].as_str().is_none_or(str::is_empty) && home != target);
+            let deferred = a["config_home"].as_str().is_none_or(str::is_empty) && home != target; // raw-path: both derive from paths.root (one spelling)
+            a["home_deferred"] = json!(deferred);
             a["home"] = json!(home);
             project_rename_state(
                 paths,
@@ -1176,7 +1219,11 @@ fn project_rename_state(
         ));
     }
     let running = if provider == ProviderId::Codex {
-        codex_instances.map(|all| all.iter().filter(|i| i.home == home).count())
+        codex_instances.map(|all| {
+            all.iter()
+                .filter(|i| crate::layout::same_home(&i.home, home))
+                .count()
+        })
     } else if home.exists() {
         native::live_sessions(provider, home).ok().map(|l| l.len())
     } else {
@@ -1775,6 +1822,8 @@ pub fn capabilities() -> Value {
     value["pane_reuse"] = crate::pane_reuse::capability();
     // Contract 1.53.0: redeem a stored Codex rate-limit reset credit.
     value["account_reset_credit"] = crate::reset_credit::capability();
+    // Contract 1.54.0: root alias and re-key (`root status|migrate|rollback|finalize`).
+    value["root_alias"] = crate::root_migrate::capability();
     value["new_space"] = json!({"since_revision":20,"version":1,"resume":true,"add_to_herdr":true,"move_space":true,"label_validation":"space_label","exists_error":"WORKSPACE_NAME_EXISTS"});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
     value["auto_recover"] = crate::auto_recover::capability();
@@ -3028,7 +3077,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             inventory(paths).await?;
             catalog::placement::project(paths, &catalog::list(paths)?)?
         }
-        Command::Version => version()?,
+        Command::Version => version_for(paths)?,
         Command::DiskSpace => crate::disk_space::report(paths),
         Command::Archives => external::archiving::list(paths)?,
         Command::Archive { target } => {
@@ -3437,37 +3486,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             ..
         } => external::spaces::list(paths, &session, &expected_generation).await?,
         Command::MoveSpace { target } => external::spaces::start(paths, target).await?,
-        Command::Operations => {
-            let mut ops = external::jobs(paths)?
-                .into_iter()
-                .filter(|j| j.non_steering)
-                .map(|j| operation(paths, j))
-                .collect::<Result<Vec<_>>>()?;
-            ops.extend(
-                crate::account_deletion::list(paths)?
-                    .into_iter()
-                    .map(|r| json!(r)),
-            );
-            ops.extend(
-                crate::account_rename::list(paths)?
-                    .iter()
-                    .map(crate::account_rename::public),
-            );
-            ops.extend(
-                crate::reset_credit::list(paths)?
-                    .iter()
-                    .map(crate::reset_credit::public),
-            );
-            ops.extend(crate::claude_switch::operations(paths)?);
-            ops.extend(crate::auto_recover::operations(paths)?);
-            ops.extend(external::archiving::operations(paths)?);
-            ops.extend(external::spaces::operations(paths)?);
-            ops.extend(crate::inline::operations(paths)?);
-            ops.extend(crate::messaging::compaction::operations(paths)?);
-            ops.extend(crate::messaging::model_change::operations(paths)?);
-            ops.extend(crate::session_launch::operations(paths)?);
-            json!(ops)
-        }
+        Command::Operations => json!(operations_list(paths)?),
         Command::Respond {
             operation: id,
             sequence,
@@ -4140,7 +4159,14 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.53.0");
+        assert_eq!(c["contract_version"], "1.54.0");
+        let root = &c["root_alias"];
+        assert_eq!(root["since_contract"], "1.54.0");
+        assert_eq!(root["layout_version"], 3);
+        assert_eq!(
+            root["gate"]["values"],
+            json!(["pass", "fail", "not_applicable"])
+        );
         let reset = &c["account_reset_credit"];
         assert_eq!(reset["since_contract"], "1.53.0");
         assert_eq!(reset["providers"], json!(["codex"]));

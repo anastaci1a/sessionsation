@@ -208,7 +208,7 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
     }
     let mut stored = vec![];
     files(&home, &home, &mut stored)?;
-    let active:Vec<_>=external::host_instances(paths)?.into_iter().filter(|i|i.home==home)
+    let active:Vec<_>=external::host_instances(paths)?.into_iter().filter(|i|crate::layout::same_home(&i.home,&home))
         .map(|i|json!({"target":i.pane,"conversation_id":i.thread_id,"pid":i.pid,"process_start":i.start_time})).collect();
     let loaded = if crate::control::available(&home) {
         crate::control::Control::connect(&home)
@@ -224,7 +224,7 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
     };
     let operations: Vec<_> = external::jobs(paths)?
         .into_iter()
-        .filter(|j| j.target == name || j.source.home == home)
+        .filter(|j| j.target == name || crate::layout::same_home(&j.source.home, &home))
         .filter(|j| {
             !matches!(
                 j.phase.as_str(),

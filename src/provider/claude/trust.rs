@@ -174,13 +174,16 @@ fn edit(text: &str, keys: &[String]) -> Result<Option<String>> {
 }
 
 /// Project keys Claude may look up for a start in `directory`: the directory
-/// as the process sees it (canonical) and, when different, as recorded.
+/// as the process sees it (canonical), as recorded, and (root alias, 1.54.0)
+/// its logical spelling.
 fn project_keys(directory: &Path) -> Result<Vec<String>> {
     ensure!(directory.is_absolute(), "directory must be absolute");
+    // raw-path: Claude keys trust by the literal spelling; every spelling is written
     let canonical = fs::canonicalize(directory)
         .with_context(|| format!("directory {} is unavailable", directory.display()))?;
+    let logical = crate::alias::logical(directory);
     let mut keys = Vec::new();
-    for path in [canonical.as_path(), directory] {
+    for path in [canonical.as_path(), directory, logical.as_path()] {
         let key = path.to_str().context("directory is not UTF-8")?.to_owned();
         let key = if key.len() > 1 {
             key.trim_end_matches('/').to_owned()
@@ -197,6 +200,17 @@ fn project_keys(directory: &Path) -> Result<Vec<String>> {
 /// Pre-accept Claude's folder trust for `directory` in the account at `home`.
 pub fn pretrust(home: &Path, directory: &Path) -> Result<Outcome> {
     let keys = project_keys(directory)?;
+    edit_config(home, |text| edit(text, &keys))
+}
+
+/// Edit `$home/.claude.json` with `change` (text in, `Some(new text)` to write or
+/// `None` for no change) under the compare-and-swap retry: a concurrent Claude
+/// write between our read and rename is detected and `change` runs again on the
+/// new content. Mode and owner are kept; a symlink is refused.
+pub(crate) fn edit_config(
+    home: &Path,
+    mut change: impl FnMut(&str) -> Result<Option<String>>,
+) -> Result<Outcome> {
     let file: PathBuf = home.join(CONFIG_FILE);
     // Bounded retries: a concurrent Claude write between our read and rename
     // is detected and the edit is redone on the new content.
@@ -215,7 +229,7 @@ pub fn pretrust(home: &Path, directory: &Path) -> Result<Outcome> {
             "CLAUDE_CONFIG_UNREADABLE: .claude.json is not a regular file"
         );
         let text = fs::read_to_string(&file).context("CLAUDE_CONFIG_UNREADABLE")?;
-        let Some(updated) = edit(&text, &keys)? else {
+        let Some(updated) = change(&text)? else {
             return Ok(Outcome::AlreadyTrusted);
         };
         let mut tmp = tempfile::Builder::new()

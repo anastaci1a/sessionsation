@@ -102,7 +102,7 @@ pub fn describe() -> Value {
         "command": "retention run [--dry-run]",
         "logs": {"setting_days":"log_retention_days","default_days":c.log_retention_days,"setting_max_bytes":"log_max_bytes","default_max_bytes":c.log_max_bytes,"rotated_suffix":".1","paths":[layout::LOGS]},
         "cache": {"setting":"cache_retention_days","default_days":c.cache_retention_days,"paths":[layout::OBSERVATIONS]},
-        "operations": {"setting":"operation_retention_days","default_days":c.operation_retention_days,"final_phases":PRUNABLE.iter().map(|(d, p)| (d.to_string(), json!(p))).collect::<serde_json::Map<_, _>>(),"never":[layout::DELETIONS,layout::ACCOUNT_DELETIONS,layout::LIFECYCLE_ADMISSION,layout::MOVE_BACKUPS],"unfinished_or_uncertain":"kept"},
+        "operations": {"setting":"operation_retention_days","default_days":c.operation_retention_days,"final_phases":PRUNABLE.iter().map(|(d, p)| (d.to_string(), json!(p))).collect::<serde_json::Map<_, _>>(),"never":[layout::DELETIONS,layout::ACCOUNT_DELETIONS,layout::LIFECYCLE_ADMISSION,layout::MOVE_BACKUPS,layout::ROOT_MIGRATIONS],"unfinished_or_uncertain":"kept"},
         "receipts": {"setting":"receipt_retention_days","default_days":c.receipt_retention_days,"unknown_horizon_setting":"receipt_unknown_horizon_days","default_unknown_horizon_days":c.receipt_unknown_horizon_days,"tombstones":"kept"},
     })
 }

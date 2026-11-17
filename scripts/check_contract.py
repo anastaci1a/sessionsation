@@ -332,6 +332,12 @@ with tempfile.TemporaryDirectory() as directory:
             retention = value["result"]["receipt_retention"]
             assert retention["delivered_journal_states_retire_as_terminal"] == ["execution_started", "native_accepted"], retention
             assert retention["delivered_requires"]["worker"] == "stopped" and retention["delivered_requires"]["since_contract"] == "1.52.0", retention
+            root_alias = value["result"]["root_alias"]
+            assert root_alias["since_contract"] == "1.54.0" and root_alias["layout_version"] == 3, root_alias
+            assert root_alias["commands"] == ["root status", "root migrate", "root rollback", "root finalize"], root_alias
+            assert root_alias["gate"]["field"] == "gate" and root_alias["gate"]["values"] == ["pass", "fail", "not_applicable"], root_alias
+            assert root_alias["retained_copies"]["deleted_by"] == "never (1.54)", root_alias
+            assert "ROOT_ALIAS_UNVERIFIED" in root_alias["errors"] and "ROOT_REKEY_CONFLICT" in root_alias["errors"], root_alias
             reset = value["result"]["account_reset_credit"]
             assert reset["since_contract"] == "1.53.0" and reset["providers"] == ["codex"], reset
             assert reset["method"] == "account/rateLimitResetCredit/consume" and reset["idempotent_by"] == "request_id", reset

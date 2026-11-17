@@ -236,6 +236,40 @@ hourly; `sessionsation retention run [--dry-run]` runs one now. Settings in
 | Operations history | `operation_retention_days` (90) | Journals in a final phase (launches `running`/`failed`; resumptions also `abandoned`; conversation operations, space moves and message recoveries `complete`/`failed`; handoff jobs also `cancelled`/`recovered`) are removed with their sidecars unless a lock is held. Unfinished or `uncertain` journals, `deletions/`, `account-deletions/`, lifecycle admission locks and move backups are kept. |
 | Receipts | `receipt_retention_days` (14), `receipt_unknown_horizon_days` (90) | Unchanged receipt retention (revision 18) runs in the same pass; retired ids keep tombstones. |
 
+`operations/root-migrations/` (root re-key journals and per-session records) is never pruned.
+
+## Root re-key (contract 1.54.0)
+
+`sessionsation root migrate` moves a data root and its sessions from one spelling of a bind-mounted tree to
+the other, for example from `/mnt/user/appdata/sessionsation` to `/mnt/disk1/appdata/sessionsation`. The old
+spelling keeps working throughout (the binds stay mounted); the alias only changes how paths are compared and
+which spelling new records use. Contract: [root alias and re-key](contract.md#root-alias-and-re-key-1540).
+
+Order for a window:
+
+1. Before the window: install the release (the alias stays inert until `root migrate`), run
+   `root migrate --from F --to T --backup DIR --dry-run` and review the plan: `left_behind`, `collisions`,
+   `memory_conflicts`, `memory_split`, `existing_target_keys`, `unmapped`. Resolve memory conflicts by making
+   the two files identical (nothing is chosen automatically). Create throwaway canary sessions on the old
+   path (one Claude, one Codex) in a scratch directory.
+2. Wait until `api operations` shows nothing in flight, then `sessionsation daemon stop`.
+3. `root migrate --from F --to T --backup DIR` (a new or empty directory outside the root; add
+   `--allow-full-copy` only where the file system cannot reflink). Running sessions are not stopped
+   (`deferred_running`); stopped Claude sessions are re-keyed (`rekeyed`, verified at their next resume).
+4. Start the supervisor, run `root status` and read `gate`. `fail` means a session that ran before the
+   activation is no longer recognised as running: stop and run `root rollback` (supervisor stopped).
+5. Canaries: `root migrate --session <canary>` for the Claude and the Codex canary; both must reach
+   `verified` before any real session.
+6. Each running session in turn (sessions of one directory back to back): `root migrate --session S
+   [--accept-risks] [--prompt-file F]`, then `root status` until `verified`, `left_behind` or `uncertain`.
+7. `root status`: report `left_behind`, `memory_split` and `unmapped`.
+
+Rollback: `root rollback --session S` for one session, `root rollback` (supervisor stopped) for the whole root
+(layout version 2; sessions already `verified` stay on their new directory, which works under either
+spelling). A binary older than 1.54.0 refuses a version 3 root, so roll the root back first. Every transcript
+moved by the re-key has a verified copy under `DIR/sessions/<session>/<attempt>/`; no command deletes these
+copies, including `root finalize`, which only removes empty old project-key directories.
+
 ## Remaining limits
 
 - Busy Queue/FIFO and unplanned native-loss acceptance in downstream adapters need

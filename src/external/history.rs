@@ -217,7 +217,7 @@ async fn fingerprint(control: &mut Control, id: &str, version: u8) -> Result<His
 pub(super) async fn capture(paths: &Paths, job: &mut Job, files: &[PathBuf]) -> Result<()> {
     if crate::account_deletion::preserved_homes(paths)?
         .iter()
-        .any(|(_, home)| *home == job.source.home)
+        .any(|(_, home)| crate::layout::same_home(home, &job.source.home))
     {
         job.history_checks = preserved_checks(&job.source.home, files)?;
         return save_job(paths, job);

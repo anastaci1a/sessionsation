@@ -88,6 +88,7 @@ fn edit(text: &str, keys: &[String]) -> Result<Option<String>> {
 /// and, when different, as given.
 fn keys(directory: &Path) -> Result<Vec<String>> {
     ensure!(directory.is_absolute(), "directory must be absolute");
+    // raw-path: agy keys trust by the literal spelling (as for Claude)
     let canonical = fs::canonicalize(directory)
         .with_context(|| format!("directory {} is unavailable", directory.display()))?;
     let mut out = Vec::new();

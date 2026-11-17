@@ -34,7 +34,8 @@ fn existing_parent(path: &Path) -> Result<(PathBuf, Vec<std::ffi::OsString>)> {
     loop {
         match fs::symlink_metadata(ancestor) {
             Ok(_) => {
-                let resolved = fs::canonicalize(ancestor)?;
+                // Contract 1.54.0: a new destination is normalised to the alias spelling.
+                let resolved = crate::alias::canonical(ancestor)?;
                 ensure!(resolved.is_dir(), "destination parent is not a directory");
                 return Ok((resolved, missing));
             }
@@ -83,6 +84,7 @@ fn plan_for(
     move_files: bool,
     restart: bool,
 ) -> Result<Relocation> {
+    // raw-path: the literal current spelling; a re-key (old -> new spelling) is a real change
     let from = fs::canonicalize(&source.cwd).context("source working directory does not exist")?;
     let to = destination(to)?;
     ensure!(
@@ -104,7 +106,8 @@ fn plan_for(
         );
         ensure!(
             from.parent().is_some()
-                && std::env::var_os("HOME").is_none_or(|home| home != from.as_os_str()),
+                && std::env::var_os("HOME")
+                    .is_none_or(|home| !crate::alias::same_path(Path::new(&home), &from)),
             "cannot move the filesystem root or home directory"
         );
         ensure!(
@@ -387,13 +390,14 @@ async fn project_users(paths: &Paths, job: &Job, root: &Path) -> Result<Vec<u32>
         if pid == std::process::id() {
             continue;
         }
-        let cwd = fs::read_link(entry.path().join("cwd")).is_ok_and(|p| p.starts_with(root));
+        let under = |p: &Path| crate::alias::starts_with(p, root);
+        let cwd = fs::read_link(entry.path().join("cwd")).is_ok_and(|p| under(&p));
         let open = fs::read_dir(entry.path().join("fd"))
             .ok()
             .is_some_and(|entries| {
                 entries
                     .flatten()
-                    .any(|fd| fs::read_link(fd.path()).is_ok_and(|p| p.starts_with(root)))
+                    .any(|fd| fs::read_link(fd.path()).is_ok_and(|p| under(&p)))
             });
         if !cwd && !open {
             continue;
@@ -417,7 +421,8 @@ async fn project_users(paths: &Paths, job: &Job, root: &Path) -> Result<Vec<u32>
                                 let mut control = Control::connect(&home).await?;
                                 Ok::<_, anyhow::Error>(control.loaded().await?.iter().all(|t| {
                                     t["cwd"].as_str().is_some_and(|cwd| {
-                                        fs::canonicalize(cwd).is_ok_and(|p| !p.starts_with(root))
+                                        crate::alias::canonical(Path::new(cwd))
+                                            .is_ok_and(|p| !crate::alias::starts_with(&p, root))
                                     })
                                 }))
                             }
@@ -482,7 +487,7 @@ async fn move_files(paths: &Paths, job: &mut Job) -> Result<()> {
     let parent = r.to.parent().context("destination parent missing")?;
     fs::create_dir_all(parent).context("cannot create destination parent directories")?;
     ensure!(
-        fs::canonicalize(parent)? == parent,
+        crate::alias::canonical(parent)? == crate::alias::logical(parent),
         "destination parent changed; retry the move"
     );
     ensure!(
@@ -537,7 +542,7 @@ pub(super) async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
     identify(paths, job).await?;
     let r = job.relocation.clone().context("missing relocation")?;
     ensure!(
-        Path::new(&job.source.cwd) == r.from,
+        crate::alias::same_path(Path::new(&job.source.cwd), &r.from),
         "session changed working directory; select it again"
     );
     let _ = plan_for(paths, &job.source, &r.to, r.move_files, r.restart)?;
@@ -581,7 +586,10 @@ pub(super) async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
     let home = job.source.home.clone();
     if r.restart && crate::control::available(&home) {
         let mut current = Control::connect(&home).await?;
-        let other_panes = live_sessions(paths).await?.iter().any(|i| i.home == home);
+        let other_panes = live_sessions(paths)
+            .await?
+            .iter()
+            .any(|i| crate::layout::same_home(&i.home, &home));
         let other_threads = !current.loaded().await?.is_empty();
         let note = if job.source.pane.starts_with("herdr/") {
             "The HERDR terminal was restarted; the existing account backend remains owned by its supervisor."
@@ -648,7 +656,7 @@ pub(crate) fn save_location(paths: &Paths, thread: &str, directory: &Path) -> Re
         &serde_json::to_vec(&json!({"cwd":directory}))?,
     )
 }
-pub(super) fn saved_location(paths: &Paths, thread: &str) -> Option<String> {
+pub(crate) fn saved_location(paths: &Paths, thread: &str) -> Option<String> {
     uuid::Uuid::parse_str(thread).ok()?;
     let v: Value = serde_json::from_slice(
         &fs::read(

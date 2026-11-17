@@ -59,7 +59,7 @@ pub(super) fn timing(paths: &Paths) -> Timing {
             .lock()
             .unwrap()
             .iter()
-            .find(|(root, _)| *root == paths.root)
+            .find(|(root, _)| *root == paths.root) // raw-path: in-process registry keyed by Paths.root
             .map_or(Timing::DISABLED, |(_, t)| *t)
     }
     #[cfg(not(test))]

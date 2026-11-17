@@ -269,7 +269,10 @@ async fn discover_mode(
 }
 
 fn warn_native(result: &mut [Instance], home: &Path, error: &anyhow::Error) {
-    for source in result.iter_mut().filter(|s| !s.inactive && s.home == home) {
+    for source in result
+        .iter_mut()
+        .filter(|s| !s.inactive && crate::alias::same_path(&s.home, home))
+    {
         source.warnings.push(format!("Native inventory metadata was not observed: {error:#}. Process/history discovery is retained; this read sent no input."));
     }
 }
@@ -290,7 +293,7 @@ async fn enrich_native(paths: &Paths, result: &mut [Instance]) {
         };
         let candidates: Vec<_> = result
             .iter()
-            .filter(|i| !i.inactive && i.home == home)
+            .filter(|i| !i.inactive && crate::alias::same_path(&i.home, &home))
             .collect();
         let selected = candidates
             .iter()
@@ -308,7 +311,7 @@ async fn enrich_native(paths: &Paths, result: &mut [Instance]) {
             }
         };
         for index in 0..result.len() {
-            if result[index].inactive || result[index].home != home {
+            if result[index].inactive || !crate::alias::same_path(&result[index].home, &home) {
                 continue;
             }
             let source = &result[index];
@@ -320,12 +323,18 @@ async fn enrich_native(paths: &Paths, result: &mut [Instance]) {
             } else if source.thread_id.is_empty() {
                 let same_panes = result
                     .iter()
-                    .filter(|p| !p.inactive && p.home == home && p.cwd == source.cwd)
+                    .filter(|p| {
+                        !p.inactive
+                            && crate::alias::same_path(&p.home, &home)
+                            && crate::alias::same_str(&p.cwd, &source.cwd)
+                    })
                     .count();
                 let matches: Vec<_> = threads
                     .iter()
                     .filter(|t| {
-                        t["cwd"].as_str() == Some(source.cwd.as_str())
+                        t["cwd"]
+                            .as_str()
+                            .is_some_and(|c| crate::alias::same_str(c, &source.cwd))
                             && t["parentThreadId"].is_null()
                     })
                     .collect();
@@ -607,7 +616,7 @@ fn rollout_for(pid: u32) -> Result<Option<(String, PathBuf, PathBuf)>> {
     found.dedup();
     Ok((found.len() == 1).then(|| found.remove(0)))
 }
-fn process_home(pid: u32) -> Result<PathBuf> {
+pub(crate) fn process_home(pid: u32) -> Result<PathBuf> {
     let raw = fs::read(format!("/proc/{pid}/environ"))?;
     let vars = raw.split(|b| *b == 0);
     let home = vars.clone().find_map(|v| v.strip_prefix(b"CODEX_HOME="));
@@ -622,12 +631,13 @@ fn process_home(pid: u32) -> Result<PathBuf> {
         }
     };
     ensure!(path.is_absolute(), "Codex home is not absolute");
-    Ok(fs::canonicalize(path)?)
+    // Root alias: an app-server started with the old CODEX_HOME spelling is this home.
+    Ok(crate::alias::canonical(&path)?)
 }
 fn resumed_thread(pid: u32) -> Result<Option<String>> {
     Ok(parse_launch(&process_args(pid)?).thread)
 }
-fn rollout_by_thread(home: &Path, thread: &str) -> Result<Option<PathBuf>> {
+pub(crate) fn rollout_by_thread(home: &Path, thread: &str) -> Result<Option<PathBuf>> {
     let mut files = Vec::new();
     collect_rollouts(&home.join("sessions"), &mut files)?;
     let mut matches = files.into_iter().filter(|path| {
@@ -762,7 +772,7 @@ pub(crate) fn history_file_details(path: &Path) -> Value {
     json!({"conversation_created_at":meta.as_ref().and_then(|m|m["timestamp"].as_str()),
         "history_file_bytes":fs::metadata(path).ok().filter(|m|m.is_file()).map(|m|m.len())})
 }
-fn session_meta(path: &Path) -> Result<Value> {
+pub(crate) fn session_meta(path: &Path) -> Result<Value> {
     let file = File::open(path)?;
     let mut line = String::new();
     BufReader::new(file).read_line(&mut line)?;
@@ -838,6 +848,7 @@ pub fn instances() -> Result<Vec<Instance>> {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| fields[4].to_owned());
         if let Some(dir) = &launch.cwd {
+            // raw-path: the process's own view of its cwd (a stored observation)
             cwd = fs::canonicalize(Path::new(&cwd).join(dir))
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| dir.clone());
@@ -964,7 +975,7 @@ fn inventory_complete(
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
     {
-        if let Ok(home) = fs::canonicalize(home) {
+        if let Ok(home) = crate::alias::canonical(&home) {
             homes.insert(home);
         }
     }
@@ -977,7 +988,7 @@ fn inventory_complete(
             .map(|h| crate::layout::resolve_path(&h)),
     );
     for (_, home) in crate::layout::codex_homes(&paths.root) {
-        homes.insert(fs::canonicalize(home)?);
+        homes.insert(crate::alias::canonical(&home)?);
     }
     let preserved = preserved_homes(paths)?;
     homes.extend(preserved.iter().map(|(_, h)| h.clone()));
@@ -997,7 +1008,12 @@ fn inventory_complete(
             }),
             &mut files,
         )?;
-        if !archived && (include_archived || preserved.iter().any(|(_, h)| *h == home)) {
+        if !archived
+            && (include_archived
+                || preserved
+                    .iter()
+                    .any(|(_, h)| crate::alias::same_path(h, &home)))
+        {
             collect_rollouts(&home.join("archived_sessions"), &mut files)?;
         }
         for rollout in files {
@@ -1032,7 +1048,9 @@ fn inventory_complete(
                 last_accessed: None,
                 archived: archived
                     || (include_archived
-                        && !preserved.iter().any(|(_, h)| *h == home)
+                        && !preserved
+                            .iter()
+                            .any(|(_, h)| crate::alias::same_path(h, &home))
                         && rollout.starts_with(home.join("archived_sessions"))),
                 inactive: true,
                 account: account.clone(),
@@ -1149,17 +1167,19 @@ fn preserved_homes(paths: &Paths) -> Result<Vec<(String, PathBuf)>> {
     }
     Ok(homes)
 }
-fn account_for_home(paths: &Paths, home: &Path) -> String {
-    let Ok(home) = fs::canonicalize(home) else {
+pub(crate) fn account_for_home(paths: &Paths, home: &Path) -> String {
+    let Ok(home) = crate::alias::canonical(home) else {
         return "unknown".into();
     };
     if let Ok(homes) = preserved_homes(paths)
-        && let Some((name, _)) = homes.into_iter().find(|(_, h)| *h == home)
+        && let Some((name, _)) = homes
+            .into_iter()
+            .find(|(_, h)| crate::alias::same_path(h, &home))
     {
         return name;
     }
     for (name, candidate) in crate::layout::codex_homes(&paths.root) {
-        if fs::canonicalize(candidate).is_ok_and(|candidate| candidate == home) {
+        if crate::alias::canonical(&candidate).is_ok_and(|candidate| candidate == home) {
             return name;
         }
     }
@@ -1412,7 +1432,8 @@ async fn run_account_thread_inner(
         "unsupported launch option; use run --account NAME -- [Codex options] or --thread UUID for an exact resume"
     );
     if let Some(dir) = &launch.cwd {
-        cwd = fs::canonicalize(cwd.join(dir)).context("working directory is unavailable")?;
+        cwd =
+            crate::alias::canonical(&cwd.join(dir)).context("working directory is unavailable")?;
     }
     ensure!(cwd.is_dir(), "working directory is not a directory");
     let requested = thread.or(launch.thread.as_deref());
@@ -1678,7 +1699,7 @@ pub fn destination_tui_may_be_active(paths: &Paths, account: &str) -> bool {
 pub fn inactive_source_only_lease(paths: &Paths, account: &str) -> bool {
     let Ok(home) = paths
         .account(account)
-        .and_then(|p| Ok(fs::canonicalize(p)?))
+        .and_then(|p| Ok(crate::alias::canonical(&p)?))
     else {
         return false;
     };
@@ -1691,20 +1712,20 @@ pub fn inactive_source_only_lease(paths: &Paths, account: &str) -> bool {
                 || job.source_lease_released
                 || job.phase != "running_on_target"
                 || job.target == account
-                || fs::canonicalize(&job.source.home).ok().as_ref() != Some(&home)
+                || crate::alias::canonical(&job.source.home).ok().as_ref() != Some(&home)
             {
                 return false;
             }
             let Ok(target) = paths
                 .account(&job.target)
-                .and_then(|p| Ok(fs::canonicalize(p)?))
+                .and_then(|p| Ok(crate::alias::canonical(&p)?))
             else {
                 return false;
             };
             handoff_worker_alive(&job.id)
                 && live.iter().any(|instance| {
                     instance.pane == job.source.pane
-                        && fs::canonicalize(&instance.home).ok().as_ref() == Some(&target)
+                        && crate::alias::canonical(&instance.home).ok().as_ref() == Some(&target)
                 })
         })
     })
@@ -1735,10 +1756,10 @@ pub(crate) fn handoff_worker_alive(id: &str) -> bool {
 }
 pub fn is_current_account(paths: &Paths, source: &Instance, name: &str) -> bool {
     match (
-        fs::canonicalize(&source.home),
+        crate::alias::canonical(&source.home),
         paths
             .account(name)
-            .and_then(|path| Ok(fs::canonicalize(path)?)),
+            .and_then(|path| Ok(crate::alias::canonical(&path)?)),
     ) {
         (Ok(source), Ok(account)) => source == account,
         _ => false,
@@ -1759,8 +1780,8 @@ fn job_conflicts_with_source(paths: &Paths, job: &Job, source: &Instance) -> boo
         if let (Ok(target), Ok(current)) = (
             paths
                 .account(&job.target)
-                .and_then(|p| Ok(fs::canonicalize(p)?)),
-            fs::canonicalize(&source.home),
+                .and_then(|p| Ok(crate::alias::canonical(&p)?)),
+            crate::alias::canonical(&source.home),
         ) {
             if target == current {
                 return false;
@@ -1801,7 +1822,7 @@ pub async fn queue_move(
         })
         .context("selected Codex conversation is no longer available")?;
     ensure!(
-        fs::canonicalize(&source.home)? != fs::canonicalize(paths.account(target)?)?,
+        crate::alias::canonical(&source.home)? != crate::alias::canonical(&paths.account(target)?)?,
         "conversation is already using that account home"
     );
     let status = daemon::call(paths, "status", json!({})).await?;
@@ -2347,7 +2368,8 @@ pub(crate) fn complete_rollout(path: &Path) -> Result<bool> {
     rollout_scan::complete(path)
 }
 pub(crate) fn rollout_still_open(path: &Path) -> Result<bool> {
-    Ok(open_rollouts()?.contains(path))
+    let open = open_rollouts()?;
+    Ok(open.contains(path) || open.contains(&crate::alias::logical(path)))
 }
 fn open_rollouts() -> Result<std::collections::BTreeSet<PathBuf>> {
     let mut found = std::collections::BTreeSet::new();
@@ -2378,6 +2400,8 @@ fn open_rollouts() -> Result<std::collections::BTreeSet<PathBuf>> {
                     {
                         continue;
                     }
+                    // Root alias: a writer that opened the file by the old spelling.
+                    found.insert(crate::alias::logical(&link));
                     found.insert(link);
                 }
             }
@@ -2447,7 +2471,7 @@ fn descendants(home: &Path, root: &str) -> Result<Vec<PathBuf>> {
     ensure!(
         selected
             .iter()
-            .any(|p| session_meta(p).is_ok_and(|m| m["id"] == root)),
+            .any(|p| session_meta(p).is_ok_and(|m| m["id"] == root)), // raw-path: a thread id
         "root rollout not found"
     );
     Ok(selected)

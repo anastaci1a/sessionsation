@@ -605,10 +605,10 @@ fn home_matches(pid: u32, home: &Path) -> bool {
         .find(|(k, _)| k == "GEMINI_CLI_HOME")
         .is_some_and(|(_, v)| {
             let v = PathBuf::from(v);
-            v == home
-                || fs::canonicalize(&v)
+            crate::alias::same_path(&v, home)
+                || crate::alias::canonical(&v)
                     .ok()
-                    .is_some_and(|c| fs::canonicalize(home).is_ok_and(|h| c == h))
+                    .is_some_and(|c| crate::alias::canonical(home).is_ok_and(|h| c == h))
         })
 }
 fn pids() -> Vec<u32> {

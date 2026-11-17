@@ -54,7 +54,10 @@ impl Paths {
             );
         }
         private_dir(&root)?;
-        let root = fs::canonicalize(root)?;
+        let requested = root.clone();
+        let root = fs::canonicalize(root)?; // raw-path: the physical spelling, then redirect
+        let root = redirect(&root)?;
+        crate::alias::record_requested(&root, &requested);
         let hash = format!("{:x}", Sha256::digest(root.as_os_str().as_encoded_bytes()));
         let runtime = PathBuf::from(format!(
             "/tmp/sessionsation-{}-{}",
@@ -85,6 +88,56 @@ impl Paths {
         Ok(self.root.join("sessions").join(id))
     }
 }
+/// Root alias (contract 1.54.0): a root opened by either spelling resolves to
+/// `canonical_root`, so every caller (old environments in running panes, pinned
+/// client configuration, new boot scripts) uses one runtime directory and one
+/// control socket. The redirect is accepted only when both spellings are the
+/// same directory (`st_dev:st_ino`) or show the same `layout.json` (same
+/// `root_id`, identical bytes); otherwise it fails closed and never falls back
+/// to the requested spelling. The active alias is installed for this process.
+fn redirect(root: &Path) -> Result<PathBuf> {
+    let Ok(bytes) = fs::read(root.join(crate::layout::LAYOUT_FILE)) else {
+        return Ok(root.to_path_buf());
+    };
+    let Ok(record) = serde_json::from_slice::<crate::layout::Record>(&bytes) else {
+        return Ok(root.to_path_buf());
+    };
+    let Some(alias) = record.root_alias.filter(|a| a.is_active()) else {
+        return Ok(root.to_path_buf());
+    };
+    crate::alias::install(&alias.entries);
+    let canonical = alias.canonical_root.clone();
+    if canonical.as_path() == root {
+        // raw-path: literal; otherwise proven below
+        return Ok(root.to_path_buf());
+    }
+    let same_inode = match (fs::metadata(root), fs::metadata(&canonical)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    };
+    let same_record = fs::read(canonical.join(crate::layout::LAYOUT_FILE))
+        .ok()
+        .is_some_and(|other| {
+            other == bytes
+                && serde_json::from_slice::<crate::layout::Record>(&other)
+                    .ok()
+                    .and_then(|r| r.root_alias)
+                    .is_some_and(|a| a.root_id == alias.root_id && !a.root_id.is_empty())
+        });
+    ensure!(
+        same_inode || same_record,
+        "ROOT_ALIAS_UNVERIFIED: {} names the canonical data root {} but the two are not provably the same directory; nothing was opened",
+        root.display(),
+        canonical.display()
+    );
+    ensure!(
+        fs::symlink_metadata(&canonical).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()),
+        "ROOT_ALIAS_UNVERIFIED: canonical data root {} is not a real directory",
+        canonical.display()
+    );
+    Ok(canonical)
+}
+
 // Resolve overrides before HOME so explicit and Unraid paths also work at boot.
 fn data_root(
     explicit: Option<PathBuf>,

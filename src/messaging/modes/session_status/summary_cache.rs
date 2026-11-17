@@ -37,8 +37,8 @@ pub(super) struct Cache {
 }
 impl Cache {
     pub(super) fn new(paths: &Paths, a: &Attachment, history: Option<&Path>) -> Option<Self> {
-        let history = std::fs::canonicalize(history?).ok()?;
-        let home = std::fs::canonicalize(&a.home).ok()?;
+        let history = crate::alias::canonical(history?).ok()?;
+        let home = crate::alias::canonical(&a.home).ok()?;
         if !history.starts_with(home.join("sessions"))
             && !history.starts_with(home.join("archived_sessions"))
         {

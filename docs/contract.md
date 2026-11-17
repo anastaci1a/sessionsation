@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.53.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.54.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3773,3 +3773,95 @@ Capability: `account_reset_credit` (`since_contract` `1.53.0`, `providers: ["cod
 `method: "account/rateLimitResetCredit/consume"`, `idempotent_by: "request_id"`, `outcomes: ["reset",
 "nothingToReset", "noCredit", "alreadyRedeemed"]`, `auto_retry: false`, `reversible: false`, `journal`,
 `usage_field`, `errors`).
+
+### Root alias and re-key (1.54.0)
+
+MINOR (additive commands; path spellings of migrated rows change once). On Unraid `/mnt/user/<share>` is a bind
+mount of `/mnt/disk1/<share>`: one tree, two spellings, and `canonicalize` keeps each spelling (a bind is not a
+symlink). `sessionsation root migrate` moves a data root and its sessions from one spelling to the other.
+
+```sh
+sessionsation root status
+sessionsation root migrate --from /mnt/user --to /mnt/disk1 --backup DIR [--dry-run] [--allow-full-copy]
+sessionsation root migrate --session S [--expected-generation G] [--accept-risks] [--prompt TEXT | --prompt-file F]
+sessionsation root rollback [--session S] [--dry-run]
+sessionsation root finalize [--dry-run] [--accept-unresumed]
+```
+
+- **Alias.** `--from F --to T` becomes one entry per first path component found in stored paths (for example
+  `/mnt/user/appdata` -> `/mnt/disk1/appdata`). An entry is accepted only when proven: both are real directories
+  (no symlink), no other branch `/<parent>/*/<share>` exists besides `user`, `user0` and the target, and
+  `st_dev:st_ino` match (or, outside `--dry-run`, a probe file written under `T` is read under `F`). An unproven
+  share is not mapped and is reported (`unproven`, `unmapped`). The block is stored in `layout.json` as
+  `root_alias` (`version`, `state` `pending|active|inactive`, `root_id`, `canonical_root`, `previous_root`,
+  `entries`, `normalize_requests`, `run`, `backup`, `activated_at`).
+- **Layout version 3.** Activation stamps layout version 3; builds before 1.54.0 refuse it
+  (`LAYOUT_UNSUPPORTED`). New roots are still stamped 2. `root rollback` returns a root to version 2, so a
+  binary downgrade is only possible after it.
+- **Opening a root.** A root opened by either spelling resolves to `canonical_root` when both spellings are the
+  same directory (`st_dev:st_ino`) or show the same `layout.json` (same `root_id`); otherwise
+  `ROOT_ALIAS_UNVERIFIED` and nothing is opened. One runtime directory and control socket follow. `api version`
+  adds `requested_root` and `root`.
+- **Comparisons.** Every equality or prefix test between two paths (account homes, working directories,
+  roots, transcripts, process environments such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`) compares the alias
+  forms, so a process started with the old spelling stays a verified live session. Stored values keep the
+  spelling in which they were recorded. New request directories (launch, resume `--directory`, relocate,
+  `session launch`) take the new spelling once the alias is active.
+- **Tier R** (supervisor stopped; `DAEMON_RUNNING` otherwise). Preconditions: layout version 2 complete or an
+  unfinished run of the same `--from/--to` (`LAYOUT_MIGRATION_REQUIRED`, `ROOT_MIGRATION_MISMATCH`); the
+  root's entry proven (`ROOT_ALIAS_UNPROVEN`); no non-terminal operation (`ROOT_MIGRATION_BLOCKED` with the
+  list); disk space; `--backup` new or empty and outside the root (`BACKUP_REQUIRED`, `BACKUP_NOT_EMPTY`).
+  Steps, journaled in `operations/root-migrations/<run>.json` (values in `<run>.changes.jsonl`), each
+  idempotent: `backup` (metadata copy, `VACUUM INTO` copies of the databases, a reflink copy of
+  `shared/claude/projects` (full copy only with `--allow-full-copy`), every managed home's `.claude.json`;
+  manifest `root-backup.json` with a sha256 per file), `mark` (version 3, migrating), `links` (the six
+  shared-store links re-pointed by `rename(2)`), `registry` (conversation owners, managed and HERDR pane homes,
+  thread locations, `config.json` `codex_binary` when the mapped file is the same inode), `claude`
+  (`.claude.json` project entries cloned to the new key, memory merged per key, every Claude session that is
+  neither running nor archived re-keyed), `codex` (thread locations for threads that are not running),
+  `activate`, `verify` (`ROOT_VERIFY_FAILED` items leave the alias active). Journals, receipts, archives,
+  logs and every other record are never rewritten; they are read through the alias.
+- **Claude re-key of one session.** All lineage transcripts are located (two transcripts for one id:
+  `ROOT_REKEY_CONFLICT`). Every name to move (`<id>.jsonl`, `<id>/`) is copied to
+  `<backup>/sessions/<session>/<attempt>/<old key>/` and the copy verified by sha256 (tree digest for the
+  sidecar) **before** any rename, which happens only while the session is stopped. A name already in the new
+  key is a collision (`ROOT_REKEY_CONFLICT`; nothing moves); the move uses `RENAME_NOREPLACE` and adds names
+  only. Memory (`projects/<key>/memory/`) is merged per file and never moved: a missing file is copied, a file
+  changed on one side only since the last sync fast-forwards (the replaced version is kept under
+  `<backup>/memory-versions/`), a file changed on both sides is a conflict (both kept in place and copied to
+  `<backup>/memory-conflicts/`; the session is not switched; nothing picks a winner). Then the catalog
+  `directory` changes (one generation change).
+- **Tier S** (`--session`, alias active). A running Claude session in a HERDR pane is stopped (pidfd-bound
+  SIGTERM; a busy one needs `--accept-risks`), re-keyed, resumed once in the same pane in the new directory
+  and verified: same conversation id in the recorded pane (V1), registry and `/proc` cwd equal the new
+  directory (V2), the pre-move bytes are a prefix of the one live transcript (V3), memory (V5). A positive
+  failure moves it back and resumes it on the old path (`left_behind`); an unconfirmed resume is
+  `uncertain`, never reverted on a timeout alone. `--prompt` is delivered once after verification. A stopped
+  Claude session is re-keyed in place (`rekeyed`). A Codex thread that is not running gets a thread location;
+  a running one goes through the existing directory job (`relocating`, then `verified`). Archived sessions:
+  `archived_rekey_at_restore` (a restore then lands in the new key). Gemini and Antigravity:
+  `ROOT_REKEY_UNSUPPORTED_PROVIDER`. Other refusals: `ROOT_REKEY_UNSUPPORTED`. Records:
+  `operations/root-migrations/session-<session>.json`, listed by `api operations` (`kind: "root_rekey"`)
+  while in flight; lifecycle admission blocks other operations on the conversation meanwhile.
+- **`root status`.** `{layout_version, requested_root, root, root_alias, run, counts, sessions,
+  deferred_running, left_behind, memory_split, memory_conflicts, collisions, unmapped, retained, gate,
+  gate_detail}`. Session states: `verified`, `rekeyed`, `archived_rekey_at_restore`, `deferred_running`,
+  `left_behind`, `unsupported_provider`, `not_applicable`, `verify_failed`, `failed`, `uncertain`,
+  `relocating`. Each row carries its retained copies (`retained[].copy`, `sha256`, `verified`).
+- **Rollback gate.** `gate` is `pass` when every session that the catalog showed attached, or that was
+  recognised as running, before activation is still recognised as running (`gate_detail.sessions[]`:
+  `running_before`, `running_now`, `in_tier_s`, `ok`); `fail` means a missed comparison site: run
+  `root rollback`. `not_applicable` without an activated run.
+- **Rollback.** `root rollback` (supervisor stopped): sessions still `rekeyed` move back, every journaled
+  value is restored (original bytes when unchanged since), links re-pointed, cloned `.claude.json` entries
+  removed when unchanged, `layout.json` restored (version 2). `verified` sessions stay on their new
+  directory (it works under either spelling). `root rollback --session S` undoes one session (stopping and
+  resuming it when it runs).
+- **Finalize.** Removes empty old project-key directories (`rmdir` only). Retained copies under the backup
+  directory are never deleted by any 1.54 command, `finalize` included; old `memory/` directories are only
+  reported (`memory_removable`).
+
+Capability: `root_alias` (`since_contract` `1.54.0`, `version`, `layout_version: 3`, `state`, `entries`,
+`commands`, `session_states`, `normalize_requests`, `gate`, `retained_copies`, `memory_merge`, `errors`).
+Client note: path-valued fields (`directory`, `home`, `cwd`, rollout and transcript paths) change spelling
+for migrated rows; treat them as opaque or compare after mapping.

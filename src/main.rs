@@ -45,6 +45,9 @@ enum Commands {
     ConversationWorker { request_id: String },
     #[command(hide = true)]
     ClaudeSwitchWorker { request_id: String },
+    /// Tier S worker of `root migrate --session` (contract 1.54.0).
+    #[command(hide = true)]
+    RootRekeyWorker { session_id: String },
     /// One auto-recover pass (the supervisor runs this loop itself); prints the recoveries it ran.
     #[command(hide = true)]
     AutoRecoverTick,
@@ -428,6 +431,63 @@ enum Commands {
         #[command(subcommand)]
         command: SharedCommand,
     },
+    /// Root alias and re-key (contract 1.54.0): move the data root and its sessions from one
+    /// spelling of a bind-mounted tree (/mnt/user/...) to the other (/mnt/disk1/...).
+    Root {
+        #[command(subcommand)]
+        command: RootCommand,
+    },
+}
+#[derive(Subcommand)]
+enum RootCommand {
+    /// Alias, run, per-session states, sessions left behind and the rollback gate (`gate: pass|fail`).
+    Status,
+    /// Tier R (`--from --to --backup`, supervisor stopped) or Tier S (`--session`, supervisor running).
+    Migrate {
+        /// Old spelling prefix, for example /mnt/user.
+        #[arg(long, requires = "to", conflicts_with = "session")]
+        from: Option<PathBuf>,
+        /// New spelling prefix, for example /mnt/disk1.
+        #[arg(long, requires = "from")]
+        to: Option<PathBuf>,
+        /// New or empty directory outside the data root for the backup and retained copies.
+        #[arg(long)]
+        backup: Option<PathBuf>,
+        /// Print the full plan (JSON, plus a short summary on stderr); change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Accept full copies where the file system cannot reflink.
+        #[arg(long)]
+        allow_full_copy: bool,
+        /// Re-key one session (UUID, alias, space:name or bare name).
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        expected_generation: Option<String>,
+        /// Allow stopping a busy session.
+        #[arg(long)]
+        accept_risks: bool,
+        /// Text delivered once to a resumed Claude session after verification.
+        #[arg(long, conflicts_with = "prompt_file")]
+        prompt: Option<String>,
+        #[arg(long)]
+        prompt_file: Option<PathBuf>,
+    },
+    /// Whole root back to layout version 2 (supervisor stopped), or one session (`--session`).
+    Rollback {
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove empty old project-key directories (rmdir only). Retained copies are never deleted.
+    Finalize {
+        #[arg(long)]
+        dry_run: bool,
+        /// Also count sessions re-keyed but not yet resumed.
+        #[arg(long)]
+        accept_unresumed: bool,
+    },
 }
 #[derive(Subcommand)]
 enum SharedCommand {
@@ -682,6 +742,7 @@ async fn run(cli: Cli) -> Result<()> {
     let any_layout = matches!(
         cli.command,
         Commands::Layout { .. }
+            | Commands::Root { .. }
             | Commands::Api {
                 command: sessionsation::api::Command::Version,
                 ..
@@ -758,6 +819,86 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::ClaudeSwitchWorker { request_id } => {
             sessionsation::claude_switch::worker(&paths, &request_id).await?;
+        }
+        Commands::RootRekeyWorker { session_id } => {
+            sessionsation::root_migrate::session::worker(&paths, &session_id).await?;
+        }
+        Commands::Root { command } => {
+            use sessionsation::root_migrate as root;
+            print_json(&match command {
+                RootCommand::Status => root::status(&paths)?,
+                RootCommand::Migrate {
+                    from: Some(from),
+                    to: Some(to),
+                    backup,
+                    dry_run,
+                    allow_full_copy,
+                    ..
+                } => {
+                    if !dry_run {
+                        sessionsation::disk_space::preflight(&paths, "root migrate")?;
+                    }
+                    let v = root::migrate(
+                        &paths,
+                        &root::Options {
+                            from,
+                            to,
+                            backup,
+                            dry_run,
+                            allow_full_copy,
+                        },
+                    )?;
+                    if let Some(lines) = v["summary"].as_array() {
+                        for l in lines {
+                            eprintln!("# {}", l.as_str().unwrap_or_default());
+                        }
+                    }
+                    v
+                }
+                RootCommand::Migrate {
+                    session: Some(session),
+                    expected_generation,
+                    accept_risks,
+                    prompt,
+                    prompt_file,
+                    ..
+                } => {
+                    let prompt = match prompt_file {
+                        Some(f) => Some(std::fs::read_to_string(&f).with_context(|| {
+                            format!(
+                                "INVALID_ARGUMENT: cannot read --prompt-file {}",
+                                f.display()
+                            )
+                        })?),
+                        None => prompt,
+                    };
+                    root::session::migrate_session(
+                        &paths,
+                        &root::session::SessionOptions {
+                            session,
+                            expected_generation,
+                            accept_risks,
+                            prompt,
+                        },
+                    )
+                    .await?
+                }
+                RootCommand::Migrate { .. } => bail!(
+                    "INVALID_ARGUMENT: root migrate needs --from F --to T --backup DIR, or --session S"
+                ),
+                RootCommand::Rollback {
+                    session: Some(session),
+                    dry_run,
+                } => root::session::rollback_session(&paths, &session, dry_run).await?,
+                RootCommand::Rollback {
+                    session: None,
+                    dry_run,
+                } => root::rollback(&paths, dry_run)?,
+                RootCommand::Finalize {
+                    dry_run,
+                    accept_unresumed,
+                } => root::finalize(&paths, dry_run, accept_unresumed)?,
+            })?;
         }
         Commands::AutoRecoverTick => {
             let outcomes = sessionsation::auto_recover::tick(&paths).await?;
@@ -1121,14 +1262,17 @@ async fn run(cli: Cli) -> Result<()> {
             let account = provider::native::account(&paths, resolved.provider, &resolved.name)?;
             let config = store::load_config(&paths)?;
             if resolved.provider == ProviderId::Claude
-                && account.home == provider::claude::default_home(&paths, &resolved.name)?
+                && sessionsation::layout::same_home(
+                    &account.home,
+                    &provider::claude::default_home(&paths, &resolved.name)?,
+                )
                 && !provider::claude::peer::settings_file(&account.home).exists()
             {
                 // A brand-new managed home: the new-account defaults (skip, statusLine).
                 let _ = provider::claude::bypass::default_new(&account.home);
                 let _ = provider::claude::statusline_seed::default_new(
                     &account.home,
-                    &config.claude_default_statusline_command,
+                    &sessionsation::alias::logical_words(&config.claude_default_statusline_command),
                 );
             }
             return exec_login(

@@ -96,6 +96,7 @@ pub fn managed_home(home: &Path) -> Option<(PathBuf, String)> {
     };
     let canonical = crate::layout::target_home(root, ProviderId::Claude, name);
     let legacy = crate::layout::legacy_home(root, ProviderId::Claude, name);
+    // raw-path: shape check; root is derived from home itself, so one spelling
     (home == canonical || legacy.as_deref() == Some(home))
         .then(|| (root.to_path_buf(), name.to_owned()))
 }
@@ -129,11 +130,14 @@ pub(crate) fn trusted_link_as(link: &Path, uid: u32) -> bool {
     let Ok(meta) = fs::symlink_metadata(link) else {
         return false;
     };
+    // Root alias (1.54.0): the stored target, the resolved link and the expected
+    // store may each use either spelling of the root; their logical forms agree.
+    let wanted = crate::alias::logical(&expected);
     meta.file_type().is_symlink()
         && meta.uid() == uid
         && fs::symlink_metadata(home).is_ok_and(|m| m.file_type().is_dir())
-        && fs::read_link(link).is_ok_and(|t| t == expected)
-        && fs::canonicalize(link).is_ok_and(|c| c == expected)
+        && fs::read_link(link).is_ok_and(|t| t.is_absolute() && crate::alias::logical(&t) == wanted)
+        && crate::alias::canonical(link).is_ok_and(|c| c == wanted)
         && private_real_dir_as(&expected, uid)
         && private_real_dir_as(&store(&root), uid)
         && private_real_dir_as(&root.join("shared"), uid)
@@ -263,7 +267,7 @@ pub fn ensure_links(paths: &Paths, home: &Path) -> Result<Ensure> {
     let Some((root, account)) = managed_home(home) else {
         return Ok(Ensure::NotApplicable);
     };
-    if root != paths.root {
+    if !crate::alias::same_path(&root, &paths.root) {
         return Ok(Ensure::NotApplicable);
     }
     if !enabled(&root) {
@@ -397,7 +401,7 @@ fn renameat2(a: &Path, b: &Path, flags: libc::c_uint) -> std::io::Result<()> {
 /// Per-account link states for `shared status`.
 pub fn account_status(paths: &Paths, name: &str, home: &Path) -> Value {
     match managed_home(home) {
-        Some((root, _)) if root == paths.root => {
+        Some((root, _)) if crate::alias::same_path(&root, &paths.root) => {
             let names: serde_json::Map<String, Value> = NAMES
                 .iter()
                 .map(|n| ((*n).to_owned(), json!(state_of(home, n).as_str())))

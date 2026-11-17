@@ -282,7 +282,8 @@ fn request(args: &Args, id: &str) -> Result<launch::Request> {
     ensure!(wanted.is_absolute(), "INVALID_DIRECTORY");
     let directory = if wanted.is_dir() {
         launch::Directory {
-            path: fs::canonicalize(&wanted)?,
+            // Contract 1.54.0: a new directory takes the alias spelling.
+            path: crate::alias::canonical(&wanted)?,
             create: vec![],
             confirmed_existing: true,
         }

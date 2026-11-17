@@ -100,7 +100,7 @@ fn homes(paths: &Paths, source: &Instance) -> Result<BTreeSet<PathBuf>> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
     {
-        if let Ok(home) = fs::canonicalize(home) {
+        if let Ok(home) = crate::alias::canonical(&home) {
             homes.insert(home);
         }
     }
@@ -108,7 +108,7 @@ fn homes(paths: &Paths, source: &Instance) -> Result<BTreeSet<PathBuf>> {
         homes.insert(job.source.home);
     }
     for (_, home) in crate::layout::codex_homes(&paths.root) {
-        homes.insert(fs::canonicalize(home)?);
+        homes.insert(crate::alias::canonical(&home)?);
     }
     homes.extend(super::preserved_homes(paths)?.into_iter().map(|(_, h)| h));
     Ok(canonical_homes(homes))
@@ -299,7 +299,7 @@ pub(super) async fn delete_history(
             .iter()
             .find(|(home, id)| {
                 !plan.copies.iter().any(|c| {
-                    c.home.as_ref() == Some(home)
+                    c.home.as_ref() == Some(home) // raw-path: both from one scan of copies
                         && c.parents.contains(id)
                         && remaining.contains(&(home.clone(), c.id.clone()))
                 })

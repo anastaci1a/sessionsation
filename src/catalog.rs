@@ -798,6 +798,59 @@ pub(crate) fn switch_account(
         Ok(s.clone())
     })
 }
+/// Root re-key (contract 1.54.0): point a session's stored directory at its
+/// new spelling. Idempotent (an entry already on `to` is returned unchanged);
+/// refuses when the identity or the stored directory changed since `from` was
+/// read. Returns (revision before, entry after).
+pub(crate) fn rekey_directory(
+    paths: &Paths,
+    id: &str,
+    conversation: &str,
+    from: Option<&str>,
+    to: &str,
+) -> Result<(u64, Session)> {
+    transaction(paths, |c| {
+        let s = live(c, id)?;
+        ensure!(s.conversation_id == conversation, "STALE_TARGET");
+        if s.directory.as_deref() == Some(to) {
+            return Ok((s.revision, s.clone()));
+        }
+        ensure!(s.directory.as_deref() == from, "STALE_TARGET");
+        let before = s.revision;
+        s.directory = Some(to.to_owned());
+        s.revision += 1;
+        Ok((before, s.clone()))
+    })
+}
+/// Undo [`rekey_directory`] exactly: the old directory and, when nothing else
+/// changed the entry since, the old revision (so the generation is the original
+/// one again). Returns whether the entry changed.
+pub(crate) fn restore_directory(
+    paths: &Paths,
+    id: &str,
+    conversation: &str,
+    to: &str,
+    from: Option<&str>,
+    revision_before: u64,
+    revision_after: u64,
+) -> Result<bool> {
+    transaction(paths, |c| {
+        let Some(s) = c.sessions.get_mut(id) else {
+            return Ok(false);
+        };
+        if s.conversation_id != conversation || s.directory.as_deref() != Some(to) {
+            return Ok(false);
+        }
+        s.directory = from.map(str::to_owned);
+        if s.revision == revision_after {
+            s.revision = revision_before;
+        } else {
+            s.revision += 1;
+        }
+        Ok(true)
+    })
+}
+
 /// `api rename`: a bare name, or `<space>:<name>` naming the session's own Space
 /// (rename never moves: `SPACE_MISMATCH`). Unique within the session's Space,
 /// case-insensitive; a byte-equal name is a no-op with the same generation.

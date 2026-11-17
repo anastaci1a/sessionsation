@@ -552,7 +552,7 @@ fn restore(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
     let s = crate::catalog::resolve(paths, &o.session.id, &o.expected_generation)?;
     let home = home_of(paths, provider, &s.account)?;
     ensure!(
-        fs::canonicalize(&home).ok() == fs::canonicalize(&m.home).ok(),
+        crate::layout::same_home(&home, &m.home),
         "ACCOUNT_HOME_CHANGED: the account home differs from the archived original; nothing was restored"
     );
     phase(
@@ -563,19 +563,30 @@ fn restore(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
     )?;
     ensure_quiet(paths, provider, Some(&home), &m.conversation_ids)?;
     let dir = bundle_dir(paths, &m)?;
-    for e in &m.entries {
-        ensure!(e.original.starts_with(&m.home), "INVALID_HISTORY_PATH");
+    // Contract 1.54.0: re-key at restore. The manifest is read through the root
+    // alias, and a Claude entry under the project key of the archived directory
+    // is restored under the key of the session's current directory.
+    let targets: Vec<PathBuf> = m
+        .entries
+        .iter()
+        .map(|e| restore_target(&m, &s, &home, &e.original))
+        .collect::<Result<_>>()?;
+    for (e, target) in m.entries.iter().zip(&targets) {
+        ensure!(
+            crate::alias::starts_with(&e.original, &m.home),
+            "INVALID_HISTORY_PATH"
+        );
         ensure!(
             Path::new(&e.stored).components().count() == 1,
             "INVALID_ARCHIVE_BLOB"
         );
         let stored = dir.join(&e.stored);
-        let original = fs::symlink_metadata(&e.original).is_ok();
+        let original = fs::symlink_metadata(target).is_ok();
         let kept = fs::symlink_metadata(&stored).is_ok();
         match (original, kept) {
             // Interrupted archive/restore: this entry is already in place.
-            (true, false) => ensure!(tree_digest(&e.original)?.1 == e.digest, "RESTORE_CONFLICT"),
-            (true, true) => bail!("RESTORE_CONFLICT: {} exists again", e.original.display()),
+            (true, false) => ensure!(tree_digest(target)?.1 == e.digest, "RESTORE_CONFLICT"),
+            (true, true) => bail!("RESTORE_CONFLICT: {} exists again", target.display()),
             (false, true) => ensure!(tree_digest(&stored)?.1 == e.digest, "ARCHIVE_CHANGED"),
             (false, false) => bail!("ARCHIVE_CORRUPT: {} is missing", e.stored),
         }
@@ -588,10 +599,10 @@ fn restore(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
         "restoring_history",
         "Moving the conversation's files back to their original account-home paths.",
     )?;
-    for e in &m.entries {
+    for (e, target) in m.entries.iter().zip(&targets) {
         let stored = dir.join(&e.stored);
         if fs::symlink_metadata(&stored).is_ok() {
-            move_entry(&stored, &e.original, &e.digest)?;
+            move_entry(&stored, target, &e.digest)?;
         }
     }
     if provider == ProviderId::Antigravity {
@@ -607,6 +618,47 @@ fn restore(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
         "complete",
         "Conversation restored to its account home as saved history; Restore never starts an agent.",
     )
+}
+
+/// Where an archived entry is restored (contract 1.54.0): its original path
+/// relative to the archived home, below the current home; a Claude
+/// `projects/<K>/...` entry with `K = key(archived directory)` moves to
+/// `projects/<K'>/...` with `K' = key(current directory)`. Any other entry is
+/// restored unchanged.
+fn restore_target(
+    m: &Manifest,
+    current: &Session,
+    home: &Path,
+    original: &Path,
+) -> Result<PathBuf> {
+    let old_home = crate::alias::logical(&m.home);
+    let logical = crate::alias::logical(original);
+    let rel = logical
+        .strip_prefix(&old_home)
+        .map_err(|_| anyhow::anyhow!("INVALID_HISTORY_PATH"))?;
+    let key = |d: &str| -> String {
+        d.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect()
+    };
+    let mut parts: Vec<std::ffi::OsString> =
+        rel.components().map(|c| c.as_os_str().to_owned()).collect();
+    let unchanged = parts.clone();
+    if m.provider == ProviderId::Claude.as_str()
+        && parts.len() >= 3
+        && parts[0] == "projects"
+        && let (Some(was), Some(now)) =
+            (m.session.directory.as_deref(), current.directory.as_deref())
+        && parts[1].to_str() == Some(key(was).as_str())
+        && key(was) != key(now)
+    {
+        parts[1] = key(now).into();
+    }
+    if parts == unchanged && logical.as_path() == original {
+        // raw-path: no alias and no key change: exactly the recorded original
+        return Ok(original.to_path_buf());
+    }
+    Ok(parts.iter().fold(home.to_path_buf(), |p, c| p.join(c)))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -797,5 +849,91 @@ fn remove_empty_project_dir(home: &Path, original: &Path, directory: Option<&str
     }
     if fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir()) {
         let _ = fs::remove_dir(dir);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(directory: &str) -> Session {
+        serde_json::from_value(
+            json!({"id":uuid::Uuid::new_v4(),"name":"n","provider":"claude",
+            "account":"a","conversation_id":uuid::Uuid::new_v4(),"revision":1,"attachment":null,
+            "directory":directory}),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn restore_remaps_the_project_key_and_reads_the_manifest_through_the_alias() {
+        let t = tempfile::tempdir().unwrap();
+        let old_root = t.path().join("user/appdata/root");
+        let new_root = t.path().join("disk/appdata/root");
+        let old_home = old_root.join("accounts/claude/a");
+        let new_home = new_root.join("accounts/claude/a");
+        let old_dir = t.path().join("user/live/p").to_string_lossy().into_owned();
+        let new_dir = t.path().join("disk/live/p").to_string_lossy().into_owned();
+        let key = |d: &str| -> String {
+            d.chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect()
+        };
+        let archived = session(&old_dir);
+        let m = Manifest {
+            version: 1,
+            session: archived.clone(),
+            provider: "claude".into(),
+            home: old_home.clone(),
+            state: "archived".into(),
+            archived_at: 0,
+            bundle: uuid::Uuid::new_v4().to_string(),
+            conversation_ids: vec![archived.conversation_id.clone()],
+            entries: vec![],
+        };
+        let transcript = old_home
+            .join("projects")
+            .join(key(&old_dir))
+            .join("x.jsonl");
+        let history = old_home.join("file-history/x/h1");
+        let other_key = old_home.join("projects/-elsewhere/x.jsonl");
+        // Without an alias and without a directory change: exactly the original.
+        assert_eq!(
+            restore_target(&m, &archived, &old_home, &transcript).unwrap(),
+            transcript
+        );
+        // Catalog directory re-keyed (archived_rekey_at_restore) and the alias active.
+        let entries = [
+            crate::alias::Entry {
+                from: t.path().join("user/appdata"),
+                to: t.path().join("disk/appdata"),
+                proof: "test".into(),
+            },
+            crate::alias::Entry {
+                from: t.path().join("user/live"),
+                to: t.path().join("disk/live"),
+                proof: "test".into(),
+            },
+        ];
+        crate::alias::install(&entries);
+        let mut current = archived.clone();
+        current.directory = Some(new_dir.clone());
+        assert_eq!(
+            restore_target(&m, &current, &new_home, &transcript).unwrap(),
+            new_home
+                .join("projects")
+                .join(key(&new_dir))
+                .join("x.jsonl")
+        );
+        // Other entries keep their relative path (under the current home).
+        assert_eq!(
+            restore_target(&m, &current, &new_home, &history).unwrap(),
+            new_home.join("file-history/x/h1")
+        );
+        assert_eq!(
+            restore_target(&m, &current, &new_home, &other_key).unwrap(),
+            new_home.join("projects/-elsewhere/x.jsonl")
+        );
+        crate::alias::uninstall(&entries);
     }
 }

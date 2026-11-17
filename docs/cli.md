@@ -766,6 +766,35 @@ recorded under `operations/account-reset-credits/` and shown by `api operations`
 accounts get `UNSUPPORTED_PROVIDER_OPERATION`, as does a Codex version without the feature (the message names the
 version). Details: [contract](contract.md#codex-rate-limit-reset-credits-1530).
 
+## Root re-key (contract 1.54.0)
+
+Moves a data root and its sessions from one spelling of a bind-mounted tree to the other (Unraid
+`/mnt/user/...` to `/mnt/disk1/...`). Plan first; the dry run changes nothing and may run beside the
+supervisor:
+
+```sh
+sessionsation root migrate --from /mnt/user --to /mnt/disk1 --backup /path/to/new-backup-dir --dry-run
+```
+
+It prints JSON (alias entries and proofs, preconditions, counts per class, every value to rewrite, Claude keys
+and sessions with memory conflicts, name collisions, `memory_split`, `left_behind`, Codex thread locations,
+existing target keys with their same-name files) and a short summary on stderr. Then, with the supervisor
+stopped:
+
+```sh
+sessionsation daemon stop
+sessionsation root migrate --from /mnt/user --to /mnt/disk1 --backup /path/to/new-backup-dir
+# start the supervisor, then:
+sessionsation root status          # "gate": "pass" | "fail"; fail -> root rollback
+sessionsation root migrate --session space:name --accept-risks [--prompt-file F]   # one running session
+sessionsation root rollback [--session space:name]
+sessionsation root finalize --dry-run
+```
+
+Running sessions are not stopped by the root step; each is re-keyed later with `--session`. Retained copies of
+every moved transcript stay in the backup directory; no command deletes them. Details:
+[contract](contract.md#root-alias-and-re-key-1540) and [operations](operations.md#root-re-key-contract-1540).
+
 ## Explicit in-turn steering
 
 For a deliberate message to a busy turn, use `api steer-target --session ID --expected-generation GENERATION`, then `api send` with `mode:"steer"` and the

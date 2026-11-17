@@ -238,6 +238,9 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     std::io::stdin().take(65537).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 65536, "REQUEST_TOO_LARGE");
     let mut r: Request = serde_json::from_slice(&bytes).context("INVALID_RESUME_REQUEST")?;
+    if let Some(d) = r.directory.as_mut() {
+        launch::normalize_directory(d);
+    }
     shape(&r)?;
     let label = launch::resolve_space(&r.host, &mut r.space).await?;
     let known = label.is_some();
@@ -370,7 +373,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     let id = &r.request_id;
     let (_, source, label) = validate(paths, r).await?;
     ensure!(
-        std::path::Path::new(&source.cwd) == saved_directory(receipt),
+        crate::alias::same_path(std::path::Path::new(&source.cwd), saved_directory(receipt)),
         "SAVED_DIRECTORY_CHANGED"
     );
     if let Some(d) = &r.directory {
@@ -433,7 +436,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     ensure!(
         source.inactive
             && current.attachment.is_none()
-            && std::path::Path::new(&source.cwd) == saved_directory(receipt),
+            && crate::alias::same_path(std::path::Path::new(&source.cwd), saved_directory(receipt)),
         "STALE_TARGET"
     );
     change(paths, id, |r| {

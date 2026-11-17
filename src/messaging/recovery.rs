@@ -84,7 +84,7 @@ fn executable(name: &str) -> anyhow::Result<PathBuf> {
             .find(|p| p.is_file())
             .context("RECOVERY_EXECUTABLE_NOT_FOUND")?
     };
-    let p = fs::canonicalize(p).context("RECOVERY_EXECUTABLE_NOT_FOUND")?;
+    let p = crate::alias::canonical(&p).context("RECOVERY_EXECUTABLE_NOT_FOUND")?;
     let m = fs::metadata(&p)?;
     ensure!(
         m.is_file() && m.permissions().mode() & 0o111 != 0,
@@ -175,7 +175,8 @@ async fn plan_inner(paths: &Paths, r: PlanRequest, own: Option<&str>) -> anyhow:
     );
     let permissions = external::recovery_permissions(&source.rollout)
         .context("RECOVERY_PERMISSIONS_MISSING_RECORD_EXPLICIT_LAUNCH_POLICY_FIRST")?;
-    let directory = fs::canonicalize(&source.cwd).context("RECOVERY_SAVED_DIRECTORY_MISSING")?;
+    let directory = crate::alias::canonical(Path::new(&source.cwd))
+        .context("RECOVERY_SAVED_DIRECTORY_MISSING")?;
     ensure!(directory.is_dir(), "RECOVERY_SAVED_DIRECTORY_MISSING");
     let configured = crate::store::load_config(paths)?.codex_binary;
     let exe = executable(&configured)?;
@@ -189,7 +190,7 @@ async fn plan_inner(paths: &Paths, r: PlanRequest, own: Option<&str>) -> anyhow:
     validate_owner(paths, &s.account).await?;
     let mut native = home_attachment(paths, &s)?.connect().await?;
     let summary = native_preflight(&mut native, &s.conversation_id, None, true).await?;
-    let launcher = fs::canonicalize(std::env::current_exe()?)
+    let launcher = crate::alias::canonical(&std::env::current_exe()?)
         .context("RECOVERY_BACKEND_ARTIFACT_MISSING_USE_IMMUTABLE_INSTALL")?;
     let plan = Plan {
         launcher_sha256: hash(fs::read(&launcher)?),
@@ -527,7 +528,8 @@ async fn validate(
             "RECOVERY_EXECUTABLE_CHANGED_REVALIDATE"
         );
         ensure!(
-            current.directory == p.directory && current.directory_identity == p.directory_identity,
+            crate::alias::same_path(&current.directory, &p.directory)
+                && current.directory_identity == p.directory_identity,
             "RECOVERY_DIRECTORY_CHANGED_REVALIDATE"
         );
         ensure!(

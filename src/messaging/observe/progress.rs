@@ -12,8 +12,8 @@ struct Revision {
     changed: (i64, i64),
 }
 fn revision(home: &Path, path: &Path) -> Option<Revision> {
-    let path = fs::canonicalize(path).ok()?;
-    let home = fs::canonicalize(home).ok()?;
+    let path = crate::alias::canonical(path).ok()?;
+    let home = crate::alias::canonical(home).ok()?;
     if !path.starts_with(home.join("sessions")) && !path.starts_with(home.join("archived_sessions"))
     {
         return None;

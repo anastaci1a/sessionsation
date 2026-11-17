@@ -224,6 +224,7 @@ impl Attachment {
         }
         // Native Codex publishes a symlink to its private short Unix socket path.
         // Validate both sides and connect to the resolved path, never an unchecked link.
+        // raw-path: I/O target of a socket link, validated below; never compared to a path
         let resolved = fs::canonicalize(&path).map_err(|_| Fault("endpoint_unavailable"))?;
         let target = fs::symlink_metadata(&resolved).map_err(|_| Fault("endpoint_unavailable"))?;
         let directory = fs::metadata(resolved.parent().ok_or(Fault("unsafe_endpoint"))?)?;
@@ -382,7 +383,7 @@ fn wait_budget(paths: &Paths, wait: Wait) -> std::time::Duration {
             .lock()
             .unwrap()
             .iter()
-            .find(|(root, _)| *root == paths.root)
+            .find(|(root, _)| *root == paths.root) // raw-path: in-process registry keyed by Paths.root
             .map_or(std::time::Duration::ZERO, |(_, d)| *d)
     }
     #[cfg(not(test))]

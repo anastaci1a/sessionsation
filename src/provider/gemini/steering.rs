@@ -185,7 +185,7 @@ pub fn effective(
         (
             "workspace",
             directory
-                .filter(|d| d.is_absolute() && *d != home)
+                .filter(|d| d.is_absolute() && !crate::alias::same_path(d, home))
                 .map(|d| d.join(".gemini/settings.json")),
         ),
         (

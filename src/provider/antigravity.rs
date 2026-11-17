@@ -438,10 +438,10 @@ pub(crate) fn conversation_argument(args: &[String]) -> Option<String> {
     None
 }
 fn same_dir(a: &Path, b: &Path) -> bool {
-    a == b
-        || fs::canonicalize(a)
+    crate::alias::same_path(a, b)
+        || crate::alias::canonical(a)
             .ok()
-            .is_some_and(|c| fs::canonicalize(b).is_ok_and(|h| c == h))
+            .is_some_and(|c| crate::alias::canonical(b).is_ok_and(|h| c == h))
 }
 fn home_of(pid: u32) -> Option<PathBuf> {
     let env = environ(pid)?;
@@ -453,12 +453,12 @@ fn home_matches(pid: u32, home: &Path) -> bool {
 }
 /// The conversation whose presence lock (or database) the process holds open.
 fn open_conversation(pid: u32, home: &Path) -> Option<String> {
-    let state = fs::canonicalize(state_dir(home)).ok()?;
+    let state = crate::alias::canonical(&state_dir(home)).ok()?;
     let presence = state.join("presence");
     let conversations = state.join("conversations");
     let mut db = None;
     for fd in fs::read_dir(format!("/proc/{pid}/fd")).ok()?.flatten() {
-        let Ok(target) = fs::read_link(fd.path()) else {
+        let Ok(target) = fs::read_link(fd.path()).map(|t| crate::alias::logical(&t)) else {
             continue;
         };
         let Some(name) = target.file_name().and_then(|n| n.to_str()) else {

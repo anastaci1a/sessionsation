@@ -206,16 +206,16 @@ fn is_claude_process(pid: u32, claude_binary: &str) -> bool {
         .take(2)
         .filter_map(|a| std::str::from_utf8(a).ok())
         .any(|a| {
-            Path::new(a) == configured
+            crate::alias::same_path(Path::new(a), configured)
                 || Path::new(a).is_absolute()
-                    && fs::canonicalize(a)
-                        .is_ok_and(|c| fs::canonicalize(configured).is_ok_and(|d| c == d))
+                    && crate::alias::canonical(Path::new(a))
+                        .is_ok_and(|c| crate::alias::canonical(configured).is_ok_and(|d| c == d))
         })
 }
 pub(crate) fn env_in_use(homes: &[&Path], claude_binary: &str) -> bool {
     let canon: Vec<_> = homes
         .iter()
-        .filter_map(|h| fs::canonicalize(h).ok())
+        .filter_map(|h| crate::alias::canonical(h).ok())
         .collect();
     let Ok(entries) = fs::read_dir("/proc") else {
         return false;
@@ -239,8 +239,8 @@ pub(crate) fn env_in_use(homes: &[&Path], claude_binary: &str) -> bool {
             .find(|(k, _)| k == "CLAUDE_CONFIG_DIR")
             .is_some_and(|(_, v)| {
                 let v = PathBuf::from(v);
-                homes.iter().any(|h| **h == *v)
-                    || fs::canonicalize(&v).is_ok_and(|c| canon.contains(&c))
+                homes.iter().any(|h| crate::alias::same_path(h, &v))
+                    || crate::alias::canonical(&v).is_ok_and(|c| canon.contains(&c))
             })
     })
 }
@@ -264,7 +264,7 @@ pub async fn check_managed_home(
         old.display()
     );
     ensure!(
-        fs::canonicalize(old)? != fs::canonicalize(&managed)?,
+        crate::alias::canonical(old)? != crate::alias::canonical(&managed)?,
         "UNSAFE_ACCOUNT_HOME: adopted and managed homes are the same directory"
     );
     for home in [old, managed.as_path()] {
@@ -319,16 +319,17 @@ pub fn validate_adopt(paths: &Paths, state: &State, dir: &Path) -> Result<PathBu
         metadata.is_dir(),
         "INVALID_CONFIG_DIR: --config-dir is not a directory"
     );
-    let dir = fs::canonicalize(dir)?;
+    let dir = crate::alias::canonical(dir)?;
+    let root = crate::alias::logical(&paths.root);
     ensure!(
-        !dir.starts_with(&paths.root) && !paths.root.starts_with(&dir),
+        !dir.starts_with(&root) && !root.starts_with(&dir),
         "INVALID_CONFIG_DIR: --config-dir overlaps the sessionsation data directory (including its accounts)"
     );
     for account in state.accounts.values() {
         let Ok(other) = super::account_home(paths, account) else {
             continue;
         };
-        let other = fs::canonicalize(&other).unwrap_or(other);
+        let other = crate::alias::canonical(&other).unwrap_or(other);
         ensure!(
             !dir.starts_with(&other) && !other.starts_with(&dir),
             "CONFIG_DIR_IN_USE: --config-dir overlaps the home of {}:{}",
@@ -873,7 +874,9 @@ fn environ_matches(pid: u32, home: &Path) -> bool {
     let effective = get("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| get("HOME").map(|h| PathBuf::from(h).join(".claude")));
-    let canonical = |p: &Path| fs::canonicalize(p).ok();
+    // Root alias (1.54.0): a process started with the old spelling of the home
+    // (bind mount, not a symlink) is still this home.
+    let canonical = |p: &Path| crate::alias::canonical(p).ok();
     effective.is_some_and(|e| canonical(&e).is_some() && canonical(&e) == canonical(home))
 }
 /// Verified live sessions of one home. A registry entry counts only when its

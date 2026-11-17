@@ -97,6 +97,24 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$session" ] || exit 2
+# Root re-key tests (contract 1.54.0): fake-resume-mode in the account home selects how a
+# resume finds its transcript. strict: only in the project key of $PWD (else a new
+# conversation); cross: in any project directory; fresh (one-shot): always a new conversation.
+# A found transcript gets one appended line, so the pre-resume bytes become a prefix.
+if [ "$mode" = resume ] && [ -f "$home/fake-resume-mode" ]; then
+  key=$(printf '%s' "$PWD" | sed 's/[^A-Za-z0-9]/-/g')
+  found=''
+  case "$(cat "$home/fake-resume-mode")" in
+    strict) [ -f "$home/projects/$key/$session.jsonl" ] && found="$home/projects/$key/$session.jsonl" ;;
+    cross) for f in "$home"/projects/*/"$session".jsonl; do [ -f "$f" ] && found=$f; done ;;
+    fresh) rm -f "$home/fake-resume-mode" ;;
+  esac
+  if [ -n "$found" ]; then
+    printf '{"type":"resumed","sessionId":"%s","cwd":"%s"}\n' "$session" "$PWD" >> "$found"
+  else
+    session=$(cat /proc/sys/kernel/random/uuid); mode=new
+  fi
+fi
 start=$(sed 's/^.*) //' /proc/$$/stat | cut -d' ' -f20)
 mkdir -p "$home/sessions"
 slug=$(printf '%s' "$PWD" | tr '/' '-')

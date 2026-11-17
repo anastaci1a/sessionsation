@@ -123,7 +123,13 @@ fn rename(from: &Path, to: &Path) -> Result<()> {
 /// or canonical). Conservative: a substring match counts. Excludes this process.
 pub fn home_users(home: &Path) -> Vec<String> {
     let mut needles = vec![home.to_string_lossy().into_owned()];
-    if let Ok(c) = fs::canonicalize(home) {
+    // raw-path: every spelling is a needle (as given, canonical, both alias spellings)
+    let canonical = fs::canonicalize(home).ok();
+    let alias = crate::alias::current();
+    for c in canonical
+        .iter()
+        .chain([alias.logical(home), alias.physical_old(home)].iter())
+    {
         let c = c.to_string_lossy().into_owned();
         if !needles.contains(&c) {
             needles.push(c);

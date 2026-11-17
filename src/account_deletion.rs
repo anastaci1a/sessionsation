@@ -144,6 +144,7 @@ fn spawn(paths: &Paths, r: &Record) -> Result<()> {
 fn safe_parent(paths: &Paths, home: &Path) -> Result<()> {
     let parent = home.parent().context("UNSAFE_ACCOUNT_PARENT")?;
     ensure!(parent.starts_with(&paths.root), "UNSAFE_ACCOUNT_PARENT");
+    // raw-path: walks the spelling checked by starts_with just above
     for dir in parent.ancestors().take_while(|d| *d != paths.root) {
         let m = fs::symlink_metadata(dir)?;
         ensure!(
@@ -309,7 +310,7 @@ pub(crate) async fn idle(paths: &Paths, home: &Path) -> Result<()> {
     ensure!(
         !external::host_instances(paths)?
             .iter()
-            .any(|s| s.home == home),
+            .any(|s| crate::layout::same_home(&s.home, home)),
         "ACCOUNT_IN_USE"
     );
     if crate::control::available(home) {
@@ -323,12 +324,17 @@ pub(crate) async fn idle(paths: &Paths, home: &Path) -> Result<()> {
         );
     }
     ensure!(
-        !external::jobs(paths)?.iter().any(|j| (j.source.home == home
-            || paths.account(&j.target).ok().as_deref() == Some(home))
-            && !matches!(
-                j.phase.as_str(),
-                "complete" | "failed" | "cancelled" | "recovered"
-            )),
+        !external::jobs(paths)?
+            .iter()
+            .any(|j| (crate::layout::same_home(&j.source.home, home)
+                || paths
+                    .account(&j.target)
+                    .ok()
+                    .is_some_and(|t| crate::layout::same_home(&t, home)))
+                && !matches!(
+                    j.phase.as_str(),
+                    "complete" | "failed" | "cancelled" | "recovered"
+                )),
         "ACCOUNT_HAS_PENDING_OPERATIONS"
     );
     Ok(())

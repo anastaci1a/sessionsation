@@ -242,9 +242,22 @@ pub(crate) fn directory_shape(directory: &Directory) -> Result<()> {
         previous = Some(p);
     }
     if let Some(last) = previous {
+        // raw-path: shape check inside one request (one spelling)
         ensure!(last == directory.path, "INVALID_DIRECTORY_PLAN");
     }
     Ok(())
+}
+/// Contract 1.54.0 (D12): with an active root alias a new request's directory is
+/// rewritten to the alias spelling once, so Sessionsation never creates an old
+/// project key again. Stored directories of existing sessions are never changed.
+pub(crate) fn normalize_directory(d: &mut Directory) {
+    if !crate::alias::active() {
+        return;
+    }
+    d.path = crate::alias::logical(&d.path);
+    for p in &mut d.create {
+        *p = crate::alias::logical(p);
+    }
 }
 pub(crate) fn directory_check(d: &Directory) -> Result<()> {
     if d.create.is_empty() {
@@ -252,12 +265,15 @@ pub(crate) fn directory_check(d: &Directory) -> Result<()> {
             d.confirmed_existing && d.path.is_dir(),
             "DIRECTORY_CONFIRMATION_REQUIRED"
         );
-        ensure!(fs::canonicalize(&d.path)? == d.path, "DIRECTORY_CHANGED");
+        ensure!(
+            crate::alias::canonical(&d.path)? == crate::alias::logical(&d.path),
+            "DIRECTORY_CHANGED"
+        );
     } else {
         ensure!(!d.confirmed_existing, "INVALID_DIRECTORY_PLAN");
         let parent = d.create[0].parent().context("INVALID_DIRECTORY_PLAN")?;
         ensure!(
-            parent.is_dir() && fs::canonicalize(parent)? == parent,
+            parent.is_dir() && crate::alias::canonical(parent)? == crate::alias::logical(parent),
             "DIRECTORY_PARENT_CHANGED"
         );
         for p in &d.create {
@@ -276,7 +292,7 @@ pub(crate) fn create_directories(
     for p in &d.create {
         let parent = p.parent().context("INVALID_DIRECTORY_PLAN")?;
         ensure!(
-            fs::canonicalize(parent)? == parent,
+            crate::alias::canonical(parent)? == crate::alias::logical(parent),
             "DIRECTORY_PARENT_CHANGED"
         );
         fs::create_dir(p).context("DIRECTORY_CREATE_FAILED")?;
@@ -514,6 +530,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
 /// path, shared by the one-pass `session launch` (contract 1.49.0). Returns the receipt, or
 /// `{"valid":true,...}` when validating.
 pub(crate) async fn admit(paths: &Paths, mut r: Request, validate_only: bool) -> Result<Value> {
+    normalize_directory(&mut r.directory);
     shape(&r)?;
     let label = resolve_space(&r.host, &mut r.space).await?;
     let known = label.is_some();

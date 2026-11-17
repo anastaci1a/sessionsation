@@ -214,10 +214,10 @@ pub fn restored_homes(paths: &Paths) -> Result<Vec<(String, PathBuf)>> {
 }
 pub(super) fn file_only_home(paths: &Paths, home: &Path) -> Result<bool> {
     let storage = root(paths)?;
-    if !all(paths)?
-        .iter()
-        .any(|a| a.state != "deleted" && storage.join(&a.session.id).join("home") == home)
-    {
+    if !all(paths)?.iter().any(|a| {
+        a.state != "deleted"
+            && crate::layout::same_home(&storage.join(&a.session.id).join("home"), home)
+    }) {
         return Ok(false);
     }
     if crate::control::available(home) {
@@ -419,7 +419,11 @@ async fn archive(paths: &Paths, o: &mut Operation) -> Result<()> {
     let primary = plan
         .copies
         .iter()
-        .filter(|c| c.home.as_ref() == Some(&source.home))
+        .filter(|c| {
+            c.home
+                .as_ref()
+                .is_some_and(|h| crate::alias::same_path(h, &source.home))
+        })
         .map(|c| c.path.clone())
         .collect::<Vec<_>>();
     ensure!(primary.contains(&source.rollout), "SOURCE_HISTORY_CHANGED");
@@ -500,10 +504,19 @@ async fn archive(paths: &Paths, o: &mut Operation) -> Result<()> {
 /// directory, including a completed relocation), whatever happened to the
 /// per-thread location record meanwhile. A missing directory is left alone.
 fn keep_location(paths: &Paths, a: &Archive) -> Result<()> {
-    let cwd = Path::new(&a.source.cwd);
+    // Contract 1.54.0: a Codex archive made before the root re-key restores to
+    // the alias spelling of its working directory.
+    let mapped = crate::alias::logical(Path::new(&a.source.cwd));
+    let cwd = if mapped.is_dir() {
+        mapped.as_path()
+    } else {
+        Path::new(&a.source.cwd)
+    };
     if cwd.is_absolute()
         && cwd.is_dir()
-        && relocation::saved_location(paths, &a.source.thread_id).as_deref() != Some(&a.source.cwd)
+        && relocation::saved_location(paths, &a.source.thread_id).as_deref()
+            != Some(&*cwd.to_string_lossy())
+    // raw-path: an exact record of what is saved
     {
         relocation::save_location(paths, &a.source.thread_id, cwd)?;
     }
@@ -562,11 +575,11 @@ async fn restore(paths: &Paths, o: &mut Operation) -> Result<()> {
     let home = slot(paths, &o.session.id)?.join("home");
     private_dir(&home)?;
     let dir = bundle(paths, &a)?;
-    for b in a
-        .blobs
-        .iter()
-        .filter(|b| b.home.as_ref() == Some(&a.source.home))
-    {
+    for b in a.blobs.iter().filter(|b| {
+        b.home
+            .as_ref()
+            .is_some_and(|h| crate::alias::same_path(h, &a.source.home))
+    }) {
         ensure!(
             Path::new(&b.blob).components().count() == 1,
             "INVALID_ARCHIVE_BLOB"

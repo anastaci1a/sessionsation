@@ -216,7 +216,7 @@ fn account_ref(to: &str) -> Result<String> {
     );
     Ok(account.name)
 }
-fn read_cmdline(pid: u32) -> Vec<String> {
+pub(crate) fn read_cmdline(pid: u32) -> Vec<String> {
     fs::read(format!("/proc/{pid}/cmdline"))
         .map(|b| {
             b.split(|c| *c == 0)
@@ -225,7 +225,7 @@ fn read_cmdline(pid: u32) -> Vec<String> {
         })
         .unwrap_or_default()
 }
-fn gone(pid: u32, start: u64) -> bool {
+pub(crate) fn gone(pid: u32, start: u64) -> bool {
     claude::proc_start(pid).is_none_or(|(s, st)| st != start || matches!(s, 'Z' | 'X'))
 }
 
@@ -519,7 +519,7 @@ async fn drive(paths: &Paths, r: &mut Record) -> Result<()> {
 
 // ------------------------------------------------------------------------ stop
 
-fn terminate(pid: u32, start: u64) -> Result<()> {
+pub(crate) fn terminate(pid: u32, start: u64) -> Result<()> {
     // A pidfd names this process object even if the pid number is reused.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0) };
     if fd < 0 {
