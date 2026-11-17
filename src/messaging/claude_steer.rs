@@ -260,6 +260,14 @@ pub(crate) fn in_flight(paths: &Paths, conversation: &str) -> Vec<String> {
     all(paths)
         .into_iter()
         .filter(|r| r.conversation_id == conversation && !is_terminal(r))
+        // A `written` record whose worker has exited is delivered; only its final
+        // outcome was never observed. It reads nothing any more, so it is not in flight.
+        .filter(|r| {
+            r.phase != "written"
+                || worker_lock(paths, &r.request.message_id)
+                    .and_then(|l| crate::background::worker_stopped(&l))
+                    .map_or(true, |stopped| !stopped)
+        })
         .map(|r| r.request.message_id)
         .collect()
 }
