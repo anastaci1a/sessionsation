@@ -1306,6 +1306,183 @@ fn s6_rollback_moves_back_lineage_names_created_after_the_resume_and_remaps_reco
     assert!(read_changes(&f.paths, &run.id).is_empty());
 }
 
+// ------------------------------------------------------------- recheck
+
+fn gate_row(f: &One, running_before: bool) -> GateRow {
+    GateRow {
+        session_id: f.s.id.clone(),
+        name: "n".into(),
+        space: None,
+        provider: "claude".into(),
+        account: "a".into(),
+        conversation_id: f.conv.clone(),
+        pane: None,
+        pid: None,
+        running_before,
+        probe_error: None,
+    }
+}
+
+/// Recheck 1: a probe error after activation fails the gate whatever the row
+/// (here: a session that was not running before; account `a` is not enrolled,
+/// so its probe cannot run), and only a record of THIS run exempts a session.
+#[tokio::test]
+async fn recheck_gate_fails_on_any_probe_error_and_ignores_records_of_other_runs() {
+    let f = one();
+    let run = Run {
+        id: uuid::Uuid::new_v4().to_string(),
+        activated_at: Some(1),
+        state: "complete".into(),
+        gate_before: vec![gate_row(&f, false)],
+        ..Default::default()
+    };
+    let g = gate(&f.paths, Some(&run)).await;
+    assert_eq!(g["gate"], "fail", "{g}");
+    assert!(!g["sessions"][0]["probe_error_now"].is_null(), "{g}");
+    // A leftover record of an earlier (rolled-back) run, stuck mid Tier S.
+    let mut leftover = f.rec.clone();
+    leftover.run = uuid::Uuid::new_v4().to_string();
+    leftover.phase = "stopped".into();
+    save_session(&f.paths, &mut leftover).unwrap();
+    let mut running = run.clone();
+    running.gate_before = vec![gate_row(&f, true)];
+    let g = gate(&f.paths, Some(&running)).await;
+    assert_eq!(g["sessions"][0]["in_tier_s"], false, "{g}");
+    assert_eq!(g["gate"], "fail", "{g}");
+}
+
+/// Recheck 2: a truncated or empty file at a FINAL backup name is never accepted
+/// (it is re-taken through the verified writer), and a copy error fails the
+/// backup leaving nothing at the final name.
+#[test]
+fn recheck_backup_never_accepts_a_truncated_or_empty_final_copy_and_fails_on_copy_errors() {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+    write(
+        &paths.root.join("operations/launches/a.json"),
+        "{\"phase\":\"running\",\"pad\":\"0123456789\"}",
+    );
+    write(
+        &paths.root.join("registry/conversations/b.json"),
+        "{\"owner\":\"/x\"}",
+    );
+    write(
+        &paths.root.join("shared/claude/projects/-k/s.jsonl"),
+        "line one\nline two\n",
+    );
+    enroll_claude(&paths, "a");
+    let home = layout::target_home(&paths.root, ProviderId::Claude, "a");
+    write(&home.join(".claude.json"), "{\"projects\":{\"/p\":{}}}\n");
+    let bk = t.path().join("bk");
+    let run = Run {
+        id: uuid::Uuid::new_v4().to_string(),
+        backup: bk.clone(),
+        allow_full_copy: true,
+        ..Default::default()
+    };
+    backup(&paths, &run).unwrap();
+    let json_copy = bk.join("root/operations/launches/a.json");
+    let reg_copy = bk.join("root/registry/conversations/b.json");
+    let cj_copy = bk.join("claude-json/a.claude.json");
+    let src = |p: &str| fs::read(paths.root.join(p)).unwrap();
+    // Truncated and empty files at final names (as an interrupted direct write
+    // would leave them), then a rerun: each is re-taken complete.
+    fs::write(&json_copy, &src("operations/launches/a.json")[..10]).unwrap();
+    fs::write(&reg_copy, b"").unwrap();
+    fs::write(&cj_copy, b"").unwrap();
+    backup(&paths, &run).unwrap();
+    assert_eq!(
+        fs::read(&json_copy).unwrap(),
+        src("operations/launches/a.json")
+    );
+    assert_eq!(
+        fs::read(&reg_copy).unwrap(),
+        src("registry/conversations/b.json")
+    );
+    assert_eq!(
+        fs::read(&cj_copy).unwrap(),
+        fs::read(home.join(".claude.json")).unwrap()
+    );
+    let doc: Value =
+        serde_json::from_slice(&fs::read(bk.join("root-backup.json")).unwrap()).unwrap();
+    let listed = doc["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["file"] == "operations/launches/a.json")
+        .unwrap()
+        .clone();
+    assert_eq!(listed["check"], "exact", "{listed}");
+    // An empty copy of a non-transcript is never a "prefix".
+    let mut out = vec![];
+    fs::write(&reg_copy, b"").unwrap();
+    verify_tree(&bk.join("root"), &paths.root, true, &mut out).unwrap();
+    assert_eq!(
+        fs::read(&reg_copy).unwrap(),
+        src("registry/conversations/b.json")
+    );
+    // A copy error (reflink refused on this tmpfs without --allow-full-copy)
+    // fails the backup and leaves nothing at the final name.
+    fs::remove_file(&json_copy).unwrap();
+    let e = verify_complete(
+        &paths.root.join("operations"),
+        &bk.join("root/operations"),
+        Path::new("operations"),
+        false,
+    );
+    if !crate::shared_state::migrate::reflink_supported(t.path()) {
+        let e = e.unwrap_err().to_string();
+        assert!(e.contains("BACKUP_VERIFY_FAILED"), "{e}");
+        assert!(!json_copy.exists(), "no partial copy at the final name");
+    }
+}
+
+/// Recheck 3: a before-snapshot refusal shows up in the dry run's preconditions,
+/// with the same session the real run refuses on.
+#[tokio::test]
+async fn recheck_dry_run_reports_the_gate_snapshot_refusal() {
+    let f = one();
+    let t = f.t.path();
+    let o = Options {
+        from: t.join("user"),
+        to: t.join("disk"),
+        backup: Some(t.join("bk")),
+        dry_run: true,
+        allow_full_copy: true,
+    };
+    let v = migrate(&f.paths, &o).await.unwrap();
+    let snap = &v["preconditions"]["gate_snapshot"];
+    assert_eq!(snap["ok"], false, "{v}");
+    assert!(snap["detail"].as_str().unwrap().contains(&f.s.id), "{snap}");
+    let real = gate_rows(&f.paths).await.unwrap_err().to_string();
+    assert!(
+        real.contains("ROOT_MIGRATION_BLOCKED") && real.contains(&f.s.id),
+        "{real}"
+    );
+    assert!(!t.join("bk").exists(), "the dry run wrote nothing");
+}
+
+/// Recheck 4: lifecycle admission skips only a fully read file in
+/// root-migrations that does not parse; a read error blocks and names the file.
+#[test]
+fn recheck_lifecycle_skips_unparseable_but_blocks_on_unreadable_root_records() {
+    let f = one();
+    let d = f.paths.root.join(layout::ROOT_MIGRATIONS);
+    fs::create_dir_all(&d).unwrap();
+    fs::write(d.join("junk.json"), "not json").unwrap();
+    assert!(
+        crate::lifecycle::pending(&f.paths, &f.conv, None)
+            .unwrap()
+            .is_none()
+    );
+    // A record that cannot be read (here: a directory with a .json name).
+    fs::create_dir(d.join(format!("session-{}.json", f.s.id))).unwrap();
+    let e = crate::lifecycle::pending(&f.paths, &f.conv, None)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains(&format!("session-{}.json", f.s.id)), "{e}");
+}
+
 // ------------------------------------------------------------- review 3
 
 fn enroll_claude(paths: &Paths, name: &str) {

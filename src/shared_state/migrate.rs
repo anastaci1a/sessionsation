@@ -273,7 +273,7 @@ fn reflink_unsupported(e: &std::io::Error) -> bool {
     )
 }
 #[cfg(test)]
-pub(super) fn reflink_supported(dir: &Path) -> bool {
+pub(crate) fn reflink_supported(dir: &Path) -> bool {
     probe_reflink(dir).is_ok()
 }
 fn probe_reflink(dir: &Path) -> Result<()> {

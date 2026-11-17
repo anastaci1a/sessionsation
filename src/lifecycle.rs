@@ -87,20 +87,27 @@ pub(crate) fn pending_detail(
             if entry.extension().is_none_or(|e| e != "json") {
                 continue;
             }
-            let r: Value = match fs::read(&entry).map(|b| serde_json::from_slice(&b)) {
-                Ok(Ok(v)) => v,
-                // Root re-key records are written atomically, so an unparseable
-                // file there is not one of them: log it, never block every admission.
+            // A read (I/O) error always blocks, naming the file: it may be a re-key
+            // record of a session that must not be resumed or launched meanwhile.
+            let bytes = fs::read(&entry).with_context(|| {
+                format!(
+                    "SESSION_OPERATION_IN_PROGRESS: operation journal {} is unreadable",
+                    entry.display()
+                )
+            })?;
+            let r: Value = match serde_json::from_slice(&bytes) {
+                Ok(v) => v,
+                // Root re-key records are written atomically, so a fully read file
+                // there that does not parse is not one of them: log, do not block.
                 // raw-path: a journal directory constant, not a filesystem path
-                _ if directory == crate::layout::ROOT_MIGRATIONS => {
+                Err(e) if directory == crate::layout::ROOT_MIGRATIONS => {
                     eprintln!(
-                        "lifecycle: ignoring unreadable file {} in {}",
+                        "lifecycle: ignoring unparseable file {} in {}: {e}",
                         entry.display(),
                         crate::layout::ROOT_MIGRATIONS
                     );
                     continue;
                 }
-                Ok(Err(e)) => return Err(e.into()),
                 Err(e) => return Err(e.into()),
             };
             let id = r["id"]

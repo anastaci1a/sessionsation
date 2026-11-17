@@ -2044,6 +2044,7 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
     }
     // Every managed Claude home's `.claude.json` and link targets.
     let mut homes = vec![];
+    let mut claude_json_files = vec![];
     for home in claude_homes(root) {
         let name = home
             .file_name()
@@ -2053,16 +2054,16 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
         let f = home.join(".claude.json");
         if f.is_file() {
             let to = dir.join("claude-json").join(format!("{name}.claude.json"));
-            if fs::symlink_metadata(&to).is_err() {
-                if let Some(p) = to.parent() {
-                    fs::DirBuilder::new()
-                        .recursive(true)
-                        .mode(0o700)
-                        .create(p)?;
-                }
-                fs::copy(&f, &to)?;
+            // Recheck: re-taken (verified, renamed) when missing or not the
+            // source's exact bytes (Claude rewrites the file while it runs).
+            let current = keys::sha256_file(&f)?;
+            if keys::sha256_file(&to).ok() != Some(current) {
+                copy_verified(&f, &to, true)?;
                 fs::set_permissions(&to, fs::Permissions::from_mode(0o600))?;
             }
+            let (bytes, sha256) = keys::sha256_file(&to)?;
+            claude_json_files
+                .push(json!({"file":to,"bytes":bytes,"sha256":sha256,"check":"exact"}));
         }
         let links: BTreeMap<String, Option<PathBuf>> = crate::shared_state::NAMES
             .iter()
@@ -2070,15 +2071,12 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
             .collect();
         homes.push(json!({"home":home,"links":links}));
     }
-    // Verify: per-file sha256 of the copies; a transcript that grew since must
-    // have the copy as its byte prefix.
-    let mut files = vec![];
-    verify_tree(&dir.join("root"), root, run.allow_full_copy, &mut files)?;
-    if shared_copy.is_dir() {
-        verify_tree(&shared_copy, &projects, run.allow_full_copy, &mut files)?;
-    }
-    // Review 3 S1: the source side too: every file of every copied entry has a
-    // copy (taken once more if missing) of a size its source can have grown from.
+    // Verification. First the source side (review 3 S1): every file of every
+    // copied entry has a copy of the same size (a transcript may have grown);
+    // a missing or wrong-sized copy is taken again through `copy_verified`.
+    // Then the copy side: every copy's sha256 against its source (exact; a
+    // byte prefix only for transcripts that grew), re-taken once on mismatch.
+    let mut files = claude_json_files;
     let entries: Vec<String> = fs::read_dir(root)?
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -2095,12 +2093,54 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
     if projects.is_dir() {
         verify_complete(&projects, &shared_copy, Path::new(""), run.allow_full_copy)?;
     }
+    verify_tree(&dir.join("root"), root, run.allow_full_copy, &mut files)?;
+    if shared_copy.is_dir() {
+        verify_tree(&shared_copy, &projects, run.allow_full_copy, &mut files)?;
+    }
     let total = files.len();
     let doc = json!({"version":1,"run":run.id,"root":root,"created_at":now(),"classes":manifest,"homes":homes,
         "file_count":total,"files":files});
     atomic_write(&dir.join("root-backup.json"), &serde_json::to_vec(&doc)?)?;
     Ok(())
 }
+/// The one way a single backup file reaches its final name: copied to a
+/// `.partial-` sibling, checked against the source (same size and sha256; a
+/// growing transcript may differ only by having grown, then its copied bytes
+/// must be the source's prefix), then renamed over the final name. A copy error
+/// or a mismatch fails and leaves nothing at the final name.
+fn copy_verified(src: &Path, dst: &Path, allow_full: bool) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    let parent = dst.parent().context("BACKUP_FAILED: no parent")?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)?;
+    let partial = parent.join(format!(
+        ".partial-{}-{}",
+        dst.file_name().unwrap_or_default().to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    let mut stats = crate::shared_state::migrate::CopyStats::default();
+    crate::shared_state::migrate::copy_tree(src, &partial, allow_full, &mut stats)
+        .with_context(|| format!("BACKUP_FAILED: copying {}", src.display()))?;
+    let (bytes, digest) = keys::sha256_file(&partial)?;
+    let (src_bytes, src_digest) = keys::sha256_file(src)?;
+    let grows = src.extension().is_some_and(|x| x == "jsonl");
+    let same = (bytes == src_bytes && digest == src_digest)
+        || (grows
+            && bytes < src_bytes
+            && keys::sha256_prefix(src, bytes)?.as_deref() == Some(digest.as_str()));
+    ensure!(
+        same,
+        "BACKUP_VERIFY_FAILED: the copy of {} does not match its source (size {bytes} vs {src_bytes}); the partial copy {} was kept",
+        src.display(),
+        partial.display()
+    );
+    fs::rename(&partial, dst)?;
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 /// Walk the SOURCE: every regular file has a copy whose size is at most the
 /// source's (a live file can only have grown since; `verify_tree` checks the
 /// bytes). A missing copy is taken once more; still missing, or larger than its
@@ -2138,24 +2178,31 @@ fn verify_complete(source: &Path, copy: &Path, rel: &Path, allow_full: bool) -> 
             continue;
         }
         sources += 1;
-        if fs::symlink_metadata(&c).is_err() {
-            if let Some(p) = c.parent() {
-                fs::DirBuilder::new()
-                    .recursive(true)
-                    .mode(0o700)
-                    .create(p)?;
+        // Same size, or (a transcript only) a copy its source has grown from.
+        let grows = r.extension().is_some_and(|x| x == "jsonl");
+        let fits = |c: &Path| {
+            fs::symlink_metadata(c).is_ok_and(|cm| {
+                cm.is_file()
+                    && fs::metadata(&s)
+                        .is_ok_and(|x| cm.len() == x.len() || (grows && cm.len() < x.len()))
+            })
+        };
+        if !fits(&c) {
+            // Missing or wrong-sized: taken again through the verified writer.
+            // A copy error fails the backup and leaves nothing at the final name.
+            let _ = fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(c.parent().unwrap_or(copy));
+            if let Err(e) = copy_verified(&s, &c, allow_full) {
+                failures.push(format!("{} ({e:#})", r.display()));
+                continue;
             }
-            let mut stats = crate::shared_state::migrate::CopyStats::default();
-            let _ = crate::shared_state::migrate::copy_tree(&s, &c, allow_full, &mut stats);
         }
-        match fs::symlink_metadata(&c) {
-            Ok(cm)
-                if cm.len() <= m.len() || fs::metadata(&s).is_ok_and(|x| cm.len() <= x.len()) =>
-            {
-                copies += 1
-            }
-            Ok(_) => failures.push(format!("{} (copy larger than its source)", r.display())),
-            Err(_) => failures.push(format!("{} (missing in the backup)", r.display())),
+        if fits(&c) {
+            copies += 1;
+        } else {
+            failures.push(format!("{} (size differs from its source)", r.display()));
         }
     }
     ensure!(
@@ -2191,11 +2238,16 @@ fn verify_tree(copy: &Path, source: &Path, allow_full: bool, out: &mut Vec<Value
         let check = match keys::sha256_file(src) {
             _ if database => "database",
             Ok((_, d)) if d == digest => "exact",
-            Ok(_) => match keys::sha256_prefix(src, bytes)? {
-                Some(d) if d == digest => "prefix",
-                _ if regenerable => "changed_regenerable",
-                _ => "changed",
-            },
+            // A prefix is accepted only for a transcript that grew (recheck item 2);
+            // any other shorter copy, an empty one included, is a changed copy.
+            Ok(_) if rel.extension().is_some_and(|x| x == "jsonl") => {
+                match keys::sha256_prefix(src, bytes)? {
+                    Some(d) if d == digest => "prefix",
+                    _ => "changed",
+                }
+            }
+            Ok(_) if regenerable => "changed_regenerable",
+            Ok(_) => "changed",
             Err(_) if regenerable => "gone_regenerable",
             Err(_) => "source_gone",
         };
@@ -2225,11 +2277,13 @@ fn verify_tree(copy: &Path, source: &Path, allow_full: bool, out: &mut Vec<Value
             let src = source.join(&rel);
             let (mut bytes, mut digest, mut check) = classify(&p, &src, &rel)?;
             if check == "changed" {
-                // Our own copy of a file that changed during the copy: take it again.
-                fs::remove_file(&p)?;
-                let mut stats = crate::shared_state::migrate::CopyStats::default();
-                crate::shared_state::migrate::copy_tree(&src, &p, allow_full, &mut stats)?;
-                (bytes, digest, check) = classify(&p, &src, &rel)?;
+                // Our own copy differs from its source: take it again (verified,
+                // then renamed over the final name; a failure keeps the old copy
+                // and fails the backup below).
+                match copy_verified(&src, &p, allow_full) {
+                    Ok(()) => (bytes, digest, check) = classify(&p, &src, &rel)?,
+                    Err(e) => failures.push(format!("{} ({e:#})", rel.display())),
+                }
             }
             if matches!(check, "changed" | "source_gone") {
                 failures.push(format!("{} ({check})", rel.display()));
@@ -2753,27 +2807,33 @@ pub async fn gate(paths: &Paths, run: Option<&Run>) -> Value {
             let before_known = g.probe_error.is_none();
             let rec = read_session(paths, &g.session_id);
             // A session this tool stopped on purpose is judged by its own outcome.
+            // Only a record of THIS run exempts a session (never a leftover of an
+            // earlier, rolled-back run).
             let in_tier_s = rec.as_ref().is_some_and(|r| {
-                matches!(
-                    r.phase.as_str(),
-                    "stopping"
-                        | "stopped"
-                        | "retained"
-                        | "moved"
-                        | "switched"
-                        | "resume_pending"
-                        | "resuming"
-                        | "verifying"
-                        | "reverting"
-                        | "rollback_admitted"
-                        | "rollback_stopping"
-                        | "rollback_stopped"
-                )
+                r.run == run.id
+                    && matches!(
+                        r.phase.as_str(),
+                        "stopping"
+                            | "stopped"
+                            | "retained"
+                            | "moved"
+                            | "switched"
+                            | "resume_pending"
+                            | "resuming"
+                            | "verifying"
+                            | "reverting"
+                            | "rollback_admitted"
+                            | "rollback_stopping"
+                            | "rollback_stopped"
+                    )
             });
+            // Any probe error after activation fails the row, whatever it was before
+            // and whether or not this run stopped it.
+            let now_known = probe.is_ok();
             json!({"session_id":g.session_id,"name":g.name,"space":g.space,"provider":g.provider,
                 "running_before":g.running_before,"running_now":now,"in_tier_s":in_tier_s,
                 "probe_error_before":g.probe_error,"probe_error_now":probe.err(),
-                "ok": before_known && (!g.running_before || now || in_tier_s)})
+                "ok": before_known && now_known && (!g.running_before || now || in_tier_s)})
         })
         .collect();
     let pass = codex.is_ok() && rows.iter().all(|r| r["ok"] == true);
