@@ -797,6 +797,263 @@ async fn tier_s_running_claude_verifies_and_a_fresh_conversation_reverts() {
     }
 }
 
+impl Fixture {
+    /// Start a stopped session in a fake HERDR pane and wait until it runs.
+    fn start_in_pane(&self, id: &str) {
+        let s = self.session(id);
+        let out = self.run(&[
+            "--permissions",
+            "default",
+            "api",
+            "resume",
+            "--session",
+            id,
+            "--expected-generation",
+            s["generation"].as_str().unwrap(),
+            "--herdr-session",
+            "fixture",
+            "--space",
+            "w1",
+        ]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        wait_for("running", || {
+            self.live_session(id)["availability"] == "running"
+        });
+    }
+    fn tier_r(&self, fault: Option<&str>) -> Output {
+        let t = self.tmp.path();
+        let mut c = self.command(&[
+            "root",
+            "migrate",
+            "--from",
+            &t.join("user").to_string_lossy(),
+            "--to",
+            &t.join("disk").to_string_lossy(),
+            "--backup",
+            &t.join("bk").to_string_lossy(),
+            "--allow-full-copy",
+        ]);
+        if let Some(f) = fault {
+            c.env("SESSIONSATION_TEST_FAULT", f);
+        }
+        c.output().unwrap()
+    }
+    fn rec(&self, id: &str) -> Value {
+        self.json(&["root", "status"])["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+    fn settled(&self, id: &str) -> Value {
+        let mut last = Value::Null;
+        wait_for("tier S outcome", || {
+            last = self.rec(id);
+            last["phase"] == "complete"
+                && matches!(
+                    last["state"].as_str(),
+                    Some("verified" | "left_behind" | "verify_failed")
+                )
+                || matches!(last["phase"].as_str(), Some("uncertain" | "failed"))
+        });
+        last
+    }
+    fn kill_fakes(&self, ids: &[&str]) {
+        for id in ids {
+            if let Some(pid) = self.live_session(id)["pid"].as_u64() {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
+        }
+        for p in std::fs::read_dir(self.tmp.path().join("herdr-state"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if p.file_name().to_string_lossy().starts_with("pid-")
+                && let Ok(pid) = read(&p.path()).trim().parse::<i32>()
+            {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+}
+
+/// Review 2 B3 + S9: after the worker stopped the session, a failure after the
+/// move (memory conflict, STALE_TARGET, I/O error) moves the files back,
+/// restores the catalog and RESUMES the session on the old path (`left_behind`);
+/// a worker that dies after the move is continued from its journal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tier_s_failures_after_the_move_resume_on_the_old_path_and_a_dead_worker_continues() {
+    let mut f = Fixture::new().await;
+    let old = f.old_project.clone();
+    let new = f.new_project.clone();
+    let projects = f.home().join("projects");
+    std::fs::write(f.home().join("fake-resume-mode"), "cross").unwrap();
+    let mut ids = vec![];
+    for _ in 0..4 {
+        let (id, native) = f.stopped_session(&old);
+        f.start_in_pane(&id);
+        ids.push((id, native));
+    }
+    f.stop_daemon();
+    let out = f.tier_r(None);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    f.start_daemon().await;
+    for ((id, native), fault) in ids
+        .iter()
+        .zip(["memory_conflict", "stale_target", "io_error"])
+    {
+        let pid_before = f.live_session(id)["pid"].as_u64();
+        let out = f
+            .command(&["root", "migrate", "--session", id, "--accept-risks"])
+            .env("SESSIONSATION_TEST_FAULT", fault)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{fault}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let rec = f.settled(id);
+        assert_eq!(rec["state"], "left_behind", "{fault}: {rec}");
+        assert!(
+            projects
+                .join(key(&old))
+                .join(format!("{native}.jsonl"))
+                .is_file(),
+            "{fault}"
+        );
+        assert!(
+            !projects
+                .join(key(&new))
+                .join(format!("{native}.jsonl"))
+                .exists(),
+            "{fault}"
+        );
+        assert_eq!(
+            f.catalog_directory(id).as_deref(),
+            Some(&*old.to_string_lossy()),
+            "{fault}"
+        );
+        // Resumed (a new process) on the old path.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let s = f.live_session(id);
+            if s["availability"] == "running" && s["pid"].as_u64() != pid_before {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{fault}: not resumed: {s}\nrec: {rec}\nherdr: {}\nerr: {}",
+                read(&f.tmp.path().join("herdr-state/calls")),
+                std::fs::read_dir(f.tmp.path().join("herdr-state"))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|e| e.file_name().to_string_lossy().ends_with(".err"))
+                    .map(|e| format!("{:?}: {}", e.file_name(), read(&e.path())))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    // A worker that dies right after the move is continued by a rerun.
+    let (id, native) = &ids[3];
+    let out = f
+        .command(&["root", "migrate", "--session", id, "--accept-risks"])
+        .env("SESSIONSATION_TEST_FAULT", "exit_after_moved")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    wait_for("worker death after the move", || {
+        let r = f.rec(id);
+        r["phase"] == "moved"
+            && std::fs::OpenOptions::new()
+                .write(true)
+                .open(f.paths.root.join(format!(
+                    "operations/root-migrations/session-{id}.worker.lock"
+                )))
+                .is_ok_and(|l| fs2::FileExt::try_lock_exclusive(&l).is_ok())
+    });
+    let again = f.json(&["root", "migrate", "--session", id, "--accept-risks"]);
+    assert_eq!(again["continued"], true, "{again}");
+    let rec = f.settled(id);
+    assert_eq!(rec["state"], "verified", "{rec}");
+    assert!(
+        projects
+            .join(key(&new))
+            .join(format!("{native}.jsonl"))
+            .is_file()
+    );
+    let refs: Vec<&str> = ids.iter().map(|(i, _)| i.as_str()).collect();
+    f.kill_fakes(&refs);
+}
+
+/// Review 2 S9: a whole-root run that dies inside the Claude step with sessions
+/// present, then `root rollback`: layout version 2, files and catalog agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_whole_root_crash_mid_step_with_sessions_rolls_back_consistently() {
+    let mut f = Fixture::new().await;
+    let old = f.old_project.clone();
+    let new = f.new_project.clone();
+    let projects = f.home().join("projects");
+    let (s1, n1) = f.stopped_session(&old);
+    let (s2, n2) = f.stopped_session(&old);
+    f.stop_daemon();
+    let out = f.tier_r(Some("exit_after_moved"));
+    assert_eq!(
+        out.status.code(),
+        Some(86),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let layout: Value =
+        serde_json::from_slice(&std::fs::read(f.paths.root.join("layout.json")).unwrap()).unwrap();
+    assert_eq!(layout["version"], 3, "died after `mark`");
+    let rb = f.json(&["root", "rollback"]);
+    assert_eq!(rb["rolled_back"], true, "{rb}");
+    let layout: Value =
+        serde_json::from_slice(&std::fs::read(f.paths.root.join("layout.json")).unwrap()).unwrap();
+    assert_eq!(layout["version"], 2);
+    for (id, native) in [(&s1, &n1), (&s2, &n2)] {
+        assert!(
+            projects
+                .join(key(&old))
+                .join(format!("{native}.jsonl"))
+                .is_file()
+        );
+        assert!(
+            !projects
+                .join(key(&new))
+                .join(format!("{native}.jsonl"))
+                .exists()
+        );
+        assert_eq!(
+            f.catalog_directory(id).as_deref(),
+            Some(&*old.to_string_lossy())
+        );
+    }
+}
+
 /// F2 with a real bind mount: needs a private user+mount namespace
 /// (`unshare -Urm`), which CI containers and the check image do not allow.
 /// Run manually: `cargo test --test root_migrate bind_namespace -- --ignored`

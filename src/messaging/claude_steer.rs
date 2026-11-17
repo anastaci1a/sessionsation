@@ -254,6 +254,15 @@ fn all(paths: &Paths) -> Vec<Record> {
 fn is_terminal(r: &Record) -> bool {
     r.phase == "complete"
 }
+/// Contract 1.54.0 (root re-key): ids of deliveries to this conversation that
+/// have not finished (their evidence reads the transcript by its current path).
+pub(crate) fn in_flight(paths: &Paths, conversation: &str) -> Vec<String> {
+    all(paths)
+        .into_iter()
+        .filter(|r| r.conversation_id == conversation && !is_terminal(r))
+        .map(|r| r.request.message_id)
+        .collect()
+}
 /// Contract 1.49.0 (set-model): a terminal delivery to this conversation is typing or
 /// submitting right now (past `admitted`, not finished), or touched the pane within
 /// `quiet_seconds`. A model change never types while this holds.

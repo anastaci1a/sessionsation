@@ -325,6 +325,15 @@ async fn poll(name: String, rpc: Rpc, home: std::path::PathBuf) -> Poll {
 
 pub async fn serve(paths: Paths) -> Result<()> {
     std::env::set_current_dir(&paths.root)?;
+    // Root alias (contract 1.54.0): old-spelling runtime paths reach this runtime.
+    for link in crate::root_migrate::runtime::ensure(&paths) {
+        if link["result"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("refused"))
+        {
+            eprintln!("root alias: runtime compatibility path not maintained: {link}");
+        }
+    }
     // A crash between create and rename of an atomic write leaves a `.tmp*` file.
     crate::paths::sweep_stale_temps(&paths.root, crate::paths::STALE_TEMP_AGE);
     // Must precede removing the stale socket and opening the database.

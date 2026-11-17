@@ -27,6 +27,7 @@
 //! idempotent and resumable; `root rollback` restores layout version 2 and the
 //! original records.
 pub mod keys;
+pub mod runtime;
 pub mod session;
 #[cfg(test)]
 mod tests;
@@ -81,6 +82,7 @@ pub const ERRORS: &[&str] = &[
     "BACKUP_REFLINK_UNSUPPORTED",
     "BACKUP_VERIFY_FAILED",
     "SESSION_STATE_UNVERIFIED",
+    "SESSION_DELIVERY_IN_PROGRESS",
     "BACKUP_REQUIRED",
     "BACKUP_NOT_EMPTY",
 ];
@@ -284,6 +286,8 @@ pub struct SessionRec {
     pub home: Option<PathBuf>,
     /// The worker undoes the re-key (`root rollback --session` of a running session).
     pub rollback: bool,
+    /// The worker stopped the session's process: any later failure resumes it.
+    pub stopped_by_worker: bool,
     pub attempt: u32,
     pub pane: Option<String>,
     pub process: Option<(u32, u64)>,
@@ -595,43 +599,71 @@ fn propose(paths: &Paths, from: &Path, to: &Path, dry_run: bool) -> (Vec<Entry>,
 // ------------------------------------------------------------ preconditions
 
 /// Non-terminal operations (P4): every `api operations` row that is not terminal.
+/// S3 (review 2): every journal file in every operation directory is read
+/// directly (read only: nothing is settled or reconciled, so a dry run beside a
+/// live supervisor writes nothing here). A journal that cannot be read or has no
+/// recognisable phase blocks like an unfinished one (fail closed).
 fn blocking_operations(paths: &Paths) -> Vec<Value> {
-    let mut unreadable = vec![];
-    let rows = crate::api::operations_list(paths).unwrap_or_else(|e| {
-        // Fail closed: an unreadable journal blocks like an unfinished one.
-        unreadable.push(json!({"id":null,"kind":"operations_unreadable","phase":format!("{e:#}")}));
-        vec![]
-    });
-    let terminal = [
+    const GENERIC: &[&str] = &[
         "complete",
         "completed",
         "failed",
         "cancelled",
         "recovered",
         "abandoned",
-        "done",
         "expired",
-        "restored",
-        "archived",
+        "rejected",
+        "done",
         "deleted",
         "removed",
+        "restored",
+        "archived",
     ];
-    let mut out: Vec<Value> = rows
-        .into_iter()
-        .filter(|o| o["kind"] != "root_rekey")
-        .filter(|o| match o["terminal"].as_bool() {
-            Some(t) => !t,
-            None => !o["phase"]
-                .as_str()
-                .or_else(|| o["state"].as_str())
-                .is_some_and(|p| terminal.contains(&p)),
-        })
-        .map(|o| json!({"id":o["id"],"kind":o["kind"],"phase":o["phase"].as_str().or_else(|| o["state"].as_str())}))
+    let skip = [
+        layout::LIFECYCLE_ADMISSION,
+        layout::MOVE_BACKUPS,
+        layout::ROOT_MIGRATIONS,
+    ];
+    let mut out = vec![];
+    let mut dirs: Vec<&str> = layout::OPERATION_DIRS
+        .iter()
+        .copied()
+        .filter(|d| !skip.contains(d))
         .collect();
-    // Shared-store migrations are not listed by `api operations`.
-    for (_, v) in json_files(&paths.root.join(layout::SHARED_MIGRATIONS)) {
-        if !matches!(v["phase"].as_str(), Some("complete" | "incomplete")) {
-            out.push(json!({"id":v["id"],"kind":"shared_migration","phase":v["phase"]}));
+    dirs.push(layout::SHARED_MIGRATIONS);
+    for d in dirs {
+        let terminal: Vec<&str> = crate::retention::PRUNABLE
+            .iter()
+            .find(|(p, _)| *p == d)
+            .map(|(_, f)| f.to_vec())
+            .unwrap_or_else(|| GENERIC.to_vec());
+        let Ok(entries) = fs::read_dir(paths.root.join(d)) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().is_none_or(|x| x != "json")
+                || !e.file_type().is_ok_and(|t| t.is_file())
+            {
+                continue;
+            }
+            let v: Value = match fs::read(&p).map(|b| serde_json::from_slice(&b)) {
+                Ok(Ok(v)) => v,
+                _ => {
+                    out.push(json!({"file":p,"kind":d,"phase":"unreadable"}));
+                    continue;
+                }
+            };
+            let phase = v["phase"].as_str().or_else(|| v["state"].as_str());
+            let done = phase.is_some_and(|ph| {
+                terminal.contains(&ph) || (d == layout::SHARED_MIGRATIONS && ph == "incomplete")
+            });
+            if !done {
+                out.push(
+                    json!({"id":v["id"].as_str().or_else(|| v["request"]["request_id"].as_str()),
+                    "file":p,"kind":d,"phase":phase}),
+                );
+            }
         }
     }
     // B2: a hosted Claude worker listens on `<runtime>/hosted/<c>.sock`, and the
@@ -653,7 +685,6 @@ fn blocking_operations(paths: &Paths) -> Vec<Value> {
             out.push(json!({"id":null,"kind":"catalog_unreadable","phase":format!("{e:#}")}));
         }
     }
-    out.extend(unreadable);
     out
 }
 
@@ -826,8 +857,15 @@ pub(crate) async fn codex_instances(paths: &Paths) -> CodexView {
 /// Processes whose command line names one of `ids` (a provider started with
 /// `--resume <id>` / `--session-id <id>`). `Err` when `/proc` is unreadable.
 pub(crate) fn processes_naming(ids: &[String]) -> std::result::Result<Vec<u32>, String> {
+    processes_naming_in(Path::new("/proc"), ids)
+}
+pub(crate) fn processes_naming_in(
+    proc_dir: &Path,
+    ids: &[String],
+) -> std::result::Result<Vec<u32>, String> {
     let me = std::process::id();
-    let entries = fs::read_dir("/proc").map_err(|e| format!("/proc unreadable: {e}"))?;
+    let entries =
+        fs::read_dir(proc_dir).map_err(|e| format!("{} unreadable: {e}", proc_dir.display()))?;
     let mut out = vec![];
     for e in entries.flatten() {
         let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
@@ -1589,6 +1627,12 @@ pub async fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
         // An interrupted run past `mark`: compare through the alias while planning.
         alias::install(&entries);
     }
+    // S2 (review 2): opened by the new spelling, the probes (plan and gate
+    // snapshot) would not match processes that use the old one: compare through
+    // the proposed entries from the start.
+    if alias.entry_for(&paths.root).is_none() && !entries.is_empty() {
+        alias::install(&entries);
+    }
     let codex = codex_instances(paths).await;
     let plan = build_plan(paths, &alias, &codex)?;
     if o.dry_run {
@@ -1825,6 +1869,10 @@ fn drive(paths: &Paths, run: &mut Run, plan: &Plan) -> Result<()> {
             .push(json!({"at":at,"action":"root_migrate","run":run.id,"entries":run.entries}));
         layout::write_record(&paths.root, &record)?;
         run.activated_at = Some(at);
+        // B2 (review 2): clients that derive the control socket from the old
+        // spelling (Agent-DM) reach the canonical runtime through a symlink.
+        // (Checked again by `verify`.)
+        let _ = runtime::ensure(paths);
         step(paths, run, "activate", "Root alias active.")?;
     }
     if step_index(&run.step) < step_index("verify") {
@@ -2145,7 +2193,21 @@ fn rewrite_json(
         after_sha256: sha(&out),
     };
     // Journaled before the write: a crash after the write is always recoverable.
-    log_change(paths, &run.id, &c)?;
+    // Rollback remaps go to their own log, so a rerun never undoes them.
+    if run.state == "rolling_back" || run.state.starts_with("rollback") {
+        let path = run_file(paths, &run.id)?.with_extension("rollback.jsonl");
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)?;
+        let mut line = serde_json::to_vec(&c)?;
+        line.push(b'\n');
+        f.write_all(&line)?;
+        f.sync_all()?;
+    } else {
+        log_change(paths, &run.id, &c)?;
+    }
     atomic_write(file, &out)?;
     Ok(true)
 }
@@ -2181,12 +2243,19 @@ fn claude_step(paths: &Paths, run: &mut Run, alias: &Alias, plan: &Plan) -> Resu
     for home in claude_homes(&paths.root) {
         // raw-path: journal identity of a home
         if run.claude_json.iter().any(|c| c.home == home) {
-            // raw-path: journal identity
+            // Journaled by an interrupted run: finish writing (idempotent).
+            keys::clone_project_entries(&home, alias, None, false)?;
             continue;
         }
-        let added = keys::clone_project_entries(&home, alias, None, false)?;
-        run.claude_json.push(ClaudeJson { home, added });
+        // S8: the planned clones are journaled before they are written, so a
+        // crash in between still lets rollback remove them (matched by value).
+        let planned = keys::clone_project_entries(&home, alias, None, true)?;
+        run.claude_json.push(ClaudeJson {
+            home: home.clone(),
+            added: planned,
+        });
         save_run(paths, run)?;
+        keys::clone_project_entries(&home, alias, None, false)?;
     }
     // Memory: every key pair, before any session moves.
     let mut bases = read_bases(paths);
@@ -2296,6 +2365,17 @@ fn claude_step(paths: &Paths, run: &mut Run, alias: &Alias, plan: &Plan) -> Resu
 }
 
 fn codex_step(paths: &Paths, run: &Run, plan: &Plan) -> Result<()> {
+    // S1: a thread interrupted after its location was journaled (the plan of the
+    // rerun no longer lists it: its cwd already maps) is finished from the journal.
+    for mut rec in sessions(paths)
+        .into_iter()
+        .filter(|r| r.provider == "codex" && r.state == "rekeying" && r.codex_location_written)
+    {
+        session::codex_rekey_stopped(paths, &mut rec)?;
+        rec.state = "rekeyed".into();
+        rec.phase = "complete".into();
+        save_session(paths, &mut rec)?;
+    }
     for c in &plan.codex {
         let Ok(s) = catalog::find(paths, &c.id) else {
             continue;
@@ -2309,6 +2389,8 @@ fn codex_step(paths: &Paths, run: &Run, plan: &Plan) -> Result<()> {
         rec.reason = c.reason.clone();
         rec.state = match c.state.as_str() {
             "rekey" => {
+                rec.state = "rekeying".into();
+                rec.phase = "admitted".into();
                 session::codex_rekey_stopped(paths, &mut rec)?;
                 "rekeyed".into()
             }
@@ -2321,7 +2403,15 @@ fn codex_step(paths: &Paths, run: &Run, plan: &Plan) -> Result<()> {
 }
 
 fn verify(paths: &Paths, run: &Run) -> Vec<String> {
-    let mut out = vec![];
+    let mut out: Vec<String> = runtime::ensure(paths)
+        .iter()
+        .filter(|l| {
+            l["result"]
+                .as_str()
+                .is_some_and(|r| r.starts_with("refused"))
+        })
+        .map(|l| format!("runtime link: {l}"))
+        .collect();
     // Both spellings open as one root.
     let a = Paths::open_any_layout(Some(run.previous_root.clone()));
     let b = Paths::open_any_layout(Some(run.canonical_root.clone()));
@@ -2551,10 +2641,16 @@ pub fn rollback(paths: &Paths, dry_run: bool) -> Result<Value> {
     let changes = read_changes(paths, &run.id);
     let recs = sessions(paths);
     // B3(d): every session this run changed and that is not on its new path for good.
-    let undo = |r: &SessionRec| {
-        r.run == run.id
+    let run_id = run.id.clone();
+    let undo = move |r: &SessionRec| {
+        r.run == run_id
             && r.state != "verified"
-            && (!r.moved.is_empty() || r.revision_after.is_some() || r.codex_location_written)
+            && (!r.moved.is_empty()
+                || r.revision_after.is_some()
+                || r.codex_location_written
+                // B1 (review 2): an interrupted re-key may have renamed names the
+                // journal did not record yet; undo checks the retained digests.
+                || (r.phase != "complete" && !r.retained.is_empty()))
     };
     let workers: Vec<String> = recs
         .iter()
@@ -2593,6 +2689,8 @@ pub fn rollback(paths: &Paths, dry_run: bool) -> Result<Value> {
     let mut record = layout::read_record(&paths.root)?.unwrap_or_default();
     record.state = State::RollingBack;
     layout::write_record(&paths.root, &record)?;
+    run.state = "rolling_back".into();
+    save_run(paths, &mut run)?;
     let mut problems = vec![];
     // Sessions first (they may use the alias for comparisons).
     for mut r in recs.into_iter().filter(|r| undo(r)) {
@@ -2619,6 +2717,29 @@ pub fn rollback(paths: &Paths, dry_run: bool) -> Result<Value> {
             problems.push(format!("{}: {e:#}", c.home.display()));
         }
     }
+    // S6: records written after activation in the new spelling map back.
+    let remapped = match remap_after_activation(paths, &run, &changes) {
+        Ok(n) => n,
+        Err(e) => {
+            problems.push(format!("registry remap: {e:#}"));
+            0
+        }
+    };
+    if !problems.is_empty() {
+        // S5: a partial rollback keeps the alias active (sessions may still be on the
+        // new path) and can be run again.
+        let mut record = layout::read_record(&paths.root)?.unwrap_or_default();
+        record.state = State::Complete;
+        layout::write_record(&paths.root, &record)?;
+        run.state = "rollback_incomplete".into();
+        run.verify = problems.clone();
+        save_run(paths, &mut run)?;
+        return Ok(
+            json!({"rolled_back":false,"state":"rollback_incomplete","run":run.id,"plan":plan,"problems":problems,
+                "detail":"fix the problems and run `root rollback` again; the alias stays active meanwhile"}),
+        );
+    }
+    let runtime_links = runtime::remove(&run);
     // layout.json: the original bytes when the backup holds them, else the record.
     let original = run.backup.join("root").join(layout::LAYOUT_FILE);
     match fs::read(&original) {
@@ -2640,8 +2761,49 @@ pub fn rollback(paths: &Paths, dry_run: bool) -> Result<Value> {
         "Rolled back to layout version 2.",
     )?;
     Ok(
-        json!({"rolled_back":true,"run":run.id,"plan":plan,"problems":problems,"layout_version":layout::VERSION}),
+        json!({"rolled_back":true,"run":run.id,"plan":plan,"problems":problems,"layout_version":layout::VERSION,
+            "remapped_after_activation":remapped,"runtime_links_removed":runtime_links}),
     )
+}
+/// Records of the rewritten classes that changed after activation and still
+/// name the new spelling (written by the supervisor meanwhile) map back through
+/// the alias, so they match the old spelling again. Values this run rewrote are
+/// handled by the change log; files untouched since activation keep their value.
+fn remap_after_activation(paths: &Paths, run: &Run, changes: &[Change]) -> Result<usize> {
+    let Some(at) = run.activated_at else {
+        return Ok(0);
+    };
+    let a = Alias::new(run.entries.clone());
+    let logged: std::collections::BTreeSet<&str> =
+        changes.iter().map(|c| c.file.as_str()).collect();
+    let mut n = 0;
+    for (dir, field) in REGISTRY_FIELDS {
+        for (file, _) in json_files(&paths.root.join(dir)) {
+            let rel = file
+                .strip_prefix(&paths.root) // raw-path: listed under paths.root
+                .unwrap_or(&file)
+                .to_string_lossy()
+                .into_owned();
+            let modified = fs::metadata(&file)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
+            if modified < at || logged.contains(rel.as_str()) {
+                continue;
+            }
+            let back = |old: &str| {
+                let p = Path::new(old);
+                let mapped = a.physical_old(p);
+                // raw-path: only values that the alias maps change
+                (mapped.as_path() != p).then(|| mapped.to_string_lossy().into_owned())
+            };
+            if rewrite_json(paths, run, &file, field, back)? {
+                n += 1;
+            }
+        }
+    }
+    Ok(n)
 }
 /// Processes whose `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`GEMINI_CLI_HOME` names the
 /// new spelling of a path under the data root (read from `/proc/*/environ`).

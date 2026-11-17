@@ -3880,7 +3880,20 @@ sessionsation root finalize [--dry-run] [--accept-unresumed]
   (`ROOT_ROLLBACK_BLOCKED` with the pids): after the rollback such a process would no longer be recognised.
   Revert the boot files, launcher and `/usr/bin` link with it. `verified` sessions stay on their new
   directory. `root rollback --session S` undoes one session; a running one is stopped, moved back and resumed
-  on the old path by a detached worker under lifecycle admission.
+  on the old path by a detached worker under lifecycle admission. Rollback also moves back every name of the
+  session's lineage found in the new key that the old key lacks (for example a sidecar created after the
+  resume, or a rename the journal had not recorded yet; never overwriting), and maps records of the rewritten
+  classes written after activation back to the old spelling. A rollback with problems ends
+  `rollback_incomplete` (alias still active) and can be rerun.
+- **Journaling.** Each rename is journaled before (intent) and after it; a Codex thread location is journaled
+  (previous record and the exact new one) before it is written; `.claude.json` clones are journaled before
+  they are written. After the worker stopped a running session, any failure moves its files back, restores
+  the catalog and resumes it on the old path (`left_behind`). Tier S waits up to 30 s for Claude deliveries
+  in flight to the conversation (`SESSION_DELIVERY_IN_PROGRESS`, retryable). Memory problems found when
+  verifying the resumed session end `verify_failed` (never a revert).
+- **Runtime compatibility.** While the alias is active each old spelling's runtime path
+  (`/tmp/sessionsation-<uid>-<hash>`) is a directory symlink to the canonical runtime directory, so clients
+  that derive the control socket from the old root string keep reaching the supervisor.
 - **Finalize.** Removes empty old project-key directories (`rmdir` only). Retained copies under the backup
   directory are never deleted by any 1.54 command, `finalize` included; old `memory/` directories are only
   reported (`memory_removable`).

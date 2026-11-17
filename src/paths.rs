@@ -59,12 +59,7 @@ impl Paths {
         let root = fs::canonicalize(root)?; // raw-path: the physical spelling, then redirect
         let root = redirect(&root)?;
         crate::alias::record_requested(&root, &requested);
-        let hash = format!("{:x}", Sha256::digest(root.as_os_str().as_encoded_bytes()));
-        let runtime = PathBuf::from(format!(
-            "/tmp/sessionsation-{}-{}",
-            unsafe { libc::geteuid() },
-            &hash[..16]
-        ));
+        let runtime = runtime_for(&root);
         private_dir(&runtime)?;
         if admit {
             crate::layout::admit(&root)?;
@@ -89,6 +84,17 @@ impl Paths {
         Ok(self.root.join("sessions").join(id))
     }
 }
+/// The runtime directory of a root spelling: `/tmp/sessionsation-<uid>-<16 hex of
+/// sha256(root)>` (clients such as Agent-DM compute the same path).
+pub fn runtime_for(root: &Path) -> PathBuf {
+    let hash = format!("{:x}", Sha256::digest(root.as_os_str().as_encoded_bytes()));
+    PathBuf::from(format!(
+        "/tmp/sessionsation-{}-{}",
+        unsafe { libc::geteuid() },
+        &hash[..16]
+    ))
+}
+
 /// Root alias (contract 1.54.0): a root opened by either spelling resolves to
 /// `canonical_root`, so every caller (old environments in running panes, pinned
 /// client configuration, new boot scripts) uses one runtime directory and one

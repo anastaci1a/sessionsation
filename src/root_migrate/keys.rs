@@ -244,7 +244,17 @@ pub struct Moved {
 /// name that appears after the preflight stops the move and the names already
 /// moved are moved back. A rerun after a crash counts a recorded name with no
 /// source and a matching destination digest as done.
-pub fn move_names(projects: &Path, retained: &[Retained], key_new: &str) -> Result<Vec<Moved>> {
+///
+/// Review 2 B1: `journal` is called with the full list before each rename (the
+/// new name is already in it as an intent) and again after it, so a death at
+/// any instant leaves a journal that names every name that may have moved.
+/// [`move_back`] treats an intent whose source still exists as not moved.
+pub fn move_names(
+    projects: &Path,
+    retained: &[Retained],
+    key_new: &str,
+    mut journal: impl FnMut(&[Moved]) -> Result<()>,
+) -> Result<Vec<Moved>> {
     let dst_dir = projects.join(key_new);
     if fs::symlink_metadata(&dst_dir).is_err() {
         fs::DirBuilder::new().mode(0o700).create(&dst_dir)?;
@@ -268,14 +278,25 @@ pub fn move_names(projects: &Path, retained: &[Retained], key_new: &str) -> Resu
             && fs::symlink_metadata(&to).is_ok()
             && digest_of(&to)? == r.sha256
         {
-            moved.push(Moved {
-                name: r.name.clone(),
-                from: r.source.clone(),
-                to,
-                digest: r.sha256.clone(),
-            });
+            if !moved.iter().any(|m| m.name == r.name) {
+                moved.push(Moved {
+                    name: r.name.clone(),
+                    from: r.source.clone(),
+                    to,
+                    digest: r.sha256.clone(),
+                });
+                journal(&moved)?;
+            }
             continue;
         }
+        // Intent first: the journal names this rename before it happens.
+        moved.push(Moved {
+            name: r.name.clone(),
+            from: r.source.clone(),
+            to: to.clone(),
+            digest: r.sha256.clone(),
+        });
+        journal(&moved)?;
         let result = (|| -> Result<()> {
             ensure!(
                 digest_of(&r.source)? == r.sha256,
@@ -295,16 +316,17 @@ pub fn move_names(projects: &Path, retained: &[Retained], key_new: &str) -> Resu
             Ok(())
         })();
         if let Err(e) = result {
-            let _ = move_back(&moved);
+            // The journal keeps the list until every name is verifiably back.
+            if move_back(&moved).is_ok() {
+                moved.clear();
+                let _ = journal(&moved);
+            }
             return Err(e);
         }
         fs::File::open(&dst_dir)?.sync_all()?;
-        moved.push(Moved {
-            name: r.name.clone(),
-            from: r.source.clone(),
-            to: to.clone(),
-            digest: r.sha256.clone(),
-        });
+        #[cfg(test)]
+        super::tests::die_check(&format!("renamed:{}", r.name));
+        journal(&moved)?;
         let after = digest_of(&to)?;
         if after != r.sha256 {
             let _ = move_back(&moved);
@@ -316,8 +338,10 @@ pub fn move_names(projects: &Path, retained: &[Retained], key_new: &str) -> Resu
 /// Move names back to where they came from (never overwriting).
 pub fn move_back(moved: &[Moved]) -> Result<()> {
     for m in moved.iter().rev() {
-        if fs::symlink_metadata(&m.to).is_err() && fs::symlink_metadata(&m.from).is_ok() {
-            continue; // already back
+        if fs::symlink_metadata(&m.from).is_ok() {
+            // Already back, or a journaled intent whose rename never happened
+            // (then anything at `to` is not ours and is never touched).
+            continue;
         }
         crate::shared_state::rename_noreplace(&m.to, &m.from).with_context(|| {
             format!(
@@ -388,6 +412,13 @@ fn files_of(dir: &Path, base: &Path, out: &mut Vec<(String, bool)>) {
 /// hashed. If a concurrent writer changed `dst` in between, the swap is undone
 /// and `Ok(false)` is returned (the caller reports a conflict). The displaced
 /// version is always saved to `versions` before its staging name is removed.
+///
+/// Residual race (review 2, S7; accepted): a writer that holds an open file
+/// descriptor on the target, or writes it in place between the exchange and the
+/// hash/removal, can land its write in the displaced inode, which is then
+/// removed after its earlier content was saved. It needs two writes to the same
+/// memory file within milliseconds of each other; Claude writes memory files by
+/// path, rarely and briefly.
 pub(crate) fn replace_with(
     src: &Path,
     dst: &Path,

@@ -264,6 +264,20 @@ Order for a window:
    [--accept-risks] [--prompt-file F]`, then `root status` until `verified`, `left_behind` or `uncertain`.
 7. `root status`: report `left_behind`, `memory_split` and `unmapped`.
 
+Agent-DM keeps working through the window without a configuration change. It derives the supervisor's
+control socket from its configured `dataRoot` (`/tmp/sessionsation-<uid>-<hash of the old spelling>/control.sock`).
+While the alias is active, the supervisor (and the `activate` step) keeps that old runtime path as a directory
+symlink to the canonical runtime directory, so Agent-DM's owner check (`lstat` of the socket, its owner and mode,
+then a connect) reaches the running supervisor. A stale old runtime directory without a live socket is moved
+aside (`.pre-alias-<time>`, never removed); a directory with a live socket or another symlink is left alone and
+reported by `root migrate` verification. Agent-DM can be repointed to the canonical `dataRoot` and socket later;
+`root rollback` removes the symlink.
+
+The dry run reads journals directly and settles nothing; it may still write what every command writes when
+it opens the root (catalog identity healing, a hosted-worker record whose worker has exited). Memory
+fast-forwards use an atomic exchange; a write landing in the same memory file within milliseconds of the
+exchange can end in the saved previous version instead of the live file (a narrow, accepted race).
+
 Before the window also stop every hosted (stream-json) Claude worker: `root migrate` refuses while one is
 live, because its socket is in the runtime directory, which moves with the root spelling.
 
@@ -271,7 +285,8 @@ Rollback: `root rollback --session S` for one session, `root rollback` (supervis
 (layout version 2; sessions already `verified` stay on their new directory). The whole-root rollback refuses
 while any process runs with the new spelling of an account home (`ROOT_ROLLBACK_BLOCKED` lists them): stop
 those sessions first and revert the boot files, launcher and `/usr/bin/sessionsation` link together with the
-rollback. A binary older than 1.54.0 refuses a version 3 root, so roll the root back first. Every transcript
+rollback. A rollback that cannot finish (for example a session that is running again) ends
+`rollback_incomplete`, keeps the alias active and can be run again. A binary older than 1.54.0 refuses a version 3 root, so roll the root back first. Every transcript
 moved by the re-key has a verified copy under `DIR/sessions/<session>/<attempt>/`; no command deletes these
 copies, including `root finalize`, which only removes empty old project-key directories.
 

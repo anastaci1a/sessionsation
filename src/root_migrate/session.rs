@@ -39,6 +39,8 @@ fn phase(paths: &Paths, r: &mut SessionRec, name: &str, detail: &str) -> Result<
     r.detail = detail.into();
     save_session(paths, r)?;
     #[cfg(test)]
+    super::tests::die_check(name);
+    #[cfg(test)]
     super::tests::crash_check(name)?;
     Ok(())
 }
@@ -106,7 +108,20 @@ fn ensure_quiet(paths: &Paths, r: &SessionRec, found: &[Found]) -> Result<()> {
         "SESSION_RUNNING: process(es) {naming:?} name this conversation on their command line; it was not moved"
     );
     for f in found {
-        crate::external::archiving::native::not_open(&f.transcript).map_err(|e| {
+        // After an interrupted move the transcript may already be in the new key.
+        let moved_to = r
+            .key_to
+            .as_ref()
+            .zip(projects_of(paths, r).ok())
+            .map(|(kt, p)| p.join(kt).join(format!("{}.jsonl", f.conversation_id)));
+        let at = if fs::symlink_metadata(&f.transcript).is_ok() {
+            f.transcript.clone()
+        } else if let Some(m) = moved_to.filter(|m| fs::symlink_metadata(m).is_ok()) {
+            m
+        } else {
+            continue; // nothing to probe: the name is in neither key
+        };
+        crate::external::archiving::native::not_open(&at).map_err(|e| {
             if format!("{e:#}").contains("HISTORY_IN_USE") {
                 e
             } else {
@@ -192,6 +207,8 @@ fn rekey_until(ctx: &mut Ctx, r: &mut SessionRec, s: &Session, finish: bool) -> 
         r.retained_dir = Some(dir.clone());
         r.found = found.clone();
         save_session(paths, r)?;
+        #[cfg(test)]
+        super::tests::die_check("before_copy");
         r.retained = keys::retain(&found, &dir, ctx.allow_full_copy)?;
         phase(
             paths,
@@ -207,13 +224,23 @@ fn rekey_until(ctx: &mut Ctx, r: &mut SessionRec, s: &Session, finish: bool) -> 
             r.retained.iter().all(|x| x.verified),
             "RETAIN_VERIFY_FAILED: the retained copy is not verified; nothing was moved"
         );
-        r.moved = keys::move_names(&projects, &r.retained, &key_to)?;
+        // B1 (review 2): every rename is journaled (intent before, done after).
+        let retained = r.retained.clone();
+        let moved = keys::move_names(&projects, &retained, &key_to, |m| {
+            r.moved = m.to_vec();
+            save_session(paths, r)
+        })?;
+        r.moved = moved;
         phase(
             paths,
             r,
             "moved",
             "The conversation's files were moved to the new project key.",
         )?;
+        if test_fault("exit_after_moved") {
+            // Process death after the move was journaled (binary-level crash tests).
+            std::process::exit(86);
+        }
     }
     if order(&r.phase) < order("switched") {
         // B3(b): any error from here on moves the names back (and restores the
@@ -239,6 +266,13 @@ fn rekey_until(ctx: &mut Ctx, r: &mut SessionRec, s: &Session, finish: bool) -> 
     )
 }
 
+/// Fault injection for the binary-level tests (debug builds only, like the
+/// symlink test proof; release builds never read the variable).
+fn test_fault(point: &str) -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("SESSIONSATION_TEST_FAULT").is_ok_and(|v| v.split(',').any(|p| p == point))
+}
+
 /// Steps 5 and 6 of §4.2 (after the names moved): memory, project entry, catalog.
 #[allow(clippy::too_many_arguments)]
 fn memory_and_switch(
@@ -255,6 +289,17 @@ fn memory_and_switch(
     // An I/O error after the move (B3(b)).
     #[cfg(test)]
     super::tests::crash_check("memory_io")?;
+    if test_fault("memory_conflict") {
+        bail!(
+            "MEMORY_CONFLICT: MEMORY.md differ(s) between the old and new key's memory (injected)"
+        );
+    }
+    if test_fault("stale_target") {
+        bail!("STALE_TARGET (injected)");
+    }
+    if test_fault("io_error") {
+        return Err(std::io::Error::other("injected I/O error").into());
+    }
     if mem_key != key_to {
         let (mut bases, pair) = bases_entry(paths, mem_key, key_to);
         let base = bases.0.entry(pair).or_default();
@@ -268,6 +313,8 @@ fn memory_and_switch(
         )?;
         save_bases(paths, &bases)?;
         r.memory = Some(m.clone());
+        #[cfg(test)]
+        super::tests::die_check("memory_synced");
         ensure!(
             m.clean(),
             "MEMORY_CONFLICT: {} differ(s) between the old and new key's memory; the files were moved back",
@@ -369,10 +416,76 @@ pub(crate) fn rollback_stopped(paths: &Paths, r: &mut SessionRec) -> Result<()> 
     r.detail = "Rolled back to the old path; the retained copy is kept.".into();
     save_session(paths, r)
 }
+/// Names in `K_new` that belong to this session but are not (or not yet) in the
+/// journal's move list: a retained name whose source is gone and whose copy in
+/// `K_new` has the retained digest (a rename the journal missed), and, for
+/// rollback (S6), any `<id>.jsonl` / `<id>/` of the lineage created in `K_new`
+/// after the resume, when the old key does not hold that name.
+pub(crate) fn untracked_moves(projects: &Path, r: &SessionRec) -> Vec<Moved> {
+    let mut out = vec![];
+    let Some(kt) = r.key_to.clone() else {
+        return out;
+    };
+    let known =
+        |name: &str, out: &[Moved]| r.moved.iter().chain(out.iter()).any(|m| m.name == name);
+    for x in &r.retained {
+        if x.key == kt || known(&x.name, &out) {
+            continue;
+        }
+        let to = projects.join(&kt).join(&x.name);
+        let digest = if x.dir {
+            crate::external::archiving::native::tree_digest(&to).map(|d| d.1)
+        } else {
+            keys::sha256_file(&to).map(|d| d.1)
+        };
+        if fs::symlink_metadata(&x.source).is_err() && digest.is_ok_and(|d| d == x.sha256) {
+            out.push(Moved {
+                name: x.name.clone(),
+                from: x.source.clone(),
+                to,
+                digest: x.sha256.clone(),
+            });
+        }
+    }
+    if let Some(kf) = r.key_from.clone().filter(|kf| *kf != kt) {
+        for id in &r.conversation_ids {
+            for name in [format!("{id}.jsonl"), id.clone()] {
+                let (to, from) = (
+                    projects.join(&kt).join(&name),
+                    projects.join(&kf).join(&name),
+                );
+                if !known(&name, &out)
+                    && fs::symlink_metadata(&to).is_ok()
+                    && fs::symlink_metadata(&from).is_err()
+                {
+                    out.push(Moved {
+                        name,
+                        from,
+                        to,
+                        digest: String::new(),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The file, memory, catalog and thread-location part of a rollback.
 fn undo_session(paths: &Paths, r: &mut SessionRec) -> Result<()> {
     match native::of(&r.provider) {
         Some(ProviderId::Claude) => {
+            if let Ok(projects) = projects_of(paths, r) {
+                let extra = untracked_moves(&projects, r);
+                if !extra.is_empty() {
+                    r.warnings.push(format!(
+                        "rollback: {} name(s) found in the new key that the journal did not list were moved back",
+                        extra.len()
+                    ));
+                    r.moved.extend(extra);
+                    save_session(paths, r)?;
+                }
+            }
             // B3(a): whatever the reported state, files the journal shows moved go back.
             let switched = r.revision_after.is_some();
             if !r.moved.is_empty() || switched {
@@ -440,13 +553,21 @@ pub(crate) fn codex_rekey_stopped(paths: &Paths, r: &mut SessionRec) -> Result<(
         .root
         .join(layout::THREAD_LOCATIONS)
         .join(format!("{}.json", r.conversation_id));
+    // S1 (review 2): `before` is read once and journaled, together with the exact
+    // record about to be written, BEFORE the write; a rerun never re-reads it.
     if !r.codex_location_written {
         r.codex_location_before = fs::read_to_string(&file).ok();
+        r.codex_location_after = Some(String::from_utf8(serde_json::to_vec(
+            &json!({"cwd": Path::new(&to)}),
+        )?)?);
+        r.codex_location_written = true;
         save_session(paths, r)?;
     }
     crate::external::relocation::save_location(paths, &r.conversation_id, Path::new(&to))?;
-    r.codex_location_written = true;
-    r.codex_location_after = fs::read_to_string(&file).ok();
+    ensure!(
+        fs::read_to_string(&file).ok() == r.codex_location_after,
+        "ROOT_VERIFY_FAILED: the thread location record differs from the journaled one"
+    );
     Ok(())
 }
 
@@ -727,6 +848,21 @@ async fn admit_running(
         }
         .into(),
     );
+    // S10 (review 2): a Claude delivery in flight reads the transcript by its
+    // current path; wait (bounded) for it, else refuse with a retryable code.
+    let deadline = Instant::now() + crate::timing::budget(Duration::from_secs(30));
+    loop {
+        let pending = crate::messaging::claude_steer::in_flight(paths, &s.conversation_id);
+        if pending.is_empty() {
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "SESSION_DELIVERY_IN_PROGRESS: message(s) {} to this session are still being delivered; retry when they finish (nothing was stopped)",
+            pending.join(", ")
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
     r.pane = Some(attached.target.clone());
     r.process = Some((l.pid, l.process_start));
     r.state = "rekeying".into();
@@ -802,6 +938,8 @@ async fn stop(paths: &Paths, r: &mut SessionRec, home: &Path) -> Result<()> {
         "Stopping the verified Claude process (SIGTERM, never a forced kill).",
     )?;
     stop_process(r, home).await?;
+    // B3 (review 2): from here on every failure resumes the session.
+    r.stopped_by_worker = r.process.is_some();
     phase(paths, r, "stopped", "The Claude process has exited.")
 }
 /// pidfd-bound SIGTERM of the recorded process; never a forced kill.
@@ -888,7 +1026,17 @@ async fn resume(paths: &Paths, r: &mut SessionRec, cwd: &str) -> Result<()> {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let current = catalog::find(paths, &r.session_id)?;
+    let mut current = catalog::find(paths, &r.session_id)?;
+    // The supervisor clears the attachment of a process that ended; do it first
+    // (the stopped process is gone), so the generation typed below stays current.
+    if current
+        .attachment
+        .as_ref()
+        .is_some_and(|a| crate::claude_switch::gone(a.pid, a.process_start))
+    {
+        current = catalog::invalidate(paths, &current.id, &current.generation())
+            .or_else(|_| catalog::find(paths, &r.session_id))?;
+    }
     let command = pane_command(paths, r, &current.generation())?;
     r.resume_dispatched_at = Some(now());
     phase(
@@ -986,14 +1134,18 @@ fn check(paths: &Paths, r: &SessionRec, home: &Path, expect_dir: &str, expect_ke
             .get(&keys::pair(km, kt))
             .cloned()
             .unwrap_or_default();
-        if let Ok(m) = keys::sync_memory(
+        let checked = keys::sync_memory(
             &projects.join(km).join("memory"),
             &projects.join(kt).join("memory"),
             &mut base,
             Path::new(""), // dry run: writes nothing
             kt,
             true,
-        ) {
+        );
+        if let Err(e) = &checked {
+            v["memory_error"] = json!(format!("{e:#}"));
+        }
+        if let Ok(m) = checked {
             v["memory"] = json!({"missing":m.copied,"conflicts":m.conflicts});
             if !m.copied.is_empty() || !m.fast_forwarded.is_empty() {
                 // Written on the old side since the sync: merge once more.
@@ -1036,13 +1188,30 @@ async fn verify_resumed(paths: &Paths, r: &mut SessionRec, home: &Path) -> Resul
                     .as_u64()
                     .zip(v["pid_start"].as_u64())
                     .map(|(p, s)| (p as u32, s));
-                r.state = "verified".into();
+                // S4 (review 2): V5 problems are reported, never reverted (the
+                // session runs on its new path).
+                let conflicts = v["memory"]["conflicts"]
+                    .as_array()
+                    .is_some_and(|c| !c.is_empty());
+                if let Some(e) = v["memory_error"].as_str() {
+                    r.warnings
+                        .push(format!("V5: memory could not be verified: {e}"));
+                }
+                if conflicts {
+                    r.state = "verify_failed".into();
+                    r.reason = Some(format!(
+                        "V5: memory conflict(s) between the old and new key: {}",
+                        v["memory"]["conflicts"]
+                    ));
+                } else {
+                    r.state = "verified".into();
+                }
                 r.verified_at = Some(now());
                 phase(
                     paths,
                     r,
                     "complete",
-                    "Verified: same conversation, same pane, new directory, pre-move bytes are a prefix.",
+                    "Resumed: same conversation, same pane, new directory, pre-move bytes are a prefix.",
                 )?;
                 deliver_prompt(paths, r).await;
                 return Ok(());
@@ -1142,8 +1311,12 @@ async fn revert(paths: &Paths, r: &mut SessionRec, home: &Path, why: &str) -> Re
 }
 
 async fn fail(paths: &Paths, r: &mut SessionRec, e: &anyhow::Error) {
-    let before_move = order(&r.phase) < order("moved") && r.moved.is_empty();
-    let stopped = r.process.is_some() && order(&r.phase) >= order("stopped");
+    // After a failed move the names are back (`moved` empty) and the phase was
+    // reset: `stopped_by_worker` still says the worker owes the session a resume.
+    let before_move =
+        r.moved.is_empty() && (order(&r.phase) < order("moved") || r.phase == "admitted");
+    let stopped =
+        r.stopped_by_worker || (r.process.is_some() && order(&r.phase) >= order("stopped"));
     if before_move {
         r.reason = Some(format!("{e:#}"));
         if stopped && r.pane.is_some() {

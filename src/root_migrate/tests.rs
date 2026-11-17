@@ -180,8 +180,16 @@ fn moves_add_names_only_and_never_overwrite() {
     let retained = keys::retain(&found, &t.path().join("bk"), true).unwrap();
     assert_eq!(retained.len(), 2);
     assert!(retained.iter().all(|r| r.verified && r.copy.exists()));
-    let moved = keys::move_names(&projects, &retained, "-new").unwrap();
+    let mut journaled: Vec<Vec<String>> = vec![];
+    let moved = keys::move_names(&projects, &retained, "-new", |m| {
+        journaled.push(m.iter().map(|x| x.name.clone()).collect());
+        Ok(())
+    })
+    .unwrap();
     assert_eq!(moved.len(), 2);
+    // Each rename is journaled before (intent) and after it.
+    assert_eq!(journaled.len(), 4, "{journaled:?}");
+    assert_eq!(journaled[0].len(), 1);
     assert!(projects.join("-new").join(format!("{id}.jsonl")).is_file());
     assert_eq!(
         fs::read_to_string(projects.join("-new/other.jsonl")).unwrap(),
@@ -200,7 +208,7 @@ fn moves_add_names_only_and_never_overwrite() {
     assert_eq!(keys::collisions(&projects, &found, "-new").len(), 1);
     // A name appearing between preflight and rename is not overwritten; nothing stays moved.
     let retained = keys::retain(&found, &t.path().join("bk2"), true).unwrap();
-    let e = keys::move_names(&projects, &retained, "-new")
+    let e = keys::move_names(&projects, &retained, "-new", |_| Ok(()))
         .unwrap_err()
         .to_string();
     assert!(e.contains("ROOT_REKEY_CONFLICT"), "{e}");
@@ -1002,4 +1010,298 @@ fn a_crash_after_any_tier_r_step_resumes_from_the_journal() {
         assert!(r.root_alias.unwrap().is_active());
         alias::uninstall(&[entry]);
     }
+}
+
+// ------------------------------------------------------------- review 2
+
+fn die_during(f: &One, rec: &mut SessionRec, point: &'static str) {
+    die_at(Some(point));
+    let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut ctx = f.ctx();
+        let _ = session::rekey_stopped(&mut ctx, rec, &f.s);
+    }));
+    die_at(None);
+    assert!(died.is_err(), "{point}: no death");
+}
+fn sidecar(f: &One, key: &str) -> PathBuf {
+    f.projects().join(keys::key(key)).join(&f.conv)
+}
+
+// REVIEW-2 repro (adapted to the journaling `move_names`): process death after
+// the rename, before phase("moved") is saved.
+#[test]
+fn review2_death_after_rename_before_journal_then_rollback() {
+    let f = one();
+    let mut rec = f.rec.clone();
+    crash_at(Some("retained"));
+    let _ = session::rekey_stopped(&mut f.ctx(), &mut rec, &f.s);
+    crash_at(None);
+    let journal = read_session(&f.paths, &f.s.id).unwrap();
+    assert_eq!(journal.phase, "retained");
+    // The renames that ran before the death (not journaled).
+    keys::move_names(&f.projects(), &journal.retained, &keys::key(&f.new), |_| {
+        Ok(())
+    })
+    .unwrap();
+    assert!(f.new_transcript().is_file());
+    let mut j = read_session(&f.paths, &f.s.id).unwrap();
+    session::rollback_stopped(&f.paths, &mut j).unwrap();
+    let after = read_session(&f.paths, &f.s.id).unwrap();
+    eprintln!(
+        "REVIEW2 state={} phase={} old_exists={} new_exists={} catalog={:?}",
+        after.state,
+        after.phase,
+        f.old_transcript().exists(),
+        f.new_transcript().exists(),
+        f.dir_now()
+    );
+    assert!(
+        f.old_transcript().is_file(),
+        "per-session rollback left the transcript in the new key while the catalog names the old directory"
+    );
+}
+
+// REVIEW-2 repro: death inside codex_step after save_location, before save_session.
+#[test]
+fn review2_codex_death_then_rerun_loses_the_original_location() {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+    let thread = uuid::Uuid::new_v4().to_string();
+    let s = catalog::record_launch(&paths, "c", &thread, "n", None).unwrap();
+    let file = paths
+        .root
+        .join(layout::THREAD_LOCATIONS)
+        .join(format!("{thread}.json"));
+    crate::external::relocation::save_location(&paths, &thread, Path::new("/old/q")).unwrap();
+    let original = fs::read_to_string(&file).unwrap();
+    let mut r = new_rec(&s, "run");
+    r.to = Some("/new/q".into());
+    session::codex_rekey_stopped(&paths, &mut r).unwrap(); // death before codex_step saves `r`
+    let mut again = read_session(&paths, &s.id).unwrap();
+    again.to = Some("/new/q".into());
+    session::codex_rekey_stopped(&paths, &mut again).unwrap(); // the rerun
+    session::rollback_stopped(&paths, &mut again).unwrap();
+    eprintln!(
+        "REVIEW2 codex before={:?} now={:?}",
+        original,
+        fs::read_to_string(&file).ok()
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        original,
+        "rollback did not restore the original thread location"
+    );
+}
+
+/// B1 / S9: every per-session crash point, then (a) a rerun from the journal and
+/// (b) a rollback from the journal, each ends consistent (files and catalog agree).
+#[test]
+fn every_per_session_crash_point_reruns_and_rolls_back_consistently() {
+    let points = [
+        "before_copy",
+        "retained",
+        "renamed:{conv}.jsonl", // transcript moved, sidecar not yet
+        "renamed:{conv}",       // both moved, the second not yet journaled done
+        "moved",
+        "memory_synced",
+        "catalog_switched",
+    ];
+    let at = |template: &str, f: &One| -> &'static str {
+        Box::leak(template.replace("{conv}", &f.conv).into_boxed_str())
+    };
+    for template in points {
+        // (a) rerun
+        let f = one();
+        let point = at(template, &f);
+        let mut rec = f.rec.clone();
+        die_during(&f, &mut rec, point);
+        let mut j = read_session(&f.paths, &f.s.id).unwrap();
+        session::rekey_stopped(&mut f.ctx(), &mut j, &f.s)
+            .unwrap_or_else(|e| panic!("{point}: {e:#}"));
+        assert_eq!(j.state, "rekeyed", "{point}");
+        assert!(
+            f.new_transcript().is_file() && !f.old_transcript().exists(),
+            "{point}"
+        );
+        assert!(
+            sidecar(&f, &f.new).is_dir() && !sidecar(&f, &f.old).exists(),
+            "{point}"
+        );
+        assert_eq!(f.dir_now().as_deref(), Some(f.new.as_str()), "{point}");
+        // (b) rollback
+        let f = one();
+        let point = at(template, &f);
+        let mut rec = f.rec.clone();
+        die_during(&f, &mut rec, point);
+        let mut j = read_session(&f.paths, &f.s.id).unwrap();
+        session::rollback_stopped(&f.paths, &mut j).unwrap_or_else(|e| panic!("{point}: {e:#}"));
+        assert!(
+            f.old_transcript().is_file() && !f.new_transcript().exists(),
+            "{point}"
+        );
+        assert!(
+            sidecar(&f, &f.old).is_dir() && !sidecar(&f, &f.new).exists(),
+            "{point}"
+        );
+        assert_eq!(f.dir_now().as_deref(), Some(f.old.as_str()), "{point}");
+    }
+}
+
+#[test]
+fn s9_account_list_and_proc_probe_errors_block_the_move() {
+    let f = one();
+    // An unreadable account registry.
+    let db = f.paths.root.join(layout::REGISTRY_DB);
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    fs::write(&db, "not a database").unwrap();
+    let mut rec = f.rec.clone();
+    let e = session::rekey_stopped(&mut f.ctx(), &mut rec, &f.s)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("probe_failed"), "{e}");
+    assert!(f.old_transcript().is_file() && !f.new_transcript().exists());
+    // An unreadable process table.
+    let e = processes_naming_in(&f.t.path().join("no-proc"), &rec.conversation_ids).unwrap_err();
+    assert!(e.contains("unreadable"), "{e}");
+}
+
+#[tokio::test]
+async fn s9_gate_fails_when_a_running_session_is_no_longer_recognised() {
+    let f = one();
+    let row = GateRow {
+        session_id: f.s.id.clone(),
+        name: "n".into(),
+        space: None,
+        provider: "claude".into(),
+        account: "a".into(),
+        conversation_id: f.conv.clone(),
+        pane: None,
+        pid: None,
+        running_before: true,
+        probe_error: None,
+    };
+    let run = Run {
+        id: uuid::Uuid::new_v4().to_string(),
+        activated_at: Some(1),
+        state: "complete".into(),
+        gate_before: vec![row.clone()],
+        ..Default::default()
+    };
+    let g = gate(&f.paths, Some(&run)).await;
+    assert_eq!(g["gate"], "fail", "{g}");
+    // A row whose before-probe failed also fails the gate.
+    let mut blind = run.clone();
+    blind.gate_before[0].running_before = false;
+    blind.gate_before[0].probe_error = Some("unknown".into());
+    assert_eq!(gate(&f.paths, Some(&blind)).await["gate"], "fail");
+    // The before-snapshot refuses Tier R when a session's state cannot be decided
+    // (account `a` is not enrolled, so its Claude probe cannot run).
+    let e = gate_rows(&f.paths).await.unwrap_err().to_string();
+    assert!(e.contains("ROOT_MIGRATION_BLOCKED"), "{e}");
+}
+
+#[test]
+fn b2_runtime_compatibility_links_reach_the_canonical_socket_and_are_safe() {
+    use std::os::unix::fs::FileTypeExt;
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("disk/appdata/root"))).unwrap();
+    let old_root = t.path().join("user/appdata/root");
+    let mut record = layout::read_record(&paths.root).unwrap().unwrap();
+    record.version = layout::ALIAS_VERSION;
+    record.root_alias = Some(RootAlias {
+        version: 1,
+        state: "active".into(),
+        root_id: "r".into(),
+        canonical_root: paths.root.clone(),
+        previous_root: old_root.clone(),
+        entries: entries(t.path()),
+        ..Default::default()
+    });
+    layout::write_record(&paths.root, &record).unwrap();
+    let listener =
+        std::os::unix::net::UnixListener::bind(paths.runtime.join("control.sock")).unwrap();
+    // The supervisor runs under umask 077 (main); the test process does not.
+    fs::set_permissions(
+        paths.runtime.join("control.sock"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let r = runtime::ensure(&paths);
+    let link = crate::paths::runtime_for(&old_root);
+    assert_eq!(r[0]["result"], "created", "{r:?}");
+    // Agent-DM's check: lstat of `<old runtime>/control.sock` is our socket.
+    let m = fs::symlink_metadata(link.join("control.sock")).unwrap();
+    assert!(m.file_type().is_socket() && m.mode() & 0o077 == 0);
+    std::os::unix::net::UnixStream::connect(link.join("control.sock")).unwrap();
+    assert_eq!(runtime::ensure(&paths)[0]["result"], "present");
+    // Rollback removes only its own link.
+    let run = Run {
+        canonical_root: paths.root.clone(),
+        previous_root: old_root.clone(),
+        entries: entries(t.path()),
+        ..Default::default()
+    };
+    runtime::remove(&run);
+    assert!(fs::symlink_metadata(&link).is_err());
+    drop(listener);
+    // A stale private directory is moved aside (never removed); a live socket is refused.
+    let stale = t.path().join("stale");
+    fs::create_dir(&stale).unwrap();
+    fs::set_permissions(&stale, fs::Permissions::from_mode(0o700)).unwrap();
+    write(&stale.join("old.txt"), "kept");
+    let r = runtime::ensure_one(&stale, &paths.runtime);
+    assert!(r.starts_with("moved_aside:"), "{r}");
+    let aside = PathBuf::from(r.trim_start_matches("moved_aside:"));
+    assert_eq!(fs::read_to_string(aside.join("old.txt")).unwrap(), "kept");
+    let live = t.path().join("live");
+    fs::create_dir(&live).unwrap();
+    fs::set_permissions(&live, fs::Permissions::from_mode(0o700)).unwrap();
+    let _l = std::os::unix::net::UnixListener::bind(live.join("control.sock")).unwrap();
+    assert!(runtime::ensure_one(&live, &paths.runtime).starts_with("refused"));
+    assert!(
+        live.is_dir()
+            && !fs::symlink_metadata(&live)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+    );
+}
+
+#[test]
+fn s6_rollback_moves_back_lineage_names_created_after_the_resume_and_remaps_records() {
+    let f = one();
+    // No sidecar at re-key time; Claude creates one in the new key after resume.
+    fs::remove_dir_all(sidecar(&f, &f.old)).unwrap();
+    let mut rec = f.rec.clone();
+    session::rekey_stopped(&mut f.ctx(), &mut rec, &f.s).unwrap();
+    write(
+        &sidecar(&f, &f.new).join("tool-results/new"),
+        "after resume",
+    );
+    session::rollback_stopped(&f.paths, &mut rec).unwrap();
+    assert!(f.old_transcript().is_file());
+    assert!(
+        sidecar(&f, &f.old).join("tool-results/new").is_file(),
+        "sidecar followed the transcript"
+    );
+    assert!(!sidecar(&f, &f.new).exists());
+    // Records written after activation in the new spelling map back.
+    let t = f.t.path();
+    let run = Run {
+        id: uuid::Uuid::new_v4().to_string(),
+        entries: entries(t),
+        activated_at: Some(0),
+        state: "rolling_back".into(),
+        ..Default::default()
+    };
+    let pane = f.paths.root.join(layout::MANAGED_PANES).join("p.json");
+    write(
+        &pane,
+        &serde_json::to_string(&json!({"home": t.join("disk/appdata/x")})).unwrap(),
+    );
+    assert_eq!(remap_after_activation(&f.paths, &run, &[]).unwrap(), 1);
+    let v: Value = serde_json::from_slice(&fs::read(&pane).unwrap()).unwrap();
+    assert_eq!(v["home"], json!(t.join("user/appdata/x")));
+    // Not part of the change log, so a second rollback never undoes the remap.
+    assert!(read_changes(&f.paths, &run.id).is_empty());
 }
