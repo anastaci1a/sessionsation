@@ -426,7 +426,12 @@ async fn archive(paths: &Paths, o: &mut Operation) -> Result<()> {
         })
         .map(|c| c.path.clone())
         .collect::<Vec<_>>();
-    ensure!(primary.contains(&source.rollout), "SOURCE_HISTORY_CHANGED");
+    ensure!(
+        primary
+            .iter()
+            .any(|p| crate::alias::same_path(p, &source.rollout)),
+        "SOURCE_HISTORY_CHANGED"
+    );
     let mut a = Archive {
         version: 1,
         session: o.session.clone(),
@@ -464,8 +469,7 @@ async fn archive(paths: &Paths, o: &mut Operation) -> Result<()> {
         let relative = copy
             .home
             .as_ref()
-            .and_then(|h| copy.path.strip_prefix(h).ok())
-            .map(Path::to_path_buf);
+            .and_then(|h| crate::alias::strip_prefix(&copy.path, h));
         ensure!(
             relative.as_ref().is_none_or(|p| safe_relative(p)),
             "INVALID_HISTORY_PATH"

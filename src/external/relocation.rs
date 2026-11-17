@@ -111,7 +111,8 @@ fn plan_for(
             "cannot move the filesystem root or home directory"
         );
         ensure!(
-            !paths.root.starts_with(&from) && !source.home.starts_with(&from),
+            !crate::alias::starts_with(&paths.root, &from)
+                && !crate::alias::starts_with(&source.home, &from),
             "project contains switcher state or Codex history; choose a narrower project directory"
         );
         ensure!(
@@ -267,7 +268,9 @@ async fn other_sessions(paths: &Paths, source: &Instance, r: &Relocation) -> Res
         .await?
         .into_iter()
         .filter(|i| {
-            !i.inactive && i.key() != source.key() && Path::new(&i.cwd).starts_with(&r.from)
+            !i.inactive
+                && i.key() != source.key()
+                && crate::alias::starts_with(Path::new(&i.cwd), &r.from)
         })
         .map(|i| format!("{} ({})", i.tmux_session, i.pane))
         .collect())

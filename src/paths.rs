@@ -38,6 +38,7 @@ impl Paths {
             std::env::var_os("HOME").map(PathBuf::from),
             unraid,
         )?;
+        // raw-path: the Unraid guard applies to the spelling as requested
         if unraid && root.starts_with("/mnt/user/") {
             ensure!(
                 Path::new("/mnt/user/appdata").is_dir(),
@@ -107,8 +108,8 @@ fn redirect(root: &Path) -> Result<PathBuf> {
     };
     crate::alias::install(&alias.entries);
     let canonical = alias.canonical_root.clone();
+    // raw-path: literal; otherwise proven below
     if canonical.as_path() == root {
-        // raw-path: literal; otherwise proven below
         return Ok(root.to_path_buf());
     }
     let same_inode = match (fs::metadata(root), fs::metadata(&canonical)) {

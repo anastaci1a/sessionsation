@@ -233,6 +233,7 @@ pub(crate) fn directory_shape(directory: &Directory) -> Result<()> {
     let mut previous: Option<&Path> = None;
     for p in &directory.create {
         ensure!(
+            // raw-path: shape check inside one request (one spelling)
             folder(p) && directory.path.starts_with(p),
             "INVALID_DIRECTORY_PLAN"
         );

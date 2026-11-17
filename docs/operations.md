@@ -264,9 +264,14 @@ Order for a window:
    [--accept-risks] [--prompt-file F]`, then `root status` until `verified`, `left_behind` or `uncertain`.
 7. `root status`: report `left_behind`, `memory_split` and `unmapped`.
 
+Before the window also stop every hosted (stream-json) Claude worker: `root migrate` refuses while one is
+live, because its socket is in the runtime directory, which moves with the root spelling.
+
 Rollback: `root rollback --session S` for one session, `root rollback` (supervisor stopped) for the whole root
-(layout version 2; sessions already `verified` stay on their new directory, which works under either
-spelling). A binary older than 1.54.0 refuses a version 3 root, so roll the root back first. Every transcript
+(layout version 2; sessions already `verified` stay on their new directory). The whole-root rollback refuses
+while any process runs with the new spelling of an account home (`ROOT_ROLLBACK_BLOCKED` lists them): stop
+those sessions first and revert the boot files, launcher and `/usr/bin/sessionsation` link together with the
+rollback. A binary older than 1.54.0 refuses a version 3 root, so roll the root back first. Every transcript
 moved by the re-key has a verified copy under `DIR/sessions/<session>/<attempt>/`; no command deletes these
 copies, including `root finalize`, which only removes empty old project-key directories.
 

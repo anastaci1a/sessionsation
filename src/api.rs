@@ -2103,7 +2103,7 @@ fn archive_info(
     archives: &std::collections::BTreeMap<String, Value>,
 ) -> Value {
     archives.get(&s.id).cloned().unwrap_or_else(|| match source {
-        Some(i) => { let archived=i.archived; json!({"kind":if archived {"provider"} else {"none"},"archived":archived,"state":if archived {"archived"} else {"active"},"archived_at":null,"source":"verified_history_location","provider_storage_archived":i.rollout.starts_with(i.home.join("archived_sessions"))}) },
+        Some(i) => { let archived=i.archived; json!({"kind":if archived {"provider"} else {"none"},"archived":archived,"state":if archived {"archived"} else {"active"},"archived_at":null,"source":"verified_history_location","provider_storage_archived":crate::alias::starts_with(&i.rollout, &i.home.join("archived_sessions"))}) },
         None => json!({"kind":"unknown","archived":null,"state":"unobserved","archived_at":null,"source":"catalog_only"}),
     })
 }

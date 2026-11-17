@@ -357,7 +357,9 @@ async fn enrich_native(paths: &Paths, result: &mut [Instance]) {
                 .as_str()
                 .map(PathBuf::from)
                 .or_else(|| rollout_by_thread(&home, id).ok().flatten());
-            let Some(path) = path.filter(|p| p.starts_with(home.join("sessions"))) else {
+            // Root alias: a long-lived app-server reports the old spelling of its home.
+            let Some(path) = path.filter(|p| crate::alias::starts_with(p, &home.join("sessions")))
+            else {
                 continue;
             };
             let source = &mut result[index];
@@ -417,7 +419,7 @@ async fn enrich_native(paths: &Paths, result: &mut [Instance]) {
             && thread["id"] == source.thread_id
             && thread["path"]
                 .as_str()
-                .is_some_and(|p| Path::new(p) == source.rollout)
+                .is_some_and(|p| crate::alias::same_path(Path::new(p), &source.rollout))
             && crate::control::confirmed_quiescent(&thread, false)
         {
             source.shared_server = true;
@@ -616,7 +618,8 @@ fn rollout_for(pid: u32) -> Result<Option<(String, PathBuf, PathBuf)>> {
     found.dedup();
     Ok((found.len() == 1).then(|| found.remove(0)))
 }
-pub(crate) fn process_home(pid: u32) -> Result<PathBuf> {
+/// The (alias-aware canonical) `CODEX_HOME` a Codex process runs with.
+pub fn process_home(pid: u32) -> Result<PathBuf> {
     let raw = fs::read(format!("/proc/{pid}/environ"))?;
     let vars = raw.split(|b| *b == 0);
     let home = vars.clone().find_map(|v| v.strip_prefix(b"CODEX_HOME="));
@@ -1033,6 +1036,7 @@ fn inventory_complete(
             let cwd = relocated
                 .as_deref()
                 .unwrap_or_else(|| meta["cwd"].as_str().unwrap_or_default());
+            // raw-path: open_rollouts holds the kernel and the logical spelling of each fd
             let block_reason = if open_histories.contains(&rollout) {
                 Some("busy".into())
             } else if !Path::new(cwd).is_dir() {
@@ -1051,7 +1055,7 @@ fn inventory_complete(
                         && !preserved
                             .iter()
                             .any(|(_, h)| crate::alias::same_path(h, &home))
-                        && rollout.starts_with(home.join("archived_sessions"))),
+                        && crate::alias::starts_with(&rollout, &home.join("archived_sessions"))),
                 inactive: true,
                 account: account.clone(),
                 display_account: display_account.clone(),
@@ -1123,6 +1127,7 @@ fn inventory_complete(
     }
     for mut survivor in latest.into_values() {
         if survivor.block_reason.is_none()
+            // raw-path: a set of rollouts from this same scan
             && pending_completeness.contains(&survivor.rollout)
             && !scans.complete(&survivor.rollout).unwrap_or(false)
         {
@@ -2369,7 +2374,15 @@ pub(crate) fn complete_rollout(path: &Path) -> Result<bool> {
 }
 pub(crate) fn rollout_still_open(path: &Path) -> Result<bool> {
     let open = open_rollouts()?;
-    Ok(open.contains(path) || open.contains(&crate::alias::logical(path)))
+    // `/proc/*/fd` shows the resolved path (through the account-home `projects`
+    // link and the root alias), so compare every form of `path`.
+    let forms = [
+        Some(path.to_path_buf()),
+        Some(crate::alias::logical(path)),
+        Some(crate::layout::resolve_path(path)),
+        fs::canonicalize(path).ok(), // raw-path: the kernel's own spelling
+    ];
+    Ok(forms.iter().flatten().any(|f| open.contains(f)))
 }
 fn open_rollouts() -> Result<std::collections::BTreeSet<PathBuf>> {
     let mut found = std::collections::BTreeSet::new();
@@ -2459,6 +2472,7 @@ fn descendants(home: &Path, root: &str) -> Result<Vec<PathBuf>> {
                     && ids.iter().any(|parent| source.to_string().contains(parent)))
             {
                 ids.insert(id.into());
+                // raw-path: de-duplication within one scan
                 if !selected.contains(path) {
                     selected.push(path.clone());
                 }
@@ -2608,6 +2622,7 @@ pub(crate) fn new_launch_observed(
 #[cfg(test)]
 fn copy_rollout(source: &Path, home: &Path, target_home: &Path) -> Result<()> {
     let relative = source
+        // raw-path: test helper on a fixture home
         .strip_prefix(home)
         .context("rollout outside source home")?;
     ensure!(relative.starts_with("sessions"), "invalid rollout location");

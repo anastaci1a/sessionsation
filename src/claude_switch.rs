@@ -603,6 +603,7 @@ fn plan(r: &Record) -> Result<Vec<Entry>> {
         files::not_open(&p)?;
         let (bytes, digest) = files::tree_digest(&p)?;
         entries.push(Entry {
+            // raw-path: `p` comes from walking `r.source_home` itself
             relative: p.strip_prefix(&r.source_home)?.to_path_buf(),
             dir: fs::symlink_metadata(&p)?.is_dir(),
             bytes,

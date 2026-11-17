@@ -110,7 +110,7 @@ async fn restore_histories(paths: &Paths, job: &mut Job) -> Result<()> {
                 .as_str()
                 .context("saved history path missing")?,
         );
-        if path.starts_with(job.source.home.join("archived_sessions")) {
+        if crate::alias::starts_with(&path, &job.source.home.join("archived_sessions")) {
             control
                 .request("thread/unarchive", json!({"threadId":id}))
                 .await?;
@@ -122,7 +122,7 @@ async fn restore_histories(paths: &Paths, job: &mut Job) -> Result<()> {
             );
         }
         ensure!(
-            path.starts_with(job.source.home.join("sessions")) && path.is_file(),
+            crate::alias::starts_with(&path, &job.source.home.join("sessions")) && path.is_file(),
             "conversation is not yet back in the resume list; retry recover"
         );
         if id == job.source.thread_id {

@@ -382,21 +382,54 @@ fn files_of(dir: &Path, base: &Path, out: &mut Vec<(String, bool)>) {
         }
     }
 }
-fn replace_with(src: &Path, dst: &Path) -> Result<()> {
+/// Fast-forward `dst` to the content of `src` only while `dst` still holds
+/// `expected` (compare after an atomic exchange): the new version is staged
+/// beside `dst`, swapped in with `RENAME_EXCHANGE`, and the displaced file is
+/// hashed. If a concurrent writer changed `dst` in between, the swap is undone
+/// and `Ok(false)` is returned (the caller reports a conflict). The displaced
+/// version is always saved to `versions` before its staging name is removed.
+pub(crate) fn replace_with(
+    src: &Path,
+    dst: &Path,
+    expected: &str,
+    versions: &Path,
+) -> Result<bool> {
     let parent = dst.parent().context("memory file has no parent")?;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(parent)?;
     let tmp = parent.join(format!(".rootmig-{}", uuid::Uuid::new_v4()));
     let mut stats = crate::shared_state::migrate::CopyStats::default();
     crate::shared_state::migrate::copy_tree(src, &tmp, true, &mut stats)?;
     if let Ok(m) = fs::metadata(src) {
         let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(m.mode() & 0o7777));
     }
-    fs::rename(&tmp, dst)?;
+    crate::shared_state::rename_exchange(&tmp, dst)
+        .with_context(|| format!("MEMORY_REPLACE_FAILED: {}", dst.display()))?;
+    // `tmp` now holds the displaced version.
+    let displaced = sha256_file(&tmp)?.1;
+    if displaced != expected {
+        crate::shared_state::rename_exchange(&tmp, dst)
+            .with_context(|| format!("MEMORY_REPLACE_FAILED: {}", dst.display()))?;
+        let _ = fs::remove_file(&tmp); // our staged copy of `src`, never user data
+        fs::File::open(parent)?.sync_all()?;
+        return Ok(false);
+    }
+    if let Some(p) = versions.parent() {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(p)?;
+    }
+    if fs::symlink_metadata(versions).is_err() {
+        let mut stats = crate::shared_state::migrate::CopyStats::default();
+        crate::shared_state::migrate::copy_tree(&tmp, versions, true, &mut stats)?;
+    }
+    ensure!(
+        sha256_file(versions)?.1 == displaced,
+        "MEMORY_VERIFY_FAILED: the saved version of {} does not match",
+        dst.display()
+    );
+    fs::remove_file(&tmp)?; // its content is verified in `versions`
     fs::File::open(parent)?.sync_all()?;
-    Ok(())
+    Ok(true)
 }
 fn save_version(path: &Path, dir: &Path, rel: &str, tag: &str) -> Result<PathBuf> {
     let to = dir.join(format!("{rel}.{tag}"));
@@ -417,12 +450,13 @@ fn save_version(path: &Path, dir: &Path, rel: &str, tag: &str) -> Result<PathBuf
 /// deleted or truncated on either side; a file is replaced only by a newer
 /// version of itself (fast-forward against the merge base); a real conflict
 /// keeps both files in place, copies both into `backup/memory-conflicts/` and
-/// is returned. `dry_run` computes the same result without writing.
+/// is returned. Every replaced version is saved under `backup/memory-versions/`.
+/// `dry_run` computes the same result without writing.
 pub fn sync_memory(
     src: &Path,
     dst: &Path,
     base: &mut BTreeMap<String, String>,
-    backup: Option<&Path>,
+    backup: &Path,
     label: &str,
     dry_run: bool,
 ) -> Result<MemoryResult> {
@@ -486,15 +520,18 @@ pub fn sync_memory(
                     r.identical.push(rel);
                 } else if b.as_deref() == Some(dd.as_str()) {
                     if !dry_run {
-                        if let Some(dir) = backup {
-                            save_version(
-                                &d,
-                                &dir.join("memory-versions").join(label),
-                                &rel,
-                                &dd[..12],
-                            )?;
+                        let versions = backup
+                            .join("memory-versions")
+                            .join(label)
+                            .join(format!("{rel}.{}", &dd[..12]));
+                        if !replace_with(&s, &d, &dd, &versions)? {
+                            // A concurrent writer changed the target: never overwrite it.
+                            let c = backup.join("memory-conflicts").join(label);
+                            save_version(&s, &c, &rel, "source")?;
+                            save_version(&d, &c, &rel, "target")?;
+                            r.conflicts.push(rel);
+                            continue;
                         }
-                        replace_with(&s, &d)?;
                         ensure!(
                             sha256_file(&d)?.1 == sd,
                             "MEMORY_VERIFY_FAILED: {}",
@@ -506,8 +543,8 @@ pub fn sync_memory(
                 } else if b.as_deref() == Some(sd.as_str()) {
                     r.kept_newer.push(rel);
                 } else {
-                    if !dry_run && let Some(dir) = backup {
-                        let c = dir.join("memory-conflicts").join(label);
+                    if !dry_run {
+                        let c = backup.join("memory-conflicts").join(label);
                         save_version(&s, &c, &rel, "source")?;
                         save_version(&d, &c, &rel, "target")?;
                     }

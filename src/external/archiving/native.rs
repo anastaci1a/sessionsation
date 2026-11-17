@@ -441,6 +441,7 @@ pub(crate) fn collect(provider: ProviderId, home: &Path, ids: &[String]) -> Resu
     }
     // Every path must stay inside the account home.
     for p in &out {
+        // raw-path: every path was built from `home` above (one spelling)
         ensure!(p.starts_with(home), "INVALID_HISTORY_PATH");
     }
     Ok(out.into_iter().collect())
@@ -634,6 +635,7 @@ fn restore_target(
     let old_home = crate::alias::logical(&m.home);
     let logical = crate::alias::logical(original);
     let rel = logical
+        // raw-path: both sides are logical forms (two lines above)
         .strip_prefix(&old_home)
         .map_err(|_| anyhow::anyhow!("INVALID_HISTORY_PATH"))?;
     let key = |d: &str| -> String {

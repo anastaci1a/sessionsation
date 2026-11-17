@@ -15,6 +15,18 @@ pub(super) fn crash_check(name: &str) -> Result<()> {
 fn crash_at(step: Option<&'static str>) {
     CRASH_AT.with(|c| *c.borrow_mut() = step);
 }
+thread_local! {
+    static DIE_AT: RefCell<Option<&'static str>> = const { RefCell::new(None) };
+}
+/// Simulated process death: unwinds without running any error handling.
+pub(super) fn die_check(name: &str) {
+    if DIE_AT.with(|c| *c.borrow()) == Some(name) {
+        panic!("SIMULATED_DEATH at {name}");
+    }
+}
+fn die_at(step: Option<&'static str>) {
+    DIE_AT.with(|c| *c.borrow_mut() = step);
+}
 
 fn write(p: &Path, text: &str) {
     fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -58,11 +70,11 @@ fn memory_merge_covers_every_case_and_never_picks_a_winner() {
     write(&dst.join("only-dst.md"), "kept");
     let mut base = BTreeMap::new();
     // Dry run computes the plan and writes nothing.
-    let dry = keys::sync_memory(&src, &dst, &mut base, Some(&backup), "k", true).unwrap();
+    let dry = keys::sync_memory(&src, &dst, &mut base, &backup, "k", true).unwrap();
     assert_eq!(dry.copied, ["MEMORY.md", "only-src.md"]);
     assert!(!dst.join("MEMORY.md").exists() && base.is_empty() && !backup.exists());
     // Missing -> copied; identical -> nothing; only in target -> left alone.
-    let r = keys::sync_memory(&src, &dst, &mut base, Some(&backup), "k", false).unwrap();
+    let r = keys::sync_memory(&src, &dst, &mut base, &backup, "k", false).unwrap();
     assert_eq!(r.copied, ["MEMORY.md", "only-src.md"]);
     assert_eq!(r.identical, ["same.md"]);
     assert_eq!(r.only_in_target, ["only-dst.md"]);
@@ -72,7 +84,7 @@ fn memory_merge_covers_every_case_and_never_picks_a_winner() {
     );
     // Newer in src (dst still equals the base): fast-forward, the base version saved.
     write(&src.join("MEMORY.md"), "index v2");
-    let r = keys::sync_memory(&src, &dst, &mut base, Some(&backup), "k", false).unwrap();
+    let r = keys::sync_memory(&src, &dst, &mut base, &backup, "k", false).unwrap();
     assert_eq!(r.fast_forwarded, ["MEMORY.md"]);
     assert_eq!(
         fs::read_to_string(dst.join("MEMORY.md")).unwrap(),
@@ -84,7 +96,7 @@ fn memory_merge_covers_every_case_and_never_picks_a_winner() {
     assert_eq!(versions.len(), 1);
     // Newer in dst (src still equals the base): dst kept.
     write(&dst.join("only-src.md"), "edited on the new side");
-    let r = keys::sync_memory(&src, &dst, &mut base, Some(&backup), "k", false).unwrap();
+    let r = keys::sync_memory(&src, &dst, &mut base, &backup, "k", false).unwrap();
     assert_eq!(r.kept_newer, ["only-src.md"]);
     assert_eq!(
         fs::read_to_string(dst.join("only-src.md")).unwrap(),
@@ -93,7 +105,7 @@ fn memory_merge_covers_every_case_and_never_picks_a_winner() {
     // Both changed: conflict; both files unchanged in place, both copied aside.
     write(&src.join("MEMORY.md"), "old side edit");
     write(&dst.join("MEMORY.md"), "new side edit");
-    let r = keys::sync_memory(&src, &dst, &mut base, Some(&backup), "k", false).unwrap();
+    let r = keys::sync_memory(&src, &dst, &mut base, &backup, "k", false).unwrap();
     assert_eq!(r.conflicts, ["MEMORY.md"]);
     assert!(!r.clean());
     assert_eq!(
@@ -117,7 +129,7 @@ fn memory_merge_covers_every_case_and_never_picks_a_winner() {
     write(&src.join("MEMORY.md"), "merged");
     write(&dst.join("MEMORY.md"), "merged");
     assert!(
-        keys::sync_memory(&src, &dst, &mut base, Some(&backup), "k", false)
+        keys::sync_memory(&src, &dst, &mut base, &backup, "k", false)
             .unwrap()
             .clean()
     );
@@ -133,7 +145,7 @@ fn a_first_sync_into_an_existing_target_with_a_differing_file_is_a_conflict() {
         "written by a session already on the new path",
     );
     let mut base = BTreeMap::new();
-    let r = keys::sync_memory(&src, &dst, &mut base, None, "k", false).unwrap();
+    let r = keys::sync_memory(&src, &dst, &mut base, &t.path().join("bk"), "k", false).unwrap();
     assert_eq!(r.conflicts, ["MEMORY.md"]);
     assert_eq!(
         fs::read_to_string(dst.join("MEMORY.md")).unwrap(),
@@ -392,20 +404,472 @@ fn alias_proof_requires_one_tree_and_refuses_symlinks_and_other_branches() {
             "symlink"
         );
     }
-    // Another branch holding the share makes it unprovable.
+    // An empty share directory on another array disk is not divergence.
     fs::create_dir_all(mnt.join("disk2/appdata")).unwrap();
+    assert_eq!(
+        prove(&mnt.join("user/appdata"), &mnt.join("disk1/appdata"), true).unwrap_err(),
+        "probe_required"
+    );
+    // Content on another array disk makes it unprovable.
+    write(&mnt.join("disk2/appdata/x/file"), "divergent");
     assert!(
         prove(&mnt.join("user/appdata"), &mnt.join("disk1/appdata"), false)
             .unwrap_err()
             .starts_with("other_branch:")
     );
-    // user0 (the array view) is not another branch.
-    fs::remove_dir(mnt.join("disk2/appdata")).unwrap();
-    fs::create_dir_all(mnt.join("user0/appdata")).unwrap();
+    // user0 (array view), remotes, addons and plain non-mount directories are never branches.
+    fs::rename(mnt.join("disk2"), mnt.join("remotes")).unwrap();
+    for n in ["user0", "addons", "notapool"] {
+        write(&mnt.join(n).join("appdata/x"), "x");
+    }
     assert_eq!(
         prove(&mnt.join("user/appdata"), &mnt.join("disk1/appdata"), true).unwrap_err(),
         "probe_required"
     );
+    let branches = other_branches(
+        &mnt,
+        std::ffi::OsStr::new("user"),
+        std::ffi::OsStr::new("disk1"),
+    );
+    assert!(branches.is_empty(), "{branches:?}");
+}
+
+// ------------------------------------------------- B1-B3 and should-fix items
+
+struct One {
+    t: tempfile::TempDir,
+    paths: Paths,
+    home: PathBuf,
+    old: String,
+    new: String,
+    conv: String,
+    s: Session,
+    rec: SessionRec,
+}
+impl One {
+    fn projects(&self) -> PathBuf {
+        self.home.join("projects")
+    }
+    fn old_transcript(&self) -> PathBuf {
+        self.projects()
+            .join(keys::key(&self.old))
+            .join(format!("{}.jsonl", self.conv))
+    }
+    fn new_transcript(&self) -> PathBuf {
+        self.projects()
+            .join(keys::key(&self.new))
+            .join(format!("{}.jsonl", self.conv))
+    }
+    fn dir_now(&self) -> Option<String> {
+        catalog::find(&self.paths, &self.s.id).unwrap().directory
+    }
+    fn ctx(&self) -> session::Ctx<'_> {
+        session::Ctx::new(&self.paths, &self.t.path().join("bk"), true)
+    }
+}
+/// One stopped Claude session in a plain home (not an enrolled account), its
+/// directory on the "old" side and a distinct "new" directory.
+fn one() -> One {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+    let home = t.path().join("home");
+    let old = t.path().join("user/live/p");
+    let new = t.path().join("disk/live/p");
+    fs::create_dir_all(&old).unwrap();
+    fs::create_dir_all(&new).unwrap();
+    let (old, new) = (
+        old.to_string_lossy().into_owned(),
+        new.to_string_lossy().into_owned(),
+    );
+    let conv = uuid::Uuid::new_v4().to_string();
+    let k = home.join("projects").join(keys::key(&old));
+    write(&k.join(format!("{conv}.jsonl")), "{\"type\":\"user\"}\n");
+    write(&k.join(&conv).join("tool-results/r"), "side");
+    write(&k.join("memory/MEMORY.md"), "mem");
+    let s = catalog::record_provider_launch(
+        &paths,
+        ProviderId::Claude,
+        "a",
+        &conv,
+        "n",
+        Some(&old),
+        None,
+    )
+    .unwrap();
+    let mut rec = new_rec(&s, "run");
+    rec.home = Some(home.clone());
+    rec.from = Some(old.clone());
+    rec.to = Some(new.clone());
+    rec.state = "rekeying".into();
+    rec.phase = "admitted".into();
+    One {
+        t,
+        paths,
+        home,
+        old,
+        new,
+        conv,
+        s,
+        rec,
+    }
+}
+
+#[test]
+fn b3b_an_error_after_the_move_moves_the_names_back_first() {
+    let mut f = one();
+    let mut rec = f.rec.clone();
+    crash_at(Some("memory_io"));
+    let e = session::rekey_stopped(&mut f.ctx(), &mut rec, &f.s).unwrap_err();
+    crash_at(None);
+    assert!(e.to_string().contains("SIMULATED_CRASH"), "{e}");
+    assert!(f.old_transcript().is_file(), "moved back before reporting");
+    assert!(!f.new_transcript().exists());
+    assert_eq!(f.dir_now().as_deref(), Some(f.old.as_str()));
+    session::abandon_rekey(&f.paths, &mut rec, &e).unwrap();
+    let saved = read_session(&f.paths, &f.s.id).unwrap();
+    assert_eq!(
+        (saved.state.as_str(), saved.phase.as_str()),
+        ("left_behind", "complete")
+    );
+    assert!(saved.moved.is_empty());
+    // The retained copy stays.
+    assert!(saved.retained.iter().all(|r| r.copy.exists()));
+    f.rec = saved;
+}
+
+#[test]
+fn b3e_death_after_the_catalog_switch_is_reconciled_from_the_journal() {
+    let f = one();
+    let mut rec = f.rec.clone();
+    save_session(&f.paths, &mut rec).unwrap();
+    die_at(Some("catalog_switched"));
+    let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut ctx = f.ctx();
+        let _ = session::rekey_stopped(&mut ctx, &mut rec, &f.s);
+    }));
+    die_at(None);
+    assert!(died.is_err());
+    // The journal says `moved`; the catalog already names the new directory.
+    let journal = read_session(&f.paths, &f.s.id).unwrap();
+    assert_eq!(journal.phase, "moved");
+    assert_eq!(f.dir_now().as_deref(), Some(f.new.as_str()));
+    assert!(
+        crate::lifecycle::pending(&f.paths, &f.conv, None)
+            .unwrap()
+            .is_some(),
+        "an unfinished re-key blocks other operations"
+    );
+    // Tier R rerun: the plan sees the new directory (not_applicable), the
+    // per-session journal is reconciled first.
+    let mut run = Run {
+        schema_version: 1,
+        id: uuid::Uuid::new_v4().to_string(),
+        backup: f.t.path().join("bk"),
+        allow_full_copy: true,
+        ..Default::default()
+    };
+    let plan = build_plan(&f.paths, &Alias::default(), &Ok(vec![])).unwrap();
+    claude_step(&f.paths, &mut run, &Alias::default(), &plan).unwrap();
+    let done = read_session(&f.paths, &f.s.id).unwrap();
+    assert_eq!(
+        (done.state.as_str(), done.phase.as_str()),
+        ("rekeyed", "complete")
+    );
+    assert!(f.new_transcript().is_file());
+    assert!(
+        crate::lifecycle::pending(&f.paths, &f.conv, None)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn b3a_rollback_moves_files_back_whatever_the_reported_state() {
+    let f = one();
+    let mut rec = f.rec.clone();
+    session::rekey_stopped(&mut f.ctx(), &mut rec, &f.s).unwrap();
+    assert!(f.new_transcript().is_file());
+    rec.state = "uncertain".into();
+    rec.phase = "uncertain".into();
+    session::rollback_stopped(&f.paths, &mut rec).unwrap();
+    assert!(f.old_transcript().is_file());
+    assert!(!f.new_transcript().exists());
+    assert_eq!(f.dir_now().as_deref(), Some(f.old.as_str()));
+}
+
+#[test]
+fn b3c_a_retry_over_moved_files_is_refused() {
+    let f = one();
+    let mut rec = f.rec.clone();
+    die_at(Some("catalog_switched"));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut ctx = f.ctx();
+        let _ = session::rekey_stopped(&mut ctx, &mut rec, &f.s);
+    }));
+    die_at(None);
+    let mut journal = read_session(&f.paths, &f.s.id).unwrap();
+    journal.state = "left_behind".into();
+    journal.phase = "complete".into();
+    let e = session::retry_allowed(&journal).unwrap_err().to_string();
+    assert!(e.contains("ROOT_REKEY_CONFLICT"), "{e}");
+    let clean = new_rec(&f.s, "run");
+    session::retry_allowed(&clean).unwrap();
+}
+
+#[test]
+fn b3d_whole_root_rollback_undoes_a_session_left_mid_rekey() {
+    let f = one();
+    let layout_bytes = fs::read(f.paths.root.join(layout::LAYOUT_FILE)).unwrap();
+    let mut run = Run {
+        schema_version: 1,
+        id: uuid::Uuid::new_v4().to_string(),
+        backup: f.t.path().join("bk"),
+        step: "activate".into(),
+        state: "running".into(),
+        layout_before: serde_json::to_value(layout::read_record(&f.paths.root).unwrap().unwrap())
+            .unwrap(),
+        layout_before_sha256: sha(&layout_bytes),
+        created_at: now(),
+        ..Default::default()
+    };
+    save_run(&f.paths, &mut run).unwrap();
+    let mut rec = f.rec.clone();
+    rec.run = run.id.clone();
+    die_at(Some("catalog_switched"));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut ctx = f.ctx();
+        let _ = session::rekey_stopped(&mut ctx, &mut rec, &f.s);
+    }));
+    die_at(None);
+    assert_eq!(read_session(&f.paths, &f.s.id).unwrap().state, "rekeying");
+    let r = rollback(&f.paths, false).unwrap();
+    assert_eq!(r["rolled_back"], true, "{r}");
+    assert!(f.old_transcript().is_file());
+    assert!(!f.new_transcript().exists());
+    assert_eq!(f.dir_now().as_deref(), Some(f.old.as_str()));
+}
+
+#[test]
+fn b1_quiet_check_fails_closed() {
+    let f = one();
+    let rec = f.rec.clone();
+    let found = keys::locate(&f.projects(), &rec.conversation_ids).unwrap();
+    // A process naming the conversation on its command line.
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "sleep 30", "sh", &f.conv])
+        .spawn()
+        .unwrap();
+    wait_cmdline(child.id(), &f.conv);
+    let e = session::ensure_quiet_pub(&f.paths, &rec, &found)
+        .unwrap_err()
+        .to_string();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(e.contains("SESSION_RUNNING"), "{e}");
+    // A writer that opened the transcript through a symlinked `projects`.
+    let link_home = f.t.path().join("linkhome");
+    fs::create_dir_all(&link_home).unwrap();
+    std::os::unix::fs::symlink(f.projects(), link_home.join("projects")).unwrap();
+    let via_link = link_home
+        .join("projects")
+        .join(keys::key(&f.old))
+        .join(format!("{}.jsonl", f.conv));
+    let mut writer = std::process::Command::new("sh")
+        .args(["-c", "exec 3>>\"$1\"; sleep 30", "sh"])
+        .arg(&via_link)
+        .spawn()
+        .unwrap();
+    let fd_open = || {
+        fs::read_dir(format!("/proc/{}/fd", writer.id()))
+            .map(|d| d.count() > 3)
+            .unwrap_or(false)
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !fd_open() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let mut linked = rec.clone();
+    linked.home = Some(link_home.clone());
+    let found = keys::locate(&link_home.join("projects"), &rec.conversation_ids).unwrap();
+    let e = session::ensure_quiet_pub(&f.paths, &linked, &found)
+        .unwrap_err()
+        .to_string();
+    let _ = writer.kill();
+    let _ = writer.wait();
+    assert!(e.contains("HISTORY_IN_USE"), "{e}");
+    // An unreadable live registry is a failed probe, never "stopped".
+    let broken = f.t.path().join("broken");
+    fs::create_dir_all(&broken).unwrap();
+    fs::write(broken.join("sessions"), "not a directory").unwrap();
+    let mut b = rec.clone();
+    b.home = Some(broken);
+    let e = session::ensure_quiet_pub(&f.paths, &b, &[])
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("probe_failed"), "{e}");
+}
+fn wait_cmdline(pid: u32, needle: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !fs::read(format!("/proc/{pid}/cmdline"))
+        .is_ok_and(|c| c.split(|b| *b == 0).any(|a| a == needle.as_bytes()))
+    {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn b1_a_codex_thread_is_never_planned_rekey_when_the_inventory_failed() {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+    let thread = uuid::Uuid::new_v4().to_string();
+    catalog::record_launch(&paths, "c", &thread, "n", None).unwrap();
+    let old = t.path().join("user/live/q");
+    fs::create_dir_all(&old).unwrap();
+    fs::create_dir_all(t.path().join("disk/live/q")).unwrap();
+    crate::external::relocation::save_location(&paths, &thread, &old).unwrap();
+    let alias = Alias::new(entries(t.path()));
+    let plan = build_plan(&paths, &alias, &Err("app-server unreachable".into())).unwrap();
+    let c = plan.codex.iter().find(|c| c.thread == thread).unwrap();
+    assert_eq!(c.state, "left_behind");
+    assert!(
+        c.reason.as_deref().unwrap().starts_with("probe_failed"),
+        "{:?}",
+        c.reason
+    );
+    let plan = build_plan(&paths, &alias, &Ok(vec![])).unwrap();
+    assert_eq!(
+        plan.codex
+            .iter()
+            .find(|c| c.thread == thread)
+            .unwrap()
+            .state,
+        "rekey"
+    );
+}
+
+#[test]
+fn item1_a_backup_inside_the_root_by_its_other_spelling_is_refused() {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("disk/appdata/root"))).unwrap();
+    let alias = Alias::new(entries(t.path()));
+    // The process-wide alias is not installed; the other spelling still counts.
+    let inside = t.path().join("user/appdata/root/backup");
+    let e = check_backup(&paths, &alias, &inside).unwrap_err();
+    assert!(e.contains("outside the data root"), "{e}");
+    let parent = t.path().join("user/appdata");
+    assert!(check_backup(&paths, &alias, &parent).is_err());
+    check_backup(&paths, &alias, &t.path().join("elsewhere/bk")).unwrap();
+}
+
+#[test]
+fn item4_codex_rollback_restores_only_the_record_it_wrote() {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+    let thread = uuid::Uuid::new_v4().to_string();
+    let s = catalog::record_launch(&paths, "c", &thread, "n", None).unwrap();
+    let file = paths
+        .root
+        .join(layout::THREAD_LOCATIONS)
+        .join(format!("{thread}.json"));
+    let mut r = new_rec(&s, "run");
+    r.to = Some("/new/q".into());
+    session::codex_rekey_stopped(&paths, &mut r).unwrap();
+    assert!(r.codex_location_after.is_some());
+    // Changed by someone else since: left as is, with a warning.
+    fs::write(&file, "{\"cwd\":\"/elsewhere\"}").unwrap();
+    let mut changed = r.clone();
+    session::rollback_stopped(&paths, &mut changed).unwrap();
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "{\"cwd\":\"/elsewhere\"}"
+    );
+    assert!(!changed.warnings.is_empty());
+    // Unchanged: the absent record is absent again.
+    session::codex_rekey_stopped(&paths, &mut r).unwrap();
+    r.codex_location_before = None;
+    session::rollback_stopped(&paths, &mut r).unwrap();
+    assert!(!file.exists());
+}
+
+#[test]
+fn item3_rollback_sees_processes_on_the_new_spelling() {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("user/appdata/root"))).unwrap();
+    let run = Run {
+        entries: entries(t.path()),
+        ..Default::default()
+    };
+    let new_home = t.path().join("disk/appdata/root/accounts/claude/a");
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .env("CLAUDE_CONFIG_DIR", &new_home)
+        .spawn()
+        .unwrap();
+    wait_env(child.id(), "CLAUDE_CONFIG_DIR");
+    let found = new_spelling_processes(&paths, &run);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        found
+            .iter()
+            .any(|p| p["pid"] == child.id() && p["variable"] == "CLAUDE_CONFIG_DIR"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn item6_backup_verification_fails_on_a_vanished_source() {
+    let t = tempfile::tempdir().unwrap();
+    let (src, copy) = (t.path().join("src"), t.path().join("copy"));
+    write(&src.join("a"), "a");
+    write(&copy.join("a"), "a");
+    write(&copy.join("b"), "b"); // its source is gone
+    write(&src.join("c"), "changed");
+    write(&copy.join("c"), "stale"); // recopied once, then exact
+    let mut out = vec![];
+    let e = verify_tree(&copy, &src, true, &mut out)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("BACKUP_VERIFY_FAILED") && e.contains("source_gone"),
+        "{e}"
+    );
+    assert_eq!(fs::read_to_string(copy.join("c")).unwrap(), "changed");
+}
+
+#[test]
+fn item7_fast_forward_never_overwrites_a_concurrent_change_and_saves_the_old_version() {
+    let t = tempfile::tempdir().unwrap();
+    write(&t.path().join("src"), "new");
+    write(&t.path().join("dst"), "concurrent edit");
+    let expected = keys::sha256_file(&t.path().join("dst")).unwrap().1;
+    write(&t.path().join("dst"), "changed again");
+    let versions = t.path().join("v/dst.old");
+    let swapped = keys::replace_with(
+        &t.path().join("src"),
+        &t.path().join("dst"),
+        &expected,
+        &versions,
+    )
+    .unwrap();
+    assert!(!swapped);
+    assert_eq!(
+        fs::read_to_string(t.path().join("dst")).unwrap(),
+        "changed again"
+    );
+    let current = keys::sha256_file(&t.path().join("dst")).unwrap().1;
+    assert!(
+        keys::replace_with(
+            &t.path().join("src"),
+            &t.path().join("dst"),
+            &current,
+            &versions
+        )
+        .unwrap()
+    );
+    assert_eq!(fs::read_to_string(t.path().join("dst")).unwrap(), "new");
+    assert_eq!(fs::read_to_string(&versions).unwrap(), "changed again");
 }
 
 #[test]
@@ -524,7 +988,7 @@ fn a_crash_after_any_tier_r_step_resumes_from_the_journal() {
             ..Default::default()
         };
         save_run(&paths, &mut run).unwrap();
-        let plan = build_plan(&paths, &Alias::new(vec![entry.clone()])).unwrap();
+        let plan = build_plan(&paths, &Alias::new(vec![entry.clone()]), &Ok(vec![])).unwrap();
         crash_at(Some(at));
         let e = drive(&paths, &mut run, &plan).unwrap_err().to_string();
         crash_at(None);

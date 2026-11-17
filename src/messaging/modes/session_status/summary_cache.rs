@@ -39,7 +39,9 @@ impl Cache {
     pub(super) fn new(paths: &Paths, a: &Attachment, history: Option<&Path>) -> Option<Self> {
         let history = crate::alias::canonical(history?).ok()?;
         let home = crate::alias::canonical(&a.home).ok()?;
+        // raw-path: both sides are alias::canonical forms (above)
         if !history.starts_with(home.join("sessions"))
+            // raw-path: both sides are alias::canonical forms (above)
             && !history.starts_with(home.join("archived_sessions"))
         {
             return None;

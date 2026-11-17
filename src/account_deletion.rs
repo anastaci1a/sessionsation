@@ -143,6 +143,7 @@ fn spawn(paths: &Paths, r: &Record) -> Result<()> {
 /// managed home (`accounts/<platform>`, or a deferred home's legacy parent).
 fn safe_parent(paths: &Paths, home: &Path) -> Result<()> {
     let parent = home.parent().context("UNSAFE_ACCOUNT_PARENT")?;
+    // raw-path: fails closed; a home spelled differently from the root is refused
     ensure!(parent.starts_with(&paths.root), "UNSAFE_ACCOUNT_PARENT");
     // raw-path: walks the spelling checked by starts_with just above
     for dir in parent.ancestors().take_while(|d| *d != paths.root) {

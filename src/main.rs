@@ -826,7 +826,7 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Root { command } => {
             use sessionsation::root_migrate as root;
             print_json(&match command {
-                RootCommand::Status => root::status(&paths)?,
+                RootCommand::Status => root::status(&paths).await?,
                 RootCommand::Migrate {
                     from: Some(from),
                     to: Some(to),
@@ -847,7 +847,8 @@ async fn run(cli: Cli) -> Result<()> {
                             dry_run,
                             allow_full_copy,
                         },
-                    )?;
+                    )
+                    .await?;
                     if let Some(lines) = v["summary"].as_array() {
                         for l in lines {
                             eprintln!("# {}", l.as_str().unwrap_or_default());

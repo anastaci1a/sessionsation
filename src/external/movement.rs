@@ -581,12 +581,14 @@ fn reported_history_path(reported: &str, target_home: &Path) -> Result<PathBuf> 
     let file = crate::layout::resolve_path(Path::new(reported));
     let home = crate::layout::resolve_path(target_home);
     ensure!(
+        // raw-path: both sides are resolve_path (alias-aware) forms
         file.starts_with(home.join("sessions")) || file.starts_with(home.join("archived_sessions")),
         "Codex reported a history path outside the destination home"
     );
     Ok(file)
 }
 fn target_path(source: &Path, home: &Path, target_home: &Path) -> Result<PathBuf> {
+    // raw-path: the literal case first; the fallback compares resolve_path forms
     let relative: PathBuf = match source.strip_prefix(home) {
         Ok(relative) => relative.to_path_buf(),
         Err(_) => crate::layout::resolve_path(source)
@@ -1331,7 +1333,7 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
         let mut control = Control::connect(&job.source.home).await?;
         let mut thread = control.thread(&job.source.thread_id, false).await?;
         if thread["path"].as_str().is_some_and(|path| {
-            Path::new(path).starts_with(job.source.home.join("archived_sessions"))
+            crate::alias::starts_with(Path::new(path), &job.source.home.join("archived_sessions"))
         }) {
             control
                 .request("thread/unarchive", json!({"threadId":job.source.thread_id}))
@@ -1344,9 +1346,7 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
                 .context("source history path missing")?,
         );
         ensure!(
-            job.source
-                .rollout
-                .starts_with(job.source.home.join("sessions"))
+            crate::alias::starts_with(&job.source.rollout, &job.source.home.join("sessions"))
                 && job.source.rollout.is_file(),
             "source history is not yet restored; retry recovery"
         );

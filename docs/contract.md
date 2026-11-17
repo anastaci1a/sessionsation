@@ -3790,8 +3790,11 @@ sessionsation root finalize [--dry-run] [--accept-unresumed]
 
 - **Alias.** `--from F --to T` becomes one entry per first path component found in stored paths (for example
   `/mnt/user/appdata` -> `/mnt/disk1/appdata`). An entry is accepted only when proven: both are real directories
-  (no symlink), no other branch `/<parent>/*/<share>` exists besides `user`, `user0` and the target, and
-  `st_dev:st_ino` match (or, outside `--dry-run`, a probe file written under `T` is read under `F`). An unproven
+  (no symlink), no other array disk (`disk<N>`) or local pool mount point beside the two spellings holds
+  content under the same share (an empty directory is not divergence; `user`, `user0`, `remotes`, `addons`,
+  `rootshare`, `disks` and network/FUSE mounts are never consulted; each check is bounded to 2 s,
+  `stat_timeout` otherwise), and `st_dev:st_ino` match (or, outside `--dry-run`, a probe file written under `T`
+  is read under `F`). An unproven
   share is not mapped and is reported (`unproven`, `unmapped`). The block is stored in `layout.json` as
   `root_alias` (`version`, `state` `pending|active|inactive`, `root_id`, `canonical_root`, `previous_root`,
   `entries`, `normalize_requests`, `run`, `backup`, `activated_at`).
@@ -3809,12 +3812,20 @@ sessionsation root finalize [--dry-run] [--accept-unresumed]
   `session launch`) take the new spelling once the alias is active.
 - **Tier R** (supervisor stopped; `DAEMON_RUNNING` otherwise). Preconditions: layout version 2 complete or an
   unfinished run of the same `--from/--to` (`LAYOUT_MIGRATION_REQUIRED`, `ROOT_MIGRATION_MISMATCH`); the
-  root's entry proven (`ROOT_ALIAS_UNPROVEN`); no non-terminal operation (`ROOT_MIGRATION_BLOCKED` with the
-  list); disk space; `--backup` new or empty and outside the root (`BACKUP_REQUIRED`, `BACKUP_NOT_EMPTY`).
+  root's entry proven (`ROOT_ALIAS_UNPROVEN`); no non-terminal operation and no live hosted (stream-json)
+  Claude worker, whose socket lives in the runtime directory that moves with the root spelling
+  (`ROOT_MIGRATION_BLOCKED` with the list; an unreadable journal or catalog also blocks); the rollback-gate
+  snapshot succeeds for every attached or running session (`ROOT_MIGRATION_BLOCKED` otherwise); disk space;
+  `--backup` new or empty and outside the root under either spelling (`BACKUP_REQUIRED`,
+  `BACKUP_NOT_EMPTY`); without `--allow-full-copy` a reflink from the root into the backup directory must
+  work (`BACKUP_REFLINK_UNSUPPORTED`). Only a session positively known to be stopped is re-keyed: a probe
+  that cannot decide leaves it on its old path (`left_behind`, reason `probe_failed: ...`).
   Steps, journaled in `operations/root-migrations/<run>.json` (values in `<run>.changes.jsonl`), each
   idempotent: `backup` (metadata copy, `VACUUM INTO` copies of the databases, a reflink copy of
   `shared/claude/projects` (full copy only with `--allow-full-copy`), every managed home's `.claude.json`;
-  manifest `root-backup.json` with a sha256 per file), `mark` (version 3, migrating), `links` (the six
+  manifest `root-backup.json` with a sha256 per file; a copy that differs from its source is taken once more,
+  then a remaining difference or a vanished source fails with `BACKUP_VERIFY_FAILED`), `mark` (version 3,
+  migrating), `links` (the six
   shared-store links re-pointed by `rename(2)`), `registry` (conversation owners, managed and HERDR pane homes,
   thread locations, `config.json` `codex_binary` when the mapped file is the same inode), `claude`
   (`.claude.json` project entries cloned to the new key, memory merged per key, every Claude session that is
@@ -3827,10 +3838,16 @@ sessionsation root finalize [--dry-run] [--accept-unresumed]
   sidecar) **before** any rename, which happens only while the session is stopped. A name already in the new
   key is a collision (`ROOT_REKEY_CONFLICT`; nothing moves); the move uses `RENAME_NOREPLACE` and adds names
   only. Memory (`projects/<key>/memory/`) is merged per file and never moved: a missing file is copied, a file
-  changed on one side only since the last sync fast-forwards (the replaced version is kept under
-  `<backup>/memory-versions/`), a file changed on both sides is a conflict (both kept in place and copied to
+  changed on one side only since the last sync fast-forwards by an atomic exchange that is undone when a
+  concurrent writer changed the target meanwhile (then a conflict); the replaced version is always kept under
+  `<backup>/memory-versions/`. A file changed on both sides is a conflict (both kept in place and copied to
   `<backup>/memory-conflicts/`; the session is not switched; nothing picks a winner). Then the catalog
-  `directory` changes (one generation change).
+  `directory` changes (one generation change). The quiet check fails closed: an unreadable live registry or
+  account list, a process naming the conversation on its command line, or a writer of the transcript
+  (compared by resolved path) refuses. Any error after the move moves the names back (and restores the
+  catalog) before the session is reported `left_behind`; an interrupted re-key continues from its own
+  journal; a new attempt over names still moved is refused (`ROOT_REKEY_CONFLICT`) until the session is
+  rolled back.
 - **Tier S** (`--session`, alias active). A running Claude session in a HERDR pane is stopped (pidfd-bound
   SIGTERM; a busy one needs `--accept-risks`), re-keyed, resumed once in the same pane in the new directory
   and verified: same conversation id in the recorded pane (V1), registry and `/proc` cwd equal the new
@@ -3849,14 +3866,21 @@ sessionsation root finalize [--dry-run] [--accept-unresumed]
   `left_behind`, `unsupported_provider`, `not_applicable`, `verify_failed`, `failed`, `uncertain`,
   `relocating`. Each row carries its retained copies (`retained[].copy`, `sha256`, `verified`).
 - **Rollback gate.** `gate` is `pass` when every session that the catalog showed attached, or that was
-  recognised as running, before activation is still recognised as running (`gate_detail.sessions[]`:
-  `running_before`, `running_now`, `in_tier_s`, `ok`); `fail` means a missed comparison site: run
-  `root rollback`. `not_applicable` without an activated run.
-- **Rollback.** `root rollback` (supervisor stopped): sessions still `rekeyed` move back, every journaled
+  recognised as running, before activation is still recognised as running, and every probe (Claude
+  registry, enriched Codex inventory) succeeded (`gate_detail.sessions[]`: `running_before`, `running_now`,
+  `in_tier_s`, `probe_error_before`, `probe_error_now`, `ok`; `gate_detail.codex_inventory_error`); `fail`
+  means a missed comparison site or a blind probe: run `root rollback`. `not_applicable` without an activated
+  run.
+- **Rollback.** `root rollback` (supervisor stopped): every session this run changed and that is not
+  `verified` moves back (whatever its reported state, including one interrupted mid re-key), every journaled
   value is restored (original bytes when unchanged since), links re-pointed, cloned `.claude.json` entries
-  removed when unchanged, `layout.json` restored (version 2). `verified` sessions stay on their new
-  directory (it works under either spelling). `root rollback --session S` undoes one session (stopping and
-  resuming it when it runs).
+  removed when unchanged, a thread location restored only when it is still the record the re-key wrote,
+  `layout.json` restored (version 2). It is refused while a re-key worker runs, and while any process uses
+  the new spelling of a home under the root in `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GEMINI_CLI_HOME`
+  (`ROOT_ROLLBACK_BLOCKED` with the pids): after the rollback such a process would no longer be recognised.
+  Revert the boot files, launcher and `/usr/bin` link with it. `verified` sessions stay on their new
+  directory. `root rollback --session S` undoes one session; a running one is stopped, moved back and resumed
+  on the old path by a detached worker under lifecycle admission.
 - **Finalize.** Removes empty old project-key directories (`rmdir` only). Retained copies under the backup
   directory are never deleted by any 1.54 command, `finalize` included; old `memory/` directories are only
   reported (`memory_removable`).

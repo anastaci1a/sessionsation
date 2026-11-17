@@ -59,6 +59,7 @@ struct Fs {
 }
 impl Fs {
     fn io(&self, logical: &Path) -> PathBuf {
+        // raw-path: --fs-path maps one literal spelling onto another
         match logical.strip_prefix(&self.root) {
             Ok(rest) => self.base.join(rest),
             Err(_) => logical.to_path_buf(),

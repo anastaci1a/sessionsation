@@ -301,6 +301,7 @@ pub(super) async fn delete_history(
                 !plan.copies.iter().any(|c| {
                     c.home.as_ref() == Some(home) // raw-path: both from one scan of copies
                         && c.parents.contains(id)
+                        // raw-path: keys of the same scan of copies
                         && remaining.contains(&(home.clone(), c.id.clone()))
                 })
             })

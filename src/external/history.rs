@@ -96,7 +96,8 @@ pub(super) async fn preserve_selected_history(
     if proof.exists() {
         let checks: Vec<PreservedCheck> = serde_json::from_slice(&fs::read(proof)?)?;
         for file in files {
-            let relative = file.strip_prefix(home)?;
+            let relative = crate::alias::strip_prefix(file, home)
+                .context("history file outside the account home")?;
             ensure!(
                 checks.iter().any(|c| c.relative == relative
                     && rollout_digest(file).ok().as_ref() == Some(&c.digest)),
@@ -143,7 +144,8 @@ pub(super) async fn preserve_selected_history(
             "HISTORY_CHANGED_DURING_VERIFICATION"
         );
         checks.push(PreservedCheck {
-            relative: file.strip_prefix(home)?.into(),
+            relative: crate::alias::strip_prefix(file, home)
+                .context("history file outside the account home")?,
             digest,
             native,
         });

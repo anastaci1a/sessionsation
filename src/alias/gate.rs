@@ -21,10 +21,109 @@ const SAFE: &[&str] = &[
     "alias::same_str(",
     "alias::logical(",
     "alias::starts_with(",
+    "alias::strip_prefix(",
     "same_home(",
     "resolve_path(",
 ];
 const NAMES: &[&str] = &["home", "cwd", "directory", "root"];
+/// Names whose prefix tests (`starts_with`, `strip_prefix`) and membership tests
+/// (`.contains(x)`) are path comparisons too.
+const PREFIX_NAMES: &[&str] = &[
+    "home",
+    "cwd",
+    "directory",
+    "root",
+    "rollout",
+    "path",
+    "transcript",
+    "dir",
+];
+fn prefix_pathish(ident: &str) -> bool {
+    PREFIX_NAMES
+        .iter()
+        .any(|n| ident == *n || ident.ends_with(&format!("_{n}")))
+}
+fn idents(span: &str) -> Vec<&str> {
+    // String literals are not operands.
+    let mut out = vec![];
+    let mut in_str = false;
+    let mut start = None;
+    for (i, c) in span.char_indices() {
+        if c == '"' {
+            in_str = !in_str;
+        }
+        let ident = !in_str && (c.is_ascii_alphanumeric() || c == '_');
+        match (ident, start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                out.push(&span[s..i]);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        out.push(&span[s..]);
+    }
+    out
+}
+/// The receiver expression before `.method(` (balanced parentheses included).
+fn receiver(before: &str) -> &str {
+    let b = before.as_bytes();
+    let mut i = b.len();
+    let mut depth = 0i32;
+    while i > 0 {
+        let c = b[i - 1];
+        match c {
+            b')' | b']' => depth += 1,
+            b'(' | b'[' if depth > 0 => depth -= 1,
+            _ if depth > 0 => {}
+            c if c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b':' | b'&' | b'*') => {}
+            _ => break,
+        }
+        i -= 1;
+    }
+    &before[i..]
+}
+/// The argument text of a call whose `(` starts `after`.
+fn argument(after: &str) -> &str {
+    let mut depth = 0;
+    for (i, c) in after.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &after[1..i];
+                }
+            }
+            _ => {}
+        }
+    }
+    after.get(1..).unwrap_or_default()
+}
+fn prefix_violation(code: &str) -> bool {
+    for method in [".starts_with(", ".strip_prefix(", ".contains("] {
+        let mut from = 0;
+        while let Some(at) = code[from..].find(method) {
+            let at = from + at;
+            from = at + method.len();
+            let recv = receiver(&code[..at]);
+            let arg = argument(&code[at + method.len() - 1..]);
+            let arg_path = idents(arg).iter().any(|i| prefix_pathish(i));
+            let recv_path = idents(recv).iter().any(|i| prefix_pathish(i));
+            let hit = if method == ".contains(" {
+                arg_path
+            } else {
+                arg_path || recv_path
+            };
+            if hit {
+                return true;
+            }
+        }
+    }
+    false
+}
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -114,11 +213,8 @@ fn violations_in(path: &Path, text: &str) -> Vec<String> {
         if trimmed.starts_with("//") {
             continue;
         }
-        // rustfmt may move a trailing comment into the next line or split the
-        // statement, so a reason within the statement's neighbourhood counts.
-        let marked = lines[i.saturating_sub(5)..(i + 2).min(lines.len())]
-            .iter()
-            .any(|l| l.contains(MARKER));
+        // A reason exempts its own line and the next line only.
+        let marked = line.contains(MARKER) || (i > 0 && lines[i - 1].contains(MARKER));
         if marked || SAFE.iter().any(|s| line.contains(s)) {
             continue;
         }
@@ -129,6 +225,15 @@ fn violations_in(path: &Path, text: &str) -> Vec<String> {
         if code.contains("canonicalize(") {
             out.push(format!(
                 "{}:{}: raw canonicalize: {}",
+                path.display(),
+                i + 1,
+                trimmed
+            ));
+            continue;
+        }
+        if prefix_violation(code) {
+            out.push(format!(
+                "{}:{}: raw path prefix/membership test: {}",
                 path.display(),
                 i + 1,
                 trimmed
@@ -178,6 +283,25 @@ fn operand_names() {
     assert_eq!(violations_in(Path::new("x.rs"), bad).len(), 2);
     let ok = "fn f() {\n    // raw-path: literal\n    if a.home == b {}\n    let x = crate::alias::canonical(p); // fine\n}\n#[cfg(test)]\nmod tests {\n    fn t() { assert!(a.cwd == b); }\n}\n";
     assert!(violations_in(Path::new("x.rs"), ok).is_empty());
+    // Prefix and membership tests on path-like operands.
+    for bad in [
+        "    if p.starts_with(home.join(\"sessions\")) {}",
+        "    let r = path.strip_prefix(root)?;",
+        "    if open.contains(&source.rollout) {}",
+        "    if Path::new(&cwd).starts_with(x) {}",
+    ] {
+        assert_eq!(violations_in(Path::new("x.rs"), bad).len(), 1, "{bad}");
+    }
+    for fine in [
+        "    if name.starts_with(\"rollout-\") {}",
+        "    if ids.contains(&id) {}",
+        "    if crate::alias::starts_with(p, &home) {}",
+    ] {
+        assert!(violations_in(Path::new("x.rs"), fine).is_empty(), "{fine}");
+    }
+    // The reason covers its own line and the next one only.
+    let far = "    // raw-path: too far\n    let a = 1;\n    if a.home == b {}\n";
+    assert_eq!(violations_in(Path::new("x.rs"), far).len(), 1);
 }
 
 #[test]
@@ -193,6 +317,8 @@ fn no_raw_path_comparisons() {
         if name == "tests.rs"
             || f.components().any(|c| c.as_os_str() == "tests")
             || f.ends_with("alias/gate.rs")
+            // The alias module defines the comparisons everything else must use.
+            || f.ends_with("src/alias.rs")
         {
             continue;
         }

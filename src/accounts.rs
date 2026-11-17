@@ -173,6 +173,7 @@ fn files(root: &Path, path: &Path, output: &mut Vec<Value>) -> Result<()> {
             entries.iter().map(|path|{
                 let m=fs::symlink_metadata(path)?;
                 ensure!(!m.is_dir(),"ACCOUNT_DATA_CHANGED");
+                // raw-path: a path from walking `root` itself (one spelling)
                 Ok(json!({"path":path.strip_prefix(root)?,"bytes":m.len(),"inode":m.ino(),"modified":m.mtime(),"modified_ns":m.mtime_nsec()}))
             }).collect()
         })).collect();

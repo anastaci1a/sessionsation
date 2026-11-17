@@ -87,6 +87,7 @@ fn is_tripwire(p: &Path) -> bool {
         && fs::read(p).is_ok_and(|b| b == TRIPWIRE.as_bytes())
 }
 fn rel(root: &Path, p: &Path) -> String {
+    // raw-path: legacy layout paths are all built from one `root`
     p.strip_prefix(root)
         .unwrap_or(p)
         .to_string_lossy()
@@ -95,6 +96,7 @@ fn rel(root: &Path, p: &Path) -> String {
 /// Relative symlink target from `link` to `target` (both under `root`).
 fn relative_target(root: &Path, link: &Path, target: &Path) -> PathBuf {
     let depth = link
+        // raw-path: legacy layout paths are all built from one `root`
         .strip_prefix(root)
         .map(|p| p.components().count().saturating_sub(1))
         .unwrap_or(0);
@@ -102,6 +104,7 @@ fn relative_target(root: &Path, link: &Path, target: &Path) -> PathBuf {
     for _ in 0..depth {
         out.push("..");
     }
+    // raw-path: legacy layout paths are all built from one `root`
     out.push(target.strip_prefix(root).unwrap_or(target));
     out
 }

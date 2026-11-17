@@ -42,26 +42,55 @@ fn phase(paths: &Paths, r: &mut SessionRec, name: &str, detail: &str) -> Result<
     super::tests::crash_check(name)?;
     Ok(())
 }
-fn projects_of(paths: &Paths, account: &str) -> Result<PathBuf> {
-    Ok(claude_home(paths, account)
-        .context("ACCOUNT_UNAVAILABLE")?
-        .join("projects"))
+/// The account home of the session (fixed in the record at admission).
+fn home_of(paths: &Paths, r: &SessionRec) -> Result<PathBuf> {
+    r.home
+        .clone()
+        .or_else(|| claude_home(paths, &r.account))
+        .context("ACCOUNT_UNAVAILABLE")
+}
+fn projects_of(paths: &Paths, r: &SessionRec) -> Result<PathBuf> {
+    Ok(home_of(paths, r)?.join("projects"))
 }
 fn bases_entry(paths: &Paths, km: &str, kt: &str) -> (keys::Bases, String) {
     (read_bases(paths), keys::pair(km, kt))
 }
+/// Where replaced memory versions go when no retained directory is known yet.
+fn memory_backup(paths: &Paths, r: &SessionRec) -> PathBuf {
+    r.retained_dir
+        .clone()
+        .or_else(|| latest_run(paths).map(|run| run.backup.join("sessions").join(&r.session_id)))
+        .unwrap_or_else(|| dir(paths).join("memory-versions-fallback"))
+}
 
-/// No verified live process holds any lineage id in any enrolled Claude home,
-/// and no transcript has a writer.
+/// B1: fails CLOSED. No verified live process holds a lineage id in the
+/// session's home or any enrolled Claude home, no process names a lineage id
+/// on its command line, and no transcript has a writer (compared by its
+/// resolved path). Any probe error refuses with `SESSION_STATE_UNVERIFIED:
+/// probe_failed`.
 fn ensure_quiet(paths: &Paths, r: &SessionRec, found: &[Found]) -> Result<()> {
-    let homes: Vec<PathBuf> = claude::enrolled(paths)
-        .map(|e| e.into_iter().map(|a| a.home).collect())
-        .unwrap_or_default();
+    let mut homes: Vec<PathBuf> = claude::enrolled(paths)
+        .map_err(|e| {
+            anyhow::anyhow!("SESSION_STATE_UNVERIFIED: probe_failed: enrolled accounts: {e:#}")
+        })?
+        .into_iter()
+        .map(|a| a.home)
+        .collect();
+    if let Ok(h) = home_of(paths, r)
+        && !homes.iter().any(|x| crate::layout::same_home(x, &h))
+    {
+        homes.push(h);
+    }
     for home in homes {
-        if let Ok(live) = claude::live_sessions(&home)
-            && let Some(l) = live
-                .iter()
-                .find(|l| r.conversation_ids.contains(&l.session_id))
+        let live = claude::live_sessions(&home).map_err(|e| {
+            anyhow::anyhow!(
+                "SESSION_STATE_UNVERIFIED: probe_failed: live sessions of {}: {e:#}",
+                home.display()
+            )
+        })?;
+        if let Some(l) = live
+            .iter()
+            .find(|l| r.conversation_ids.contains(&l.session_id))
         {
             bail!(
                 "SESSION_RUNNING: Claude process {} runs conversation {}; it was not moved",
@@ -70,10 +99,27 @@ fn ensure_quiet(paths: &Paths, r: &SessionRec, found: &[Found]) -> Result<()> {
             );
         }
     }
+    let naming = processes_naming(&r.conversation_ids)
+        .map_err(|e| anyhow::anyhow!("SESSION_STATE_UNVERIFIED: probe_failed: {e}"))?;
+    ensure!(
+        naming.is_empty(),
+        "SESSION_RUNNING: process(es) {naming:?} name this conversation on their command line; it was not moved"
+    );
     for f in found {
-        crate::external::archiving::native::not_open(&f.transcript)?;
+        crate::external::archiving::native::not_open(&f.transcript).map_err(|e| {
+            if format!("{e:#}").contains("HISTORY_IN_USE") {
+                e
+            } else {
+                anyhow::anyhow!("SESSION_STATE_UNVERIFIED: probe_failed: open files: {e:#}")
+            }
+        })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn ensure_quiet_pub(paths: &Paths, r: &SessionRec, found: &[Found]) -> Result<()> {
+    ensure_quiet(paths, r, found)
 }
 
 /// Steps 1-6 of §4.2 for a session that is not running (Tier R, or the worker
@@ -99,7 +145,10 @@ fn rekey_until(ctx: &mut Ctx, r: &mut SessionRec, s: &Session, finish: bool) -> 
         Path::new(&to).is_dir(),
         "ROOT_REKEY_UNSUPPORTED: {to} is not a directory"
     );
-    let projects = projects_of(paths, &r.account)?;
+    let projects = projects_of(paths, r)?;
+    if r.home.is_none() {
+        r.home = Some(home_of(paths, r)?);
+    }
     if order(&r.phase) < order("retained") {
         // 1. Locate, 2. quiet check, 4. collision preflight (before anything moves).
         let found = keys::locate(&projects, &r.conversation_ids)?;
@@ -122,7 +171,7 @@ fn rekey_until(ctx: &mut Ctx, r: &mut SessionRec, s: &Session, finish: bool) -> 
             &projects.join(&mem_key).join("memory"),
             &projects.join(&key_to).join("memory"),
             &mut base,
-            None,
+            Path::new(""), // dry run: writes nothing
             &key_to,
             true,
         )?;
@@ -167,52 +216,15 @@ fn rekey_until(ctx: &mut Ctx, r: &mut SessionRec, s: &Session, finish: bool) -> 
         )?;
     }
     if order(&r.phase) < order("switched") {
-        // 5. Memory merge and project entry. A conflict moves the names back.
-        if mem_key != key_to {
-            let (mut bases, pair) = bases_entry(paths, &mem_key, &key_to);
-            let base = bases.0.entry(pair).or_default();
-            let m = keys::sync_memory(
-                &projects.join(&mem_key).join("memory"),
-                &projects.join(&key_to).join("memory"),
-                base,
-                Some(&ctx.backup),
-                &key_to,
-                false,
-            )?;
-            save_bases(paths, &bases)?;
-            r.memory = Some(m.clone());
-            if !m.clean() {
-                keys::move_back(&r.moved)?;
-                r.moved.clear();
-                r.phase = "admitted".into();
-                bail!(
-                    "MEMORY_CONFLICT: {} differ(s) between the old and new key's memory; the files were moved back",
-                    m.conflicts.join(", ")
-                );
-            }
+        // B3(b): any error from here on moves the names back (and restores the
+        // catalog when it was switched) before it is reported.
+        if let Err(e) = memory_and_switch(ctx, r, s, &projects, &from, &to, &mem_key, &key_to) {
+            let back = undo_moves(paths, r);
+            return Err(match back {
+                Ok(()) => e,
+                Err(b) => e.context(format!("ROOT_REKEY_REVERT_FAILED: {b:#}")),
+            });
         }
-        for home in claude::enrolled(paths)
-            .map(|e| e.into_iter().map(|a| a.home).collect::<Vec<_>>())
-            .unwrap_or_default()
-        {
-            let alias = Alias::new(vec![Entry {
-                from: from.clone().into(),
-                to: to.clone().into(),
-                proof: "session".into(),
-            }]);
-            let _ = keys::clone_project_entries(&home, &alias, Some(&from), false);
-        }
-        // 6. Switch the catalog (generation-checked against the stored directory).
-        let (before, after) =
-            catalog::rekey_directory(paths, &s.id, &s.conversation_id, Some(&from), &to)?;
-        r.revision_before.get_or_insert(before);
-        r.revision_after = Some(after.revision);
-        phase(
-            paths,
-            r,
-            "switched",
-            "The catalog directory now names the new spelling.",
-        )?;
     }
     if !finish {
         return Ok(());
@@ -227,16 +239,149 @@ fn rekey_until(ctx: &mut Ctx, r: &mut SessionRec, s: &Session, finish: bool) -> 
     )
 }
 
+/// Steps 5 and 6 of §4.2 (after the names moved): memory, project entry, catalog.
+#[allow(clippy::too_many_arguments)]
+fn memory_and_switch(
+    ctx: &mut Ctx,
+    r: &mut SessionRec,
+    s: &Session,
+    projects: &Path,
+    from: &str,
+    to: &str,
+    mem_key: &str,
+    key_to: &str,
+) -> Result<()> {
+    let paths = ctx.paths;
+    // An I/O error after the move (B3(b)).
+    #[cfg(test)]
+    super::tests::crash_check("memory_io")?;
+    if mem_key != key_to {
+        let (mut bases, pair) = bases_entry(paths, mem_key, key_to);
+        let base = bases.0.entry(pair).or_default();
+        let m = keys::sync_memory(
+            &projects.join(mem_key).join("memory"),
+            &projects.join(key_to).join("memory"),
+            base,
+            &ctx.backup,
+            key_to,
+            false,
+        )?;
+        save_bases(paths, &bases)?;
+        r.memory = Some(m.clone());
+        ensure!(
+            m.clean(),
+            "MEMORY_CONFLICT: {} differ(s) between the old and new key's memory; the files were moved back",
+            m.conflicts.join(", ")
+        );
+    }
+    for home in claude::enrolled(paths)
+        .map(|e| e.into_iter().map(|a| a.home).collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
+        let alias = Alias::new(vec![Entry {
+            from: from.into(),
+            to: to.into(),
+            proof: "session".into(),
+        }]);
+        let _ = keys::clone_project_entries(&home, &alias, Some(from), false);
+    }
+    // 6. Switch the catalog (generation-checked against the stored directory).
+    let (before, after) =
+        catalog::rekey_directory(paths, &s.id, &s.conversation_id, Some(from), to)?;
+    r.revision_before.get_or_insert(before);
+    r.revision_after = Some(after.revision);
+    // Process death between the catalog switch and the journal write (B3(e)).
+    #[cfg(test)]
+    super::tests::die_check("catalog_switched");
+    phase(
+        paths,
+        r,
+        "switched",
+        "The catalog directory now names the new spelling.",
+    )
+}
+
+/// Move the names back and restore the catalog directory (and revision) if it
+/// was switched. The record keeps `moved` until the move-back succeeded.
+pub(crate) fn undo_moves(paths: &Paths, r: &mut SessionRec) -> Result<()> {
+    keys::move_back(&r.moved)?;
+    r.moved.clear();
+    restore_catalog(paths, r)?;
+    r.phase = "admitted".into();
+    save_session(paths, r)
+}
+/// Point the catalog back at the old directory when it names the new one.
+/// The journal may lack the revisions (death between the catalog switch and
+/// the journal write): the directory is restored all the same (a new revision).
+fn restore_catalog(paths: &Paths, r: &mut SessionRec) -> Result<()> {
+    if let Some(to) = r.to.clone() {
+        let (before, after) = (
+            r.revision_before.unwrap_or(u64::MAX),
+            r.revision_after.unwrap_or(u64::MAX),
+        );
+        catalog::restore_directory(
+            paths,
+            &r.session_id,
+            &r.conversation_id,
+            &to,
+            r.from.as_deref(),
+            before,
+            after,
+        )?;
+    }
+    r.revision_after = None;
+    Ok(())
+}
+
+/// Record a re-key that failed: its files are back (B3(b)) and it stays on the
+/// old path (`left_behind`), or, when moving back failed too, `uncertain` with
+/// `moved` kept so `root rollback` can finish it.
+pub(crate) fn abandon_rekey(paths: &Paths, r: &mut SessionRec, e: &anyhow::Error) -> Result<()> {
+    let back = if r.moved.is_empty() && r.revision_after.is_none() {
+        Ok(())
+    } else {
+        undo_moves(paths, r)
+    };
+    r.reason = Some(format!("{e:#}"));
+    match back {
+        Ok(()) => {
+            r.state = "left_behind".into();
+            r.phase = "complete".into();
+        }
+        Err(b) => {
+            r.state = "uncertain".into();
+            r.phase = "uncertain".into();
+            r.uncertain_from = Some("moved".into());
+            r.warnings.push(format!("move back failed: {b:#}"));
+        }
+    }
+    save_session(paths, r)
+}
+
 /// Undo a stopped session's re-key: move the files back, merge memory in the
 /// reverse direction, restore the catalog directory (and its revision).
 pub(crate) fn rollback_stopped(paths: &Paths, r: &mut SessionRec) -> Result<()> {
+    undo_session(paths, r)?;
+    r.state = "not_applicable".into();
+    r.reason = Some("rolled_back".into());
+    r.phase = "complete".into();
+    r.rollback = false;
+    r.detail = "Rolled back to the old path; the retained copy is kept.".into();
+    save_session(paths, r)
+}
+/// The file, memory, catalog and thread-location part of a rollback.
+fn undo_session(paths: &Paths, r: &mut SessionRec) -> Result<()> {
     match native::of(&r.provider) {
         Some(ProviderId::Claude) => {
-            if r.state == "rekeyed" || r.state == "left_behind" || r.state == "verified" {
-                let projects = projects_of(paths, &r.account)?;
+            // B3(a): whatever the reported state, files the journal shows moved go back.
+            let switched = r.revision_after.is_some();
+            if !r.moved.is_empty() || switched {
+                let projects = projects_of(paths, r)?;
                 let found: Vec<Found> = vec![];
                 ensure_quiet(paths, r, &found)?;
                 keys::move_back(&r.moved)?;
+                r.moved.clear();
+                save_session(paths, r)?;
                 if let (Some(km), Some(kt)) = (r.memory_key.clone(), r.key_to.clone())
                     && km != kt
                 {
@@ -246,7 +391,7 @@ pub(crate) fn rollback_stopped(paths: &Paths, r: &mut SessionRec) -> Result<()> 
                         &projects.join(&kt).join("memory"),
                         &projects.join(&km).join("memory"),
                         base,
-                        None,
+                        &memory_backup(paths, r),
                         &km,
                         false,
                     )?;
@@ -259,41 +404,32 @@ pub(crate) fn rollback_stopped(paths: &Paths, r: &mut SessionRec) -> Result<()> 
                     }
                 }
             }
-            if let (Some(to), Some(before), Some(after)) =
-                (r.to.clone(), r.revision_before, r.revision_after)
-            {
-                catalog::restore_directory(
-                    paths,
-                    &r.session_id,
-                    &r.conversation_id,
-                    &to,
-                    r.from.as_deref(),
-                    before,
-                    after,
-                )?;
-            }
+            restore_catalog(paths, r)?;
         }
         None if r.codex_location_written => {
             let file = paths
                 .root
                 .join(layout::THREAD_LOCATIONS)
                 .join(format!("{}.json", r.conversation_id));
-            match &r.codex_location_before {
-                Some(text) => atomic_write(&file, text.as_bytes())?,
-                None => {
-                    if file.is_file() {
-                        fs::remove_file(&file)?;
-                    }
+            let current = fs::read_to_string(&file).ok();
+            // Item 4: only the record this tool wrote is restored or removed.
+            if current.is_some() && current == r.codex_location_after {
+                match &r.codex_location_before {
+                    Some(text) => atomic_write(&file, text.as_bytes())?,
+                    None => fs::remove_file(&file)?,
                 }
+            } else if current != r.codex_location_before {
+                r.warnings.push(
+                    "rollback: the thread location changed since the re-key; it was left as is"
+                        .into(),
+                );
             }
         }
         _ => {}
     }
     r.moved.clear();
-    r.state = "not_applicable".into();
-    r.reason = Some("rolled_back".into());
-    r.phase = "complete".into();
-    r.detail = "Rolled back to the old path; the retained copy is kept.".into();
+    r.revision_after = None;
+    r.codex_location_written = false;
     save_session(paths, r)
 }
 
@@ -310,6 +446,7 @@ pub(crate) fn codex_rekey_stopped(paths: &Paths, r: &mut SessionRec) -> Result<(
     }
     crate::external::relocation::save_location(paths, &r.conversation_id, Path::new(&to))?;
     r.codex_location_written = true;
+    r.codex_location_after = fs::read_to_string(&file).ok();
     Ok(())
 }
 
@@ -371,17 +508,43 @@ pub async fn migrate_session(paths: &Paths, o: &SessionOptions) -> Result<Value>
         save_session(paths, &mut r)?;
         return Ok(json!({"session":row(&r)}));
     }
+    ensure!(
+        !claude::hosted::live(paths, &s.conversation_id),
+        "SESSION_HOSTED: a Sessionsation-hosted (stream-json) Claude session is not re-keyed; stop it first"
+    );
     if r.phase == "uncertain"
-        || (r.phase != "complete" && r.phase != "admitted" && worker_gone(paths, &r))
+        || (r.phase != "complete"
+            && r.phase != "failed"
+            && ((r.process.is_none() && !r.rollback)
+                || (r.phase != "admitted"
+                    && r.phase != "rollback_admitted"
+                    && worker_gone(paths, &r))))
     {
-        // Continue from the journaled phase.
+        // Continue from the journaled phase (B3(e)): a stopped session's re-key
+        // continues inline, a running one's in its worker.
         if let Some(from) = r.uncertain_from.take() {
             r.phase = from;
+        }
+        if r.rollback {
+            save_session(paths, &mut r)?;
+            spawn(paths, &r)?;
+            return Ok(json!({"session":row(&r),"continued":true}));
+        }
+        if r.process.is_none() {
+            let _guard = crate::lifecycle::admit(paths, &s.conversation_id, Some(&s.id))?;
+            let mut ctx = Ctx::new(paths, &run.backup, run.allow_full_copy);
+            r.state = "rekeying".into();
+            if let Err(e) = rekey_stopped(&mut ctx, &mut r, &s) {
+                abandon_rekey(paths, &mut r, &e)?;
+                bail!("{e:#}");
+            }
+            return Ok(json!({"session":row(&r),"continued":true}));
         }
         save_session(paths, &mut r)?;
         spawn(paths, &r)?;
         return Ok(json!({"session":row(&r),"continued":true}));
     }
+    retry_allowed(&r)?;
     ensure!(
         r.phase == "complete" || r.phase == "failed",
         "SESSION_OPERATION_IN_PROGRESS: the re-key of this session is in phase {}",
@@ -404,23 +567,26 @@ pub async fn migrate_session(paths: &Paths, o: &SessionOptions) -> Result<Value>
     );
     let home = claude_home(paths, &s.account).context("ACCOUNT_UNAVAILABLE")?;
     let observation = claude::observe(&home, &s.conversation_id, s.attachment.as_ref());
+    let prior = r;
     r = new_rec(&s, &run.id);
-    r.attempt = read_session(paths, &s.id).map_or(0, |o| o.attempt);
+    r.attempt = prior.attempt;
+    r.warnings = prior.warnings;
+    r.home = Some(home.clone());
     r.from = Some(from.clone());
     r.to = Some(to.clone());
     r.accept_risks = o.accept_risks;
     r.prompt = o.prompt.clone();
     match observation.availability {
         "stopped" => {
+            // Item 5: lifecycle admission is held for the whole re-key, so a
+            // resume cannot start between the quiet check and the rename.
+            let _guard = crate::lifecycle::admit(paths, &s.conversation_id, Some(&s.id))?;
             let mut ctx = Ctx::new(paths, &run.backup, run.allow_full_copy);
             r.state = "rekeying".into();
             r.phase = "admitted".into();
             save_session(paths, &mut r)?;
             if let Err(e) = rekey_stopped(&mut ctx, &mut r, &s) {
-                r.state = "left_behind".into();
-                r.reason = Some(format!("{e:#}"));
-                r.phase = "complete".into();
-                save_session(paths, &mut r)?;
+                abandon_rekey(paths, &mut r, &e)?;
                 bail!("{e:#}");
             }
             Ok(json!({"session":row(&r)}))
@@ -431,6 +597,20 @@ pub async fn migrate_session(paths: &Paths, o: &SessionOptions) -> Result<Value>
     }
 }
 
+/// B3(c): while files of an earlier attempt are still in the new key (or the
+/// catalog still names it), a new attempt would replace the record and lose
+/// the list of moves: refuse until the session is rolled back.
+pub(crate) fn retry_allowed(r: &SessionRec) -> Result<()> {
+    ensure!(
+        matches!(r.state.as_str(), "rekeyed" | "verified")
+            || (r.moved.is_empty() && r.revision_after.is_none()),
+        "ROOT_REKEY_CONFLICT: an earlier attempt left {} name(s) moved; run `root rollback --session {}` first",
+        r.moved.len(),
+        r.session_id
+    );
+    Ok(())
+}
+
 fn row(r: &SessionRec) -> Value {
     json!({"id":r.session_id,"name":r.name,"space":r.space,"provider":r.provider,"state":r.state,
         "reason":r.reason,"phase":r.phase,"detail":r.detail,"from":r.from,"to":r.to,"key_from":r.key_from,"key_to":r.key_to,
@@ -439,6 +619,9 @@ fn row(r: &SessionRec) -> Value {
 }
 fn worker_lock(paths: &Paths, id: &str) -> Result<PathBuf> {
     Ok(session_file(paths, id)?.with_extension("worker.lock"))
+}
+pub(crate) fn worker_gone_pub(paths: &Paths, r: &SessionRec) -> bool {
+    worker_gone(paths, r)
 }
 fn worker_gone(paths: &Paths, r: &SessionRec) -> bool {
     worker_lock(paths, &r.session_id)
@@ -525,7 +708,7 @@ async fn admit_running(
             &projects.join(&km).join("memory"),
             &projects.join(&kt).join("memory"),
             &mut base,
-            None,
+            Path::new(""), // dry run: writes nothing
             &kt,
             true,
         )?;
@@ -570,7 +753,19 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         return Ok(());
     }
     let run = latest_run(paths).context("ROOT_MIGRATION_MISMATCH")?;
-    if let Err(e) = drive(paths, &run, &mut r).await {
+    if r.rollback {
+        if let Err(e) = drive_rollback(paths, &mut r).await {
+            r.uncertain_from = Some(r.phase.clone());
+            r.state = "uncertain".into();
+            r.reason = Some(format!("{e:#}"));
+            let _ = phase(
+                paths,
+                &mut r,
+                "uncertain",
+                &format!("{e:#}. Rerun `root rollback --session S`."),
+            );
+        }
+    } else if let Err(e) = drive(paths, &run, &mut r).await {
         fail(paths, &mut r, &e).await;
     }
     crate::api::refresh_active_snapshot(paths).await;
@@ -579,7 +774,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
 
 async fn drive(paths: &Paths, run: &Run, r: &mut SessionRec) -> Result<()> {
     let s = catalog::find(paths, &r.session_id)?;
-    let home = claude_home(paths, &r.account).context("ACCOUNT_UNAVAILABLE")?;
+    let home = home_of(paths, r)?;
     if order(&r.phase) < order("stopped") {
         let _guard = crate::lifecycle::admit(paths, &r.conversation_id, Some(&r.id))?;
         stop(paths, r, &home).await?;
@@ -606,6 +801,11 @@ async fn stop(paths: &Paths, r: &mut SessionRec, home: &Path) -> Result<()> {
         "stopping",
         "Stopping the verified Claude process (SIGTERM, never a forced kill).",
     )?;
+    stop_process(r, home).await?;
+    phase(paths, r, "stopped", "The Claude process has exited.")
+}
+/// pidfd-bound SIGTERM of the recorded process; never a forced kill.
+async fn stop_process(r: &SessionRec, home: &Path) -> Result<()> {
     if let Some((pid, start)) = r.process {
         let live = claude::live_sessions(home)?;
         match live
@@ -635,7 +835,7 @@ async fn stop(paths: &Paths, r: &mut SessionRec, home: &Path) -> Result<()> {
             ),
         }
     }
-    phase(paths, r, "stopped", "The Claude process has exited.")
+    Ok(())
 }
 
 fn pane_command(paths: &Paths, r: &SessionRec, generation: &str) -> Result<String> {
@@ -790,7 +990,7 @@ fn check(paths: &Paths, r: &SessionRec, home: &Path, expect_dir: &str, expect_ke
             &projects.join(km).join("memory"),
             &projects.join(kt).join("memory"),
             &mut base,
-            None,
+            Path::new(""), // dry run: writes nothing
             kt,
             true,
         ) {
@@ -803,7 +1003,7 @@ fn check(paths: &Paths, r: &SessionRec, home: &Path, expect_dir: &str, expect_ke
                     &projects.join(km).join("memory"),
                     &projects.join(kt).join("memory"),
                     base,
-                    None,
+                    &memory_backup(paths, r),
                     kt,
                     false,
                 );
@@ -1020,14 +1220,17 @@ async fn migrate_codex(
     o: &SessionOptions,
 ) -> Result<Value> {
     if r.state == "relocating" {
-        refresh_codex(paths, &mut r)?;
+        refresh_codex(paths, &mut r).await?;
         return Ok(json!({"session":row(&r)}));
     }
     if r.state == "rekeyed" {
         return Ok(json!({"session":row(&r),"noop":true}));
     }
     let (cwd, _) = codex_cwd(paths, &s);
-    let codex = codex_instances(paths);
+    // Fail closed: an unreadable inventory never means "not running".
+    let codex = codex_instances(paths)
+        .await
+        .map_err(|e| anyhow::anyhow!("SESSION_STATE_UNVERIFIED: probe_failed: {e}"))?;
     let live = codex
         .iter()
         .find(|i| !i.inactive && i.thread_id == s.conversation_id)
@@ -1041,8 +1244,8 @@ async fn migrate_codex(
         .logical(Path::new(&cwd))
         .to_string_lossy()
         .into_owned();
-    // raw-path: the mapping changes the spelling or the cwd is not under an entry
     ensure!(
+        // raw-path: the mapping changes the spelling or the cwd is not under an entry
         to != cwd,
         "ROOT_REKEY_UNSUPPORTED: {cwd} is not under an alias entry"
     );
@@ -1067,6 +1270,14 @@ async fn migrate_codex(
                 r.codex_rollout = Some((rollout, bytes, digest));
             }
             r.pane = Some(source.pane.clone());
+            // The directory job writes the thread location; keep what was there.
+            r.codex_location_before = fs::read_to_string(
+                paths
+                    .root
+                    .join(layout::THREAD_LOCATIONS)
+                    .join(format!("{}.json", r.conversation_id)),
+            )
+            .ok();
             daemon::ensure_started(paths).await?;
             let generation = o
                 .expected_generation
@@ -1092,7 +1303,7 @@ async fn migrate_codex(
 }
 
 /// Settle a Codex Tier S re-key from its directory job.
-pub(crate) fn refresh_codex(paths: &Paths, r: &mut SessionRec) -> Result<()> {
+pub(crate) async fn refresh_codex(paths: &Paths, r: &mut SessionRec) -> Result<()> {
     let Some(id) = r.codex_job.clone() else {
         return Ok(());
     };
@@ -1105,7 +1316,19 @@ pub(crate) fn refresh_codex(paths: &Paths, r: &mut SessionRec) -> Result<()> {
     match job.phase.as_str() {
         "complete" => {
             let to = r.to.clone().unwrap_or_default();
-            let live = codex_instances(paths)
+            // The directory job wrote the thread location: record it (item 4).
+            let file = paths
+                .root
+                .join(layout::THREAD_LOCATIONS)
+                .join(format!("{}.json", r.conversation_id));
+            if !r.codex_location_written {
+                r.codex_location_written = true;
+                r.codex_location_after = fs::read_to_string(&file).ok();
+            }
+            let Ok(instances) = codex_instances(paths).await else {
+                return Ok(()); // undecided: re-checked by the next status
+            };
+            let live = instances
                 .into_iter()
                 .find(|i| !i.inactive && i.thread_id == r.conversation_id);
             let mut v = json!({"job":id,"job_phase":job.phase});
@@ -1162,7 +1385,8 @@ pub async fn rollback_session(paths: &Paths, session: &str, dry_run: bool) -> Re
         claude::observe(h, &s.conversation_id, s.attachment.as_ref()).availability == "running"
     });
     if r.provider == "claude" && running {
-        // Stop it (same worker machinery), move back, resume on the old path.
+        // Item 5: a detached worker with lifecycle admission stops it, moves the
+        // files back and resumes it on the old path (never this CLI process).
         let home = home.context("ACCOUNT_UNAVAILABLE")?;
         let live = claude::live_sessions(&home)?;
         let l = live
@@ -1171,24 +1395,84 @@ pub async fn rollback_session(paths: &Paths, session: &str, dry_run: bool) -> Re
             .context("SESSION_STATE_UNVERIFIED")?;
         r.process = Some((l.pid, l.process_start));
         r.pane = s.attachment.as_ref().map(|a| a.target.clone());
+        r.home = Some(home.clone());
         ensure!(
             r.pane.as_deref().is_some_and(|p| p.starts_with("herdr/")),
             "ROOT_REKEY_UNSUPPORTED: only sessions in a HERDR pane are rolled back while running"
         );
-        stop(paths, &mut r, &home).await?;
-        rollback_stopped(paths, &mut r)?;
-        let from = r.from.clone().unwrap_or_default();
-        resume(paths, &mut r, &from).await?;
-        r.state = "not_applicable".into();
-        r.reason = Some("rolled_back".into());
+        r.rollback = true;
+        daemon::ensure_started(paths).await?;
+        let _guard = crate::lifecycle::admit(paths, &s.conversation_id, Some(&s.id))?;
         phase(
             paths,
             &mut r,
-            "complete",
-            "Rolled back and resumed on the old path.",
+            "rollback_admitted",
+            "Rollback admitted; waiting for the worker.",
         )?;
-        return Ok(json!({"session":row(&r)}));
+        spawn(paths, &r)?;
+        return Ok(json!({"session":row(&r),"worker":"started"}));
     }
+    // Not running: under lifecycle admission so no resume starts meanwhile.
+    let _guard = crate::lifecycle::admit(paths, &s.conversation_id, Some(&s.id))?;
     rollback_stopped(paths, &mut r)?;
     Ok(json!({"session":row(&r)}))
+}
+
+/// The rollback worker: stop, move back, resume on the old path, confirm.
+async fn drive_rollback(paths: &Paths, r: &mut SessionRec) -> Result<()> {
+    let home = home_of(paths, r)?;
+    if matches!(r.phase.as_str(), "rollback_admitted" | "rollback_stopping") {
+        let _guard = crate::lifecycle::admit(paths, &r.conversation_id, Some(&r.id))?;
+        phase(
+            paths,
+            r,
+            "rollback_stopping",
+            "Stopping the verified Claude process.",
+        )?;
+        stop_process(r, &home).await?;
+        phase(
+            paths,
+            r,
+            "rollback_stopped",
+            "The Claude process has exited.",
+        )?;
+    }
+    if r.phase == "rollback_stopped" {
+        let _guard = crate::lifecycle::admit(paths, &r.conversation_id, Some(&r.id))?;
+        undo_session(paths, r)?;
+        let from = r.from.clone().unwrap_or_default();
+        resume(paths, r, &from).await?;
+    }
+    let from = r.from.clone().unwrap_or_default();
+    let km = keys::key(&from);
+    let deadline = Instant::now() + budget(r);
+    loop {
+        match check(paths, r, &home, &from, &km) {
+            Check::Verified(v) => {
+                r.verification = v;
+                r.state = "not_applicable".into();
+                r.reason = Some("rolled_back".into());
+                r.rollback = false;
+                return phase(
+                    paths,
+                    r,
+                    "complete",
+                    "Rolled back and resumed on the old path.",
+                );
+            }
+            Check::Pending if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(200)).await
+            }
+            _ => {
+                r.state = "uncertain".into();
+                r.uncertain_from = Some("resuming".into());
+                return phase(
+                    paths,
+                    r,
+                    "uncertain",
+                    "Rolled back, but the resume on the old path was not confirmed; inspect the pane.",
+                );
+            }
+        }
+    }
 }

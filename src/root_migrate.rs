@@ -77,6 +77,10 @@ pub const ERRORS: &[&str] = &[
     "ROOT_REKEY_UNSUPPORTED",
     "ROOT_REKEY_UNSUPPORTED_PROVIDER",
     "ROOT_VERIFY_FAILED",
+    "ROOT_ROLLBACK_BLOCKED",
+    "BACKUP_REFLINK_UNSUPPORTED",
+    "BACKUP_VERIFY_FAILED",
+    "SESSION_STATE_UNVERIFIED",
     "BACKUP_REQUIRED",
     "BACKUP_NOT_EMPTY",
 ];
@@ -124,6 +128,9 @@ pub struct GateRow {
     pub pane: Option<String>,
     pub pid: Option<u32>,
     pub running_before: bool,
+    /// The probe could not decide (the gate then fails for this row).
+    #[serde(default)]
+    pub probe_error: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LinkChange {
@@ -231,6 +238,7 @@ fn read_changes(paths: &Paths, run: &str) -> Vec<Change> {
 
 /// Per-session record (`session-<catalog id>.json`).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SessionRec {
     pub schema_version: u32,
     /// The catalog id (lifecycle admission names it).
@@ -268,8 +276,14 @@ pub struct SessionRec {
     /// Codex: the previous thread-location record (`None` = absent).
     pub codex_location_before: Option<String>,
     pub codex_location_written: bool,
+    /// Codex: the exact record this tool wrote (rollback restores only over it).
+    pub codex_location_after: Option<String>,
     pub codex_job: Option<String>,
     pub codex_rollout: Option<(PathBuf, u64, String)>,
+    /// The Claude account home the session's files live in (fixed at admission).
+    pub home: Option<PathBuf>,
+    /// The worker undoes the re-key (`root rollback --session` of a running session).
+    pub rollback: bool,
     pub attempt: u32,
     pub pane: Option<String>,
     pub process: Option<(u32, u64)>,
@@ -385,6 +399,7 @@ pub(crate) fn prove(from: &Path, to: &Path, dry_run: bool) -> std::result::Resul
     let tm = fs::symlink_metadata(to).map_err(|_| "to_missing".to_string())?;
     if test_symlink_proof()
         && (fm.file_type().is_symlink() || tm.file_type().is_symlink())
+        // raw-path: debug-only test proof (a symlink fake of the bind)
         && fs::canonicalize(from).ok() == fs::canonicalize(to).ok()
     // raw-path: test proof
     {
@@ -396,21 +411,22 @@ pub(crate) fn prove(from: &Path, to: &Path, dry_run: bool) -> std::result::Resul
     if !fm.is_dir() || !tm.is_dir() {
         return Err("not_a_directory".into());
     }
-    // No other branch may hold the same share (Unraid user0 is the array view).
+    // No other array disk or pool may hold content of the same share.
     if let (Some(fp), Some(fname), Some(tname), Some(share)) = (
         from.parent().and_then(Path::parent),
         from.parent().and_then(Path::file_name),
         to.parent().and_then(Path::file_name),
         from.file_name(),
-    ) && let Ok(entries) = fs::read_dir(fp)
-    {
-        for e in entries.flatten() {
-            let n = e.file_name();
-            if n == fname || n == tname || n == "user0" {
-                continue;
-            }
-            if fs::symlink_metadata(e.path().join(share)).is_ok() {
-                return Err(format!("other_branch:{}", e.path().join(share).display()));
+    ) {
+        for branch in other_branches(fp, fname, tname) {
+            let dir = branch.join(share);
+            match stat_with_timeout(&dir) {
+                StatResult::Timeout => return Err(format!("stat_timeout:{}", dir.display())),
+                StatResult::NonEmptyDir => {
+                    return Err(format!("other_branch:{}", dir.display()));
+                }
+                // Missing, or an empty directory: no divergent content.
+                StatResult::Absent | StatResult::Empty => {}
             }
         }
     }
@@ -431,6 +447,94 @@ pub(crate) fn prove(from: &Path, to: &Path, dry_run: bool) -> std::result::Resul
     } else {
         Err("probe_mismatch".into())
     }
+}
+
+/// Branches that could hold another copy of a share: siblings of the alias
+/// parent named `disk<N>` (array disks) and siblings that are local block-device
+/// mount points (pools). Never `user`, `user0`, `remotes`, `addons`, `rootshare`,
+/// `disks` (unassigned devices) or network/FUSE mounts, and never the two
+/// spellings themselves. Nothing here is stat-ed: names come from `read_dir` and
+/// `/proc/self/mountinfo`.
+pub(crate) fn other_branches(
+    parent: &Path,
+    from_name: &std::ffi::OsStr,
+    to_name: &std::ffi::OsStr,
+) -> Vec<PathBuf> {
+    const SKIP: &[&str] = &["user", "user0", "remotes", "addons", "rootshare", "disks"];
+    const REMOTE: &[&str] = &[
+        "nfs",
+        "nfs4",
+        "cifs",
+        "smb3",
+        "smbfs",
+        "fuse",
+        "fuse.shfs",
+        "fuse.sshfs",
+        "fuse.rclone",
+        "9p",
+        "ceph",
+        "glusterfs",
+    ];
+    let mut pools = std::collections::BTreeSet::new();
+    if let Ok(info) = fs::read_to_string("/proc/self/mountinfo") {
+        for line in info.lines() {
+            let fields: Vec<&str> = line.split(' ').collect();
+            let Some(sep) = fields.iter().position(|f| *f == "-") else {
+                continue;
+            };
+            let (Some(point), Some(fstype)) = (fields.get(4), fields.get(sep + 1)) else {
+                continue;
+            };
+            let point = Path::new(point);
+            if point.parent() == Some(parent)
+                && !REMOTE.contains(fstype)
+                && !fstype.starts_with("fuse")
+            {
+                pools.insert(point.to_path_buf());
+            }
+        }
+    }
+    let mut out = vec![];
+    for e in fs::read_dir(parent).into_iter().flatten().flatten() {
+        let n = e.file_name();
+        let name = n.to_string_lossy();
+        if n == from_name || n == to_name || SKIP.contains(&name.as_ref()) {
+            continue;
+        }
+        let disk = name
+            .strip_prefix("disk")
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
+        // raw-path: both from /proc/self/mountinfo and read_dir of one parent
+        if disk || pools.contains(&e.path()) {
+            out.push(e.path());
+        }
+    }
+    out.sort();
+    out
+}
+pub(crate) enum StatResult {
+    Absent,
+    Empty,
+    NonEmptyDir,
+    Timeout,
+}
+/// `stat` + one `readdir` entry with a 2 s bound (a dead mount never hangs the run).
+pub(crate) fn stat_with_timeout(dir: &Path) -> StatResult {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let d = dir.to_path_buf();
+    std::thread::spawn(move || {
+        let r = match fs::symlink_metadata(&d) {
+            Err(_) => StatResult::Absent,
+            Ok(m) if !m.is_dir() => StatResult::NonEmptyDir,
+            Ok(_) => match fs::read_dir(&d).map(|mut x| x.next().is_some()) {
+                Ok(false) => StatResult::Empty,
+                _ => StatResult::NonEmptyDir,
+            },
+        };
+        let _ = tx.send(r);
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap_or(StatResult::Timeout)
 }
 
 /// Every stored absolute path this plan looks at (for the share expansion).
@@ -459,6 +563,7 @@ fn stored_paths(paths: &Paths) -> Vec<PathBuf> {
 fn propose(paths: &Paths, from: &Path, to: &Path, dry_run: bool) -> (Vec<Entry>, Vec<Value>) {
     let mut shares = std::collections::BTreeSet::new();
     // The root's own share, also when it is already opened by the new spelling.
+    // raw-path: literal spellings define the alias being proposed
     if let Ok(rest) = paths.root.strip_prefix(to)
         && let Some(first) = rest.components().next()
     {
@@ -491,7 +596,12 @@ fn propose(paths: &Paths, from: &Path, to: &Path, dry_run: bool) -> (Vec<Entry>,
 
 /// Non-terminal operations (P4): every `api operations` row that is not terminal.
 fn blocking_operations(paths: &Paths) -> Vec<Value> {
-    let rows = crate::api::operations_list(paths).unwrap_or_default();
+    let mut unreadable = vec![];
+    let rows = crate::api::operations_list(paths).unwrap_or_else(|e| {
+        // Fail closed: an unreadable journal blocks like an unfinished one.
+        unreadable.push(json!({"id":null,"kind":"operations_unreadable","phase":format!("{e:#}")}));
+        vec![]
+    });
     let terminal = [
         "complete",
         "completed",
@@ -524,6 +634,26 @@ fn blocking_operations(paths: &Paths) -> Vec<Value> {
             out.push(json!({"id":v["id"],"kind":"shared_migration","phase":v["phase"]}));
         }
     }
+    // B2: a hosted Claude worker listens on `<runtime>/hosted/<c>.sock`, and the
+    // runtime directory follows the root spelling, so activation would orphan it.
+    match catalog::list(paths) {
+        Ok(list) => {
+            for s in list.iter().filter(|s| s.provider == "claude") {
+                let mut ids = s.previous_conversation_ids.clone();
+                ids.push(s.conversation_id.clone());
+                for c in ids {
+                    if claude::hosted::live(paths, &c) {
+                        out.push(json!({"id":s.id,"kind":"claude_hosted_worker","phase":"live",
+                            "detail":"stop the hosted (stream-json) worker first; its socket is in the runtime directory, which moves with the root spelling"}));
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            out.push(json!({"id":null,"kind":"catalog_unreadable","phase":format!("{e:#}")}));
+        }
+    }
+    out.extend(unreadable);
     out
 }
 
@@ -685,50 +815,113 @@ fn archived_ids(paths: &Paths) -> std::collections::BTreeSet<String> {
         .map(|(k, _)| k)
         .collect()
 }
+/// Codex inventory as the supervisor sees it (host panes enriched with their
+/// thread, cwd and rollout through the app-servers). `Err` = the probe failed.
+pub(crate) type CodexView = std::result::Result<Vec<crate::external::Instance>, String>;
+pub(crate) async fn codex_instances(paths: &Paths) -> CodexView {
+    crate::external::live_sessions(paths)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+/// Processes whose command line names one of `ids` (a provider started with
+/// `--resume <id>` / `--session-id <id>`). `Err` when `/proc` is unreadable.
+pub(crate) fn processes_naming(ids: &[String]) -> std::result::Result<Vec<u32>, String> {
+    let me = std::process::id();
+    let entries = fs::read_dir("/proc").map_err(|e| format!("/proc unreadable: {e}"))?;
+    let mut out = vec![];
+    for e in entries.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == me {
+            continue;
+        }
+        let Ok(cmd) = fs::read(e.path().join("cmdline")) else {
+            continue;
+        };
+        if cmd
+            .split(|b| *b == 0)
+            .any(|a| ids.iter().any(|id| a == id.as_bytes()))
+        {
+            out.push(pid);
+        }
+    }
+    Ok(out)
+}
 /// Is this catalog session recognised as running by the code paths the
 /// supervisor uses (Claude registry + environment, Codex host inventory)?
-pub(crate) fn recognised(paths: &Paths, s: &Session, codex: &[crate::external::Instance]) -> bool {
+/// `Err` when it cannot be decided (a failed probe is never "stopped").
+pub(crate) fn recognition(
+    paths: &Paths,
+    s: &Session,
+    codex: &CodexView,
+) -> std::result::Result<bool, String> {
     match native::of(&s.provider) {
-        Some(ProviderId::Claude) => claude_home(paths, &s.account).is_some_and(|home| {
-            claude::observe(&home, &s.conversation_id, s.attachment.as_ref()).availability
-                == "running"
-        }),
-        Some(p @ (ProviderId::Gemini | ProviderId::Antigravity)) => {
-            native::account(paths, p, &s.account).is_ok_and(|a| {
-                native::live_sessions(p, &a.home)
-                    .is_ok_and(|l| l.iter().any(|l| l.session_id == s.conversation_id))
-            })
+        Some(ProviderId::Claude) => {
+            let home = claude_home(paths, &s.account)
+                .ok_or_else(|| format!("account claude:{} unavailable", s.account))?;
+            match claude::observe(&home, &s.conversation_id, s.attachment.as_ref()).availability {
+                "running" => Ok(true),
+                "stopped" | "stale" => {
+                    let mut ids = s.previous_conversation_ids.clone();
+                    ids.push(s.conversation_id.clone());
+                    Ok(!processes_naming(&ids)?.is_empty())
+                }
+                other => Err(format!("Claude state {other}")),
+            }
         }
-        _ => codex.iter().any(|i| {
+        Some(p @ (ProviderId::Gemini | ProviderId::Antigravity)) => {
+            let a = native::account(paths, p, &s.account).map_err(|e| format!("{e:#}"))?;
+            native::live_sessions(p, &a.home)
+                .map(|l| l.iter().any(|l| l.session_id == s.conversation_id))
+                .map_err(|e| format!("{e:#}"))
+        }
+        _ => Ok(codex.as_ref().map_err(Clone::clone)?.iter().any(|i| {
             !i.inactive
                 && i.thread_id == s.conversation_id
                 && crate::external::account_for_home(paths, &i.home) == s.account // raw-path: account names
-        }),
+        })),
     }
 }
-fn codex_instances(paths: &Paths) -> Vec<crate::external::Instance> {
-    crate::external::host_instances(paths).unwrap_or_default()
-}
-pub(crate) fn gate_rows(paths: &Paths) -> Vec<GateRow> {
-    let codex = codex_instances(paths);
-    catalog::list(paths)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|s| {
-            let running = recognised(paths, &s, &codex);
-            (s.attachment.is_some() || running).then(|| GateRow {
-                session_id: s.id.clone(),
-                name: s.name.clone(),
-                space: s.space.clone(),
-                provider: s.provider.clone(),
-                account: s.account.clone(),
-                conversation_id: s.conversation_id.clone(),
-                pane: s.attachment.as_ref().map(|a| a.target.clone()),
-                pid: s.attachment.as_ref().map(|a| a.pid),
-                running_before: running,
-            })
+/// The F2 before-snapshot. `Err` refuses Tier R before anything changes.
+pub(crate) async fn gate_rows(paths: &Paths) -> Result<Vec<GateRow>> {
+    let codex = codex_instances(paths).await;
+    if let Err(e) = &codex {
+        bail!("ROOT_MIGRATION_BLOCKED: the Codex inventory for the rollback gate failed: {e}");
+    }
+    let mut out = vec![];
+    for s in catalog::list(paths)? {
+        let r = recognition(paths, &s, &codex);
+        if s.attachment.is_none() && r == Ok(false) {
+            continue;
+        }
+        out.push(GateRow {
+            session_id: s.id.clone(),
+            name: s.name.clone(),
+            space: s.space.clone(),
+            provider: s.provider.clone(),
+            account: s.account.clone(),
+            conversation_id: s.conversation_id.clone(),
+            pane: s.attachment.as_ref().map(|a| a.target.clone()),
+            pid: s.attachment.as_ref().map(|a| a.pid),
+            running_before: r.clone().unwrap_or(true),
+            probe_error: r.err(),
+        });
+    }
+    let failed: Vec<String> = out
+        .iter()
+        .filter_map(|g| {
+            g.probe_error
+                .as_ref()
+                .map(|e| format!("{}: {e}", g.session_id))
         })
-        .collect()
+        .collect();
+    ensure!(
+        failed.is_empty(),
+        "ROOT_MIGRATION_BLOCKED: the running state of these sessions cannot be decided, so the rollback gate would be blind: {}",
+        failed.join("; ")
+    );
+    Ok(out)
 }
 
 /// The Codex thread's effective working directory: its saved location, else
@@ -750,7 +943,7 @@ fn codex_cwd(paths: &Paths, s: &Session) -> (Option<String>, Option<String>) {
     (cwd, None)
 }
 
-pub(crate) fn build_plan(paths: &Paths, alias: &Alias) -> Result<Plan> {
+pub(crate) fn build_plan(paths: &Paths, alias: &Alias, codex: &CodexView) -> Result<Plan> {
     let mut plan = Plan {
         alias: alias.clone(),
         ..Default::default()
@@ -761,6 +954,7 @@ pub(crate) fn build_plan(paths: &Paths, alias: &Alias) -> Result<Plan> {
             if let Some(old) = v.pointer(field).and_then(Value::as_str) {
                 let new = alias.logical(Path::new(old));
                 if new.as_os_str() != old {
+                    // raw-path: `file` comes from listing under paths.root
                     plan.files.push(json!({"file":file.strip_prefix(&paths.root).unwrap_or(&file),"pointer":field,"old":old,"new":new}));
                 }
             }
@@ -817,7 +1011,6 @@ pub(crate) fn build_plan(paths: &Paths, alias: &Alias) -> Result<Plan> {
     }
     // Sessions.
     let archived = archived_ids(paths);
-    let codex = codex_instances(paths);
     let list = catalog::list(paths)?;
     let mut owned: std::collections::BTreeSet<String> = Default::default();
     for s in &list {
@@ -828,7 +1021,7 @@ pub(crate) fn build_plan(paths: &Paths, alias: &Alias) -> Result<Plan> {
     for s in &list {
         match native::of(&s.provider) {
             Some(ProviderId::Claude) => {
-                let p = plan_claude(paths, alias, s, archived.contains(&s.id), &codex)?;
+                let p = plan_claude(paths, alias, s, archived.contains(&s.id), codex)?;
                 if let (Some(km), Some(kt), Some(home)) = (&p.memory_key, &p.key_to, &p.home)
                     && km != kt
                     && matches!(
@@ -862,15 +1055,20 @@ pub(crate) fn build_plan(paths: &Paths, alias: &Alias) -> Result<Plan> {
                                 .get(&keys::pair(km, kt))
                                 .cloned()
                                 .unwrap_or_default();
+                            // Dry run: nothing is written, so no backup directory is used.
                             let memory = keys::sync_memory(
                                 &projects.join(km).join("memory"),
                                 &target.join("memory"),
                                 &mut base,
-                                None,
+                                Path::new(""),
                                 kt,
                                 true,
                             )
-                            .unwrap_or_default();
+                            .unwrap_or_else(|e| MemoryResult {
+                                // Unreadable memory blocks like a conflict (fail closed).
+                                conflicts: vec![format!("<unreadable: {e:#}>")],
+                                ..Default::default()
+                            });
                             KeyPlan {
                                 key_from: km.clone(),
                                 key_to: kt.clone(),
@@ -924,13 +1122,14 @@ pub(crate) fn build_plan(paths: &Paths, alias: &Alias) -> Result<Plan> {
                 if to.as_os_str() == cwd.as_str() {
                     continue;
                 }
-                let running = recognised(paths, s, &codex);
-                let (state, reason) = if running {
-                    ("deferred_running", None)
-                } else if !to.is_dir() {
-                    ("left_behind", Some("target_missing"))
-                } else {
-                    ("rekey", None)
+                // Only a thread positively known not to run is re-keyed.
+                let known = recognition(paths, s, codex);
+                let running = known.clone().unwrap_or(true);
+                let (state, reason) = match known {
+                    Err(e) => ("left_behind", Some(format!("probe_failed: {e}"))),
+                    Ok(true) => ("deferred_running", None),
+                    Ok(false) if !to.is_dir() => ("left_behind", Some("target_missing".into())),
+                    Ok(false) => ("rekey", None),
                 };
                 plan.codex.push(CodexPlan {
                     id: s.id.clone(),
@@ -942,7 +1141,7 @@ pub(crate) fn build_plan(paths: &Paths, alias: &Alias) -> Result<Plan> {
                     running,
                     saved_location: saved,
                     state: state.into(),
-                    reason: reason.map(str::to_owned),
+                    reason,
                 });
             }
         }
@@ -1047,7 +1246,7 @@ fn plan_claude(
     alias: &Alias,
     s: &Session,
     archived: bool,
-    codex: &[crate::external::Instance],
+    codex: &CodexView,
 ) -> Result<SessionPlan> {
     let mut p = SessionPlan {
         id: s.id.clone(),
@@ -1108,9 +1307,18 @@ fn plan_claude(
             return Ok(p);
         }
     }
-    if recognised(paths, s, codex) {
-        p.state = "deferred_running".into();
-        return Ok(p);
+    // B1: only a session positively known to be stopped is planned `rekey`.
+    match recognition(paths, s, codex) {
+        Ok(false) => {}
+        Ok(true) => {
+            p.state = "deferred_running".into();
+            return Ok(p);
+        }
+        Err(e) => {
+            p.state = "left_behind".into();
+            p.reason = Some(format!("probe_failed: {e}"));
+            return Ok(p);
+        }
     }
     let (state, reason) = if keys::key(&new_dir).len() > keys::KEY_MAX {
         (
@@ -1301,7 +1509,7 @@ pub struct Options {
 }
 
 /// `root migrate --from F --to T --backup DIR [--dry-run] [--allow-full-copy]`.
-pub fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
+pub async fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
     ensure!(
         o.from.is_absolute() && o.to.is_absolute() && o.from != o.to,
         "INVALID_ARGUMENT: --from and --to must be two different absolute paths"
@@ -1321,7 +1529,9 @@ pub fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
                 run.to.display()
             );
             if a.state == "active" && run.state == "complete" && !o.dry_run {
-                return Ok(json!({"already_active":true,"run":run.id,"status":status(paths)?}));
+                return Ok(
+                    json!({"already_active":true,"run":run.id,"status":status(paths).await?}),
+                );
             }
             Some(run.clone())
         }
@@ -1352,6 +1562,7 @@ pub fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
         alias
             .entries
             .iter()
+            // raw-path: the root already in the literal new spelling
             .find(|e| paths.root.starts_with(&e.to))
             .cloned()
     });
@@ -1369,7 +1580,7 @@ pub fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
             "BACKUP_REQUIRED: pass --backup DIR (a new or empty directory outside the data root)"
                 .to_string(),
         ),
-        (None, Some(b)) => check_backup(paths, b).map(|_| b.clone()),
+        (None, Some(b)) => check_backup(paths, &alias, b).map(|_| b.clone()),
     };
     if resume
         .as_ref()
@@ -1378,7 +1589,8 @@ pub fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
         // An interrupted run past `mark`: compare through the alias while planning.
         alias::install(&entries);
     }
-    let plan = build_plan(paths, &alias)?;
+    let codex = codex_instances(paths).await;
+    let plan = build_plan(paths, &alias, &codex)?;
     if o.dry_run {
         let mut v = plan_json(&plan, paths);
         v["dry_run"] = json!(true);
@@ -1388,7 +1600,9 @@ pub fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
             "P3_supervisor_stopped": {"ok": daemon_stopped(paths), "checked_by":"daemon.lock (dry run does not hold it)"},
             "P4_no_operations_in_flight": {"ok": blocked.is_empty(), "blocked": blocked},
             "P5_disk_space": {"checked_by":"real run only"},
-            "P6_backup": {"ok": backup_state.is_ok(), "detail": backup_state.as_ref().err()},
+            "P6_backup": {"ok": backup_state.is_ok(), "detail": backup_state.as_ref().err(),
+                "reflink": if o.allow_full_copy {"full copies allowed"} else {"probed by the real run (refused without --allow-full-copy when unsupported)"}},
+            "codex_inventory": {"ok": codex.is_ok(), "detail": codex.as_ref().err()},
         });
         return Ok(v);
     }
@@ -1406,6 +1620,10 @@ pub fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
         serde_json::to_string(&blocked).unwrap_or_default()
     );
     let backup = backup_state.map_err(|e| anyhow::anyhow!(e))?;
+    // P6 (backup quality): without --allow-full-copy the backup must reflink.
+    if resume.is_none() && !o.allow_full_copy {
+        probe_reflink(paths, &backup)?;
+    }
     let mut run = match resume {
         Some(r) => r,
         None => {
@@ -1436,7 +1654,7 @@ pub fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
                 previous_root: paths.root.clone(),
                 layout_before: serde_json::to_value(&record)?,
                 layout_before_sha256: sha(&layout_bytes),
-                gate_before: gate_rows(paths),
+                gate_before: gate_rows(paths).await?,
                 created_at: now(),
                 ..Default::default()
             };
@@ -1446,8 +1664,49 @@ pub fn migrate(paths: &Paths, o: &Options) -> Result<Value> {
     };
     drive(paths, &mut run, &plan)?;
     Ok(
-        json!({"run":run.id,"step":run.step,"state":run.state,"verify":run.verify,"status":status(paths)?}),
+        json!({"run":run.id,"step":run.step,"state":run.state,"verify":run.verify,"status":status(paths).await?}),
     )
+}
+
+/// Reflink a small file from the data root into the backup directory (the
+/// same pair of file systems the real copies use). Refused when unsupported.
+fn probe_reflink(paths: &Paths, backup: &Path) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::io::AsRawFd;
+    let src_dir = dir(paths);
+    private_dir(&src_dir)?;
+    if fs::symlink_metadata(backup).is_err() {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(backup)?;
+    }
+    let id = uuid::Uuid::new_v4();
+    let a = src_dir.join(format!(".reflink-probe-{id}"));
+    let b = backup.join(format!(".reflink-probe-{id}"));
+    fs::write(&a, vec![7u8; 8192])?;
+    let result = (|| -> std::io::Result<()> {
+        let src = fs::File::open(&a)?;
+        let dst = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&b)?;
+        const FICLONE: libc::c_ulong = 0x4004_9409;
+        if unsafe { libc::ioctl(dst.as_raw_fd(), FICLONE, src.as_raw_fd()) } == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    })();
+    // Our own probe files only.
+    let _ = fs::remove_file(&a);
+    let _ = fs::remove_file(&b);
+    result.map_err(|e| {
+        anyhow::anyhow!(
+            "BACKUP_REFLINK_UNSUPPORTED: {} cannot reflink from the data root ({e}); the backup would be a full copy. Repeat with --allow-full-copy to accept that",
+            backup.display()
+        )
+    })
 }
 
 fn daemon_stopped(paths: &Paths) -> bool {
@@ -1455,13 +1714,26 @@ fn daemon_stopped(paths: &Paths) -> bool {
         .ok()
         .is_some_and(|f| crate::paths::try_lock_brief(&f).is_ok())
 }
-fn check_backup(paths: &Paths, b: &Path) -> std::result::Result<(), String> {
+fn check_backup(paths: &Paths, a: &Alias, b: &Path) -> std::result::Result<(), String> {
     if !b.is_absolute() {
         return Err("BACKUP_REQUIRED: --backup must be an absolute path".into());
     }
-    let logical_b = alias::logical(&crate::layout::resolve_path(b));
-    let root = alias::logical(&paths.root);
-    if logical_b.starts_with(&root) || root.starts_with(&logical_b) {
+    // Every spelling of both (as given, resolved, through the proposed alias in
+    // either direction): the process-wide alias is not installed yet.
+    let forms = |p: &Path| {
+        let resolved = crate::layout::resolve_path(p);
+        let mut v = vec![p.to_path_buf(), resolved.clone()];
+        for x in [p.to_path_buf(), resolved] {
+            v.push(a.logical(&x));
+            v.push(a.physical_old(&x));
+        }
+        v
+    };
+    let (bs, rs) = (forms(b), forms(&paths.root));
+    if bs
+        .iter()
+        .any(|x| rs.iter().any(|r| x.starts_with(r) || r.starts_with(x)))
+    {
         return Err("BACKUP_REQUIRED: --backup must be outside the data root".into());
     }
     if fs::symlink_metadata(b).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -1693,9 +1965,9 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
     // Verify: per-file sha256 of the copies; a transcript that grew since must
     // have the copy as its byte prefix.
     let mut files = vec![];
-    verify_tree(&dir.join("root"), root, &mut files)?;
+    verify_tree(&dir.join("root"), root, run.allow_full_copy, &mut files)?;
     if shared_copy.is_dir() {
-        verify_tree(&shared_copy, &projects, &mut files)?;
+        verify_tree(&shared_copy, &projects, run.allow_full_copy, &mut files)?;
     }
     let total = files.len();
     let doc = json!({"version":1,"run":run.id,"root":root,"created_at":now(),"classes":manifest,"homes":homes,
@@ -1703,9 +1975,36 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
     atomic_write(&dir.join("root-backup.json"), &serde_json::to_vec(&doc)?)?;
     Ok(())
 }
-/// Hash every file of the copy and compare it with its source (exact for quiet
-/// files; byte prefix for files that grew).
-fn verify_tree(copy: &Path, source: &Path, out: &mut Vec<Value>) -> Result<()> {
+/// Hash every file of the copy and compare it with its source: exact for quiet
+/// files, byte prefix for files that grew (live transcripts). A file that
+/// changed otherwise is copied once more and checked again; a file that still
+/// differs, or whose source is gone, fails the backup (`BACKUP_VERIFY_FAILED`).
+/// Regenerable logs/cache and the database copies are labelled, not compared.
+fn verify_tree(copy: &Path, source: &Path, allow_full: bool, out: &mut Vec<Value>) -> Result<()> {
+    fn classify(p: &Path, src: &Path, rel: &Path) -> Result<(u64, String, &'static str)> {
+        let (bytes, digest) = keys::sha256_file(p)?;
+        let regenerable = rel.starts_with("logs") || rel.starts_with("cache");
+        // The consistent database copies are the `.vacuum` files; the raw copies
+        // of SQLite files and their sidecars change with every connection.
+        let name = rel.to_string_lossy();
+        let database = rel.extension().is_some_and(|x| x == "vacuum")
+            || [".db", ".db-wal", ".db-shm", ".db-journal"]
+                .iter()
+                .any(|s| name.ends_with(s));
+        let check = match keys::sha256_file(src) {
+            _ if database => "database",
+            Ok((_, d)) if d == digest => "exact",
+            Ok(_) => match keys::sha256_prefix(src, bytes)? {
+                Some(d) if d == digest => "prefix",
+                _ if regenerable => "changed_regenerable",
+                _ => "changed",
+            },
+            Err(_) if regenerable => "gone_regenerable",
+            Err(_) => "source_gone",
+        };
+        Ok((bytes, digest, check))
+    }
+    let mut failures = vec![];
     let mut stack = vec![copy.to_path_buf()];
     while let Some(d) = stack.pop() {
         for e in fs::read_dir(&d)?.flatten() {
@@ -1719,24 +2018,32 @@ fn verify_tree(copy: &Path, source: &Path, out: &mut Vec<Value>) -> Result<()> {
                 continue;
             }
             let rel = p.strip_prefix(copy).unwrap_or(&p).to_path_buf();
-            let (bytes, digest) = keys::sha256_file(&p)?;
             let src = source.join(&rel);
-            let check = match keys::sha256_file(&src) {
-                Ok((_, d)) if d == digest => "exact",
-                Ok(_) => match keys::sha256_prefix(&src, bytes)? {
-                    Some(d) if d == digest => "prefix",
-                    _ if rel.extension().is_some_and(|x| x == "vacuum") => "database",
-                    _ if rel.starts_with("logs") || rel.starts_with("cache") => {
-                        "changed_regenerable"
-                    }
-                    _ => "changed",
-                },
-                Err(_) if rel.extension().is_some_and(|x| x == "vacuum") => "database",
-                Err(_) => "source_gone",
-            };
+            let (mut bytes, mut digest, mut check) = classify(&p, &src, &rel)?;
+            if check == "changed" {
+                // Our own copy of a file that changed during the copy: take it again.
+                fs::remove_file(&p)?;
+                let mut stats = crate::shared_state::migrate::CopyStats::default();
+                crate::shared_state::migrate::copy_tree(&src, &p, allow_full, &mut stats)?;
+                (bytes, digest, check) = classify(&p, &src, &rel)?;
+            }
+            if matches!(check, "changed" | "source_gone") {
+                failures.push(format!("{} ({check})", rel.display()));
+            }
             out.push(json!({"file":rel,"bytes":bytes,"sha256":digest,"check":check}));
         }
     }
+    ensure!(
+        failures.is_empty(),
+        "BACKUP_VERIFY_FAILED: {} file(s) of the backup do not match their source: {}",
+        failures.len(),
+        failures
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     Ok(())
 }
 
@@ -1749,6 +2056,7 @@ fn relink(paths: &Paths, run: &mut Run, plan: &Plan) -> Result<()> {
             if !run
                 .links
                 .iter()
+                // raw-path: journal identity of a planned link
                 .any(|x| x.home == l.home && x.name == l.name)
             {
                 run.links.push(l.clone());
@@ -1764,6 +2072,7 @@ fn relink(paths: &Paths, run: &mut Run, plan: &Plan) -> Result<()> {
         if !run
             .links
             .iter()
+            // raw-path: journal identity of a planned link
             .any(|x| x.home == l.home && x.name == l.name)
         {
             run.links.push(l.clone());
@@ -1824,6 +2133,7 @@ fn rewrite_json(
     }
     let c = Change {
         file: file
+            // raw-path: `file` comes from listing under paths.root
             .strip_prefix(&paths.root)
             .unwrap_or(file)
             .to_string_lossy()
@@ -1869,6 +2179,7 @@ fn rewrite_registry(paths: &Paths, run: &Run, alias: &Alias) -> Result<()> {
 fn claude_step(paths: &Paths, run: &mut Run, alias: &Alias, plan: &Plan) -> Result<()> {
     // `.claude.json` project entries (old entries stay).
     for home in claude_homes(&paths.root) {
+        // raw-path: journal identity of a home
         if run.claude_json.iter().any(|c| c.home == home) {
             // raw-path: journal identity
             continue;
@@ -1892,7 +2203,7 @@ fn claude_step(paths: &Paths, run: &mut Run, alias: &Alias, plan: &Plan) -> Resu
                 &projects.join(km).join("memory"),
                 &projects.join(kt).join("memory"),
                 base,
-                Some(&run.backup),
+                &run.backup,
                 kt,
                 false,
             )?;
@@ -1908,10 +2219,30 @@ fn claude_step(paths: &Paths, run: &mut Run, alias: &Alias, plan: &Plan) -> Resu
         let Ok(s) = catalog::find(paths, &p.id) else {
             continue;
         };
-        let mut rec = read_session(paths, &s.id).unwrap_or_else(|| new_rec(&s, &run.id));
-        if matches!(rec.state.as_str(), "rekeyed" | "verified") && rec.phase == "complete" {
+        let existing = read_session(paths, &s.id);
+        // B3(e): an interrupted re-key is reconciled from its own journal first
+        // (the plan may already see the new directory and call it not_applicable).
+        if let Some(mut rec) = existing.clone()
+            && rec.state == "rekeying"
+            && rec.phase != "complete"
+            && rec.process.is_none()
+        {
+            let mut ctx = session::Ctx::new(paths, &run.backup, run.allow_full_copy);
+            if let Err(e) = session::rekey_stopped(&mut ctx, &mut rec, &s) {
+                session::abandon_rekey(paths, &mut rec, &e)?;
+            }
             continue;
         }
+        if existing.as_ref().is_some_and(|r| {
+            (matches!(r.state.as_str(), "rekeyed" | "verified") && r.phase == "complete")
+                || !r.moved.is_empty()
+                || (r.phase != "complete" && r.phase != "failed")
+        }) {
+            // Done, files still moved by an earlier attempt, or owned by a Tier S worker.
+            continue;
+        }
+        let mut rec = existing.unwrap_or_else(|| new_rec(&s, &run.id));
+        rec.home = p.home.clone();
         rec.to = p.to.clone();
         rec.key_from = p.key_from.clone();
         rec.key_to = p.key_to.clone();
@@ -1932,10 +2263,10 @@ fn claude_step(paths: &Paths, run: &mut Run, alias: &Alias, plan: &Plan) -> Resu
                 save_session(paths, &mut rec)?;
                 let mut ctx = session::Ctx::new(paths, &run.backup, run.allow_full_copy);
                 if let Err(e) = session::rekey_stopped(&mut ctx, &mut rec, &s) {
-                    rec.state = "left_behind".into();
-                    rec.reason = Some(format!("{e:#}"));
-                    rec.phase = "complete".into();
+                    // B3(b): moved names go back before the session is reported left behind.
+                    session::abandon_rekey(paths, &mut rec, &e)?;
                 }
+                continue;
             }
             "archived_rekey_at_restore" => {
                 if let Some(to) = &p.to {
@@ -2071,20 +2402,14 @@ fn verify(paths: &Paths, run: &Run) -> Vec<String> {
 // ---------------------------------------------------------------- status
 
 /// `root status` (§7.3) plus the F2 rollback gate.
-pub fn status(paths: &Paths) -> Result<Value> {
+pub async fn status(paths: &Paths) -> Result<Value> {
     let record = layout::read_record(&paths.root)?;
     let run = latest_run(paths);
-    let recs = sessions(paths);
     // Codex Tier S jobs settle here as well.
-    let recs: Vec<SessionRec> = recs
-        .into_iter()
-        .map(|mut r| {
-            if r.state == "relocating" {
-                let _ = session::refresh_codex(paths, &mut r);
-            }
-            r
-        })
-        .collect();
+    let mut recs = sessions(paths);
+    for r in recs.iter_mut().filter(|r| r.state == "relocating") {
+        let _ = session::refresh_codex(paths, r).await;
+    }
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     for r in &recs {
         *counts.entry(r.state.clone()).or_default() += 1;
@@ -2141,7 +2466,7 @@ pub fn status(paths: &Paths) -> Result<Value> {
                 .collect::<Vec<_>>()
         })
         .collect();
-    let gate = gate(paths, run.as_ref());
+    let gate = gate(paths, run.as_ref()).await;
     Ok(json!({
         "layout_version": record.as_ref().map_or(1, |r| r.version),
         "requested_root": alias::requested_root(&paths.root),
@@ -2165,18 +2490,21 @@ pub fn status(paths: &Paths) -> Result<Value> {
 /// F2 rollback gate: every session the catalog showed attached/running before
 /// activation must still be recognised as running now. `pass` | `fail` |
 /// `not_applicable` (no activated run).
-pub fn gate(paths: &Paths, run: Option<&Run>) -> Value {
+pub async fn gate(paths: &Paths, run: Option<&Run>) -> Value {
     let Some(run) = run.filter(|r| r.activated_at.is_some() && r.state != "rolled_back") else {
         return json!({"gate":"not_applicable","sessions":[]});
     };
-    let codex = codex_instances(paths);
+    let codex = codex_instances(paths).await;
     let rows: Vec<Value> = run
         .gate_before
         .iter()
         .map(|g| {
-            let now = catalog::find(paths, &g.session_id)
-                .map(|s| recognised(paths, &s, &codex))
-                .unwrap_or(false);
+            // A probe that cannot decide counts as "not recognised" (fail closed).
+            let probe = catalog::find(paths, &g.session_id)
+                .map_err(|e| format!("{e:#}"))
+                .and_then(|s| recognition(paths, &s, &codex));
+            let now = probe.clone().unwrap_or(false);
+            let before_known = g.probe_error.is_none();
             let rec = read_session(paths, &g.session_id);
             // A session this tool stopped on purpose is judged by its own outcome.
             let in_tier_s = rec.as_ref().is_some_and(|r| {
@@ -2191,16 +2519,21 @@ pub fn gate(paths: &Paths, run: Option<&Run>) -> Value {
                         | "resuming"
                         | "verifying"
                         | "reverting"
+                        | "rollback_admitted"
+                        | "rollback_stopping"
+                        | "rollback_stopped"
                 )
             });
             json!({"session_id":g.session_id,"name":g.name,"space":g.space,"provider":g.provider,
                 "running_before":g.running_before,"running_now":now,"in_tier_s":in_tier_s,
-                "ok": !g.running_before || now || in_tier_s})
+                "probe_error_before":g.probe_error,"probe_error_now":probe.err(),
+                "ok": before_known && (!g.running_before || now || in_tier_s)})
         })
         .collect();
-    let pass = rows.iter().all(|r| r["ok"] == true);
+    let pass = codex.is_ok() && rows.iter().all(|r| r["ok"] == true);
     json!({"gate": if pass {"pass"} else {"fail"}, "run": run.id, "sessions": rows,
-        "rule":"every session recognised as running before activation is still recognised as running; fail means a missed comparison site: run `root rollback`"})
+        "codex_inventory_error": codex.as_ref().err(),
+        "rule":"every session recognised as running before activation is still recognised as running, and every probe succeeded; fail means a missed comparison site or a blind probe: run `root rollback`"})
 }
 
 // --------------------------------------------------------------- rollback
@@ -2217,29 +2550,53 @@ pub fn rollback(paths: &Paths, dry_run: bool) -> Result<Value> {
     }
     let changes = read_changes(paths, &run.id);
     let recs = sessions(paths);
+    // B3(d): every session this run changed and that is not on its new path for good.
+    let undo = |r: &SessionRec| {
+        r.run == run.id
+            && r.state != "verified"
+            && (!r.moved.is_empty() || r.revision_after.is_some() || r.codex_location_written)
+    };
+    let workers: Vec<String> = recs
+        .iter()
+        .filter(|r| r.phase != "complete" && r.phase != "failed" && r.phase != "uncertain")
+        .filter(|r| !session::worker_gone_pub(paths, r))
+        .map(|r| r.session_id.clone())
+        .collect();
+    let new_spelling = new_spelling_processes(paths, &run);
     let plan = json!({
         "run": run.id,
         "changes": changes.len(),
         "links": run.links.len(),
         "claude_json": run.claude_json.iter().map(|c| c.added.len()).sum::<usize>(),
-        "sessions_moved_back": recs.iter().filter(|r| r.state == "rekeyed" && r.run == run.id).map(|r| r.session_id.clone()).collect::<Vec<_>>(),
+        "sessions_moved_back": recs.iter().filter(|r| undo(r)).map(|r| r.session_id.clone()).collect::<Vec<_>>(),
         "sessions_left_on_new_path": recs.iter().filter(|r| r.state == "verified").map(|r| r.session_id.clone()).collect::<Vec<_>>(),
+        "workers_running": workers,
+        "new_spelling_processes": new_spelling,
+        "boot_files": "revert the boot files, launcher and /usr/bin link that name the new spelling together with this rollback",
     });
     if dry_run {
         return Ok(json!({"dry_run":true,"plan":plan}));
     }
+    ensure!(
+        workers.is_empty(),
+        "SESSION_OPERATION_IN_PROGRESS: root re-key worker(s) still run for {}; wait for them",
+        workers.join(", ")
+    );
+    // After a rollback the alias is gone, so a process that uses the new spelling
+    // of an account home would no longer be recognised as running (F2 in reverse).
+    ensure!(
+        new_spelling.is_empty(),
+        "ROOT_ROLLBACK_BLOCKED: these processes use the new spelling of a home under the data root and would not be recognised after the rollback; stop them first (they resume on the old path afterwards), and revert the boot files with the rollback: {}",
+        serde_json::to_string(&new_spelling).unwrap_or_default()
+    );
     alias::install(&run.entries);
     let mut record = layout::read_record(&paths.root)?.unwrap_or_default();
     record.state = State::RollingBack;
     layout::write_record(&paths.root, &record)?;
     let mut problems = vec![];
     // Sessions first (they may use the alias for comparisons).
-    for mut r in recs.into_iter().filter(|r| r.run == run.id) {
-        let res = match r.state.as_str() {
-            "rekeyed" | "archived_rekey_at_restore" => session::rollback_stopped(paths, &mut r),
-            _ => Ok(()),
-        };
-        if let Err(e) = res {
+    for mut r in recs.into_iter().filter(|r| undo(r)) {
+        if let Err(e) = session::rollback_stopped(paths, &mut r) {
             problems.push(format!("session {}: {e:#}", r.session_id));
         }
     }
@@ -2285,6 +2642,42 @@ pub fn rollback(paths: &Paths, dry_run: bool) -> Result<Value> {
     Ok(
         json!({"rolled_back":true,"run":run.id,"plan":plan,"problems":problems,"layout_version":layout::VERSION}),
     )
+}
+/// Processes whose `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`GEMINI_CLI_HOME` names the
+/// new spelling of a path under the data root (read from `/proc/*/environ`).
+fn new_spelling_processes(paths: &Paths, run: &Run) -> Vec<Value> {
+    let a = Alias::new(run.entries.clone());
+    let new_root = a.logical(&paths.root);
+    let old_root = a.physical_old(&paths.root);
+    // raw-path: the two spellings of the alias are literally different
+    if new_root == old_root {
+        return vec![];
+    }
+    let me = std::process::id();
+    let mut out = vec![];
+    for e in fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == me {
+            continue;
+        }
+        let Ok(env) = fs::read(e.path().join("environ")) else {
+            continue;
+        };
+        for var in env.split(|b| *b == 0) {
+            let var = String::from_utf8_lossy(var);
+            if let Some((k, v)) = var.split_once('=')
+                && matches!(k, "CLAUDE_CONFIG_DIR" | "CODEX_HOME" | "GEMINI_CLI_HOME")
+                // raw-path: looking for the literal new spelling
+                && Path::new(v).starts_with(&new_root)
+            // raw-path: the literal new spelling
+            {
+                out.push(json!({"pid":pid,"variable":k,"value":v}));
+            }
+        }
+    }
+    out
 }
 fn undo_change(paths: &Paths, run: &Run, c: &Change) -> Result<()> {
     let file = paths.root.join(&c.file);
@@ -2362,7 +2755,7 @@ pub fn finalize(paths: &Paths, dry_run: bool, accept_unresumed: bool) -> Result<
             let src = projects.join(km).join("memory");
             let dst = projects.join(kt).join("memory");
             let mut base = Default::default();
-            if let Ok(m) = keys::sync_memory(&src, &dst, &mut base, None, kt, true)
+            if let Ok(m) = keys::sync_memory(&src, &dst, &mut base, Path::new(""), kt, true)
                 && src.is_dir()
                 && m.copied.is_empty()
                 && m.fast_forwarded.is_empty()

@@ -162,6 +162,16 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
 pub fn same_str(a: &str, b: &str) -> bool {
     same_path(Path::new(a), Path::new(b))
 }
+/// `path` relative to `prefix`, as given or in logical form (either spelling of each).
+pub fn strip_prefix(path: &Path, prefix: &Path) -> Option<PathBuf> {
+    if let Ok(rest) = path.strip_prefix(prefix) {
+        return Some(rest.to_path_buf());
+    }
+    logical(path)
+        .strip_prefix(logical(prefix))
+        .ok()
+        .map(Path::to_path_buf)
+}
 /// `path` starts with `prefix` in logical form.
 pub fn starts_with(path: &Path, prefix: &Path) -> bool {
     path.starts_with(prefix) || logical(path).starts_with(logical(prefix))

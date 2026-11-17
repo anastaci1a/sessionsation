@@ -322,6 +322,7 @@ pub fn validate_adopt(paths: &Paths, state: &State, dir: &Path) -> Result<PathBu
     let dir = crate::alias::canonical(dir)?;
     let root = crate::alias::logical(&paths.root);
     ensure!(
+        // raw-path: both sides are alias::canonical / logical forms (above)
         !dir.starts_with(&root) && !root.starts_with(&dir),
         "INVALID_CONFIG_DIR: --config-dir overlaps the sessionsation data directory (including its accounts)"
     );
@@ -331,6 +332,7 @@ pub fn validate_adopt(paths: &Paths, state: &State, dir: &Path) -> Result<PathBu
         };
         let other = crate::alias::canonical(&other).unwrap_or(other);
         ensure!(
+            // raw-path: both sides are alias::canonical forms (above)
             !dir.starts_with(&other) && !other.starts_with(&dir),
             "CONFIG_DIR_IN_USE: --config-dir overlaps the home of {}:{}",
             account.provider,

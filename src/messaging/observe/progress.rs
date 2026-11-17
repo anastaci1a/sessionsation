@@ -14,6 +14,7 @@ struct Revision {
 fn revision(home: &Path, path: &Path) -> Option<Revision> {
     let path = crate::alias::canonical(path).ok()?;
     let home = crate::alias::canonical(home).ok()?;
+    // raw-path: both sides are alias::canonical forms (above)
     if !path.starts_with(home.join("sessions")) && !path.starts_with(home.join("archived_sessions"))
     {
         return None;

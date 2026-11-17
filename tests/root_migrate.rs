@@ -581,6 +581,15 @@ async fn tier_r_is_blocked_by_an_operation_in_flight_and_needs_the_supervisor_st
     let layout: Value =
         serde_json::from_slice(&std::fs::read(f.paths.root.join("layout.json")).unwrap()).unwrap();
     assert_eq!(layout["version"], 2);
+    // Without the in-flight journal, a backup that cannot reflink (tmpfs here)
+    // is refused unless --allow-full-copy accepts full copies.
+    std::fs::remove_file(dir.join(format!("{op}.json"))).unwrap();
+    let out = f.run(&refs);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("BACKUP_REFLINK_UNSUPPORTED"), "{err}");
+    let layout: Value =
+        serde_json::from_slice(&std::fs::read(f.paths.root.join("layout.json")).unwrap()).unwrap();
+    assert_eq!(layout["version"], 2, "nothing changed");
 }
 
 /// Tier S with a running Claude session in a fake HERDR pane: stopped,
@@ -816,14 +825,23 @@ fn bind_namespace_running_claude_is_still_live_after_activation() {
     let t = tmp.path();
     std::fs::create_dir_all(t.join("disk/appdata")).unwrap();
     std::fs::create_dir_all(t.join("user/appdata")).unwrap();
-    let ok = Command::new("mount")
-        .args(["--bind"])
-        .arg(t.join("disk/appdata"))
-        .arg(t.join("user/appdata"))
-        .status()
-        .unwrap()
-        .success();
-    assert!(ok, "bind mount failed inside the namespace");
+    let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
+    let (src, dst) = (c(&t.join("disk/appdata")), c(&t.join("user/appdata")));
+    let rc = unsafe {
+        libc::mount(
+            src.as_ptr(),
+            dst.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(
+        rc,
+        0,
+        "bind mount failed inside the namespace: {}",
+        std::io::Error::last_os_error()
+    );
     let old_root = t.join("user/appdata/state");
     let paths = Paths::new(Some(old_root.clone())).unwrap();
     assert_eq!(
@@ -861,11 +879,28 @@ fn bind_namespace_running_claude_is_still_live_after_activation() {
     }]);
     let new_home = t.join("disk/appdata/state/accounts/claude/a");
     let live = sessionsation::provider::claude::live_sessions(&new_home).unwrap();
+    // Codex: an app-server started with the old CODEX_HOME spelling.
+    let codex_old = old_root.join("accounts/codex/c");
+    std::fs::create_dir_all(&codex_old).unwrap();
+    let mut codex = Command::new("sleep")
+        .arg("30")
+        .env("CODEX_HOME", &codex_old)
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    let codex_home = sessionsation::external::process_home(codex.id());
     let _ = child.kill();
     let _ = child.wait();
+    let _ = codex.kill();
+    let _ = codex.wait();
     assert_eq!(
         live.len(),
         1,
         "the old-spelling process is live for the new-spelling home"
+    );
+    assert_eq!(
+        codex_home.unwrap(),
+        t.join("disk/appdata/state/accounts/codex/c"),
+        "the old CODEX_HOME spelling is the new-spelling account home"
     );
 }
