@@ -107,6 +107,41 @@ pub(crate) async fn launch_lock_within(
     wait: std::time::Duration,
     on_wait: impl FnOnce(),
 ) -> Result<fs::File> {
+    lock_within(paths, provider, name, wait, false, on_wait).await
+}
+
+/// Exclusive account lock for a background conversation worker (archive, restore, delete).
+/// Contract 1.55.0: like [`launch_lock`] it waits with backoff for [`launch_lock_wait`]
+/// (another worker or a launch holds the lock for seconds) instead of failing after the
+/// ~50 ms of [`operation_lock`]; `on_wait` runs once when it first has to wait. After the
+/// window it fails with `ACCOUNT_BUSY`. Nothing is changed while waiting.
+pub async fn operation_lock_waiting(
+    paths: &Paths,
+    provider: ProviderId,
+    name: &str,
+    on_wait: impl FnOnce(),
+) -> Result<fs::File> {
+    operation_lock_within(paths, provider, name, launch_lock_wait(), on_wait).await
+}
+
+pub(crate) async fn operation_lock_within(
+    paths: &Paths,
+    provider: ProviderId,
+    name: &str,
+    wait: std::time::Duration,
+    on_wait: impl FnOnce(),
+) -> Result<fs::File> {
+    lock_within(paths, provider, name, wait, true, on_wait).await
+}
+
+async fn lock_within(
+    paths: &Paths,
+    provider: ProviderId,
+    name: &str,
+    wait: std::time::Duration,
+    exclusive: bool,
+    on_wait: impl FnOnce(),
+) -> Result<fs::File> {
     validate_name(name)?;
     let dir = paths
         .root
@@ -118,7 +153,12 @@ pub(crate) async fn launch_lock_within(
     let mut delay = LAUNCH_LOCK_FIRST_RETRY;
     let mut on_wait = Some(on_wait);
     loop {
-        match FileExt::try_lock_shared(&lock) {
+        let attempt = if exclusive {
+            FileExt::try_lock_exclusive(&lock)
+        } else {
+            FileExt::try_lock_shared(&lock)
+        };
+        match attempt {
             Ok(()) => return Ok(lock),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => return Err(e).context("ACCOUNT_BUSY"),
@@ -546,5 +586,67 @@ mod tests {
         assert_eq!(notices, 1);
         release.join().unwrap();
         assert_eq!(describe_wait(LAUNCH_LOCK_WAIT), "120s");
+    }
+
+    #[tokio::test]
+    async fn worker_lock_waits_for_a_holder_and_times_out_busy() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(d.path().join("data"))).unwrap();
+        // A launch holds the shared side; the exclusive worker waits for it.
+        let held = launch_lock_within(
+            &paths,
+            ProviderId::Codex,
+            "acct",
+            std::time::Duration::ZERO,
+            || {},
+        )
+        .await
+        .unwrap();
+        let start = std::time::Instant::now();
+        let mut notices = 0;
+        let error = operation_lock_within(
+            &paths,
+            ProviderId::Codex,
+            "acct",
+            std::time::Duration::from_millis(300),
+            || notices += 1,
+        )
+        .await
+        .unwrap_err();
+        assert!(start.elapsed() >= std::time::Duration::from_millis(300));
+        assert_eq!(notices, 1);
+        assert_eq!(
+            format!("{error:#}"),
+            "ACCOUNT_BUSY: an account operation held the lock for 300ms"
+        );
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            drop(held);
+        });
+        let mut notices = 0;
+        let lock = operation_lock_within(
+            &paths,
+            ProviderId::Codex,
+            "acct",
+            std::time::Duration::from_secs(20),
+            || notices += 1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(notices, 1);
+        release.join().unwrap();
+        // Exclusive once acquired: nothing else gets in.
+        assert!(
+            launch_lock_within(
+                &paths,
+                ProviderId::Codex,
+                "acct",
+                std::time::Duration::ZERO,
+                || {}
+            )
+            .await
+            .is_err()
+        );
+        drop(lock);
     }
 }

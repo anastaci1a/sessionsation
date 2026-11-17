@@ -17,9 +17,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 54;
+pub const CONTRACT_MINOR: u32 = 55;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.54.0";
+pub const CONTRACT_VERSION: &str = "1.55.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1759,7 +1759,7 @@ pub fn capabilities() -> Value {
     "turn_observation":{"version":1,"command":"turn-target","includes_terminal_turns":true,"requires_sending_enabled":false,"sends_input":false,"starts_process":false,"association":"turn_only"},
     "steering":{"version":1,"automatic_compaction":"native_pending_until_continuation","dedicated_compact_turn":"native_rejects_without_injection","compaction_verified_profiles":["0.164.0","0.165.0","0.166.0"],"command":"send","mode":"steer","target_command":"steer-target","providers":["codex"],"requires_expected_turn_id":true,"requires_expected_runtime_generation":true,"requires_expected_generation":true,"acceptance_only":false,"reply_correlation":"after_steer_item","automatic_replay":false,"queue_fallback":false,"starts_process":false,"interrupts":false},"native_protocol":{"supported_versions":crate::messaging::NATIVE_PROFILES,"version_source":"initialize.userAgent","unknown_versions":"fail_closed"},"message_recovery":{"command":"send","mode":"resume","plan_command":"recovery-plan","reconcile_command":"recovery-reconcile","retained_live_attachment":true,"exited_process":true,"hosts":["herdr","tmux"],"explicit_only":true,"same_conversation":true,"launch_is_not_message_acceptance":true,"exact_item_idle_start":true,"ordinary_send_rejects_terminal_state":true,"start_ack_is_not_input_recorded":true,"owner_reservation_required":"message-recoveries"},
     "receipt_observation":{"poll_min_seconds":5,"public_correlation":true,"resumable_local_summary_scan":true,"native_budget_seconds":5,"max_turns":1000,"partial_match_is_not_delivery":true},
-    "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root"},
+    "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root","account_wait":{"since_contract":"1.55.0","phase":"waiting_for_account","window_seconds":120},"wait":{"since_contract":"1.55.0","flag":"--wait","timeout_seconds":300,"errors":["OPERATION_FAILED","OPERATION_TIMEOUT","ACCOUNT_BUSY"]}},
     "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false});
     for provider in value["providers"].as_array_mut().into_iter().flatten() {
         provider["account_logout"] = json!(provider["id"] != "antigravity");
@@ -3081,13 +3081,13 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         Command::DiskSpace => crate::disk_space::report(paths),
         Command::Archives => external::archiving::list(paths)?,
         Command::Archive { target } => {
-            external::archiving::start(paths, external::archiving::Kind::Archive, target).await?
+            queue_and_wait(paths, external::archiving::Kind::Archive, target).await?
         }
         Command::RestoreSession { target } => {
-            external::archiving::start(paths, external::archiving::Kind::Restore, target).await?
+            queue_and_wait(paths, external::archiving::Kind::Restore, target).await?
         }
         Command::DeleteSession { target } => {
-            external::archiving::start(paths, external::archiving::Kind::Delete, target).await?
+            queue_and_wait(paths, external::archiving::Kind::Delete, target).await?
         }
         Command::Launch { command } => crate::launch::api(paths, command).await?,
         Command::Account { command } => account(paths, command).await?,
@@ -3381,22 +3381,32 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             expected_generation,
             keep_pane,
         } => {
-            let (_, source) = selected(paths, &session, &expected_generation).await?;
-            ensure!(!source.inactive, "SESSION_NOT_RUNNING");
-            operation(
-                paths,
-                external::queue_snapshot(
+            // Idempotent (1.55.0): `Err(session)` is an existing session with no process.
+            let found = match selected(paths, &session, &expected_generation).await {
+                Ok((s, source)) if source.inactive => Err(s),
+                Ok((_, source)) => Ok(source),
+                Err(e) if format!("{e:#}").starts_with("SESSION_UNAVAILABLE") => {
+                    Err(catalog::resolve(paths, &session, &expected_generation)?)
+                }
+                Err(e) => return Err(e),
+            };
+            match found {
+                Err(s) => already_stopped(paths, &s)?,
+                Ok(source) => operation(
                     paths,
-                    source,
-                    "",
-                    external::MoveOptions {
-                        close_pane: !keep_pane,
-                        ..Default::default()
-                    },
-                    "terminate",
-                )
-                .await?,
-            )?
+                    external::queue_snapshot(
+                        paths,
+                        source,
+                        "",
+                        external::MoveOptions {
+                            close_pane: !keep_pane,
+                            ..Default::default()
+                        },
+                        "terminate",
+                    )
+                    .await?,
+                )?,
+            }
         }
         Command::Resume {
             session,
@@ -3942,7 +3952,9 @@ async fn stop_antigravity(
     keep_pane: bool,
 ) -> Result<Value> {
     let (s, observation) = native_selected(paths, id, generation)?;
-    ensure!(observation.availability == "running", "SESSION_NOT_RUNNING");
+    if observation.availability != "running" {
+        return already_stopped(paths, &s);
+    }
     let account = native::account(paths, ProviderId::Antigravity, &s.account)?;
     let _lock = crate::external::conversation_lock(paths, &s.conversation_id)?;
     let (home, conversation) = (account.home.clone(), s.conversation_id.clone());
@@ -3979,6 +3991,31 @@ async fn stop_antigravity(
         "provider":"antigravity","signal":"SIGTERM","pid":stopped.pid,"process_start":stopped.process_start,
         "provider_conversation_id":stopped.conversation_id,"source_account_id":format!("antigravity:{}",s.account)}),
     )
+}
+
+/// Queue a conversation operation; with `--wait` (contract 1.55.0) poll it to its end.
+async fn queue_and_wait(
+    paths: &Paths,
+    kind: external::archiving::Kind,
+    target: external::archiving::Target,
+) -> Result<Value> {
+    let wait = target.wait;
+    let queued = external::archiving::start(paths, kind, target).await?;
+    if wait {
+        external::archiving::wait_for(paths, queued).await
+    } else {
+        Ok(queued)
+    }
+}
+
+/// Idempotent stop (contract 1.55.0): the session exists, is not archived and has no
+/// running process, so there is nothing to stop.
+fn already_stopped(paths: &Paths, s: &catalog::Session) -> Result<Value> {
+    ensure!(
+        !external::archiving::is_archived(paths, &s.id)?,
+        "SESSION_ARCHIVED"
+    );
+    Ok(json!({"session_id":s.id,"already_stopped":true,"phase":"complete"}))
 }
 
 fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
@@ -4159,7 +4196,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.54.0");
+        assert_eq!(c["contract_version"], "1.55.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
         assert_eq!(root["layout_version"], 3);

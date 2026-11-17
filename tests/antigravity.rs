@@ -263,8 +263,8 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
         false
     );
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 54);
-    assert_eq!(caps["contract_version"], "1.54.0");
+    assert_eq!(caps["contract_revision"], 55);
+    assert_eq!(caps["contract_version"], "1.55.0");
     let p = caps["providers"]
         .as_array()
         .unwrap()
@@ -432,12 +432,12 @@ async fn a_live_agy_process_holding_the_conversation_is_running_and_refuses_resu
 async fn api_version_reports_semver_and_negotiates_by_major() {
     let f = fixture().await;
     let v = f.api(&["version"]);
-    assert_eq!(v["contract_version"], "1.54.0");
-    assert_eq!(v["contract_revision"], 54);
+    assert_eq!(v["contract_version"], "1.55.0");
+    assert_eq!(v["contract_revision"], 55);
     for ok in ["1", "1.25", "1.26", "1.99.0"] {
         assert_eq!(
             f.api(&["--api-version", ok, "version"])["contract_version"],
-            "1.54.0"
+            "1.55.0"
         );
     }
     for bad in ["2", "2.0.0", "0.24"] {
@@ -741,16 +741,17 @@ async fn archive_restore_and_delete_move_only_the_exact_conversation_and_stop_en
     });
     drop(child);
     let again = f.by_conversation(&mine);
-    assert!(
-        f.api_error(&[
-            "stop",
-            "--session",
-            again["id"].as_str().unwrap(),
-            "--expected-generation",
-            again["generation"].as_str().unwrap(),
-        ])
-        .contains("SESSION_NOT_RUNNING")
-    );
+    // Contract 1.55.0: stopping a stopped session is idempotent.
+    let already = f.api(&[
+        "stop",
+        "--session",
+        again["id"].as_str().unwrap(),
+        "--expected-generation",
+        again["generation"].as_str().unwrap(),
+    ]);
+    assert_eq!(already["already_stopped"], true, "{already}");
+    assert_eq!(already["phase"], "complete");
+    assert_eq!(already["session_id"], again["id"]);
 
     // Delete removes the files, the row, the cache entry and the catalog entry.
     let op = f.job("delete-session", &again);

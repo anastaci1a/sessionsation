@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.54.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.55.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3902,3 +3902,26 @@ Capability: `root_alias` (`since_contract` `1.54.0`, `version`, `layout_version:
 `commands`, `session_states`, `normalize_requests`, `gate`, `retained_copies`, `memory_merge`, `errors`).
 Client note: path-valued fields (`directory`, `home`, `cwd`, rollout and transcript paths) change spelling
 for migrated rows; treat them as opaque or compare after mapping.
+
+### Archive workers wait for the account; `--wait`; idempotent stop (1.55.0)
+
+MINOR (additive flag and result; no error code is removed).
+
+- **Workers wait for the account lock.** The background worker of `api archive`, `restore-session` and
+  `delete-session` (Codex archive and delete, and the native providers' archive, restore and delete) took the
+  exclusive account lock with ~50 ms of retries and failed permanently with `ACCOUNT_BUSY ... (os error 11)`
+  when another archive or a launch held it. It now waits like a launch does (backoff 50 ms doubling to 1 s, up to
+  120 s, `SESSIONSATION_ACCOUNT_WAIT_MS` shortens it in tests) and fails `ACCOUNT_BUSY: an account operation held
+  the lock for 120s` only after that window. While waiting the operation is in phase `waiting_for_account` with
+  `detail` "waiting for another account operation to finish (ACCOUNT_BUSY wait)"; nothing is read or changed
+  before the lock is held. Account rename, removal, the daemon and migration keep their immediate refusal.
+- **`--wait`.** `api archive|restore-session|delete-session --wait` queues as before, then polls the operation
+  until `complete` or `failed` (bound 300 s, `SESSIONSATION_OPERATION_WAIT_MS` in tests). `complete` returns
+  `ok:true` with the final operation. `failed` returns `ok:false`, code `OPERATION_FAILED`, the operation's
+  `detail` in the message and the operation in `error.operation`; `retryable` is true when the detail starts with
+  `ACCOUNT_BUSY`. No end in time returns `OPERATION_TIMEOUT` (retryable) with the operation. Without `--wait`
+  the queued operation is returned unchanged. Capability `conversation_archive.wait` and `.account_wait`.
+- **Idempotent stop.** `api stop` of an existing, unarchived session with no running process (Codex or
+  Antigravity) returns `ok:true` with `{"session_id":…,"already_stopped":true,"phase":"complete"}` instead of
+  `SESSION_UNAVAILABLE` / `SESSION_NOT_RUNNING`. The generation is still checked; an archived session keeps
+  `SESSION_ARCHIVED` and an unknown one its error.

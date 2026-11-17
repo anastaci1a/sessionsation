@@ -31,6 +31,9 @@ pub struct Target {
     pub request_id: String,
     #[arg(long)]
     pub confirm: String,
+    /// Contract 1.55.0: after queueing, wait until the operation is complete or failed.
+    #[arg(long)]
+    pub wait: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Operation {
@@ -188,6 +191,10 @@ pub fn metadata(paths: &Paths) -> Result<std::collections::BTreeMap<String, Valu
     let mut out: std::collections::BTreeMap<String, Value> = all(paths)?.into_iter().map(|a| (a.session.id, json!({"kind":"managed","state":a.state,"archived":!matches!(a.state.as_str(),"restored"|"deleted"),"archived_at":a.archived_at,"source":"managed_manifest"}))).collect();
     out.extend(native::metadata(paths)?);
     Ok(out)
+}
+/// Whether a session is archived (or deleted) by either archive implementation.
+pub fn is_archived(paths: &Paths, id: &str) -> Result<bool> {
+    Ok(hidden(paths)?.contains(id) || native::is_archived(paths, id)?)
 }
 pub fn hidden(paths: &Paths) -> Result<std::collections::BTreeSet<String>> {
     Ok(all(paths)?
@@ -400,13 +407,32 @@ fn bundle(paths: &Paths, a: &Archive) -> Result<PathBuf> {
     private_dir(&dir)?;
     Ok(dir)
 }
+/// Contract 1.55.0: the exclusive account lock for a worker. It waits (bounded by
+/// `SESSIONSATION_ACCOUNT_WAIT_MS`, default 120 s) for another account operation or a launch
+/// instead of failing permanently, and says so in the operation while it waits; nothing is
+/// changed before the lock is held.
+async fn account_lock(
+    paths: &Paths,
+    o: &mut Operation,
+    provider: crate::provider::ProviderId,
+    account: &str,
+) -> Result<File> {
+    crate::accounts::operation_lock_waiting(paths, provider, account, || {
+        let _ = phase(paths, o, WAITING_PHASE, WAITING_DETAIL);
+    })
+    .await
+}
+const WAITING_PHASE: &str = "waiting_for_account";
+const WAITING_DETAIL: &str = "waiting for another account operation to finish (ACCOUNT_BUSY wait)";
 async fn archive(paths: &Paths, o: &mut Operation) -> Result<()> {
     let source = o.source.clone().context("MISSING_SOURCE")?;
-    let _account = crate::accounts::operation_lock(
+    let _account = account_lock(
         paths,
+        o,
         crate::provider::ProviderId::Codex,
         &source.account,
-    )?;
+    )
+    .await?;
     crate::catalog::resolve(paths, &o.session.id, &o.expected_generation)?;
     phase(
         paths,
@@ -645,11 +671,13 @@ async fn delete(paths: &Paths, o: &mut Operation) -> Result<()> {
         .clone()
         .or_else(|| prior.as_ref().map(|a| a.source.clone()))
         .context("MISSING_SOURCE")?;
-    let _account = crate::accounts::operation_lock(
+    let _account = account_lock(
         paths,
+        o,
         crate::provider::ProviderId::Codex,
         &source.account,
-    )?;
+    )
+    .await?;
     crate::catalog::resolve(paths, &o.session.id, &o.expected_generation)?;
     phase(
         paths,
@@ -716,7 +744,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     op_save(paths, &o)?;
     let result = match o.kind {
         _ if crate::provider::native::of(&o.session.provider).is_some() => {
-            native::run(paths, &mut o)
+            native::run(paths, &mut o).await
         }
         Kind::Archive => archive(paths, &mut o).await,
         Kind::Restore => restore(paths, &mut o).await,
@@ -795,5 +823,126 @@ mod location_tests {
         .unwrap();
         keep_location(&paths, &a).unwrap();
         assert!(relocation::saved_location(&paths, &thread).is_none());
+    }
+}
+
+/// Contract 1.55.0: how long `--wait` polls a queued operation (seconds; tests shorten it
+/// with `SESSIONSATION_OPERATION_WAIT_MS`).
+pub const OPERATION_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn operation_wait() -> std::time::Duration {
+    std::env::var("SESSIONSATION_OPERATION_WAIT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(OPERATION_WAIT, std::time::Duration::from_millis)
+}
+
+/// `--wait`: poll the queued operation until it is terminal. Complete returns the final
+/// record; failed is `OPERATION_FAILED` (message = the operation's detail; retryable when
+/// it is `ACCOUNT_BUSY`); no end inside the bound is `OPERATION_TIMEOUT` (retryable).
+pub async fn wait_for(paths: &Paths, queued: Value) -> Result<Value> {
+    wait_within(paths, queued, operation_wait()).await
+}
+
+async fn wait_within(paths: &Paths, queued: Value, bound: std::time::Duration) -> Result<Value> {
+    let id = queued["id"]
+        .as_str()
+        .context("MISSING_OPERATION")?
+        .to_owned();
+    let started = std::time::Instant::now();
+    let mut delay = std::time::Duration::from_millis(50);
+    loop {
+        let current = operations(paths)?
+            .into_iter()
+            .find(|o| o["id"] == id.as_str())
+            .unwrap_or_else(|| queued.clone());
+        match current["phase"].as_str() {
+            Some("complete") => return Ok(current),
+            Some("failed") => {
+                return Err(crate::session_model::NotConfirmed {
+                    code: "OPERATION_FAILED",
+                    message: current["detail"].as_str().unwrap_or_default().to_owned(),
+                    operation: current,
+                }
+                .into());
+            }
+            _ => {}
+        }
+        let left = bound.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return Err(crate::session_model::NotConfirmed {
+                code: "OPERATION_TIMEOUT",
+                message: format!(
+                    "operation {id} is {} after {}s; poll `api operations`",
+                    current["phase"].as_str().unwrap_or("unknown"),
+                    bound.as_secs()
+                ),
+                operation: current,
+            }
+            .into());
+        }
+        tokio::time::sleep(delay.min(left)).await;
+        delay = (delay * 2).min(std::time::Duration::from_secs(1));
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    fn queued(paths: &Paths, phase_name: &str, detail: &str) -> Value {
+        let session = crate::catalog::record_launch(
+            paths,
+            "acct",
+            &uuid::Uuid::new_v4().to_string(),
+            "s",
+            None,
+        )
+        .unwrap();
+        let o = Operation {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: Kind::Archive,
+            session,
+            source: None,
+            expected_generation: String::new(),
+            phase: phase_name.into(),
+            detail: detail.into(),
+            created_at: daemon::now(),
+            updated_at: daemon::now(),
+            worker_pid: None,
+            worker_start: None,
+        };
+        op_save(paths, &o).unwrap();
+        o.public()
+    }
+
+    #[tokio::test]
+    async fn wait_reports_failure_success_and_timeout() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(d.path().join("state"))).unwrap();
+        let bound = std::time::Duration::from_millis(300);
+        let failed = queued(
+            &paths,
+            "failed",
+            "ACCOUNT_BUSY: held (os error 11). No automatic retry",
+        );
+        let e = wait_within(&paths, failed, bound).await.unwrap_err();
+        let n = e
+            .downcast_ref::<crate::session_model::NotConfirmed>()
+            .unwrap();
+        assert_eq!(n.code, "OPERATION_FAILED");
+        assert!(n.message.starts_with("ACCOUNT_BUSY"));
+        assert_eq!(n.operation["phase"], "failed");
+        let done = queued(&paths, "complete", "ok");
+        let v = wait_within(&paths, done, bound).await.unwrap();
+        assert_eq!(v["phase"], "complete");
+        let stuck = queued(&paths, "waiting_for_account", WAITING_DETAIL);
+        let e = wait_within(&paths, stuck, bound).await.unwrap_err();
+        assert_eq!(
+            e.downcast_ref::<crate::session_model::NotConfirmed>()
+                .unwrap()
+                .code,
+            "OPERATION_TIMEOUT"
+        );
     }
 }

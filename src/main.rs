@@ -2069,7 +2069,7 @@ fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
             .map(|help| format!("{code}: {help}"))
             .unwrap_or_else(|| format!("{error:#}"))
     };
-    let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS")}});
+    let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"OPERATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS")}});
     if let Some(space) = error.downcast_ref::<sessionsation::disk_space::InsufficientSpace>() {
         envelope["error"]["free_bytes"] = json!(space.free_bytes);
         envelope["error"]["needed_bytes"] = json!(space.needed_bytes);
@@ -2078,6 +2078,10 @@ fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
     // Contract 1.49.0: a --wait that ended unconfirmed carries the operation record.
     if let Some(n) = error.downcast_ref::<sessionsation::session_model::NotConfirmed>() {
         envelope["error"]["operation"] = n.operation.clone();
+        // Contract 1.55.0: a failed `--wait` operation is retryable when the account was busy.
+        if n.code == "OPERATION_FAILED" && n.message.starts_with("ACCOUNT_BUSY") {
+            envelope["error"]["retryable"] = json!(true);
+        }
     }
     envelope
 }
@@ -2145,5 +2149,32 @@ mod error_envelope_tests {
             ),
             (Some(5), Some(9))
         );
+    }
+
+    #[test]
+    fn failed_wait_is_operation_failed_and_retryable_only_when_the_account_was_busy() {
+        let failed = |detail: &str| {
+            anyhow::Error::new(sessionsation::session_model::NotConfirmed {
+                code: "OPERATION_FAILED",
+                message: detail.into(),
+                operation: json!({"phase":"failed","detail":detail}),
+            })
+        };
+        let busy = error_envelope(&failed("ACCOUNT_BUSY: held (os error 11)"));
+        assert_eq!(busy["error"]["code"], "OPERATION_FAILED");
+        assert_eq!(busy["error"]["retryable"], true);
+        assert_eq!(busy["error"]["operation"]["phase"], "failed");
+        let other = error_envelope(&failed("HISTORY_CHANGED"));
+        assert_eq!(other["error"]["code"], "OPERATION_FAILED");
+        assert_eq!(other["error"]["retryable"], false);
+        let timeout = error_envelope(&anyhow::Error::new(
+            sessionsation::session_model::NotConfirmed {
+                code: "OPERATION_TIMEOUT",
+                message: "still running".into(),
+                operation: json!({}),
+            },
+        ));
+        assert_eq!(timeout["error"]["code"], "OPERATION_TIMEOUT");
+        assert_eq!(timeout["error"]["retryable"], true);
     }
 }

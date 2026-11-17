@@ -3505,6 +3505,28 @@ async fn public_catalog_ids_names_and_stale_targets_survive_runtime_changes() {
         .code()
         .is_some_and(|c| c != 0)
     );
+    // Contract 1.55.0: with the current generation, stopping a stopped session is idempotent.
+    let current = f.invoke(&["api", "state"]);
+    let current = current["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap()["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let again = f.invoke(&[
+        "api",
+        "stop",
+        "--session",
+        id,
+        "--expected-generation",
+        &current,
+    ]);
+    assert_eq!(again["result"]["already_stopped"], true, "{again}");
+    assert_eq!(again["result"]["phase"], "complete");
+    assert_eq!(again["result"]["session_id"], id);
     assert!(!pane.is_empty());
 }
 

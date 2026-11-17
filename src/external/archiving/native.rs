@@ -69,6 +69,9 @@ fn save(paths: &Paths, m: &Manifest) -> Result<()> {
         &serde_json::to_vec(m)?,
     )
 }
+pub(super) fn is_archived(paths: &Paths, id: &str) -> Result<bool> {
+    Ok(load(paths, id)?.is_some_and(|m| archived_state(&m.state)))
+}
 fn archived_state(state: &str) -> bool {
     matches!(state, "archiving" | "archived" | "restoring")
 }
@@ -467,9 +470,9 @@ fn bundle_dir(paths: &Paths, m: &Manifest) -> Result<PathBuf> {
 
 // ------------------------------------------------------------------- jobs
 
-pub(super) fn run(paths: &Paths, o: &mut Operation) -> Result<()> {
+pub(super) async fn run(paths: &Paths, o: &mut Operation) -> Result<()> {
     let provider = native::of(&o.session.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
-    let _account = crate::accounts::operation_lock(paths, provider, &o.session.account)?;
+    let _account = super::account_lock(paths, o, provider, &o.session.account.clone()).await?;
     match o.kind {
         Kind::Archive => archive(paths, provider, o),
         Kind::Restore => restore(paths, provider, o),
