@@ -940,7 +940,18 @@ pub(crate) fn supervisor_recognition(
         Some(ProviderId::Claude) => {
             let home = claude_home(paths, &s.account)
                 .ok_or_else(|| format!("account claude:{} unavailable", s.account))?;
-            match claude::observe(&home, &s.conversation_id, s.attachment.as_ref()).availability {
+            let o = claude::observe(&home, &s.conversation_id, s.attachment.as_ref());
+            match o.availability {
+                // Re-check 2: "running" only by the recorded process's argv (no
+                // registry holder, no transcript) is not a recognised session: a
+                // gate row had a conversation before activation.
+                "running"
+                    if o.detail
+                        .as_deref()
+                        .is_some_and(|d| d.starts_with("NO_CONVERSATION_YET")) =>
+                {
+                    Ok(false)
+                }
                 "running" => Ok(true),
                 "stopped" | "stale" => Ok(false),
                 other => Err(format!("Claude state {other}")),
@@ -2097,10 +2108,28 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
     if shared_copy.is_dir() {
         verify_tree(&shared_copy, &projects, run.allow_full_copy, &mut files)?;
     }
+    // Re-check 2: the copies are durable before the manifest is written and the
+    // step is journaled done (a host crash must not leave a "done" backup of
+    // unflushed copies). The root's file system too: reflinked extents.
+    syncfs(dir)?;
+    syncfs(root)?;
     let total = files.len();
     let doc = json!({"version":1,"run":run.id,"root":root,"created_at":now(),"classes":manifest,"homes":homes,
         "file_count":total,"files":files});
     atomic_write(&dir.join("root-backup.json"), &serde_json::to_vec(&doc)?)?;
+    Ok(())
+}
+/// `syncfs(2)` the file system holding `path`.
+fn syncfs(path: &Path) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let f = fs::File::open(path)?;
+    let rc = unsafe { libc::syncfs(f.as_raw_fd()) };
+    ensure!(
+        rc == 0,
+        "BACKUP_FAILED: syncfs {}: {}",
+        path.display(),
+        std::io::Error::last_os_error()
+    );
     Ok(())
 }
 /// The one way a single backup file reaches its final name: copied to a

@@ -1483,6 +1483,98 @@ fn recheck_lifecycle_skips_unparseable_but_blocks_on_unreadable_root_records() {
     assert!(e.contains(&format!("session-{}.json", f.s.id)), "{e}");
 }
 
+/// Re-check 2: "running" only through the recorded process's argv (no registry
+/// holder, no transcript: `NO_CONVERSATION_YET`) is not running for a gate row.
+#[tokio::test]
+async fn recheck2_gate_does_not_count_an_argv_only_attachment_as_running() {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("root"))).unwrap();
+    enroll_claude(&paths, "a");
+    let home = layout::target_home(&paths.root, ProviderId::Claude, "a");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    let conv = uuid::Uuid::new_v4().to_string();
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "sleep 30", "sh", "--resume", &conv])
+        .spawn()
+        .unwrap();
+    wait_cmdline(child.id(), &conv);
+    let (_, start) = claude::proc_start(child.id()).unwrap();
+    let attachment = catalog::Attachment {
+        host: "herdr".into(),
+        target: "herdr/fixture/w1:p1".into(),
+        pid: child.id(),
+        process_start: start,
+    };
+    let s = catalog::record_provider_launch(
+        &paths,
+        ProviderId::Claude,
+        "a",
+        &conv,
+        "n",
+        Some("/p"),
+        Some(attachment.clone()),
+    )
+    .unwrap();
+    let observed = claude::observe(&home, &conv, Some(&attachment));
+    let row = GateRow {
+        session_id: s.id.clone(),
+        name: "n".into(),
+        space: None,
+        provider: "claude".into(),
+        account: "a".into(),
+        conversation_id: conv.clone(),
+        pane: Some(attachment.target.clone()),
+        pid: Some(attachment.pid),
+        running_before: true,
+        probe_error: None,
+    };
+    let run = Run {
+        id: uuid::Uuid::new_v4().to_string(),
+        activated_at: Some(1),
+        state: "complete".into(),
+        gate_before: vec![row],
+        ..Default::default()
+    };
+    let g = gate(&paths, Some(&run)).await;
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(observed.availability, "running");
+    assert!(
+        observed
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.starts_with("NO_CONVERSATION_YET")),
+        "{:?}",
+        observed.detail
+    );
+    assert_eq!(g["gate"], "fail", "{g}");
+}
+
+/// Re-check 2: a journal directory that cannot be stat-ed (not merely absent)
+/// blocks lifecycle admission and names the directory.
+#[test]
+fn recheck2_lifecycle_blocks_when_a_journal_directory_cannot_be_stated() {
+    let f = one();
+    let conv = f.conv.clone();
+    assert!(
+        crate::lifecycle::pending(&f.paths, &conv, None)
+            .unwrap()
+            .is_none()
+    );
+    // `operations` replaced by a file: every journal directory below it fails
+    // to stat with ENOTDIR (not NotFound).
+    let ops = f.paths.root.join(layout::OPERATIONS);
+    fs::remove_dir_all(&ops).unwrap();
+    fs::write(&ops, "not a directory").unwrap();
+    let e = crate::lifecycle::pending(&f.paths, &conv, None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("operation journal directory") && e.contains("unreadable"),
+        "{e}"
+    );
+}
+
 // ------------------------------------------------------------- review 3
 
 fn enroll_claude(paths: &Paths, name: &str) {

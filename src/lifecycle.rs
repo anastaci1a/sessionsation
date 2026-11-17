@@ -80,8 +80,18 @@ pub(crate) fn pending_detail(
         crate::layout::ROOT_MIGRATIONS,
     ] {
         let root = paths.root.join(directory);
-        if !root.is_dir() {
-            continue;
+        // Only an absent directory means "no journals"; any other stat error
+        // (EIO, EACCES) blocks admission, naming the directory.
+        match fs::metadata(&root) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "SESSION_OPERATION_IN_PROGRESS: operation journal directory {} is unreadable: {e}",
+                    root.display()
+                ));
+            }
         }
         for entry in crate::paths::journal_paths(&root)? {
             if entry.extension().is_none_or(|e| e != "json") {
