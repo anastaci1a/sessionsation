@@ -1528,16 +1528,25 @@ pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or(Value::Null);
     let window = |key: &str| {
-        let fresh = statusline_window(&limits[key]);
+        let mut fresh = statusline_window(&limits[key]);
         let old = statusline_window(&previous[key]);
+        // A replayed window that has already reset carries no current usage: treat it
+        // as absent (the recorded window is carried forward below).
+        if fresh["resets_at"].as_i64().is_some_and(|r| r <= now) {
+            fresh = Value::Null;
+        }
         if !fresh.is_null() {
             // An idle session re-renders its statusline with the limits of its LAST API
             // response. Within one reset cycle (same resets_at) usage only grows, so a
             // lower payload is a stale replay: keep the stored window and its observed_at.
-            // A different resets_at is a new cycle and replaces; an equal or higher value
+            // An older resets_at is a replay of an earlier cycle and is kept out too.
+            // A later resets_at is a new cycle and replaces; an equal or higher value
             // refreshes observed_at.
-            if old["resets_at"] == fresh["resets_at"]
-                && old["used_percentage"].as_f64() > fresh["used_percentage"].as_f64()
+            let (old_reset, fresh_reset) = (old["resets_at"].as_i64(), fresh["resets_at"].as_i64());
+            let older_cycle = matches!((old_reset, fresh_reset), (Some(o), Some(f)) if f < o);
+            if older_cycle
+                || old["resets_at"] == fresh["resets_at"]
+                    && old["used_percentage"].as_f64() > fresh["used_percentage"].as_f64()
             {
                 return json!({"used_percentage":old["used_percentage"],"resets_at":old["resets_at"],
                     "observed_at":previous[key]["observed_at"].as_i64().or_else(|| previous["observed_at"].as_i64())});
@@ -2038,6 +2047,22 @@ mod tests {
             "seven_day":{"used_percentage":70,"resets_at":r7}}});
         record_statusline(home, &next, now + 4000).unwrap();
         let (usage, _, _) = project_usage(home, now + 4001);
+        assert_eq!(usage["short"]["used_percent"], 1.0);
+        assert_eq!(usage["short"]["resets_at"], r5 + 18000);
+        // Replays of an earlier cycle never replace the current one: an already reset
+        // window, and an older (still future) resets_at with higher usage.
+        let before = fs::read(usage_file(home)).unwrap();
+        for (used, resets) in [(12, r5), (50, r5 + 9000)] {
+            let replay = json!({"rate_limits":{"five_hour":{"used_percentage":used,"resets_at":resets},
+                "seven_day":{"used_percentage":69,"resets_at":r7}}});
+            record_statusline(home, &replay, now + 4100).unwrap();
+        }
+        assert_eq!(
+            fs::read(usage_file(home)).unwrap(),
+            before,
+            "no write at all"
+        );
+        let (usage, _, _) = project_usage(home, now + 4101);
         assert_eq!(usage["short"]["used_percent"], 1.0);
         assert_eq!(usage["short"]["resets_at"], r5 + 18000);
     }
