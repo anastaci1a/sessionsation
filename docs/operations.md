@@ -121,7 +121,7 @@ DATA_ROOT/
                model-changes/, session-launches/, move-backups/
   messaging/   receipts.db, checkpoints/, observations/, claude-steer/,
                claude-deliveries/, questions/
-  cache/       state-snapshot-*.json, observations/, compatibility-report.json
+  cache/       state-snapshot-*.json, observations/, compatibility-report.json, claude-transcript-facts.json
   logs/        daemon.log, handoff.log
   accounts/<platform>/<name>   codex, claude, gemini, antigravity homes
 ```

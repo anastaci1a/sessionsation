@@ -14,7 +14,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const TAIL: u64 = 128 * 1024;
+pub(crate) const TAIL: u64 = 128 * 1024;
 const CACHE_MAX: usize = 4096;
 type Stamp = (SystemTime, u64);
 type Cache = Mutex<HashMap<PathBuf, (Stamp, Option<i64>)>>;
@@ -82,15 +82,20 @@ pub(crate) fn parse_rfc3339(s: &str) -> Option<i64> {
     let ms = ((days * 86400 + h * 3600 + mi * 60 + sec - offset * 60) * 1000) + frac;
     Some(ms).filter(|n| *n > 0)
 }
-fn last_record_time(path: &Path, len: u64) -> Option<i64> {
+pub(crate) fn last_record_time(path: &Path, len: u64) -> Option<i64> {
     let mut file = fs::File::open(path).ok()?;
     let from = len.saturating_sub(TAIL);
     file.seek(SeekFrom::Start(from)).ok()?;
     let mut bytes = vec![];
     file.take(TAIL).read_to_end(&mut bytes).ok()?;
-    let text = String::from_utf8_lossy(&bytes);
+    last_record_in(&bytes, from > 0)
+}
+/// The newest record time in a window of complete records; `cut_front`: the window starts
+/// mid-file, so its first (possibly partial) line is dropped.
+pub(crate) fn last_record_in(bytes: &[u8], cut_front: bool) -> Option<i64> {
+    let text = String::from_utf8_lossy(bytes);
     let mut lines = text.lines();
-    if from > 0 {
+    if cut_front {
         lines.next(); // possibly cut mid-record
     }
     lines.rev().filter(|l| l.starts_with('{')).find_map(|l| {
@@ -120,7 +125,8 @@ fn cached(path: &Path, compute: impl FnOnce(&Stamp) -> Option<i64>) -> Option<i6
 /// the conversation db for Antigravity).
 pub fn last_accessed(provider: ProviderId, transcript: &Path) -> Option<i64> {
     match provider {
-        ProviderId::Claude | ProviderId::Gemini => cached(transcript, |(mtime, len)| {
+        ProviderId::Claude => super::claude::last_record_ms(transcript),
+        ProviderId::Gemini => cached(transcript, |(mtime, len)| {
             last_record_time(transcript, *len).or_else(|| millis(*mtime))
         }),
         ProviderId::Antigravity => {

@@ -69,6 +69,37 @@ pub(crate) fn pending_detail(
 ) -> Result<Option<Pending>> {
     let own = own.or(INLINE_OWNER.get().map(String::as_str));
     crate::inline::settle_resumptions(paths);
+    let mut found = None;
+    walk(paths, |directory, entry, r| {
+        if source_of(r) != Some(thread) {
+            return false;
+        }
+        match judge(directory, entry, r, own) {
+            Some(verdict) => {
+                found = Some(verdict);
+                true
+            }
+            None => false,
+        }
+    })?;
+    found.transpose()
+}
+
+/// The conversation an operation journal entry names.
+fn source_of(r: &Value) -> Option<&str> {
+    r["conversation_id"]
+        .as_str()
+        .or_else(|| r["session"]["conversation_id"].as_str())
+        .or_else(|| r["source"]["thread_id"].as_str())
+}
+
+/// Visits every journal entry in admission order (directory order, then entry
+/// order) until `visit` returns true. Only an absent directory means "no
+/// journals"; any other stat or read error blocks, naming the file.
+fn walk(
+    paths: &Paths,
+    mut visit: impl FnMut(&'static str, &std::path::Path, &Value) -> bool,
+) -> Result<()> {
     for directory in [
         crate::layout::RESUMPTIONS,
         crate::layout::CONVERSATION_OPERATIONS,
@@ -120,58 +151,109 @@ pub(crate) fn pending_detail(
                 }
                 Err(e) => return Err(e.into()),
             };
-            let id = r["id"]
-                .as_str()
-                .or_else(|| r["request"]["request_id"].as_str())
-                .or_else(|| r["request"]["message_id"].as_str());
-            let source = r["conversation_id"]
-                .as_str()
-                .or_else(|| r["session"]["conversation_id"].as_str())
-                .or_else(|| r["source"]["thread_id"].as_str());
-            // raw-path: a journal directory constant, not a filesystem path
-            if directory == crate::layout::HANDOFF_JOBS {
-                if source == Some(thread)
-                    && id != own
-                    && matches!(
-                        r["phase"].as_str(),
-                        Some("complete" | "failed" | "cancelled" | "recovered")
-                    )
-                    && !crate::background::worker_stopped(&entry.with_extension("worker-lock"))?
-                {
-                    return Ok(Some(Pending {
-                        id: id.context("INVALID_OPERATION_ID")?.into(),
-                        kind: kind_of(directory),
-                        phase: r["phase"].as_str().unwrap_or("unknown").into(),
-                    }));
-                }
-                continue;
-            }
-            if source == Some(thread)
-                && id != own
-                && !matches!(
-                    r["phase"].as_str(),
-                    Some(
-                        "running"
-                            | "resumed"
-                            | "prompting"
-                            | "resuming"
-                            | "complete"
-                            | "failed"
-                            | "cancelled"
-                            | "recovered"
-                            | "abandoned"
-                    )
-                )
-            {
-                return Ok(Some(Pending {
-                    id: id.context("INVALID_OPERATION_ID")?.into(),
-                    kind: kind_of(directory),
-                    phase: r["phase"].as_str().unwrap_or("unknown").into(),
-                }));
+            if visit(directory, &entry, &r) {
+                return Ok(());
             }
         }
     }
-    Ok(None)
+    Ok(())
+}
+
+/// Whether the entry (naming `thread`) blocks it: the blocking operation, or
+/// an error reading its worker lock / id. `None`: the entry does not block.
+fn judge(
+    directory: &str,
+    entry: &std::path::Path,
+    r: &Value,
+    own: Option<&str>,
+) -> Option<Result<Pending>> {
+    let id = r["id"]
+        .as_str()
+        .or_else(|| r["request"]["request_id"].as_str())
+        .or_else(|| r["request"]["message_id"].as_str());
+    let pending = |id: Option<&str>| {
+        Ok(Pending {
+            id: id.context("INVALID_OPERATION_ID")?.into(),
+            kind: kind_of(directory),
+            phase: r["phase"].as_str().unwrap_or("unknown").into(),
+        })
+    };
+    // raw-path: a journal directory constant, not a filesystem path
+    if directory == crate::layout::HANDOFF_JOBS {
+        if id != own
+            && matches!(
+                r["phase"].as_str(),
+                Some("complete" | "failed" | "cancelled" | "recovered")
+            )
+        {
+            return match crate::background::worker_stopped(&entry.with_extension("worker-lock")) {
+                Ok(true) => None,
+                Ok(false) => Some(pending(id)),
+                Err(e) => Some(Err(e)),
+            };
+        }
+        return None;
+    }
+    (id != own
+        && !matches!(
+            r["phase"].as_str(),
+            Some(
+                "running"
+                    | "resumed"
+                    | "prompting"
+                    | "resuming"
+                    | "complete"
+                    | "failed"
+                    | "cancelled"
+                    | "recovered"
+                    | "abandoned"
+            )
+        ))
+    .then(|| pending(id))
+}
+
+/// Every conversation's blocking operation from one pass over the journals,
+/// for batch readers such as `state`. `get` answers exactly what
+/// [`pending_detail`] would for that conversation, including which error it
+/// would have hit: an entry decides only the conversation it names, and a
+/// journal that cannot be read blocks only conversations whose answer was not
+/// settled by an earlier entry.
+pub(crate) struct PendingIndex {
+    found: std::collections::HashMap<String, std::result::Result<Pending, String>>,
+    failed: Option<String>,
+}
+impl PendingIndex {
+    pub(crate) fn scan(paths: &Paths) -> Self {
+        let own = INLINE_OWNER.get().map(String::as_str);
+        crate::inline::settle_resumptions(paths);
+        let mut found: std::collections::HashMap<String, std::result::Result<Pending, String>> =
+            Default::default();
+        let failed = walk(paths, |directory, entry, r| {
+            let Some(thread) = source_of(r) else {
+                return false;
+            };
+            if found.contains_key(thread) {
+                return false;
+            }
+            if let Some(verdict) = judge(directory, entry, r, own) {
+                found.insert(thread.to_owned(), verdict.map_err(|e| format!("{e:#}")));
+            }
+            false
+        })
+        .err()
+        .map(|e| format!("{e:#}"));
+        Self { found, failed }
+    }
+    pub(crate) fn get(&self, thread: &str) -> Result<Option<Pending>> {
+        match self.found.get(thread) {
+            Some(Ok(p)) => Ok(Some(p.clone())),
+            Some(Err(e)) => Err(anyhow::anyhow!("{e}")),
+            None => match &self.failed {
+                Some(e) => Err(anyhow::anyhow!("{e}")),
+                None => Ok(None),
+            },
+        }
+    }
 }
 pub(crate) fn ensure_available(paths: &Paths, thread: &str, own: Option<&str>) -> Result<()> {
     if let Some(p) = pending_detail(paths, thread, own)? {
@@ -293,5 +375,79 @@ mod tests {
         .unwrap();
         assert!(ensure_no_handoff(&p, &thread, None).is_err());
         assert!(ensure_no_handoff(&p, &thread, Some("move")).is_ok());
+    }
+    /// One pass over the journals answers every conversation exactly as a scan per
+    /// conversation does, including which ones an unreadable journal blocks.
+    #[test]
+    fn the_batch_index_answers_like_a_scan_per_conversation() {
+        let d = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(d.path().join("state"))).unwrap();
+        let ids: Vec<String> = (0..6).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        let write = |dir: &str, name: &str, v: Value| {
+            private_dir(&p.root.join(dir)).unwrap();
+            fs::write(p.root.join(dir).join(name), serde_json::to_vec(&v).unwrap()).unwrap();
+        };
+        let compare = |p: &Paths| {
+            let index = PendingIndex::scan(p);
+            for id in ids.iter().map(String::as_str).chain(["unknown-thread"]) {
+                let one = pending_detail(p, id, None).map_err(|e| format!("{e:#}"));
+                let batch = index.get(id).map_err(|e| format!("{e:#}"));
+                assert_eq!(one, batch, "{id}");
+            }
+        };
+        compare(&p);
+        write(
+            crate::layout::RESUMPTIONS,
+            "a.json",
+            json!({"conversation_id":ids[0],"request":{"request_id":"a"},"phase":"uncertain"}),
+        );
+        write(
+            crate::layout::CONVERSATION_OPERATIONS,
+            "b.json",
+            json!({"id":"b","session":{"conversation_id":ids[1]},"phase":"queued"}),
+        );
+        write(
+            crate::layout::CONVERSATION_OPERATIONS,
+            "c.json",
+            json!({"id":"c","session":{"conversation_id":ids[1]},"phase":"queued"}),
+        );
+        write(
+            crate::layout::CONVERSATION_OPERATIONS,
+            "d.json",
+            json!({"id":"d","session":{"conversation_id":ids[2]},"phase":"complete"}),
+        );
+        write(
+            crate::layout::HANDOFF_JOBS,
+            "e.json",
+            json!({"id":"e","source":{"thread_id":ids[3]},"phase":"failed"}),
+        );
+        write(
+            crate::layout::HANDOFF_JOBS,
+            "f.json",
+            json!({"source":{"thread_id":ids[4]},"phase":"failed"}),
+        );
+        write(
+            crate::layout::SPACE_MOVES,
+            "g.json",
+            json!({"conversation_id":ids[5],"phase":"moving"}),
+        );
+        compare(&p);
+        assert_eq!(
+            PendingIndex::scan(&p).get(&ids[1]).unwrap().unwrap().id,
+            "b"
+        );
+        // An unreadable journal blocks only what no earlier entry settled.
+        fs::write(
+            p.root
+                .join(crate::layout::CONVERSATION_OPERATIONS)
+                .join("bad.json"),
+            b"{",
+        )
+        .unwrap();
+        compare(&p);
+        let index = PendingIndex::scan(&p);
+        assert!(index.get(&ids[0]).unwrap().is_some());
+        assert!(index.get(&ids[2]).is_err());
+        assert!(index.get("unknown-thread").is_err());
     }
 }

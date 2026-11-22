@@ -9,7 +9,7 @@
 //!   sessions/          archived/, preserved/ (deleted accounts' history), hosted/ (hosted Claude)
 //!   operations/        operation journals: launches, resumptions, deletions, moves, ...
 //!   messaging/         receipts.db, checkpoints, observations, Claude/Gemini journals, questions
-//!   cache/             regenerable data: state snapshots, batch observations, reports
+//!   cache/             regenerable data: state snapshots, batch observations, reports, transcript facts
 //!   logs/              daemon.log, handoff.log
 //!   accounts/<platform>/<name>   account homes (codex, claude, gemini, antigravity)
 //! ```
@@ -114,6 +114,8 @@ pub const QUESTIONS: &str = "messaging/questions";
 
 pub const OBSERVATIONS: &str = "cache/observations";
 pub const COMPATIBILITY_REPORT: &str = "cache/compatibility-report.json";
+/// Per-transcript facts of Claude transcripts (regenerable; contract 1.57.0).
+pub const TRANSCRIPT_FACTS: &str = "cache/claude-transcript-facts.json";
 
 pub const DAEMON_LOG: &str = "logs/daemon.log";
 pub const HANDOFF_LOG: &str = "logs/handoff.log";

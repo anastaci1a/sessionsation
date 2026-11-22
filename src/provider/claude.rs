@@ -15,6 +15,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 pub mod attach;
 pub mod bypass;
+mod facts;
 pub mod hosted;
 pub mod launch;
 pub mod native_peer;
@@ -23,9 +24,11 @@ pub mod sender_registry;
 pub mod statusline_seed;
 pub mod trust;
 
+#[cfg(test)]
+use std::io::{BufRead, BufReader};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -598,7 +601,8 @@ fn project_dirs(home: &Path) -> Vec<PathBuf> {
     dirs.sort();
     dirs
 }
-/// Read only metadata fields from the first lines; message text is never kept.
+/// Reference reader of the head metadata (the cached facts must equal it).
+#[cfg(test)]
 fn transcript_metadata(path: &Path) -> (Option<String>, Option<String>, Option<String>) {
     let (mut id, mut cwd, mut at) = (None, None, None);
     let Ok(file) = fs::File::open(path) else {
@@ -626,6 +630,7 @@ fn transcript_metadata(path: &Path) -> (Option<String>, Option<String>, Option<S
 }
 /// `forkedFrom.sessionId` on the leading records: Claude copies a branched
 /// conversation into a new session and stamps each copied record with it.
+#[cfg(test)]
 fn forked_from(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
     let file = fs::File::open(path).ok()?;
@@ -729,7 +734,12 @@ pub fn transcripts(home: &Path) -> Vec<Transcript> {
             if uuid::Uuid::parse_str(stem).is_err() || !regular_file(&path) {
                 continue;
             }
-            let (id, cwd, started_at) = transcript_metadata(&path);
+            let facts::Head {
+                id,
+                cwd,
+                at: started_at,
+                ..
+            } = facts::head(&path);
             if id.as_deref().is_some_and(|id| id != stem) {
                 continue;
             }
@@ -1089,10 +1099,12 @@ pub fn observe_in(
     live: &LiveProbe,
 ) -> Observation {
     let transcript = find_transcript(home, session_id);
-    let (_, cwd, started_at) = transcript
-        .as_deref()
-        .map(transcript_metadata)
-        .unwrap_or_default();
+    let facts::Head {
+        cwd,
+        at: started_at,
+        forked_from,
+        ..
+    } = transcript.as_deref().map(facts::head).unwrap_or_default();
     let mut o = Observation {
         availability: "unknown",
         native_status: None,
@@ -1104,7 +1116,7 @@ pub fn observe_in(
             .as_deref()
             .and_then(|p| fs::symlink_metadata(p).ok())
             .map(|m| m.len()),
-        forked_from: transcript.as_deref().and_then(forked_from),
+        forked_from,
         transcript,
         started_at,
         attachment: None,
@@ -1328,67 +1340,6 @@ pub fn deleted(paths: &Paths, name: &str) -> Result<bool> {
         .any(|r| r.account_id == id && r.phase == "complete"))
 }
 
-/// Continuation markers keyed by transcript path and (size, mtime), so the
-/// bounded tail of an unchanged transcript is read once, not on every poll.
-struct LineageCache {
-    file: PathBuf,
-    entries: std::collections::BTreeMap<String, (u64, i128, Option<String>)>,
-    changed: bool,
-}
-impl LineageCache {
-    fn load(paths: &Paths) -> Self {
-        let file = paths
-            .root
-            .join(crate::layout::SESSION_CATALOG)
-            .join("claude-lineage.json");
-        let entries = fs::read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        Self {
-            file,
-            entries,
-            changed: false,
-        }
-    }
-    fn continued_in(&mut self, path: &Path) -> Option<String> {
-        let meta = fs::symlink_metadata(path).ok()?;
-        let modified = meta
-            .modified()
-            .ok()
-            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_nanos() as i128);
-        let key = path.to_string_lossy().into_owned();
-        if let Some((len, at, next)) = self.entries.get(&key)
-            && *len == meta.len()
-            && *at == modified
-        {
-            return next.clone();
-        }
-        let next = continued_in(path);
-        self.entries
-            .insert(key, (meta.len(), modified, next.clone()));
-        self.changed = true;
-        next
-    }
-    fn save(self, live: &std::collections::BTreeSet<String>) {
-        if !self.changed && self.entries.keys().all(|k| live.contains(k)) {
-            return;
-        }
-        let entries: std::collections::BTreeMap<_, _> = self
-            .entries
-            .into_iter()
-            .filter(|(k, _)| live.contains(k))
-            .collect();
-        if let Some(dir) = self.file.parent()
-            && private_dir(dir).is_ok()
-            && let Ok(bytes) = serde_json::to_vec(&entries)
-        {
-            let _ = atomic_write(&self.file, &bytes);
-        }
-    }
-}
-
 /// Register discovered transcripts, link verified continuations and refresh live
 /// attachments for every Claude account. Returns observations keyed by catalog
 /// session id.
@@ -1404,15 +1355,15 @@ pub fn reconcile(
     let accounts = enrolled(paths)?;
     let mut discovered = vec![];
     let mut links = vec![];
-    let mut cache = LineageCache::load(paths);
+    facts::attach(paths.root.join(crate::layout::TRANSCRIPT_FACTS));
     let mut seen = std::collections::BTreeSet::new();
     for a in &accounts {
         let found = transcripts(&a.home);
         let ids: std::collections::BTreeSet<_> =
             found.iter().map(|t| t.session_id.clone()).collect();
         for t in found {
-            seen.insert(t.path.to_string_lossy().into_owned());
-            if let Some(next) = cache.continued_in(&t.path)
+            seen.extend(facts::key_of(&t.path));
+            if let Some(next) = facts::tail(&t.path).and_then(|f| f.continued_in)
                 && ids.contains(&next)
             {
                 // Continued under a new id in this same account home: the old
@@ -1438,7 +1389,7 @@ pub fn reconcile(
             });
         }
     }
-    cache.save(&seen);
+    facts::flush(&seen);
     catalog::link_continuations(paths, ProviderId::Claude, &links)?;
     let sessions = catalog::register_discovered(paths, ProviderId::Claude, &discovered)?;
     let probes: std::collections::BTreeMap<_, _> = accounts
@@ -1493,6 +1444,11 @@ pub fn reconcile(
     }
     catalog::observe_provider_sessions(paths, attachments)?;
     Ok(observations)
+}
+
+/// Milliseconds of the newest record of a Claude transcript, else of its modification time.
+pub(crate) fn last_record_ms(path: &Path) -> Option<i64> {
+    facts::tail(path).and_then(|t| t.last_ms)
 }
 
 // -------------------------------------------------------------------- usage

@@ -37,9 +37,13 @@ fn file(paths: &Paths) -> std::path::PathBuf {
         .join("placements.json")
 }
 fn read(paths: &Paths) -> Result<Placements> {
+    Ok(read_raw(paths)?.0)
+}
+/// The parsed file and its exact bytes (empty when absent).
+fn read_raw(paths: &Paths) -> Result<(Placements, Vec<u8>)> {
     match fs::read(file(paths)) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Placements::default()),
+        Ok(bytes) => Ok((serde_json::from_slice(&bytes)?, bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((Placements::default(), vec![])),
         Err(e) => Err(e.into()),
     }
 }
@@ -93,7 +97,7 @@ fn membership<'a>(snapshot: &'a Value, a: &Attachment) -> Result<(&'a str, &'a s
 type HostObservation = (Session, Host, Option<(i64, Value)>);
 pub(crate) fn record(paths: &Paths, observations: Vec<HostObservation>) -> Result<()> {
     transaction(paths, |catalog| {
-        let mut data = read(paths)?;
+        let (mut data, current) = read_raw(paths)?;
         let now = daemon::now();
         for (session, host, snapshot) in observations {
             let Some(a) = session.attachment.as_ref() else {
@@ -166,7 +170,13 @@ pub(crate) fn record(paths: &Paths, observations: Vec<HostObservation>) -> Resul
                 }
             }
         }
-        atomic_write(&file(paths), &serde_json::to_vec(&data)?)
+        // Nothing to record is not a write (no rename, no fsync): the file is
+        // replaced only when its content changes.
+        let next = serde_json::to_vec(&data)?;
+        if next == current {
+            return Ok(());
+        }
+        atomic_write(&file(paths), &next)
     })
 }
 /// One disk read per public batch. Fresh means bounded host evidence, never an
@@ -337,5 +347,33 @@ mod tests {
         tmux.id = "other".into();
         tmux.attachment.as_mut().unwrap().host = "tmux".into();
         assert_eq!(get(&p, &tmux)["reason"], "not_herdr");
+    }
+    /// A call that records nothing new neither renames nor fsyncs the file (contract 1.57.0).
+    #[test]
+    fn recording_nothing_new_does_not_rewrite_the_file() {
+        use std::os::unix::fs::MetadataExt;
+        let (_t, p, s, h) = setup();
+        let host = |h: &Host| Host {
+            session: h.session.clone(),
+            socket: h.socket.clone(),
+        };
+        record(
+            &p,
+            vec![(s.clone(), host(&h), Some(snapshot("w1", "Work")))],
+        )
+        .unwrap();
+        let first = fs::metadata(file(&p)).unwrap();
+        record(&p, vec![]).unwrap();
+        let mut moved = s.clone();
+        moved.attachment.as_mut().unwrap().process_start += 1;
+        record(&p, vec![(moved, host(&h), Some(snapshot("w1", "Other")))]).unwrap();
+        assert_eq!(fs::metadata(file(&p)).unwrap().ino(), first.ino());
+        assert_eq!(get(&p, &s)["space"]["label"], "Work");
+        let at = daemon::now() + 5;
+        let mut later = snapshot("w1", "Renamed");
+        later.0 = at;
+        record(&p, vec![(s.clone(), h, Some(later))]).unwrap();
+        assert_ne!(fs::metadata(file(&p)).unwrap().ino(), first.ino());
+        assert_eq!(get(&p, &s)["space"]["label"], "Renamed");
     }
 }

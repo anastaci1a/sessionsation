@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.56.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.57.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3945,3 +3945,26 @@ MINOR (additive fields; no error code or field is removed).
 - **No defunct workers.** The supervisor reaps every detached worker it starts (`background::SpawnReaped`: a
   small thread waits on the child). Workers keep their own process group and still outlive the supervisor; before
   this, each finished worker stayed `<defunct>` until the supervisor restarted.
+
+### Cheap full `state` (1.57.0)
+
+MINOR (performance only; no field, error code or ordering changes). A full `api state` on a host with
+about 190 sessions read 951 MB in 1.06 M reads (3.1 s CPU, 4-5 s wall) and the supervisor repeated it every 20 s.
+The result is the same bytes of facts; the work is not.
+
+- **One pass over the operation journals.** `state` used to rescan every journal directory (`resumptions`,
+  `conversation-operations`, `handoff-jobs`, `space-moves`, `claude-switches`, `auto-recoveries`,
+  `message-recoveries`, `root-migrations`) once per session (sessions x journals reads, about 90 % of the bytes).
+  It now reads each journal once and answers every session from that pass; the blocking operation chosen for a
+  session, and the error a journal that cannot be read produces, are exactly what the per-session scan gave.
+- **Per-transcript facts are remembered.** For Claude transcripts the head metadata (`directory`,
+  `conversation_created_at`), `forked_from_conversation_id`, the `continued-in` hand-off and `last_accessed` are
+  derived by at most one bounded read per transcript and kept while the file is unchanged, in memory and in
+  `cache/claude-transcript-facts.json` (regenerable; deleting it only costs one re-read). Entries are keyed by file
+  identity (device and inode), so accounts that share one projects directory share them, and are valid for an
+  exact (size, mtime); a head survives appends when the first 4 KiB still hash the same. A truncated, rewritten or
+  replaced transcript is read again. A stopped session's transcript is not read again while unchanged.
+- **No write without a change.** `state` writes the host placement file (`placements.json`) and the facts cache
+  only when their content changed (no rename, no fsync otherwise). Host evidence for sessions attached to HERDR
+  carries `observed_at`/`checked_at`, which change on every observation, so that file still changes then. The
+  `cache/state-snapshot-*.json` file that `state --cached` serves is still written by every full `state`.
