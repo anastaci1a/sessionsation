@@ -367,6 +367,7 @@ pub(crate) fn public(r: &Record) -> Value {
         "non_steering":true,"replays":false})
 }
 
+#[derive(Clone, Copy)]
 pub struct Request<'a> {
     pub session: &'a str,
     pub expected_generation: &'a str,
@@ -514,6 +515,38 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
     let mut v = public(&r);
     v["existing"] = json!(false);
     Ok(v)
+}
+
+/// Admission that, for a freshly launched Claude session, waits (bounded by `wait_seconds`, with
+/// backoff) for the session's first status-line record before deciding (contract 1.58.0).
+pub async fn request_waiting(
+    paths: &Paths,
+    req: Request<'_>,
+    wait_seconds: u64,
+) -> anyhow::Result<Value> {
+    retry_unrecorded(wait_seconds, || request(paths, req)).await
+}
+
+/// Retry `attempt` while it fails with `HookNotRecorded`, until the deadline (250 ms doubling to 2 s).
+pub(crate) async fn retry_unrecorded<T>(
+    wait_seconds: u64,
+    mut attempt: impl FnMut() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_seconds);
+    let mut pause = std::time::Duration::from_millis(250);
+    loop {
+        match attempt() {
+            Err(e)
+                if e.downcast_ref::<claude::HookNotRecorded>().is_some()
+                    && std::time::Instant::now() < deadline =>
+            {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                tokio::time::sleep(crate::timing::scaled(pause).min(left)).await;
+                pause = (pause * 2).min(std::time::Duration::from_secs(2));
+            }
+            other => return other,
+        }
+    }
 }
 
 /// Wait (bounded) for the record to end. A non-`complete` end is `MODEL_NOT_CONFIRMED`.
@@ -1061,7 +1094,7 @@ pub async fn monitor(paths: Paths) {
 
 /// `api capabilities.session_model`.
 pub fn capability() -> Value {
-    json!({"since_contract":"1.49.0","version":1,
+    let mut value = json!({"since_contract":"1.49.0","version":1,
         "row_field":"model","row_shape":["id","effort","observed_at","source"],
         "sources":["claude_statusline","codex_thread","set_model"],"exact_ids_only":true,"effort_after_model":true,
         "claude_model_grammar":"claude-<lower-case letters, digits, dots, dashes>[1m]?","claude_efforts":session_model::CLAUDE_EFFORTS,
@@ -1081,7 +1114,9 @@ pub fn capability() -> Value {
                 "claude":"not held; terminal deliveries wait for the pane lock the worker holds while applying"},
             "ordering":"compactions and model changes of one session run in request order",
             "not_confirmed_error":"MODEL_NOT_CONFIRMED","journal":crate::layout::MODEL_CHANGES,"replays":false},
-        "launch":crate::session_launch::capability()})
+        "launch":crate::session_launch::capability()});
+    value["set"]["admission_wait"] = json!({"since_contract":"1.58.0","claude":"with --wait, admission waits (bounded, backoff) for the session first status-line record","not_recorded_yet":{"code":"SESSION_STATE_UNVERIFIED","detail":"hook_not_recorded","retryable":true}});
+    value
 }
 
 #[cfg(test)]

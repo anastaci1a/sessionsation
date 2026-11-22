@@ -423,4 +423,93 @@ mod tests {
         assert!(age < Duration::from_secs(86400 * 365));
         assert!(process_age(u64::MAX / 4).is_none());
     }
+
+    fn request(
+        session: &crate::catalog::Session,
+        id: &str,
+        expires_at: i64,
+    ) -> crate::messaging::public::PublicRequest {
+        crate::messaging::public::PublicRequest {
+            origin: None,
+            delivery: None,
+            await_reply: false,
+            if_busy: None,
+            steering: None,
+            recovery: None,
+            api_version: 1,
+            message_id: id.into(),
+            session_id: session.id.clone(),
+            expected_generation: session.generation(),
+            mode: crate::messaging::public::PublicMode::Submit,
+            text: "hello".into(),
+            expires_at,
+        }
+    }
+
+    /// Contract 1.58.0: a refused connection is a definite, retryable failure with the native
+    /// error and a health counter; a later success resets the counter.
+    #[tokio::test]
+    async fn refused_connection_is_not_delivered_with_native_error_and_counts_in_health() {
+        use crate::messaging::input_health;
+        let (_dir, paths, input, _) = fixture();
+        let expires = crate::daemon::now() + 120;
+        let mut a = attachment_fixture(&paths, &input);
+        bind(&paths, &mut a);
+        let instance: external::Instance = serde_json::from_value(json!({"pane":"%1","tmux_session":"fixture","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
+        let session = crate::catalog::reconcile(&paths, &[instance])
+            .unwrap()
+            .remove(0);
+        let one = "11111111-1111-4111-8111-111111111111";
+        let two = "22222222-2222-4222-8222-222222222222";
+        let three = "33333333-3333-4333-8333-333333333333";
+        let out = send_public(&paths, request(&session, one, expires))
+            .await
+            .unwrap();
+        assert_eq!(out["state"], "rejected", "{out}");
+        assert_eq!(out["reason"], "endpoint_unavailable");
+        assert_eq!(out["facts"]["native_error"]["kind"], "endpoint_unavailable");
+        assert_eq!(out["facts"]["retryable"], true);
+        assert_eq!(out["facts"]["accepted_native"], false);
+        assert!(!out.to_string().contains("hello"));
+        let h = input_health::public(&paths, &a.id);
+        assert_eq!(h["consecutive_failures"], 1);
+        assert_eq!(h["last_outcome"], "not_delivered");
+        assert_eq!(h["last_native_error"]["kind"], "endpoint_unavailable");
+        assert!(h["last_success_at"].is_null());
+        let out = send_public(&paths, request(&session, two, expires))
+            .await
+            .unwrap();
+        assert_eq!(out["state"], "rejected");
+        assert_eq!(
+            input_health::public(&paths, &a.id)["consecutive_failures"],
+            2
+        );
+        // The app-server comes back: the next send is accepted and the counter resets.
+        let server = scripted_connections(
+            &a.endpoint(),
+            move |r| match r["method"].as_str().unwrap() {
+                "thread/read" => {
+                    Some(json!({"thread":{"id":r["params"]["threadId"],"status":{"type":"idle"}}}))
+                }
+                "thread/queue/add" => Some(
+                    json!({"queuedSubmission":{"id":"q1","clientUserMessageId":r["params"]["clientUserMessageId"]}}),
+                ),
+                "thread/turns/list" => Some(json!({"data":[],"nextCursor":null})),
+                other => panic!("unexpected {other}"),
+            },
+            4,
+        )
+        .await;
+        let out = send_public(&paths, request(&session, three, expires))
+            .await
+            .unwrap();
+        server.abort();
+        assert_eq!(out["state"], "native_accepted", "{out}");
+        let h = input_health::public(&paths, &a.id);
+        assert_eq!(h["consecutive_failures"], 0);
+        assert_eq!(h["last_outcome"], "accepted");
+        assert!(h["last_success_at"].is_i64());
+        // The earlier error stays as the last diagnostic.
+        assert_eq!(h["last_native_error"]["kind"], "endpoint_unavailable");
+    }
 }

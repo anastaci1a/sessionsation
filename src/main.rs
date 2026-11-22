@@ -2070,6 +2070,14 @@ fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
             .unwrap_or_else(|| format!("{error:#}"))
     };
     let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"OPERATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS")}});
+    // Contract 1.58.0: a session that has not written its first status-line record yet.
+    if error
+        .downcast_ref::<sessionsation::messaging::model_change::claude::HookNotRecorded>()
+        .is_some()
+    {
+        envelope["error"]["retryable"] = json!(true);
+        envelope["error"]["detail"] = json!("hook_not_recorded");
+    }
     if let Some(space) = error.downcast_ref::<sessionsation::disk_space::InsufficientSpace>() {
         envelope["error"]["free_bytes"] = json!(space.free_bytes);
         envelope["error"]["needed_bytes"] = json!(space.needed_bytes);
@@ -2176,5 +2184,25 @@ mod error_envelope_tests {
         ));
         assert_eq!(timeout["error"]["code"], "OPERATION_TIMEOUT");
         assert_eq!(timeout["error"]["retryable"], true);
+    }
+}
+
+#[cfg(test)]
+mod hook_not_recorded_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_not_yet_recorded_state_unverified_is_retryable() {
+        let fresh =
+            anyhow::Error::new(sessionsation::messaging::model_change::claude::HookNotRecorded);
+        let e = error_envelope(&fresh);
+        assert_eq!(e["error"]["code"], "SESSION_STATE_UNVERIFIED");
+        assert_eq!(e["error"]["retryable"], true);
+        assert_eq!(e["error"]["detail"], "hook_not_recorded");
+        let other = anyhow::anyhow!("SESSION_STATE_UNVERIFIED: the session reports no model");
+        let e = error_envelope(&other);
+        assert_eq!(e["error"]["code"], "SESSION_STATE_UNVERIFIED");
+        assert_eq!(e["error"]["retryable"], false);
+        assert!(e["error"]["detail"].is_null());
     }
 }

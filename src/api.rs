@@ -18,9 +18,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 57;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.57.1";
+pub const CONTRACT_MINOR: u32 = 58;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.58.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1849,6 +1849,11 @@ pub fn capabilities() -> Value {
     value["live_activity"] = json!({"since_revision":37,"version":1,"field":"sessions[].live_activity","providers":["codex","claude","gemini","antigravity"],"claude_gemini_antigravity_since_contract":"1.42.0","states":["working","idle","turn_ended","blocked","error","unknown"],"native_sources":{"claude":["native_registry","transcript_tail"],"gemini":["transcript_tail"],"antigravity":["transcript_tail"]},"error_text":"provider turn-error text, bounded to 300 characters, only with state error","cached_state":true,"source":"app_server_thread_status_else_rollout_tail"});
     value["pending_operations"] = json!({"since_revision":37,"field":"sessions[].pending_operations","kinds":["stop","pause","switch","restart"],"stop_wait_expiry_seconds":external::TERMINATE_WAIT_SECONDS});
     value["native_send_checks"] = json!({"since_revision":37,"version":1,"commands":["send"],"modes":["submit","queue"],"providers":["codex"],"readiness_wait_seconds":20,"consumption_wait_seconds":8,"unconsumed_input":"removed_and_failed:input_not_consumed","unproven_input":"delivery_unknown:consumption_unverified","failed_turn_accepts_input":true});
+    value["codex_submit_diagnostics"] = json!({"since_contract":"1.58.0","version":1,
+        "receipt":{"field":"facts.native_error","shape":["kind","message","at"],"kinds":["endpoint_unavailable","disconnected","timeout","native_rejected","malformed_response","native_frame_limit","unsafe_endpoint"],"message":"fixed bounded sentence per kind; never message text or provider output"},
+        "never_reached":{"kind":"endpoint_unavailable","state":"rejected","facts_retryable":true,"note":"the connection could not be made, so nothing was sent; a held release stays pending_local"},
+        "uncertain":{"state":"delivery_unknown","kinds":["disconnected","timeout","native_rejected","malformed_response","native_frame_limit"],"facts_retryable":false},
+        "session_health":{"row_field":"input_delivery.health","providers":["codex"],"shape":["last_outcome","last_attempt_at","last_success_at","consecutive_failures","last_native_error"],"outcomes":["accepted","not_delivered","uncertain"],"source":"messaging/input-health/<conversation>.json","provider_calls":0}});
     if let Some(claude) = value["providers"]
         .as_array_mut()
         .and_then(|p| p.iter_mut().find(|p| p["id"] == "claude"))
@@ -2400,6 +2405,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         if archived { value["capabilities"]=json!({"rename":false,"add_to_herdr":false,"change_directory":false,"move_project":false,"resume":false,"switch_account":false,"move_space":false,"restart":false,"stop":false,"archive":false,"delete":value["archive"]["kind"]=="managed","restore":value["archive"]["kind"]=="managed"}); }
         let ctx = CodexReasonContext { running, unambiguous, known, in_herdr: source.is_some_and(|s|s.pane.starts_with("herdr/")), resume_supported, archived };
         fill_codex_reasons(&mut value, &ctx);
+        // Contract 1.58.0: submit health from the last outcomes (one tiny file; no provider call).
+        value["input_delivery"] = json!({"health":crate::messaging::input_health::public(paths,value["conversation_id"].as_str().unwrap_or_default())});
         value
     }).filter(|s|match filter { ArchiveFilter::All=>true, ArchiveFilter::Archived=>s["archived"]==true, ArchiveFilter::Active=>s["archived"]!=true }).collect::<Vec<_>>();
     let jobs = external::jobs(paths).unwrap_or_default();
@@ -3007,7 +3014,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 "INVALID_ARGUMENT: --wait is at most {} seconds",
                 mc::MAX_WAIT_SECONDS
             );
-            let v = mc::request(
+            let v = mc::request_waiting(
                 paths,
                 mc::Request {
                     session: &session,
@@ -3018,7 +3025,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     expires_at,
                     operation: operation.as_deref(),
                 },
-            )?;
+                wait,
+            )
+            .await?;
             if wait > 0 {
                 mc::wait(paths, v["id"].as_str().unwrap_or_default(), wait).await?
             } else {
@@ -4235,7 +4244,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.57.1");
+        assert_eq!(c["contract_version"], "1.58.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
         assert_eq!(root["layout_version"], 3);

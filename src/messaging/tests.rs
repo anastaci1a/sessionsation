@@ -1319,3 +1319,54 @@ fn a_stale_error_never_overwrites_a_receipt_another_sender_settled() {
         Some("note")
     );
 }
+
+/// Contract 1.58.0: an EOF in the middle of the add stays uncertain, records the native error on
+/// the receipt and in the session health; a later accepted add resets the failure counter.
+#[tokio::test]
+async fn mid_request_eof_stays_uncertain_with_native_error_and_success_resets_health() {
+    let (_dir, paths, input, now) = fixture();
+    let a = attachment_fixture(&paths, &input);
+    let attempts = Arc::new(std::sync::Mutex::new(0));
+    let seen = attempts.clone();
+    let server = scripted_connections(
+        &a.endpoint(),
+        move |r| {
+            assert_eq!(r["method"], "thread/queue/add");
+            let mut n = seen.lock().unwrap();
+            *n += 1;
+            // First add: the server dies without answering. Second: accepted.
+            (*n > 1).then(|| json!({"queuedSubmission":{"id":"q-2","clientUserMessageId":r["params"]["clientUserMessageId"]}}))
+        },
+        2,
+    )
+    .await;
+    let mut db = Ledger::open(&paths).unwrap();
+    let mut first = db.accept(&input, now).unwrap();
+    let mut control = a.connect().await.unwrap();
+    submit(&mut control, &mut db, &mut first, &input)
+        .await
+        .unwrap();
+    assert_eq!(first.state, "unknown");
+    assert_eq!(first.reason.as_deref(), Some("submission_uncertain"));
+    let e = first.native_error.clone().unwrap();
+    assert_eq!(e.kind, "disconnected");
+    assert!(e.message.len() < 200 && !e.message.contains(&input.text));
+    assert_eq!(db.get(&first.message_id).unwrap().unwrap(), first);
+    let h = input_health::public(&paths, &input.session_id);
+    assert_eq!(h["consecutive_failures"], 1);
+    assert_eq!(h["last_outcome"], "uncertain");
+    assert_eq!(h["last_native_error"]["kind"], "disconnected");
+    let mut again = input.clone();
+    again.message_id = "44444444-4444-4444-8444-444444444444".into();
+    let mut second = db.accept(&again, now).unwrap();
+    let mut control = a.connect().await.unwrap();
+    submit(&mut control, &mut db, &mut second, &again)
+        .await
+        .unwrap();
+    assert_eq!(second.state, "native_accepted");
+    let h = input_health::public(&paths, &input.session_id);
+    assert_eq!(h["consecutive_failures"], 0);
+    assert_eq!(h["last_outcome"], "accepted");
+    assert!(h["last_success_at"].is_i64());
+    server.abort();
+}

@@ -525,6 +525,7 @@ mod tests {
             reason: None,
             correlation: None,
             reply: None,
+            native_error: None,
             submit: Some(SubmitEvidence {
                 expected_turn_id: "turn-1".into(),
                 acknowledged_turn_id: Some("turn-1".into()),

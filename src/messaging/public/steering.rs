@@ -299,6 +299,7 @@ pub(super) fn unsubmitted(b: &Binding, state: &str) -> Value {
         reply: None,
         submit: None,
         steer: None,
+        native_error: None,
     };
     receipt(b, &r)
 }

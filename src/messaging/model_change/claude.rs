@@ -47,21 +47,43 @@ pub(crate) fn admit(
     );
     ensure!(o.availability == "running", "SESSION_NOT_RUNNING");
     let t = term::eligible(&o).map_err(|code| anyhow::anyhow!("{code}"))?;
-    let hook = current_hook(&account.home, &session.conversation_id, &o).context(
-        "SESSION_STATE_UNVERIFIED: the session reports no model (started before contract 1.49, status line disabled, or folder trust not accepted); stop and resume it to enable set-model",
-    )?;
-    Ok((t, hook))
-}
-
-/// The hook record of this running process: written at or after its start.
-fn current_hook(home: &Path, conversation: &str, o: &claude::Observation) -> Option<HookRecord> {
     let started = o
         .process_start
         .and_then(claude::process_started_at)
-        .or(o.active_since)?;
-    crate::session_model::hook_record(home, conversation)
-        .filter(|h| h.model_id.is_some() && h.observed_at_ms / 1000 >= started - 2)
+        .or(o.active_since);
+    let record = crate::session_model::hook_record(&account.home, &session.conversation_id);
+    hook_verdict(started, record).map(|hook| (t, hook))
 }
+
+/// The hook record of this running process (written at or after its start), or why none counts.
+/// A record of this process without a model is a permanent cause; no record of this process yet
+/// is the retryable `HookNotRecorded` (contract 1.58.0).
+pub(crate) fn hook_verdict(
+    started: Option<i64>,
+    record: Option<HookRecord>,
+) -> anyhow::Result<HookRecord> {
+    let current = started.and_then(|s| record.filter(|h| h.observed_at_ms / 1000 >= s - 2));
+    match current {
+        Some(h) if h.model_id.is_some() => Ok(h),
+        Some(_) => Err(anyhow::anyhow!(
+            "SESSION_STATE_UNVERIFIED: the session reports no model (started before contract 1.49, status line disabled, or folder trust not accepted); stop and resume it to enable set-model"
+        )),
+        None => Err(HookNotRecorded.into()),
+    }
+}
+
+/// Contract 1.58.0: the session's process has not written its first status-line record yet
+/// (a freshly launched session). Retryable, unlike the other `SESSION_STATE_UNVERIFIED` causes.
+#[derive(Debug)]
+pub struct HookNotRecorded;
+impl std::fmt::Display for HookNotRecorded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "SESSION_STATE_UNVERIFIED: hook_not_recorded: the session has not written its first status-line record yet (freshly launched); retry shortly or pass --wait",
+        )
+    }
+}
+impl std::error::Error for HookNotRecorded {}
 
 /// Re-observe the target: same process and pane as admitted.
 fn target(paths: &Paths, r: &Record) -> std::result::Result<(term::Terminal, PathBuf), String> {

@@ -922,3 +922,63 @@ fn cached_records_list_like_fresh_reads_and_follow_the_files() {
     );
     crate::file_cache::trust_fresh_stamps(false);
 }
+
+fn hook_with(model: Option<&str>, at_ms: i64) -> crate::session_model::HookRecord {
+    let dir = tempfile::tempdir().unwrap();
+    let mut payload = json!({"session_id":CONV});
+    if let Some(m) = model {
+        payload["model"] = json!({"id":m});
+    }
+    crate::session_model::record_hook(dir.path(), &payload, at_ms).unwrap();
+    crate::session_model::hook_record(dir.path(), CONV).unwrap()
+}
+
+#[test]
+fn a_fresh_session_without_its_own_record_is_not_recorded_yet_and_retryable() {
+    let not_recorded = |r: anyhow::Result<crate::session_model::HookRecord>| {
+        r.unwrap_err()
+            .downcast_ref::<claude::HookNotRecorded>()
+            .is_some()
+    };
+    assert!(not_recorded(claude::hook_verdict(Some(1000), None)));
+    assert!(not_recorded(claude::hook_verdict(None, None)));
+    // A record left by an earlier process of the conversation does not count.
+    let old = hook_with(Some("claude-opus-5-5"), 500_000);
+    assert!(not_recorded(claude::hook_verdict(Some(1000), Some(old))));
+    // Its own record without a model is the permanent cause, not retryable.
+    let mut nomodel = hook_with(Some("claude-opus-5-5"), 1_001_000);
+    nomodel.model_id = None;
+    let e = claude::hook_verdict(Some(1000), Some(nomodel)).unwrap_err();
+    assert!(e.downcast_ref::<claude::HookNotRecorded>().is_none());
+    assert!(e.to_string().starts_with("SESSION_STATE_UNVERIFIED"), "{e}");
+    let good = hook_with(Some("claude-opus-5-5"), 1_001_000);
+    assert!(claude::hook_verdict(Some(1000), Some(good)).is_ok());
+}
+
+#[tokio::test]
+async fn admission_waits_for_the_first_record_within_wait_and_otherwise_is_retryable() {
+    let calls = std::cell::Cell::new(0);
+    let r = retry_unrecorded(5, || {
+        calls.set(calls.get() + 1);
+        if calls.get() < 3 {
+            Err(claude::HookNotRecorded.into())
+        } else {
+            Ok(calls.get())
+        }
+    })
+    .await;
+    assert_eq!(r.unwrap(), 3);
+    // Another error is returned at once.
+    let calls = std::cell::Cell::new(0);
+    let r: anyhow::Result<()> = retry_unrecorded(5, || {
+        calls.set(calls.get() + 1);
+        anyhow::bail!("SESSION_NOT_RUNNING")
+    })
+    .await;
+    assert!(r.is_err() && calls.get() == 1);
+    // No record within the wait: the retryable error comes back.
+    let e = retry_unrecorded::<()>(0, || Err(claude::HookNotRecorded.into()))
+        .await
+        .unwrap_err();
+    assert!(e.downcast_ref::<claude::HookNotRecorded>().is_some());
+}

@@ -111,6 +111,7 @@ pub const RECEIPTS_DB: &str = "messaging/receipts.db";
 pub const CLAUDE_STEER: &str = "messaging/claude-steer";
 pub const CLAUDE_DELIVERIES: &str = "messaging/claude-deliveries";
 pub const QUESTIONS: &str = "messaging/questions";
+pub const INPUT_HEALTH: &str = "messaging/input-health";
 
 pub const OBSERVATIONS: &str = "cache/observations";
 pub const COMPATIBILITY_REPORT: &str = "cache/compatibility-report.json";

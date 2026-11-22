@@ -5,6 +5,7 @@ pub mod claude_steer;
 pub mod compaction;
 mod delivery;
 pub mod headless;
+pub mod input_health;
 pub mod model_change;
 mod modes;
 mod public;
@@ -24,6 +25,7 @@ use crate::{
     paths::{Paths, lock_file, private_dir},
 };
 use fs2::FileExt;
+pub use input_health::NativeError;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -121,6 +123,9 @@ pub struct Receipt {
     /// Steer-only reply attribution evidence (contract revision 15).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steer: Option<SteerEvidence>,
+    /// Contract 1.58.0: the newest native transport error of a submit (bounded, no message text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_error: Option<NativeError>,
 }
 /// Native item positions recorded immediately before a steer and re-verified on
 /// every observation. Contains item identifiers only, never input text.
@@ -643,6 +648,7 @@ impl Ledger {
             reply: None,
             submit: binding.as_ref().and_then(|b| b.2.clone()),
             steer: None,
+            native_error: None,
         };
         let data = serde_json::to_string(&receipt).map_err(|_| Fault("storage_error"))?;
         let tx = self.db.transaction()?;
@@ -813,7 +819,7 @@ async fn submit(
     ledger.save(receipt)?;
     let budget = wait_budget(&ledger.paths, Wait::Send);
     let result:Result<Added>=ledger.during(budget, control.request("thread/queue/add",json!({"threadId":receipt.session_id,"clientUserMessageId":receipt.message_id,"input":[{"type":"text","text":input.text,"text_elements":[]}]}))).await?;
-    match result {
+    let outcome = match result {
         Ok(response) => {
             if response.item.client_id == receipt.message_id
                 && !response.item.id.is_empty()
@@ -826,14 +832,43 @@ async fn submit(
                     receipt.reason = None;
                     ledger.save(receipt)?;
                 }
+                "accepted"
+            } else {
+                "uncertain"
             }
         }
         // A late acknowledgement (a session still starting) leaves the entry in the
-        // native queue: learn that without ever resending.
-        Err(_) => {
+        // native queue: learn that without ever resending. The request may have reached the
+        // server, so the receipt stays uncertain unless that proves it was accepted; the
+        // transport error is kept on the receipt (contract 1.58.0).
+        Err(fault) => {
+            let at = crate::daemon::now();
+            let error = input_health::native_error(fault, at);
+            if let Some(error) = error.clone()
+                && ledger.unchanged(receipt)?
+            {
+                receipt.native_error = Some(error);
+                ledger.save(receipt)?;
+            }
             let _ = reconcile(control, ledger, receipt).await;
+            let learned = receipt.state == "native_accepted";
+            input_health::record(
+                &ledger.paths,
+                &receipt.session_id,
+                if learned { "accepted" } else { "uncertain" },
+                error,
+                at,
+            );
+            return Ok(());
         }
-    }
+    };
+    input_health::record(
+        &ledger.paths,
+        &receipt.session_id,
+        outcome,
+        None,
+        crate::daemon::now(),
+    );
     Ok(())
 }
 async fn deliver(

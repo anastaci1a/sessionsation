@@ -111,7 +111,7 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         Some(_) => "stale",
         None => "unknown",
     };
-    json!({"origin":binding.origin.as_deref().unwrap_or("operator"),"origin_source":binding.origin_source.as_deref().unwrap_or("default"),
+    let mut out = json!({"origin":binding.origin.as_deref().unwrap_or("operator"),"origin_source":binding.origin_source.as_deref().unwrap_or("default"),
         "message_id":binding.request.message_id,"session_id":binding.request.session_id,
         "accepted_generation":binding.request.expected_generation,"provider":"codex",
         "accepted_runtime_generation":binding.native.expected_generation,
@@ -130,7 +130,14 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         "observation":{"state":observation,"checked_at":now,
             "native_attempted_at":if matches!(observation,"observed"|"uncorrelated"|"unavailable") {Some(now)} else {None},
             "evidence_observed_at":evidence_at,"freshness":freshness,"error_code":value["observation"]["code"]},
-        "reply":if reply.is_null() {Value::Null} else {json!({"item_id":reply["item_id"],"text":reply["text"],"phase":reply["phase"]})}})
+        "reply":if reply.is_null() {Value::Null} else {json!({"item_id":reply["item_id"],"text":reply["text"],"phase":reply["phase"]})}});
+    // Contract 1.58.0: the native transport error of a failed submit, and whether the input
+    // provably never reached the app-server (state `rejected`: safe to send again).
+    if !value["native_error"].is_null() {
+        out["facts"]["native_error"] = value["native_error"].clone();
+        out["facts"]["retryable"] = json!(value["state"] == "rejected");
+    }
+    out
 }
 
 /// `origin` must be `operator` or `agent`; a `delivery` other than `auto` names a Claude
@@ -325,7 +332,23 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         {
             Ok(from_idle) => accepted_from_idle = from_idle,
             Err(error) => {
+                let now = crate::daemon::now();
+                let transport = super::input_health::native_error(error, now);
+                // Before `submit` ran nothing was written to the app-server. A connection
+                // that could not be made is a definite failure (`rejected`, safe to send
+                // again); a held release keeps retrying as `pending_local`.
+                let unsent = receipt.state == "pending_local" && transport.is_some();
+                let never_reached =
+                    unsent && error.0 == "endpoint_unavailable" && !binding.released_hold;
                 ledger.amend(&mut receipt, |r| {
+                    if let Some(e) = transport.clone()
+                        && (r.state != "unknown" || r.native_error.is_none())
+                    {
+                        r.native_error = Some(e);
+                    }
+                    if never_reached && r.state == "pending_local" {
+                        r.state = "rejected".into();
+                    }
                     if r.state == "pending_local"
                         && matches!(
                             error.0,
@@ -339,6 +362,15 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
                     }
                     r.reason = Some(error.0.into());
                 })?;
+                if unsent {
+                    super::input_health::record(
+                        paths,
+                        &receipt.session_id,
+                        "not_delivered",
+                        transport,
+                        now,
+                    );
+                }
             }
         }
     }

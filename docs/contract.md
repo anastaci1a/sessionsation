@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.57.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.58.0`
 (the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3992,3 +3992,47 @@ minute at under 1 % of a core. Results are what the same reads gave before.
   Every mutation still runs inside the locked transaction and writes only when the catalog changed.
 - **Gone pane bindings are skipped for good.** A binding whose process id no longer exists (or now has another
   start time, or is a zombie) cannot come back, so the supervisor stops reading `/proc` for it.
+
+### Set-model admission wait and Codex submit diagnostics (1.58.0)
+
+MINOR (additive fields; no error code is removed or renamed).
+
+**Claude `session set-model` on a fresh session.** Admission needs the status-line (hook) record the
+session's own process writes; a session launched moments ago has none yet, which used to fail at once with
+`SESSION_STATE_UNVERIFIED`.
+
+- With `--wait` (the default for a non-`--when-idle` change is 90 s), admission waits, bounded by the wait, with
+  a 250 ms doubling backoff capped at 2 s, for the first record of this process, then proceeds as before.
+- If no record of this process exists when the wait ends (or without `--wait`), the error is
+  `SESSION_STATE_UNVERIFIED` with `error.retryable: true` and `error.detail: "hook_not_recorded"`; the message
+  contains `hook_not_recorded`. Only this not-yet-recorded case is retryable: a record of this process that has
+  no model (status line disabled, folder trust not accepted, a build before 1.49) keeps the old, non-retryable
+  `SESSION_STATE_UNVERIFIED`. A record left by an earlier process of the conversation does not count.
+- `capabilities.session_model.set.admission_wait` describes this.
+
+**Codex submit diagnostics.** A transport failure while submitting used to leave the receipt
+`delivery_unknown` (`submission_uncertain`) with no reason why.
+
+- `facts.native_error` `{kind, message, at}` is present on the public receipt (and `native_error` on the
+  ledger receipt) after a transport error. `kind` is one of `endpoint_unavailable` (socket missing, connection
+  refused, handshake failed, connect timeout), `disconnected` (EOF or a failed write), `timeout`,
+  `native_rejected` (JSON-RPC error), `malformed_response`, `native_frame_limit`, `unsafe_endpoint`.
+  `message` is a fixed bounded sentence per kind: never message text, provider output or paths. The first
+  error of an uncertain receipt is kept; later reconciliation failures do not replace it.
+- Uncertain stays uncertain: an error after the add was written (`disconnected`, `timeout`, `native_rejected`,
+  ...) keeps `state: "delivery_unknown"`, `reason: "submission_uncertain"` and is still reconciled without
+  resending; `facts.retryable` is `false`.
+- A definite failure: when the connection could not be made (`endpoint_unavailable`) before anything was
+  written, a new public send is `state: "rejected"`, `reason: "endpoint_unavailable"`, `facts.accepted_native:
+  false`, `facts.retryable: true` (the same state the repo uses for other pre-submit refusals; send again with a
+  new message id). A release of held input (compaction or model change) keeps its `pending_local` retry loop and
+  only records the `native_error`.
+- `capabilities.codex_submit_diagnostics` (version 1) lists the kinds and states.
+
+**Per-session input health.** Codex `api state` rows gain `input_delivery.health` (the key `input_delivery`
+already exists on Claude, Gemini and Antigravity rows with other members; Codex rows now carry it with only
+`health`): `{since_revision: 58, last_outcome: accepted|not_delivered|uncertain|null, last_attempt_at,
+last_success_at, consecutive_failures, last_native_error}`. An accepted submit sets `last_success_at` and
+resets `consecutive_failures` to 0; a `not_delivered` or `uncertain` submit adds 1. It is read from
+`messaging/input-health/<conversation>.json` (a few hundred bytes, written by the submit path under the session
+lock): no provider call and no ledger lock. Only submit attempts count (not observation reads).
