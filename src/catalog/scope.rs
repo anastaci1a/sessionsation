@@ -195,7 +195,7 @@ pub(super) fn taken_anywhere(c: &Catalog, name: &str) -> bool {
 
 /// Whether `name` is used by another entry (or reserved) in `space`.
 pub fn space_taken(paths: &Paths, space: Option<&str>, name: &str, except: &str) -> Result<bool> {
-    transaction(paths, |c| Ok(taken(c, space, name, Some(except), None)))
+    super::read_catalog(paths, |c| Ok(taken(c, space, name, Some(except), None)))
 }
 
 /// A parsed `--name`/`name`: a bare name, or `<space>:<name>`.

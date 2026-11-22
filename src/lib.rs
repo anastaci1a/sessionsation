@@ -12,6 +12,7 @@ pub mod control;
 pub mod daemon;
 pub mod disk_space;
 pub mod external;
+pub(crate) mod file_cache;
 pub mod identity;
 mod lifecycle;
 pub mod live_activity;

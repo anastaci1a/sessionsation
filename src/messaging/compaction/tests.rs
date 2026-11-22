@@ -1048,3 +1048,61 @@ fn diagnostics_are_rate_limited_per_operation_and_reason() {
     prune(&[]);
     assert!(log_due(op, "turn_read", 1000 + LOG_EVERY_SECONDS + 1));
 }
+
+/// Records served from the in-process cache list exactly like fresh reads of the files,
+/// and a rewrite, a removal or a corrupted file is seen on the next pass.
+#[test]
+fn cached_records_list_like_fresh_reads_and_follow_the_files() {
+    let d = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(d.path().join("state"))).unwrap();
+    crate::file_cache::trust_fresh_stamps(true);
+    let record = |n: u8, phase: &str| -> Record {
+        let id = uuid::Uuid::from_bytes([n; 16]).to_string();
+        serde_json::from_value(json!({"schema_version":1,"id":id,"session_id":"s","accepted_generation":"g",
+            "conversation_id":"c","runtime_generation":"r","phase":phase,"reason":null,"created_at":i64::from(n),
+            "updated_at":1,"expires_at":9,"started_at":null,"finished_at":null,"attempts":0,"baseline":[],
+            "compaction_turn_id":null,"hold_released":phase != "waiting","release_claimed_at":null}))
+        .unwrap()
+    };
+    let fresh = |paths: &Paths| -> Vec<Record> {
+        let mut all: Vec<Record> = fs::read_dir(dir(paths))
+            .unwrap()
+            .filter_map(|e| serde_json::from_slice(&fs::read(e.unwrap().path()).ok()?).ok())
+            .collect();
+        all.sort_by_key(|r| (r.created_at, r.id.clone()));
+        all
+    };
+    for (n, phase) in [(1, "complete"), (2, "waiting"), (3, "failed")] {
+        save(&paths, &record(n, phase)).unwrap();
+    }
+    for _ in 0..2 {
+        assert_eq!(list(&paths).unwrap(), fresh(&paths));
+    }
+    // Rewritten: the waiting record starts.
+    save(&paths, &record(2, "running_with_a_longer_phase_name")).unwrap();
+    assert_eq!(list(&paths).unwrap(), fresh(&paths));
+    assert_eq!(
+        read(&paths, &record(2, "x").id).unwrap().phase,
+        "running_with_a_longer_phase_name"
+    );
+    // Removed.
+    fs::remove_file(file(&paths, &record(1, "x").id).unwrap()).unwrap();
+    assert_eq!(list(&paths).unwrap().len(), 2);
+    assert!(
+        read(&paths, &record(1, "x").id)
+            .unwrap_err()
+            .to_string()
+            .contains("OPERATION_NOT_FOUND")
+    );
+    // Corrupted: skipped by the list, named by a direct read.
+    fs::write(file(&paths, &record(3, "x").id).unwrap(), b"{").unwrap();
+    assert_eq!(list(&paths).unwrap(), fresh(&paths));
+    assert_eq!(list(&paths).unwrap().len(), 1);
+    assert!(
+        read(&paths, &record(3, "x").id)
+            .unwrap_err()
+            .to_string()
+            .contains("UNREADABLE_OPERATION_RECORD")
+    );
+    crate::file_cache::trust_fresh_stamps(false);
+}

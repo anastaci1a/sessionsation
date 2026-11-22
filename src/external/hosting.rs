@@ -3,12 +3,28 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct HerdrBinding {
     target: String,
     binding: Binding,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     socket: Option<PathBuf>,
+}
+
+/// Pane binding records by file version (see [`crate::file_cache`]).
+static BINDINGS: crate::file_cache::FileCache<HerdrBinding> = crate::file_cache::FileCache::new();
+/// Bound processes (pid, start time) proven gone. A process identity never comes back: the
+/// pid can be reused only with another start time, so a gone binding is skipped without
+/// reading `/proc` again (there are hundreds of historical bindings for a handful of live ones).
+static GONE: std::sync::Mutex<std::collections::BTreeSet<(u32, u64)>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+fn is_gone(pid: u32, start_time: u64) -> bool {
+    GONE.lock().is_ok_and(|g| g.contains(&(pid, start_time)))
+}
+fn remember_gone(pid: u32, start_time: u64) {
+    if let Ok(mut g) = GONE.lock() {
+        g.insert((pid, start_time));
+    }
 }
 
 pub use crate::terminal::herdr_target;
@@ -163,22 +179,42 @@ fn instances_with_state(
         return Ok(vec![]);
     }
     let mut result = Vec::new();
-    for entry in fs::read_dir(dir)? {
+    let mut present = Vec::new();
+    for entry in fs::read_dir(&dir)? {
         let entry = entry?;
         if entry.path().extension().is_none_or(|e| e != "json") {
             continue;
         }
         ensure!(!entry.file_type()?.is_symlink(), "unsafe HERDR binding");
-        let record: HerdrBinding = serde_json::from_slice(&fs::read(entry.path())?)?;
+        present.push(entry.path());
+        let record =
+            match BINDINGS.load(&entry.path(), |b| serde_json::from_slice::<HerdrBinding>(b)) {
+                Ok(record) => (*record).clone(),
+                Err(crate::file_cache::LoadError::Io(e)) => return Err(e.into()),
+                Err(crate::file_cache::LoadError::Parse(e)) => return Err(e.into()),
+            };
         let b = record.binding;
+        if is_gone(b.pid, b.start_time) {
+            continue;
+        }
         // A dead or replaced bound process cannot own this pane. Reject it before
         // contacting HERDR: stopped servers otherwise add a connection timeout
         // per historical binding on every menu/discovery request. Retain the
         // binding/history, and keep the full host/ownership checks for live PIDs.
-        let Ok(bound) = process_info(b.pid) else {
-            continue;
+        let bound = match process_info(b.pid) {
+            Ok(bound) => bound,
+            Err(error) => {
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                {
+                    remember_gone(b.pid, b.start_time);
+                }
+                continue;
+            }
         };
         if bound.start_time != b.start_time || matches!(bound.state, 'Z' | 'X') {
+            remember_gone(b.pid, b.start_time);
             continue;
         }
         // Read-only discovery never starts a server and never infers ownership
@@ -238,6 +274,7 @@ fn instances_with_state(
             resume_options: launch.options,
         });
     }
+    BINDINGS.retain_dir(&dir, &present.iter().map(|p| p.as_path()).collect());
     Ok(result)
 }
 
@@ -929,6 +966,77 @@ mod space_binding_tests {
         // stale HERDR home cannot supply its live messaging attachment.
         assert!(!catalog::messaging_owner(&p, &thread, &home).unwrap());
         assert_eq!(super::super::messaging_inventory(&p).unwrap(), vec![thread]);
+    }
+    /// A binding whose process is gone is skipped without contacting HERDR, and remembered
+    /// as gone; a binding of a live process still reaches the host check. Cached records follow
+    /// a rewrite of the file.
+    #[test]
+    fn gone_bindings_are_skipped_for_good_and_live_ones_still_reach_the_host() {
+        let d = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(d.path().join("state"))).unwrap();
+        crate::file_cache::trust_fresh_stamps(true);
+        private_dir(&p.root.join(crate::layout::HERDR_PANES)).unwrap();
+        // This process is the live one; a pid that cannot exist is the exited one.
+        let me = std::process::id();
+        let start = process_info(me).unwrap().start_time;
+        let nobody = u32::MAX - 1;
+        let bind_to = |pane: &str, pid: u32, start_time: u64| {
+            atomic_write(
+                &binding_file(&p, pane),
+                &serde_json::to_vec(&HerdrBinding {
+                    target: pane.into(),
+                    socket: Some(p.root.join("s.sock")),
+                    binding: Binding {
+                        pid,
+                        start_time,
+                        home: p.root.join("home"),
+                        thread: uuid::Uuid::new_v4().to_string(),
+                    },
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        let (live, gone) = ("herdr/fixture/w1:p1", "herdr/fixture/w1:p2");
+        bind_to(live, me, start);
+        bind_to(gone, me, start + 1); // the pid now belongs to another process
+        bind_to("herdr/fixture/w1:p3", nobody, 7);
+        let mut asked = vec![];
+        let none = instances_with_state(&p, |pane, _| {
+            asked.push(pane.to_owned());
+            anyhow::bail!("host unavailable")
+        })
+        .unwrap();
+        assert!(none.is_empty());
+        assert_eq!(
+            asked,
+            [live],
+            "only the live process reaches the host check"
+        );
+        assert!(is_gone(me, start + 1));
+        assert!(is_gone(nobody, 7));
+        assert!(!is_gone(me, start));
+        // Same answers from the cache, and a rewritten record is read again.
+        let mut asked = vec![];
+        instances_with_state(&p, |pane, _| {
+            asked.push(pane.to_owned());
+            anyhow::bail!("host unavailable")
+        })
+        .unwrap();
+        assert_eq!(asked, [live]);
+        // The live pane's record is rewritten: the next pass reads the new content.
+        bind_to(live, me, start + 2);
+        let mut asked = vec![];
+        instances_with_state(&p, |pane, _| {
+            asked.push(pane.to_owned());
+            anyhow::bail!("host unavailable")
+        })
+        .unwrap();
+        assert!(
+            asked.is_empty(),
+            "the rewritten binding names a gone identity"
+        );
+        crate::file_cache::trust_fresh_stamps(false);
     }
     #[test]
     fn binding_write_rename_gap_recovers_and_cannot_replace_another_process() {

@@ -19,7 +19,7 @@ use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 /// Events kept in the journal; older ones are dropped (`gap:true` tells a waiter).
 pub const MAX_EVENTS: usize = 500;
@@ -61,7 +61,7 @@ pub struct Event {
     /// null without a designated session; else the queued message's outcome.
     pub delivery: Option<Value>,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct Store {
     #[serde(default)]
     schema_version: u32,
@@ -76,11 +76,17 @@ struct Store {
 fn store_file(paths: &Paths) -> PathBuf {
     paths.root.join(crate::layout::TURN_NOTIFY)
 }
+/// The settings file as parsed (see [`crate::file_cache`]): read on every poll, changed rarely.
+static LOADED: crate::file_cache::FileCache<Store> = crate::file_cache::FileCache::new();
 fn load(paths: &Paths) -> Result<Store> {
-    match fs::read(store_file(paths)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("UNREADABLE_TURN_NOTIFY_SETTINGS"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Store::default()),
-        Err(e) => Err(e.into()),
+    use crate::file_cache::LoadError;
+    match LOADED.load(&store_file(paths), |b| serde_json::from_slice::<Store>(b)) {
+        Ok(store) => Ok((*store).clone()),
+        Err(LoadError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(Store::default()),
+        Err(LoadError::Io(e)) => Err(e.into()),
+        Err(LoadError::Parse(e)) => {
+            Err(anyhow::Error::new(e).context("UNREADABLE_TURN_NOTIFY_SETTINGS"))
+        }
     }
 }
 fn with_store<R>(paths: &Paths, f: impl FnOnce(&mut Store) -> Result<R>) -> Result<R> {
@@ -406,7 +412,7 @@ mod tests {
             root: dir.path().join("state"),
             runtime: dir.path().join("runtime"),
         };
-        fs::create_dir_all(&paths.root).unwrap();
+        std::fs::create_dir_all(&paths.root).unwrap();
         (dir, paths)
     }
     fn enable(paths: &Paths, id: &str, to: Option<&str>) {

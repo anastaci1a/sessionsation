@@ -169,7 +169,7 @@ impl Setting {
         }
     }
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct Store {
     #[serde(default)]
     schema_version: u32,
@@ -188,22 +188,48 @@ struct Store {
 fn store_file(paths: &Paths) -> PathBuf {
     paths.root.join(crate::layout::AUTO_RECOVER)
 }
-fn load(paths: &Paths) -> Result<Store> {
-    match fs::read(store_file(paths)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("UNREADABLE_AUTO_RECOVER_SETTINGS"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Store::default()),
-        Err(e) => Err(e.into()),
+/// The settings file as parsed, with its bytes (see [`crate::file_cache`]): the supervisor
+/// reads it on every pass and it only changes when a setting does.
+struct Loaded {
+    store: Store,
+    bytes: Vec<u8>,
+}
+static LOADED: crate::file_cache::FileCache<Loaded> = crate::file_cache::FileCache::new();
+/// `None` when the file does not exist.
+fn load_raw(paths: &Paths) -> Result<Option<std::sync::Arc<Loaded>>> {
+    use crate::file_cache::LoadError;
+    match LOADED.load(&store_file(paths), |bytes| {
+        serde_json::from_slice::<Store>(bytes).map(|store| Loaded {
+            store,
+            bytes: bytes.to_vec(),
+        })
+    }) {
+        Ok(loaded) => Ok(Some(loaded)),
+        Err(LoadError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(LoadError::Io(e)) => Err(e.into()),
+        Err(LoadError::Parse(e)) => {
+            Err(anyhow::Error::new(e).context("UNREADABLE_AUTO_RECOVER_SETTINGS"))
+        }
     }
+}
+fn load(paths: &Paths) -> Result<Store> {
+    Ok(load_raw(paths)?.map_or_else(Store::default, |l| l.store.clone()))
 }
 /// Read-modify-write under an exclusive lock; the file is replaced atomically.
 fn with_store<R>(paths: &Paths, f: impl FnOnce(&mut Store) -> R) -> Result<R> {
     private_dir(&paths.root.join(crate::layout::REGISTRY))?;
     let lock = lock_file(&paths.root.join(crate::layout::AUTO_RECOVER_LOCK))?;
     lock.lock_exclusive()?;
-    let mut store = load(paths)?;
-    // Compared with the file as stored, so records from before 1.43.0 are rewritten
-    // (with their mode filled in) by the first write.
-    let before = fs::read(store_file(paths)).unwrap_or(serde_json::to_vec(&store)?);
+    let (mut store, before) = match load_raw(paths)? {
+        // Compared with the file as stored, so records from before 1.43.0 are rewritten
+        // (with their mode filled in) by the first write.
+        Some(loaded) => (loaded.store.clone(), loaded.bytes.clone()),
+        None => {
+            let store = Store::default();
+            let before = serde_json::to_vec(&store)?;
+            (store, before)
+        }
+    };
     for setting in store.sessions.values_mut() {
         setting.mode = Some(setting.mode());
     }

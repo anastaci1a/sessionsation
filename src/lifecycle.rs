@@ -85,6 +85,28 @@ pub(crate) fn pending_detail(
     found.transpose()
 }
 
+/// The fields the admission checks read from a journal entry (see [`source_of`] and
+/// [`judge`]), parsed once per file version: the journals hold thousands of finished
+/// operations and every pass visits all of them. Anything else in the entry is dropped.
+static ENTRIES: crate::file_cache::FileCache<Value> = crate::file_cache::FileCache::new();
+fn reduced(full: Value) -> Value {
+    use serde_json::json;
+    json!({
+        "id": full["id"],
+        "phase": full["phase"],
+        "conversation_id": full["conversation_id"],
+        "session": {"conversation_id": full["session"]["conversation_id"]},
+        "source": {"thread_id": full["source"]["thread_id"]},
+        "request": {"request_id": full["request"]["request_id"], "message_id": full["request"]["message_id"]},
+    })
+}
+/// The reduced entry of one journal file; the I/O and parse errors are the caller's to word.
+fn entry_value(
+    entry: &std::path::Path,
+) -> std::result::Result<std::sync::Arc<Value>, crate::file_cache::LoadError<serde_json::Error>> {
+    ENTRIES.load(entry, |b| serde_json::from_slice::<Value>(b).map(reduced))
+}
+
 /// The conversation an operation journal entry names.
 fn source_of(r: &Value) -> Option<&str> {
     r["conversation_id"]
@@ -124,32 +146,36 @@ fn walk(
                 ));
             }
         }
-        for entry in crate::paths::journal_paths(&root)? {
+        let entries = crate::paths::journal_paths(&root)?;
+        ENTRIES.retain_dir(&root, &entries.iter().map(|e| e.as_path()).collect());
+        for entry in entries {
             if entry.extension().is_none_or(|e| e != "json") {
                 continue;
             }
             // A read (I/O) error always blocks, naming the file: it may be a re-key
             // record of a session that must not be resumed or launched meanwhile.
-            let bytes = fs::read(&entry).with_context(|| {
-                format!(
-                    "SESSION_OPERATION_IN_PROGRESS: operation journal {} is unreadable",
-                    entry.display()
-                )
-            })?;
-            let r: Value = match serde_json::from_slice(&bytes) {
+            let r = match entry_value(&entry) {
                 Ok(v) => v,
-                // Root re-key records are written atomically, so a fully read file
-                // there that does not parse is not one of them: log, do not block.
-                // raw-path: a journal directory constant, not a filesystem path
-                Err(e) if directory == crate::layout::ROOT_MIGRATIONS => {
-                    eprintln!(
-                        "lifecycle: ignoring unparseable file {} in {}: {e}",
-                        entry.display(),
-                        crate::layout::ROOT_MIGRATIONS
-                    );
-                    continue;
+                Err(crate::file_cache::LoadError::Io(e)) => {
+                    return Err(anyhow::Error::new(e).context(format!(
+                        "SESSION_OPERATION_IN_PROGRESS: operation journal {} is unreadable",
+                        entry.display()
+                    )));
                 }
-                Err(e) => return Err(e.into()),
+                Err(crate::file_cache::LoadError::Parse(e)) => {
+                    // Root re-key records are written atomically, so a fully read file
+                    // there that does not parse is not one of them: log, do not block.
+                    // raw-path: a journal directory constant, not a filesystem path
+                    if directory == crate::layout::ROOT_MIGRATIONS {
+                        eprintln!(
+                            "lifecycle: ignoring unparseable file {} in {}: {e}",
+                            entry.display(),
+                            crate::layout::ROOT_MIGRATIONS
+                        );
+                        continue;
+                    }
+                    return Err(e.into());
+                }
             };
             if visit(directory, &entry, &r) {
                 return Ok(());
@@ -272,7 +298,11 @@ pub(crate) fn ensure_no_handoff(paths: &Paths, thread: &str, own: Option<&str>) 
         if entry.extension().is_none_or(|e| e != "json") {
             continue;
         }
-        let r: Value = serde_json::from_slice(&fs::read(&entry)?)?;
+        let r = match entry_value(&entry) {
+            Ok(v) => v,
+            Err(crate::file_cache::LoadError::Io(e)) => return Err(e.into()),
+            Err(crate::file_cache::LoadError::Parse(e)) => return Err(e.into()),
+        };
         if r["source"]["thread_id"] == thread && r["id"].as_str() != own {
             ensure!(
                 matches!(
@@ -375,6 +405,65 @@ mod tests {
         .unwrap();
         assert!(ensure_no_handoff(&p, &thread, None).is_err());
         assert!(ensure_no_handoff(&p, &thread, Some("move")).is_ok());
+    }
+    /// A journal entry parsed once and served from memory answers like a fresh read, and a
+    /// rewrite, removal or corruption of the file is seen on the next pass.
+    #[test]
+    fn cached_journal_entries_follow_the_files() {
+        let d = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(d.path().join("state"))).unwrap();
+        let (a, b) = (
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        );
+        let dir = p.root.join(crate::layout::CONVERSATION_OPERATIONS);
+        private_dir(&dir).unwrap();
+        let put = |name: &str, id: &str, thread: &str, phase: &str| {
+            fs::write(
+                dir.join(name),
+                serde_json::to_vec(
+                    &json!({"id":id,"session":{"conversation_id":thread},"phase":phase,"noise":[1,2,3]}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        let answer = |thread: &str| {
+            let cached = (
+                pending_detail(&p, thread, None),
+                PendingIndex::scan(&p).get(thread),
+            );
+            crate::file_cache::trust_fresh_stamps(false);
+            let fresh = (
+                pending_detail(&p, thread, None),
+                PendingIndex::scan(&p).get(thread),
+            );
+            crate::file_cache::trust_fresh_stamps(true);
+            let text = |r: Result<Option<Pending>>| r.map_err(|e| format!("{e:#}"));
+            assert_eq!(text(cached.0), text(fresh.0), "{thread}");
+            assert_eq!(text(cached.1), text(fresh.1), "{thread}");
+            pending_detail(&p, thread, None).map_err(|e| format!("{e:#}"))
+        };
+        crate::file_cache::trust_fresh_stamps(true);
+        put("x.json", "x", &a, "queued");
+        put("y.json", "y", &b, "complete");
+        for _ in 0..2 {
+            assert_eq!(answer(&a).unwrap().unwrap().id, "x");
+            assert!(answer(&b).unwrap().is_none());
+        }
+        // Rewritten in place (different size): no longer blocks.
+        put("x.json", "x", &a, "cancelled");
+        assert!(answer(&a).unwrap().is_none());
+        // Another operation appears for the same conversation.
+        put("z.json", "z", &a, "queued");
+        assert_eq!(answer(&a).unwrap().unwrap().id, "z");
+        // Removed.
+        fs::remove_file(dir.join("z.json")).unwrap();
+        assert!(answer(&a).unwrap().is_none());
+        // Corrupted: blocks with the parse error, like a fresh read.
+        fs::write(dir.join("y.json"), b"{").unwrap();
+        assert!(answer(&b).is_err());
+        crate::file_cache::trust_fresh_stamps(false);
     }
     /// One pass over the journals answers every conversation exactly as a scan per
     /// conversation does, including which ones an unreadable journal blocks.

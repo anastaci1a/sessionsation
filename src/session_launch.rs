@@ -106,9 +106,17 @@ fn brief_file(paths: &Paths, id: &str) -> Result<PathBuf> {
 pub fn exists(paths: &Paths, id: &str) -> bool {
     file(paths, id).is_ok_and(|f| f.is_file())
 }
+/// Parsed records by file version (see [`crate::file_cache`]): a settled record is parsed once.
+static RECORDS: crate::file_cache::FileCache<Record> = crate::file_cache::FileCache::new();
 fn read(paths: &Paths, id: &str) -> Result<Record> {
-    let bytes = fs::read(file(paths, id)?).context("OPERATION_NOT_FOUND")?;
-    serde_json::from_slice(&bytes).context("UNREADABLE_OPERATION_RECORD")
+    use crate::file_cache::LoadError;
+    match RECORDS.load(&file(paths, id)?, |b| serde_json::from_slice::<Record>(b)) {
+        Ok(r) => Ok((*r).clone()),
+        Err(LoadError::Io(e)) => Err(anyhow::Error::new(e).context("OPERATION_NOT_FOUND")),
+        Err(LoadError::Parse(e)) => {
+            Err(anyhow::Error::new(e).context("UNREADABLE_OPERATION_RECORD"))
+        }
+    }
 }
 fn save(paths: &Paths, r: &Record) -> Result<()> {
     private_dir(&dir(paths))?;
@@ -119,7 +127,9 @@ fn list(paths: &Paths) -> Result<Vec<Record>> {
     if !dir(paths).is_dir() {
         return Ok(all);
     }
-    for entry in crate::paths::journal_paths(&dir(paths))? {
+    let entries = crate::paths::journal_paths(&dir(paths))?;
+    RECORDS.retain_dir(&dir(paths), &entries.iter().map(|e| e.as_path()).collect());
+    for entry in entries {
         if let Some(id) = entry
             .file_name()
             .and_then(|n| n.to_str())

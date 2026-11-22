@@ -17,8 +17,8 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.57.0`
-(the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
+so revision N maps to contract `1.N.0` and the current contract is `1.57.1`
+(the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -3968,3 +3968,27 @@ The result is the same bytes of facts; the work is not.
   only when their content changed (no rename, no fsync otherwise). Host evidence for sessions attached to HERDR
   carries `observed_at`/`checked_at`, which change on every observation, so that file still changes then. The
   `cache/state-snapshot-*.json` file that `state --cached` serves is still written by every full `state`.
+
+### Cheap supervisor loop (1.57.1)
+
+PATCH (performance only; no field, error code, ordering or lock change). With about 190 catalog entries, 700
+compaction, 380 model-change and several hundred handoff records and 900 pane bindings, the supervisor
+(`daemon serve`) alone read about 3.4 GB a minute at 18 % of a core, because each periodic pass reread whole
+journal directories and `catalog.json` for every session. On a fixture of that shape it now reads about 11 MB a
+minute at under 1 % of a core. Results are what the same reads gave before.
+
+- **Parsed files are remembered by version.** The compaction, model-change and one-pass-launch journals, the
+  handoff jobs, the operation-admission journals (`lifecycle`), the turn-notify and auto-recover settings and the
+  HERDR pane bindings are parsed once per file version and served from memory while the file keeps its device,
+  inode, size, mtime and ctime. Every access still stats the file, so a record replaced by an atomic write (a new
+  inode) or rewritten in place is read again at once; a file modified within the last 2 s is never served from
+  memory. Unreadable or unparseable files are never remembered, and a removed file leaves the cache at the next
+  directory pass. The worker-liveness inference for unfinished handoff jobs is applied to a copy on every call.
+- **The session catalog is read once per change.** `catalog.json`, `identity.json` and `spaces.json` are read
+  and healed under `catalog.lock` as before; when that transaction had nothing to write, the result is kept and
+  the next transaction under the same lock reuses it while the three files keep their stamps. Reads
+  (`list`, `find`, `resolve`, aliases, name checks) then cost a lock and three `stat` calls. A write by any
+  process under the lock changes a stamp and the next transaction reads the files again, healing as before.
+  Every mutation still runs inside the locked transaction and writes only when the catalog changed.
+- **Gone pane bindings are skipped for good.** A binding whose process id no longer exists (or now has another
+  start time, or is a zombie) cannot come back, so the supervisor stops reading `/proc` for it.

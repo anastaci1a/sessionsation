@@ -22,7 +22,7 @@ pub struct Attachment {
     pub process_start: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub name: String,
@@ -72,7 +72,7 @@ impl Session {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Catalog {
     schema_version: u32,
     sessions: BTreeMap<String, Session>,
@@ -90,7 +90,7 @@ struct Catalog {
 /// lineage. Releases before contract revision 12 rewrite `catalog.json` with a
 /// schema that has neither field, so a mixed-version writer silently dropped
 /// them; this file is unknown to such releases and restores them.
-#[derive(Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Identity {
     schema_version: u32,
     #[serde(default)]
@@ -171,6 +171,71 @@ fn transaction<T>(paths: &Paths, change: impl FnOnce(&mut Catalog) -> Result<T>)
     healing_transaction(paths, |c, _| change(c))
 }
 
+/// What the three catalog files held after a transaction that had nothing to write: the
+/// state a later transaction would reach again (healing and backfill already applied). It
+/// is valid exactly while the files keep the recorded stamps, and it is only ever used under
+/// `catalog.lock`, which every writer holds, so a write invalidates it (new inode, size or
+/// timestamps). Mutations never take this path: they run the full locked transaction.
+struct Settled {
+    stamps: [Option<crate::file_cache::Stamp>; 3],
+    catalog: Catalog,
+    /// `catalog` as serialized (what a write would compare against).
+    bytes: Vec<u8>,
+    identity: Identity,
+    spaces: scope::Sidecar,
+}
+static SETTLED: std::sync::Mutex<BTreeMap<std::path::PathBuf, std::sync::Arc<Settled>>> =
+    std::sync::Mutex::new(BTreeMap::new());
+/// Roots remembered at once (a supervisor serves one; test processes create many).
+const SETTLED_ROOTS: usize = 8;
+
+fn stamps_of(dir: &std::path::Path) -> Result<[Option<crate::file_cache::Stamp>; 3]> {
+    let one = |name: &str| -> Result<Option<crate::file_cache::Stamp>> {
+        match fs::metadata(dir.join(name)) {
+            Ok(m) => Ok(Some(crate::file_cache::Stamp::of(&m))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    };
+    Ok([
+        one("catalog.json")?,
+        one("identity.json")?,
+        one(scope::SIDECAR)?,
+    ])
+}
+/// The settled state when the files still carry the stamps it was recorded with. Call with
+/// `catalog.lock` held.
+fn settled_hit(dir: &std::path::Path) -> Option<std::sync::Arc<Settled>> {
+    let hit = SETTLED.lock().ok()?.get(dir)?.clone();
+    let current = stamps_of(dir).ok()? == hit.stamps;
+    #[cfg(test)]
+    if current {
+        SETTLED_HITS.with(|h| h.set(h.get() + 1));
+    }
+    current.then_some(hit)
+}
+#[cfg(test)]
+thread_local! {
+    static SETTLED_HITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Read-only access: the settled catalog without cloning it, else the full (healing)
+/// transaction. The lock is taken and released like a transaction's, so a writer in flight
+/// is waited for.
+fn read_catalog<T>(paths: &Paths, read: impl FnOnce(&Catalog) -> Result<T>) -> Result<T> {
+    let dir = paths.root.join(crate::layout::SESSION_CATALOG);
+    private_dir(&dir)?;
+    {
+        let lock = lock_file(&dir.join("catalog.lock"))?;
+        lock.lock_exclusive()?;
+        if let Some(settled) = settled_hit(&dir) {
+            drop(lock);
+            return read(&settled.catalog);
+        }
+    }
+    healing_transaction(paths, |c, _| read(c))
+}
+
 fn healing_transaction<T>(
     paths: &Paths,
     change: impl FnOnce(&mut Catalog, &Healed) -> Result<T>,
@@ -181,48 +246,97 @@ fn healing_transaction<T>(
     lock.lock_exclusive()?;
     let file = dir.join("catalog.json");
     let identity_file = dir.join("identity.json");
-    let mut catalog = if file.exists() {
-        let c: Catalog = serde_json::from_slice(&fs::read(&file)?)?;
-        ensure!(c.schema_version == 1, "UNSUPPORTED_CATALOG_VERSION");
-        c
-    } else {
-        Catalog {
-            schema_version: 1,
-            ..Default::default()
-        }
-    };
-    let identity: Identity = match fs::read(&identity_file) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("UNREADABLE_IDENTITY_RECORD")?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Identity::default(),
-        Err(e) => return Err(e.into()),
-    };
     let spaces_file = dir.join(scope::SIDECAR);
-    let spaces = scope::read_sidecar(&spaces_file)?;
-    let before = serde_json::to_vec(&catalog)?;
-    let mut healed = heal(&mut catalog, &identity);
-    healed.restored_spaces = scope::heal(&mut catalog, &spaces);
-    let backfill = scope::backfill(paths, &mut catalog, &spaces);
+    let started = stamps_of(&dir)?;
+    let (mut catalog, identity, spaces, before, healed, backfill, cached) = if let Some(s) =
+        settled_hit(&dir)
+    {
+        // Nothing to heal or backfill: the files are what the last quiet transaction left.
+        (
+            s.catalog.clone(),
+            s.identity.clone(),
+            s.spaces.clone(),
+            s.bytes.clone(),
+            Healed::default(),
+            None,
+            Some(s),
+        )
+    } else {
+        let mut catalog = if file.exists() {
+            let c: Catalog = serde_json::from_slice(&fs::read(&file)?)?;
+            ensure!(c.schema_version == 1, "UNSUPPORTED_CATALOG_VERSION");
+            c
+        } else {
+            Catalog {
+                schema_version: 1,
+                ..Default::default()
+            }
+        };
+        let identity: Identity = match fs::read(&identity_file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).context("UNREADABLE_IDENTITY_RECORD")?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Identity::default(),
+            Err(e) => return Err(e.into()),
+        };
+        let spaces = scope::read_sidecar(&spaces_file)?;
+        let before = serde_json::to_vec(&catalog)?;
+        let mut healed = heal(&mut catalog, &identity);
+        healed.restored_spaces = scope::heal(&mut catalog, &spaces);
+        let backfill = scope::backfill(paths, &mut catalog, &spaces);
+        (catalog, identity, spaces, before, healed, backfill, None)
+    };
     let result = change(&mut catalog, &healed)?;
+    if let Some(s) = &cached
+        && catalog == s.catalog
+    {
+        // A settled catalog the closure left alone: no healing, nothing to write.
+        return Ok(result);
+    }
     let after = serde_json::to_vec(&catalog)?;
     // The space record is written first too (same crash ordering as identity).
     let next = scope::next_sidecar(&mut catalog, &spaces, backfill);
-    if next != spaces || !spaces_file.exists() {
+    let wrote_spaces = next != spaces || !spaces_file.exists();
+    if wrote_spaces {
         atomic_write(&spaces_file, &serde_json::to_vec(&next)?)?;
     }
     // The identity record is written first: a crash between the two writes
     // leaves a record the next transaction restores from, never a loss.
     let next = Identity::of(&catalog);
-    if next != identity && (identity_file.exists() || next != Identity::of(&Catalog::default())) {
+    let wrote_identity =
+        next != identity && (identity_file.exists() || next != Identity::of(&Catalog::default()));
+    if wrote_identity {
         atomic_write(&identity_file, &serde_json::to_vec(&next)?)?;
     }
-    if before != after || !file.exists() {
+    let wrote_catalog = before != after || !file.exists();
+    if wrote_catalog {
         atomic_write(&file, &after)?;
+    }
+    // Nothing was written: remember this state for the next transaction (see `Settled`).
+    if !wrote_catalog && !wrote_identity && !wrote_spaces {
+        let settled = Settled {
+            stamps: started,
+            catalog,
+            bytes: after,
+            identity,
+            spaces,
+        };
+        if settled.stamps.iter().flatten().all(|s| s.settled())
+            && let Ok(mut map) = SETTLED.lock()
+        {
+            if map.len() >= SETTLED_ROOTS && !map.contains_key(&dir) {
+                map.clear();
+            }
+            map.insert(dir, std::sync::Arc::new(settled));
+        }
     }
     Ok(result)
 }
 
 /// The live entry `id`, or `SESSION_MERGED` naming its survivor.
 fn live<'a>(c: &'a mut Catalog, id: &str) -> Result<&'a mut Session> {
+    live_ref(c, id)?;
+    c.sessions.get_mut(id).context("SESSION_NOT_FOUND")
+}
+fn live_ref<'a>(c: &'a Catalog, id: &str) -> Result<&'a Session> {
     if !c.sessions.contains_key(id)
         && let Some(target) = c.aliases.get(id)
     {
@@ -230,7 +344,7 @@ fn live<'a>(c: &'a mut Catalog, id: &str) -> Result<&'a mut Session> {
             "SESSION_MERGED: this entry continues as session {target}; refresh the session list"
         );
     }
-    c.sessions.get_mut(id).context("SESSION_NOT_FOUND")
+    c.sessions.get(id).context("SESSION_NOT_FOUND")
 }
 
 fn validate_name(name: &str) -> Result<()> {
@@ -245,7 +359,7 @@ fn validate_name(name: &str) -> Result<()> {
 }
 
 pub fn list(paths: &Paths) -> Result<Vec<Session>> {
-    transaction(paths, |c| Ok(c.sessions.values().cloned().collect()))
+    read_catalog(paths, |c| Ok(c.sessions.values().cloned().collect()))
 }
 
 pub fn record_launch(
@@ -699,8 +813,8 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
 }
 
 pub fn resolve(paths: &Paths, id: &str, generation: &str) -> Result<Session> {
-    transaction(paths, |c| {
-        let s = live(c, id)?;
+    read_catalog(paths, |c| {
+        let s = live_ref(c, id)?;
         ensure!(s.generation() == generation, "STALE_TARGET");
         Ok(s.clone())
     })
@@ -709,7 +823,7 @@ pub fn resolve(paths: &Paths, id: &str, generation: &str) -> Result<Session> {
 /// The current entry `id` without a generation check (`SESSION_MERGED` for a
 /// merged id).
 pub fn find(paths: &Paths, id: &str) -> Result<Session> {
-    transaction(paths, |c| Ok(live(c, id)?.clone()))
+    read_catalog(paths, |c| Ok(live_ref(c, id)?.clone()))
 }
 
 /// Explicit, idempotent identity repair: restore merged ids and continuation
@@ -722,7 +836,7 @@ pub fn repair_identity(paths: &Paths) -> Result<Healed> {
 
 /// Merged ids (alias -> survivor) currently recorded.
 pub fn aliases(paths: &Paths) -> Result<BTreeMap<String, String>> {
-    transaction(paths, |c| Ok(c.aliases.clone()))
+    read_catalog(paths, |c| Ok(c.aliases.clone()))
 }
 
 pub(crate) fn invalidate(paths: &Paths, id: &str, generation: &str) -> Result<Session> {
@@ -1696,5 +1810,165 @@ mod stable_identity_tests {
         assert_eq!(after.previous_conversation_ids, ["o"]);
         link_continuations(&p, ProviderId::Claude, &[link("o", "n")]).unwrap();
         assert_eq!(find(&p, &n.id).unwrap().generation(), after.generation());
+    }
+}
+
+#[cfg(test)]
+mod settled_tests {
+    use super::*;
+
+    fn root() -> (tempfile::TempDir, Paths) {
+        crate::file_cache::trust_fresh_stamps(true);
+        let t = tempfile::tempdir().unwrap();
+        let p = Paths::new(Some(t.path().join("root"))).unwrap();
+        (t, p)
+    }
+    fn seed(p: &Paths, n: usize) -> Vec<Session> {
+        let found: Vec<Discovered> = (0..n)
+            .map(|i| Discovered {
+                account: "a".into(),
+                conversation_id: format!("conv-{i}"),
+                label: format!("label-{i}"),
+                directory: Some("/work".into()),
+            })
+            .collect();
+        register_discovered(p, ProviderId::Claude, &found).unwrap()
+    }
+    fn files(p: &Paths) -> Vec<Vec<u8>> {
+        let dir = p.root.join(crate::layout::SESSION_CATALOG);
+        ["catalog.json", "identity.json", "spaces.json"]
+            .iter()
+            .map(|f| fs::read(dir.join(f)).unwrap_or_default())
+            .collect()
+    }
+    fn hits() -> usize {
+        SETTLED_HITS.with(|h| h.get())
+    }
+    /// Forget the in-process state so the next call reads the files (the reference answer).
+    fn forget(p: &Paths) {
+        SETTLED
+            .lock()
+            .unwrap()
+            .remove(&p.root.join(crate::layout::SESSION_CATALOG));
+    }
+
+    #[test]
+    fn reads_of_a_settled_catalog_match_a_fresh_read_and_touch_nothing() {
+        let (_t, p) = root();
+        let all = seed(&p, 12);
+        let first = list(&p).unwrap(); // full transaction: nothing to write, state remembered
+        let before = files(&p);
+        let h = hits();
+        let again = list(&p).unwrap();
+        assert!(
+            hits() > h,
+            "the second read is served from the settled state"
+        );
+        assert_eq!(first, again);
+        for s in &all {
+            let expected = first.iter().find(|x| x.id == s.id).unwrap();
+            assert_eq!(&find(&p, &s.id).unwrap(), expected);
+            assert_eq!(resolve(&p, &s.id, &s.generation()).unwrap().id, s.id);
+            assert!(
+                resolve(&p, &s.id, "stale")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("STALE_TARGET")
+            );
+        }
+        assert!(
+            find(&p, "missing")
+                .unwrap_err()
+                .to_string()
+                .contains("SESSION_NOT_FOUND")
+        );
+        assert_eq!(aliases(&p).unwrap().len(), 0);
+        assert_eq!(files(&p), before, "reads write nothing");
+        forget(&p);
+        assert_eq!(
+            list(&p).unwrap(),
+            again,
+            "same as a read that parses the files"
+        );
+    }
+    #[test]
+    fn a_write_under_the_lock_invalidates_the_settled_state() {
+        let (_t, p) = root();
+        let all = seed(&p, 3);
+        list(&p).unwrap();
+        list(&p).unwrap();
+        let renamed = rename(&p, &all[0].id, &all[0].generation(), "renamed").unwrap();
+        assert_eq!(find(&p, &all[0].id).unwrap().name, "renamed");
+        assert_eq!(
+            find(&p, &all[0].id).unwrap().generation(),
+            renamed.generation()
+        );
+        // A mutation from the settled state persists and is what the next process reads.
+        list(&p).unwrap();
+        let h = hits();
+        transaction(&p, |c| {
+            c.sessions.get_mut(&all[1].id).unwrap().revision += 10;
+            Ok(())
+        })
+        .unwrap();
+        assert!(hits() > h, "the mutation started from the settled state");
+        forget(&p);
+        assert_eq!(find(&p, &all[1].id).unwrap().revision, all[1].revision + 10);
+        // A closure that changes nothing, or fails, leaves the files alone.
+        list(&p).unwrap();
+        let before = files(&p);
+        transaction(&p, |c| Ok(c.sessions.len())).unwrap();
+        assert!(
+            transaction(&p, |c| -> Result<()> {
+                c.sessions.clear();
+                anyhow::bail!("no")
+            })
+            .is_err()
+        );
+        assert_eq!(files(&p), before);
+        assert_eq!(list(&p).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_rewrite_of_any_catalog_file_is_seen_and_healed_not_served_stale() {
+        let (_t, p) = root();
+        let all = seed(&p, 2);
+        list(&p).unwrap();
+        list(&p).unwrap();
+        // An older release rewrites identity.json with a merged id (a different size).
+        let dir = p.root.join(crate::layout::SESSION_CATALOG);
+        let target = all[1].id.clone();
+        fs::write(
+            dir.join("identity.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "aliases": {"11111111-1111-4111-8111-111111111111": target},
+                "lineage": {}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            aliases(&p)
+                .unwrap()
+                .get("11111111-1111-4111-8111-111111111111"),
+            Some(&target),
+            "the identity record was read again and its alias restored"
+        );
+        // catalog.json replaced by an older release's shape (an entry lost): the entry is
+        // never recreated, but the file is read again, not served from memory.
+        list(&p).unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("catalog.json")).unwrap()).unwrap();
+        value["sessions"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&all[0].id);
+        fs::write(
+            dir.join("catalog.json"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(list(&p).unwrap().len(), 1);
     }
 }
