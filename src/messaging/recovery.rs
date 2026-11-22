@@ -1,5 +1,6 @@
 //! Caller-authorized recovery. Journals launch and delivery separately; reads never dispatch.
 use super::*;
+use crate::background::SpawnReaped as _;
 use anyhow::{Context, ensure};
 use std::{os::unix::fs::PermissionsExt, path::Path, process::Stdio};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -620,7 +621,7 @@ pub(super) async fn send(paths: &Paths, request: PublicRequest) -> anyhow::Resul
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::null())
-    .spawn();
+    .spawn_reaped();
     if child.is_err() {
         record.phase = "failed".into();
         record.detail = Some("RECOVERY_WORKER_COULD_NOT_START_NO_PROVIDER_ACTION".into());

@@ -12,6 +12,7 @@
 //! input API for a running interactive session. Records of both providers share
 //! `DATA_ROOT/messaging/claude-deliveries/` (the directory keeps its original name so
 //! existing receipts stay readable); each record names its provider.
+use crate::background::SpawnReaped as _;
 use crate::{
     catalog,
     paths::{Paths, atomic_write, lock_file, private_dir},
@@ -457,7 +458,7 @@ pub async fn send(paths: &Paths, request: Request) -> Result<Value> {
     .arg("--data-dir")
     .arg(&paths.root)
     .args(["claude-delivery-worker", &id])
-    .spawn();
+    .spawn_reaped();
     if spawned.is_err() {
         record.phase = "complete".into();
         record.state = "rejected".into();

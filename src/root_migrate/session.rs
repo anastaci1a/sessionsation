@@ -2,6 +2,7 @@
 //! worker for a running one (§4.5-4.6), Codex thread locations (§5) and the
 //! per-session rollback (§9).
 use super::*;
+use crate::background::SpawnReaped as _;
 use std::time::{Duration, Instant};
 
 pub(crate) struct Ctx<'a> {
@@ -777,7 +778,7 @@ fn spawn(paths: &Paths, r: &SessionRec) -> Result<()> {
     .arg("--data-dir")
     .arg(&paths.root)
     .args(["root-rekey-worker", &r.session_id])
-    .spawn()
+    .spawn_reaped()
     .context("ROOT_REKEY_WORKER_FAILED: the worker did not start")?;
     Ok(())
 }

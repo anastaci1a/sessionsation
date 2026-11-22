@@ -1,4 +1,5 @@
 //! Durable new-session admission. No message receipts or supervisor ownership here.
+use crate::background::SpawnReaped as _;
 use crate::{
     catalog, daemon,
     paths::{Paths, atomic_write, lock_file, private_dir},
@@ -576,7 +577,7 @@ pub(crate) async fn admit(paths: &Paths, mut r: Request, validate_only: bool) ->
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn();
+            .spawn_reaped();
     if spawned.is_err() {
         catalog::release_reservation(paths, &receipt.request.request_id)?;
         receipt.phase = "failed".into();

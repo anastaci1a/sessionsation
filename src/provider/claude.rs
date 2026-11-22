@@ -1529,10 +1529,21 @@ pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
         .unwrap_or(Value::Null);
     let window = |key: &str| {
         let fresh = statusline_window(&limits[key]);
+        let old = statusline_window(&previous[key]);
         if !fresh.is_null() {
+            // An idle session re-renders its statusline with the limits of its LAST API
+            // response. Within one reset cycle (same resets_at) usage only grows, so a
+            // lower payload is a stale replay: keep the stored window and its observed_at.
+            // A different resets_at is a new cycle and replaces; an equal or higher value
+            // refreshes observed_at.
+            if old["resets_at"] == fresh["resets_at"]
+                && old["used_percentage"].as_f64() > fresh["used_percentage"].as_f64()
+            {
+                return json!({"used_percentage":old["used_percentage"],"resets_at":old["resets_at"],
+                    "observed_at":previous[key]["observed_at"].as_i64().or_else(|| previous["observed_at"].as_i64())});
+            }
             return json!({"used_percentage":fresh["used_percentage"],"resets_at":fresh["resets_at"],"observed_at":now});
         }
-        let old = statusline_window(&previous[key]);
         match old["resets_at"].as_i64() {
             Some(resets) if resets > now => {
                 json!({"used_percentage":old["used_percentage"],"resets_at":resets,
@@ -1541,13 +1552,22 @@ pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
             _ => Value::Null,
         }
     };
+    let (five_hour, seven_day) = (window("five_hour"), window("seven_day"));
+    // Nothing changed (every window was a stale replay or carried forward unchanged):
+    // do not rewrite, so `observed_at` keeps meaning "last time usage was learned".
+    if previous["source"] == USAGE_SOURCE
+        && previous["five_hour"] == five_hour
+        && previous["seven_day"] == seven_day
+    {
+        return Ok(true);
+    }
     let record = json!({
         "source": USAGE_SOURCE,
         "observed_at": now,
         "claude_version": input["version"].as_str(),
         "session_id": input["session_id"].as_str(),
-        "five_hour": window("five_hour"),
-        "seven_day": window("seven_day"),
+        "five_hour": five_hour,
+        "seven_day": seven_day,
     });
     private_dir(&home.join(".sessionsation"))?;
     sweep_stale_tmp(&home.join(".sessionsation"), now);
@@ -1954,7 +1974,7 @@ mod tests {
         let (_, _, state) = project_usage(home, now + 3601);
         assert_eq!(state, "stale", "a passed reset is stale");
         let partial =
-            json!({"rate_limits":{"five_hour":{"used_percentage":5,"resets_at":now+3600}}});
+            json!({"rate_limits":{"five_hour":{"used_percentage":15,"resets_at":now+3600}}});
         // A payload without seven_day carries the recorded window until its own reset,
         // with its own observed_at.
         record_statusline(home, &partial, now + 100).unwrap();
@@ -1964,7 +1984,7 @@ mod tests {
         assert_eq!(usage["weekly"]["used_percent"], 40.0);
         assert_eq!(usage["weekly"]["observed_at"], now);
         assert_eq!(usage["short"]["observed_at"], now + 100);
-        assert_eq!(usage["short"]["used_percent"], 5.0);
+        assert_eq!(usage["short"]["used_percent"], 15.0);
         // Past its reset the carried window is dropped: null, never 0.
         let later = now + 86401;
         record_statusline(home, &json!({"rate_limits":{}}), later).unwrap();
@@ -1973,6 +1993,53 @@ mod tests {
         assert!(usage["short"].is_null() && usage["weekly"].is_null());
         fs::write(usage_file(home), b"{").unwrap();
         assert_eq!(project_usage(home, now).2, "error");
+    }
+    #[test]
+    fn stale_statusline_replay_never_lowers_usage_within_a_reset_cycle() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        let now = 1_000_000;
+        let (r5, r7) = (now + 3600, now + 86400);
+        let payload = |s: f64, w: f64| {
+            json!({"rate_limits":{"five_hour":{"used_percentage":s,"resets_at":r5},
+                "seven_day":{"used_percentage":w,"resets_at":r7}}})
+        };
+        record_statusline(home, &payload(10., 68.), now).unwrap();
+        // An idle session replays its last (older, lower) reading.
+        let before = fs::read(usage_file(home)).unwrap();
+        record_statusline(home, &payload(8., 24.), now + 300).unwrap();
+        assert_eq!(
+            fs::read(usage_file(home)).unwrap(),
+            before,
+            "no write at all"
+        );
+        let (usage, _, _) = project_usage(home, now + 301);
+        assert_eq!(usage["weekly"]["used_percent"], 68.0);
+        assert_eq!(usage["weekly"]["observed_at"], now);
+        // Alternating stale and fresh: the maximum wins, only the grown window refreshes.
+        record_statusline(home, &payload(12., 20.), now + 600).unwrap();
+        let (usage, _, _) = project_usage(home, now + 601);
+        assert_eq!(usage["short"]["used_percent"], 12.0);
+        assert_eq!(usage["short"]["observed_at"], now + 600);
+        assert_eq!(usage["weekly"]["used_percent"], 68.0);
+        assert_eq!(usage["weekly"]["observed_at"], now);
+        record_statusline(home, &payload(5., 70.), now + 900).unwrap();
+        let (usage, _, _) = project_usage(home, now + 901);
+        assert_eq!(usage["short"]["used_percent"], 12.0);
+        assert_eq!(usage["short"]["observed_at"], now + 600);
+        assert_eq!(usage["weekly"]["used_percent"], 70.0);
+        // An equal value is current: it refreshes observed_at.
+        record_statusline(home, &payload(12., 70.), now + 1200).unwrap();
+        let (usage, _, _) = project_usage(home, now + 1201);
+        assert_eq!(usage["short"]["observed_at"], now + 1200);
+        assert_eq!(usage["weekly"]["observed_at"], now + 1200);
+        // A new resets_at is a new cycle: a lower value replaces.
+        let next = json!({"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":r5+18000},
+            "seven_day":{"used_percentage":70,"resets_at":r7}}});
+        record_statusline(home, &next, now + 4000).unwrap();
+        let (usage, _, _) = project_usage(home, now + 4001);
+        assert_eq!(usage["short"]["used_percent"], 1.0);
+        assert_eq!(usage["short"]["resets_at"], r5 + 18000);
     }
     #[test]
     fn recorder_sweeps_only_stale_tmp_files() {

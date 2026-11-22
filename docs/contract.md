@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.55.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.56.0`
 (the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -3925,3 +3925,23 @@ MINOR (additive flag and result; no error code is removed).
   Antigravity) returns `ok:true` with `{"session_id":…,"already_stopped":true,"phase":"complete"}` instead of
   `SESSION_UNAVAILABLE` / `SESSION_NOT_RUNNING`. The generation is still checked; an archived session keeps
   `SESSION_ARCHIVED` and an unknown one its error.
+
+### Usage replays, reaped workers, cached facts in `session resolve` (1.56.0)
+
+MINOR (additive fields; no error code or field is removed).
+
+- **`session resolve` fills `availability`, `activity`, `pid` and `live_activity`** from the last cached state
+  snapshot (the file `api state --cached` serves: the `active` snapshot, then `all`), and adds
+  `snapshot: {"observed_at","age_seconds","fresh","cached":true,"source":"state_snapshot"}`. `fresh` means at most
+  15 s old. Resolve stays one local file read: no provider refresh, transcript scan, process probe or write. A
+  session with no row in any snapshot keeps the four fields `null` and `snapshot: null`; callers needing live
+  facts still call `api state`. The facts can be stale by `age_seconds`; the generation is unaffected.
+- **Claude statusline replays never lower usage.** An idle Claude session re-renders its statusline with the
+  rate limits of its last API response. Recording a payload now merges per window (`five_hour`, `seven_day`): the
+  same `resets_at` with a lower `used_percentage` than recorded keeps the stored window with its own
+  `observed_at`; an equal or higher value refreshes `observed_at`; a different `resets_at` is a new cycle and
+  replaces. When no window changes, `usage.json` is not rewritten, so `usage.observed_at` means "last time usage
+  was learned" and an account with only replaying sessions turns `stale` instead of reporting old numbers as fresh.
+- **No defunct workers.** The supervisor reaps every detached worker it starts (`background::SpawnReaped`: a
+  small thread waits on the child). Workers keep their own process group and still outlive the supervisor; before
+  this, each finished worker stayed `<defunct>` until the supervisor restarted.

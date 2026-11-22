@@ -1,4 +1,5 @@
 //! Durable saved-session intent. Reuses the account launcher and transfer worker.
+use crate::background::SpawnReaped as _;
 use crate::{
     api, catalog, daemon, external,
     launch::{self, Host, Space},
@@ -309,7 +310,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::null())
-    .spawn();
+    .spawn_reaped();
     if child.is_err() {
         receipt.phase = "failed".into();
         receipt.detail = Some("Worker could not start; no resources created".into());

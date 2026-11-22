@@ -1,5 +1,6 @@
 //! Public machine interface. The inherited CLI and native conversation IDs are
 //! implementation details; consumers use stable catalog IDs and generations.
+use crate::background::SpawnReaped as _;
 use crate::{
     catalog, daemon, external,
     paths::Paths,
@@ -17,9 +18,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 55;
+pub const CONTRACT_MINOR: u32 = 56;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.55.0";
+pub const CONTRACT_VERSION: &str = "1.56.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -2164,6 +2165,38 @@ fn serve_snapshot_when_disk_full(
     refresh_cached_accounts(paths, &mut value);
     Ok(value)
 }
+/// Contract 1.56.0: `session resolve` carries `availability`, `activity`, `pid` and
+/// `live_activity` from the last cached state snapshot (the source of `state --cached`), with
+/// `snapshot.observed_at` and `age_seconds` so the caller knows how old the facts are. It reads
+/// one local file: no provider contact, transcript scan, process probe or write. A session with
+/// no snapshot row keeps the fields `null` and `snapshot: null`.
+fn overlay_resolve_snapshot(paths: &Paths, row: &mut Value, now: i64) {
+    let id = row["id"].as_str().unwrap_or_default().to_owned();
+    let found = [ArchiveFilter::Active, ArchiveFilter::All]
+        .into_iter()
+        .filter_map(|filter| read_snapshot(paths, filter))
+        .find_map(|snapshot| {
+            let observed_at = snapshot["observed_at"].as_i64()?;
+            let cached = snapshot["sessions"]
+                .as_array()?
+                .iter()
+                .find(|s| s["id"] == id.as_str())?
+                .clone();
+            Some((observed_at, cached))
+        });
+    for key in ["availability", "activity", "pid", "live_activity"] {
+        row[key] = Value::Null;
+    }
+    row["snapshot"] = Value::Null;
+    let Some((observed_at, cached)) = found else {
+        return;
+    };
+    for key in ["availability", "activity", "pid", "live_activity"] {
+        row[key] = cached[key].clone();
+    }
+    row["snapshot"] = json!({"observed_at":observed_at,"age_seconds":(now - observed_at).max(0),
+        "fresh":now - observed_at <= SNAPSHOT_FRESH_SECONDS,"cached":true,"source":"state_snapshot"});
+}
 /// `api state --cached`: the last full result with no catalog write, transcript
 /// scan or process probe. Without a snapshot a full state is computed.
 pub async fn state_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value> {
@@ -2889,6 +2922,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             }
             let mut row = public_session(s);
             crate::session_model::annotate(paths, std::slice::from_mut(&mut row));
+            overlay_resolve_snapshot(paths, &mut row, daemon::now());
             row
         }
         Command::Session {
@@ -3678,7 +3712,7 @@ pub(crate) fn refresh_active_snapshot_detached(paths: &Paths) {
         .arg("--data-dir")
         .arg(&paths.root)
         .arg("snapshot-refresh")
-        .spawn();
+        .spawn_reaped();
 }
 
 /// Rewrite every cached state snapshot (Active, Archived, All) from the current catalog.
@@ -4196,7 +4230,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.55.0");
+        assert_eq!(c["contract_version"], "1.56.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
         assert_eq!(root["layout_version"], 3);
@@ -4860,5 +4894,48 @@ mod stale_generation_tests {
             renamed.generation().as_str()
         );
         assert_eq!(fresh["sessions"][1]["generation"], "x");
+    }
+}
+
+#[cfg(test)]
+mod resolve_snapshot_tests {
+    use super::*;
+    #[test]
+    fn resolve_overlays_cached_snapshot_facts_with_their_age() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("root"))).unwrap();
+        let blank = || json!({"id":"s1","availability":null,"activity":null,"pid":null});
+        // No snapshot: everything stays null.
+        let mut row = blank();
+        overlay_resolve_snapshot(&paths, &mut row, 1000);
+        assert!(row["availability"].is_null() && row["snapshot"].is_null());
+        let snapshot = json!({"observed_at":990,"sessions":[
+            {"id":"other","availability":"stopped","activity":null,"pid":null},
+            {"id":"s1","availability":"running","activity":"working","pid":4242,"live_activity":{"state":"working"}}]});
+        write_snapshot(&paths, ArchiveFilter::Active, &snapshot);
+        let mut row = blank();
+        overlay_resolve_snapshot(&paths, &mut row, 1000);
+        assert_eq!(row["availability"], "running");
+        assert_eq!(row["activity"], "working");
+        assert_eq!(row["pid"], 4242);
+        assert_eq!(row["live_activity"]["state"], "working");
+        assert_eq!(row["snapshot"]["observed_at"], 990);
+        assert_eq!(row["snapshot"]["age_seconds"], 10);
+        assert_eq!(row["snapshot"]["fresh"], true);
+        // A session missing from every snapshot keeps null.
+        let mut row = json!({"id":"absent"});
+        overlay_resolve_snapshot(&paths, &mut row, 1000);
+        assert!(row["availability"].is_null() && row["pid"].is_null() && row["snapshot"].is_null());
+        // An archived session is found in the `all` snapshot; an old snapshot is not fresh.
+        write_snapshot(
+            &paths,
+            ArchiveFilter::All,
+            &json!({"observed_at":100,"sessions":[
+            {"id":"absent","availability":"archived","activity":null,"pid":null}]}),
+        );
+        let mut row = json!({"id":"absent"});
+        overlay_resolve_snapshot(&paths, &mut row, 1000);
+        assert_eq!(row["availability"], "archived");
+        assert_eq!(row["snapshot"]["fresh"], false);
     }
 }

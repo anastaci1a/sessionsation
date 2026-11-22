@@ -330,7 +330,7 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .spawn_reaped();
     if let Err(e) = spawned {
         let mut failed = o.clone();
         phase(

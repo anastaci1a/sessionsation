@@ -1,4 +1,5 @@
 //! Durable CLI-owned local account deletion. Admission never scans account files.
+use crate::background::SpawnReaped as _;
 use crate::{
     accounts, catalog, daemon, external,
     paths::{Paths, atomic_write, lock_file, private_dir, validate_name},
@@ -136,7 +137,7 @@ fn spawn(paths: &Paths, r: &Record) -> Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
+        .spawn_reaped()?;
     Ok(())
 }
 /// Refuse a symlinked or foreign directory between the data root and a

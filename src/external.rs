@@ -1,4 +1,5 @@
 //! Account-aware Codex lifecycle, independent of terminal placement.
+use crate::background::SpawnReaped as _;
 pub(crate) use crate::terminal::{shell_quote, tmux};
 use crate::{
     config::LaunchPermissions,
@@ -2152,7 +2153,7 @@ fn enqueue_with_id(
         .stdout(Stdio::null())
         .stderr(log)
         .process_group(0)
-        .spawn();
+        .spawn_reaped();
     if let Err(error) = child {
         let mut failed = job.clone();
         failed.phase = "failed".into();

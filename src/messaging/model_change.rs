@@ -19,6 +19,7 @@
 //! Effort is always applied after the model (a `/model` switch can change it); without
 //! `--effort` the effort in force before the switch is re-applied.
 use super::*;
+use crate::background::SpawnReaped as _;
 use crate::provider::ProviderId;
 use crate::session_model::{self, Observed};
 use anyhow::{Context, ensure};
@@ -705,7 +706,7 @@ fn spawn_claude_worker(paths: &Paths, r: &Record, now: i64) {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .spawn_reaped();
 }
 
 #[derive(Deserialize)]

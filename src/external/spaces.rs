@@ -427,7 +427,7 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
     .arg("--data-dir")
     .arg(&paths.root)
     .args(["space-move-worker", &op.request.request_id])
-    .spawn();
+    .spawn_reaped();
     if child.is_err() {
         save(
             paths,

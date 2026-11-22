@@ -11,6 +11,7 @@
 //! message to another session. Nothing is replayed; a worker lost to a reboot
 //! leaves the record `stalled` and the operator subscribes again. The watched
 //! session sends no model request for this; only its own inbound controls apply.
+use crate::background::SpawnReaped as _;
 use crate::{
     catalog, daemon,
     paths::{Paths, atomic_write, lock_file, private_dir},
@@ -194,7 +195,7 @@ pub async fn start(
     .arg("--data-dir")
     .arg(&paths.root)
     .args(["claude-idle-worker", &r.id])
-    .spawn();
+    .spawn_reaped();
     if spawned.is_err() {
         finish(paths, &mut r, "failed", Some("WORKER_COULD_NOT_START"))?;
         return Ok(public(paths, &r));

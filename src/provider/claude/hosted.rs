@@ -20,6 +20,7 @@
 //! (`--permission-prompt-tool stdio`) and stay pending until the operator
 //! answers them (`api hosted respond`); nothing is auto-approved.
 use super::{Enrolled, proc_start};
+use crate::background::SpawnReaped as _;
 use crate::{
     catalog,
     paths::{Paths, atomic_write, lock_file, private_dir},
@@ -492,7 +493,7 @@ pub async fn start(paths: &Paths, s: Start) -> Result<Host> {
     .arg("--data-dir")
     .arg(&paths.root)
     .args(["claude-host-worker", &c])
-    .spawn();
+    .spawn_reaped();
     if spawned.is_err() {
         update(paths, &c, |h| {
             h.state = "failed".into();

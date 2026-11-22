@@ -25,6 +25,7 @@
 //!
 //! Shared store (contract 1.39.0): when both homes link to `<root>/shared/claude`
 //! the copy and remove phases are journaled no-ops (nothing copied or deleted).
+use crate::background::SpawnReaped as _;
 use crate::{
     catalog::{self, Session},
     daemon,
@@ -398,7 +399,7 @@ pub async fn start(
     .arg("--data-dir")
     .arg(&paths.root)
     .args(["claude-switch-worker", &r.id])
-    .spawn();
+    .spawn_reaped();
     if let Err(e) = child {
         phase(
             paths,

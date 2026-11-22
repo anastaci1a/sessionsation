@@ -29,6 +29,7 @@
 //! All paths journal before any write, keep durable receipts in
 //! `DATA_ROOT/messaging/claude-steer/`, share the message-id namespace with the other
 //! stores, and never replay an uncertain send.
+use crate::background::SpawnReaped as _;
 use crate::{
     catalog,
     paths::{Paths, atomic_write, lock_file, private_dir},
@@ -658,7 +659,7 @@ pub async fn send(
             "claude-peer-worker"
         })
         .arg(&id)
-        .spawn();
+        .spawn_reaped();
         if spawned.is_err() {
             abandon_unsent(paths, &id, "WORKER_COULD_NOT_START_NO_PROVIDER_ACTION")?;
         }
@@ -1225,7 +1226,7 @@ fn spawn_worker(paths: &Paths, subcommand: &str, id: &str) -> bool {
         .arg(&paths.root)
         .arg(subcommand)
         .arg(id)
-        .spawn()
+        .spawn_reaped()
         .is_ok()
 }
 fn spawn_terminal_worker(paths: &Paths, id: &str) -> Result<()> {
@@ -1236,7 +1237,7 @@ fn spawn_terminal_worker(paths: &Paths, id: &str) -> Result<()> {
     .arg(&paths.root)
     .arg("claude-terminal-worker")
     .arg(id)
-    .spawn();
+    .spawn_reaped();
     if spawned.is_err() {
         abandon_unsent(paths, id, "WORKER_COULD_NOT_START_NO_PROVIDER_ACTION")?;
     }
