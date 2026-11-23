@@ -60,6 +60,7 @@ while IFS= read -r line; do
       weekly=$(($(date +%s) + 604800))
       short=23; long=42; credits=''
       if [ -f "$CODEX_HOME/fake-reset-done" ]; then short=0; long=0; fi
+      if [ -f "$CODEX_HOME/fake-short" ]; then short=$(cat "$CODEX_HOME/fake-short"); fi
       if [ -f "$CODEX_HOME/fake-reset-available" ]; then
         credits=$(printf ',"rateLimitResetCredits":{"availableCount":%s,"credits":null}' "$(cat "$CODEX_HOME/fake-reset-available")")
       fi

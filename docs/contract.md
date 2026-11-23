@@ -17,8 +17,8 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.62.0`
-(the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
+so revision N maps to contract `1.N.0` and the current contract is `1.62.1`
+(the 1.62.1 PATCH is described under [Idle Codex meters stay fresh](#idle-codex-meters-stay-fresh-1621) and the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
 Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
@@ -1406,7 +1406,7 @@ first observed).
 
 `api state --cached [--archive-filter F]` serves the last full result of the same
 filter with the identical JSON shape plus `snapshot: {observed_at, fresh, cached}`;
-`fresh` is true while the snapshot is at most 15 seconds old. It performs no
+`fresh` is true while the snapshot is at most 30 seconds old (15 before 1.62.1; the supervisor now rebuilds it every 20 s). It performs no
 transcript scan, process probe or catalog write (`capabilities` is current).
 Every full `api state` stores its result atomically as
 `DATA_ROOT/cache/state-snapshot-<filter>.json` (and reports `snapshot.cached:false`);
@@ -3934,7 +3934,7 @@ MINOR (additive fields; no error code or field is removed).
 - **`session resolve` fills `availability`, `activity`, `pid` and `live_activity`** from the last cached state
   snapshot (the file `api state --cached` serves: the `active` snapshot, then `all`), and adds
   `snapshot: {"observed_at","age_seconds","fresh","cached":true,"source":"state_snapshot"}`. `fresh` means at most
-  15 s old. Resolve stays one local file read: no provider refresh, transcript scan, process probe or write. A
+  30 s old (15 s before 1.62.1). Resolve stays one local file read: no provider refresh, transcript scan, process probe or write. A
   session with no row in any snapshot keeps the four fields `null` and `snapshot: null`; callers needing live
   facts still call `api state`. The facts can be stale by `age_seconds`; the generation is unaffected.
 - **Claude statusline replays never lower usage.** An idle Claude session re-renders its statusline with the
@@ -4246,3 +4246,39 @@ set as the thread's own shell environment (`shell_environment_policy.set` on `th
 `thread/resume`; a thread the app-server already has loaded keeps the value it was loaded with). An
 inherited value is removed from every provider child and from the supervisor, so a child never carries
 its caller's id. `capabilities.session_env` describes it.
+
+### Idle Codex meters stay fresh (1.62.1)
+
+PATCH (no new field, error code or capability; `usage.meter.reason` and `meter_read`/`read` now carry text in cases
+that were silent). The 1.62.0 promise is that `usage.meter` is readable with no session running. Two gaps broke it
+for Codex:
+
+- The supervisor skipped an account without saying so (no shared app-server and either a possible destination
+  terminal or a held `.switcher-lease`), and its rate-limits read through a shared app-server inherited the 3 s
+  control timeout, so a slow provider answer left the meter stale with `reason:null`.
+- `api account limits` and `api usage` returned the cached reading and never read.
+
+Now:
+
+- **One safety decision.** The poll loop, `monitoring_pause_reason` and the on-demand read use the same rule. The
+  skips stay (a second app-server must not contend with a terminal's, or with a session's lease, for the login),
+  but while one holds, the meter says so: `fresh:false` with `reason` naming the lease or the possible terminal.
+  A reading that failed says why (`the rate-limits read failed: ...`, `the app-server could not be reached or
+  started: ...`). A meter that is not fresh always has a `reason`; a fresh one never does. A rate-limits read
+  now waits up to 20 s, also through a shared app-server (which is read as before, never a second one).
+- **On-demand read.** `api usage` (not `--cached`) and `api account limits` for a Codex account ask the supervisor
+  (`account/usage_read`) to read when the cached reading is older than 60 s (the Claude period) and a read is
+  safe. `api usage` rows carry the outcome as `read` (`{attempted, ok, reason}`; `null` when the cache was young
+  and nothing was attempted), `api account limits` as `meter_read`. A supervisor that is not running is the
+  read's `reason`; the cached reading is shown, still never `fresh:true` when stale.
+- Operators can set `SESSIONSATION_CODEX_METER_CACHE_SECONDS` on the supervisor to change the 60 s (tests).
+
+### The supervisor keeps `state --cached` fresh (1.62.1)
+
+PATCH. The `active` state snapshot that `api state --cached` and `session resolve` serve was rewritten only by a
+full `state` (and once when the supervisor starts), so with no full-state caller it went minutes stale. While
+`daemon serve` runs it now rebuilds the active snapshot itself every 20 s when the current one is older than that
+(`SNAPSHOT_REFRESH_SECONDS`, compressed by the test time scale), never two builds at once, and not at all when
+another process wrote a fresh one. Cached state is therefore at most about 20 s old while the supervisor runs
+(plus a build of well under a second), and `snapshot.fresh` (at most 30 s old, was 15) and `age_seconds` stay
+truthful: they describe the file, which is no fresher when the supervisor is down.

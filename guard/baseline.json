@@ -3,7 +3,7 @@
   "counters_digest": "3aea17f14456bf1ca4f238860a07c41d1779a29212a2f750108b4b52244041c0",
   "counters": {
     "alive_fns": { "value": 8 },
-    "api_rs_lines": { "value": 5237 },
+    "api_rs_lines": { "value": 5379 },
     "apply_session_input_fns": { "value": 3 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 3 },
@@ -11,22 +11,22 @@
     "codes_allow_markers": { "value": 0 },
     "contract_allow_markers": { "value": 0 },
     "control_allow_markers": { "value": 0 },
-    "daemon_methods": { "value": 23 },
+    "daemon_methods": { "value": 24 },
     "doc_bytes:AGENTS.md": { "value": 103 },
     "doc_bytes:README.md": { "value": 5500 },
     "doc_bytes:agents/README.md": { "value": 9276 },
     "doc_bytes:docs/README.md": { "value": 711 },
     "doc_bytes:docs/architecture.md": { "value": 10016 },
     "doc_bytes:docs/cli.md": { "value": 112591 },
-    "doc_bytes:docs/contract.md": { "value": 320889 },
-    "doc_bytes:docs/operations.md": { "value": 29240 },
-    "doc_bytes_total": { "value": 488326 },
+    "doc_bytes:docs/contract.md": { "value": 323877 },
+    "doc_bytes:docs/operations.md": { "value": 29501 },
+    "doc_bytes_total": { "value": 491575 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "duration_literals": { "value": 182 },
+    "duration_literals": { "value": 184 },
     "env_scrub_sites": { "value": 51 },
-    "error_code_literals": { "value": 676 },
+    "error_code_literals": { "value": 677 },
     "file_cache_statics": { "value": 8 },
-    "flock_sites": { "value": 84 },
+    "flock_sites": { "value": 83 },
     "fs2_imports": { "value": 30 },
     "fs_write_sites": { "value": 5 },
     "generation_allow_markers": { "value": 0 },
@@ -44,10 +44,10 @@
     "phase_records": { "value": 12 },
     "pidfd_sites": { "value": 6 },
     "proc_stat_readers": { "value": 2 },
-    "provider_enum_dispatch": { "value": 159 },
+    "provider_enum_dispatch": { "value": 164 },
     "provider_ops_allow_markers": { "value": 0 },
     "provider_string_compares": { "value": 75 },
-    "raw_sleeps": { "value": 99 },
+    "raw_sleeps": { "value": 100 },
     "receipts_sites": { "value": 2 },
     "records_allow_markers": { "value": 0 },
     "rename_sites": { "value": 26 },
@@ -61,7 +61,7 @@
     "spawn_sites": { "value": 64 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 94484 },
+    "src_lines": { "value": 94809 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -235,6 +235,111 @@
       "reason": "R1 rebase onto 1.62.0: the api.rs guard-allow(oauth) marker line",
       "considered": "n/a",
       "step": "S0"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 65,
+      "reason": "1.62.1: api usage and account limits read Codex meters on demand through the supervisor; stale-reason annotation",
+      "considered": "n/a",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "daemon_methods",
+      "by": 1,
+      "reason": "1.62.1: account/usage_read, the supervisor read of one Codex meter on demand",
+      "considered": "status already serves the cached reading and the api process cannot hold the app-server or write the account state; the supervisor is the single owner of both, so the read has to be one of its methods",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 2095,
+      "reason": "1.62.1 contract section: idle Codex meters stay fresh",
+      "considered": "n/a",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 2095,
+      "reason": "1.62.1 contract section: idle Codex meters stay fresh",
+      "considered": "n/a",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "duration_literals",
+      "by": 2,
+      "reason": "1.62.1: 20 s rate-limits read timeout and 40 s bound on one on-demand read",
+      "considered": "the shared control's 3 s default is too short for a backend call; both use the same named timeout style as the neighbouring code, the 20 s one a const",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "error_code_literals",
+      "by": 1,
+      "reason": "1.62.1: the on-demand read reuses codex_named, and its refusal text is one more code literal",
+      "considered": "reused codex_named and the existing account refusals; the one new literal is the account-disabled reason string",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "flock_sites",
+      "by": -1,
+      "reason": "1.62.1: the poll loop's own lease probe replaced by monitoring_pause_reason, which already held the identical probe",
+      "considered": "n/a",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "provider_enum_dispatch",
+      "by": 5,
+      "reason": "1.62.1: Codex-only branches in api usage, account limits and status for the on-demand read and stale reasons",
+      "considered": "the meter shape is per provider by design (Claude reads through OAuth, Codex through the supervisor); no existing provider dispatch owns the Codex read",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "src_lines",
+      "by": 245,
+      "reason": "1.62.1: on-demand Codex meter read, stale reasons, shared poll application",
+      "considered": "n/a",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 77,
+      "reason": "1.62.1: supervisor keeps the active state snapshot fresh (snapshot_monitor, refresh_snapshot_if_due)",
+      "considered": "n/a",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 893,
+      "reason": "1.62.1 contract section: cached state kept fresh by the supervisor",
+      "considered": "n/a",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "doc_bytes:docs/operations.md",
+      "by": 261,
+      "reason": "1.62.1 operations note: supervisor refreshes the state snapshot",
+      "considered": "n/a",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 1154,
+      "reason": "1.62.1 contract and operations text for the snapshot refresh",
+      "considered": "n/a",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "raw_sleeps",
+      "by": 1,
+      "reason": "1.62.1: the snapshot refresh loop's sleep, scaled by timing::secs",
+      "considered": "a tokio interval would also be a raw timer site; the loop is the same shape as the sibling supervisor monitors (turn_notify::monitor) and sleeps after the build so builds can never overlap or pile up",
+      "step": "1.62.1"
+    },
+    {
+      "counter": "src_lines",
+      "by": 80,
+      "reason": "1.62.1: supervisor keeps the active state snapshot fresh (snapshot_monitor, refresh_snapshot_if_due)",
+      "considered": "n/a",
+      "step": "1.62.1"
     }
   ],
   "enforced": { "oauth": "S0" }

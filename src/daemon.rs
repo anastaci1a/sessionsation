@@ -39,6 +39,69 @@ struct Poll {
     identity: Option<String>,
     usage: Option<Usage>,
     unauthenticated: bool,
+    /// Why no reading came back (`None` when one did, or the account is unauthenticated).
+    failure: Option<String>,
+}
+
+/// Contract 1.62.1: an on-demand Codex meter read is skipped while the cached reading is
+/// younger than this (the Claude read's period); `SESSIONSATION_CODEX_METER_CACHE_SECONDS`
+/// overrides it for tests.
+pub const CODEX_METER_CACHE_SECONDS: i64 = 60;
+pub const CODEX_METER_CACHE_ENV: &str = "SESSIONSATION_CODEX_METER_CACHE_SECONDS";
+/// A rate-limits read goes to the provider's backend; the shared app-server's 3 s control
+/// default is too short for it.
+const RATE_LIMITS_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Why the newest read of a Codex account did not produce a reading, by account name.
+/// In memory only: the supervisor is the only reader (`status`), and a restart starts clean.
+static METER_NOTES: std::sync::Mutex<BTreeMap<String, String>> =
+    std::sync::Mutex::new(BTreeMap::new());
+fn set_meter_note(name: &str, note: Option<String>) {
+    if let Ok(mut notes) = METER_NOTES.lock() {
+        match note {
+            Some(note) => notes.insert(name.to_owned(), note),
+            None => notes.remove(name),
+        };
+    }
+}
+fn meter_note(name: &str) -> Option<String> {
+    METER_NOTES.lock().ok()?.get(name).cloned()
+}
+/// What the supervisor says when it is not reading an account's meter.
+fn pause_sentence(code: &str) -> &'static str {
+    match code {
+        "active_session" => {
+            "not read: a session handoff to this account may have a terminal open on it, and a read could disturb that terminal's app-server"
+        }
+        _ => {
+            "not read: a running session holds this account's lease and no shared app-server serves it, so a second app-server could contend with it for the login"
+        }
+    }
+}
+/// A Codex meter that is not fresh says why. A fresh reading never gets a reason.
+pub fn explain_stale_meter(meter: &mut Value, reason: Option<String>) {
+    if meter["supported"] != true || meter["fresh"] != false {
+        return;
+    }
+    let never = meter["reason"].as_str().map(str::to_owned);
+    if never.is_some() && reason.is_none() {
+        return;
+    }
+    let why = reason.unwrap_or_else(|| {
+        format!(
+            "the last reading is {} s old and no newer read has succeeded",
+            meter["age_seconds"].as_i64().unwrap_or(0)
+        )
+    });
+    meter["reason"] = json!(match never {
+        Some(never) => format!("{never}; {why}"),
+        None => why,
+    });
+}
+pub fn codex_stale_reason(paths: &Paths, name: &str) -> Option<String> {
+    monitoring_pause_reason(paths, name)
+        .map(|code| pause_sentence(code).to_owned())
+        .or_else(|| meter_note(name))
 }
 
 pub fn parse_usage(value: &Value, at: i64) -> Result<Usage> {
@@ -281,6 +344,9 @@ pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> V
         let (mut usage, fresh, usage_state) = account_usage(paths, a, config, at);
         // Contract 1.62.0 (SM8): one meter shape for every provider.
         usage["meter"] = crate::provider::usage_meter::of(a.provider, &usage, at, config.stale_seconds);
+        if a.provider == ProviderId::Codex && usage["meter"]["fresh"] == false {
+            explain_stale_meter(&mut usage["meter"], codex_stale_reason(paths, &a.name));
+        }
         json!({
         "name":a.name,"folder_name":a.name,"name_mismatch":a.display_name.is_some(),"generation":crate::account_rename::account_generation(a),
         "order":a.order,"display_name":a.display_name,"provider":a.provider,"config_home":a.config_home,
@@ -314,12 +380,31 @@ async fn poll(name: String, rpc: Rpc, home: std::path::PathBuf) -> Poll {
     } else {
         None
     };
+    let mut failure = None;
     let usage = if identity.is_some() {
-        match rpc.request("account/rateLimits/read", json!({})).await {
-            Ok(v) => parse_usage(&v, now()).ok(),
-            Err(_) => None,
+        match rpc
+            .request_timeout("account/rateLimits/read", json!({}), RATE_LIMITS_TIMEOUT)
+            .await
+        {
+            Ok(v) => match parse_usage(&v, now()) {
+                Ok(usage) => Some(usage),
+                Err(e) => {
+                    failure = Some(format!("the rate-limits answer could not be read: {e}"));
+                    None
+                }
+            },
+            Err(e) => {
+                failure = Some(format!("the rate-limits read failed: {e}"));
+                None
+            }
         }
     } else {
+        if !unauthenticated {
+            failure = Some(match &account {
+                Err(e) => format!("the app-server did not answer: {e}"),
+                Ok(_) => "the account identity could not be read".into(),
+            });
+        }
         None
     };
     Poll {
@@ -327,7 +412,42 @@ async fn poll(name: String, rpc: Rpc, home: std::path::PathBuf) -> Poll {
         identity,
         usage,
         unauthenticated,
+        failure,
     }
+}
+
+/// Record one finished account read; true when a usage reading was stored.
+fn apply_poll(state: &mut State, store: &mut Store, result: Poll) -> Result<bool> {
+    let duplicate = result.identity.as_ref().is_some_and(|identity| {
+        state
+            .accounts
+            .values()
+            .any(|a| a.key() != result.name && &a.identity == identity)
+    });
+    let mut stored = false;
+    set_meter_note(&result.name, result.failure.clone());
+    if let Some(a) = state.accounts.get_mut(&result.name) {
+        if duplicate
+            || result
+                .identity
+                .as_ref()
+                .is_some_and(|id| !a.identity.is_empty() && id != &a.identity)
+        {
+            a.auth_required = true;
+            a.enabled = false;
+        } else if let Some(identity) = result.identity {
+            a.identity = identity;
+            a.auth_required = false;
+            if let Some(usage) = result.usage {
+                a.observe(usage);
+                stored = true;
+            }
+        } else if result.unauthenticated {
+            a.auth_required = true;
+        }
+        store.save(state, now(), "account_observed", &result.name)?;
+    }
+    Ok(stored)
 }
 
 pub async fn serve(paths: Paths) -> Result<()> {
@@ -457,6 +577,8 @@ pub async fn serve(paths: Paths) -> Result<()> {
     let turn_notify_task = tokio::spawn(crate::turn_notify::monitor(paths.clone()));
     // Contract 1.62.0 (SM8): idle Claude meters are read in the background.
     let meter_task = tokio::spawn(crate::provider::claude::meter::monitor(paths.clone()));
+    // Contract 1.62.1: `state --cached` stays fresh with no caller of full `state`.
+    let snapshot_task = tokio::spawn(crate::api::snapshot_monitor(paths.clone()));
     let (history_tx, mut history_rx) = mpsc::channel(1);
     let history_task = tokio::spawn(crate::usage_history::monitor(paths.clone(), history_tx));
     let mut history = crate::usage_history::Recorder::default();
@@ -516,6 +638,55 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         "daemon/stop" => {
                             ensure!(state.sessions.is_empty(), "cannot stop while managed sessions need reconciliation");
                             stopping = true; Ok(json!({"stopping":true}))
+                        }
+                        // Contract 1.62.1: read one Codex account's meter now when the cached
+                        // reading is older than the cache period and a read is safe. The answer
+                        // says what happened; it never fails because a read was not possible.
+                        "account/usage_read" => {
+                            let account = codex_named(&state,params)?;
+                            let name = account.name.clone();
+                            let cache = std::env::var(CODEX_METER_CACHE_ENV).ok().and_then(|v|v.parse::<i64>().ok()).unwrap_or(CODEX_METER_CACHE_SECONDS);
+                            let age = now() - account.usage.observed_at;
+                            if !account.enabled || account.deletion_id.is_some() {
+                                Ok(json!({"attempted":false,"ok":false,"reason":"the account is disabled or being removed"}))
+                            } else if (0..cache).contains(&age) {
+                                Ok(json!({"attempted":false,"ok":true,"reason":null}))
+                            } else if let Some(code) = monitoring_pause_reason(&paths,&name) {
+                                let reason = pause_sentence(code);
+                                set_meter_note(&name, Some(reason.to_owned()));
+                                Ok(json!({"attempted":false,"ok":false,"reason":reason}))
+                            } else if pending.contains(&name) {
+                                Ok(json!({"attempted":false,"ok":false,"reason":"a background read of this account is still running"}))
+                            } else {
+                                last_poll.insert(name.clone(),now());
+                                if let Some(helper) = helpers.get(&name) {
+                                    if !helper.is_alive().await {helpers.remove(&name);}
+                                }
+                                if !helpers.contains_key(&name) {
+                                    match Rpc::spawn(&config.codex_binary,&paths.account(&name)?,&paths.root).await {
+                                        Ok(rpc) => {helpers.insert(name.clone(),rpc);},
+                                        Err(e) => {
+                                            let reason = format!("the app-server could not be reached or started: {e}");
+                                            set_meter_note(&name, Some(reason.clone()));
+                                            return Ok(json!({"attempted":true,"ok":false,"reason":reason}));
+                                        }
+                                    }
+                                }
+                                let rpc = helpers[&name].clone(); let home = paths.account(&name)?;
+                                let polled = tokio::time::timeout(Duration::from_secs(40), poll(name.clone(),rpc,home)).await;
+                                match polled {
+                                    Ok(result) => {
+                                        let failure = result.failure.clone();
+                                        let stored = apply_poll(&mut state,&mut store,result)?;
+                                        Ok(json!({"attempted":true,"ok":stored,"reason":failure}))
+                                    }
+                                    Err(_) => {
+                                        let reason = "the rate-limits read timed out";
+                                        set_meter_note(&name, Some(reason.into()));
+                                        Ok(json!({"attempted":true,"ok":false,"reason":reason}))
+                                    }
+                                }
+                            }
                         }
                         "config/get" => Ok(serde_json::to_value(&config)?),
                         "config/set" => {
@@ -974,16 +1145,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
             }
             Some(result) = polls.recv() => {
                 pending.remove(&result.name);
-                let duplicate = result.identity.as_ref().is_some_and(|identity|state.accounts.values().any(|a|a.key() != result.name && &a.identity == identity));
-                if let Some(a) = state.accounts.get_mut(&result.name) {
-                    if duplicate || result.identity.as_ref().is_some_and(|id|!a.identity.is_empty() && id != &a.identity) {
-                        a.auth_required = true; a.enabled = false;
-                    } else if let Some(identity) = result.identity {
-                        a.identity = identity; a.auth_required = false;
-                        if let Some(usage) = result.usage {a.observe(usage);}
-                    } else if result.unauthenticated { a.auth_required = true; }
-                    store.save(&state,now(),"account_observed",&result.name)?;
-                }
+                apply_poll(&mut state,&mut store,result)?;
             }
             Some(result) = claude_polls.recv() => {
                 pending.remove(&result.name);
@@ -1033,15 +1195,12 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         });
                         continue;
                     }
-                    let shared = crate::control::available(&paths.account(&a.name)?);
-                    if !shared && crate::external::destination_tui_may_be_active(&paths,&a.name) {continue;}
-                    let lease_path = paths.account(&a.name)?.join(".switcher-lease");
-                    if let Ok(lease) = OpenOptions::new().read(true).write(true).open(&lease_path) {
-                        if lease.try_lock_exclusive().is_err() {
-                            if !shared && !crate::external::inactive_source_only_lease(&paths, &a.name) { continue; }
-                        } else {
-                            let _ = FileExt::unlock(&lease);
-                        }
+                    // Contract 1.62.1: the two safety skips (a terminal may be opening on the account;
+                    // a session holds its lease with no shared app-server) are one decision, and
+                    // the meter says why it is not being read.
+                    if let Some(code) = monitoring_pause_reason(&paths,&a.name) {
+                        set_meter_note(&a.name, Some(pause_sentence(code).to_owned()));
+                        continue;
                     }
                     let automatic = state.automatic_switching.values().any(|p| p.enabled && p.accounts.contains(&a.name))
                         || state.automatic_start.values().any(|p|p.enabled);
@@ -1057,7 +1216,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                     }
                     if !helpers.contains_key(&a.name) {
                         match Rpc::spawn(&config.codex_binary,&paths.account(&a.name)?,&paths.root).await {
-                            Ok(rpc) => {helpers.insert(a.name.clone(),rpc);}, Err(_) => continue,
+                            Ok(rpc) => {helpers.insert(a.name.clone(),rpc);}, Err(e) => { set_meter_note(&a.name, Some(format!("the app-server could not be reached or started: {e}"))); continue; }
                         }
                     }
                     pending.insert(a.name.clone());
@@ -1073,6 +1232,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     model_task.abort();
     turn_notify_task.abort();
     meter_task.abort();
+    snapshot_task.abort();
     history_task.abort();
     accept_task.abort();
     for (_, helper) in helpers {
@@ -1153,6 +1313,29 @@ pub async fn ensure_started(paths: &Paths) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_stale_codex_meter_always_says_why_and_a_fresh_one_never_does() {
+        use crate::provider::usage_meter;
+        let now = 1_000_000;
+        let old = json!({"short":{"used_percent":23.0,"duration_minutes":300,"resets_at":now+100},
+            "weekly":{"used_percent":42.0,"duration_minutes":10080,"resets_at":now+1000},"observed_at":now-10_000});
+        let mut m = usage_meter::of(ProviderId::Codex, &old, now, 300);
+        assert_eq!(m["fresh"], false);
+        super::explain_stale_meter(&mut m, None);
+        assert!(m["reason"].as_str().unwrap().contains("10000 s old"), "{m}");
+        let mut m = usage_meter::of(ProviderId::Codex, &old, now, 300);
+        super::explain_stale_meter(&mut m, Some("lease".into()));
+        assert_eq!(m["reason"], "lease");
+        let mut never = usage_meter::of(ProviderId::Codex, &json!({}), now, 300);
+        super::explain_stale_meter(&mut never, Some("lease".into()));
+        assert_eq!(never["reason"], "no usage window has been read yet; lease");
+        let young = json!({"short":{"used_percent":23.0,"duration_minutes":300,"resets_at":now+100},
+            "weekly":{"used_percent":42.0,"duration_minutes":10080,"resets_at":now+1000},"observed_at":now-10});
+        let mut fresh = usage_meter::of(ProviderId::Codex, &young, now, 300);
+        super::explain_stale_meter(&mut fresh, Some("lease".into()));
+        assert_eq!(fresh["fresh"], true);
+        assert!(fresh["reason"].is_null(), "{fresh}");
+    }
     #[test]
     fn account_rows_carry_the_observed_plan() {
         let tmp = tempfile::tempdir().unwrap();

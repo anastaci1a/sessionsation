@@ -86,6 +86,9 @@ sessions leave only ids in their manifest.
 credentials or a running process; external backups are outside session deletion.
 
 Use one supervisor per root. Updating a client executable does not update the owner.
+While it runs, the supervisor rebuilds the active state snapshot every 20 s (contract 1.62.1), so
+`api state --cached` is at most about 20 s old without anyone running a full `state`; a stopped
+supervisor leaves the file as it was and `snapshot.fresh` says so.
 Capability checks gate operations requiring a newer owner. A viewer detach does not
 stop agents; a host-server stop can terminate all its panes. Migrations, owner
 handoffs and provider upgrades require their own reviewed maintenance procedure.

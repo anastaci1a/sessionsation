@@ -19,8 +19,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 62;
-pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.62.0";
+pub const CONTRACT_PATCH: u32 = 1;
+pub const CONTRACT_VERSION: &str = "1.62.1";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1026,6 +1026,22 @@ fn account_ref(paths: &Paths, id: &str) -> Result<AccountRef> {
     }
     Ok(account)
 }
+/// One on-demand Codex meter read through the supervisor (contract 1.62.1). Never fails: a
+/// supervisor that is not running, or too old to know the method, is the read's `reason`.
+async fn codex_meter_read(paths: &Paths, name: &str) -> Value {
+    match daemon::call(
+        paths,
+        "account/usage_read",
+        json!({"name":name,"provider":"codex"}),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            json!({"attempted":false,"ok":false,"reason":format!("the supervisor could not read it: {e}")})
+        }
+    }
+}
 /// `api usage` (contract 1.62.0, SM8): one row per enrolled account of every provider, with
 /// the legacy projection (`state`, `fresh`, `source`, `short`, `weekly`, ages) and the one
 /// `meter` shape. A Claude meter older than [`claude::meter::CACHE_SECONDS`] is read from the
@@ -1046,6 +1062,32 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
     if let Some(w) = &want {
         ensure!(!selected.is_empty(), "ACCOUNT_NOT_FOUND: {}", w.id());
     }
+    // Contract 1.62.1: Codex readings older than the cache period are read through the
+    // supervisor now (it owns the app-server and decides whether a read is safe).
+    let mut codex_reads = std::collections::HashMap::new();
+    if !cached {
+        for a in selected
+            .iter()
+            .filter(|a| a.provider == ProviderId::Codex && a.enabled && a.deletion_id.is_none())
+        {
+            let read = codex_meter_read(paths, &a.name).await;
+            codex_reads.insert(a.name.clone(), read);
+        }
+    }
+    drop(selected);
+    let state = if codex_reads.values().any(|r| r["ok"] == true) {
+        store::load_state_snapshot(paths)?
+    } else {
+        state
+    };
+    let selected: Vec<&crate::model::Account> = state
+        .ordered()
+        .into_iter()
+        .filter(|a| {
+            want.as_ref()
+                .is_none_or(|w| w.name == a.name && w.provider == a.provider)
+        })
+        .collect();
     // Claude reads run concurrently, each at most once per cache period.
     let mut reads = std::collections::HashMap::new();
     if !cached {
@@ -1081,7 +1123,15 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
     let mut rows = vec![];
     for a in selected {
         let (mut usage, fresh, usage_state) = daemon::account_usage(paths, a, &config, now);
-        let meter = crate::provider::usage_meter::of(a.provider, &usage, now, config.stale_seconds);
+        let mut meter =
+            crate::provider::usage_meter::of(a.provider, &usage, now, config.stale_seconds);
+        if a.provider == ProviderId::Codex && meter["fresh"] == false {
+            let reason = codex_reads
+                .get(&a.name)
+                .and_then(|r| r["reason"].as_str().map(str::to_owned))
+                .or_else(|| daemon::codex_stale_reason(paths, &a.name));
+            daemon::explain_stale_meter(&mut meter, reason);
+        }
         usage["meter"] = meter.clone();
         let age = |t: &Value| t.as_i64().map(|t| (now - t).max(0));
         let window = |key: &str| {
@@ -1095,6 +1145,12 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
         let id = format!("{}:{}", a.provider, a.name);
         let read = if a.provider == ProviderId::Claude {
             reads.remove(&a.name).unwrap_or(Value::Null)
+        } else if a.provider == ProviderId::Codex
+            && codex_reads
+                .get(&a.name)
+                .is_some_and(|r| r["attempted"] == true || r["ok"] == false)
+        {
+            codex_reads.remove(&a.name).unwrap_or(Value::Null)
         } else {
             Value::Null
         };
@@ -1486,6 +1542,12 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 .await?;
                 Ok(json!({"account_id":id,"limits":value["thresholds"],"saved":value["saved"]}))
             } else {
+                // Contract 1.62.1: a Codex reading older than the cache period is read now.
+                let codex_read = if account.provider == ProviderId::Codex {
+                    Some(codex_meter_read(paths, name).await)
+                } else {
+                    None
+                };
                 let status = daemon::call(paths, "status", json!({})).await?;
                 let a = status["accounts"]
                     .as_array()
@@ -1500,6 +1562,9 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 let mut usage = a["usage"].clone();
                 let mut value = json!({"account_id":id,"limits":a["switch_thresholds"],"saved":false,
                     "usage_fresh":a["usage_fresh"],"usage_state":a["usage_state"]});
+                if let Some(read) = codex_read {
+                    value["meter_read"] = read;
+                }
                 // Contract 1.60.0: Claude limit resets are read on demand (cached 60 s).
                 if account.provider == ProviderId::Claude && a["deletion_id"].is_null() {
                     let home = crate::provider::claude::home(
@@ -2276,8 +2341,48 @@ fn archive_info(
 pub async fn state(paths: &Paths) -> Result<Value> {
     state_filtered(paths, ArchiveFilter::Active).await
 }
-/// A snapshot older than this is reported `fresh:false`.
-pub const SNAPSHOT_FRESH_SECONDS: i64 = 15;
+/// A snapshot older than this is reported `fresh:false`. The supervisor rebuilds the active snapshot every
+/// [`SNAPSHOT_REFRESH_SECONDS`], so while it runs a cached state is fresh.
+pub const SNAPSHOT_FRESH_SECONDS: i64 = 30;
+/// Contract 1.62.1: the supervisor keeps the active snapshot this fresh (`state --cached` is at most about
+/// this old while it runs).
+pub const SNAPSHOT_REFRESH_SECONDS: u64 = 20;
+static SNAPSHOT_REFRESHING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Full builds started by [`refresh_snapshot_if_due`] in this process.
+pub static SNAPSHOT_BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+struct RefreshGuard;
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        SNAPSHOT_REFRESHING.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+/// Rebuild the active snapshot when it is older than the refresh period. At most one build runs at a
+/// time in this process (a second caller returns false at once), and a snapshot another process wrote
+/// within the period is left alone. True when a build ran and succeeded.
+pub async fn refresh_snapshot_if_due(paths: &Paths) -> bool {
+    use std::sync::atomic::Ordering;
+    if SNAPSHOT_REFRESHING.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    let _guard = RefreshGuard;
+    let period = crate::timing::secs(SNAPSHOT_REFRESH_SECONDS)
+        .as_secs_f64()
+        .ceil() as i64;
+    let at = read_snapshot(paths, ArchiveFilter::Active).and_then(|v| v["observed_at"].as_i64());
+    if at.is_some_and(|at| (0..period).contains(&(daemon::now() - at))) {
+        return false;
+    }
+    SNAPSHOT_BUILDS.fetch_add(1, Ordering::AcqRel);
+    state_filtered(paths, ArchiveFilter::Active).await.is_ok()
+}
+/// The supervisor task that keeps `state --cached` fresh with no caller of full `state`.
+pub async fn snapshot_monitor(paths: Paths) {
+    loop {
+        tokio::time::sleep(crate::timing::secs(SNAPSHOT_REFRESH_SECONDS)).await;
+        refresh_snapshot_if_due(&paths).await;
+    }
+}
 fn snapshot_file(paths: &Paths, filter: ArchiveFilter) -> std::path::PathBuf {
     let name = match filter {
         ArchiveFilter::Active => "active",
@@ -4526,7 +4631,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.62.0");
+        assert_eq!(c["contract_version"], "1.62.1");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
         assert_eq!(root["layout_version"], 3);
@@ -5233,5 +5338,42 @@ mod resolve_snapshot_tests {
         overlay_resolve_snapshot(&paths, &mut row, 1000);
         assert_eq!(row["availability"], "archived");
         assert_eq!(row["snapshot"]["fresh"], false);
+    }
+}
+
+#[cfg(test)]
+mod snapshot_refresh_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    #[tokio::test]
+    async fn refreshes_never_overlap_and_leave_a_fresh_snapshot_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
+        // A snapshot another process wrote within the period is not rebuilt.
+        write_snapshot(
+            &paths,
+            ArchiveFilter::Active,
+            &json!({"observed_at":daemon::now(),"sessions":[]}),
+        );
+        let before = SNAPSHOT_BUILDS.load(Ordering::Acquire);
+        assert!(!refresh_snapshot_if_due(&paths).await);
+        assert_eq!(SNAPSHOT_BUILDS.load(Ordering::Acquire), before);
+        // An old one is rebuilt, once, however many callers ask at the same time.
+        write_snapshot(
+            &paths,
+            ArchiveFilter::Active,
+            &json!({"observed_at":daemon::now() - 3600,"sessions":[]}),
+        );
+        let (a, b, c) = tokio::join!(
+            refresh_snapshot_if_due(&paths),
+            refresh_snapshot_if_due(&paths),
+            refresh_snapshot_if_due(&paths)
+        );
+        assert_eq!(SNAPSHOT_BUILDS.load(Ordering::Acquire), before + 1);
+        assert_eq!([a, b, c].iter().filter(|r| **r).count(), 1);
+        let at = read_snapshot(&paths, ArchiveFilter::Active).unwrap()["observed_at"]
+            .as_i64()
+            .unwrap();
+        assert!(daemon::now() - at <= 1, "the snapshot was rewritten");
     }
 }
