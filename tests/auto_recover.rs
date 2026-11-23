@@ -1,6 +1,10 @@
 //! Per-session auto-recover (contract 1.35.0) with a metadata-only fake Claude
 //! (`support/fake-claude.sh`) and a fake HERDR. Disposable homes; no provider
 //! network, credentials, model requests or real panes.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use sessionsation::{daemon, paths::Paths};
 use std::{

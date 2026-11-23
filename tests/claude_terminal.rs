@@ -2,6 +2,10 @@
 //! `support/fake-herdr-tui.py` (HERDR with one pane showing a fake Claude
 //! prompt) and `support/fake-claude-peer.py` (the live registered process the
 //! pane runs). Disposable homes; no real pane, provider or model is touched.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use sessionsation::{daemon, paths::Paths};
 use std::{

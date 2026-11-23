@@ -1,0 +1,5 @@
+# Owned-role enforcement for method-call roles (see src/guard/roles.rs and
+# agents/README.md "Owned roles and the guard"). A method path enters this list
+# only when its role flips to Enforced; `guard::clippy_roles_are_configured`
+# keeps the list and the roles table in step.
+disallowed-methods = []

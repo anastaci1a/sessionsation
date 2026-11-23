@@ -1,5 +1,9 @@
 //! Drive the real UI launch path (`api launch start` -> HERDR pane ->
 //! `launch-run` -> provider exec) against a scripted HERDR host.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use std::{
     io::Write,

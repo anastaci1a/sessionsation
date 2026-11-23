@@ -1,3 +1,7 @@
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::json;
 use sessionsation::rpc::{Rpc, read_frame};
 use std::os::unix::fs::PermissionsExt;

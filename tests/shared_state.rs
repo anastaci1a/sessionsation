@@ -1,4 +1,8 @@
 //! `sessionsation shared ...` through the real binary on disposable roots (contract 1.39.0).
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::Value;
 use sessionsation::{
     model::{Account, State},

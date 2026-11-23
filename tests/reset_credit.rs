@@ -1,5 +1,9 @@
 //! `api account reset-credit` (contract 1.53.0) against the fake Codex app-server
 //! only (tests/support/fake-codex.sh). No real account or app-server is involved.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use std::{
     fs,

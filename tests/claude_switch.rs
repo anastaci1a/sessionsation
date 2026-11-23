@@ -1,5 +1,9 @@
 //! Claude account switch (contract 1.34.0) with a metadata-only fake (`support/fake-claude.sh`)
 //! and a fake HERDR. Disposable homes only; no provider network, credentials or model requests.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use sessionsation::{daemon, paths::Paths};
 use std::{

@@ -1,3 +1,7 @@
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 #![allow(dead_code)]
 //! Inline run/resume journaling and --name (contract 1.32), driven through the
 //! Gemini fake (`support/fake-gemini.sh`). Disposable homes only; no provider

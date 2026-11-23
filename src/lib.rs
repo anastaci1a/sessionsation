@@ -1,3 +1,10 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        reason = "tests are exempt from owned roles"
+    )
+)]
 pub mod accounts;
 pub mod api;
 pub mod automatic;

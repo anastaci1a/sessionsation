@@ -1,4 +1,8 @@
 //! Stop closes the HERDR pane (contract 1.36.0): the safety rules, against the fake HERDR.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use sessionsation::{external::hosting::close_pane, paths::Paths};
 use std::{os::unix::fs::PermissionsExt, path::Path};
 

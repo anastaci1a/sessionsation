@@ -2,6 +2,10 @@
 //! waits for the lock, records why, and a refusal before any provider mutation is a
 //! certain `failed` (name released) with a one-line reason on the pane's stderr.
 //! Disposable data roots only; no daemon, provider, network or credentials.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use sessionsation::{catalog, launch, paths::Paths, provider::ProviderId};
 use std::{
     process::{Child, Command, Stdio},

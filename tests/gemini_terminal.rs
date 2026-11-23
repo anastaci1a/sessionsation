@@ -2,6 +2,10 @@
 //! `support/fake-herdr-gemini.py` (HERDR with one pane showing a fake Gemini
 //! CLI prompt) and `support/fake-gemini.sh` (the live Gemini process the pane
 //! runs). Disposable homes; no real pane, provider, account or model is touched.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use sessionsation::{daemon, paths::Paths};
 use std::{

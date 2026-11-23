@@ -8,6 +8,10 @@
 //! that a real bind would expose (F2) are covered by the unit tests in
 //! `src/root_migrate/tests.rs` (two real, distinct directories) and by the ignored
 //! namespace test at the end of this file.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use sessionsation::{daemon, paths::Paths};
 use std::{

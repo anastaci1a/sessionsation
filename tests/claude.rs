@@ -1,5 +1,9 @@
 //! Claude provider integration with a metadata-only fake (`support/fake-claude.sh`).
 //! Disposable homes only; no provider network, credentials or model requests.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use sessionsation::{daemon, paths::Paths};
 use std::{

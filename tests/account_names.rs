@@ -1,5 +1,9 @@
 //! Per-provider account names, display/folder names and the backend rename
 //! (contract 1.30.0). Disposable data root and fake providers only.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use sessionsation::{daemon, paths::Paths, provider::ProviderId};
 use std::{

@@ -1,4 +1,8 @@
 //! Synthetic servers and isolated tmux only: these tests never touch real accounts.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 #[path = "external_move/archives.rs"]
 mod archives;
 #[path = "external_move/autostart.rs"]

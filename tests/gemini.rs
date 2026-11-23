@@ -2,6 +2,10 @@
 //! (`support/fake-gemini.sh`, installed as `gemini.js`). Disposable homes only; no
 //! provider network, credentials or model requests. Login and headless behaviour
 //! are verified against the fake only; see docs/architecture.md.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use sessionsation::{daemon, paths::Paths};
 use std::{

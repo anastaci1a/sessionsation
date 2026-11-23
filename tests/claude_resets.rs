@@ -1,5 +1,9 @@
 //! `api account limits` / `api account reset-credit` for a Claude account (contract 1.60.0)
 //! with the metadata-only fake Claude and a fake curl. Fixture credentials only; no network.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use sessionsation::{daemon, paths::Paths};
 use std::{

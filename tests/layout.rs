@@ -2,6 +2,10 @@
 //! all four providers: in-use homes are deferred (never moved), idle homes move
 //! with a compatibility symlink (Codex control socket and SQLite paths keep
 //! working through it), and migrate is idempotent, resumable and reversible.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use sessionsation::layout::{self, migrate};
 use std::{
     collections::BTreeMap,
