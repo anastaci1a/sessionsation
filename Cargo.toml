@@ -33,3 +33,7 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Test-only: the source guard (src/guard.rs). Never part of the release graph.
+[dev-dependencies]
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
