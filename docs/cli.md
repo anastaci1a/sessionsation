@@ -931,14 +931,17 @@ session id, a timeout, unparseable output or a worker that exits mid-run is
 payload returns the original receipt, and a changed payload is `MESSAGE_ID_CONFLICT`.
 Interactive resume of the same session is refused while a delivery runs.
 
-Usage comes only from Claude Code's statusline. Launches pass a statusline that
+Usage comes from Claude Code's statusline and, since contract 1.62.0, from the account's OAuth
+usage read (no session needed; see [usage meter](#usage-meter-session-meters-and-the-session-id-contract-1620)).
+Launches pass a statusline that
 runs the hidden `sessionsation provider-hook claude-statusline`, which atomically
 writes `CLAUDE_CONFIG_DIR/.sessionsation/usage.json` (0600) with the rate-limit
 windows only, then runs the account's own `settings.json` `statusLine.command`
 with the same input and passes its output through. Recorder errors never break the
 statusline. Rate limits appear only for subscription accounts after the first API
 response; missing windows stay `null`, and readings older than 30 minutes or past
-their reset are stale. No model request is made to obtain usage.
+their reset are stale. No model request is made to obtain usage. Both sources write `usage.json`
+through one owner (`usage.lock`); the last OAuth attempt is `.sessionsation/usage-read.json` (no token).
 The launch statusline sets `refreshInterval` (config key `claude_statusline_refresh_seconds`, default 300, `0` disables)
 so Claude Code re-runs it while a session is idle and `usage.json` stays fresh for background-driven sessions.
 
@@ -1032,7 +1035,7 @@ non-cached `api state` falls back to the cached snapshot with a warning. See the
 
 ```sh
 sessionsation api state --cached      # running Claude/Gemini/Antigravity rows now carry activity + live_activity
-sessionsation api usage [--account claude:NAME]   # projected usage with age and source, per window
+sessionsation api usage [--account ID] [--cached]   # every account (1.62.0): usage, age, source and the meter
 ```
 
 `live_activity.source` names the signal (`native_registry` or `transcript_tail`); `observed_at` is the
@@ -1748,3 +1751,22 @@ name and sends nothing. It is refused with `SESSION_EXISTS` (a session with that
 `SESSION_PROCESS_LIVE` (the launch pane still runs a program other than an idle shell). Since 1.46.2 a launch
 whose `launch-run` never started within 120 s ends `failed` (`LAUNCH_RUN_NEVER_STARTED`) with the name
 released, so this is only needed for receipts stuck by older builds.
+
+### Usage meter, session meters and the session id (contract 1.62.0)
+
+```sh
+sessionsation api usage                          # one row per account, every provider, with `meter`
+sessionsation api usage --account claude:NAME    # reads an idle Claude account's OAuth usage (cached 60 s)
+sessionsation api usage --cached                 # never contacts a provider
+```
+
+`usage.meter` (account rows and `api usage`) has one shape for every provider: `supported`,
+`requires_session` (false for Codex and Claude), `source` (`app_server`, `statusline` or `oauth`), `fresh`,
+`observed_at`, `age_seconds`, `windows.five_hour` / `windows.seven_day` and `reason` (why Gemini and
+Antigravity have none). A Claude meter needs no running session: the account's OAuth usage read fills it
+on demand and the supervisor refreshes idle accounts every 10 minutes without ever renewing a token; a
+lower reading of the same reset cycle never replaces a higher one. Session rows carry `context_pct`,
+`subagents_running` and `background_tasks`, each with `_source`, `_observed_at` and `_reason` (null with
+the reason when unknown). Every provider process started for a session has
+`SESSIONSATION_SESSION_ID=<session id>` in its environment. See the
+[contract](contract.md#provider-parity-usage-meter-session-meters-session-id-env-1620).

@@ -650,6 +650,8 @@ async fn execute(
 ) -> Outcome {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut std_command = native::command(r.provider, config, home);
+    // Contract 1.62.0 (SM7): a headless run works for the session it delivers to.
+    crate::provider::set_session_env(&mut std_command, &r.session_id);
     if r.provider == ProviderId::Gemini {
         // Headless runs cannot answer the folder-trust prompt; the directory is
         // the session's recorded one, chosen by the operator.

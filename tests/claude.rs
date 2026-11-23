@@ -1283,7 +1283,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 61);
+    assert_eq!(caps["contract_revision"], 62);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1878,7 +1878,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 61);
+    assert_eq!(caps["contract_revision"], 62);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2035,6 +2035,11 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
     assert_eq!(read(&state.join("label-w1:p2")).trim(), "bg-view");
     let attach = read(&home.join("fake-attach"));
     assert!(attach.contains(&format!("attach={}", &bg[..8])), "{attach}");
+    // Contract 1.62.0 (SM7).
+    assert!(
+        attach.contains(&format!("session_env={}\n", s["id"].as_str().unwrap())),
+        "{attach}"
+    );
     assert!(attach.contains(&format!("config_dir={}", home.display())));
     let client: u32 = read(&state.join("pid-w1:p2")).trim().parse().unwrap();
     assert_eq!(added["attachment"]["pid"], client);
@@ -2746,7 +2751,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 61);
+    assert_eq!(caps["contract_revision"], 62);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()
@@ -3658,4 +3663,71 @@ async fn stop_refuses_an_archived_claude_session() {
     assert_eq!(archived["archived"], true, "{archived}");
     let refused = stop_error(&f, &archived);
     assert!(refused.contains("SESSION_ARCHIVED"), "{refused}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_rows_carry_context_and_task_meters_with_sources_or_reasons() {
+    // Contract 1.62.0 (SM3).
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let home = f.home("personal");
+    let (id, native) = f.stopped_session("personal");
+    let fields = ["context_pct", "subagents_running", "background_tasks"];
+    // Nothing reported yet: null with a reason, never a guess.
+    let s = f.session(&id);
+    for field in fields {
+        assert!(s[field].is_null(), "{s}");
+        assert!(s[format!("{field}_source")].is_null());
+        assert!(s[format!("{field}_observed_at")].is_null());
+        assert!(s[format!("{field}_reason")].is_string(), "{field}: {s}");
+    }
+    // Claude Code's status-line payload carries the conversation's context window.
+    let mut child = Command::new(binary())
+        .args(["provider-hook", "claude-statusline", "--record-only"])
+        .env("CLAUDE_CONFIG_DIR", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let payload = json!({"session_id":native,"version":"2.1.314","model":{"id":"claude-fable-5-2"},
+        "context_window":{"total_input_tokens":84000,"total_output_tokens":900,"context_window_size":200000,
+            "current_usage":{"input_tokens":4000,"output_tokens":900,"cache_creation_input_tokens":0,"cache_read_input_tokens":80000},
+            "used_percentage":42,"remaining_percentage":58}});
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.to_string().as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    let started = std::time::Instant::now();
+    let cached = f.api(&["state", "--cached"]);
+    let elapsed = started.elapsed();
+    let full = f.api(&["state"]);
+    for state in [&cached, &full] {
+        let s = state["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id.as_str())
+            .unwrap();
+        assert_eq!(s["context_pct"], 42.0, "{s}");
+        assert_eq!(s["context_pct_source"], "statusline");
+        assert!(s["context_pct_observed_at"].as_i64().unwrap() >= now() - 60);
+        assert!(s["context_pct_reason"].is_null());
+        assert_eq!(s["context_tokens"], 84000);
+        assert_eq!(s["context_window_size"], 200000);
+        assert!(s["subagents_running"].is_null());
+        assert!(s["subagents_running_reason"].is_string());
+        assert!(s["background_tasks_reason"].is_string());
+    }
+    eprintln!("state --cached with session meters took {elapsed:?}");
+    let caps = f.api(&["capabilities"]);
+    assert_eq!(caps["session_meters"]["since_contract"], "1.62.0");
+    assert_eq!(caps["session_env"]["var"], "SESSIONSATION_SESSION_ID");
+    assert_eq!(
+        caps["usage_meter"]["providers"]["claude"]["requires_session"],
+        false
+    );
 }

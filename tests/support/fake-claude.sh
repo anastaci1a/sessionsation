@@ -12,7 +12,7 @@ case "$1" in
     exit 0 ;;
   attach)
     # `claude attach <job>`: a viewer client of a running background session.
-    printf "attach=%s\nconfig_dir=%s\napi_key=%s\n" "$2" "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY:+present}" > "$home/fake-attach"
+    printf "attach=%s\nconfig_dir=%s\napi_key=%s\nsession_env=%s\n" "$2" "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY:+present}" "${SESSIONSATION_SESSION_ID:-}" > "$home/fake-attach"
     while :; do sleep 1; done ;;
   auth)
     case "$2" in
@@ -73,6 +73,7 @@ for arg in "$@"; do
       printf 'mode=%s\nsession=%s\ncwd=%s\nmessage=%s\n' "$mode" "$session" "$PWD" "$message"
       printf 'api_key=%s\nauth_token=%s\nbase_url=%s\n' "${ANTHROPIC_API_KEY:+present}" "${ANTHROPIC_AUTH_TOKEN:+present}" "${ANTHROPIC_BASE_URL:+present}"
       printf 'autoupdater=%s\nconfig_dir=%s\n' "$DISABLE_AUTOUPDATER" "$CLAUDE_CONFIG_DIR"
+      printf 'session_env=%s\n' "${SESSIONSATION_SESSION_ID:-}"
     } > "$home/fake-print-$mode"
     [ -f "$home/fake-print-sleep" ] && sleep "$(cat "$home/fake-print-sleep")"
     slug=$(printf '%s' "$PWD" | tr '/' '-')
@@ -128,6 +129,7 @@ fi
   printf 'api_key=%s\nauth_token=%s\nbase_url=%s\n' "${ANTHROPIC_API_KEY:+present}" "${ANTHROPIC_AUTH_TOKEN:+present}" "${ANTHROPIC_BASE_URL:+present}"
   printf 'bypass=%s\nis_sandbox=%s\n' "$bypass" "${IS_SANDBOX:-}"
   printf 'autoupdater=%s\nconfig_dir=%s\n' "$DISABLE_AUTOUPDATER" "$CLAUDE_CONFIG_DIR"
+  printf 'session_env=%s\n' "${SESSIONSATION_SESSION_ID:-}"
 } > "$home/fake-launch-$mode"
 printf '{"pid":%s,"sessionId":"%s","cwd":"%s","startedAt":%s,"procStart":"%s","version":"2.1.312","kind":"interactive","name":"%s","nameSource":"flag","status":"busy","updatedAt":%s}\n' \
   "$$" "$session" "$PWD" "$(now_ms)" "$start" "$name" "$(now_ms)" > "$home/sessions/$$.json"

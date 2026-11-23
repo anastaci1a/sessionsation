@@ -115,6 +115,14 @@ pub struct HookRecord {
     pub claude_version: Option<String>,
     pub observed_at_ms: i64,
     pub changed_at_ms: i64,
+    /// Contract 1.62.0 (SM3): the payload's `context_window.used_percentage` (0-100; null
+    /// before the first API response), `total_input_tokens` and `context_window_size`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_used_percentage: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_size: Option<u64>,
 }
 
 fn hook_dir(home: &Path) -> PathBuf {
@@ -157,6 +165,13 @@ pub fn record_hook(home: &Path, input: &Value, now_ms: i64) -> Result<bool> {
         claude_version: text(&input["version"]),
         observed_at_ms: now_ms,
         changed_at_ms: now_ms,
+        context_used_percentage: input["context_window"]["used_percentage"]
+            .as_f64()
+            .filter(|p| p.is_finite() && (0. ..=100.).contains(p)),
+        context_tokens: input["context_window"]["total_input_tokens"].as_u64(),
+        context_window_size: input["context_window"]["context_window_size"]
+            .as_u64()
+            .filter(|n| *n > 0),
     };
     if let Some(old) = fs::read(&file)
         .ok()
@@ -166,8 +181,15 @@ pub fn record_hook(home: &Path, input: &Value, now_ms: i64) -> Result<bool> {
             && old.effort_level == fresh.effort_level
             && old.thinking_enabled == fresh.thinking_enabled
             && old.fast_mode == fresh.fast_mode;
+        // A new context reading is written at once, but it is not a model change.
+        let same_context = old.context_used_percentage == fresh.context_used_percentage
+            && old.context_tokens == fresh.context_tokens
+            && old.context_window_size == fresh.context_window_size;
         if unchanged {
-            if now_ms - old.observed_at_ms < HOOK_REFRESH_MS && now_ms >= old.observed_at_ms {
+            if same_context
+                && now_ms - old.observed_at_ms < HOOK_REFRESH_MS
+                && now_ms >= old.observed_at_ms
+            {
                 return Ok(false);
             }
             fresh.changed_at_ms = old.changed_at_ms;
@@ -297,9 +319,14 @@ pub fn current(paths: &Paths, conversation: &str, home: Option<&Path>) -> Option
     current_in(&load(paths), conversation, home)
 }
 fn current_in(all: &Sidecar, conversation: &str, home: Option<&Path>) -> Option<Observed> {
-    let hook = home
-        .and_then(|h| hook_record(h, conversation))
-        .and_then(|r| Observed::from_hook(&r));
+    current_with(
+        all,
+        conversation,
+        home.and_then(|h| hook_record(h, conversation)).as_ref(),
+    )
+}
+fn current_with(all: &Sidecar, conversation: &str, hook: Option<&HookRecord>) -> Option<Observed> {
+    let hook = hook.and_then(Observed::from_hook);
     let side = all.sessions.get(conversation).cloned();
     match (hook, side) {
         (Some(h), Some(s)) if s.observed_at > h.observed_at => Some(s),
@@ -308,7 +335,8 @@ fn current_in(all: &Sidecar, conversation: &str, home: Option<&Path>) -> Option<
     }
 }
 
-/// Fill `model` in public session rows (`state`, `session`, `resolve`). Rows of providers
+/// Fill `model` and the session meters ([`crate::provider::session_meters`], contract 1.62.0) in public
+/// session rows (`state`, `session`, `resolve`). Rows of providers
 /// without model reporting get null.
 pub fn annotate(paths: &Paths, rows: &mut [Value]) {
     let all = load(paths);
@@ -332,12 +360,16 @@ pub fn annotate(paths: &Paths, rows: &mut [Value]) {
         } else {
             None
         };
+        // One read of the Claude hook record serves the model and the context meter.
+        let hook = home.as_deref().and_then(|h| hook_record(h, &conversation));
         row["model"] = match provider {
             "claude" | "codex" => {
-                current_in(&all, &conversation, home.as_deref()).map_or(Value::Null, |o| o.public())
+                current_with(&all, &conversation, hook.as_ref()).map_or(Value::Null, |o| o.public())
             }
             _ => Value::Null,
         };
+        // Contract 1.62.0 (SM3).
+        crate::provider::session_meters::apply(row, hook.as_ref());
     }
 }
 

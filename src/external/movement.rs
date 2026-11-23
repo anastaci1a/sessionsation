@@ -799,6 +799,7 @@ pub(super) async fn launch_target(
         save_job(paths, job)?;
         let mut params = json!({"threadId":job.source.thread_id,"cwd":cwd,"excludeTurns":true});
         set_permissions(&mut params, permissions);
+        set_known_thread_session_env(paths, &mut params, &job.source.thread_id);
         // Native resume reconstructs the destination's index from the unchanged
         // rollout. Same-home actions use their existing native identity/index.
         if job.relocation.is_none() {
@@ -844,6 +845,7 @@ pub(super) async fn launch_target(
             mode,
         )
     };
+    let command = with_session_env(paths, &job.source.thread_id, command);
     let command = format!("{command} -C {}", shell_quote(&cwd));
     phase(
         paths,
@@ -1374,6 +1376,7 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
                     .or_else(|| launch_permissions(&job.source.resume_options)),
             ),
         );
+        set_known_thread_session_env(paths, &mut params, &job.source.thread_id);
         Control::connect(&job.source.home)
             .await?
             .resume_with_permissions(params)
@@ -1394,6 +1397,7 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
             mode,
         )
     };
+    let command = with_session_env(paths, &job.source.thread_id, command);
     hosting::relaunch(paths, &job.source.pane, &job.source.cwd, &command)?;
     confirm_runtime(
         paths,

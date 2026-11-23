@@ -504,7 +504,7 @@ impl Fixture {
 #include <stdlib.h>
 #include <string.h>
 #include <glob.h>
-int main(int argc,char**argv){char path[4096];if(argc>3 && strcmp(argv[1],"app-server")==0 && strcmp(argv[2],"daemon")==0 && strcmp(argv[3],"stop")==0){snprintf(path,sizeof(path),"%s/app-server-control/app-server-control.sock",getenv("CODEX_HOME"));unlink(path);return 0;}if(argc>1 && strcmp(argv[1],"app-server")==0){snprintf(path,sizeof(path),"%s/backend-restart",getenv("CODEX_HOME"));FILE*f=fopen(path,"w");fclose(f);return 0;}snprintf(path,sizeof(path),"%s/launch-args",getenv("CODEX_HOME"));FILE*f=fopen(path,"w");int remote=0,permissions=0;for(int i=1;i<argc;i++){fprintf(f,"%s\n",argv[i]);if(strcmp(argv[i],"--remote")==0)remote=1;if(strcmp(argv[i],"--sandbox")==0||strcmp(argv[i],"--ask-for-approval")==0||strcmp(argv[i],"--dangerously-bypass-approvals-and-sandbox")==0||strcmp(argv[i],"--approve-for-me")==0||strcmp(argv[i],"--full-auto")==0||strncmp(argv[i],"approval_policy=",16)==0||strncmp(argv[i],"sandbox_mode=",13)==0)permissions=1;}fclose(f);if(remote&&permissions){fprintf(stderr,"Permission overrides are not supported when resuming a remote task.\n");return 42;}if(argc>2&&strcmp(argv[1],"resume")==0&&strlen(argv[2])==36){glob_t g={0};snprintf(path,sizeof(path),"%s/sessions/**/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);int found=glob(path,0,NULL,&g)==0;globfree(&g);snprintf(path,sizeof(path),"%s/sessions/*/*/*/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);found|=glob(path,0,NULL,&g)==0;globfree(&g);snprintf(path,sizeof(path),"%s/sessions/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);found|=glob(path,0,NULL,&g)==0;globfree(&g);if(!found){fprintf(stderr,"no rollout found for thread id %s\n",argv[2]);return 43;}}if(getenv("SESSIONSATION_FIXTURE_EXIT")){char line[128];while(fgets(line,sizeof(line),stdin)){if(strcmp(line,"/exit\n")==0)return 0;}}for(;;)pause();}"#).unwrap();
+int main(int argc,char**argv){char path[4096];if(argc>3 && strcmp(argv[1],"app-server")==0 && strcmp(argv[2],"daemon")==0 && strcmp(argv[3],"stop")==0){snprintf(path,sizeof(path),"%s/app-server-control/app-server-control.sock",getenv("CODEX_HOME"));unlink(path);return 0;}if(argc>1 && strcmp(argv[1],"app-server")==0){snprintf(path,sizeof(path),"%s/backend-restart",getenv("CODEX_HOME"));FILE*f=fopen(path,"w");fclose(f);return 0;}snprintf(path,sizeof(path),"%s/launch-args",getenv("CODEX_HOME"));FILE*f=fopen(path,"w");int remote=0,permissions=0;for(int i=1;i<argc;i++){fprintf(f,"%s\n",argv[i]);if(strcmp(argv[i],"--remote")==0)remote=1;if(strcmp(argv[i],"--sandbox")==0||strcmp(argv[i],"--ask-for-approval")==0||strcmp(argv[i],"--dangerously-bypass-approvals-and-sandbox")==0||strcmp(argv[i],"--approve-for-me")==0||strcmp(argv[i],"--full-auto")==0||strncmp(argv[i],"approval_policy=",16)==0||strncmp(argv[i],"sandbox_mode=",13)==0)permissions=1;}fclose(f);if(argc>2&&strcmp(argv[1],"resume")==0){snprintf(path,sizeof(path),"%s/launch-env-%s",getenv("CODEX_HOME"),argv[2]);FILE*e=fopen(path,"w");if(e){const char*s=getenv("SESSIONSATION_SESSION_ID");fprintf(e,"%s\n",s?s:"");fclose(e);}}if(remote&&permissions){fprintf(stderr,"Permission overrides are not supported when resuming a remote task.\n");return 42;}if(argc>2&&strcmp(argv[1],"resume")==0&&strlen(argv[2])==36){glob_t g={0};snprintf(path,sizeof(path),"%s/sessions/**/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);int found=glob(path,0,NULL,&g)==0;globfree(&g);snprintf(path,sizeof(path),"%s/sessions/*/*/*/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);found|=glob(path,0,NULL,&g)==0;globfree(&g);snprintf(path,sizeof(path),"%s/sessions/rollout-*%s*.jsonl",getenv("CODEX_HOME"),argv[2]);found|=glob(path,0,NULL,&g)==0;globfree(&g);if(!found){fprintf(stderr,"no rollout found for thread id %s\n",argv[2]);return 43;}}if(getenv("SESSIONSATION_FIXTURE_EXIT")){char line[128];while(fgets(line,sizeof(line),stdin)){if(strcmp(line,"/exit\n")==0)return 0;}}for(;;)pause();}"#).unwrap();
         let bin = tmp.path().join("codex");
         assert!(
             Command::new("cc")
@@ -1710,6 +1710,7 @@ async fn multiple_launches_share_account_server_and_register_exact_threads() {
             .count(),
         4
     );
+    let mut named_tuis = vec![];
     let server = f.a.lock().unwrap();
     for (index, name) in ["new-0", "new-1", "new-2", "new-3"].iter().enumerate() {
         let (_, named) = server
@@ -1737,6 +1738,25 @@ async fn multiple_launches_share_account_server_and_register_exact_threads() {
         }
         assert_eq!(resumed.1["excludeTurns"], true);
         assert!(resumed.1.get("historyMode").is_none());
+        // Contract 1.62.0 (SM7): the thread's tool shells (children of the shared
+        // app-server) and the TUI both carry the catalog session id, chosen before
+        // thread/start.
+        let session = sessionsation::catalog::id_for_conversation(
+            &f.paths,
+            sessionsation::provider::ProviderId::Codex,
+            id,
+        )
+        .expect("catalog entry");
+        let key = "shell_environment_policy.set.SESSIONSATION_SESSION_ID";
+        assert_eq!(resumed.1["config"][key], session.as_str(), "{}", resumed.1);
+        assert!(
+            server
+                .calls
+                .iter()
+                .any(|(method, params)| method == "thread/start"
+                    && params["config"][key] == session.as_str())
+        );
+        named_tuis.push((id.to_owned(), session));
     }
     assert!(
         !server
@@ -1758,6 +1778,13 @@ async fn multiple_launches_share_account_server_and_register_exact_threads() {
                         params["sandbox"] == sandbox && params.get("permissions").is_none()
                     })
         );
+    }
+    drop(server);
+    let home = f.paths.account("personal").unwrap();
+    for (id, session) in named_tuis {
+        let file = home.join(format!("launch-env-{id}"));
+        wait_until(|| file.exists());
+        assert_eq!(fs::read_to_string(&file).unwrap().trim(), session);
     }
 }
 

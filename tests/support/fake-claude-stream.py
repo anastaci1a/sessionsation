@@ -65,6 +65,7 @@ with open(os.path.join(home, "fake-stream-launch.json"), "w") as f:
             "herdr_pane": os.environ.get("HERDR_PANE_ID", ""),
             "config_dir": home,
             "autoupdater": os.environ.get("DISABLE_AUTOUPDATER"),
+            "session_env": os.environ.get("SESSIONSATION_SESSION_ID", ""),
         },
         f,
     )

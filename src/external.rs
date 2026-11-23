@@ -1563,6 +1563,17 @@ async fn run_account_thread_inner(
             }
         }
     }
+    // Contract 1.62.0 (SM7): the session id is chosen before the thread exists (an admitted
+    // launch is its request id; a known conversation keeps its entry's id).
+    let session_id = match (creation, requested) {
+        (Some((request, _)), _) => request.to_owned(),
+        (None, Some(thread)) => {
+            crate::catalog::id_for_conversation(paths, crate::provider::ProviderId::Codex, thread)
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+        }
+        (None, None) => uuid::Uuid::new_v4().to_string(),
+    };
+    set_thread_session_env(&mut params, &session_id);
     // First provider mutation (a lost reply may still have started a thread): from here a
     // failed launch is `uncertain`, before it a certain `failed` (contract 1.49.1).
     crate::launch::provider_may_start();
@@ -1634,14 +1645,17 @@ async fn run_account_thread_inner(
     if let Some((request, _)) = creation {
         crate::launch::attached(paths, request, id, attachment)?;
     } else {
-        let recorded = crate::catalog::record_launch(
+        let recorded = crate::catalog::record_provider_launch_as(
             paths,
+            crate::provider::ProviderId::Codex,
             account,
             id,
             cwd.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("session"),
+            None,
             attachment,
+            Some(&session_id),
         )?;
         if let Some(request) = resumption {
             crate::resume::attached(paths, request, &recorded)?;
@@ -1661,6 +1675,7 @@ async fn run_account_thread_inner(
         .env_remove("OPENAI_API_KEY")
         .env_remove("CODEX_API_KEY")
         .env_remove("CODEX_ACCESS_TOKEN")
+        .env(crate::provider::SESSION_ENV, &session_id)
         .exec();
     Err(error).context("could not launch Codex")
 }
@@ -2814,6 +2829,44 @@ fn remote_tui_options(options: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Contract 1.62.0 (SM7): a Codex thread's tool commands are children of the account's
+/// app-server, not of the TUI, so the session id is set in the thread's own shell
+/// environment (`shell_environment_policy.set`, a per-thread config override of
+/// `thread/start` and `thread/resume`). An already loaded thread keeps the value it was
+/// loaded with.
+pub(crate) fn set_thread_session_env(params: &mut Value, session_id: &str) {
+    if !params["config"].is_object() {
+        params["config"] = json!({});
+    }
+    params["config"][format!(
+        "shell_environment_policy.set.{}",
+        crate::provider::SESSION_ENV
+    )] = json!(session_id);
+}
+/// [`set_thread_session_env`] for a conversation that has a catalog entry.
+pub(crate) fn set_known_thread_session_env(paths: &Paths, params: &mut Value, thread: &str) {
+    if let Some(id) =
+        crate::catalog::id_for_conversation(paths, crate::provider::ProviderId::Codex, thread)
+    {
+        set_thread_session_env(params, &id);
+    }
+}
+/// The session id in a Codex pane command's `env` prefix (`exec env -u ... CODEX_HOME=...`),
+/// for a conversation that has a catalog entry (contract 1.62.0).
+pub(crate) fn with_session_env(paths: &Paths, thread: &str, command: String) -> String {
+    match crate::catalog::id_for_conversation(paths, crate::provider::ProviderId::Codex, thread) {
+        Some(id) => command.replacen(
+            " CODEX_HOME=",
+            &format!(
+                " {} CODEX_HOME=",
+                crate::provider::session_env_assignment(&id)
+            ),
+            1,
+        ),
+        None => command,
+    }
+}
+
 fn resume_shell(
     home: &Path,
     binary: &str,
@@ -3179,6 +3232,90 @@ mod tests {
         assert_eq!(activity_from_tail(Cursor::new(data)), Activity::Unknown);
     }
     use crate::model::{Account, State};
+
+    #[test]
+    fn codex_threads_and_pane_commands_carry_the_catalog_session_id() {
+        // Contract 1.62.0 (SM7).
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(tmp.path().join("root"))).unwrap();
+        let thread = "11111111-1111-4111-8111-111111111111";
+        let home = tmp.path().join("codex home");
+        let options = vec!["--yolo".to_owned()];
+        let plain = resume_shell(
+            &home,
+            "codex",
+            &options,
+            thread,
+            &tmp.path().join("missing.jsonl"),
+            LaunchPermissions::Default,
+        );
+        // No catalog entry: nothing to name.
+        assert_eq!(with_session_env(&paths, thread, plain.clone()), plain);
+        let mut params = json!({"threadId":thread,"config":{"model_reasoning_effort":"high"}});
+        set_known_thread_session_env(&paths, &mut params, thread);
+        assert!(
+            params["config"]
+                .get("shell_environment_policy.set.SESSIONSATION_SESSION_ID")
+                .is_none()
+        );
+        let session = crate::catalog::record_provider_launch_as(
+            &paths,
+            crate::provider::ProviderId::Codex,
+            "personal",
+            thread,
+            "label",
+            None,
+            None,
+            Some("22222222-2222-4222-8222-222222222222"),
+        )
+        .unwrap();
+        assert_eq!(session.id, "22222222-2222-4222-8222-222222222222");
+        let named = with_session_env(&paths, thread, plain.clone());
+        assert!(
+            named.starts_with(
+                "exec env -u OPENAI_API_KEY -u CODEX_API_KEY -u CODEX_ACCESS_TOKEN SESSIONSATION_SESSION_ID='22222222-2222-4222-8222-222222222222' CODEX_HOME="
+            ),
+            "{named}"
+        );
+        assert_eq!(
+            named.replacen(
+                "SESSIONSATION_SESSION_ID='22222222-2222-4222-8222-222222222222' ",
+                "",
+                1
+            ),
+            plain
+        );
+        let remote = with_session_env(
+            &paths,
+            thread,
+            super::movement::remote_resume_shell(&home, "codex", &options, thread),
+        );
+        assert!(
+            remote.contains(
+                " SESSIONSATION_SESSION_ID='22222222-2222-4222-8222-222222222222' CODEX_HOME="
+            ),
+            "{remote}"
+        );
+        set_known_thread_session_env(&paths, &mut params, thread);
+        assert_eq!(
+            params["config"],
+            json!({"model_reasoning_effort":"high",
+                "shell_environment_policy.set.SESSIONSATION_SESSION_ID":"22222222-2222-4222-8222-222222222222"})
+        );
+        // A second record of the same conversation keeps its entry's id.
+        let again = crate::catalog::record_provider_launch_as(
+            &paths,
+            crate::provider::ProviderId::Codex,
+            "personal",
+            thread,
+            "label",
+            None,
+            None,
+            Some("33333333-3333-4333-8333-333333333333"),
+        )
+        .unwrap();
+        assert_eq!(again.id, session.id);
+    }
 
     #[test]
     fn codex_start_permissions_follow_the_launch_mode() {

@@ -389,6 +389,45 @@ pub fn record_provider_launch(
     directory: Option<&str>,
     attachment: Option<Attachment>,
 ) -> Result<Session> {
+    record_provider_launch_as(
+        paths,
+        provider,
+        account,
+        conversation,
+        label,
+        directory,
+        attachment,
+        None,
+    )
+}
+/// The catalog id of a provider conversation, when it has an entry.
+pub fn id_for_conversation(
+    paths: &Paths,
+    provider: ProviderId,
+    conversation: &str,
+) -> Option<String> {
+    read_catalog(paths, |c| {
+        Ok(c.sessions
+            .values()
+            .find(|s| s.provider == provider.as_str() && s.conversation_id == conversation)
+            .map(|s| s.id.clone()))
+    })
+    .ok()
+    .flatten()
+}
+/// [`record_provider_launch`] with the id a new entry gets (contract 1.62.0: a Codex
+/// thread is told its session id before the entry exists). An existing entry keeps its id.
+#[allow(clippy::too_many_arguments)]
+pub fn record_provider_launch_as(
+    paths: &Paths,
+    provider: ProviderId,
+    account: &str,
+    conversation: &str,
+    label: &str,
+    directory: Option<&str>,
+    attachment: Option<Attachment>,
+    preferred_id: Option<&str>,
+) -> Result<Session> {
     transaction(paths, |c| {
         if let Some(s) = c
             .sessions
@@ -421,7 +460,9 @@ pub fn record_provider_launch(
             suffix += 1;
         }
         let s = Session {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: preferred_id
+                .filter(|id| !c.sessions.contains_key(*id))
+                .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned),
             name,
             provider: provider.as_str().into(),
             account: account.into(),

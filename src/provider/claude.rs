@@ -19,6 +19,7 @@ pub mod bypass;
 mod facts;
 pub mod hosted;
 pub mod launch;
+pub mod meter;
 pub mod native_peer;
 pub mod oauth;
 pub mod peer;
@@ -364,6 +365,7 @@ pub fn command(config: &Config, home: &Path) -> std::process::Command {
     // /run/user/<uid> when the last login session closes, unlinking the live socket.
     // Unset, Claude uses /tmp/cc-socks/<pid>.sock, which it accepts and elogind never removes.
     command.env_remove("XDG_RUNTIME_DIR");
+    super::scrub_session_env(&mut command);
     command
         .env("CLAUDE_CONFIG_DIR", home)
         .env("DISABLE_AUTOUPDATER", "1");
@@ -1477,6 +1479,25 @@ fn statusline_window(v: &Value) -> Value {
         _ => Value::Null,
     }
 }
+/// Where a usage window was learned (contract 1.62.0): Claude Code's statusline payload
+/// of a running session, or the account's OAuth usage read (no session needed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsageSource {
+    Statusline,
+    OAuth,
+}
+impl UsageSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Statusline => "statusline",
+            Self::OAuth => "oauth",
+        }
+    }
+}
+/// Two readings of one window whose `resets_at` differ by at most this much are the same
+/// reset cycle: the statusline gets whole seconds from a response header, the OAuth read an
+/// ISO 8601 time. A new cycle starts hours later (a 5-hour or 7-day window), never minutes.
+pub const SAME_CYCLE_SECONDS: i64 = 300;
 /// Persist only rate-limit fields from one statusline payload. Returns false
 /// when the payload carries no rate-limit information (nothing observed).
 pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
@@ -1484,6 +1505,34 @@ pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
     if !limits.is_object() {
         return Ok(false);
     }
+    record_windows(
+        home,
+        limits,
+        now,
+        UsageSource::Statusline,
+        Some((input["version"].as_str(), input["session_id"].as_str())),
+    )?;
+    Ok(true)
+}
+/// The one owner of `usage.json` for both sources (statusline and OAuth read, contract
+/// 1.62.0): `limits` holds `five_hour` / `seven_day` as `{used_percentage, resets_at}` (Unix
+/// seconds). The fresher reading wins, but within one reset cycle usage never goes down
+/// (the 1.56.0 rule, now across sources): a lower reading of the same cycle is a stale
+/// replay and keeps the stored window, its `observed_at` and its `source`. `session` is the
+/// statusline payload's (`version`, `session_id`); an OAuth read keeps the recorded ones.
+/// Returns whether the file was rewritten.
+pub fn record_windows(
+    home: &Path,
+    limits: &Value,
+    now: i64,
+    source: UsageSource,
+    session: Option<(Option<&str>, Option<&str>)>,
+) -> Result<bool> {
+    let dir = home.join(".sessionsation");
+    private_dir(&dir)?;
+    // The statusline hook and an OAuth read may run at once: one read-modify-write at a time.
+    let lock = crate::paths::lock_file(&dir.join("usage.lock"))?;
+    fs2::FileExt::lock_exclusive(&lock)?;
     // Claude Code drops a window after its reset until the next API response, so a
     // payload can lack one. Carry the recorded window forward until its own
     // resets_at; every window keeps the time it was last observed.
@@ -1494,6 +1543,17 @@ pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
     let window = |key: &str| {
         let mut fresh = statusline_window(&limits[key]);
         let old = statusline_window(&previous[key]);
+        let old_at = previous[key]["observed_at"]
+            .as_i64()
+            .or_else(|| previous["observed_at"].as_i64());
+        // Records before 1.62.0 have no per-window source: they came from the statusline.
+        let old_source = previous[key]["source"]
+            .as_str()
+            .unwrap_or(UsageSource::Statusline.as_str());
+        let kept = || {
+            json!({"used_percentage":old["used_percentage"],"resets_at":old["resets_at"],
+                "observed_at":old_at,"source":old_source})
+        };
         // A replayed window that has already reset carries no current usage: treat it
         // as absent (the recorded window is carried forward below).
         if fresh["resets_at"].as_i64().is_some_and(|r| r <= now) {
@@ -1501,27 +1561,25 @@ pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
         }
         if !fresh.is_null() {
             // An idle session re-renders its statusline with the limits of its LAST API
-            // response. Within one reset cycle (same resets_at) usage only grows, so a
-            // lower payload is a stale replay: keep the stored window and its observed_at.
-            // An older resets_at is a replay of an earlier cycle and is kept out too.
-            // A later resets_at is a new cycle and replaces; an equal or higher value
-            // refreshes observed_at.
-            let (old_reset, fresh_reset) = (old["resets_at"].as_i64(), fresh["resets_at"].as_i64());
-            let older_cycle = matches!((old_reset, fresh_reset), (Some(o), Some(f)) if f < o);
-            if older_cycle
-                || old["resets_at"] == fresh["resets_at"]
-                    && old["used_percentage"].as_f64() > fresh["used_percentage"].as_f64()
-            {
-                return json!({"used_percentage":old["used_percentage"],"resets_at":old["resets_at"],
-                    "observed_at":previous[key]["observed_at"].as_i64().or_else(|| previous["observed_at"].as_i64())});
+            // response, and an OAuth read can be older than a statusline that just ran.
+            // Within one reset cycle usage only grows, so a lower reading is stale: keep
+            // the stored window and its observed_at. An earlier cycle is kept out too. A
+            // later cycle replaces; an equal or higher value refreshes observed_at.
+            if let (Some(o), Some(f)) = (old["resets_at"].as_i64(), fresh["resets_at"].as_i64()) {
+                let same_cycle = (f - o).abs() <= SAME_CYCLE_SECONDS;
+                let older_cycle = f < o - SAME_CYCLE_SECONDS;
+                if older_cycle
+                    || same_cycle
+                        && old["used_percentage"].as_f64() > fresh["used_percentage"].as_f64()
+                {
+                    return kept();
+                }
             }
-            return json!({"used_percentage":fresh["used_percentage"],"resets_at":fresh["resets_at"],"observed_at":now});
+            return json!({"used_percentage":fresh["used_percentage"],"resets_at":fresh["resets_at"],
+                "observed_at":now,"source":source.as_str()});
         }
         match old["resets_at"].as_i64() {
-            Some(resets) if resets > now => {
-                json!({"used_percentage":old["used_percentage"],"resets_at":resets,
-                "observed_at":previous[key]["observed_at"].as_i64().or_else(|| previous["observed_at"].as_i64())})
-            }
+            Some(resets) if resets > now => kept(),
             _ => Value::Null,
         }
     };
@@ -1532,18 +1590,24 @@ pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
         && previous["five_hour"] == five_hour
         && previous["seven_day"] == seven_day
     {
-        return Ok(true);
+        return Ok(false);
     }
+    let (version, session_id) = match session {
+        Some((v, s)) => (json!(v), json!(s)),
+        None => (
+            previous["claude_version"].clone(),
+            previous["session_id"].clone(),
+        ),
+    };
     let record = json!({
         "source": USAGE_SOURCE,
         "observed_at": now,
-        "claude_version": input["version"].as_str(),
-        "session_id": input["session_id"].as_str(),
+        "claude_version": version,
+        "session_id": session_id,
         "five_hour": five_hour,
         "seven_day": seven_day,
     });
-    private_dir(&home.join(".sessionsation"))?;
-    sweep_stale_tmp(&home.join(".sessionsation"), now);
+    sweep_stale_tmp(&dir, now);
     atomic_write(&usage_file(home), &serde_json::to_vec(&record)?)?;
     Ok(true)
 }
@@ -1646,7 +1710,9 @@ pub fn project_usage(home: &Path, now: i64) -> (Value, bool, &'static str) {
             Value::Null
         } else {
             json!({"duration_minutes":minutes,"used_percent":w["used_percentage"],"resets_at":w["resets_at"],
-                "observed_at":record[key]["observed_at"].as_i64().unwrap_or(observed)})
+                "observed_at":record[key]["observed_at"].as_i64().unwrap_or(observed),
+                // Contract 1.62.0: where this window was learned (`statusline` or `oauth`).
+                "source":record[key]["source"].as_str().unwrap_or(UsageSource::Statusline.as_str())})
         }
     };
     let short = window("five_hour", 300);

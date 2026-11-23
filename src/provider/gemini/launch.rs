@@ -71,8 +71,10 @@ pub fn resume_argv(config: &Config, session_id: &str, mode: LaunchPermissions) -
     argv
 }
 
-fn exec(config: &Config, home: &Path, cwd: &Path, argv: &[String]) -> Result<()> {
+fn exec(config: &Config, home: &Path, cwd: &Path, argv: &[String], session: &str) -> Result<()> {
     let mut command = gemini::command(config, home);
+    // Contract 1.62.0 (SM7).
+    crate::provider::set_session_env(&mut command, session);
     command.args(&argv[1..]).current_dir(cwd);
     Err(command.exec()).context("could not launch Gemini")
 }
@@ -92,29 +94,26 @@ pub async fn exec_new(
     gemini::prelaunch_gate(&account.home)?;
     let id = uuid::Uuid::new_v4().to_string();
     let attachment = crate::external::current_attachment(paths)?;
-    match creation {
-        Some(request) => {
-            crate::launch::attached(paths, request, &id, attachment)?;
-        }
-        None => {
-            catalog::record_provider_launch(
-                paths,
-                ProviderId::Gemini,
-                &account.name,
-                &id,
-                label
-                    .or_else(|| cwd.file_name().and_then(|n| n.to_str()))
-                    .unwrap_or("gemini"),
-                Some(directory),
-                attachment,
-            )?;
-        }
-    }
+    let session = match creation {
+        Some(request) => crate::launch::attached(paths, request, &id, attachment)?,
+        None => catalog::record_provider_launch(
+            paths,
+            ProviderId::Gemini,
+            &account.name,
+            &id,
+            label
+                .or_else(|| cwd.file_name().and_then(|n| n.to_str()))
+                .unwrap_or("gemini"),
+            Some(directory),
+            attachment,
+        )?,
+    };
     exec(
         &config,
         &account.home,
         &cwd,
         &new_argv(&config, &id, config.effective_launch_permissions()),
+        &session.id,
     )
 }
 
@@ -149,6 +148,7 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
             &current.conversation_id,
             config.effective_launch_permissions(),
         ),
+        &current.id,
     )
 }
 

@@ -18,9 +18,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 61;
+pub const CONTRACT_MINOR: u32 = 62;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.61.0";
+pub const CONTRACT_VERSION: &str = "1.62.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -277,11 +277,14 @@ pub enum Command {
         #[arg(long)]
         notify_session: Option<String>,
     },
-    /// Projected Claude usage windows with age and source (read-only).
+    /// Usage windows of every account with age, source and the one meter shape (1.62.0).
     Usage {
-        /// Only this account, e.g. claude:main (default: every Claude account).
+        /// Only this account, e.g. claude:main (default: every account).
         #[arg(long)]
         account: Option<String>,
+        /// Never contact a provider: report what is recorded.
+        #[arg(long)]
+        cached: bool,
     },
     /// Turn-end events of notifying sessions after a cursor; --wait blocks for the next one.
     TurnEvents {
@@ -1023,41 +1026,85 @@ fn account_ref(paths: &Paths, id: &str) -> Result<AccountRef> {
     }
     Ok(account)
 }
-/// `api usage`: the usage projected from each Claude account's statusline recorder,
-/// with the age of the whole record and of every window, and the source.
-fn usage_read(paths: &Paths, account: Option<&str>) -> Result<Value> {
+/// `api usage` (contract 1.62.0, SM8): one row per enrolled account of every provider, with
+/// the legacy projection (`state`, `fresh`, `source`, `short`, `weekly`, ages) and the one
+/// `meter` shape. A Claude meter older than [`claude::meter::CACHE_SECONDS`] is read from the
+/// account's OAuth usage endpoint first (no session needed), unless `cached`; the read's
+/// outcome is the row's `read` (null when none was attempted).
+async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Result<Value> {
     let want = account.map(|a| account_ref(paths, a)).transpose()?;
-    if let Some(w) = &want {
-        ensure!(
-            w.provider == ProviderId::Claude,
-            "UNSUPPORTED_PROVIDER_OPERATION: api usage reads the Claude statusline recorder; other providers report usage in api state"
-        );
-    }
     let state = store::load_state_snapshot(paths)?;
+    let config = store::load_config(paths)?;
+    let selected: Vec<&crate::model::Account> = state
+        .ordered()
+        .into_iter()
+        .filter(|a| {
+            want.as_ref()
+                .is_none_or(|w| w.name == a.name && w.provider == a.provider)
+        })
+        .collect();
+    if let Some(w) = &want {
+        ensure!(!selected.is_empty(), "ACCOUNT_NOT_FOUND: {}", w.id());
+    }
+    // Claude reads run concurrently, each at most once per cache period.
+    let mut reads = std::collections::HashMap::new();
+    if !cached {
+        let client = crate::reset_credit::claude::client(paths)?;
+        let mut tasks = tokio::task::JoinSet::new();
+        for a in &selected {
+            if a.provider != ProviderId::Claude || !a.enabled || a.deletion_id.is_some() {
+                continue;
+            }
+            let home = crate::provider::account_home(paths, a)?;
+            let now = daemon::now();
+            if claude::meter::newest_observation(&home, now)
+                .is_some_and(|t| now - t < claude::meter::CACHE_SECONDS)
+            {
+                continue;
+            }
+            let (client, name) = (client.clone(), a.name.clone());
+            tasks.spawn(async move {
+                let id = format!("claude:{name}");
+                let read =
+                    claude::meter::read(&client, &home, &id, false, claude::meter::Renew::Allowed)
+                        .await;
+                (name, read)
+            });
+        }
+        while let Some(done) = tasks.join_next().await {
+            if let Ok((name, read)) = done {
+                reads.insert(name, read);
+            }
+        }
+    }
     let now = daemon::now();
     let mut rows = vec![];
-    for a in state.ordered() {
-        if a.provider != ProviderId::Claude || want.as_ref().is_some_and(|w| w.name != a.name) {
-            continue;
-        }
-        let home = crate::provider::account_home(paths, a)?;
-        let (usage, fresh, usage_state) = claude::project_usage(&home, now);
+    for a in selected {
+        let (mut usage, fresh, usage_state) = daemon::account_usage(paths, a, &config, now);
+        let meter = crate::provider::usage_meter::of(a.provider, &usage, now, config.stale_seconds);
+        usage["meter"] = meter.clone();
         let age = |t: &Value| t.as_i64().map(|t| (now - t).max(0));
         let window = |key: &str| {
             let mut w = usage[key].clone();
             if w.is_object() {
-                w["age_seconds"] = json!(age(&w["observed_at"]));
+                w["age_seconds"] =
+                    json!(age(&w["observed_at"]).or_else(|| age(&usage["observed_at"])));
             }
             w
         };
-        rows.push(json!({"account":format!("claude:{}",a.name),"provider":"claude",
+        let id = format!("{}:{}", a.provider, a.name);
+        let read = if a.provider == ProviderId::Claude {
+            reads.remove(&a.name).unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+        rows.push(json!({"account":id,"account_id":id,"provider":a.provider,
+            "supported":meter["supported"],"requires_session":meter["requires_session"],
             "state":usage_state,"fresh":fresh,"source":usage["source"],"semantics":usage["semantics"],
             "observed_at":usage["observed_at"],"age_seconds":age(&usage["observed_at"]),
             "claude_version":usage["claude_version"],
-            "short":window("short"),"weekly":window("weekly"),"exhausted":usage["exhausted"]}));
-    }
-    if let Some(w) = &want {
-        ensure!(!rows.is_empty(), "ACCOUNT_NOT_FOUND: {}", w.id());
+            "short":window("short"),"weekly":window("weekly"),"exhausted":usage["exhausted"],
+            "meter":meter,"read":read}));
     }
     Ok(json!({"read_at":now,"accounts":rows}))
 }
@@ -1127,6 +1174,7 @@ fn refresh_cached_accounts(paths: &Paths, value: &mut Value) {
     }
 }
 pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value>> {
+    let stale_seconds = crate::store::load_config(paths).map_or(300, |c| c.stale_seconds);
     // One process-table scan serves every Codex row.
     let codex_instances = accounts
         .iter()
@@ -1196,6 +1244,8 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
                     }
                 }
             }
+            // Contract 1.62.0 (SM8): an older supervisor sends no meter.
+            crate::provider::usage_meter::ensure(&mut a, daemon::now(), stale_seconds);
             a["selectable"] = json!(account_selectable(&a, removed));
             a["prefill"] = account_prefill(
                 &a,
@@ -1461,6 +1511,32 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                         crate::reset_credit::claude::limits_read(paths, name, &home).await;
                     usage["reset_credits"] = credits;
                     value["reset_credits_read"] = read;
+                    // Contract 1.62.0 (SM8): the meter is read on demand too (no session
+                    // needed; cached 60 s), then the row shows the current projection.
+                    let now = daemon::now();
+                    value["meter_read"] = if claude::meter::newest_observation(&home, now)
+                        .is_some_and(|t| now - t < claude::meter::CACHE_SECONDS)
+                    {
+                        Value::Null
+                    } else {
+                        let client = crate::reset_credit::claude::client(paths)?;
+                        claude::meter::read(
+                            &client,
+                            &home,
+                            &account.id(),
+                            false,
+                            claude::meter::Renew::Allowed,
+                        )
+                        .await
+                    };
+                    let now = daemon::now();
+                    let (fresh_usage, fresh, usage_state) = claude::project_usage(&home, now);
+                    let stale = crate::store::load_config(paths).map_or(300, |c| c.stale_seconds);
+                    usage = fresh_usage;
+                    usage["meter"] =
+                        crate::provider::usage_meter::of(ProviderId::Claude, &usage, now, stale);
+                    value["usage_fresh"] = json!(fresh);
+                    value["usage_state"] = json!(usage_state);
                 }
                 value["usage"] = usage;
                 Ok(value)
@@ -1848,6 +1924,27 @@ pub fn capabilities() -> Value {
     value["claude_lifecycle"] = json!({"since_contract":"1.59.0","version":1,"stop":{"method":"sigterm_exact_process","verified_by":["registry_pid","process_start","account_home","conversation"],"signal_handle":"pidfd","wait_seconds":claude::stop::STOP_SECONDS,"sigkill":false,"busy_turn":"interrupted","result_field":"interrupted_turn","not_running":"already_stopped","refused":{"background":"UNSUPPORTED_PROVIDER_OPERATION","hosted":"HOSTED_SESSION","archived":"SESSION_ARCHIVED","unregistered":"SESSION_STATE_UNVERIFIED"},"errors":["SESSION_STATE_UNVERIFIED","AMBIGUOUS_SESSION","STOP_TIMEOUT","STOP_UNAVAILABLE","STOP_FAILED"],"retryable":["STOP_TIMEOUT"]},"restart":false});
     // Contract 1.61.0: `api stop --wait` for every provider.
     value["stop_wait"] = json!({"since_contract":"1.61.0","flag":"--wait","providers":{"codex":"polls the terminate job to its end","claude":"already synchronous","antigravity":"already synchronous"},"timeout_seconds":300,"timeout_env":"SESSIONSATION_OPERATION_WAIT_MS","errors":["OPERATION_FAILED","OPERATION_TIMEOUT"],"retryable":["OPERATION_TIMEOUT"],"disable_auto_start":"after the stop completed (with --wait)"});
+    // Contract 1.62.0: provider parity SM7 (session env var), SM8 (usage meter), SM3 (session meters).
+    value["session_env"] = json!({"since_contract":"1.62.0","var":crate::provider::SESSION_ENV,
+        "value":"the session id (api state sessions[].id), not the provider conversation id",
+        "providers":["codex","claude","gemini","antigravity"],
+        "launch_paths":["launch","session launch","resume","auto-start","auto-recover","restart","account switch","hosted","headless","add-to-herdr"],
+        "codex":"the thread's tool shells (shell_environment_policy.set on thread/start and thread/resume) and the TUI",
+        "inherited":"scrubbed: a child never carries its caller's id"});
+    value["usage_meter"] = json!({"since_contract":"1.62.0","field":"accounts[].usage.meter","command":"usage","args":["--account","--cached"],
+        "keys":["supported","requires_session","source","fresh","observed_at","age_seconds","windows","reason"],
+        "windows":["five_hour","seven_day"],
+        "providers":{"codex":{"supported":true,"requires_session":false,"source":["app_server"]},
+            "claude":{"supported":true,"requires_session":false,"source":["statusline","oauth"],"oauth_read":"GET /api/oauth/usage","cache_seconds":claude::meter::CACHE_SECONDS,"background_refresh_seconds":claude::meter::REFRESH_SECONDS,"background_renews_token":false},
+            "gemini":{"supported":false,"reason":crate::provider::usage_meter::GEMINI_REASON},
+            "antigravity":{"supported":false,"reason":crate::provider::usage_meter::ANTIGRAVITY_REASON}},
+        "never_lowers_within_reset_cycle":true,"same_cycle_seconds":claude::SAME_CYCLE_SECONDS,"credentials_returned":false});
+    value["session_meters"] = json!({"since_contract":"1.62.0","fields":crate::provider::session_meters::FIELDS,
+        "per_field":["<field>_source","<field>_observed_at","<field>_reason"],"extra":["context_tokens","context_window_size"],
+        "sources":{"context_pct":{"claude":"statusline","codex":"rollout","gemini":null,"antigravity":null},
+            "subagents_running":{"claude":null,"codex":null,"gemini":null,"antigravity":null},
+            "background_tasks":{"claude":null,"codex":null,"gemini":null,"antigravity":null}},
+        "unknown":"null with <field>_reason, never a guess","cached_state":true});
     // Revision 21: per-account Claude bypass-permissions warning.
     value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.27.0: default statusLine for new managed Claude homes.
@@ -1894,7 +1991,7 @@ pub fn capabilities() -> Value {
         "sources":{"claude":"auth_status","codex":"usage_snapshot"},"persisted":{"claude":"account registry (last auth status observation)","codex":"account registry usage snapshot"},
         "names":{"claude":{"pro":"Claude Pro"},"codex":{"free":"ChatGPT Free","plus":"ChatGPT Plus","pro":"ChatGPT Pro","team":"ChatGPT Team","business":"ChatGPT Business","enterprise":"ChatGPT Enterprise"},"unknown_raw":"name null, raw kept"},
         "gemini":null,"antigravity":null,"cached_state":true,"credentials_read":false});
-    value["usage_read"] = json!({"since_contract":"1.42.0","command":"usage","args":["--account"],"providers":["claude"],"fields":["observed_at","age_seconds","short.observed_at","weekly.observed_at"],"windows_carried_until_own_reset":true});
+    value["usage_read"] = json!({"since_contract":"1.42.0","command":"usage","args":["--account","--cached"],"providers":["codex","claude","gemini","antigravity"],"all_providers_since_contract":"1.62.0","fields":["observed_at","age_seconds","short.observed_at","weekly.observed_at"],"windows_carried_until_own_reset":true});
     value["live_activity"] = json!({"since_revision":37,"version":1,"field":"sessions[].live_activity","providers":["codex","claude","gemini","antigravity"],"claude_gemini_antigravity_since_contract":"1.42.0","states":["working","idle","turn_ended","blocked","error","unknown"],"native_sources":{"claude":["native_registry","transcript_tail"],"gemini":["transcript_tail"],"antigravity":["transcript_tail"]},"error_text":"provider turn-error text, bounded to 300 characters, only with state error","cached_state":true,"source":"app_server_thread_status_else_rollout_tail"});
     value["pending_operations"] = json!({"since_revision":37,"field":"sessions[].pending_operations","kinds":["stop","pause","switch","restart"],"stop_wait_expiry_seconds":external::TERMINATE_WAIT_SECONDS});
     value["native_send_checks"] = json!({"since_revision":37,"version":1,"commands":["send"],"modes":["submit","queue"],"providers":["codex"],"readiness_wait_seconds":20,"consumption_wait_seconds":8,"unconsumed_input":"removed_and_failed:input_not_consumed","unproven_input":"delivery_unknown:consumption_unverified","failed_turn_accepts_input":true});
@@ -2325,6 +2422,11 @@ fn overlay_codex_usage(value: &mut Value, status: Option<&Value>, now: i64, stal
             a["usage"]["observed_at_clamped_from"] = json!(at);
             a["usage_fresh"] = json!(false);
         }
+        // Contract 1.62.0: the meter follows the usage it was computed from.
+        if live.is_none() && a["usage"].is_object() {
+            a["usage"]["meter"] = Value::Null;
+        }
+        crate::provider::usage_meter::ensure(a, now, stale);
     }
 }
 /// Queued session operations of one conversation that have not finished yet, so a
@@ -2452,6 +2554,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["history_file_bytes"]=facts["history_file_bytes"].clone();
         value["activity"]=source.map(|s|json!(s.activity)).unwrap_or(Value::Null);
         value["live_activity"]=source.filter(|s|!s.inactive).map_or(Value::Null,|s|crate::live_activity::public(Some(&s.turn_facts.clone().unwrap_or_default()),now));
+        // Contract 1.62.0 (SM3): the context share from a running rollout's newest token count.
+        crate::provider::session_meters::apply_codex(&mut value, source.map(|s| s.rollout.as_path()), source.is_some_and(|s| !s.inactive));
         value["pending_questions"]=match source.filter(|i|!i.inactive && !archived) {
             Some(i)=>crate::questions::to_values(crate::questions::codex_pending(paths,value["id"].as_str().unwrap_or_default(),&i.rollout)),
             None=>json!([]),
@@ -3357,7 +3461,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         } => {
             crate::claude_idle::start(paths, &session, &expected_generation, notify_session).await?
         }
-        Command::Usage { account } => usage_read(paths, account.as_deref())?,
+        Command::Usage { account, cached } => usage_read(paths, account.as_deref(), cached).await?,
         Command::TurnEvents { after, wait } => {
             crate::turn_notify::events(paths, after, wait).await?
         }
@@ -4421,7 +4525,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.61.0");
+        assert_eq!(c["contract_version"], "1.62.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
         assert_eq!(root["layout_version"], 3);

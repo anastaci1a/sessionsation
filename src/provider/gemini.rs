@@ -270,6 +270,7 @@ pub fn command(config: &Config, home: &Path) -> std::process::Command {
         command.env_remove(name);
     }
     command.env_remove(auth_mode::WRAPPER_ENV);
+    super::scrub_session_env(&mut command);
     command
         .env("GEMINI_CLI_HOME", home)
         .env("GEMINI_CLI_NO_RELAUNCH", "1")

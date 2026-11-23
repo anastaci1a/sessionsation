@@ -263,8 +263,8 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
         false
     );
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 61);
-    assert_eq!(caps["contract_version"], "1.61.0");
+    assert_eq!(caps["contract_revision"], 62);
+    assert_eq!(caps["contract_version"], "1.62.0");
     let p = caps["providers"]
         .as_array()
         .unwrap()
@@ -327,6 +327,12 @@ async fn headless_new_creates_the_conversation_first_and_resume_delivers_once() 
     assert_eq!(input["message"]["content"][0]["text"], text);
     let calls = read(&home.join("fake-agy-calls"));
     assert!(!calls.contains("say hi"), "{calls}");
+    // Contract 1.62.0 (SM7): every headless run names the session it delivers to.
+    let session = receipt["session_id"].as_str().unwrap();
+    assert!(
+        calls.contains(&format!("session_env={session}\n")),
+        "{calls}"
+    );
     assert!(calls.contains("--print-timeout 595s"), "{calls}");
     assert!(calls.contains("--disable-slash-commands"), "{calls}");
     assert!(
@@ -432,12 +438,12 @@ async fn a_live_agy_process_holding_the_conversation_is_running_and_refuses_resu
 async fn api_version_reports_semver_and_negotiates_by_major() {
     let f = fixture().await;
     let v = f.api(&["version"]);
-    assert_eq!(v["contract_version"], "1.61.0");
-    assert_eq!(v["contract_revision"], 61);
+    assert_eq!(v["contract_version"], "1.62.0");
+    assert_eq!(v["contract_revision"], 62);
     for ok in ["1", "1.25", "1.26", "1.99.0"] {
         assert_eq!(
             f.api(&["--api-version", ok, "version"])["contract_version"],
-            "1.61.0"
+            "1.62.0"
         );
     }
     for bad in ["2", "2.0.0", "0.24"] {
@@ -817,6 +823,19 @@ async fn yolo_starts_pre_trust_the_launch_directory_and_the_setting_turns_it_off
     assert!(
         !read(&settings).contains("trustedWorkspaces"),
         "default permissions do not pre-trust"
+    );
+    // Contract 1.62.0 (SM7): the interactive start names its catalog session (the
+    // conversation-allocating run before it has none yet).
+    let named: Vec<String> = read(&home.join("fake-agy-calls"))
+        .lines()
+        .filter_map(|l| l.strip_prefix("session_env="))
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(named.len(), 1, "{named:?}");
+    assert!(
+        f.sessions().iter().any(|s| s["id"] == named[0].as_str()),
+        "{named:?}"
     );
     run("yolo");
     let value: Value = serde_json::from_str(&read(&settings)).unwrap();

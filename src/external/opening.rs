@@ -173,6 +173,7 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
         }
         let mut params = json!({"threadId":source.thread_id,"cwd":source.cwd,"excludeTurns":true});
         set_permissions(&mut params, permissions);
+        set_known_thread_session_env(paths, &mut params, &source.thread_id);
         control.resume_with_permissions(params).await?;
     } else {
         ensure!(
@@ -201,6 +202,7 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
             mode,
         )
     };
+    let command = with_session_env(paths, &source.thread_id, command);
     // Keep startup diagnostics, while a normal /exit still removes the pane.
     let command = format!(
         "tmux set-option -p remain-on-exit failed; {command} -C {}",

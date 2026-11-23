@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.61.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.62.0`
 (the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -2859,7 +2859,8 @@ MINOR, additive. Capability additions: `usage_read`; `live_activity.providers` n
   `seven_day`) forward until its own `resets_at` when a payload lacks it (Claude Code drops a window
   after its reset until the next API response), records a per-window `observed_at`, and sweeps
   `.tmp*` files older than 10 minutes from `<home>/.sessionsation/`. `usage.<window>.observed_at` is
-  also in the account rows of `api state`.
+  also in the account rows of `api state`. Since [1.62.0](#provider-parity-usage-meter-session-meters-session-id-env-1620)
+  `api usage` lists every account of every provider and adds the one `meter` shape.
 - **Uncertain operations are named.** A session blocked by an unfinished journaled operation reports it
   in `sessions[].pending_operations` (`{id, kind, phase, created_at:null, expires_at:null, unresolved,
   resolve}` for journals that are not queued jobs; `kind` also `resume`, `auto_recover`, `switch`,
@@ -4101,7 +4102,8 @@ sessionsation api account reset-credit claude:NAME [--credit-id GRANT] [--kind 5
   stores `null`. `api account limits claude:NAME` reads it when the stored read is older than 60 s and adds
   `reset_credits_read` `{ok}` or `{ok:false, code, message, retryable}` (a failed read keeps the last value and
   is not fatal). `api account list` and `api state` show the stored read
-  (`<home>/.sessionsation/reset-credits.json`) and never call the API. The supervisor never polls it.
+  (`<home>/.sessionsation/reset-credits.json`) and never call the API. The supervisor never polls it. Since
+  1.62.0 the windows of the same answer, when present, are recorded as an `oauth` usage reading.
 - **Claim.** `POST https://api.anthropic.com/api/organizations/<oauthAccount.organizationUuid>/reset_rate_limits`
   with `{program: "cedar_ember", grant_id, request_id}`. The grant is `--credit-id`, else a usable grant
   (`usable_now`, not paused, not ended) of `--kind`, else the status's `next_grant_id`, else the first usable
@@ -4171,3 +4173,76 @@ without `--wait`. `capabilities.stop_wait` describes the flag.
 **`--disable-auto-start` with `--wait`** (Codex). The setting is applied after the stop completed, not at
 admission; a failed or timed-out wait changes nothing. Without `--wait` the 1.59.0 behaviour stays: disabled when
 the stop is admitted.
+
+### Provider parity: usage meter, session meters, session id env (1.62.0)
+
+MINOR (additive: new fields, one new capability block each, one new flag, a new environment variable in
+provider children; `api usage` now also answers for Codex, Gemini and Antigravity accounts instead of
+refusing with `UNSUPPORTED_PROVIDER_OPERATION`; no error code is removed or renamed). 1.61.0 is described
+separately.
+
+**Account usage meter without a session (SM8).** Every account row (`api account list`, `api account
+limits`, `api state`, supervisor `status`) gains `usage.meter`, and `api usage` lists one row per account
+of every provider (`--account ID` for one, `--cached` never contacts a provider). The meter has one shape
+for every provider:
+
+```json
+{"supported":true,"requires_session":false,"source":"oauth","fresh":true,"observed_at":1800000000,
+ "age_seconds":12,"windows":{"five_hour":{"used_percent":31.0,"resets_at":1800003600,
+ "observed_at":1800000000,"source":"oauth"},"seven_day":null},"reason":null}
+```
+
+- Codex: the supervisor's `account/rateLimits/read` of every enabled account (`source:"app_server"`,
+  `requires_session:false`), as before; only the shape is new.
+- Claude: two sources share one owner, the statusline recorder. `statusline` is Claude Code's status-line
+  payload of a running session; `oauth` is the account's own `GET https://api.anthropic.com/api/oauth/usage`
+  (Claude Code's plain `fetchUtilization` read) through the 1.60.0 OAuth owner, so no session is needed.
+  That answer's `five_hour` / `seven_day` windows are `{utilization, resets_at}`: `utilization` is the
+  percentage used (0-100; above 100 is reported as 100, as Claude Code shows it) or null, `resets_at` an
+  ISO 8601 time or null; a window with either null is not observed. Every window names its `source`; the
+  meter's `source` is the newest window's. The fresher reading wins, but within one reset cycle a window
+  never goes down, whichever source reported it (the 1.56.0 rule across sources): two readings whose
+  `resets_at` differ by at most 300 s are the same cycle (`usage_meter.same_cycle_seconds`).
+- On demand: `api usage` and `api account limits` read a Claude meter that is older than 60 s, at most
+  once per 60 s per account (a failed attempt counts). The token is renewed only as the 1.60.0 rules allow
+  (expiring within 5 minutes, or after a 401). The row's `read` (`api usage`) or `meter_read` (`api account
+  limits`) is `{attempted, ok, code, message, attempted_at, retryable}`, or null when no read was needed;
+  a failed read keeps the last value. Codes: `AUTH_REQUIRED`, `AUTH_STALE` (retryable),
+  `USAGE_READ_FAILED` (retryable). The token never appears in a result, log or file other than the
+  account's own credentials.
+- In the background: the supervisor reads, once a minute at most, every enabled Claude account whose
+  meter is older than 600 s (`SESSIONSATION_CLAUDE_METER_SECONDS` overrides it; `0` turns it off), with
+  the stored token only: a token due for renewal is left alone (`AUTH_STALE` in
+  `<home>/.sessionsation/usage-read.json`, the last attempt), so a background read never rotates a refresh
+  token.
+- Gemini and Antigravity: `supported:false` with `reason`; nothing is invented.
+- `fresh`: some window is present, none is past its reset, and the newest reading is younger than the
+  provider's staleness limit (Codex `stale_seconds`, Claude 1800 s). A missing window is null, never 0%.
+
+`api usage` rows keep their 1.42.0 keys (`account`, `state`, `fresh`, `source`, `semantics`,
+`observed_at`, `age_seconds`, `claude_version`, `short`, `weekly`, `exhausted`) and add `account_id`,
+`provider`, `supported`, `requires_session`, `meter` and `read`; every row has the same keys.
+`capabilities.usage_meter` describes the shape, sources, cache and refresh.
+
+**Session meters (SM3).** Every session row (`api state`, `state --cached`, `session resolve`) has the same
+keys for every provider: `context_pct`, `subagents_running` and `background_tasks`, each with
+`<field>_source`, `<field>_observed_at` (Unix seconds) and `<field>_reason`, plus `context_tokens` and
+`context_window_size`. A value nobody reported is null with the reason, never a guess.
+
+| Field | Codex | Claude | Gemini | Antigravity |
+|---|---|---|---|---|
+| `context_pct` | `rollout`: the newest `token_count` event of a running conversation (`last_token_usage.total_tokens` of `model_context_window`, the raw share; Codex's footer subtracts a 12,000-token baseline first), read by a full `api state`; cached rows keep it with its time | `statusline`: Claude Code's `context_window.used_percentage`, recorded per conversation by the status-line hook; read on every row, so `state --cached` is current | null (the share is footer screen state; it will be `screen` once the shared typing engine reads it) | null (not reported) |
+| `subagents_running` | null (app-server only, per loaded thread) | null (hook events only: `SubagentStart`/`SubagentStop`) | null | null |
+| `background_tasks` | null (app-server only: background terminals per loaded thread) | null (hook events only) | null | null |
+
+`capabilities.session_meters` lists the fields and sources.
+
+**`SESSIONSATION_SESSION_ID` (SM7).** Every provider process Sessionsation starts for a session carries
+`SESSIONSATION_SESSION_ID=<session id>` (the `api state` `sessions[].id`, not the provider conversation
+id), for every provider and start path: launch and `session launch`, resume (also by auto-start,
+auto-recover and an account switch), Codex restart and move, hosted Claude, headless runs and Claude
+`add-to-herdr`. Codex tool commands run under the account's app-server, not the TUI, so the id is also
+set as the thread's own shell environment (`shell_environment_policy.set` on `thread/start` and
+`thread/resume`; a thread the app-server already has loaded keeps the value it was loaded with). An
+inherited value is removed from every provider child and from the supervisor, so a child never carries
+its caller's id. `capabilities.session_env` describes it.

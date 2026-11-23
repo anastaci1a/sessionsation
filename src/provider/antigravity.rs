@@ -197,6 +197,7 @@ pub fn command(config: &Config, home: &Path) -> std::process::Command {
     for name in STRIPPED_ENV {
         command.env_remove(name);
     }
+    super::scrub_session_env(&mut command);
     command
         .env(HOME_ENV, home)
         .env("HOME", home)

@@ -109,6 +109,8 @@ printf '%s\n%s' "$(cat "$d/$k-body" 2>/dev/null)" "$(cat "$d/$k-status" 2>/dev/n
             .arg("--data-dir")
             .arg(&paths.root)
             .args(["daemon", "serve"])
+            // Contract 1.62.0: no background meter read between the counted requests.
+            .env("SESSIONSATION_CLAUDE_METER_SECONDS", "0")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -139,7 +141,7 @@ printf '%s\n%s' "$(cat "$d/$k-body" 2>/dev/null)" "$(cat "$d/$k-status" 2>/dev/n
         caps["account_reset_credit"]["providers"],
         json!(["codex", "claude"])
     );
-    assert_eq!(caps["contract_version"], "1.61.0");
+    assert_eq!(caps["contract_version"], "1.62.0");
 
     // Limits: an on-demand status read.
     fs::write(fake.join("usage-status"), "200").unwrap();

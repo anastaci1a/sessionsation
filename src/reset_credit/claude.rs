@@ -17,7 +17,7 @@ use crate::{
     paths::{Paths, atomic_write},
     provider::{
         ProviderId,
-        claude::oauth::{self, Client, Secret, SendError},
+        claude::oauth::{self, Client, SendError},
     },
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -248,31 +248,6 @@ fn store(home: &Path, at: i64, credits: &Option<ResetCredits>) -> Result<()> {
 
 // ------------------------------------------------------------------- calls
 
-/// `api` with one renewal after a 401 for this token (Claude Code's `refreshOAuth` retry).
-async fn authed(
-    client: &Client,
-    home: &Path,
-    account: &str,
-    method: &str,
-    path: &str,
-    body: Option<&Value>,
-) -> Result<std::result::Result<oauth::Response, SendError>> {
-    let token = oauth::access_token(client, home, account, None).await?;
-    let first = oauth::api(client, &token, method, path, body).await;
-    if !matches!(&first, Ok(r) if r.status == 401) {
-        return Ok(first);
-    }
-    let renewed: Secret = oauth::access_token(client, home, account, Some(&token)).await?;
-    let second = oauth::api(client, &renewed, method, path, body).await;
-    if matches!(&second, Ok(r) if r.status == 401) {
-        return Err(oauth::stale(
-            account,
-            "the API refused the renewed token (HTTP 401)",
-        ));
-    }
-    Ok(second)
-}
-
 /// The account's reset credits: the cached read when younger than [`CACHE_SECONDS`]
 /// (unless `force`), else a status read, stored for `api account list` and `api state`.
 pub async fn read(
@@ -288,7 +263,7 @@ pub async fn read(
     {
         return Ok(credits);
     }
-    let response = match authed(client, home, account, "GET", STATUS_PATH, None).await? {
+    let response = match oauth::authed(client, home, account, "GET", STATUS_PATH, None).await? {
         Ok(r) => r,
         Err(e) => bail!("RESET_CREDITS_READ_FAILED: the Claude usage endpoint gave {e}; retry"),
     };
@@ -301,6 +276,9 @@ pub async fn read(
         .context("RESET_CREDITS_UNREADABLE: the usage answer is not JSON")?;
     let at = crate::daemon::now();
     let credits = parse_status(&body, at)?;
+    // Contract 1.62.0: the same answer carries the usage windows; record them as an OAuth
+    // reading (best effort: the reset credits are what this read is for).
+    let _ = crate::provider::claude::meter::record_answer(home, &body, at);
     store(home, at, &credits)?;
     Ok(credits)
 }

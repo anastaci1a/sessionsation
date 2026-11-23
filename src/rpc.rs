@@ -106,6 +106,7 @@ impl Rpc {
         .env_remove("OPENAI_API_KEY")
         .env_remove("CODEX_API_KEY")
         .env_remove("CODEX_ACCESS_TOKEN")
+        .env_remove(crate::provider::SESSION_ENV)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

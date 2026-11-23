@@ -12,6 +12,8 @@ pub mod claude;
 pub mod codex;
 pub mod gemini;
 pub mod native;
+pub mod session_meters;
+pub mod usage_meter;
 
 use crate::{
     model::Account,
@@ -185,6 +187,25 @@ pub fn account_home(paths: &Paths, account: &Account) -> Result<PathBuf> {
         ProviderId::Gemini => gemini::home(paths, &account.name),
         ProviderId::Antigravity => antigravity::home(paths, &account.name),
     }
+}
+
+/// Contract 1.62.0 (SM7): the environment variable every provider process that
+/// sessionsation starts for a session carries, set to that session's id (the
+/// catalog id `api state` reports, not the provider's conversation id).
+pub const SESSION_ENV: &str = "SESSIONSATION_SESSION_ID";
+/// Name the session a provider child runs for. The builders scrub an inherited
+/// value first ([`scrub_session_env`]), so a child never carries its caller's id.
+pub fn set_session_env(command: &mut std::process::Command, session_id: &str) {
+    command.env(SESSION_ENV, session_id);
+}
+/// Remove an inherited session id: a supervisor or helper started from inside a
+/// session must not hand that session's id to unrelated children.
+pub fn scrub_session_env(command: &mut std::process::Command) {
+    command.env_remove(SESSION_ENV);
+}
+/// `NAME=value` for the `env` prefix of a Codex pane command.
+pub fn session_env_assignment(session_id: &str) -> String {
+    format!("{SESSION_ENV}={}", crate::terminal::shell_quote(session_id))
 }
 
 #[derive(Clone, Debug, Serialize)]

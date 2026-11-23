@@ -221,7 +221,12 @@ pub fn account_plan(a: &Account, at: i64) -> Value {
 /// Provider usage in the shared account shape plus `source`/`semantics`.
 /// Codex values are the supervisor's snapshot; Claude values are projected from
 /// the statusline recorder; Gemini reports no usage (state `unsupported`). Returns (usage, usage_fresh, usage_state).
-fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value, bool, String) {
+pub(crate) fn account_usage(
+    paths: &Paths,
+    a: &Account,
+    config: &Config,
+    at: i64,
+) -> (Value, bool, String) {
     match a.provider {
         ProviderId::Codex => {
             let fresh = a.usage.fresh(at, config.stale_seconds);
@@ -273,7 +278,9 @@ fn account_usage(paths: &Paths, a: &Account, config: &Config, at: i64) -> (Value
 pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> Value {
     let at = now();
     let accounts: Vec<_> = state.ordered().into_iter().map(|a| {
-        let (usage, fresh, usage_state) = account_usage(paths, a, config, at);
+        let (mut usage, fresh, usage_state) = account_usage(paths, a, config, at);
+        // Contract 1.62.0 (SM8): one meter shape for every provider.
+        usage["meter"] = crate::provider::usage_meter::of(a.provider, &usage, at, config.stale_seconds);
         json!({
         "name":a.name,"folder_name":a.name,"name_mismatch":a.display_name.is_some(),"generation":crate::account_rename::account_generation(a),
         "order":a.order,"display_name":a.display_name,"provider":a.provider,"config_home":a.config_home,
@@ -448,6 +455,8 @@ pub async fn serve(paths: Paths) -> Result<()> {
     // Contract 1.49.0: model changes and one-pass launches.
     let model_task = tokio::spawn(crate::messaging::model_change::monitor(paths.clone()));
     let turn_notify_task = tokio::spawn(crate::turn_notify::monitor(paths.clone()));
+    // Contract 1.62.0 (SM8): idle Claude meters are read in the background.
+    let meter_task = tokio::spawn(crate::provider::claude::meter::monitor(paths.clone()));
     let (history_tx, mut history_rx) = mpsc::channel(1);
     let history_task = tokio::spawn(crate::usage_history::monitor(paths.clone(), history_tx));
     let mut history = crate::usage_history::Recorder::default();
@@ -1063,6 +1072,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     compaction_task.abort();
     model_task.abort();
     turn_notify_task.abort();
+    meter_task.abort();
     history_task.abort();
     accept_task.abort();
     for (_, helper) in helpers {
@@ -1113,6 +1123,9 @@ pub async fn ensure_started(paths: &Paths) -> Result<()> {
         .arg("--data-dir")
         .arg(&paths.root)
         .args(["daemon", "serve"])
+        // Contract 1.62.0: a supervisor started from inside a session never hands that
+        // session's id to the app-servers and workers it starts.
+        .env_remove(crate::provider::SESSION_ENV)
         .current_dir(&paths.root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

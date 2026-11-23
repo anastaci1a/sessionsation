@@ -345,6 +345,14 @@ with tempfile.TemporaryDirectory() as directory:
             assert reset["method"] == "account/rateLimitResetCredit/consume" and reset["idempotent_by"] == "request_id", reset
             assert reset["outcomes"] == ["reset", "nothingToReset", "noCredit", "alreadyRedeemed"], reset
             assert reset["auto_retry"] is False and reset["reversible"] is False, reset
+            session_env = value["result"]["session_env"]
+            assert session_env["since_contract"] == "1.62.0" and session_env["var"] == "SESSIONSATION_SESSION_ID", session_env
+            assert session_env["providers"] == ["codex", "claude", "gemini", "antigravity"], session_env
+            meter = value["result"]["usage_meter"]
+            assert meter["since_contract"] == "1.62.0" and meter["never_lowers_within_reset_cycle"] is True, meter
+            assert meter["providers"]["claude"]["requires_session"] is False and meter["providers"]["codex"]["requires_session"] is False, meter
+            assert meter["providers"]["claude"]["background_renews_token"] is False, meter
+            assert value["result"]["session_meters"]["fields"] == ["context_pct", "subagents_running", "background_tasks"]
             reuse = value["result"]["pane_reuse"]
             assert reuse["since_contract"] == "1.52.0" and reuse["version"] == 1, reuse
             assert reuse["order"] == ["recorded_pane_if_idle_shell", "same_name_single_pane_idle_tab_in_space", "new_tab"], reuse

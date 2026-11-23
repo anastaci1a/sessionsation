@@ -327,7 +327,7 @@ async fn advertised_capability_and_a_stopped_session_switches_with_memory_left_b
         .unwrap();
     assert_eq!(claude["account_switch"], true);
     assert_eq!(claude["operations"]["account_switch"]["supported"], true);
-    assert_eq!(caps["contract_version"], "1.61.0");
+    assert_eq!(caps["contract_version"], "1.62.0");
 
     let (id, native) = t.f.stopped_session("a");
     populate(&t.f.home("a"), &t.f.project, &native);
@@ -519,6 +519,8 @@ async fn a_running_session_is_stopped_moved_and_resumed_in_its_pane_with_recorde
     assert_ne!(moved["pid"].as_u64().unwrap() as i32, old_pid);
     let launch = read(&t.f.home("b").join("fake-launch-resume"));
     assert!(launch.contains(&format!("session={native}")), "{launch}");
+    // Contract 1.62.0 (SM7): the resumed process names its session.
+    assert!(launch.contains(&format!("session_env={id}\n")), "{launch}");
     assert!(
         launch.contains(&format!("config_dir={}", t.f.home("b").display())),
         "{launch}"
@@ -595,6 +597,12 @@ async fn a_running_session_outside_a_recorded_pane_is_refused_and_left_alone() {
         id = found.clone().unwrap_or_default();
         found.is_some()
     });
+    // Contract 1.62.0 (SM7): a terminal launch names its new session.
+    let launched = read(&t.f.home("a").join("fake-launch-new"));
+    assert!(
+        launched.contains(&format!("session_env={id}\n")),
+        "{launched}"
+    );
     let running = t.session(&id);
     assert_eq!(running["capabilities"]["switch_account"], false);
     let reason = running["capability_reasons"]["switch_account"].to_string();

@@ -26,9 +26,9 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-printf 'args=%s\nupdate=%s\ncache=%s\nruntime=%s\napi_key=%s\npwd=%s\n' "$args" \
+printf 'args=%s\nupdate=%s\ncache=%s\nruntime=%s\napi_key=%s\npwd=%s\nsession_env=%s\n' "$args" \
   "$AGY_CLI_DISABLE_AUTO_UPDATE" "$XDG_CACHE_HOME" "${XDG_RUNTIME_DIR:+present}" \
-  "${GEMINI_API_KEY:+present}" "$PWD" >> "$home/fake-agy-calls"
+  "${GEMINI_API_KEY:+present}" "$PWD" "${SESSIONSATION_SESSION_ID:-}" >> "$home/fake-agy-calls"
 
 if [ -n "$print" ]; then
   [ "$input" = stream-json ] && [ "$output" = stream-json ] || exit 42

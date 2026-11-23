@@ -23,6 +23,7 @@ env_report() {
   printf 'home=%s\nno_relaunch=%s\nfile_storage=%s\ntrust=%s\nno_browser=%s\ncwd=%s\n' \
     "$GEMINI_CLI_HOME" "$GEMINI_CLI_NO_RELAUNCH" "$GEMINI_FORCE_FILE_STORAGE" \
     "$GEMINI_CLI_TRUST_WORKSPACE" "$NO_BROWSER" "$PWD"
+  printf 'session_env=%s\n' "${SESSIONSATION_SESSION_ID:-}"
 }
 slug_of() { printf '%s' "$1" | sed 's|^/||; s|/|-|g'; }
 register_project() {

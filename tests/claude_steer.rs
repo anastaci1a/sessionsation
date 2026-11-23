@@ -292,6 +292,8 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
     let id = started["session_id"].as_str().unwrap().to_owned();
     let conversation = started["conversation_id"].as_str().unwrap().to_owned();
     let launch = launched(&home, &conversation);
+    // Contract 1.62.0 (SM7): the hosted worker's provider names its session.
+    assert_eq!(launch["session_env"], id.as_str(), "{launch}");
     let args: Vec<String> = serde_json::from_value(launch["args"].clone()).unwrap();
     assert!(
         args.windows(2)
@@ -683,6 +685,10 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
     let interactive = read(&home.join("fake-launch-resume"));
     assert!(
         interactive.contains(&format!("session={conversation}")),
+        "{interactive}"
+    );
+    assert!(
+        interactive.contains(&format!("session_env={id}\n")),
         "{interactive}"
     );
     assert!(worker_gone(&f, &conversation));

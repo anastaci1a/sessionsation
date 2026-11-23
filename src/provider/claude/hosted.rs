@@ -582,6 +582,8 @@ pub async fn worker(paths: &Paths, c: &str) -> Result<()> {
     ] {
         std_command.env_remove(name);
     }
+    // Contract 1.62.0 (SM7).
+    crate::provider::set_session_env(&mut std_command, &h.session_id);
     if h.effective_permission_mode.as_deref() == Some("bypassPermissions") {
         claude::allow_bypass(&mut std_command);
         if config.claude_pretrust_folders {

@@ -540,6 +540,11 @@ async fn sessions_launch_track_live_identity_rename_resume_and_go_stale() {
     let s = &sessions[0];
     assert_eq!(s["conversation_id"], native);
     assert_eq!(s["conversation_id_source"], "native");
+    // Contract 1.62.0 (SM7): the launched process names its session.
+    assert!(
+        launch.contains(&format!("session_env={}\n", s["id"].as_str().unwrap())),
+        "{launch}"
+    );
     assert_eq!(s["account_id"], "gemini:personal");
     assert_eq!(s["pid"], child.id());
     assert_eq!(s["directory"], json!(f.project));
@@ -655,6 +660,7 @@ async fn sessions_launch_track_live_identity_rename_resume_and_go_stale() {
     });
     let resume = read(&home.join("fake-launch-resume"));
     assert!(resume.contains(&format!("session={native}")), "{resume}");
+    assert!(resume.contains(&format!("session_env={id}\n")), "{resume}");
     assert!(resume.contains(&format!("args=-r {native}")), "{resume}");
     assert!(
         resume.contains(&format!("cwd={}", f.project.display())),
@@ -801,6 +807,8 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     assert_eq!(r["provider_conversation_id"], native.as_str());
     let launch = read(&home.join("fake-print-resume"));
     assert!(launch.contains(&format!("session={native}")), "{launch}");
+    // Contract 1.62.0 (SM7): a headless run names the session it delivers to.
+    assert!(launch.contains(&format!("session_env={id}\n")), "{launch}");
     assert!(launch.contains("message=hello world"), "{launch}");
     assert!(
         launch.contains(&format!("cwd={}", f.project.display())),
@@ -982,7 +990,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     assert_eq!(gemini["operations"]["headless_delivery"]["supported"], true);
     assert_eq!(gemini["headless_delivery"]["automatic_replay"], false);
     assert_eq!(gemini["headless_delivery"]["approval_mode"], "default");
-    assert_eq!(caps["contract_revision"], 61);
+    assert_eq!(caps["contract_revision"], 62);
     assert_eq!(
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false

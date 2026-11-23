@@ -38,6 +38,10 @@ use tokio::io::AsyncWriteExt;
 pub const API_BASE: &str = "https://api.anthropic.com";
 /// Claude Code's `TOKEN_URL`.
 pub const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+/// Claude Code's plain usage read (`fetchUtilization`, read `plain`; contract 1.62.0). The
+/// answer's windows (`five_hour`, `seven_day`, ...) are `{utilization, resets_at}`:
+/// utilization is the percentage used (0-100, or null), resets_at an ISO 8601 time (or null).
+pub const USAGE_PATH: &str = "/api/oauth/usage";
 /// Claude Code's `CLIENT_ID` (used when the stored login names no `clientId`).
 pub const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 /// `anthropic-beta` sent with every OAuth bearer request.
@@ -440,6 +444,40 @@ fn required(account: &str, why: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "AUTH_REQUIRED: {account} needs a new Claude login ({why}); run `sessionsation api account login {account}`"
     )
+}
+
+/// The stored access token when it is not due for renewal, else None. Never renews: the
+/// supervisor's background usage reads use it, so only a caller's own request (or Claude
+/// Code itself) ever rotates a refresh token (contract 1.62.0).
+pub fn current_token(home: &Path) -> Option<Secret> {
+    let login = read_login(home).ok().flatten()?;
+    (!expired(login.expires_at_ms, now_ms())).then_some(login.access)
+}
+
+/// [`api`] with one renewal after a 401 for this token (Claude Code's `refreshOAuth`
+/// retry). The renewal follows [`access_token`]'s rules.
+pub async fn authed(
+    client: &Client,
+    home: &Path,
+    account: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<std::result::Result<Response, SendError>> {
+    let token = access_token(client, home, account, None).await?;
+    let first = api(client, &token, method, path, body).await;
+    if !matches!(&first, Ok(r) if r.status == 401) {
+        return Ok(first);
+    }
+    let renewed = access_token(client, home, account, Some(&token)).await?;
+    let second = api(client, &renewed, method, path, body).await;
+    if matches!(&second, Ok(r) if r.status == 401) {
+        return Err(stale(
+            account,
+            "the API refused the renewed token (HTTP 401)",
+        ));
+    }
+    Ok(second)
 }
 
 /// A usable access token for the account. `failed` is a token the API just refused
