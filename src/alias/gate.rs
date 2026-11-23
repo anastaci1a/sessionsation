@@ -317,6 +317,10 @@ fn no_raw_path_comparisons() {
         if name == "tests.rs"
             || f.components().any(|c| c.as_os_str() == "tests")
             || f.ends_with("alias/gate.rs")
+            // The test-only source guard (`#[cfg(test)] mod guard;`) compares
+            // repository-relative path strings, not filesystem paths.
+            || f.ends_with("src/guard.rs")
+            || f.strip_prefix(&src).is_ok_and(|r| r.starts_with("guard"))
             // The alias module defines the comparisons everything else must use.
             || f.ends_with("src/alias.rs")
         {

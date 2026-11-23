@@ -86,6 +86,25 @@ after building the debug CLI in that target directory.
 Setup/check-script changes need clean-environment execution. Test examples against
 actual help/envelopes. Keep fixtures synthetic; do not copy an operator's root.
 
+## Owned roles and the guard
+
+Internal systems (locks, atomic writes, operation records, spawning, HERDR calls,
+provider dispatch, the Claude OAuth client and others) each have one owner module,
+listed in `src/guard/roles.rs`. The test-only guard (`src/guard.rs`, part of the lib
+unit tests and so of every check) counts each role's sites outside its owner and
+compares them with `guard/baseline.json`. Any change of a counter, up or down, needs
+a ledger entry `{counter, by, reason, considered, step}`; the guard requires
+`value == initial + Σ by`, with `initial` pinned in `src/guard/counters.rs`. The same
+ledger holds `doc_bytes:<path>` for every Markdown file, their total and the count of
+long paragraphs repeated across files, so a new doc file needs an entry too. An
+`Enforced` role rejects a new site outside its owner unless it carries
+`// guard-allow(<role>): <why>` on the same line or the line above. Method-call
+roles become clippy `disallowed-methods` in `clippy.toml` when they flip to
+`Enforced`; a justified site then carries
+`#[allow(clippy::disallowed_methods, reason = "<role>: <why>")]`. Print current
+values with `cargo test --lib guard::measure -- --ignored --nocapture`
+(`GUARD_SITES=<counter>` lists that counter's sites).
+
 ## Documentation and release preparation
 
 README owns purpose, requirements and short setup. docs/ owns behavior, architecture,

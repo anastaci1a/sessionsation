@@ -244,6 +244,7 @@ pub fn capability() -> Value {
             "claim":{"method":"POST","path":"/api/organizations/<organizationUuid>/reset_rate_limits","body":["program","grant_id","request_id"],"program":claude::PROGRAM,"request_id":"request_id"},
             "outcomes":claude::OUTCOMES,"kinds":["5-hour","weekly","fable","full"],"credit_id":"grant id ^[a-z0-9_-]{1,40}$",
             "grant_selection":"--credit-id, else a usable grant of --kind, else next_grant_id, else the first usable grant","no_usable_grant":{"outcome":"noCredit","sent":false},
+            // guard-allow(oauth): capability text names the credential source; nothing is read here
             "credentials":{"reads":"CLAUDE_CONFIG_DIR/.credentials.json claudeAiOauth","token_in":"curl stdin only","renewal":"only when expiring within 300 s or after a 401, under Claude Code's refresh lock",
                 "refresh_lock":crate::provider::claude::oauth::REFRESH_LOCK,"storage_lock":crate::provider::claude::oauth::STORAGE_LOCK,"write":"atomic, mode 0600, other fields preserved, compare-and-swap on refreshToken"},
             "errors":["AUTH_STALE","AUTH_REQUIRED","RESET_CREDITS_READ_FAILED","RESET_CREDITS_UNREADABLE"]},

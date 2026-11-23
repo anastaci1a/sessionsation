@@ -62,3 +62,6 @@ pub mod claude_switch;
 pub mod inline;
 pub mod reset_credit;
 pub mod root_migrate;
+
+#[cfg(test)]
+mod guard;
