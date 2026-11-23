@@ -2069,7 +2069,7 @@ fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
             .map(|help| format!("{code}: {help}"))
             .unwrap_or_else(|| format!("{error:#}"))
     };
-    let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"OPERATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS")}});
+    let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"OPERATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS"|"STOP_TIMEOUT")}});
     // Contract 1.58.0: a session that has not written its first status-line record yet.
     if error
         .downcast_ref::<sessionsation::messaging::model_change::claude::HookNotRecorded>()
@@ -2204,5 +2204,19 @@ mod hook_not_recorded_tests {
         assert_eq!(e["error"]["code"], "SESSION_STATE_UNVERIFIED");
         assert_eq!(e["error"]["retryable"], false);
         assert!(e["error"]["detail"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod stop_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn a_stop_that_timed_out_is_retryable() {
+        let e = error_envelope(&anyhow::anyhow!(
+            "STOP_TIMEOUT: Claude process 7 did not exit within 10s of SIGTERM; it was not killed"
+        ));
+        assert_eq!(e["error"]["code"], "STOP_TIMEOUT");
+        assert_eq!(e["error"]["retryable"], true);
     }
 }
