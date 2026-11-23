@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.60.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.61.0`
 (the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -4075,7 +4075,7 @@ even one with no process left. Now:
 without an error, including an `already_stopped` result, the session's Auto Start is set to `disabled` through
 the same owner as `api auto-start --mode disabled`, and the result gains `auto_start` (the row's
 `auto_start` projection after the change). A Codex stop is an asynchronous operation: there the setting is
-disabled when the stop is admitted (the operation is returned queued), not when it completes. A refused stop
+disabled when the stop is admitted (the operation is returned queued), not when it completes (with `--wait`, 1.61.0, it is disabled after completion). A refused stop
 changes nothing. Without the flag nothing changes: an explicit stop only marks the session
 ([1.44.0](#auto-start-semantics-host-boot-and-crash-1440) semantics) and there is no `auto_start` field.
 
@@ -4137,3 +4137,37 @@ sessionsation api account reset-credit claude:NAME [--credit-id GRANT] [--kind 5
 
 Capability: `account_reset_credit.providers` is `["codex", "claude"]`; `account_reset_credit.claude`
 (`since_contract` `1.60.0`) describes the status, claim, outcomes, kinds and credential handling.
+
+### Provider parity: Codex `initial-prompt` and `stop --wait` (1.61.0)
+
+MINOR (additive: a flag value and a flag become valid for Codex; one response field is added; no error code is
+removed or renamed). 1.60.0 is described separately.
+
+**`api session launch --brief-delivery initial-prompt` for Codex.** One call now works for every launch
+provider. For a Codex account the value is accepted and treated exactly like Codex's own `first_turn` delivery:
+the brief is held until the model (and requested effort) is verified, then sent as an ordinary message, with the
+Codex limit of 16384 bytes (`INPUT_TOO_LARGE`) and the same retry and `delivery_unknown` rules. The record states
+what happened: `brief.delivery` is `first_turn`, and the new `brief.requested_delivery` is `initial_prompt` when
+the caller asked for it (otherwise `null`; it is `null` for every Claude launch). Claude's `initial_prompt`
+contract is unchanged (32768 bytes, not starting with `/ ! #`, handed over before the model can be verified, and
+exclusive with `--when-ready`). Gemini and Antigravity have no launch (`session launch` supports Codex and Claude
+accounts) and keep refusing with `UNSUPPORTED_PROVIDER_OPERATION`. `capabilities.session_model.launch.brief.codex`
+lists `accepts: ["first_turn","initial_prompt"]`, and names `gemini` and `antigravity` as unsupported.
+
+**`api stop --wait`** (every provider). Claude and Antigravity stops are already synchronous: the flag is accepted
+and changes nothing. A Codex stop queues a `terminate` job. With `--wait` the call polls that job with the owner
+`archive --wait` uses ([1.55.0](#archive-workers-wait-for-the-account---wait-idempotent-stop-1550)) and returns
+only when it ended:
+
+- `complete`: the job record, the same shape the queued result has (`kind:"terminate"`, `phase:"complete"`,
+  `pane_closed`, ...);
+- `failed` (or `cancelled`): `OPERATION_FAILED` with the job's detail and `error.operation`;
+- no end within 300 s (`SESSIONSATION_OPERATION_WAIT_MS` shortens it, for tests): `OPERATION_TIMEOUT`,
+  `error.retryable: true`, with `error.operation` (the stop is still queued; poll `api operations`).
+
+An already-stopped session returns the same `{"session_id":…,"already_stopped":true,"phase":"complete"}` with or
+without `--wait`. `capabilities.stop_wait` describes the flag.
+
+**`--disable-auto-start` with `--wait`** (Codex). The setting is applied after the stop completed, not at
+admission; a failed or timed-out wait changes nothing. Without `--wait` the 1.59.0 behaviour stays: disabled when
+the stop is admitted.

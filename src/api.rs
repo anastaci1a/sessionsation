@@ -18,9 +18,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 60;
+pub const CONTRACT_MINOR: u32 = 61;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.60.0";
+pub const CONTRACT_VERSION: &str = "1.61.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -322,6 +322,9 @@ pub enum Command {
         /// After the stop (or an already-stopped result), also set the session's Auto Start to disabled (1.59.0).
         #[arg(long)]
         disable_auto_start: bool,
+        /// Wait for the stop to finish (1.61.0). Claude and Antigravity stops are already synchronous.
+        #[arg(long)]
+        wait: bool,
     },
     Resume {
         #[arg(long)]
@@ -563,8 +566,9 @@ pub enum SessionAction {
         /// Hold the brief until the model and effort are verified (the default; explicit form).
         #[arg(long)]
         when_ready: bool,
-        /// Claude only: `held` (default) or `initial-prompt` (opt-in: handed to Claude at start,
-        /// before the model can be verified).
+        /// Claude: `held` (default) or `initial-prompt` (opt-in: handed to Claude at start, before the
+        /// model can be verified). Codex: `initial-prompt` is accepted and delivered as its
+        /// `first_turn` (1.61.0).
         #[arg(long, value_parser = ["held", "initial-prompt"])]
         brief_delivery: Option<String>,
         /// Working directory (default: the current directory).
@@ -1842,6 +1846,8 @@ pub fn capabilities() -> Value {
         "archive":{"files":["conversations/<id>.db","conversations/<id>.db-wal","conversations/<id>.db-shm","brain/<id>/","annotations/<id>.pbtxt","presence/<id>.lock"],"index_row":"conversation_summaries.db row saved then removed in one SQLite transaction after a backup","delete_also_removes":["jetbox_summaries_proto.pb entry"],"unchanged":["history.jsonl","implicit/"],"match":"exact_conversation_id","refused_while":"a verified agy process (interactive or headless) holds the conversation"}});
     // Contract 1.59.0: Claude stop.
     value["claude_lifecycle"] = json!({"since_contract":"1.59.0","version":1,"stop":{"method":"sigterm_exact_process","verified_by":["registry_pid","process_start","account_home","conversation"],"signal_handle":"pidfd","wait_seconds":claude::stop::STOP_SECONDS,"sigkill":false,"busy_turn":"interrupted","result_field":"interrupted_turn","not_running":"already_stopped","refused":{"background":"UNSUPPORTED_PROVIDER_OPERATION","hosted":"HOSTED_SESSION","archived":"SESSION_ARCHIVED","unregistered":"SESSION_STATE_UNVERIFIED"},"errors":["SESSION_STATE_UNVERIFIED","AMBIGUOUS_SESSION","STOP_TIMEOUT","STOP_UNAVAILABLE","STOP_FAILED"],"retryable":["STOP_TIMEOUT"]},"restart":false});
+    // Contract 1.61.0: `api stop --wait` for every provider.
+    value["stop_wait"] = json!({"since_contract":"1.61.0","flag":"--wait","providers":{"codex":"polls the terminate job to its end","claude":"already synchronous","antigravity":"already synchronous"},"timeout_seconds":300,"timeout_env":"SESSIONSATION_OPERATION_WAIT_MS","errors":["OPERATION_FAILED","OPERATION_TIMEOUT"],"retryable":["OPERATION_TIMEOUT"],"disable_auto_start":"after the stop completed (with --wait)"});
     // Revision 21: per-account Claude bypass-permissions warning.
     value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.27.0: default statusLine for new managed Claude homes.
@@ -3506,6 +3512,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             session,
             expected_generation,
             keep_pane,
+            wait,
             ..
         } => {
             // Idempotent (1.55.0): `Err(session)` is an existing session with no process.
@@ -3519,20 +3526,35 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             };
             match found {
                 Err(s) => already_stopped(paths, &s)?,
-                Ok(source) => operation(
-                    paths,
-                    external::queue_snapshot(
+                Ok(source) => {
+                    let queued = operation(
                         paths,
-                        source,
-                        "",
-                        external::MoveOptions {
-                            close_pane: !keep_pane,
-                            ..Default::default()
-                        },
-                        "terminate",
-                    )
-                    .await?,
-                )?,
+                        external::queue_snapshot(
+                            paths,
+                            source,
+                            "",
+                            external::MoveOptions {
+                                close_pane: !keep_pane,
+                                ..Default::default()
+                            },
+                            "terminate",
+                        )
+                        .await?,
+                    )?;
+                    if wait {
+                        // Contract 1.61.0: the same wait owner as archive.
+                        external::archiving::wait_job(queued, |id| {
+                            external::jobs(paths)?
+                                .into_iter()
+                                .find(|j| j.id == id)
+                                .map(|j| operation(paths, j))
+                                .transpose()
+                        })
+                        .await?
+                    } else {
+                        queued
+                    }
+                }
             }
         }
         Command::Resume {
@@ -4399,7 +4421,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.60.0");
+        assert_eq!(c["contract_version"], "1.61.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
         assert_eq!(root["layout_version"], 3);

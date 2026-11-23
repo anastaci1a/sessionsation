@@ -845,6 +845,26 @@ pub async fn wait_for(paths: &Paths, queued: Value) -> Result<Value> {
 }
 
 async fn wait_within(paths: &Paths, queued: Value, bound: std::time::Duration) -> Result<Value> {
+    wait_polled(queued, bound, |id| {
+        Ok(operations(paths)?.into_iter().find(|o| o["id"] == id))
+    })
+    .await
+}
+
+/// Contract 1.61.0: the same `--wait` for an operation another owner journals (a Codex stop
+/// job): `poll` returns the operation's current record, `None` while it is not listed.
+pub async fn wait_job(
+    queued: Value,
+    poll: impl Fn(&str) -> Result<Option<Value>>,
+) -> Result<Value> {
+    wait_polled(queued, operation_wait(), poll).await
+}
+
+async fn wait_polled(
+    queued: Value,
+    bound: std::time::Duration,
+    poll: impl Fn(&str) -> Result<Option<Value>>,
+) -> Result<Value> {
     let id = queued["id"]
         .as_str()
         .context("MISSING_OPERATION")?
@@ -852,13 +872,10 @@ async fn wait_within(paths: &Paths, queued: Value, bound: std::time::Duration) -
     let started = std::time::Instant::now();
     let mut delay = std::time::Duration::from_millis(50);
     loop {
-        let current = operations(paths)?
-            .into_iter()
-            .find(|o| o["id"] == id.as_str())
-            .unwrap_or_else(|| queued.clone());
+        let current = poll(&id)?.unwrap_or_else(|| queued.clone());
         match current["phase"].as_str() {
             Some("complete") => return Ok(current),
-            Some("failed") => {
+            Some("failed" | "cancelled") => {
                 return Err(crate::session_model::NotConfirmed {
                     code: "OPERATION_FAILED",
                     message: current["detail"].as_str().unwrap_or_default().to_owned(),

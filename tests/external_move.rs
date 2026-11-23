@@ -5,6 +5,8 @@ mod archives;
 mod autostart;
 #[path = "external_move/launch.rs"]
 mod launch;
+#[path = "external_move/parity.rs"]
+mod parity;
 #[path = "external_move/recovery.rs"]
 mod recovery;
 use futures_util::{SinkExt, StreamExt};

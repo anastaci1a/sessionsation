@@ -13,7 +13,8 @@
 //! verified, so a session on the wrong model never receives it: Claude through an ordinary
 //! terminal-input send, Codex as an ordinary public send. Claude's initial-prompt delivery
 //! (`--brief-delivery initial-prompt`) is an explicit opt-in: it is faster, but the brief is
-//! handed to Claude before the model can be verified.
+//! handed to Claude before the model can be verified. Codex accepts the same flag (1.61.0) and
+//! treats it as `first_turn` (still held until the model is verified); the record says so.
 use crate::{
     launch,
     paths::{Paths, atomic_write, lock_file, private_dir},
@@ -48,8 +49,12 @@ const TERMINAL: &[&str] = &["complete", "failed", "cancelled"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Brief {
-    /// `held` (Claude, default) | `initial_prompt` (Claude, opt-in) | `first_turn` (Codex)
+    /// `held` (Claude, default), `initial_prompt` (Claude, opt-in) or `first_turn` (Codex)
     delivery: String,
+    /// Contract 1.61.0: the delivery the caller asked for when it differs from `delivery`
+    /// (Codex `initial-prompt` runs as `first_turn`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requested_delivery: Option<String>,
     /// pending | held | handed_to_provider | sending | delivered | not_sent | delivery_unknown
     state: String,
     sha256: String,
@@ -194,7 +199,7 @@ fn public(paths: &Paths, r: &Record) -> Value {
         "model":{"requested":r.model_requested,"applied":observed.map(|o| o.model.clone()),"confirmed":r.model_confirmed,
             "source":observed.map(|o| o.source.clone()),"observed_at":observed.map(|o| o.observed_at)},
         "effort":{"requested":r.effort_requested,"applied":observed.and_then(|o| o.effort.clone()),"confirmed":r.effort_confirmed},
-        "brief":{"delivery":r.brief.delivery,"state":r.brief.state,"sha256":r.brief.sha256,"bytes":r.brief.bytes,
+        "brief":{"delivery":r.brief.delivery,"requested_delivery":r.brief.requested_delivery,"state":r.brief.state,"sha256":r.brief.sha256,"bytes":r.brief.bytes,
             "attempts":r.brief.attempts,"message_id":r.brief.message_id,"message_ids":r.brief.message_ids,
             "receipt_state":r.brief.receipt_state,"reason":r.brief.reason},
         "created_at":r.created_at,"updated_at":r.updated_at,"deadline_at":r.deadline_at,
@@ -363,14 +368,11 @@ pub async fn launch(paths: &Paths, args: Args) -> Result<Value> {
             "initial_prompt"
         }
         ProviderId::Claude => "held",
-        _ => {
-            ensure!(
-                !args.initial_prompt,
-                "INVALID_ARGUMENT: initial-prompt delivery is Claude-only"
-            );
-            "first_turn"
-        }
+        _ => "first_turn",
     };
+    // Contract 1.61.0: Codex accepts `initial-prompt` and delivers it as its `first_turn`.
+    let requested =
+        (account.provider == ProviderId::Codex && args.initial_prompt).then_some("initial_prompt");
     let deadline = args.deadline.unwrap_or(DEFAULT_DEADLINE);
     ensure!(
         (MIN_DEADLINE..=MAX_DEADLINE).contains(&deadline),
@@ -387,7 +389,7 @@ pub async fn launch(paths: &Paths, args: Args) -> Result<Value> {
     let request = request(&args, &id)?;
     if args.dry_run {
         let mut v = launch::admit(paths, request, true).await?;
-        v["brief"] = json!({"delivery":delivery,"bytes":bytes.len(),"sha256":digest});
+        v["brief"] = json!({"delivery":delivery,"requested_delivery":requested,"bytes":bytes.len(),"sha256":digest});
         v["model"] = json!({"requested":args.model});
         v["effort"] = json!({"requested":args.effort});
         return Ok(v);
@@ -417,6 +419,7 @@ pub async fn launch(paths: &Paths, args: Args) -> Result<Value> {
             provider: account.provider.as_str().to_owned(),
             brief: Brief {
                 delivery: delivery.into(),
+                requested_delivery: requested.map(str::to_owned),
                 state: if delivery == "initial_prompt" {
                     "pending"
                 } else {
@@ -908,7 +911,8 @@ pub fn capability() -> Value {
         "idempotent":"request_id","request_providers":["codex","claude"],"model_required":true,
         "brief":{"default":"held until the model (and requested effort) is verified",
             "claude":{"default":"held","opt_in":"initial_prompt","max_bytes":{"initial_prompt":CLAUDE_INITIAL_MAX,"held":CLAUDE_HELD_MAX}},
-            "codex":{"delivery":"first_turn","max_bytes":CODEX_MAX},
+            "codex":{"delivery":"first_turn","accepts":["first_turn","initial_prompt"],"initial_prompt":"delivered as first_turn (record brief.delivery first_turn, brief.requested_delivery initial_prompt)","max_bytes":CODEX_MAX},
+            "gemini":{"launch":"UNSUPPORTED_PROVIDER_OPERATION"},"antigravity":{"launch":"UNSUPPORTED_PROVIDER_OPERATION"},
             "states":["pending","held","handed_to_provider","sending","delivered","not_sent","delivery_unknown"],
             "retries":MAX_BRIEF_ATTEMPTS,"retry_seconds":RETRY_SECONDS},
         "when_ready":"hold the brief until the model is verified (the default; explicit flag accepted)",
@@ -1018,18 +1022,6 @@ mod tests {
                 .starts_with("INVALID_ARGUMENT")
         );
         let mut a = args(dir.path());
-        a.account = "codex:c".into();
-        a.model = "gpt-6-astra".into();
-        a.effort = None;
-        a.initial_prompt = true;
-        assert!(
-            launch(&paths, a)
-                .await
-                .unwrap_err()
-                .to_string()
-                .starts_with("INVALID_ARGUMENT")
-        );
-        let mut a = args(dir.path());
         a.account = "gemini:g".into();
         assert!(
             launch(&paths, a)
@@ -1076,6 +1068,7 @@ mod tests {
             provider: "codex".into(),
             brief: Brief {
                 delivery: "first_turn".into(),
+                requested_delivery: None,
                 state: "sending".into(),
                 sha256: "x".into(),
                 bytes: 5,

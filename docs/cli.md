@@ -369,6 +369,8 @@ session's HERDR pane (`api stop --keep-pane` keeps it; hidden CLI `terminate --k
 [contract](contract.md#stop-closes-the-herdr-pane-1360).
 Claude sessions stop by SIGTERM to their verified process (contract 1.59.0), and `api stop --disable-auto-start`
 also turns the session's Auto Start off; see [contract](contract.md#claude-stop-and-stop---disable-auto-start-1590).
+`api stop --wait` blocks a Codex stop until its job ended (contract 1.61.0); see
+[contract](contract.md#provider-parity-codex-initial-prompt-and-stop---wait-1610).
 `herdr server stop` stops the named host and panes; it is not viewer detachment.
 Restart replaces the terminal client on its selected account, retaining recorded
 permissions and the existing account server. Clear unsent drafts before lifecycle
@@ -680,8 +682,10 @@ Codex with the model and effort in `thread/start`), verifies the model (and the 
 **from the session itself** (Claude: the status-line payload recorded by Sessionsation's hook; Codex:
 `thread/read`), and only then sends the brief as an ordinary message. A session that reports another model never
 receives the brief (`failed`, `model_not_confirmed`, `brief.state:"not_sent"`; the session keeps running).
-`--when-ready` names this default explicitly. `--brief-delivery initial-prompt` (Claude only) is an opt-in that
+`--when-ready` names this default explicitly. `--brief-delivery initial-prompt` is an opt-in for Claude that
 hands the brief to Claude as its start-up prompt: faster, but it is given before the model can be verified.
+Codex accepts the same flag (1.61.0) and delivers the brief as its usual `first_turn` after verification
+(`brief.requested_delivery` records the request).
 
 `--wait N` blocks until the record is `complete` or `failed`, at most N seconds (launch: default 0, max 1800;
 set-model: default 90, or 0 with `--when-idle`, max 600). Ending without `complete` exits 1 with
