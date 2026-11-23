@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.58.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.59.0`
 (the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -4036,3 +4036,45 @@ last_success_at, consecutive_failures, last_native_error}`. An accepted submit s
 resets `consecutive_failures` to 0; a `not_delivered` or `uncertain` submit adds 1. It is read from
 `messaging/input-health/<conversation>.json` (a few hundred bytes, written by the submit path under the session
 lock): no provider call and no ledger lock. Only submit attempts count (not observation reads).
+
+### Claude stop and `stop --disable-auto-start` (1.59.0)
+
+MINOR (additive: a provider gains `stop`, a flag and result fields; no error code is removed or renamed).
+
+**Claude `api stop`.** Before 1.59.0 every Claude session was refused with `UNSUPPORTED_PROVIDER_OPERATION`,
+even one with no process left. Now:
+
+- **No process** (availability `stopped` or `stale`, not archived): the idempotent result of 1.55.0,
+  `{"session_id":…,"already_stopped":true,"phase":"complete"}`. Archived: `SESSION_ARCHIVED`.
+- **Running interactive session:** the target is the process Claude Code's own registry
+  (`sessions/<pid>.json`) names as the holder of the conversation, verified as for every observation (exact
+  pid, `/proc` start time, config home). Under the conversation lock it is re-read and must still be the exact
+  process that was observed (pid and start time; otherwise `SESSION_STATE_UNVERIFIED`, nothing signalled). The
+  signal goes through a pidfd whose start time is checked after it was opened (the owner the Claude account
+  switch uses), so a reused pid is never signalled. SIGTERM only, then a wait of up to 10 s
+  (`capabilities.claude_lifecycle.stop.wait_seconds`). Claude Code appends its transcript as records happen, so
+  the conversation is saved and resumable after the exit. A turn in progress is interrupted (its unfinished
+  reply is not saved); the result says so with `interrupted_turn: true` (the registry reported `busy`).
+- **Result** (synchronous, like Antigravity): `{id, source_session_id, kind:"terminate", phase:"complete",
+  provider:"claude", signal:"SIGTERM", pid, process_start, interrupted_turn, provider_conversation_id,
+  source_account_id, detail, pane_closed, pane_close_reason}`. The recorded HERDR pane is then closed as in
+  [1.36.0](#stop-closes-the-herdr-pane-1360) unless `--keep-pane` (`KEEP_PANE`), and `NO_PANE` without one.
+- **Errors:** `STOP_TIMEOUT` (not exited in time; the process is **not** killed, SIGKILL is never sent;
+  `error.retryable: true`, also for Antigravity), `SESSION_STATE_UNVERIFIED` (the registry does not name this
+  exact process, for example a session still at its trust prompt with no registry entry yet, or the state could
+  not be observed), `AMBIGUOUS_SESSION`, `STOP_UNAVAILABLE`, `STOP_FAILED`. Refused unsignalled: background
+  (`bg`) sessions and pre-started spares (`UNSUPPORTED_PROVIDER_OPERATION`: they belong to Claude's background
+  daemon) and hosted sessions (`HOSTED_SESSION`: use `api hosted stop`).
+- **Capabilities.** The Claude provider entry reports `stop: true` and `operations.stop.supported: true`;
+  `restart` stays unsupported (stop, then resume). Session rows report `capabilities.stop: true` exactly while
+  the registry-verified interactive process runs; otherwise `capability_reasons.stop` is `SESSION_NOT_RUNNING`,
+  the background reason, `SESSION_STATE_UNVERIFIED: …`, or `HOSTED_SESSION`. `capabilities.claude_lifecycle`
+  describes the stop.
+
+**`api stop --disable-auto-start`** (every provider: Codex, Claude, Antigravity). After the stop returned
+without an error, including an `already_stopped` result, the session's Auto Start is set to `disabled` through
+the same owner as `api auto-start --mode disabled`, and the result gains `auto_start` (the row's
+`auto_start` projection after the change). A Codex stop is an asynchronous operation: there the setting is
+disabled when the stop is admitted (the operation is returned queued), not when it completes. A refused stop
+changes nothing. Without the flag nothing changes: an explicit stop only marks the session
+([1.44.0](#auto-start-semantics-host-boot-and-crash-1440) semantics) and there is no `auto_start` field.

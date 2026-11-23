@@ -367,6 +367,8 @@ Detach a HERDR viewer with default **Ctrl+B, Q**. This leaves agents running.
 Backend `api stop` ends the selected agent and preserves resumable history. By default it then also closes the
 session's HERDR pane (`api stop --keep-pane` keeps it; hidden CLI `terminate --keep-pane` likewise); see
 [contract](contract.md#stop-closes-the-herdr-pane-1360).
+Claude sessions stop by SIGTERM to their verified process (contract 1.59.0), and `api stop --disable-auto-start`
+also turns the session's Auto Start off; see [contract](contract.md#claude-stop-and-stop---disable-auto-start-1590).
 `herdr server stop` stops the named host and panes; it is not viewer detachment.
 Restart replaces the terminal client on its selected account, retaining recorded
 permissions and the existing account server. Clear unsent drafts before lifecycle
