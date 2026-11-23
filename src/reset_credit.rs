@@ -27,6 +27,7 @@ pub const METHOD: &str = "account/rateLimitResetCredit/consume";
 /// Every `ConsumeAccountRateLimitResetCreditOutcome` of Codex app-server 0.165.0.
 pub const OUTCOMES: &[&str] = &["reset", "nothingToReset", "noCredit", "alreadyRedeemed"];
 pub const KIND: &str = "account_reset_credit";
+pub mod claude;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
@@ -43,7 +44,11 @@ pub struct Record {
     /// Requests sent with this key (1 + retries with the same request id).
     pub attempts: u32,
     pub detail: String,
+    /// The provider build or API that answered (the field name predates Claude).
     pub codex_version: String,
+    /// Claude: the backend `result` and `reason` (`reset_rate_limits`), as sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_result: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -95,7 +100,7 @@ pub fn list(paths: &Paths) -> Result<Vec<Record>> {
 pub fn public(r: &Record) -> Value {
     json!({"id":r.id,"kind":KIND,"phase":r.phase,"detail":r.detail,
     "account_id":r.account_id,"credit_id":r.credit_id,"request_id":r.id,
-    "outcome":r.outcome,"attempts":r.attempts,
+    "outcome":r.outcome,"attempts":r.attempts,"provider":r.provider,"provider_result":r.provider_result,
     "uncertain":r.phase == "uncertain","terminal":matches!(r.phase.as_str(),"complete"|"failed"),
     "created_at":r.created_at,"updated_at":r.updated_at,
     "replays":false,
@@ -109,6 +114,7 @@ pub fn public(r: &Record) -> Value {
 /// record of this request id (same account and credit) with one more attempt.
 pub fn admit(
     paths: &Paths,
+    provider: ProviderId,
     account_id: &str,
     credit_id: Option<&str>,
     request_id: &str,
@@ -136,15 +142,19 @@ pub fn admit(
             schema_version: 1,
             id: request_id.into(),
             kind: KIND.into(),
-            provider: ProviderId::Codex,
+            provider,
             account_id: account_id.into(),
             credit_id: credit_id.map(str::to_owned),
             idempotency_key: request_id.into(),
             phase: "requesting".into(),
             outcome: None,
             attempts: 1,
-            detail: "request sent to the account app-server".into(),
+            detail: match provider {
+                ProviderId::Claude => "claim sent to the Claude API (reset_rate_limits)".into(),
+                _ => "request sent to the account app-server".into(),
+            },
             codex_version: codex_version.into(),
+            provider_result: None,
             created_at: now,
             updated_at: now,
         }
@@ -186,6 +196,7 @@ pub fn parse_summary(summary: &Value, at: i64) -> Option<ResetCredits> {
                     id: c["id"].as_str()?.to_owned(),
                     status: c["status"].as_str().map(str::to_owned),
                     expires_at: c["expiresAt"].as_i64(),
+                    ..Default::default()
                 })
             })
             .collect()
@@ -194,6 +205,7 @@ pub fn parse_summary(summary: &Value, at: i64) -> Option<ResetCredits> {
         available,
         observed_at: at,
         credits,
+        ..Default::default()
     })
 }
 
@@ -224,18 +236,25 @@ pub fn failure(error: &anyhow::Error, version: &str, request_id: &str) -> (&'sta
     }
 }
 
-/// Capability `account_reset_credit` (contract 1.53.0).
+/// Capability `account_reset_credit` (contract 1.53.0; Claude since 1.60.0).
 pub fn capability() -> Value {
-    json!({"since_contract":"1.53.0","providers":["codex"],"method":METHOD,
-        "command":"api account reset-credit codex:NAME [--credit-id ID] [--request-id UUID]",
+    json!({"since_contract":"1.53.0","providers":["codex","claude"],"method":METHOD,
+        "command":"api account reset-credit PROVIDER:NAME [--credit-id ID] [--request-id UUID] [--kind 5-hour|weekly|fable|full]",
+        "claude":{"since_contract":"1.60.0","status":{"method":"GET","url":format!("{}{}",crate::provider::claude::oauth::API_BASE,claude::STATUS_PATH),"block":"cedar_ember","cache_seconds":claude::CACHE_SECONDS,"polled":false},
+            "claim":{"method":"POST","path":"/api/organizations/<organizationUuid>/reset_rate_limits","body":["program","grant_id","request_id"],"program":claude::PROGRAM,"request_id":"request_id"},
+            "outcomes":claude::OUTCOMES,"kinds":["5-hour","weekly","fable","full"],"credit_id":"grant id ^[a-z0-9_-]{1,40}$",
+            "grant_selection":"--credit-id, else a usable grant of --kind, else next_grant_id, else the first usable grant","no_usable_grant":{"outcome":"noCredit","sent":false},
+            "credentials":{"reads":"CLAUDE_CONFIG_DIR/.credentials.json claudeAiOauth","token_in":"curl stdin only","renewal":"only when expiring within 300 s or after a 401, under Claude Code's refresh lock",
+                "refresh_lock":crate::provider::claude::oauth::REFRESH_LOCK,"storage_lock":crate::provider::claude::oauth::STORAGE_LOCK,"write":"atomic, mode 0600, other fields preserved, compare-and-swap on refreshToken"},
+            "errors":["AUTH_STALE","AUTH_REQUIRED","RESET_CREDITS_READ_FAILED","RESET_CREDITS_UNREADABLE"]},
         "idempotent_by":"request_id","idempotency_key":"request_id",
         "request_id_generated_when_omitted":true,"journaled_before_request":true,
         "journal":crate::layout::ACCOUNT_RESET_CREDITS,"auto_retry":false,"retry":"same_request_id_only",
-        "outcomes":OUTCOMES,"result_fields":["account_id","request_id","outcome","rate_limits_after","attempts","operation"],
+        "outcomes":OUTCOMES,"result_fields":["account_id","request_id","outcome","rate_limits_after","attempts","operation"],"claude_result_fields":["credit_id","claude","rate_limits_after_error","sent"],
         "rate_limits_refreshed_after":["reset","alreadyRedeemed"],
         "lock":"account_operation_lock","reversible":false,
         "usage_field":{"field":"usage.reset_credits","shape":{"available":"integer","observed_at":"unix_seconds","credits":"array|null"},"absent":null},
-        "errors":["UNSUPPORTED_PROVIDER_OPERATION","INVALID_REQUEST_ID","REQUEST_ID_CONFLICT","ACCOUNT_BUSY","AUTH_REQUIRED","RESET_CREDIT_FAILED","RESET_CREDIT_OUTCOME_UNKNOWN"]})
+        "errors":["UNSUPPORTED_PROVIDER_OPERATION","INVALID_REQUEST_ID","REQUEST_ID_CONFLICT","ACCOUNT_BUSY","AUTH_REQUIRED","AUTH_STALE","RESET_CREDIT_FAILED","RESET_CREDIT_OUTCOME_UNKNOWN"]})
 }
 
 #[cfg(test)]
@@ -256,7 +275,8 @@ mod tests {
             vec![ResetCredit {
                 id: "c1".into(),
                 status: Some("available".into()),
-                expires_at: Some(99)
+                expires_at: Some(99),
+                ..Default::default()
             }]
         );
         assert!(
@@ -279,16 +299,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
         let id = uuid::Uuid::new_v4().to_string();
-        let mut r = admit(&paths, "codex:a", None, &id, "v").unwrap();
+        let mut r = admit(&paths, ProviderId::Codex, "codex:a", None, &id, "v").unwrap();
         assert_eq!((r.phase.as_str(), r.attempts), ("requesting", 1));
         assert_eq!(read(&paths, &id).unwrap().idempotency_key, id);
         finish(&paths, &mut r, "uncertain", None, "x").unwrap();
-        let again = admit(&paths, "codex:a", None, &id, "v").unwrap();
+        let again = admit(&paths, ProviderId::Codex, "codex:a", None, &id, "v").unwrap();
         assert_eq!((again.phase.as_str(), again.attempts), ("requesting", 2));
         assert_eq!(again.idempotency_key, id);
         assert_eq!(again.created_at, r.created_at);
         for (account, credit) in [("codex:b", None), ("codex:a", Some("c1"))] {
-            let e = admit(&paths, account, credit, &id, "v").unwrap_err();
+            let e = admit(&paths, ProviderId::Codex, account, credit, &id, "v").unwrap_err();
             assert!(e.to_string().starts_with("REQUEST_ID_CONFLICT"), "{e}");
         }
         assert_eq!(list(&paths).unwrap().len(), 1);

@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.59.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.60.0`
 (the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -4078,3 +4078,62 @@ the same owner as `api auto-start --mode disabled`, and the result gains `auto_s
 disabled when the stop is admitted (the operation is returned queued), not when it completes. A refused stop
 changes nothing. Without the flag nothing changes: an explicit stop only marks the session
 ([1.44.0](#auto-start-semantics-host-boot-and-crash-1440) semantics) and there is no `auto_start` field.
+
+### Claude limit resets (1.60.0)
+
+MINOR (additive). Claude subscriptions can hold stored limit resets (Claude Code 2.1.314's hidden
+`/limit-reset [fable|full|5-hour|weekly]`, internally "cedar-ember"). The
+[reset-credit operation](#codex-rate-limit-reset-credits-1530) now has a Claude adapter: the same command, journal,
+lock, idempotency and outcome names.
+
+```sh
+sessionsation api account limits claude:NAME        # usage.reset_credits (read on demand, cached 60 s)
+sessionsation api account reset-credit claude:NAME [--credit-id GRANT] [--kind 5-hour|weekly|fable|full] [--request-id UUID]
+```
+
+- **Status.** `GET https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1` (Claude Code's
+  `cedar_ember` read). Its `cedar_ember` block becomes `usage.reset_credits` with the Codex shape:
+  `available` is the sum of `resets_left` over grants that are not `paused`; `credits` has one row per grant
+  `{id, status: available|paused|used, expires_at (ends_at, unix seconds), kind: session|weekly|fable|full,
+  label, resets_left, resets_total, paused, usable_now, starts_at, clears, unavailable_reason}` (malformed
+  grants are skipped, as Claude Code does). Claude-only optional keys: `eligible`, `ineligible_reason`,
+  `at_limit`, `next_grant_id`, `cooldown_until`, `weekly_resets_at` (unix seconds). An answer without the block
+  stores `null`. `api account limits claude:NAME` reads it when the stored read is older than 60 s and adds
+  `reset_credits_read` `{ok}` or `{ok:false, code, message, retryable}` (a failed read keeps the last value and
+  is not fatal). `api account list` and `api state` show the stored read
+  (`<home>/.sessionsation/reset-credits.json`) and never call the API. The supervisor never polls it.
+- **Claim.** `POST https://api.anthropic.com/api/organizations/<oauthAccount.organizationUuid>/reset_rate_limits`
+  with `{program: "cedar_ember", grant_id, request_id}`. The grant is `--credit-id`, else a usable grant
+  (`usable_now`, not paused, not ended) of `--kind`, else the status's `next_grant_id`, else the first usable
+  grant in Claude Code's kind order; with none, `outcome: "noCredit"`, `sent: false`, nothing journaled. A retry
+  with the same `--request-id` resends the grant its first attempt named.
+- **Outcomes** (`ok:true`): `reset` (`result: reset`), `nothingToReset` (`not_limited`), `noCredit`
+  (`ineligible`, or `already_used` on a first attempt), `alreadyRedeemed` (`already_used` when an earlier send
+  of this request id may have reached the API), `cooldown` (Claude-only: nothing spent, claim after
+  `cooldown_until`). `unavailable`, an unknown result, an unreadable answer, a 5xx or no answer is
+  `RESET_CREDIT_OUTCOME_UNKNOWN` (phase `uncertain`); a 4xx/429 or a request that never connected is
+  `RESET_CREDIT_FAILED` (phase `failed`). The result adds `credit_id`, `claude {result, reason, resets_left,
+  cleared, weekly_resets_at, cooldown_until}` and, after `reset`/`alreadyRedeemed`, `rate_limits_after` from a
+  fresh status read (`rate_limits_after_error` when that read failed). The journal record has `provider:
+  "claude"` and `provider_result` (`result/reason`).
+- **Credentials.** The access token is read from the account's `CLAUDE_CONFIG_DIR/.credentials.json`
+  (`claudeAiOauth`). It is only on curl's stdin (`curl -q -K -`, config `curl_binary`, default `/usr/bin/curl`);
+  never in argv, the environment, logs, journals, errors or results. Headers are Claude Code's:
+  `Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`, `Content-Type: application/json`,
+  `User-Agent: claude-cli/2.1.314 (external, cli)`.
+- **Renewal** matches Claude Code so the two never race a refresh-token rotation: only when the token expires
+  within 300 s, or after a 401 for that token (then the request is sent once more, same request id). It takes
+  Claude Code's proper-lockfile lock `CLAUDE_CONFIG_DIR/.oauth_refresh.lock` (stale after 60 s; 5 tries 1-2 s
+  apart) and the legacy `<realpath(CLAUDE_CONFIG_DIR)>.lock`, re-reads the file under the lock and uses another
+  process's renewed token when there is one, posts `{grant_type: refresh_token, refresh_token, client_id,
+  scope}` to `https://platform.claude.com/v1/oauth/token`, and writes back under `.storage-write.lock` with
+  Claude Code's compare-and-swap (a sibling's newer refresh token wins and is adopted). The write keeps every
+  other field, is atomic and mode 0600.
+- **Errors.** `AUTH_STALE` (`retryable: true`; the lock is held by another process or the renewal failed
+  transiently: a running Claude session on the account refreshes the token itself, and the next attempt
+  renews it here). `AUTH_REQUIRED` (no stored login, no refresh token, the refresh token was revoked
+  (`invalid_grant`), or no `organizationUuid`). `RESET_CREDITS_READ_FAILED`, `RESET_CREDITS_UNREADABLE` (status
+  reads). Plus the 1.53.0 codes.
+
+Capability: `account_reset_credit.providers` is `["codex", "claude"]`; `account_reset_credit.claude`
+(`since_contract` `1.60.0`) describes the status, claim, outcomes, kinds and credential handling.

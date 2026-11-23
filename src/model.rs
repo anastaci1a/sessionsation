@@ -44,8 +44,9 @@ pub struct Usage {
     #[serde(default)]
     pub reset_credits: Option<ResetCredits>,
 }
-/// Stored Codex rate-limit reset credits, from `account/rateLimits/read`
-/// `rateLimitResetCredits` (contract 1.53.0).
+/// Stored rate-limit reset credits: Codex `account/rateLimits/read` `rateLimitResetCredits`
+/// (contract 1.53.0), or Claude limit resets, the `cedar_ember` block of `/api/oauth/usage`
+/// (contract 1.60.0). The optional keys are Claude-only and absent for Codex.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResetCredits {
     pub available: u64,
@@ -54,6 +55,23 @@ pub struct ResetCredits {
     /// list can be shorter than `available`).
     #[serde(default)]
     pub credits: Option<Vec<ResetCredit>>,
+    /// Claude: the account takes part in limit resets at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eligible: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ineligible_reason: Option<String>,
+    /// Claude: the account is at a limit now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_limit: Option<bool>,
+    /// Claude: the grant the backend offers next.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_grant_id: Option<String>,
+    /// Claude: no claim before this time (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_until: Option<i64>,
+    /// Claude: when the weekly window resets (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekly_resets_at: Option<i64>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResetCredit {
@@ -62,6 +80,28 @@ pub struct ResetCredit {
     pub status: Option<String>,
     #[serde(default)]
     pub expires_at: Option<i64>,
+    /// Claude: `session` (5-hour), `weekly`, `fable` or `full`, as Claude Code names grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Claude: resets left in this grant and its total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_left: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<bool>,
+    /// Claude: can be claimed right now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usable_now: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<i64>,
+    /// Claude: the limit windows a claim clears (`five_hour`, `seven_day`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clears: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
 }
 impl Usage {
     pub fn window_absent(&self, duration: u64) -> bool {

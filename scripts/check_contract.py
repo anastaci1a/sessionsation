@@ -339,7 +339,9 @@ with tempfile.TemporaryDirectory() as directory:
             assert root_alias["retained_copies"]["deleted_by"] == "never (1.54)", root_alias
             assert "ROOT_ALIAS_UNVERIFIED" in root_alias["errors"] and "ROOT_REKEY_CONFLICT" in root_alias["errors"], root_alias
             reset = value["result"]["account_reset_credit"]
-            assert reset["since_contract"] == "1.53.0" and reset["providers"] == ["codex"], reset
+            assert reset["since_contract"] == "1.53.0" and reset["providers"] == ["codex", "claude"], reset
+            assert reset["claude"]["since_contract"] == "1.60.0" and reset["claude"]["claim"]["program"] == "cedar_ember", reset
+            assert reset["claude"]["outcomes"] == ["reset", "nothingToReset", "noCredit", "alreadyRedeemed", "cooldown"], reset
             assert reset["method"] == "account/rateLimitResetCredit/consume" and reset["idempotent_by"] == "request_id", reset
             assert reset["outcomes"] == ["reset", "nothingToReset", "noCredit", "alreadyRedeemed"], reset
             assert reset["auto_retry"] is False and reset["reversible"] is False, reset

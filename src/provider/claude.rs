@@ -1,6 +1,7 @@
 //! Claude Code provider. Each account is an isolated `CLAUDE_CONFIG_DIR`, either
 //! created at `<root>/accounts/claude/<name>` or adopted in place. Sessionsation
-//! never reads Claude credentials (`.credentials.json`, `sessions/*.key`); it uses
+//! reads Claude credentials (`.credentials.json`) only in [`oauth`], for the two
+//! limit-reset calls (contract 1.60.0), never `sessions/*.key`; otherwise it uses
 //! only `claude auth status --json`, session registry metadata, transcript header
 //! fields (sessionId/cwd/timestamp) and statusline rate-limit fields.
 use super::{Capability, ProviderCapabilities, ProviderId, no, yes};
@@ -19,6 +20,7 @@ mod facts;
 pub mod hosted;
 pub mod launch;
 pub mod native_peer;
+pub mod oauth;
 pub mod peer;
 pub mod sender_registry;
 pub mod statusline_seed;
@@ -1621,7 +1623,9 @@ fn chained_command(home: &Path) -> Option<String> {
 pub fn project_usage(home: &Path, now: i64) -> (Value, bool, &'static str) {
     let base = |state: &'static str| {
         json!({"short":null,"weekly":null,"observed_at":null,"exhausted":false,
-            "source":USAGE_SOURCE,"semantics":USAGE_SEMANTICS,"state":state})
+            "source":USAGE_SOURCE,"semantics":USAGE_SEMANTICS,"state":state,
+            // Contract 1.60.0: the last limit-reset status read (null before one).
+            "reset_credits":crate::reset_credit::claude::usage_field(home)})
     };
     let bytes = match fs::read(usage_file(home)) {
         Ok(b) => b,

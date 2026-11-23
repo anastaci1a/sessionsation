@@ -297,8 +297,12 @@ async fn reset_credit_outcomes_idempotency_and_refreshed_usage() {
     assert_eq!(e["code"], "INVALID_REQUEST_ID", "{e}");
     assert_eq!(lines(&keys).len(), 5);
 
+    // Claude has its own adapter (contract 1.60.0): an unknown account is not found.
+    let (ok, e) = api(&root, &["account", "reset-credit", "claude:nobody"]);
+    assert!(!ok);
+    assert_eq!(e["code"], "ACCOUNT_NOT_FOUND", "{e}");
     // Other providers are refused.
-    for other in ["claude:nobody", "gemini:nobody", "antigravity:nobody"] {
+    for other in ["gemini:nobody", "antigravity:nobody"] {
         let (ok, e) = api(&root, &["account", "reset-credit", other]);
         assert!(!ok);
         assert_eq!(e["code"], "UNSUPPORTED_PROVIDER_OPERATION", "{other}: {e}");

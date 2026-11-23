@@ -2069,7 +2069,13 @@ fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
             .map(|help| format!("{code}: {help}"))
             .unwrap_or_else(|| format!("{error:#}"))
     };
-    let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"OPERATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS"|"STOP_TIMEOUT")}});
+    let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"OPERATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS"|"STOP_TIMEOUT"|"AUTH_STALE")}});
+    // Contract 1.60.0: a Claude token that could not be renewed right now.
+    if code == "AUTH_STALE" {
+        envelope["error"]["detail"] = json!(
+            "a running Claude session on the account refreshes the token itself; the next attempt also renews it under Claude Code's refresh lock"
+        );
+    }
     // Contract 1.58.0: a session that has not written its first status-line record yet.
     if error
         .downcast_ref::<sessionsation::messaging::model_change::claude::HookNotRecorded>()

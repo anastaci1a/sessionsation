@@ -74,6 +74,9 @@ pub struct Config {
     /// pane (the session's recorded pane, then a same-named single-pane tab) instead of
     /// opening a new tab. Off: always a new tab, as before 1.52.0.
     pub reuse_idle_tabs: bool,
+    /// Contract 1.60.0: the curl that sends the two Claude limit-reset requests (and, when
+    /// due, Claude Code's token renewal). Requests go on its stdin (`-K -`), never argv.
+    pub curl_binary: String,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -108,6 +111,7 @@ impl Default for Config {
             operation_retention_days: 90,
             native_sender_registration: false,
             reuse_idle_tabs: true,
+            curl_binary: "/usr/bin/curl".into(),
         }
     }
 }
@@ -148,6 +152,7 @@ impl Config {
                 && self.idle_poll_seconds > 0,
             "invalid poll intervals"
         );
+        ensure!(!self.curl_binary.trim().is_empty(), "curl_binary is empty");
         ensure!(
             !self.codex_binary.trim().is_empty(),
             "codex_binary is empty"

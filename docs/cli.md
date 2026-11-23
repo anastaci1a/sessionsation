@@ -764,9 +764,28 @@ and `account list`/`state` show it immediately), `nothingToReset` (nothing to re
 If the command fails with `RESET_CREDIT_OUTCOME_UNKNOWN` or `RESET_CREDIT_FAILED`, retry with the
 `request_id` from the message (`--request-id <id>`). The same request id is the same attempt, so it cannot spend
 a second credit; a new request id is a new attempt and can. Sessionsation never retries by itself. Each attempt is
-recorded under `operations/account-reset-credits/` and shown by `api operations`. Claude, Gemini and Antigravity
+recorded under `operations/account-reset-credits/` and shown by `api operations`. Gemini and Antigravity
 accounts get `UNSUPPORTED_PROVIDER_OPERATION`, as does a Codex version without the feature (the message names the
 version). Details: [contract](contract.md#codex-rate-limit-reset-credits-1530).
+
+## Claude limit resets (contract 1.60.0)
+
+Claude accounts can hold stored limit resets (Claude Code's `/limit-reset`). `api account limits claude:NAME` reads
+them on demand (at most once a minute) into `usage.reset_credits`, with one row per grant (`kind` is `session`,
+`weekly`, `fable` or `full`):
+
+```sh
+sessionsation api account limits claude:personal
+sessionsation api account reset-credit claude:personal                  # the next offered reset
+sessionsation api account reset-credit claude:personal --kind 5-hour    # or weekly, fable, full
+sessionsation api account reset-credit claude:personal --credit-id GRANT --request-id 3f0c...
+```
+
+**This uses a stored reset and cannot be undone.** Outcomes, retries with the same `--request-id` and the journal
+are as for Codex, plus `cooldown` (nothing spent; try after `cooldown_until`). Sessionsation uses the account's
+Claude login and renews an expiring token exactly as Claude Code does (under its refresh lock); `AUTH_STALE`
+(retryable) means try again shortly, `AUTH_REQUIRED` means log in again. The token is sent to curl on stdin only.
+Details: [contract](contract.md#claude-limit-resets-1600).
 
 ## Root re-key (contract 1.54.0)
 

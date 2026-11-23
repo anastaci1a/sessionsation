@@ -18,9 +18,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 59;
+pub const CONTRACT_MINOR: u32 = 60;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.59.0";
+pub const CONTRACT_VERSION: &str = "1.60.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -914,11 +914,11 @@ pub enum AccountCommand {
         #[arg(long)]
         request_id: Option<String>,
     },
-    /// Codex: spend one stored rate-limit reset credit (not reversible). Journaled; the
-    /// request id is the idempotency key, so a retry with the same --request-id can
+    /// Codex or Claude: spend one stored rate-limit reset credit (not reversible). Journaled;
+    /// the request id is the idempotency key, so a retry with the same --request-id can
     /// never spend a second credit. Never retried automatically.
     ResetCredit {
-        /// codex:NAME (or pass --account).
+        /// codex:NAME or claude:NAME (or pass --account).
         #[arg(required_unless_present = "account", conflicts_with = "account")]
         id: Option<String>,
         #[arg(long)]
@@ -929,6 +929,9 @@ pub enum AccountCommand {
         /// Idempotency key (a UUID); generated when omitted. Reuse it to retry.
         #[arg(long)]
         request_id: Option<String>,
+        /// Claude: which reset to use when --credit-id is omitted: 5-hour, weekly, fable or full.
+        #[arg(long)]
+        kind: Option<String>,
     },
     /// Claude: switch an adopted account to its managed home (no files are moved).
     ManagedHome {
@@ -1440,10 +1443,23 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                         })
                     })
                     .context("ACCOUNT_NOT_FOUND")?;
-                Ok(
-                    json!({"account_id":id,"limits":a["switch_thresholds"],"saved":false,
-                    "usage":a["usage"],"usage_fresh":a["usage_fresh"],"usage_state":a["usage_state"]}),
-                )
+                let mut usage = a["usage"].clone();
+                let mut value = json!({"account_id":id,"limits":a["switch_thresholds"],"saved":false,
+                    "usage_fresh":a["usage_fresh"],"usage_state":a["usage_state"]});
+                // Contract 1.60.0: Claude limit resets are read on demand (cached 60 s).
+                if account.provider == ProviderId::Claude && a["deletion_id"].is_null() {
+                    let home = crate::provider::claude::home(
+                        paths,
+                        name,
+                        a["config_home"].as_str().map(std::path::Path::new),
+                    )?;
+                    let (credits, read) =
+                        crate::reset_credit::claude::limits_read(paths, name, &home).await;
+                    usage["reset_credits"] = credits;
+                    value["reset_credits_read"] = read;
+                }
+                value["usage"] = usage;
+                Ok(value)
             }
         }
         AccountCommand::List { platform } => {
@@ -1559,16 +1575,38 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             account,
             credit_id,
             request_id,
+            kind,
         } => {
             let id = id
                 .or(account)
-                .context("INVALID_ARGUMENT: pass codex:NAME")?;
+                .context("INVALID_ARGUMENT: pass codex:NAME or claude:NAME")?;
             let account = account_ref(paths, &id)?;
             ensure!(
-                account.provider == ProviderId::Codex,
-                "UNSUPPORTED_PROVIDER_OPERATION: rate-limit reset credits are a Codex account feature; {} accounts have none",
+                matches!(account.provider, ProviderId::Codex | ProviderId::Claude),
+                "UNSUPPORTED_PROVIDER_OPERATION: rate-limit reset credits are a Codex and Claude account feature; {} accounts have none",
                 account.provider
             );
+            ensure!(
+                kind.is_none() || account.provider == ProviderId::Claude,
+                "INVALID_ARGUMENT: --kind is for Claude accounts"
+            );
+            if account.provider == ProviderId::Claude {
+                let kind = kind
+                    .as_deref()
+                    .map(crate::reset_credit::claude::parse_kind)
+                    .transpose()?;
+                let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                crate::reset_credit::validate_request_id(&request_id)?;
+                crate::accounts::ensure_available(paths, account.provider, &account.name)?;
+                return crate::reset_credit::claude::command(
+                    paths,
+                    &account.name,
+                    credit_id,
+                    kind,
+                    request_id,
+                )
+                .await;
+            }
             if let Some(credit) = &credit_id {
                 ensure!(
                     !credit.trim().is_empty() && credit.len() <= 256,
@@ -4361,7 +4399,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.59.0");
+        assert_eq!(c["contract_version"], "1.60.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
         assert_eq!(root["layout_version"], 3);
@@ -4371,7 +4409,7 @@ mod prefill_tests {
         );
         let reset = &c["account_reset_credit"];
         assert_eq!(reset["since_contract"], "1.53.0");
-        assert_eq!(reset["providers"], json!(["codex"]));
+        assert_eq!(reset["providers"], json!(["codex", "claude"]));
         assert_eq!(reset["method"], "account/rateLimitResetCredit/consume");
         assert_eq!(reset["idempotent_by"], "request_id");
         assert_eq!(

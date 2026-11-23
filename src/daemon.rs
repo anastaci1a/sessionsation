@@ -786,7 +786,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 bail!("ACCOUNT_BUSY: a Codex terminal holds codex:{name} without a shared app-server ({reason}); nothing was sent");
                             }
                             let account_id = format!("codex:{name}");
-                            let mut record = crate::reset_credit::admit(&paths,&account_id,credit_id.as_deref(),&request_id,&version)?;
+                            let mut record = crate::reset_credit::admit(&paths,ProviderId::Codex,&account_id,credit_id.as_deref(),&request_id,&version)?;
                             if let Some(helper) = helpers.get(&name) && !helper.is_alive().await { helpers.remove(&name); }
                             if !helpers.contains_key(&name) {
                                 // Adopts the account's shared app-server when it runs (Rpc::spawn).
