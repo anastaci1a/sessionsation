@@ -308,13 +308,14 @@ fn skeleton(text: &str) -> Vec<u8> {
 }
 
 fn is_test_cfg(attr: &str) -> bool {
-    attr == "#[cfg(test)]"
-        || attr.starts_with("#[cfg(all(test,")
-        || attr.starts_with("#[cfg(any(test,")
+    // `cfg(any(test, x))` is not stripped: that item also ships when `x` holds.
+    attr == "#[cfg(test)]" || attr.starts_with("#[cfg(all(test,")
 }
 
 /// §4.4 rule 3: the end (exclusive) of the item starting at `from`: the first
-/// `;` at bracket depth 0 or the `}` closing the first `{` opened at depth 0.
+/// `;` or `,` at bracket depth 0 (`,` ends a test-only match arm, field or
+/// variant) or the `}` closing the first `{` opened at depth 0. A `,` inside
+/// generics (`impl<A, B>`) ends the item early, which keeps more lines counted.
 fn item_end(sk: &[u8], from: usize) -> usize {
     let mut depth = 0i32;
     for (k, &c) in sk.iter().enumerate().skip(from) {
@@ -329,15 +330,15 @@ fn item_end(sk: &[u8], from: usize) -> usize {
                     return k + 1;
                 }
             }
-            b';' if depth == 0 => return k + 1,
+            b';' | b',' if depth == 0 => return k + 1,
             _ => {}
         }
     }
     sk.len()
 }
 
-/// The text with every `#[cfg(test)]` / `#[cfg(all(test, ..))]` /
-/// `#[cfg(any(test, ..))]` item (attribute included) replaced by spaces.
+/// The text with every `#[cfg(test)]` / `#[cfg(all(test, ..))]` item
+/// (attribute included) replaced by spaces.
 fn strip_tests(text: &str) -> String {
     let sk = skeleton(text);
     let n = sk.len();
@@ -554,19 +555,26 @@ struct Doc {
     text: String,
 }
 
-fn md_files(dir: &Path, recurse: bool, out: &mut Vec<PathBuf>) {
+/// Directories never walked for documentation: Git metadata, build trees and
+/// vendored crate registries.
+fn skip_doc_dir(name: &str) -> bool {
+    name == ".git"
+        || name.starts_with("target")
+        || name == "registry"
+        || name.starts_with("cargo-registry")
+        || name == "node_modules"
+}
+
+fn md_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for e in entries.flatten() {
         let p = e.path();
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with("target") || name == ".git" || name == "cargo-registry-cache" {
-            continue;
-        }
         if p.is_dir() {
-            if recurse {
-                md_files(&p, true, out);
+            if !skip_doc_dir(&name) {
+                md_files(&p, out);
             }
         } else if p.extension().is_some_and(|x| x == "md") {
             out.push(p);
@@ -574,32 +582,91 @@ fn md_files(dir: &Path, recurse: bool, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Project-owned Markdown: `*.md` at the repository root and every `*.md` under
-/// `docs/` and `agents/`.
-fn docs_in(root: &Path) -> Vec<Doc> {
+/// Git-tracked `*.md` paths, or `None` when Git cannot answer (for example a
+/// worktree checked inside the Docker image, whose `.git` points outside the mount).
+fn tracked_md(root: &Path) -> Option<BTreeSet<String>> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z", "--", "*.md"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        out.stdout
+            .split(|&b| b == 0)
+            .filter(|p| !p.is_empty())
+            .map(|p| String::from_utf8_lossy(p).into_owned())
+            .collect(),
+    )
+}
+
+/// Root-level files and files under dot-directories are where untracked
+/// scratch notes land.
+fn scratch_location(rel: &str) -> bool {
+    !rel.contains('/') || rel.split('/').any(|c| c.starts_with('.'))
+}
+
+/// Whether a found doc file is project documentation. Files with a counter
+/// (`known`) always count. Otherwise Git decides (tracked files only); without
+/// Git, every file counts except untracked-looking scratch at the root or in
+/// dot-directories.
+fn doc_counts(rel: &str, known: &BTreeSet<String>, tracked: Option<&BTreeSet<String>>) -> bool {
+    known.contains(rel)
+        || match tracked {
+            Some(t) => t.contains(rel),
+            None => !scratch_location(rel),
+        }
+}
+
+/// Project-owned Markdown: every `*.md` in the repository outside `.git`,
+/// `target*` and vendored registries, filtered by [`doc_counts`].
+fn docs_in(root: &Path, known: &BTreeSet<String>, tracked: Option<&BTreeSet<String>>) -> Vec<Doc> {
     let mut files = vec![];
-    md_files(root, false, &mut files);
-    md_files(&root.join("docs"), true, &mut files);
-    md_files(&root.join("agents"), true, &mut files);
+    md_files(root, &mut files);
     let mut out: Vec<Doc> = files
         .into_iter()
-        .map(|f| {
+        .filter_map(|f| {
+            let path = rel_path(root, &f);
+            if !doc_counts(&path, known, tracked) {
+                return None;
+            }
             let bytes =
                 std::fs::read(&f).unwrap_or_else(|e| panic!("guard: read {}: {e}", f.display()));
-            Doc {
-                path: rel_path(root, &f),
+            Some(Doc {
+                path,
                 bytes: bytes.len(),
                 text: String::from_utf8_lossy(&bytes).into_owned(),
-            }
+            })
         })
         .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
 }
 
+/// Doc paths that have a counter: `DOC_INITIAL` and the baseline's
+/// `doc_bytes:<path>` entries.
+fn known_docs() -> BTreeSet<String> {
+    let mut known: BTreeSet<String> = DOC_INITIAL.iter().map(|(p, _)| (*p).to_owned()).collect();
+    if let Ok(base) = load_baseline(&manifest_root()) {
+        known.extend(
+            base.counters
+                .keys()
+                .filter_map(|k| k.strip_prefix(DOC_BYTES))
+                .map(str::to_owned),
+        );
+    }
+    known
+}
+
 fn docs() -> &'static [Doc] {
     static DOCS: OnceLock<Vec<Doc>> = OnceLock::new();
-    DOCS.get_or_init(|| docs_in(&manifest_root()))
+    DOCS.get_or_init(|| {
+        let root = manifest_root();
+        docs_in(&root, &known_docs(), tracked_md(&root).as_ref())
+    })
 }
 
 const MIN_PARAGRAPH: usize = 160;
@@ -666,6 +733,8 @@ fn first_chars(s: &str, n: usize) -> String {
 #[serde(deny_unknown_fields)]
 struct Baseline {
     roles_digest: String,
+    /// sha256 (hex) of the whole of src/guard/counters.rs.
+    counters_digest: String,
     counters: BTreeMap<String, BaselineCounter>,
     ledger: Vec<Entry>,
     enforced: BTreeMap<String, String>,
@@ -769,7 +838,7 @@ fn ledger_problems(base: &Baseline) -> Vec<String> {
             out.push(format!("{at} has no step"));
         }
         let considered = e.considered.trim();
-        if e.by > 0 && (considered.is_empty() || considered == "n/a") {
+        if e.by > 0 && !size_counter(&e.counter) && (considered.is_empty() || considered == "n/a") {
             out.push(format!(
                 "{at} raises the counter (by: {:+}) without \"considered\" (what was tried instead)",
                 e.by
@@ -952,6 +1021,47 @@ fn roles_digest_of(text: &str) -> String {
         .collect()
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Size counters: their rises need no `considered`.
+fn size_counter(name: &str) -> bool {
+    name.starts_with(DOC_BYTES)
+        || COUNTERS
+            .iter()
+            .any(|c| c.name == name && matches!(c.kind, Kind::Lines | Kind::DocBytesTotal))
+}
+
+/// `roles_table_is_pinned` / `counters_table_is_pinned` failures: the roles
+/// table (between its markers) and the whole counters file (`initial`, regex,
+/// `exclude`, `files`, `scope`, `DOC_INITIAL`) must match their pinned digests.
+fn pin_problems(base: &Baseline, roles_rs: &str, counters_rs: &str) -> Vec<String> {
+    let mut out = vec![];
+    let roles = roles_digest_of(roles_rs);
+    if roles != ROLES_DIGEST || roles != base.roles_digest {
+        out.push(format!(
+            "guard: roles table changed; update ROLES_DIGEST and guard/baseline.json (reviewed change)\n  \
+             sha256 between the markers: {roles}\n  ROLES_DIGEST: {ROLES_DIGEST}\n  baseline roles_digest: {}",
+            base.roles_digest
+        ));
+    }
+    let counters = sha256_hex(counters_rs.as_bytes());
+    if counters != base.counters_digest {
+        out.push(format!(
+            "guard: counters table changed; update counters_digest in guard/baseline.json (reviewed change: \
+             an initial, regex, exclude, files, scope or DOC_INITIAL edit can hide sites)\n  \
+             sha256 of src/guard/counters.rs: {counters}\n  baseline counters_digest: {}",
+            base.counters_digest
+        ));
+    }
+    out
+}
+
 /// Method paths listed in `clippy.toml` `disallowed-methods`.
 fn clippy_paths(toml: &str) -> BTreeSet<String> {
     let Some(at) = toml.find("disallowed-methods") else {
@@ -1032,16 +1142,62 @@ fn ledger_balances() {
     fail_on(ledger_problems(&baseline()));
 }
 
+const ROLES_RS: &str = include_str!("guard/roles.rs");
+const COUNTERS_RS: &str = include_str!("guard/counters.rs");
+
 #[test]
 fn roles_table_is_pinned() {
-    let actual = roles_digest_of(include_str!("guard/roles.rs"));
-    let base = baseline();
-    assert!(
-        actual == ROLES_DIGEST && actual == base.roles_digest,
-        "guard: roles table changed; update ROLES_DIGEST and guard/baseline.json (reviewed change)\n  \
-         sha256 between the markers: {actual}\n  ROLES_DIGEST: {ROLES_DIGEST}\n  baseline roles_digest: {}",
-        base.roles_digest
+    let p = pin_problems(&baseline(), ROLES_RS, COUNTERS_RS);
+    fail_on(
+        p.into_iter()
+            .filter(|m| m.starts_with("guard: roles"))
+            .collect(),
     );
+}
+
+#[test]
+fn counters_table_is_pinned() {
+    let p = pin_problems(&baseline(), ROLES_RS, COUNTERS_RS);
+    fail_on(
+        p.into_iter()
+            .filter(|m| m.starts_with("guard: counters"))
+            .collect(),
+    );
+}
+
+#[test]
+fn pinned_tables_detect_edits() {
+    let base = baseline();
+    assert!(pin_problems(&base, ROLES_RS, COUNTERS_RS).is_empty());
+    // Raising an initial, widening an exclude, adding a DOC_INITIAL row or
+    // narrowing a regex each change the counters digest.
+    for (from, to) in [
+        ("initial: 93238,", "initial: 93239,"),
+        (
+            "&[\"src/paths.rs\", \"src/sync.rs\"],",
+            "&[\"src/paths.rs\", \"src/sync.rs\", \"src/daemon.rs\"],",
+        ),
+        (
+            "    (\"AGENTS.md\", 103),",
+            "    (\"AGENTS.md\", 103),\n    (\"NOTES.md\", 50),",
+        ),
+        (r#""Command::new\(|"#, r#""Command::new\(x|"#),
+    ] {
+        assert!(COUNTERS_RS.contains(from), "fixture text missing: {from}");
+        let edited = COUNTERS_RS.replacen(from, to, 1);
+        let p = pin_problems(&base, ROLES_RS, &edited);
+        assert_eq!(p.len(), 1, "{from}: {p:#?}");
+        assert!(
+            p[0].starts_with("guard: counters table changed;"),
+            "{}",
+            p[0]
+        );
+    }
+    // A roles edit between the markers changes the roles digest.
+    let edited = ROLES_RS.replacen("mode: Mode::Enforced", "mode: Mode::Counted", 1);
+    let p = pin_problems(&base, &edited, COUNTERS_RS);
+    assert_eq!(p.len(), 1, "{p:#?}");
+    assert!(p[0].starts_with("guard: roles table changed;"));
 }
 
 #[test]
@@ -1178,7 +1334,8 @@ fn measure() {
     // GUARD_SITES=<counter>[,<counter>..] also lists those counters' sites.
     let show = std::env::var("GUARD_SITES").unwrap_or_default();
     let show: BTreeSet<&str> = show.split(',').collect();
-    for (name, m) in measure_all(sources(), docs) {
+    let actual = measure_all(sources(), docs);
+    for (name, m) in &actual {
         println!("{name} {}", m.value);
         if show.contains(name.as_str()) {
             for s in &m.sites {
@@ -1186,14 +1343,160 @@ fn measure() {
             }
         }
     }
-    println!(
-        "roles_digest {}",
-        roles_digest_of(include_str!("guard/roles.rs"))
-    );
+    println!("roles_digest {}", roles_digest_of(ROLES_RS));
+    println!("counters_digest {}", sha256_hex(COUNTERS_RS.as_bytes()));
     println!("files {}", sources().len());
     for (p, files) in duplicate_paragraphs(docs).iter().take(10) {
         println!("dup [{}] {}", files.join(", "), first_chars(p, 60));
     }
+    if let Ok(base) = load_baseline(&manifest_root()) {
+        let (entries, values) = drift(&actual, &base);
+        if !entries.is_empty() {
+            println!("\n// guard/baseline.json \"counters\": set these values");
+            for v in values {
+                println!("{v}");
+            }
+            println!(
+                "\n// guard/baseline.json \"ledger\": append these entries (fill in the TODOs)"
+            );
+            println!("{}", entries.join(",\n"));
+        }
+    }
+}
+
+/// Ready-to-paste ledger entries and `"counters"` values for every counter whose
+/// measured value differs from the baseline.
+fn drift(actual: &BTreeMap<String, Measured>, base: &Baseline) -> (Vec<String>, Vec<String>) {
+    let mut now: BTreeMap<&str, i64> = actual
+        .iter()
+        .map(|(n, m)| (n.as_str(), m.value as i64))
+        .collect();
+    for n in base.counters.keys() {
+        if n.starts_with(DOC_BYTES) {
+            now.entry(n.as_str()).or_insert(0);
+        }
+    }
+    let mut entries = vec![];
+    let mut values = vec![];
+    for (name, value) in now {
+        let was = base.counters.get(name).map_or(0, |b| b.value);
+        if value == was {
+            continue;
+        }
+        let by = value - was;
+        let considered = if by < 0 || size_counter(name) {
+            "n/a"
+        } else {
+            "TODO: what was tried instead of a new site"
+        };
+        let entry = serde_json::json!({
+            "counter": name,
+            "by": by,
+            "reason": "TODO",
+            "considered": considered,
+            "step": "TODO",
+        });
+        entries.push(format!("    {entry}"));
+        values.push(format!(
+            "    {}: {{ \"value\": {value} }},",
+            serde_json::Value::from(name)
+        ));
+    }
+    (entries, values)
+}
+
+/// Why the skipped file `rel` is not test-only, if it is not: it must be
+/// declared (`mod name;`) only behind `#[cfg(test)]`/`#[cfg(all(test, ..))]`,
+/// or by a declaring file that is itself skipped and test-only.
+fn skip_problem(root: &Path, rel: &str, depth: usize) -> Option<String> {
+    let (dir, file) = rel.rsplit_once('/')?;
+    let (dir, name) = match file.strip_suffix(".rs")? {
+        "mod" => dir.rsplit_once('/')?,
+        stem => (dir, stem),
+    };
+    let candidates: Vec<String> = if dir == "src" {
+        vec!["src/lib.rs".into(), "src/main.rs".into()]
+    } else {
+        vec![format!("{dir}.rs"), format!("{dir}/mod.rs")]
+    };
+    let decl = re(&format!(r"(?m)^\s*(pub(\([^)]*\))?\s+)?mod\s+{name}\s*;"));
+    let mut declared_in = vec![];
+    for c in &candidates {
+        let Ok(text) = std::fs::read_to_string(root.join(c)) else {
+            continue;
+        };
+        if !decl.is_match(&text) {
+            continue;
+        }
+        declared_in.push(c.clone());
+        if decl.is_match(&strip_tests(&text)) {
+            if skipped(c) && depth < 8 && skip_problem(root, c, depth + 1).is_none() {
+                continue;
+            }
+            return Some(format!(
+                "guard: {rel} is skipped as test code but {c} declares `mod {name};` without #[cfg(test)]"
+            ));
+        }
+    }
+    if declared_in.is_empty() {
+        return Some(format!(
+            "guard: {rel} is skipped as test code but no `mod {name};` declares it in {}",
+            candidates.join(" or ")
+        ));
+    }
+    None
+}
+
+#[test]
+fn skipped_files_are_test_only() {
+    let root = manifest_root();
+    let mut files = vec![];
+    rust_files(&root.join("src"), &mut files);
+    let mut out = vec![];
+    for f in files {
+        let rel = rel_path(&root, &f);
+        if skipped(&rel) {
+            out.extend(skip_problem(&root, &rel, 0));
+        }
+    }
+    fail_on(out);
+}
+
+#[test]
+fn skipped_file_fixtures() {
+    let dir = tempfile::tempdir().unwrap();
+    for (f, text) in [
+        (
+            "src/lib.rs",
+            "pub mod a;\npub mod b;\n#[cfg(test)]\nmod guard;\n",
+        ),
+        ("src/a.rs", "#[cfg(test)]\nmod tests;\n"),
+        ("src/a/tests.rs", "mod deep;\n"),
+        ("src/a/tests/deep.rs", ""),
+        ("src/b.rs", "mod tests;\n"),
+        ("src/b/tests.rs", ""),
+        ("src/c/tests.rs", ""),
+        ("src/guard.rs", "mod roles;\n"),
+        ("src/guard/roles.rs", ""),
+    ] {
+        let p = dir.path().join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, text).unwrap();
+    }
+    let check = |rel: &str| skip_problem(dir.path(), rel, 0);
+    assert_eq!(check("src/a/tests.rs"), None);
+    assert_eq!(check("src/a/tests/deep.rs"), None);
+    assert_eq!(check("src/guard.rs"), None);
+    assert_eq!(check("src/guard/roles.rs"), None);
+    assert_eq!(
+        check("src/b/tests.rs").unwrap(),
+        "guard: src/b/tests.rs is skipped as test code but src/b.rs declares `mod tests;` without #[cfg(test)]"
+    );
+    assert!(
+        check("src/c/tests.rs")
+            .unwrap()
+            .contains("no `mod tests;` declares it")
+    );
 }
 
 // --------------------------------------------------- self-check (§4.4 a–m)
@@ -1239,13 +1542,53 @@ fn self_check() {
         [4, 5],
         "(c)"
     );
-    // (d) cfg(all(test, ..)) and cfg(any(test, ..)) items: ignored.
+    // (d) cfg(all(test, ..)) items: ignored; cfg(any(test, x)) ships when x holds: kept.
     assert_eq!(
         hits(
             "#[cfg(all(test, unix))]\nfn f() {\n    PATTERN\n}\n#[cfg(any(test, feature = \"x\"))]\nfn g() { PATTERN }\nPATTERN\n"
         ),
-        [7],
+        [6, 7],
         "(d)"
+    );
+    // (n) a `,` at depth 0 ends a test-only match arm, field or variant; the
+    // production arms, fields and variants after it are scanned.
+    assert_eq!(
+        hits(concat!(
+            "match x {\n",
+            "    #[cfg(test)]\n",
+            "    Some(1) => PATTERN_TEST,\n",
+            "    Some(2) => PATTERN_PROD,\n",
+            "    #[cfg(test)]\n",
+            "    Some(3) => { PATTERN_TEST }\n",
+            "    _ => PATTERN_PROD,\n",
+            "}\n",
+            "struct S {\n",
+            "    #[cfg(test)]\n",
+            "    probe: PATTERN_TEST,\n",
+            "    real: PATTERN_PROD,\n",
+            "}\n",
+            "let s = S {\n",
+            "    #[cfg(test)]\n",
+            "    probe: vec![PATTERN_TEST, 2],\n",
+            "    real: PATTERN_PROD,\n",
+            "};\n",
+            "enum E {\n",
+            "    #[cfg(test)]\n",
+            "    Probe(PATTERN_TEST),\n",
+            "    Real(PATTERN_PROD),\n",
+            "}\n",
+        ))
+        .len(),
+        5,
+        "(n)"
+    );
+    let s = source(
+        "src/fixture.rs",
+        "match x {\n    #[cfg(test)]\n    Some(1) => PATTERN_TEST,\n    Some(2) => PATTERN_PROD,\n}\n",
+    );
+    assert!(
+        s.lines.iter().all(|l| !l.text.contains("PATTERN_TEST")),
+        "(n)"
     );
     // (e) cfg_attr(test, ..) items are production code.
     assert_eq!(
@@ -1592,6 +1935,14 @@ fn baseline_tampering_is_caught() {
             .any(|m| m.starts_with("guard: counter doc_bytes:docs/new.md is 10, but guard/baseline.json has no such counter"))
     );
     assert_eq!(initial_of("doc_bytes:docs/new.md"), Some(0));
+    let (entries, _) = drift(&fake, &base);
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.contains("\"counter\":\"doc_bytes:docs/new.md\"")
+                && e.contains("\"considered\":\"n/a\"")),
+        "{entries:#?}"
+    );
     // Clippy configuration: a Counted role's path present is refused, an
     // unknown path is refused.
     let paths: BTreeSet<String> =

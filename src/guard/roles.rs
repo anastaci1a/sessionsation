@@ -42,7 +42,7 @@ pub struct Role {
 
 /// sha256 (hex) of the bytes between the `guard-roles-begin` line and the
 /// `guard-roles-end` line of this file.
-pub const ROLES_DIGEST: &str = "634003c4d314c4912e0c94889254874f8aaa2698ee5e1004bf2c4ac12da5b706";
+pub const ROLES_DIGEST: &str = "4f8d41684e96e999400034c7ffc061c87880a757fe05d4861229a2f043c6125b";
 
 // guard-roles-begin
 pub const ROLES: &[Role] = &[
@@ -359,6 +359,9 @@ pub const ROLES: &[Role] = &[
         hint: "use control::Method::parse",
     },
     Role {
+        // Claude-OAuth specifics only (credential file, claudeAiOauth key, Anthropic API
+        // host, /api/oauth paths). Generic token words (access_token, refresh_token,
+        // Authorization, curl) are shared with Codex/Gemini token code (SM8) and stay out.
         name: "oauth",
         owners: &[
             "src/provider/claude/oauth.rs",
@@ -366,10 +369,8 @@ pub const ROLES: &[Role] = &[
             "src/reset_credit/claude.rs",
         ],
         scope: None,
-        forbidden: &[
-            r#"credentials\.json|CREDENTIALS_FILE|"curl"|api\.anthropic\.com|/api/oauth|access_token|refresh_token|Authorization"#,
-        ],
-        permitted: &[r"\boauth::\w+"],
+        forbidden: &[r#"\.credentials\.json|claudeAiOauth|api\.anthropic\.com|/api/oauth"#],
+        permitted: &[r"\bclaude::oauth::\w+"],
         counters: &["oauth_sites", "oauth_allow_markers"],
         mech: Mech::Regex,
         mode: Mode::Enforced,

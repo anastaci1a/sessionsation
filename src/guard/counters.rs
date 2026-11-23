@@ -370,12 +370,8 @@ pub const COUNTERS: &[Counter] = &[
         name: "typing_dup_fns",
         regex: r"fn (deliver|observe_loop|recheck|restore|until|clear|withdraw)\(",
         exclude: &["src/messaging/claude_steer/typing.rs"],
-        scope: None,
-        files: &[
-            "src/messaging/claude_steer/terminal.rs",
-            "src/messaging/claude_steer/gemini.rs",
-            "src/messaging/claude_steer/antigravity.rs",
-        ],
+        scope: Some("src/messaging/claude_steer/"),
+        files: &[],
         role: Some("typing"),
         initial: 20,
         kind: Kind::Sites,
@@ -412,7 +408,7 @@ pub const COUNTERS: &[Counter] = &[
     // oauth
     sites(
         "oauth_sites",
-        r#"credentials\.json|CREDENTIALS_FILE|"curl"|api\.anthropic\.com|/api/oauth|access_token|refresh_token|Authorization"#,
+        r#"\.credentials\.json|claudeAiOauth|api\.anthropic\.com|/api/oauth"#,
         &["src/provider/claude/oauth", "src/reset_credit/claude.rs"],
         "oauth",
         1,

@@ -1,5 +1,6 @@
 {
-  "roles_digest": "634003c4d314c4912e0c94889254874f8aaa2698ee5e1004bf2c4ac12da5b706",
+  "roles_digest": "4f8d41684e96e999400034c7ffc061c87880a757fe05d4861229a2f043c6125b",
+  "counters_digest": "3aea17f14456bf1ca4f238860a07c41d1779a29212a2f750108b4b52244041c0",
   "counters": {
     "alive_fns": { "value": 8 },
     "api_rs_lines": { "value": 5132 },
@@ -13,13 +14,13 @@
     "daemon_methods": { "value": 23 },
     "doc_bytes:AGENTS.md": { "value": 103 },
     "doc_bytes:README.md": { "value": 5500 },
-    "doc_bytes:agents/README.md": { "value": 8070 },
+    "doc_bytes:agents/README.md": { "value": 9276 },
     "doc_bytes:docs/README.md": { "value": 711 },
     "doc_bytes:docs/architecture.md": { "value": 10016 },
     "doc_bytes:docs/cli.md": { "value": 110969 },
     "doc_bytes:docs/contract.md": { "value": 314589 },
     "doc_bytes:docs/operations.md": { "value": 29184 },
-    "doc_bytes_total": { "value": 479142 },
+    "doc_bytes_total": { "value": 480348 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 182 },
     "env_scrub_sites": { "value": 48 },
@@ -90,14 +91,14 @@
     },
     {
       "counter": "doc_bytes:agents/README.md",
-      "by": 1251,
-      "reason": "S0 paragraph \"Owned roles and the guard\" (design §4.3)",
+      "by": 2457,
+      "reason": "S0 section \"Owned roles and the guard\" (design §4.3), including its known limits",
       "considered": "one contributor-facing section; the design document itself stays outside the repository",
       "step": "S0"
     },
     {
       "counter": "doc_bytes_total",
-      "by": 1251,
+      "by": 2457,
       "reason": "S0 paragraph \"Owned roles and the guard\" in agents/README.md",
       "considered": "same as doc_bytes:agents/README.md",
       "step": "S0"

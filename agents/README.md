@@ -94,16 +94,32 @@ listed in `src/guard/roles.rs`. The test-only guard (`src/guard.rs`, part of the
 unit tests and so of every check) counts each role's sites outside its owner and
 compares them with `guard/baseline.json`. Any change of a counter, up or down, needs
 a ledger entry `{counter, by, reason, considered, step}`; the guard requires
-`value == initial + Σ by`, with `initial` pinned in `src/guard/counters.rs`. The same
-ledger holds `doc_bytes:<path>` for every Markdown file, their total and the count of
-long paragraphs repeated across files, so a new doc file needs an entry too. An
+`value == initial + Σ by`. `initial` is pinned in `src/guard/counters.rs`, and that
+file and the roles table are pinned by `counters_digest` and `roles_digest`. A rise
+needs a real `considered`, except for the size counters (`src_lines`, `api_rs_lines`,
+`doc_bytes:*`, `doc_bytes_total`). The ledger also covers `doc_bytes:<path>` for
+every Markdown file in the repository (outside `.git`, `target*` and vendored
+registries; Git-tracked files only when Git is available, otherwise everything
+except root-level and dot-directory scratch), their total, and the count of long
+paragraphs repeated across files, so a new doc file needs an entry too. An
 `Enforced` role rejects a new site outside its owner unless it carries
-`// guard-allow(<role>): <why>` on the same line or the line above. Method-call
-roles become clippy `disallowed-methods` in `clippy.toml` when they flip to
-`Enforced`; a justified site then carries
-`#[allow(clippy::disallowed_methods, reason = "<role>: <why>")]`. Print current
-values with `cargo test --lib guard::measure -- --ignored --nocapture`
-(`GUARD_SITES=<counter>` lists that counter's sites).
+`// guard-allow(<role>): <why>` on the same line or the line above. The `oauth` role
+matches Claude-OAuth specifics only (`.credentials.json`, `claudeAiOauth`, the
+Anthropic API host, `/api/oauth`), so generic token code for other providers does
+not trip it. Method-call roles become clippy `disallowed-methods` in `clippy.toml`
+when they flip to `Enforced`; a justified site then carries
+`#[allow(clippy::disallowed_methods, reason = "<role>: <why>")]`. Run
+`cargo test --lib guard::measure -- --ignored --nocapture` to print current values
+(`GUARD_SITES=<counter>` lists that counter's sites) and ready-to-paste baseline
+values and ledger entries for any counter that drifted.
+
+Known limits, to settle in the step that first flips a clippy role: an item-level
+`#[allow(clippy::disallowed_methods)]` is not tied to the regex counter sites it
+covers, so an Enforced clippy role still needs its counters' sites marked or at 0;
+`build.rs` spawns `git` and needs a reasoned allow before `Command::new` enters
+`clippy.toml`. Regex roles see one line at a time: aliased imports
+(`use ProviderId::*`) or values bound earlier (`let c = ProviderId::Codex; p == c`)
+are not matched, and counters count lines, not matches.
 
 ## Documentation and release preparation
 
