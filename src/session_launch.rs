@@ -650,6 +650,23 @@ async fn advance(paths: &Paths, id: &str) {
             }
         }
         "launching" => follow_launch(paths, &r),
+        // Contract 1.63.0: the provider exited before the brief was sent; nothing is typed
+        // into the shell left in its terminal.
+        "verifying_model" | "delivering_brief"
+            if r.brief.message_id.is_none()
+                && r.session_id
+                    .as_deref()
+                    .and_then(|s| crate::catalog::find(paths, s).ok())
+                    .is_some_and(|s| launch::provider_exited(&s)) =>
+        {
+            end(
+                paths,
+                id,
+                "failed",
+                "provider_exited",
+                Some(launch::PROVIDER_EXITED.into()),
+            )
+        }
         "verifying_model" => verify(paths, &r).await,
         "delivering_brief" => deliver(paths, &r).await,
         _ => {}

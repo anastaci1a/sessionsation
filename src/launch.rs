@@ -363,6 +363,19 @@ pub(crate) fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
             && r.generation.as_deref() == Some(s.generation().as_str())
             && r.request.account_id == format!("{}:{}", s.provider, s.account)
     });
+    // Contract 1.63.0: the exact recorded provider process (pid + start time) exited before
+    // it was ever observed running: the launch failed, the pane holds a shell.
+    if session.as_ref().is_some_and(provider_exited) {
+        return change(paths, id, |current| {
+            if matches!(current.phase.as_str(), "attached" | "uncertain")
+                && current.generation == r.generation
+            {
+                current.phase = "failed".into();
+                current.detail = Some(PROVIDER_EXITED.into());
+            }
+            Ok(())
+        });
+    }
     if !session.as_ref().is_some_and(|s| launch_observed(paths, s)) {
         return Ok(r);
     }
@@ -718,10 +731,20 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
             ticks += 1;
         }
         if status.phase == "running" {
-            return Ok(());
+            return watch_launch_window(paths, id).await;
         }
         if status.phase == "attached" {
             let session = catalog::list(paths)?.into_iter().find(|s| s.id == *id);
+            if session.as_ref().is_some_and(provider_exited) {
+                change(paths, id, |r| {
+                    if r.phase == "attached" {
+                        r.phase = "failed".into();
+                        r.detail = Some(PROVIDER_EXITED.into());
+                    }
+                    Ok(())
+                })?;
+                return Ok(());
+            }
             if !session.as_ref().is_some_and(|s| launch_observed(paths, s)) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
@@ -730,12 +753,54 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
                 r.phase = "running".into();
                 Ok(())
             })?;
-            return Ok(());
+            return watch_launch_window(paths, id).await;
         }
         ensure!(status.phase != "failed", "PROVIDER_LAUNCH_FAILED");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     expire_ack(paths, id)
+}
+/// Contract 1.63.0: a launch whose provider process exits within this window after it was
+/// first observed running failed (`PROVIDER_EXITED`) instead of staying `running`.
+/// `SESSIONSATION_LAUNCH_EXIT_WINDOW_SECONDS` overrides it (`0` turns the watch off).
+pub const LAUNCH_EXIT_WINDOW_SECONDS: u64 = 15;
+/// The detail (and error code) of a launch whose provider process exited early.
+pub const PROVIDER_EXITED: &str = "PROVIDER_EXITED: the provider process exited right after it started (for example after a folder-trust prompt); the terminal now holds a shell, not the provider. Nothing is typed into it; start the session again";
+fn exit_window() -> Duration {
+    let seconds = std::env::var("SESSIONSATION_LAUNCH_EXIT_WINDOW_SECONDS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(LAUNCH_EXIT_WINDOW_SECONDS);
+    if seconds == 0 {
+        return Duration::ZERO;
+    }
+    crate::timing::budget(Duration::from_secs(seconds))
+}
+/// The session's exact recorded provider process (pid and start time) is gone.
+pub(crate) fn provider_exited(s: &catalog::Session) -> bool {
+    s.attachment
+        .as_ref()
+        .is_some_and(|a| crate::external::attachment_definitely_gone(a.pid, a.process_start))
+}
+/// After `running`: watch the exact provider process for the launch window. An exit turns the
+/// receipt `failed` with `PROVIDER_EXITED` (the session entry stays, as a stopped session).
+async fn watch_launch_window(paths: &Paths, id: &str) -> Result<()> {
+    let deadline = std::time::Instant::now() + exit_window();
+    while std::time::Instant::now() < deadline {
+        let session = catalog::list(paths)?.into_iter().find(|s| s.id == *id);
+        if session.as_ref().is_some_and(provider_exited) {
+            change(paths, id, |r| {
+                if r.phase == "running" {
+                    r.phase = "failed".into();
+                    r.detail = Some(PROVIDER_EXITED.into());
+                }
+                Ok(())
+            })?;
+            return Ok(());
+        }
+        tokio::time::sleep(crate::timing::scaled(Duration::from_millis(250))).await;
+    }
+    Ok(())
 }
 /// Wait (100 ms ticks) for launch-run to acknowledge: 120 s, tolerant of a loaded host.
 const ACK_WAIT_TICKS: u32 = 1200;

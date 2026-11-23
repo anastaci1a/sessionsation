@@ -1858,3 +1858,141 @@ async fn gemini_last_accessed_is_the_last_chat_record_and_null_without_a_source(
         assert!(s["last_accessed"].is_null(), "{s}");
     }
 }
+
+// -------------------------------- contract 1.63.0: Gemini unsupported, early exit, empty archive
+
+#[path = "support/parity_keys.rs"]
+mod parity_keys;
+
+const GEMINI_UNSUPPORTED: &str =
+    "Gemini CLI no longer supports individual accounts (migrate to Antigravity)";
+
+fn last_json(stderr: &str) -> Value {
+    serde_json::from_str(stderr.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {stderr}"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gemini_observe_and_stop_are_unsupported_with_the_reason() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let (id, _) = f.stopped_session("personal");
+    let s = f.session(&id);
+    let args = |cmd: &str| {
+        [
+            cmd.to_owned(),
+            "--session".into(),
+            id.clone(),
+            "--expected-generation".into(),
+            s["generation"].as_str().unwrap().into(),
+        ]
+    };
+    let o = f.api(&args("observe").each_ref().map(String::as_str));
+    assert_eq!(o["provider"], "gemini", "{o}");
+    parity_keys::assert_conversation_shape(&o);
+    assert_eq!(o["conversation"]["supported"], false);
+    assert_eq!(o["conversation"]["reason"], GEMINI_UNSUPPORTED);
+    assert_eq!(o["conversation"]["last_reply_reason"], GEMINI_UNSUPPORTED);
+    let refused = last_json(&f.api_error(&args("stop").each_ref().map(String::as_str)));
+    assert_eq!(
+        refused["error"]["code"], "UNSUPPORTED_PROVIDER_OPERATION",
+        "{refused}"
+    );
+    assert_eq!(refused["error"]["supported"], false);
+    assert_eq!(refused["error"]["reason"], GEMINI_UNSUPPORTED);
+    assert_eq!(
+        f.session(&id)["capability_reasons"]["stop"],
+        GEMINI_UNSUPPORTED
+    );
+}
+
+/// The UI path when the provider exits right after it started (the folder-trust restart that
+/// never came back): the launch fails `PROVIDER_EXITED`, it never stays `running`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_provider_that_exits_right_after_launch_fails_the_launch_with_provider_exited() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let home = f.home("personal");
+    std::fs::write(home.join("fake-launch-exit"), "0.3").unwrap();
+    let dir = f.paths.root.parent().unwrap().to_owned();
+    let pane = fake_launch_host::launch(binary(), &f.paths.root, &dir, "gemini:personal", "trust");
+    wait_for("gemini launch", || home.join("fake-launch-new").exists());
+    let mut receipt = Value::Null;
+    wait_for("launch failed", || {
+        receipt = f.api(&["launch", "status", "--request-id", &pane.request_id]);
+        receipt["phase"] == "failed"
+    });
+    assert!(
+        receipt["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("PROVIDER_EXITED:"),
+        "{receipt}"
+    );
+    // It stays failed: a later status read does not turn it back to running.
+    std::thread::sleep(Duration::from_millis(500));
+    let again = f.api(&["launch", "status", "--request-id", &pane.request_id]);
+    assert_eq!(again["phase"], "failed", "{again}");
+}
+
+/// A session whose provider never wrote a conversation archives cleanly (nothing to move) and
+/// restores, like delete-session already did.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_that_never_had_a_conversation_archives_and_restores() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let home = f.home("personal");
+    std::fs::write(home.join("fake-launch-exit"), "0").unwrap();
+    let status = f
+        .command(&["run", "--account", "personal"])
+        .current_dir(&f.project)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let s = f
+        .gemini_sessions()
+        .into_iter()
+        .next()
+        .expect("the launch is recorded");
+    assert_ne!(s["availability"], "running", "{s}");
+    assert_eq!(s["capabilities"]["archive"], true, "{s}");
+    let id = s["id"].as_str().unwrap().to_owned();
+    let job = |command: &str, s: &Value| {
+        let request = uuid::Uuid::new_v4().to_string();
+        f.api(&[
+            command,
+            "--session",
+            &id,
+            "--expected-generation",
+            s["generation"].as_str().unwrap(),
+            "--request-id",
+            &request,
+            "--confirm",
+            &id,
+            "--wait",
+        ])
+    };
+    let archived = job("archive", &s);
+    assert_eq!(archived["phase"], "complete", "{archived}");
+    assert_eq!(archived["nothing_to_archive"], true, "{archived}");
+    let all = || {
+        f.api(&["state", "--archive-filter", "all"])["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == id.as_str())
+            .cloned()
+            .unwrap()
+    };
+    let hidden = all();
+    assert_eq!(hidden["availability"], "archived", "{hidden}");
+    assert!(!f.gemini_sessions().iter().any(|x| x["id"] == id.as_str()));
+    let restored = job("restore-session", &hidden);
+    assert_eq!(restored["phase"], "complete", "{restored}");
+    assert_eq!(restored["nothing_to_archive"], true, "{restored}");
+    let back = all();
+    assert_ne!(back["availability"], "archived", "{back}");
+    assert!(f.gemini_sessions().iter().any(|x| x["id"] == id.as_str()));
+}

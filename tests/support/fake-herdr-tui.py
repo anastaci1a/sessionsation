@@ -8,6 +8,7 @@ No sockets, no real terminal, no model.
 
 State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
   pane, pid           the pane and the process HERDR reports in its foreground
+  shell_foreground    HERDR reports the pane's bare shell in front (the provider exited)
   screens             the fixture directory
   view                main | transcript | help | subagent | menu | agents | blank
   input               the prompt text (the user's draft); the cursor is at its end
@@ -231,8 +232,8 @@ if cmd == "agent list":
     out({"result": {"agents": [{"agent": "claude", "agent_status": status, "pane_id": state["pane"]}],
                     "type": "agent_list"}})
 elif cmd == "pane process-info":
-    out({"result": {"process_info": {"shell_pid": 1,
-                                     "foreground_processes": [{"pid": state["pid"], "name": "claude"}]}}})
+    front = {"pid": 1, "name": "bash"} if state.get("shell_foreground") else {"pid": state["pid"], "name": "claude"}
+    out({"result": {"process_info": {"shell_pid": 1, "foreground_processes": [front]}}})
 elif cmd == "pane read":
     if args[2] != state["pane"]:
         fail("pane_not_found")

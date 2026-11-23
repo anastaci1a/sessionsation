@@ -86,7 +86,7 @@ pub fn capabilities() -> ProviderCapabilities {
         resume: yes(),
         rename: yes(),
         native_rename: no(LABEL_ONLY),
-        stop: no(NO_LIFECYCLE),
+        stop: no(super::conversation::GEMINI_UNSUPPORTED),
         restart: no(NO_LIFECYCLE),
         account_switch: no(NATIVE_HOME_BOUND),
         relocate: no(NATIVE_HOME_BOUND),

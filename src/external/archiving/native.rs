@@ -44,6 +44,10 @@ pub(super) struct Manifest {
     bundle: String,
     conversation_ids: Vec<String>,
     entries: Vec<Entry>,
+    /// Contract 1.63.0: the session never had a conversation (no history file): the archive
+    /// only hides the catalog entry, and restore only shows it again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    nothing_to_archive: bool,
 }
 const MANIFEST: &str = "native.json";
 
@@ -248,13 +252,6 @@ pub fn apply_session(
         match activity(paths, provider, None, &ids[..ids.len().saturating_sub(1)]) {
             Ok(Some(r)) => (Some(r.clone()), Some(r)),
             Err(e) => (Some(e.to_string()), Some(e.to_string())),
-            Ok(None) if availability == "stale" => (
-                Some(
-                    "HISTORY_UNAVAILABLE: no transcript to archive; delete removes the entry"
-                        .into(),
-                ),
-                None,
-            ),
             Ok(None) => (None, None),
         }
     };
@@ -496,10 +493,11 @@ fn archive(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
     )?;
     ensure_quiet(paths, provider, Some(&home), &ids)?;
     let files = collect(provider, &home, &ids)?;
-    ensure!(
-        native::find_transcript(provider, &home, &s.conversation_id).is_some(),
-        "HISTORY_NOT_FOUND"
-    );
+    // Contract 1.63.0: a session that never had a conversation has nothing to move; it is
+    // archived (hidden) all the same. Files without the transcript stay refused.
+    let transcript = native::find_transcript(provider, &home, &s.conversation_id).is_some();
+    let nothing = !transcript && files.is_empty();
+    ensure!(transcript || nothing, "HISTORY_NOT_FOUND");
     let mut m = Manifest {
         version: 1,
         session: s.clone(),
@@ -510,6 +508,7 @@ fn archive(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
         bundle: o.id.clone(),
         conversation_ids: ids.clone(),
         entries: vec![],
+        nothing_to_archive: nothing,
     };
     for (i, p) in files.iter().enumerate() {
         not_open(p)?;
@@ -532,7 +531,7 @@ fn archive(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
         "Moving the conversation's files into sessionsation-managed Archived Sessions.",
     )?;
     ensure_quiet(paths, provider, Some(&home), &ids)?;
-    if provider == ProviderId::Antigravity {
+    if provider == ProviderId::Antigravity && !m.nothing_to_archive {
         detach_agy_rows(&home, &dir, &ids)?;
     }
     for e in &m.entries {
@@ -542,6 +541,15 @@ fn archive(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
     m.state = "archived".into();
     m.session = crate::catalog::invalidate(paths, &s.id, &o.expected_generation)?;
     save(paths, &m)?;
+    if m.nothing_to_archive {
+        o.nothing_to_archive = true;
+        return phase(
+            paths,
+            o,
+            "complete",
+            "Nothing to archive: the session never had a conversation (no history file). The entry is hidden like an archived session; restore shows it again.",
+        );
+    }
     phase(
         paths,
         o,
@@ -609,9 +617,10 @@ fn restore(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
             move_entry(&stored, target, &e.digest)?;
         }
     }
-    if provider == ProviderId::Antigravity {
+    if provider == ProviderId::Antigravity && !m.nothing_to_archive {
         reattach_agy_rows(&home, &dir, &m.conversation_ids)?;
     }
+    o.nothing_to_archive = m.nothing_to_archive;
     let _ = fs::remove_dir(&dir);
     m.state = "restored".into();
     m.session = crate::catalog::invalidate(paths, &s.id, &o.expected_generation)?;
@@ -772,6 +781,7 @@ fn delete(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()> 
             bundle: o.id.clone(),
             conversation_ids: ids,
             entries: vec![],
+            nothing_to_archive: false,
         },
     )?;
     let native_dir = slot(paths, &o.session.id)?.join("native");
@@ -895,6 +905,7 @@ mod tests {
             bundle: uuid::Uuid::new_v4().to_string(),
             conversation_ids: vec![archived.conversation_id.clone()],
             entries: vec![],
+            nothing_to_archive: false,
         };
         let transcript = old_home
             .join("projects")

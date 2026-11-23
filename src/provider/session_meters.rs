@@ -70,7 +70,7 @@ pub struct Context {
     pub observed_at: Option<i64>,
 }
 const TAILS: [u64; 2] = [64 * 1024, 256 * 1024];
-fn tail(path: &Path, limit: u64) -> Option<(String, bool)> {
+pub(crate) fn tail(path: &Path, limit: u64) -> Option<(String, bool)> {
     let meta = fs::symlink_metadata(path).ok().filter(|m| m.is_file())?;
     let mut file = fs::File::open(path).ok()?;
     let from = meta.len().saturating_sub(limit);

@@ -505,6 +505,11 @@ async fn gemini_terminal_input_submits_queues_and_steers_as_the_user() {
         (json!({"view":"blank"}), "TERMINAL_VIEW_UNDETERMINED"),
         (json!({"vim":true}), "TERMINAL_VIM_MODE"),
         (json!({"shell":true,"input":"ls"}), "TERMINAL_SHELL_MODE"),
+        // Contract 1.63.0: the provider exited and the pane's shell is in front.
+        (
+            json!({"shell_foreground":true,"input":"keep me"}),
+            "TERMINAL_PANE_IS_SHELL",
+        ),
         (json!({"input":"?why"}), "TERMINAL_DRAFT_UNRESTORABLE"),
     ] {
         reset(patch.clone());

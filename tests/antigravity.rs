@@ -856,3 +856,123 @@ async fn yolo_starts_pre_trust_the_launch_directory_and_the_setting_turns_it_off
     run("yolo");
     assert_eq!(read(&settings), "{}");
 }
+
+// -------------------------------- contract 1.63.0: observe parity (SM4), one stop shape (P1)
+
+#[path = "support/parity_keys.rs"]
+mod parity_keys;
+
+async fn logged_in() -> (Fixture, PathBuf) {
+    let f = fixture().await;
+    f.api(&["account", "add", "antigravity:life"]);
+    assert!(
+        f.run(&["account", "login", "antigravity:life"])
+            .status
+            .success()
+    );
+    f.api(&["account", "refresh", "antigravity:life"]);
+    let home = f.home("life");
+    (f, home)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observe_reports_the_last_reply_and_instruction_of_an_antigravity_session() {
+    let (f, home) = logged_in().await;
+    let mine = f.conversation("antigravity:life", &home);
+    let log = home
+        .join(".gemini/antigravity-cli/brain")
+        .join(&mine)
+        .join(".system_generated/logs/transcript.jsonl");
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+    for step in [
+        json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-01-01T00:00:05Z","content":"first reply"}),
+        json!({"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-01-01T00:01:00Z","content":"<USER_REQUEST>\nsecond ask\n</USER_REQUEST>"}),
+        json!({"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-01-01T00:01:05Z","content":"second reply"}),
+    ] {
+        writeln!(file, "{step}").unwrap();
+    }
+    drop(file);
+    let s = f.by_conversation(&mine);
+    let o = f.api(&[
+        "observe",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+        "--history",
+        "5",
+    ]);
+    assert_eq!(o["provider"], "antigravity", "{o}");
+    assert_eq!(o["account_id"], "antigravity:life");
+    assert_eq!(o["state"], "disconnected");
+    parity_keys::assert_conversation_shape(&o);
+    let c = &o["conversation"];
+    assert_eq!(c["last_reply"]["text"], "second reply", "{c}");
+    assert_eq!(c["last_reply_source"], "transcript_log");
+    assert_eq!(c["last_instruction"]["text"], "second ask");
+    assert_eq!(c["last_instruction"]["at"], 1_767_225_660);
+    assert_eq!(c["history_turns"], 5);
+    let turns = c["recent_turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 2, "{c}");
+    assert_eq!(turns[0]["instruction"]["text"], "fake");
+    assert_eq!(turns[0]["reply"]["text"], "first reply");
+    // agy records no compaction step: null with the reason, never a guess.
+    assert!(c["compacted_at"].is_null());
+    assert!(
+        c["compacted_at_reason"]
+            .as_str()
+            .unwrap()
+            .contains("no compaction step")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_result_keys_are_identical_per_provider_for_antigravity() {
+    let (f, home) = logged_in().await;
+    let mine = f.conversation("antigravity:life", &home);
+    let child = Process(
+        Command::new(&f.fake)
+            .args(["--conversation", &mine])
+            .env("HOME", &home)
+            .env("AGY_ACCOUNT_HOME", &home)
+            .current_dir(&f.project)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for("live session", || {
+        f.by_conversation(&mine)["availability"] == "running"
+    });
+    let live = f.by_conversation(&mine);
+    let id = live["id"].as_str().unwrap().to_owned();
+    let args = |s: &Value| {
+        [
+            "stop".to_owned(),
+            "--session".into(),
+            s["id"].as_str().unwrap().into(),
+            "--expected-generation".into(),
+            s["generation"].as_str().unwrap().into(),
+        ]
+    };
+    let stopped = f.api(&args(&live).each_ref().map(String::as_str));
+    parity_keys::assert_stop_shape(&stopped, &id, "antigravity");
+    assert_eq!(stopped["already_stopped"], false);
+    assert_eq!(stopped["pid"], child.0.id());
+    assert_eq!(stopped["signal"], "SIGTERM");
+    assert!(stopped["interrupted_turn"].is_null(), "{stopped}");
+    wait_for("stopped", || {
+        f.by_conversation(&mine)["availability"] == "stopped"
+    });
+    drop(child);
+    let again = f.api(
+        &args(&f.by_conversation(&mine))
+            .each_ref()
+            .map(String::as_str),
+    );
+    parity_keys::assert_stop_shape(&again, &id, "antigravity");
+    assert_eq!(again["already_stopped"], true);
+    assert!(again["pid"].is_null(), "{again}");
+    assert_eq!(again["source_account_id"], "antigravity:life");
+}

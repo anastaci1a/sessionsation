@@ -10,9 +10,11 @@ pub mod activity;
 pub mod antigravity;
 pub mod claude;
 pub mod codex;
+pub mod conversation;
 pub mod gemini;
 pub mod native;
 pub mod session_meters;
+pub mod stop_shape;
 pub mod usage_meter;
 
 use crate::{

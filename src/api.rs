@@ -180,6 +180,9 @@ pub enum Command {
         session: String,
         #[arg(long)]
         expected_generation: String,
+        /// Contract 1.63.0: also return the N most recent turns (default 10, at most 50).
+        #[arg(long, num_args = 0..=1, default_missing_value = "10", value_name = "N")]
+        history: Option<usize>,
     },
     /// Bounded batch readiness from stdin; optional cached-only reads never contact a provider.
     Observations,
@@ -3427,7 +3430,11 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         Command::Observe {
             session,
             expected_generation,
-        } => crate::messaging::observe_public(paths, &session, &expected_generation).await?,
+            history,
+        } => {
+            crate::messaging::observe_command(paths, &session, &expected_generation, history)
+                .await?
+        }
         Command::State {
             watch,
             interval,
@@ -3698,6 +3705,18 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 .await?,
             )?
         }
+        // Contract 1.63.0: Gemini CLI cannot run sessions for individual accounts any more.
+        Command::Stop {
+            session,
+            expected_generation,
+            ..
+        } if catalog::resolve(paths, &session, &expected_generation)
+            .is_ok_and(|s| crate::provider::stop_shape::unsupported(&s.provider).is_some()) =>
+        {
+            let s = catalog::resolve(paths, &session, &expected_generation)?;
+            let reason = crate::provider::stop_shape::unsupported(&s.provider).unwrap_or_default();
+            return Err(crate::provider::stop_shape::Unsupported(reason).into());
+        }
         Command::Stop {
             session,
             expected_generation,
@@ -3728,7 +3747,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             // Idempotent (1.55.0): `Err(session)` is an existing session with no process.
             let found = match selected(paths, &session, &expected_generation).await {
                 Ok((s, source)) if source.inactive => Err(s),
-                Ok((_, source)) => Ok(source),
+                Ok((s, source)) => Ok((s, source)),
                 Err(e) if format!("{e:#}").starts_with("SESSION_UNAVAILABLE") => {
                     Err(catalog::resolve(paths, &session, &expected_generation)?)
                 }
@@ -3736,7 +3755,8 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             };
             match found {
                 Err(s) => already_stopped(paths, &s)?,
-                Ok(source) => {
+                Ok((s, source)) => {
+                    let (pid, start) = (source.pid, source.start_time);
                     let queued = operation(
                         paths,
                         external::queue_snapshot(
@@ -3751,7 +3771,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                         )
                         .await?,
                     )?;
-                    if wait {
+                    let mut v = if wait {
                         // Contract 1.61.0: the same wait owner as archive.
                         external::archiving::wait_job(queued, |id| {
                             external::jobs(paths)?
@@ -3763,7 +3783,13 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                         .await?
                     } else {
                         queued
-                    }
+                    };
+                    // Contract 1.63.0: the shared stop keys. The job signals the exact
+                    // verified process with SIGTERM once it is idle.
+                    v["pid"] = json!(pid);
+                    v["process_start"] = json!(start);
+                    v["signal"] = json!((v["phase"] == "complete").then_some("SIGTERM"));
+                    crate::provider::stop_shape::shape(v, &s)
                 }
             }
         }
@@ -4335,13 +4361,14 @@ async fn stop_antigravity(
         .or(s.attachment.as_ref())
         .map(|a| a.target.clone());
     let (pane_closed, pane_close_reason) = close_stopped_pane(paths, keep_pane, target).await?;
-    Ok(
+    Ok(crate::provider::stop_shape::shape(
         json!({"id":uuid::Uuid::new_v4().to_string(),"source_session_id":s.id,"kind":"terminate","phase":"complete",
         "detail":"Antigravity received SIGTERM, flushed its conversation and exited; the session is saved and can be resumed.",
         "pane_closed":pane_closed,"pane_close_reason":pane_close_reason,
         "provider":"antigravity","signal":"SIGTERM","pid":stopped.pid,"process_start":stopped.process_start,
         "provider_conversation_id":stopped.conversation_id,"source_account_id":format!("antigravity:{}",s.account)}),
-    )
+        &s,
+    ))
 }
 
 /// Close the stopped session's recorded pane (unless `keep_pane`), after the stop is verified.
@@ -4418,14 +4445,15 @@ async fn stop_claude(paths: &Paths, id: &str, generation: &str, keep_pane: bool)
         .or(s.attachment.as_ref())
         .map(|a| a.target.clone());
     let (pane_closed, pane_close_reason) = close_stopped_pane(paths, keep_pane, target).await?;
-    Ok(
+    Ok(crate::provider::stop_shape::shape(
         json!({"id":uuid::Uuid::new_v4().to_string(),"source_session_id":s.id,"kind":"terminate","phase":"complete",
         "detail":"Claude Code received SIGTERM and exited; its transcript is saved and the session can be resumed.",
         "pane_closed":pane_closed,"pane_close_reason":pane_close_reason,
         "provider":"claude","signal":"SIGTERM","pid":stopped.pid,"process_start":stopped.process_start,
         "interrupted_turn":stopped.was_busy,
         "provider_conversation_id":s.conversation_id,"source_account_id":format!("claude:{}",s.account)}),
-    )
+        &s,
+    ))
 }
 
 /// Queue a conversation operation; with `--wait` (contract 1.55.0) poll it to its end.
@@ -4450,7 +4478,10 @@ fn already_stopped(paths: &Paths, s: &catalog::Session) -> Result<Value> {
         !external::archiving::is_archived(paths, &s.id)?,
         "SESSION_ARCHIVED"
     );
-    Ok(json!({"session_id":s.id,"already_stopped":true,"phase":"complete"}))
+    Ok(crate::provider::stop_shape::shape(
+        json!({"session_id":s.id,"already_stopped":true,"phase":"complete"}),
+        s,
+    ))
 }
 
 fn operation(paths: &Paths, j: external::Job) -> Result<Value> {

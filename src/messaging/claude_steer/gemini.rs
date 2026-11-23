@@ -76,6 +76,8 @@ pub const REASONS: &[&str] = &[
     "TERMINAL_HOST_UNAVAILABLE",
     "TERMINAL_AGENT_UNKNOWN",
     "TERMINAL_AGENT_BLOCKED",
+    "TERMINAL_PANE_IS_SHELL",
+    "PROVIDER_EXITED",
     "TERMINAL_VIEW_UNDETERMINED",
     "TERMINAL_OVERLAY_UNIDENTIFIED",
     "TERMINAL_VIM_MODE",
@@ -633,6 +635,10 @@ async fn deliver(
         Ok(None) => return reject(paths, id, "TERMINAL_AGENT_UNKNOWN"),
         Err(_) => return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE"),
     }
+    // Contract 1.63.0: the pane must run the exact provider process, not a shell.
+    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
+        return reject(paths, id, code);
+    }
     // 2. View: the input prompt; the shortcut panel is closed with backspace.
     let Ok(screen) = host.screen() else {
         return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE");
@@ -723,6 +729,9 @@ async fn deliver(
     })?;
     // The screen read above came well after the last typed key, so Gemini's
     // 30 ms fast-return rule (Enter right after typing is a newline) is past.
+    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
+        return reject(paths, id, code);
+    }
     let sent = host.keys(&["enter"]);
     change(paths, id, |r| {
         if sent.is_ok() {

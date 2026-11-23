@@ -189,3 +189,102 @@ async fn codex_stop_wait_disables_auto_start_after_completion() {
     assert_eq!(v["result"]["auto_start"]["mode"], "disabled", "{v}");
     assert_eq!(session(&f)["auto_start"]["mode"], "disabled");
 }
+
+// -------------------------------- contract 1.63.0: observe parity (SM4), one stop shape (P1)
+
+#[path = "../support/parity_keys.rs"]
+mod parity_keys;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_stop_result_keys_are_identical_per_provider() {
+    let f = Fixture::new().await;
+    f.live(ID, false);
+    let id = session(&f)["id"].as_str().unwrap().to_owned();
+    let (ok, v) = stop(&f, &["--wait"], &[]);
+    assert!(ok, "{v}");
+    let done = &v["result"];
+    parity_keys::assert_stop_shape(done, &id, "codex");
+    assert_eq!(done["phase"], "complete", "{done}");
+    assert_eq!(done["already_stopped"], false);
+    assert_eq!(done["signal"], "SIGTERM");
+    assert!(
+        done["pid"].is_u64() && done["process_start"].is_u64(),
+        "{done}"
+    );
+    assert!(done["auto_start"].is_null());
+    let (ok, again) = stop(&f, &[], &[]);
+    assert!(ok, "{again}");
+    parity_keys::assert_stop_shape(&again["result"], &id, "codex");
+    assert_eq!(again["result"]["already_stopped"], true);
+    assert!(again["result"]["pid"].is_null());
+    assert_eq!(again["result"]["source_account_id"], "codex:personal");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_observe_reports_the_last_reply_instruction_compaction_and_turns() {
+    let f = Fixture::new().await;
+    f.live(ID, false);
+    let (ok, v) = stop(&f, &["--wait"], &[]);
+    assert!(ok, "{v}");
+    let home = f.paths.account("personal").unwrap();
+    let rollout = find_rollout(&home, ID).expect("the saved rollout");
+    let line = |at: &str, kind: &str, payload: Value| {
+        json!({"timestamp":format!("2026-01-01T00:0{at}.000Z"),"type":kind,"payload":payload})
+            .to_string()
+            + "\n"
+    };
+    let text = line(
+        "0:01",
+        "event_msg",
+        json!({"type":"user_message","message":"first ask"}),
+    ) + &line(
+        "0:02",
+        "event_msg",
+        json!({"type":"agent_message","message":"first answer"}),
+    ) + &line("0:03", "event_msg", json!({"type":"task_complete"}))
+        + &line("1:00", "compacted", json!({"message":"summary"}))
+        + &line(
+            "2:00",
+            "event_msg",
+            json!({"type":"user_message","message":"second ask"}),
+        )
+        + &line(
+            "2:05",
+            "event_msg",
+            json!({"type":"agent_message","message":"second answer"}),
+        );
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&rollout)
+        .unwrap()
+        .write_all(text.as_bytes())
+        .unwrap();
+    let s = session(&f);
+    let (ok, o) = run(
+        &f,
+        &[
+            "observe",
+            "--session",
+            s["id"].as_str().unwrap(),
+            "--expected-generation",
+            s["generation"].as_str().unwrap(),
+            "--history",
+        ],
+        &[],
+    );
+    assert!(ok, "{o}");
+    let o = &o["result"];
+    assert_eq!(o["provider"], "codex", "{o}");
+    parity_keys::assert_conversation_shape(o);
+    let c = &o["conversation"];
+    assert_eq!(c["last_reply"]["text"], "second answer", "{c}");
+    assert_eq!(c["last_reply_source"], "rollout");
+    assert_eq!(c["last_instruction"]["text"], "second ask");
+    assert_eq!(c["compacted_at"], 1_767_225_660);
+    assert_eq!(c["history_turns"], 10);
+    let turns = c["recent_turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 2, "{c}");
+    assert_eq!(turns[0]["reply"]["text"], "first answer");
+    assert_eq!(turns[0]["ended_at"], 1_767_225_603);
+}

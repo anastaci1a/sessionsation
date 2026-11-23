@@ -133,6 +133,16 @@ if [ -n "$headless" ]; then
   exit "$code"
 fi
 
+# The folder-trust restart that never comes back (seen live 2026-11-23): with
+# $GEMINI_CLI_HOME/fake-launch-exit (seconds), record the launch, wait, print the
+# restart notice and exit without writing a chat file.
+if [ -f "$home/fake-launch-exit" ]; then
+  { printf 'mode=%s\nsession=%s\nargs=%s\n' "$mode" "$session" "$args"; env_report; } > "$home/fake-launch-$mode"
+  sleep "$(cat "$home/fake-launch-exit")"
+  printf '%s\n' 'Gemini CLI is restarting to apply the trust changes...'
+  exit 0
+fi
+
 # Interactive session: refuses a taken id (new) or a missing chat (resume), like
 # the real CLI, writes the chat header, records its launch and stays alive.
 existing=$(find_chat "$session")

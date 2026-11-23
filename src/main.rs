@@ -2077,6 +2077,11 @@ fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
             .unwrap_or_else(|| format!("{error:#}"))
     };
     let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"OPERATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS"|"STOP_TIMEOUT"|"AUTH_STALE")}});
+    // Contract 1.63.0: a provider that cannot perform the operation at all.
+    if let Some(u) = error.downcast_ref::<sessionsation::provider::stop_shape::Unsupported>() {
+        envelope["error"]["supported"] = json!(false);
+        envelope["error"]["reason"] = json!(u.0);
+    }
     // Contract 1.60.0: a Claude token that could not be renewed right now.
     if code == "AUTH_STALE" {
         envelope["error"]["detail"] = json!(

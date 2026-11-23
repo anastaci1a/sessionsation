@@ -82,6 +82,8 @@ pub const REASONS: &[&str] = &[
     "TERMINAL_HOST_UNAVAILABLE",
     "TERMINAL_AGENT_UNKNOWN",
     "TERMINAL_AGENT_BLOCKED",
+    "TERMINAL_PANE_IS_SHELL",
+    "PROVIDER_EXITED",
     "TERMINAL_VIEW_NOT_MAIN",
     "TERMINAL_VIEW_UNDETERMINED",
     "TERMINAL_OVERLAY_UNIDENTIFIED",
@@ -579,6 +581,25 @@ impl Host {
                 .and_then(|x| x["agent_status"].as_str().map(str::to_owned))
         }))
     }
+    /// Contract 1.63.0: the exact provider process (pid and start time) still runs and the
+    /// pane's foreground is not a bare shell. A provider that exited (for example after a
+    /// folder-trust restart that never came back) leaves the pane's shell in front, and typed
+    /// keys would run there. `Err` is the refusal code; nothing was typed.
+    pub(crate) fn provider_in_front(&self, pid: u32, start: u64) -> Result<(), &'static str> {
+        if crate::external::attachment_definitely_gone(pid, start) {
+            return Err("PROVIDER_EXITED");
+        }
+        let info = crate::terminal::call_at(
+            &self.session,
+            &["pane", "process-info", "--pane", &self.pane],
+            self.socket.as_deref(),
+        )
+        .map_err(|_| "TERMINAL_HOST_UNAVAILABLE")?;
+        match crate::terminal::process_state(&info["process_info"]) {
+            Ok((true, _)) => Err("TERMINAL_PANE_IS_SHELL"),
+            _ => Ok(()),
+        }
+    }
     pub(crate) fn screen(&self) -> Result<Vec<Vec<Cell>>> {
         let out = self.raw(&[
             "pane", "read", &self.pane, "--source", "visible", "--format", "ansi",
@@ -947,6 +968,10 @@ async fn deliver(paths: &Paths, id: &str, host: &Host, t: &Terminal) -> Result<(
         Ok(None) => return reject(paths, id, "TERMINAL_AGENT_UNKNOWN"),
         Err(_) => return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE"),
     }
+    // Contract 1.63.0: the pane must run the exact provider process, not a shell.
+    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
+        return reject(paths, id, code);
+    }
     // 2. View: main prompt, or a view left with its own toggle.
     let Ok(screen) = host.screen() else {
         return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE");
@@ -1104,6 +1129,9 @@ async fn typed_input(
             t.submitted_at_ms = Some(at);
         }
     })?;
+    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
+        return reject(paths, id, code);
+    }
     let sent = host.keys(&["enter"]);
     *submitted = true;
     // Whether a failed Enter landed is unknown: the caller first salvages the

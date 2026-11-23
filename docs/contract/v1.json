@@ -1295,7 +1295,8 @@
           "pattern": "^[a-f0-9]{64}$"
         },
         "provider": {
-          "const": "codex"
+          "enum": ["codex", "claude", "gemini", "antigravity"],
+          "description": "Since 1.63.0 every provider (api observe); api observations stays Codex-only."
         },
         "provider_conversation_id": {
           "type": "string"
@@ -1392,7 +1393,10 @@
           "const": "native_read_only_snapshot_not_reservation"
         },
         "delivery_semantics": {
-          "const": "non_steering_native_queue"
+          "enum": ["non_steering_native_queue", "api_send", null]
+        },
+        "conversation": {
+          "$ref": "#/$defs/ObserveConversation"
         },
         "actions": {
           "type": "object",

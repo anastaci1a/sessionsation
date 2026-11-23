@@ -31,6 +31,8 @@ esac
 
 /// Kills the provider process group started in the scripted pane.
 pub struct LaunchedPane {
+    #[allow(dead_code, reason = "read by the Gemini early-exit test only")]
+    pub request_id: String,
     group: PathBuf,
     _host: std::os::unix::net::UnixListener,
 }
@@ -47,7 +49,7 @@ impl Drop for LaunchedPane {
 }
 
 /// Start `account` through `api launch start` and return the pane guard once
-/// the launch has dispatched into its pane.
+/// the launch has dispatched into its pane (or already failed there).
 pub fn launch(binary: &str, root: &Path, dir: &Path, account: &str, name: &str) -> LaunchedPane {
     let socket = dir.join("host.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
@@ -94,6 +96,7 @@ pub fn launch(binary: &str, root: &Path, dir: &Path, account: &str, name: &str) 
     api(&["launch", "start"], Some(&request));
     let id = request["request_id"].as_str().unwrap();
     let pane = LaunchedPane {
+        request_id: id.to_owned(),
         group: dir.join("group.pid"),
         _host: listener,
     };
@@ -102,7 +105,7 @@ pub fn launch(binary: &str, root: &Path, dir: &Path, account: &str, name: &str) 
         let receipt = api(&["launch", "status", "--request-id", id], None);
         if matches!(
             receipt["phase"].as_str(),
-            Some("starting_provider" | "running")
+            Some("starting_provider" | "attached" | "running" | "failed")
         ) {
             return pane;
         }

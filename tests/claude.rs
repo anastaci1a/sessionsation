@@ -3735,3 +3735,128 @@ async fn session_rows_carry_context_and_task_meters_with_sources_or_reasons() {
         false
     );
 }
+
+// -------------------------------- contract 1.63.0: observe parity (SM4), one stop shape (P1)
+
+#[path = "support/parity_keys.rs"]
+mod parity_keys;
+
+fn observe(f: &Fixture, s: &Value, history: bool) -> Value {
+    let mut args = vec![
+        "observe",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+    ];
+    if history {
+        args.push("--history");
+    }
+    f.api(&args)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observe_reports_the_last_reply_instruction_compaction_and_turns_of_a_claude_session() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let id = uuid::Uuid::new_v4().to_string();
+    // "private prompt" at 2026-01-01T00:00:00Z (1767225600).
+    let path = transcript(&home, &f.project, &id);
+    let at = |s: &str| format!("2026-01-01T00:0{s}.000Z");
+    append(
+        &path,
+        json!({"type":"assistant","timestamp":at("0:05"),"message":{"content":[{"type":"text","text":"first reply"},{"type":"tool_use","name":"Bash"}]}}),
+    );
+    append(
+        &path,
+        json!({"type":"user","timestamp":at("0:06"),"message":{"content":[{"type":"tool_result","content":"TOOL OUTPUT"}]}}),
+    );
+    append(
+        &path,
+        json!({"type":"system","subtype":"compact_boundary","timestamp":at("1:00")}),
+    );
+    append(
+        &path,
+        json!({"type":"user","isCompactSummary":true,"timestamp":at("1:01"),"message":{"content":"SUMMARY"}}),
+    );
+    append(
+        &path,
+        json!({"type":"user","timestamp":at("2:00"),"message":{"content":"second ask"}}),
+    );
+    append(
+        &path,
+        json!({"type":"assistant","timestamp":at("2:05"),"message":{"content":[{"type":"text","text":"second reply"}]}}),
+    );
+    let s = by_conversation(&f, &id);
+    let o = observe(&f, &s, true);
+    assert_eq!(o["provider"], "claude", "{o}");
+    assert_eq!(o["session_id"], s["id"]);
+    assert_eq!(o["state"], "disconnected");
+    assert_eq!(o["process_state"], "unattached");
+    parity_keys::assert_conversation_shape(&o);
+    let c = &o["conversation"];
+    assert_eq!(c["supported"], true);
+    assert_eq!(c["last_reply"]["text"], "second reply", "{c}");
+    assert_eq!(c["last_reply"]["at"], 1_767_225_725);
+    assert_eq!(c["last_reply_source"], "transcript");
+    assert_eq!(c["last_instruction"]["text"], "second ask");
+    assert_eq!(c["compacted_at"], 1_767_225_660);
+    let turns = c["recent_turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 2, "{c}");
+    assert_eq!(turns[0]["instruction"]["text"], "private prompt");
+    assert_eq!(turns[0]["reply"]["text"], "first reply");
+    assert!(!c.to_string().contains("TOOL OUTPUT") && !c.to_string().contains("SUMMARY"));
+    // Without --history the turns are not read; the other fields are.
+    let plain = observe(&f, &s, false);
+    parity_keys::assert_conversation_shape(&plain);
+    assert!(plain["conversation"]["recent_turns"].is_null());
+    assert!(
+        plain["conversation"]["recent_turns_reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("history_not_requested")
+    );
+    assert_eq!(plain["conversation"]["last_reply"]["text"], "second reply");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_result_keys_are_identical_per_provider_for_claude() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let child = f
+        .command(&["run", "--account", "claude:personal"])
+        .current_dir(&f.project)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    wait_for("fake claude launch", || {
+        home.join("sessions").join(format!("{pid}.json")).exists()
+    });
+    let conversation = read(&home.join("fake-launch-new"))
+        .lines()
+        .find_map(|l| l.strip_prefix("session="))
+        .unwrap()
+        .to_owned();
+    let s = by_conversation(&f, &conversation);
+    let id = s["id"].as_str().unwrap().to_owned();
+    let stopped = stop(&f, &s);
+    parity_keys::assert_stop_shape(&stopped, &id, "claude");
+    assert_eq!(stopped["already_stopped"], false);
+    assert_eq!(stopped["pid"], pid);
+    assert_eq!(stopped["signal"], "SIGTERM");
+    assert!(stopped["auto_start"].is_null(), "{stopped}");
+    kill(child);
+    let again = stop(&f, &by_conversation(&f, &conversation));
+    parity_keys::assert_stop_shape(&again, &id, "claude");
+    assert_eq!(again["already_stopped"], true);
+    assert_eq!(again["phase"], "complete");
+    assert!(
+        again["pid"].is_null() && again["signal"].is_null(),
+        "{again}"
+    );
+    assert_eq!(again["interrupted_turn"], false);
+    assert_eq!(again["kind"], "terminate");
+    assert_eq!(again["provider_conversation_id"], conversation.as_str());
+}

@@ -73,6 +73,8 @@ pub const REASONS: &[&str] = &[
     "TERMINAL_HOST_UNAVAILABLE",
     "TERMINAL_AGENT_UNKNOWN",
     "TERMINAL_AGENT_BLOCKED",
+    "TERMINAL_PANE_IS_SHELL",
+    "PROVIDER_EXITED",
     "TERMINAL_VIEW_UNDETERMINED",
     "TERMINAL_OVERLAY_UNIDENTIFIED",
     "TERMINAL_EXIT_ARMED",
@@ -576,6 +578,10 @@ async fn deliver(
         Ok(None) => return reject(paths, id, "TERMINAL_AGENT_UNKNOWN"),
         Err(_) => return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE"),
     }
+    // Contract 1.63.0: the pane must run the exact provider process, not a shell.
+    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
+        return reject(paths, id, code);
+    }
     // 2. View: the input prompt with no menu, panel or dialog.
     let Ok(screen) = host.screen() else {
         return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE");
@@ -662,6 +668,9 @@ async fn deliver(
             f.expected = Some(expected.into());
         }
     })?;
+    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
+        return reject(paths, id, code);
+    }
     let sent = host.keys(&[key]);
     change(paths, id, |r| {
         if sent.is_ok() {

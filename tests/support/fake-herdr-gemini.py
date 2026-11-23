@@ -5,6 +5,7 @@ no model. Modelled on fake-herdr-tui.py.
 
 State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
   pane, pid           the pane and the Gemini process HERDR reports in it
+  shell_foreground    HERDR reports the pane's bare shell in front (the provider exited)
   view                main | help | dialog | blank
   input               the prompt text (the user's draft); the cursor is at its end
   status              idle | working | blocked (HERDR agent_status)
@@ -215,8 +216,8 @@ if cmd == "agent list":
     out({"result": {"agents": [{"agent": "gemini", "agent_status": state["status"], "pane_id": state["pane"]}],
                     "type": "agent_list"}})
 elif cmd == "pane process-info":
-    out({"result": {"process_info": {"shell_pid": 1,
-                                     "foreground_processes": [{"pid": state["pid"], "name": "node"}]}}})
+    front = {"pid": 1, "name": "bash"} if state.get("shell_foreground") else {"pid": state["pid"], "name": "node"}
+    out({"result": {"process_info": {"shell_pid": 1, "foreground_processes": [front]}}})
 elif cmd == "pane read":
     if args[2] != state["pane"]:
         fail("pane_not_found")

@@ -457,6 +457,11 @@ async fn terminal_input_types_as_the_user_and_keeps_the_draft() {
         (json!({"view":"agents"}), "TERMINAL_OVERLAY_UNIDENTIFIED"),
         (json!({"view":"blank"}), "TERMINAL_VIEW_UNDETERMINED"),
         (json!({"vim":true,"input":"x"}), "TERMINAL_VIM_MODE"),
+        // Contract 1.63.0: the provider exited and the pane's shell is in front.
+        (
+            json!({"shell_foreground":true,"input":"keep me"}),
+            "TERMINAL_PANE_IS_SHELL",
+        ),
     ] {
         reset(patch.clone());
         let before = f.writes().len();

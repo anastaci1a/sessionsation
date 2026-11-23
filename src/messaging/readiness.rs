@@ -86,8 +86,8 @@ pub(super) fn project(session: &catalog::Session, native: Value, removed: bool, 
         crate::live_activity::public(Some(&facts), at.unwrap_or(now))
     };
     json!({"session_id":session.id,"generation":session.generation(),
-        "provider":"codex","provider_conversation_id":session.conversation_id,
-        "account_id":format!("codex:{}",session.account),"state":state,
+        "provider":session.provider,"provider_conversation_id":session.conversation_id,
+        "account_id":format!("{}:{}",session.provider,session.account),"state":state,
         "reason":native["reason"],"observed_at":at,"valid_until":until,
         "freshness":if fresh {"fresh"} else {"stale"},
         "observation":{"status":if at.is_none() {"unobserved"} else if fresh {"fresh"} else {"stale"},"checked_at":now,"failure":observation_failure(native["reason"].as_str()),"turn_summary":native["summary_evidence"],"native_protocol":native["native_protocol"]},
@@ -135,6 +135,85 @@ pub(super) fn recorded(
         );
     }
     Ok(a)
+}
+
+/// `api observe` (contract 1.63.0, SM4): the passive readiness of any provider's session plus
+/// its `conversation` block (last reply, last instruction, compaction time and, with
+/// `history`, the recent turns). Codex keeps its native readiness; Claude and Antigravity get
+/// the same keys from their native observation; Gemini is `supported:false`.
+pub async fn observe_command(
+    paths: &Paths,
+    id: &str,
+    generation: &str,
+    history: Option<usize>,
+) -> anyhow::Result<Value> {
+    use crate::provider::{ProviderId, conversation, native};
+    let session = catalog::resolve(paths, id, generation)?;
+    let history = history.map(|n| n.clamp(1, conversation::MAX_TURNS));
+    let Some(provider) = native::of(&session.provider) else {
+        let mut value = observe_public(paths, id, generation).await?;
+        let home = crate::layout::account_home(&paths.root, ProviderId::Codex, &session.account);
+        let file = conversation::history_file(ProviderId::Codex, &home, &session.conversation_id);
+        value["conversation"] = conversation::observe(ProviderId::Codex, file.as_deref(), history);
+        return Ok(value);
+    };
+    let now = crate::daemon::now();
+    if conversation::supported(provider).is_err() {
+        let mut value = project(
+            &session,
+            json!({"state":"unknown","reason":"provider_unsupported","observed_at":null,"valid_until":null,
+                "native_sending_enabled":false,"process_state":"unknown"}),
+            false,
+            now,
+        );
+        value["delivery_semantics"] = Value::Null;
+        value["conversation"] = conversation::observe(provider, None, history);
+        return Ok(value);
+    }
+    let (session, o) = crate::api::native_selected(paths, id, generation)?;
+    let account = native::account(paths, provider, &session.account)?;
+    let archived = crate::external::archiving::is_archived(paths, &session.id)?;
+    let running = o.availability == "running";
+    let mut row = json!({});
+    crate::native_activity::apply(provider, &account.home, &mut row, Some(&o), now);
+    let live = &row["live_activity"];
+    let state = match (archived, running, live["state"].as_str()) {
+        (true, _, _) => "disconnected",
+        (_, false, _) => "disconnected",
+        (_, true, Some("working" | "blocked")) => "working",
+        (_, true, Some("idle" | "turn_ended")) => "idle",
+        (_, true, Some("error")) => "errored",
+        _ => "unknown",
+    };
+    // Native input is gated by `api send` (terminal typing or headless), not by this read.
+    let reason = if archived {
+        "session_archived"
+    } else if running {
+        "native_input_via_send"
+    } else {
+        "no_live_process"
+    };
+    let process_state = if running {
+        "running"
+    } else if session.attachment.is_some() {
+        "exited"
+    } else {
+        "unattached"
+    };
+    let mut value = project(
+        &session,
+        json!({"state":state,"reason":reason,"observed_at":now,"valid_until":now+5,
+            "last_turn":{"status":live["last_turn_status"],"error":live["error"]},
+            "native_sending_enabled":false,"stop_intent_id":null,
+            "generation":null,
+            "process_state":process_state,"process_observed_at":now}),
+        crate::accounts::removed_session(paths, &session.provider, &session.account)?,
+        now,
+    );
+    value["delivery_semantics"] = json!("api_send");
+    let file = conversation::history_file(provider, &account.home, &session.conversation_id);
+    value["conversation"] = conversation::observe(provider, file.as_deref(), history);
+    Ok(value)
 }
 
 pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow::Result<Value> {
