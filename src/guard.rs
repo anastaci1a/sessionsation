@@ -1898,14 +1898,16 @@ fn baseline_tampering_is_caught() {
     // Raising a value without a ledger entry, or a rise entry with no
     // "considered", does not balance.
     let mut base = baseline();
+    let value = base.counters["spawn_sites"].value;
     base.counters.get_mut("spawn_sites").unwrap().value += 1;
     let p = ledger_problems(&base);
     let initial = initial_of("spawn_sites").unwrap();
+    let sum = value - initial as i64;
     assert!(
         p.iter().any(|m| m
             == &format!(
-                "guard: counter spawn_sites value {} != initial {initial} + ledger 0",
-                initial + 1
+                "guard: counter spawn_sites value {} != initial {initial} + ledger {sum}",
+                value + 1
             )),
         "{p:#?}"
     );

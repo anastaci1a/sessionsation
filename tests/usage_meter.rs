@@ -2,6 +2,10 @@
 //! Codex from the supervisor's app-server rate-limit read; Claude from the OAuth usage
 //! endpoint through the 1.60.0 owner (fake curl) and from the statusline recorder, the
 //! fresher reading winning without ever lowering a reset cycle. Fixture credentials only.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests are exempt from owned roles (src/guard.rs)"
+)]
 use serde_json::{Value, json};
 use sessionsation::{daemon, paths::Paths};
 use std::{

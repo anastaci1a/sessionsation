@@ -1935,6 +1935,7 @@ pub fn capabilities() -> Value {
         "keys":["supported","requires_session","source","fresh","observed_at","age_seconds","windows","reason"],
         "windows":["five_hour","seven_day"],
         "providers":{"codex":{"supported":true,"requires_session":false,"source":["app_server"]},
+            // guard-allow(oauth): capability text names the usage path; the read goes through provider::claude::oauth
             "claude":{"supported":true,"requires_session":false,"source":["statusline","oauth"],"oauth_read":"GET /api/oauth/usage","cache_seconds":claude::meter::CACHE_SECONDS,"background_refresh_seconds":claude::meter::REFRESH_SECONDS,"background_renews_token":false},
             "gemini":{"supported":false,"reason":crate::provider::usage_meter::GEMINI_REASON},
             "antigravity":{"supported":false,"reason":crate::provider::usage_meter::ANTIGRAVITY_REASON}},

@@ -3,7 +3,7 @@
   "counters_digest": "3aea17f14456bf1ca4f238860a07c41d1779a29212a2f750108b4b52244041c0",
   "counters": {
     "alive_fns": { "value": 8 },
-    "api_rs_lines": { "value": 5132 },
+    "api_rs_lines": { "value": 5237 },
     "apply_session_input_fns": { "value": 3 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 3 },
@@ -17,29 +17,29 @@
     "doc_bytes:agents/README.md": { "value": 9276 },
     "doc_bytes:docs/README.md": { "value": 711 },
     "doc_bytes:docs/architecture.md": { "value": 10016 },
-    "doc_bytes:docs/cli.md": { "value": 110969 },
-    "doc_bytes:docs/contract.md": { "value": 314589 },
-    "doc_bytes:docs/operations.md": { "value": 29184 },
-    "doc_bytes_total": { "value": 480348 },
+    "doc_bytes:docs/cli.md": { "value": 112591 },
+    "doc_bytes:docs/contract.md": { "value": 320889 },
+    "doc_bytes:docs/operations.md": { "value": 29240 },
+    "doc_bytes_total": { "value": 488326 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 182 },
-    "env_scrub_sites": { "value": 48 },
-    "error_code_literals": { "value": 673 },
+    "env_scrub_sites": { "value": 51 },
+    "error_code_literals": { "value": 676 },
     "file_cache_statics": { "value": 8 },
-    "flock_sites": { "value": 83 },
-    "fs2_imports": { "value": 29 },
+    "flock_sites": { "value": 84 },
+    "fs2_imports": { "value": 30 },
     "fs_write_sites": { "value": 5 },
     "generation_allow_markers": { "value": 0 },
     "herdr_allow_markers": { "value": 0 },
     "herdr_cli_callers": { "value": 41 },
     "identity_allow_markers": { "value": 0 },
-    "json_parse_sites": { "value": 131 },
+    "json_parse_sites": { "value": 134 },
     "ledger_allow_markers": { "value": 0 },
     "ledger_opens": { "value": 23 },
     "locks_allow_markers": { "value": 0 },
     "now_sites": { "value": 26 },
-    "oauth_allow_markers": { "value": 1 },
-    "oauth_sites": { "value": 1 },
+    "oauth_allow_markers": { "value": 2 },
+    "oauth_sites": { "value": 2 },
     "operations_dir_sites": { "value": 43 },
     "phase_records": { "value": 12 },
     "pidfd_sites": { "value": 6 },
@@ -47,7 +47,7 @@
     "provider_enum_dispatch": { "value": 159 },
     "provider_ops_allow_markers": { "value": 0 },
     "provider_string_compares": { "value": 75 },
-    "raw_sleeps": { "value": 98 },
+    "raw_sleeps": { "value": 99 },
     "receipts_sites": { "value": 2 },
     "records_allow_markers": { "value": 0 },
     "rename_sites": { "value": 26 },
@@ -55,20 +55,20 @@
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
     "sha256_digests": { "value": 31 },
-    "since_contract_literals": { "value": 33 },
+    "since_contract_literals": { "value": 36 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
-    "spawn_sites": { "value": 62 },
+    "spawn_sites": { "value": 64 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 93260 },
+    "src_lines": { "value": 94484 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
     "tmux_raw": { "value": 5 },
     "typing_allow_markers": { "value": 0 },
     "typing_dup_fns": { "value": 20 },
-    "unsupported_literals": { "value": 58 },
+    "unsupported_literals": { "value": 57 },
     "waits_allow_markers": { "value": 0 },
     "worker_lock_sites": { "value": 21 },
     "ws_allow_markers": { "value": 0 },
@@ -101,6 +101,139 @@
       "by": 2457,
       "reason": "S0 paragraph \"Owned roles and the guard\" in agents/README.md",
       "considered": "same as doc_bytes:agents/README.md",
+      "step": "S0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 1223,
+      "reason": "1.62.0 SM8 usage meter, SM3 session meters, SM7 SESSIONSATION_SESSION_ID",
+      "considered": "n/a",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 104,
+      "reason": "1.62.0 usage_read for every provider (usage meter rows, capabilities for session_env, usage_meter, session_meters)",
+      "considered": "n/a",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "doc_bytes:docs/cli.md",
+      "by": 1622,
+      "reason": "1.62.0 api usage --cached and the meter fields",
+      "considered": "n/a",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 6300,
+      "reason": "1.62.0 contract: usage meter, session meters, session env capabilities",
+      "considered": "n/a",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "doc_bytes:docs/operations.md",
+      "by": 56,
+      "reason": "1.62.0 operations note for the Claude meter refresh",
+      "considered": "n/a",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 7978,
+      "reason": "1.62.0 docs (cli +1622, contract +6300, operations +56)",
+      "considered": "n/a",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "env_scrub_sites",
+      "by": 3,
+      "reason": "1.62.0 SM7: daemon.rs and rpc.rs remove SESSIONSATION_SESSION_ID from spawned helpers; provider::scrub_session_env does the same for provider commands",
+      "considered": "the proc::Bin scrub owner arrives in S7; until then the scrub sits beside each spawn, through one shared helper where possible",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "error_code_literals",
+      "by": 3,
+      "reason": "1.62.0: USAGE_READ_FAILED (Claude meter read), and the env names SESSIONSATION_SESSION_ID and SESSIONSATION_CLAUDE_METER_SECONDS, which match the code-literal pattern",
+      "considered": "codes.rs arrives in S9; each literal is declared once as a const (SESSION_ENV, REFRESH_ENV) or in the meter module",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "flock_sites",
+      "by": 1,
+      "reason": "1.62.0 SM8: provider/claude.rs takes .sessionsation/usage.lock so the statusline hook and an OAuth usage read do not interleave their read-modify-write",
+      "considered": "sync::Lock arrives in S2/S5; the lock file is opened through paths::lock_file",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "fs2_imports",
+      "by": 1,
+      "reason": "1.62.0 SM8: the same usage.lock site calls fs2::FileExt::lock_exclusive",
+      "considered": "as flock_sites: sync::Lock arrives in S2/S5",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "json_parse_sites",
+      "by": 3,
+      "reason": "1.62.0: claude/meter.rs parses its attempt file and the OAuth usage body; session_meters.rs parses transcript lines",
+      "considered": "these are one-shot reads of fresh data, not repeated parses FileCache would serve",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "oauth_sites",
+      "by": 1,
+      "reason": "1.62.0 SM8: api.rs usage_read capability text names GET /api/oauth/usage; the read itself goes through provider::claude::oauth (marked guard-allow(oauth))",
+      "considered": "the capability text is contract output and stays; moving it into the oauth owner is later scope",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "raw_sleeps",
+      "by": 1,
+      "reason": "1.62.0 SM8: the Claude meter monitor loop waits with tokio::time::sleep between refreshes",
+      "considered": "the interval already goes through timing::secs; timing::poll_until/Deadline arrive in S9",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "since_contract_literals",
+      "by": 3,
+      "reason": "1.62.0 capabilities session_env, usage_meter and session_meters",
+      "considered": "contract::FEATURES arrives in S9 and absorbs every since_contract literal",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "spawn_sites",
+      "by": 2,
+      "reason": "1.62.0 SM7: provider::set_session_env and scrub_session_env take &mut std::process::Command (signatures, no new spawn)",
+      "considered": "proc::command(Bin) arrives in S7 and will own the env handling",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "unsupported_literals",
+      "by": -1,
+      "reason": "1.62.0: api usage no longer refuses non-Claude providers",
+      "considered": "n/a",
+      "step": "1.62.0"
+    },
+    {
+      "counter": "oauth_allow_markers",
+      "by": 1,
+      "reason": "R1 rebase onto 1.62.0: guard-allow(oauth) marker on the api.rs usage_read capability text",
+      "considered": "the marker is the documented way to keep contract text that names the OAuth path",
+      "step": "S0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 1,
+      "reason": "R1 rebase onto 1.62.0: the api.rs guard-allow(oauth) marker line",
+      "considered": "n/a",
+      "step": "S0"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 1,
+      "reason": "R1 rebase onto 1.62.0: the api.rs guard-allow(oauth) marker line",
+      "considered": "n/a",
       "step": "S0"
     }
   ],
