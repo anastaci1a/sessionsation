@@ -518,17 +518,8 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
         ])
         .contains("SESSION_ALREADY_RUNNING")
     );
-    // Unsupported operations are rejected by provider, not attempted.
-    assert!(
-        f.api_error(&[
-            "stop",
-            "--session",
-            &id,
-            "--expected-generation",
-            &generation
-        ])
-        .contains("UNSUPPORTED_PROVIDER_OPERATION")
-    );
+    // Contract 1.59.0: a verified live process can be stopped (see the stop_* tests).
+    assert_eq!(f.session(&id)["capabilities"]["stop"], true);
     kill(child);
 
     // Exited process with a leftover registry entry: stopped, not live.
@@ -1292,7 +1283,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 58);
+    assert_eq!(caps["contract_revision"], 59);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1887,7 +1878,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 58);
+    assert_eq!(caps["contract_revision"], 59);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2755,7 +2746,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 58);
+    assert_eq!(caps["contract_revision"], 59);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()
@@ -3502,4 +3493,169 @@ async fn space_scoped_names_resolve_rename_and_set_space() {
         "--clear",
     ]);
     assert!(refused.contains("ALREADY_IN_HERDR"), "{refused}");
+}
+
+// ------------------------------------------------------------ stop (contract 1.59.0)
+
+fn claude_account(f: &Fixture) -> PathBuf {
+    assert!(
+        f.run(&["account", "add", "--platform", "claude", "personal"])
+            .status
+            .success()
+    );
+    wait_for("auth status poll", || {
+        f.api(&["account", "list"])[0]["auth_required"] == false
+    });
+    f.home("personal")
+}
+fn stop_args(s: &Value) -> [String; 5] {
+    [
+        "stop".into(),
+        "--session".into(),
+        s["id"].as_str().unwrap().into(),
+        "--expected-generation".into(),
+        s["generation"].as_str().unwrap().into(),
+    ]
+}
+fn stop(f: &Fixture, s: &Value) -> Value {
+    let args = stop_args(s);
+    f.api(&args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+fn stop_error(f: &Fixture, s: &Value) -> String {
+    let args = stop_args(s);
+    f.api_error(&args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_of_a_stopped_claude_session_is_already_stopped() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let id = uuid::Uuid::new_v4().to_string();
+    transcript(&home, &f.project, &id);
+    let s = by_conversation(&f, &id);
+    assert_eq!(s["availability"], "stopped");
+    assert_eq!(s["capabilities"]["stop"], false);
+    assert_eq!(s["capability_reasons"]["stop"], "SESSION_NOT_RUNNING");
+    let done = stop(&f, &s);
+    assert_eq!(done["already_stopped"], true, "{done}");
+    assert_eq!(done["phase"], "complete");
+    assert_eq!(done["session_id"], s["id"]);
+    // Idempotent: the same again.
+    assert_eq!(stop(&f, &by_conversation(&f, &id))["already_stopped"], true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_sends_sigterm_to_the_running_claude_process_and_waits_for_its_exit() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let mut child = f
+        .command(&["run", "--account", "claude:personal"])
+        .current_dir(&f.project)
+        // The fake's `sleep 1` outlives its shell by up to a second: keep it off the test output.
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    wait_for("fake claude launch", || {
+        home.join("sessions").join(format!("{pid}.json")).exists()
+    });
+    let conversation = read(&home.join("fake-launch-new"))
+        .lines()
+        .find_map(|l| l.strip_prefix("session="))
+        .unwrap()
+        .to_owned();
+    let s = by_conversation(&f, &conversation);
+    assert_eq!(s["availability"], "running");
+    assert_eq!(s["pid"], pid);
+    assert_eq!(s["capabilities"]["stop"], true, "{s}");
+    assert!(s["capability_reasons"]["stop"].is_null());
+    let caps = f.api(&["capabilities"]);
+    let claude = caps["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "claude")
+        .unwrap()
+        .clone();
+    assert_eq!(claude["stop"], true);
+    assert_eq!(claude["operations"]["stop"]["supported"], true);
+    assert_eq!(claude["restart"], false);
+    assert_eq!(caps["claude_lifecycle"]["stop"]["sigkill"], false);
+    assert_eq!(caps["claude_lifecycle"]["stop"]["wait_seconds"], 10);
+
+    let stopped = stop(&f, &s);
+    assert_eq!(stopped["phase"], "complete", "{stopped}");
+    assert_eq!(stopped["kind"], "terminate");
+    assert_eq!(stopped["provider"], "claude");
+    assert_eq!(stopped["signal"], "SIGTERM");
+    assert_eq!(stopped["pid"], pid);
+    assert_eq!(stopped["process_start"], proc_start(pid));
+    assert_eq!(stopped["interrupted_turn"], true, "the fake registers busy");
+    assert_eq!(stopped["source_session_id"], s["id"]);
+    assert_eq!(stopped["provider_conversation_id"], conversation.as_str());
+    assert_eq!(stopped["source_account_id"], "claude:personal");
+    assert_eq!(stopped["pane_closed"], false);
+    assert_eq!(stopped["pane_close_reason"], "NO_PANE");
+    // The process had exited (by SIGTERM) before the result was returned.
+    let status = child.wait().unwrap();
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+    let after = by_conversation(&f, &conversation);
+    assert_eq!(after["availability"], "stopped");
+    assert_eq!(after["capabilities"]["resume"], true);
+    assert_eq!(stop(&f, &after)["already_stopped"], true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_never_signals_a_pid_whose_process_start_does_not_match() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let id = uuid::Uuid::new_v4().to_string();
+    transcript(&home, &f.project, &id);
+    // A process of this config home whose registry entry has another start time
+    // (what a reused pid looks like).
+    let mut other = Process(
+        Command::new("sleep")
+            .arg("120")
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = other.0.id();
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    std::fs::write(
+        home.join("sessions").join(format!("{pid}.json")),
+        json!({"pid":pid,"sessionId":id,"cwd":f.project,"procStart":(proc_start(pid) + 1).to_string(),
+            "kind":"interactive","status":"idle"})
+        .to_string(),
+    )
+    .unwrap();
+    let s = by_conversation(&f, &id);
+    assert_eq!(s["availability"], "stopped", "{s}");
+    assert_eq!(s["capabilities"]["stop"], false);
+    let done = stop(&f, &s);
+    assert_eq!(done["already_stopped"], true, "{done}");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        other.0.try_wait().unwrap().is_none(),
+        "the mismatched process was not signalled"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_refuses_an_archived_claude_session() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let id = uuid::Uuid::new_v4().to_string();
+    transcript(&home, &f.project, &id);
+    let s = by_conversation(&f, &id);
+    conversation_job(&f, "archive", &s);
+    let archived = all_claude(&f)
+        .into_iter()
+        .find(|x| x["id"] == s["id"])
+        .unwrap();
+    assert_eq!(archived["archived"], true, "{archived}");
+    let refused = stop_error(&f, &archived);
+    assert!(refused.contains("SESSION_ARCHIVED"), "{refused}");
 }

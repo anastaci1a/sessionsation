@@ -263,8 +263,8 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
         false
     );
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 58);
-    assert_eq!(caps["contract_version"], "1.58.0");
+    assert_eq!(caps["contract_revision"], 59);
+    assert_eq!(caps["contract_version"], "1.59.0");
     let p = caps["providers"]
         .as_array()
         .unwrap()
@@ -432,12 +432,12 @@ async fn a_live_agy_process_holding_the_conversation_is_running_and_refuses_resu
 async fn api_version_reports_semver_and_negotiates_by_major() {
     let f = fixture().await;
     let v = f.api(&["version"]);
-    assert_eq!(v["contract_version"], "1.58.0");
-    assert_eq!(v["contract_revision"], 58);
+    assert_eq!(v["contract_version"], "1.59.0");
+    assert_eq!(v["contract_revision"], 59);
     for ok in ["1", "1.25", "1.26", "1.99.0"] {
         assert_eq!(
             f.api(&["--api-version", ok, "version"])["contract_version"],
-            "1.58.0"
+            "1.59.0"
         );
     }
     for bad in ["2", "2.0.0", "0.24"] {
@@ -748,8 +748,11 @@ async fn archive_restore_and_delete_move_only_the_exact_conversation_and_stop_en
         again["id"].as_str().unwrap(),
         "--expected-generation",
         again["generation"].as_str().unwrap(),
+        "--disable-auto-start",
     ]);
     assert_eq!(already["already_stopped"], true, "{already}");
+    // Contract 1.59.0: the flag reports the (now disabled) Auto Start state.
+    assert_eq!(already["auto_start"]["mode"], "disabled", "{already}");
     assert_eq!(already["phase"], "complete");
     assert_eq!(already["session_id"], again["id"]);
 

@@ -18,9 +18,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 58;
+pub const CONTRACT_MINOR: u32 = 59;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.58.0";
+pub const CONTRACT_VERSION: &str = "1.59.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -319,6 +319,9 @@ pub enum Command {
         /// Keep the session's HERDR pane open after it stops (default: close it once the stop is verified).
         #[arg(long)]
         keep_pane: bool,
+        /// After the stop (or an already-stopped result), also set the session's Auto Start to disabled (1.59.0).
+        #[arg(long)]
+        disable_auto_start: bool,
     },
     Resume {
         #[arg(long)]
@@ -1746,7 +1749,7 @@ pub fn capabilities() -> Value {
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
          "account_deletion":true,"account_removal":true,"account_rename":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"purge":false,"force_interrupt":false,"steer":true,"cross_provider_conversion":false,"operations":crate::provider::capabilities(ProviderId::Codex)},
         {"id":"claude","implemented":true,"enrollment":true,"adopt_config_dir":true,"login":"interactive_exec","usage":true,"usage_source":claude::USAGE_SOURCE,
-         "new":true,"resume":true,"rename":true,"native_rename":false,"stop":false,
+         "new":true,"resume":true,"rename":true,"native_rename":false,"stop":true,
          "account_switch":true,"restart":false,"submit":false,"queue":false,
          "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false},
          "force_interrupt":false,"steer":false,"cross_provider_conversion":false,
@@ -1799,6 +1802,8 @@ pub fn capabilities() -> Value {
     // Revision 25: Antigravity stop, archive, restore and delete.
     value["antigravity_lifecycle"] = json!({"since_revision":25,"stop":{"method":"sigterm_exact_process","verified_by":["pid","process_start","command_line","account_home","conversation"],"wait_seconds":crate::provider::antigravity::STOP_SECONDS,"sigkill":false,"flushes_state":true,"errors":["SESSION_NOT_RUNNING","SESSION_STATE_UNVERIFIED","AMBIGUOUS_SESSION","STOP_TIMEOUT","STOP_UNAVAILABLE","STOP_FAILED"]},
         "archive":{"files":["conversations/<id>.db","conversations/<id>.db-wal","conversations/<id>.db-shm","brain/<id>/","annotations/<id>.pbtxt","presence/<id>.lock"],"index_row":"conversation_summaries.db row saved then removed in one SQLite transaction after a backup","delete_also_removes":["jetbox_summaries_proto.pb entry"],"unchanged":["history.jsonl","implicit/"],"match":"exact_conversation_id","refused_while":"a verified agy process (interactive or headless) holds the conversation"}});
+    // Contract 1.59.0: Claude stop.
+    value["claude_lifecycle"] = json!({"since_contract":"1.59.0","version":1,"stop":{"method":"sigterm_exact_process","verified_by":["registry_pid","process_start","account_home","conversation"],"signal_handle":"pidfd","wait_seconds":claude::stop::STOP_SECONDS,"sigkill":false,"busy_turn":"interrupted","result_field":"interrupted_turn","not_running":"already_stopped","refused":{"background":"UNSUPPORTED_PROVIDER_OPERATION","hosted":"HOSTED_SESSION","archived":"SESSION_ARCHIVED","unregistered":"SESSION_STATE_UNVERIFIED"},"errors":["SESSION_STATE_UNVERIFIED","AMBIGUOUS_SESSION","STOP_TIMEOUT","STOP_UNAVAILABLE","STOP_FAILED"],"retryable":["STOP_TIMEOUT"]},"restart":false});
     // Revision 21: per-account Claude bypass-permissions warning.
     value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.27.0: default statusLine for new managed Claude homes.
@@ -2024,8 +2029,32 @@ fn native_public(
         value["resume_block_reason"] = json!("account_deleted");
         value["history_preserved"] = json!(true);
     }
+    // Stop (Antigravity; Claude since 1.59.0): exactly while a verified process runs the conversation.
+    let stop_reason: Option<&'static str> = match provider {
+        ProviderId::Antigravity | ProviderId::Claude if !running => Some("SESSION_NOT_RUNNING"),
+        ProviderId::Antigravity if observed.is_some_and(|o| o.pid.is_some()) => None,
+        ProviderId::Antigravity => {
+            Some("SESSION_STATE_UNVERIFIED: no verified Antigravity process")
+        }
+        ProviderId::Claude => match observed {
+            Some(o)
+                if o.native_kind.as_deref().is_some_and(|k| k != "interactive")
+                    || o.job_id.is_some() =>
+            {
+                Some(claude::stop::BACKGROUND)
+            }
+            // Verified by the registry (not only by a launch's argv: no conversation yet).
+            Some(o)
+                if o.pid.is_some() && o.detail.as_deref() != Some(claude::NO_CONVERSATION_YET) =>
+            {
+                None
+            }
+            _ => Some(claude::stop::NOT_REGISTERED),
+        },
+        _ => caps.stop.reason,
+    };
     value["capabilities"] = json!({"rename":true,"native_rename":false,"resume":resumable,
-        "focus":running && attached,"switch_account":switch_account,"restart":false,"stop":provider == ProviderId::Antigravity && running && observed.is_some_and(|o| o.pid.is_some()),"move_space":false,
+        "focus":running && attached,"switch_account":switch_account,"restart":false,"stop":stop_reason.is_none(),"move_space":false,
         "change_directory":false,"move_project":false,"archive":false,"delete":false,
         "submit":false,"queue":false,"steer":false,"add_to_herdr":add_to_herdr});
     let resume_reason = if account_deleted {
@@ -2048,18 +2077,7 @@ fn native_public(
         "restart":caps.restart.reason,"stop":caps.stop.reason,"move_space":caps.move_space.reason,
         "change_directory":caps.relocate.reason,"move_project":caps.relocate.reason,"archive":caps.archive.reason,
         "delete":caps.delete_session.reason,"submit":caps.submit.reason,"queue":caps.queue.reason,"steer":caps.steer.reason,"add_to_herdr":add_reason});
-    if provider == ProviderId::Antigravity {
-        // Stop is available exactly while a verified agy process runs the conversation.
-        value["capability_reasons"]["stop"] = if value["capabilities"]["stop"] == true {
-            Value::Null
-        } else {
-            json!(if running {
-                "SESSION_STATE_UNVERIFIED: no verified Antigravity process"
-            } else {
-                "SESSION_NOT_RUNNING"
-            })
-        };
-    }
+    value["capability_reasons"]["stop"] = json!(stop_reason);
     value
 }
 
@@ -2869,6 +2887,17 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
     }
     note_deliberate_action(paths, &command);
     let lifecycle = lifecycle_subject(paths, &command);
+    // Contract 1.59.0: `api stop --disable-auto-start` (any provider) disables Auto Start once
+    // the stop returned without an error, through the `api auto-start --mode disabled` owner.
+    let disable_auto_start_of = match &command {
+        Command::Stop {
+            session,
+            expected_generation,
+            disable_auto_start: true,
+            ..
+        } => Some(catalog::resolve(paths, session, expected_generation)?),
+        _ => None,
+    };
     let mut result = match command {
         Command::ResumeLaunch { command } => crate::resume::api(paths, command).await?,
         Command::Session {
@@ -3419,6 +3448,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             session,
             expected_generation,
             keep_pane,
+            ..
         } if catalog::resolve(paths, &session, &expected_generation)
             .is_ok_and(|s| s.provider == ProviderId::Antigravity.as_str()) =>
         {
@@ -3428,6 +3458,17 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             session,
             expected_generation,
             keep_pane,
+            ..
+        } if catalog::resolve(paths, &session, &expected_generation)
+            .is_ok_and(|s| s.provider == ProviderId::Claude.as_str()) =>
+        {
+            stop_claude(paths, &session, &expected_generation, keep_pane).await?
+        }
+        Command::Stop {
+            session,
+            expected_generation,
+            keep_pane,
+            ..
         } => {
             // Idempotent (1.55.0): `Err(session)` is an existing session with no process.
             let found = match selected(paths, &session, &expected_generation).await {
@@ -3627,6 +3668,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             crate::messaging::receipt_public(paths, &message, true).await?
         }
     };
+    if let Some(s) = disable_auto_start_of {
+        result["auto_start"] = crate::auto_recover::disable(paths, &s)?["auto_start"].take();
+    }
     if let Some(subject) = lifecycle {
         // A lifecycle operation changes the generation: the next `state --cached` and the
         // generation guard of the next send must see it at once, not after the next full
@@ -4015,29 +4059,102 @@ async fn stop_antigravity(
     })
     .await??;
     // The stop is verified (process gone by exact identity) only now; a failed stop returned above.
-    let (pane_closed, pane_close_reason) = if keep_pane {
-        (false, Some("KEEP_PANE".to_owned()))
-    } else {
-        match observation
-            .attachment
-            .as_ref()
-            .or(s.attachment.as_ref())
-            .map(|a| a.target.clone())
-        {
-            Some(target) => {
-                let paths = paths.clone();
-                tokio::task::spawn_blocking(move || external::hosting::close_pane(&paths, &target))
-                    .await?
-            }
-            None => (false, Some("NO_PANE".to_owned())),
-        }
-    };
+    let target = observation
+        .attachment
+        .as_ref()
+        .or(s.attachment.as_ref())
+        .map(|a| a.target.clone());
+    let (pane_closed, pane_close_reason) = close_stopped_pane(paths, keep_pane, target).await?;
     Ok(
         json!({"id":uuid::Uuid::new_v4().to_string(),"source_session_id":s.id,"kind":"terminate","phase":"complete",
         "detail":"Antigravity received SIGTERM, flushed its conversation and exited; the session is saved and can be resumed.",
         "pane_closed":pane_closed,"pane_close_reason":pane_close_reason,
         "provider":"antigravity","signal":"SIGTERM","pid":stopped.pid,"process_start":stopped.process_start,
         "provider_conversation_id":stopped.conversation_id,"source_account_id":format!("antigravity:{}",s.account)}),
+    )
+}
+
+/// Close the stopped session's recorded pane (unless `keep_pane`), after the stop is verified.
+async fn close_stopped_pane(
+    paths: &Paths,
+    keep_pane: bool,
+    target: Option<String>,
+) -> Result<(bool, Option<String>)> {
+    if keep_pane {
+        return Ok((false, Some("KEEP_PANE".to_owned())));
+    }
+    match target {
+        Some(target) => {
+            let paths = paths.clone();
+            Ok(
+                tokio::task::spawn_blocking(move || external::hosting::close_pane(&paths, &target))
+                    .await?,
+            )
+        }
+        None => Ok((false, Some("NO_PANE".to_owned()))),
+    }
+}
+
+/// Stop one running interactive Claude session (contract 1.59.0): SIGTERM to the exact
+/// process Claude Code's registry names as the holder, re-verified by pid and start time
+/// (see `provider::claude::stop`). Synchronous like the Antigravity stop: `phase:"complete"`
+/// only after the process exited. No process: the idempotent `already_stopped` result.
+async fn stop_claude(paths: &Paths, id: &str, generation: &str, keep_pane: bool) -> Result<Value> {
+    let s = catalog::resolve(paths, id, generation)?;
+    ensure!(
+        !external::archiving::is_archived(paths, &s.id)?,
+        "SESSION_ARCHIVED"
+    );
+    ensure!(
+        !claude::hosted::live(paths, &s.conversation_id),
+        "{}",
+        crate::messaging::claude_steer::HOSTED_STOP
+    );
+    let (s, observation) = native_selected(paths, id, generation)?;
+    match observation.availability {
+        "running" => {}
+        "stopped" | "stale" => return already_stopped(paths, &s),
+        _ => bail!(
+            "SESSION_STATE_UNVERIFIED: the Claude session state could not be observed; nothing was signalled"
+        ),
+    }
+    let expected = observation
+        .pid
+        .zip(observation.process_start)
+        .context(claude::stop::NOT_REGISTERED)?;
+    let account = native::account(paths, ProviderId::Claude, &s.account)?;
+    let _lock = crate::external::conversation_lock(paths, &s.conversation_id)?;
+    let (home, conversation) = (account.home.clone(), s.conversation_id.clone());
+    let stopped = tokio::task::spawn_blocking(move || {
+        claude::stop::stop(
+            &home,
+            &conversation,
+            expected,
+            std::time::Duration::from_secs(claude::stop::STOP_SECONDS),
+        )
+    })
+    .await?;
+    let stopped = match stopped {
+        Ok(stopped) => stopped,
+        // It exited between the observation and the stop: nothing left to stop.
+        Err(e) if e.to_string().starts_with("SESSION_NOT_RUNNING") => {
+            return already_stopped(paths, &s);
+        }
+        Err(e) => return Err(e),
+    };
+    let target = observation
+        .attachment
+        .as_ref()
+        .or(s.attachment.as_ref())
+        .map(|a| a.target.clone());
+    let (pane_closed, pane_close_reason) = close_stopped_pane(paths, keep_pane, target).await?;
+    Ok(
+        json!({"id":uuid::Uuid::new_v4().to_string(),"source_session_id":s.id,"kind":"terminate","phase":"complete",
+        "detail":"Claude Code received SIGTERM and exited; its transcript is saved and the session can be resumed.",
+        "pane_closed":pane_closed,"pane_close_reason":pane_close_reason,
+        "provider":"claude","signal":"SIGTERM","pid":stopped.pid,"process_start":stopped.process_start,
+        "interrupted_turn":stopped.was_busy,
+        "provider_conversation_id":s.conversation_id,"source_account_id":format!("claude:{}",s.account)}),
     )
 }
 
@@ -4244,7 +4361,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.58.0");
+        assert_eq!(c["contract_version"], "1.59.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
         assert_eq!(root["layout_version"], 3);

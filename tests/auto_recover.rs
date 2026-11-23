@@ -383,7 +383,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.58.0");
+    assert_eq!(caps["contract_version"], "1.59.0");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
@@ -1268,5 +1268,54 @@ async fn auto_start_takes_a_same_named_idle_tab_before_a_new_one() {
         t.session(&id)["attachment"]["target"],
         "herdr/fixture/w1:p7"
     );
+    cleanup(&t, &id);
+}
+
+impl Setup {
+    fn stop(&self, id: &str, extra: &[&str]) -> Value {
+        let s = self.session(id);
+        let mut args = vec![
+            "stop",
+            "--session",
+            id,
+            "--expected-generation",
+            s["generation"].as_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        self.api(&args)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_stop_with_disable_auto_start_disables_it_and_without_the_flag_keeps_the_mode() {
+    let t = Setup::new().await;
+    let (id, _) = t.stopped_session("a");
+    // With the flag on a live session: stopped, then disabled, reported in the result.
+    let pid = live_with_mode(&t, &id, "start_prompt");
+    let stopped = t.stop(&id, &["--disable-auto-start", "--keep-pane"]);
+    assert_eq!(stopped["phase"], "complete", "{stopped}");
+    assert_eq!(stopped["signal"], "SIGTERM");
+    assert_eq!(stopped["pid"], pid);
+    assert_eq!(stopped["pane_closed"], false);
+    assert_eq!(stopped["pane_close_reason"], "KEEP_PANE");
+    assert!(gone(pid));
+    assert_eq!(stopped["auto_start"]["mode"], "disabled", "{stopped}");
+    assert_eq!(stopped["auto_start"]["enabled"], false);
+    assert_eq!(t.session(&id)["auto_start"]["mode"], "disabled");
+    // Without the flag (in the kept pane): the mode is kept and the idle pane is closed.
+    let pid = live_with_mode(&t, &id, "start");
+    let stopped = t.stop(&id, &[]);
+    assert_eq!(stopped["phase"], "complete", "{stopped}");
+    assert_eq!(stopped["pid"], pid);
+    assert_eq!(stopped["pane_closed"], true, "{stopped}");
+    assert_eq!(stopped["pane_close_reason"], Value::Null);
+    assert!(gone(pid));
+    assert!(stopped.get("auto_start").is_none(), "{stopped}");
+    assert_eq!(t.session(&id)["auto_start"]["mode"], "start");
+    // With the flag on an already stopped session: idempotent, and disabled.
+    let again = t.stop(&id, &["--disable-auto-start"]);
+    assert_eq!(again["already_stopped"], true, "{again}");
+    assert_eq!(again["auto_start"]["mode"], "disabled");
+    assert_eq!(t.session(&id)["auto_start"]["mode"], "disabled");
     cleanup(&t, &id);
 }

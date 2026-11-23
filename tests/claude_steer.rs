@@ -1073,6 +1073,16 @@ async fn hosted_launch_plans_and_terminal_viewer_render_the_event_log() {
     drop(viewer);
     assert_eq!(f.hosted_status(&id)["worker"]["alive"], true);
     let s = f.session(&id);
+    // Contract 1.59.0: `api stop` never signals a hosted worker's provider.
+    let refused = f.api_error(&[
+        "stop",
+        "--session",
+        &id,
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+    ]);
+    assert!(refused.contains("HOSTED_SESSION"), "{refused}");
+    assert_eq!(f.hosted_status(&id)["worker"]["alive"], true);
     let stopped = f.api(&[
         "hosted",
         "stop",

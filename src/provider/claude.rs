@@ -63,7 +63,9 @@ pub const LABEL_ONLY: &str =
 /// Revision 17: per-session archive/delete of stopped native conversations.
 pub const NATIVE_ARCHIVE: &str = "stopped sessions: exact-id conversation files move to sessionsation-managed Archived Sessions and back on restore; refused while running or hosted (see each session's capability_reasons)";
 pub const NATIVE_DELETE: &str = "stopped or archived sessions: exact-id conversation files and the catalog entry are deleted; refused while running or hosted (see each session's capability_reasons)";
-const NO_LIFECYCLE: &str = "no verified Claude process lifecycle control; stop it in its terminal";
+/// Contract 1.59.0: per-session availability is in each session's capabilities.
+pub const STOP: &str = "running interactive sessions: SIGTERM to the exact process Claude Code's registry names as the holder (pid and start time re-checked through a pidfd), then a bounded wait; never SIGKILL, a process that does not exit is reported; background (bg) and hosted sessions are refused";
+const NO_RESTART: &str = "no verified Claude restart: stop the session, then resume it";
 
 /// Revision 16: per-session support (hosted or opted-in live sessions).
 pub const INPUT_DELIVERY: &str = "hosted sessions (stream-json worker) and live sessions of accounts with live steering enabled (peer message); see each session's capabilities";
@@ -84,8 +86,11 @@ pub fn capabilities() -> ProviderCapabilities {
         resume: yes(),
         rename: yes(),
         native_rename: no(LABEL_ONLY),
-        stop: no(NO_LIFECYCLE),
-        restart: no(NO_LIFECYCLE),
+        stop: Capability {
+            supported: true,
+            reason: Some(STOP),
+        },
+        restart: no(NO_RESTART),
         account_switch: Capability {
             supported: true,
             reason: Some(ACCOUNT_SWITCH),

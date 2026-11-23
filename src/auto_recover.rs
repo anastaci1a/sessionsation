@@ -659,22 +659,7 @@ pub async fn set_mode(
         "INVALID_ARGUMENT: --prompt is only valid with --mode start_prompt"
     );
     if mode == Mode::Disabled {
-        let changed = with_store(paths, |store| match store.sessions.get_mut(&s.id) {
-            Some(setting) if setting.mode() != Mode::Disabled => {
-                setting.set_mode(Mode::Disabled);
-                setting.suppressed = false;
-                setting.misses = 0;
-                setting.last_result = Some(result(
-                    "disabled",
-                    "DISABLED",
-                    "Disabled by the operator.",
-                    None,
-                ));
-                true
-            }
-            _ => false,
-        })?;
-        return Ok(receipt(paths, &s, changed));
+        return disable(paths, &s);
     }
     if let Some(p) = &prompt {
         ensure!(
@@ -714,6 +699,26 @@ pub async fn set_mode(
         changed
     })?;
     Ok(receipt(paths, &s, changed))
+}
+/// Disable one resolved session's Auto Start (`api auto-start --mode disabled`, and
+/// `api stop --disable-auto-start` after its stop, contract 1.59.0). Always allowed.
+pub fn disable(paths: &Paths, s: &Session) -> Result<Value> {
+    let changed = with_store(paths, |store| match store.sessions.get_mut(&s.id) {
+        Some(setting) if setting.mode() != Mode::Disabled => {
+            setting.set_mode(Mode::Disabled);
+            setting.suppressed = false;
+            setting.misses = 0;
+            setting.last_result = Some(result(
+                "disabled",
+                "DISABLED",
+                "Disabled by the operator.",
+                None,
+            ));
+            true
+        }
+        _ => false,
+    })?;
+    Ok(receipt(paths, s, changed))
 }
 /// `api auto-start --all --mode disabled`: disable every session (operator bulk admin).
 pub fn disable_all(paths: &Paths) -> Result<Value> {

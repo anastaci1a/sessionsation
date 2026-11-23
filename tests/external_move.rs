@@ -3997,3 +3997,58 @@ async fn second_operation_on_a_busy_session_reports_operation_in_progress() {
     f.invoke(&["cancel-move", id]);
     f.wait(id, "cancelled").await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_stop_with_disable_auto_start_disables_it_when_the_stop_is_admitted() {
+    let f = Fixture::new().await;
+    f.live(ID, false);
+    let row = |f: &Fixture| {
+        f.invoke(&["api", "state"])["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["conversation_id"] == ID)
+            .unwrap()
+            .clone()
+    };
+    let s = row(&f);
+    let on = f.invoke(&[
+        "api",
+        "auto-start",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+        "--mode",
+        "start",
+    ]);
+    assert_eq!(on["result"]["auto_start"]["mode"], "start", "{on}");
+    let s = row(&f);
+    let job = f.invoke(&[
+        "api",
+        "stop",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+        "--disable-auto-start",
+    ]);
+    assert_eq!(job["result"]["kind"], "terminate", "{job}");
+    assert_eq!(job["result"]["auto_start"]["mode"], "disabled", "{job}");
+    f.wait(job["result"]["id"].as_str().unwrap(), "complete")
+        .await;
+    assert_eq!(row(&f)["auto_start"]["mode"], "disabled");
+    // Already stopped, with the flag: idempotent and still disabled.
+    let s = row(&f);
+    let again = f.invoke(&[
+        "api",
+        "stop",
+        "--session",
+        s["id"].as_str().unwrap(),
+        "--expected-generation",
+        s["generation"].as_str().unwrap(),
+        "--disable-auto-start",
+    ]);
+    assert_eq!(again["result"]["already_stopped"], true, "{again}");
+    assert_eq!(again["result"]["auto_start"]["mode"], "disabled");
+}
