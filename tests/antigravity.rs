@@ -1182,35 +1182,188 @@ async fn typing_golden_herdr_sequences_for_antigravity() {
         .collect::<Vec<_>>()
         .join("\n");
     let busy = json!({"status":"working","working_polls":100000});
-    for (name, patch, mode, text) in [
-        ("submit idle", json!({}), "submit", "hello there."),
-        ("queue busy", busy.clone(), "queue", "also run clippy."),
-        ("steer busy", busy.clone(), "steer", "also check the docs."),
-        ("submit busy", busy.clone(), "submit", "busy submit."),
-        ("multi-line", json!({}), "submit", long.as_str()),
+    let busy_with = |patch: Value| {
+        let mut v = busy.clone();
+        for (k, x) in patch.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        v
+    };
+    let settings = home.join(".gemini/antigravity-cli/settings.json");
+    let original = std::fs::read(&settings).ok();
+    let restore_settings = || match &original {
+        Some(b) => std::fs::write(&settings, b).unwrap(),
+        None => {
+            let _ = std::fs::remove_file(&settings);
+        }
+    };
+    // (name, settings.json, tui patch, mode, text, the turn must be ended once written)
+    type Scenario<'a> = (&'a str, Option<&'a str>, Value, &'a str, &'a str, bool);
+    let scenarios: Vec<Scenario> = vec![
+        (
+            "submit idle",
+            None,
+            json!({}),
+            "submit",
+            "hello there.",
+            false,
+        ),
+        (
+            "queue busy",
+            None,
+            busy.clone(),
+            "queue",
+            "also run clippy.",
+            true,
+        ),
+        (
+            "steer busy",
+            None,
+            busy.clone(),
+            "steer",
+            "also check the docs.",
+            true,
+        ),
+        (
+            "submit busy",
+            None,
+            busy.clone(),
+            "submit",
+            "busy submit.",
+            true,
+        ),
+        (
+            "busy during typing",
+            None,
+            json!({"on_type":{"status":"working","working_polls":100000}}),
+            "submit",
+            "turned busy.",
+            true,
+        ),
+        ("multi-line", None, json!({}), "submit", &long, false),
         (
             "draft present",
+            None,
             json!({"input":"half a thought\nsecond line"}),
             "submit",
             "please check\nthe build.",
+            false,
         ),
         (
             "withdraw after failed verification",
+            None,
             json!({"input":"garbled draft","garble_once":true}),
             "submit",
             "will be garbled.",
+            false,
         ),
-    ] {
-        reset(patch.clone());
+        (
+            "host failure while typing",
+            None,
+            json!({"input":"failure draft","fail_text_at":2}),
+            "submit",
+            &long,
+            false,
+        ),
+        (
+            "enter fails",
+            None,
+            json!({"input":"enter draft","fail_enter":true}),
+            "submit",
+            "enter fails.",
+            false,
+        ),
+        (
+            "clear unverified",
+            None,
+            json!({"input":"stuck draft","no_clear":true}),
+            "submit",
+            "never typed.",
+            false,
+        ),
+        (
+            "box not empty after submit",
+            None,
+            json!({"input":"kept draft","keep_on_enter":true}),
+            "submit",
+            "kept after enter.",
+            false,
+        ),
+        (
+            "restore unverified",
+            None,
+            json!({"input":"my draft","drop_after_submit":true}),
+            "submit",
+            "restore check.",
+            false,
+        ),
+        (
+            "blocked after typing",
+            None,
+            json!({"input":"blocked draft","on_type":{"status":"blocked"}}),
+            "submit",
+            "blocked while typing.",
+            false,
+        ),
+        (
+            "pane is a shell",
+            None,
+            json!({"input":"keep me","shell_foreground":true}),
+            "submit",
+            "never typed.",
+            false,
+        ),
+        (
+            "shell in front before enter",
+            None,
+            json!({"input":"shell draft","on_type":{"shell_foreground":true}}),
+            "submit",
+            "typed then a shell.",
+            false,
+        ),
+        (
+            "queue busy with send-immediately: alt+m",
+            Some(r#"{"queuedMessages":"send-immediately"}"#),
+            busy_with(json!({"queued_mode":"send-immediately"})),
+            "queue",
+            "queued by alt+m.",
+            true,
+        ),
+        (
+            "steer busy with send-immediately: enter",
+            Some(r#"{"queuedMessages":"send-immediately"}"#),
+            busy_with(json!({"queued_mode":"send-immediately"})),
+            "steer",
+            "sent by enter.",
+            true,
+        ),
+        (
+            "submit busy with the queue mode unknown",
+            Some("not json"),
+            busy.clone(),
+            "submit",
+            "unknown mode submit.",
+            true,
+        ),
+    ];
+    for (name, file, patch, mode, text, ends) in scenarios {
+        match file {
+            Some(s) => {
+                std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+                std::fs::write(&settings, s).unwrap();
+            }
+            None => restore_settings(),
+        }
+        reset(patch);
         g.begin(name);
         let b = body(mode, text);
         f.send_ok(&b);
-        let r = complete(
-            b["message_id"].as_str().unwrap(),
-            patch["status"] == "working",
-        );
+        let r = complete(b["message_id"].as_str().unwrap(), ends);
         g.end(&r);
     }
+    g.begin("queue refused with the queue mode unknown");
+    g.refused(&f.send_err(&body("queue", "unknown mode queue.")));
+    restore_settings();
     g.begin("leading slash refused");
     g.refused(&f.send_err(&body("submit", "/compact the notes.")));
     g.check("antigravity");

@@ -18,6 +18,8 @@ State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
   record              human (default) | none (Enter records nothing)
   drop_after_submit   ignore typing after Enter (a restore that fails)
   garble_once         drop the last character of the next typed chunk
+  fail_text_at, no_clear, keep_on_enter, on_type   golden fault options (see the
+                      send-text and send-keys handlers)
   wrap, window        soft-wrap the box at `wrap` columns and show only its last `window` rows
   fail_enter          `send-keys enter` fails and submits nothing
   break_journal       directory of Sessionsation's request records; after the first typed text each
@@ -49,15 +51,40 @@ args = sys.argv[1:]
 with open(os.path.join(base, "calls"), "a") as f:
     f.write(json.dumps(args) + "\n")
 # The typing golden tests (tests/support/typing_golden.rs) read the calls made by a
-# terminal delivery worker only: $FAKE_HERDR_DIR/worker-calls.
+# terminal delivery worker only: $FAKE_HERDR_DIR/worker-calls, one JSON object per call
+# with its argv and a digest of what it printed (stdout and stderr).
 try:
     with open("/proc/%d/cmdline" % os.getppid(), "rb") as f:
         _parent = f.read().split(b"\0")
 except OSError:
     _parent = []
 if any(a.endswith(b"-terminal-worker") for a in _parent):
-    with open(os.path.join(base, "worker-calls"), "a") as f:
-        f.write(json.dumps(args) + "\n")
+    import atexit
+    import hashlib
+    import io
+    _logged_args = list(args)
+    _printed = io.StringIO()
+
+    class _Tee:
+        def __init__(self, real):
+            self.real = real
+
+        def write(self, s):
+            _printed.write(s)
+            return self.real.write(s)
+
+        def flush(self):
+            self.real.flush()
+
+    sys.stdout = _Tee(sys.stdout)
+    sys.stderr = _Tee(sys.stderr)
+
+    def _log_call():
+        digest = hashlib.sha256(_printed.getvalue().encode()).hexdigest()[:16]
+        with open(os.path.join(base, "worker-calls"), "a") as f:
+            f.write(json.dumps({"args": _logged_args, "out": digest}) + "\n")
+
+    atexit.register(_log_call)
 while args and args[0] == "--session":
     args = args[2:]
 state = json.load(open(state_file))
@@ -285,9 +312,19 @@ elif cmd == "pane send-text":
         fail("pane_write_failed")
     if args[2] != state["pane"]:
         fail("pane_not_found")
+    # Golden fault options: the Nth send-text fails untyped (fail_text_at); typing after
+    # an Enter is ignored (drop_after_submit).
+    state["texts"] = state.get("texts", 0) + 1
+    if state.get("fail_text_at") == state["texts"]:
+        save()
+        fail("pane_write_failed")
     with open(os.path.join(base, "typed-status"), "a") as f:
         f.write(state["status"] + "\n")
     type_text(" ".join(args[3:]))
+    # on_type: state patched in after the first typed text (busy, blocked, shell in front).
+    if "on_type" in state:
+        state.update(state.pop("on_type"))
+        save()
     save()
     state["chunks"] = state.get("chunks", 0) + 1
     save()
@@ -305,7 +342,16 @@ elif cmd == "pane send-text":
 elif cmd == "pane send-keys":
     if args[2] != state["pane"]:
         fail("pane_not_found")
-    keys(args[3:])
+    # Golden fault options: clearing keys do nothing (no_clear); the input box keeps its
+    # text after a submit key (keep_on_enter).
+    names = args[3:]
+    if state.get("no_clear"):
+        names = [k for k in names if k not in ("ctrl+u", "ctrl+k", "ctrl+e", "backspace", "alt+>")]
+    submits = any(k in ("enter", "alt+m") for k in names)
+    before = state["input"]
+    keys(names)
+    if submits and state.get("keep_on_enter"):
+        state["input"] = before
     save()
 else:
     fail("unsupported_fake_command")

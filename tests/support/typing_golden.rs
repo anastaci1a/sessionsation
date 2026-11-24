@@ -1,8 +1,10 @@
 //! Golden HERDR command sequences of the terminal typing engine (step S8). The fake HERDR
 //! scripts log every call a `*-terminal-worker` process makes to
-//! `$FAKE_HERDR_DIR/worker-calls`; each scenario's slice of that log, with runs of the same
-//! read (`agent list`, `pane read`, `pane process-info`, whose count depends on polling
-//! timing) collapsed to one line, plus the receipt's outcome and journal steps, is compared
+//! `$FAKE_HERDR_DIR/worker-calls` with a digest of each call's output. Each scenario's slice
+//! of that log is written one call per line as `argv => oN`, where `oN` numbers the distinct
+//! outputs in order of first appearance; a call repeated with the same argv and the same
+//! output (a poll that saw nothing new) is written once. With the receipt's outcome and
+//! journal steps after each scenario, the text is compared
 //! with `tests/fixtures/typing-golden/<provider>.txt`. Set `TYPING_GOLDEN_RECORD=1` to
 //! write the file instead (only on a reviewed change of typing behaviour).
 #![allow(dead_code)]
@@ -16,6 +18,7 @@ pub struct Golden {
     log: PathBuf,
     from: usize,
     out: String,
+    outputs: Vec<String>,
 }
 
 fn lines(log: &Path) -> Vec<String> {
@@ -26,25 +29,13 @@ fn lines(log: &Path) -> Vec<String> {
         .collect()
 }
 
-fn is_read(args: &[String]) -> bool {
-    let a: Vec<&str> = args
-        .iter()
-        .map(String::as_str)
-        .skip_while(|a| *a != "agent" && *a != "pane")
-        .take(2)
-        .collect();
-    matches!(
-        a.as_slice(),
-        ["agent", "list"] | ["pane", "read"] | ["pane", "process-info"]
-    )
-}
-
 impl Golden {
     pub fn new(herdr: &Path) -> Self {
         Self {
             log: herdr.join("worker-calls"),
             from: 0,
             out: String::new(),
+            outputs: vec![],
         }
     }
     /// Start a scenario: later calls belong to it.
@@ -70,15 +61,22 @@ impl Golden {
     /// End a scenario with its receipt: the normalized calls and the outcome.
     pub fn end(&mut self, receipt: &Value) {
         self.settle();
-        let mut last: Option<Vec<String>> = None;
+        let mut last: Option<Value> = None;
         for l in lines(&self.log).into_iter().skip(self.from) {
-            let args: Vec<String> = serde_json::from_str(&l).unwrap();
-            if is_read(&args) && last.as_ref() == Some(&args) {
+            let call: Value = serde_json::from_str(&l).unwrap();
+            if last.as_ref() == Some(&call) {
                 continue;
             }
-            self.out.push_str(&l);
-            self.out.push('\n');
-            last = Some(args);
+            let digest = call["out"].as_str().unwrap().to_owned();
+            let n = match self.outputs.iter().position(|d| *d == digest) {
+                Some(i) => i + 1,
+                None => {
+                    self.outputs.push(digest);
+                    self.outputs.len()
+                }
+            };
+            self.out.push_str(&format!("{} => o{n}\n", call["args"]));
+            last = Some(call);
         }
         let t = &receipt["terminal_input"];
         let outcome = serde_json::json!({

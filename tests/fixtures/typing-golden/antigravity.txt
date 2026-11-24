@@ -1,128 +1,289 @@
 ## submit idle
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "hello there."]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "enter"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-text","w1:p1","hello there."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o5
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
 => {"antigravity_input":{"busy_at_submit":false,"expected":"user_turn","key":"enter","outcome":"submitted","screen_evidence":null},"correlation":"user","draft":{"chars":0,"left_chars":null,"left_in_input":null,"present":false,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit"],"view_switched":null,"written":true}
 ## queue busy
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "also run clippy."]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "enter"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","send-text","w1:p1","also run clippy."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o8
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o9
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
 => {"antigravity_input":{"busy_at_submit":true,"expected":"native_queue","key":"enter","outcome":"queued","screen_evidence":"queued"},"correlation":"user","draft":{"chars":0,"left_chars":null,"left_in_input":null,"present":false,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit"],"view_switched":null,"written":true}
 ## steer busy
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "also check the docs."]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "alt+m"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","send-text","w1:p1","also check the docs."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o10
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","alt+m"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
 => {"antigravity_input":{"busy_at_submit":true,"expected":"send_immediately","key":"alt+m","outcome":"sent_immediately","screen_evidence":null},"correlation":"user","draft":{"chars":0,"left_chars":null,"left_in_input":null,"present":false,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit"],"view_switched":null,"written":true}
 ## submit busy
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "busy submit."]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "enter"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","send-text","w1:p1","busy submit."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o11
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o12
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
+=> {"antigravity_input":{"busy_at_submit":true,"expected":"native_queue","key":"enter","outcome":"queued","screen_evidence":"queued"},"correlation":"user","draft":{"chars":0,"left_chars":null,"left_in_input":null,"present":false,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit"],"view_switched":null,"written":true}
+## busy during typing
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-text","w1:p1","turned busy."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o13
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o14
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
 => {"antigravity_input":{"busy_at_submit":true,"expected":"native_queue","key":"enter","outcome":"queued","screen_evidence":"queued"},"correlation":"user","draft":{"chars":0,"left_chars":null,"left_in_input":null,"present":false,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit"],"view_switched":null,"written":true}
 ## multi-line
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "line 0: check the build and the "]
-["--session", "fixture", "pane", "send-text", "w1:p1", "tests check the build and the te"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "sts check the build and the test"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "s "]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+j"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "line 1: check the build and the "]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "tests check the build and the te"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "sts check the build and the test"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "s "]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+j"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "line 2: check the build and the "]
-["--session", "fixture", "pane", "send-text", "w1:p1", "tests check the build and the te"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "sts check the build and the test"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "s"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "enter"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-text","w1:p1","line 0: check the build and the "] => o4
+["--session","fixture","pane","send-text","w1:p1","tests check the build and the te"] => o4
+["--session","fixture","pane","send-text","w1:p1","sts check the build and the test"] => o4
+["--session","fixture","pane","send-text","w1:p1","s "] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+j"] => o4
+["--session","fixture","pane","send-text","w1:p1","line 1: check the build and the "] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o15
+["--session","fixture","pane","send-text","w1:p1","tests check the build and the te"] => o4
+["--session","fixture","pane","send-text","w1:p1","sts check the build and the test"] => o4
+["--session","fixture","pane","send-text","w1:p1","s "] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+j"] => o4
+["--session","fixture","pane","send-text","w1:p1","line 2: check the build and the "] => o4
+["--session","fixture","pane","send-text","w1:p1","tests check the build and the te"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o16
+["--session","fixture","pane","send-text","w1:p1","sts check the build and the test"] => o4
+["--session","fixture","pane","send-text","w1:p1","s"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o17
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
 => {"antigravity_input":{"busy_at_submit":false,"expected":"user_turn","key":"enter","outcome":"submitted","screen_evidence":null},"correlation":"user","draft":{"chars":0,"left_chars":null,"left_in_input":null,"present":false,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit"],"view_switched":null,"written":true}
 ## draft present
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "alt+>"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+u", "backspace"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+u", "backspace"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+u", "backspace"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+u", "backspace"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "please check"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+j"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "the build."]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "enter"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "half a thought"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+j"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "second line"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o18
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","pane","send-text","w1:p1","please check"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+j"] => o4
+["--session","fixture","pane","send-text","w1:p1","the build."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o19
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","pane","send-text","w1:p1","half a thought"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+j"] => o4
+["--session","fixture","pane","send-text","w1:p1","second line"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o20
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
 => {"antigravity_input":{"busy_at_submit":false,"expected":"user_turn","key":"enter","outcome":"submitted","screen_evidence":null},"correlation":"user","draft":{"chars":26,"left_chars":null,"left_in_input":null,"present":true,"restore_error":null,"restored":true},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit","restore"],"view_switched":null,"written":true}
 ## withdraw after failed verification
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "process-info", "--pane", "w1:p1"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "alt+>"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+u", "backspace"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+u", "backspace"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+u", "backspace"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "will be garbled."]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "agent", "list"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "alt+>"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+u", "backspace"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+u", "backspace"]
-["--session", "fixture", "pane", "send-keys", "w1:p1", "ctrl+u", "backspace"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
-["--session", "fixture", "pane", "send-text", "w1:p1", "garbled draft"]
-["--session", "fixture", "pane", "read", "w1:p1", "--source", "visible", "--format", "ansi"]
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o21
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","pane","send-text","w1:p1","will be garbled."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o22
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","pane","send-text","w1:p1","garbled draft"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o21
 => {"antigravity_input":{"busy_at_submit":null,"expected":null,"key":null,"outcome":null,"screen_evidence":null},"correlation":null,"draft":{"chars":13,"left_chars":null,"left_in_input":null,"present":true,"restore_error":null,"restored":true},"escaped_prefix":false,"gemini_input":null,"reason":"TERMINAL_TYPED_TEXT_MISMATCH","state":"rejected","steps":["clear","type","withdraw","restore"],"view_switched":null,"written":false}
+## host failure while typing
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o23
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","pane","send-text","w1:p1","line 0: check the build and the "] => o4
+["--session","fixture","pane","send-text","w1:p1","tests check the build and the te"] => o24
+=> {"antigravity_input":{"busy_at_submit":null,"expected":null,"key":null,"outcome":null,"screen_evidence":null},"correlation":null,"draft":{"chars":13,"left_chars":null,"left_in_input":null,"present":true,"restore_error":"host_failed_draft_kept_in_journal","restored":false},"escaped_prefix":false,"gemini_input":null,"reason":"TERMINAL_HOST_FAILED_BEFORE_SUBMIT","state":"rejected","steps":["clear","type"],"view_switched":null,"written":false}
+## enter fails
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o25
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","pane","send-text","w1:p1","enter fails."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o26
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o24
+=> {"antigravity_input":{"busy_at_submit":false,"expected":"user_turn","key":"enter","outcome":null,"screen_evidence":null},"correlation":null,"draft":{"chars":11,"left_chars":null,"left_in_input":null,"present":true,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":"TERMINAL_SUBMIT_UNCERTAIN","state":"delivery_unknown","steps":["clear","type","submit"],"view_switched":null,"written":false}
+## clear unverified
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o27
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o27
+=> {"antigravity_input":{"busy_at_submit":null,"expected":null,"key":null,"outcome":null,"screen_evidence":null},"correlation":null,"draft":{"chars":11,"left_chars":null,"left_in_input":null,"present":true,"restore_error":"clear_unverified_draft_kept_in_journal","restored":false},"escaped_prefix":false,"gemini_input":null,"reason":"TERMINAL_CLEAR_UNVERIFIED","state":"rejected","steps":["clear"],"view_switched":null,"written":false}
+## box not empty after submit
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o28
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","pane","send-text","w1:p1","kept after enter."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o29
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o30
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
+=> {"antigravity_input":{"busy_at_submit":false,"expected":"user_turn","key":"enter","outcome":"submitted","screen_evidence":null},"correlation":"user","draft":{"chars":10,"left_chars":null,"left_in_input":null,"present":true,"restore_error":"input_not_empty_after_submit","restored":false},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit"],"view_switched":null,"written":true}
+## restore unverified
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o31
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","pane","send-text","w1:p1","restore check."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o32
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","pane","send-text","w1:p1","my draft"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
+=> {"antigravity_input":{"busy_at_submit":false,"expected":"user_turn","key":"enter","outcome":"submitted","screen_evidence":null},"correlation":"user","draft":{"chars":8,"left_chars":null,"left_in_input":null,"present":true,"restore_error":"restore_unverified","restored":false},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit","restore"],"view_switched":null,"written":true}
+## blocked after typing
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o33
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","pane","send-text","w1:p1","blocked while typing."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o34
+["--session","fixture","agent","list"] => o35
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","pane","send-text","w1:p1","blocked draft"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o33
+=> {"antigravity_input":{"busy_at_submit":null,"expected":null,"key":null,"outcome":null,"screen_evidence":null},"correlation":null,"draft":{"chars":13,"left_chars":null,"left_in_input":null,"present":true,"restore_error":null,"restored":true},"escaped_prefix":false,"gemini_input":null,"reason":"TERMINAL_AGENT_BLOCKED","state":"rejected","steps":["clear","type","withdraw","restore"],"view_switched":null,"written":false}
+## pane is a shell
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o36
+=> {"antigravity_input":{"busy_at_submit":null,"expected":null,"key":null,"outcome":null,"screen_evidence":null},"correlation":null,"draft":{"chars":null,"left_chars":null,"left_in_input":null,"present":null,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":"TERMINAL_PANE_IS_SHELL","state":"rejected","steps":[],"view_switched":null,"written":false}
+## shell in front before enter
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o37
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","send-keys","w1:p1","alt+>"] => o4
+["--session","fixture","pane","send-keys","w1:p1","ctrl+u","backspace"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o3
+["--session","fixture","pane","send-text","w1:p1","typed then a shell."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o38
+["--session","fixture","agent","list"] => o1
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o36
+=> {"antigravity_input":{"busy_at_submit":false,"expected":"user_turn","key":"enter","outcome":null,"screen_evidence":null},"correlation":null,"draft":{"chars":11,"left_chars":null,"left_in_input":null,"present":true,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":"TERMINAL_PANE_IS_SHELL","state":"rejected","steps":["clear","type","submit"],"view_switched":null,"written":false}
+## queue busy with send-immediately: alt+m
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","send-text","w1:p1","queued by alt+m."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o39
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","alt+m"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o40
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
+=> {"antigravity_input":{"busy_at_submit":true,"expected":"native_queue","key":"alt+m","outcome":"queued","screen_evidence":"queued"},"correlation":"user","draft":{"chars":0,"left_chars":null,"left_in_input":null,"present":false,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit"],"view_switched":null,"written":true}
+## steer busy with send-immediately: enter
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","send-text","w1:p1","sent by enter."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o41
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
+=> {"antigravity_input":{"busy_at_submit":true,"expected":"send_immediately","key":"enter","outcome":"sent_immediately","screen_evidence":null},"correlation":"user","draft":{"chars":0,"left_chars":null,"left_in_input":null,"present":false,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit"],"view_switched":null,"written":true}
+## submit busy with the queue mode unknown
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o6
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","send-text","w1:p1","unknown mode submit."] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o42
+["--session","fixture","agent","list"] => o7
+["--session","fixture","pane","process-info","--pane","w1:p1"] => o2
+["--session","fixture","pane","send-keys","w1:p1","enter"] => o4
+["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o43
+["--session","fixture","agent","list"] => o7
+["--session","fixture","agent","list"] => o1
+=> {"antigravity_input":{"busy_at_submit":true,"expected":"unknown","key":"enter","outcome":"submitted","screen_evidence":"queued"},"correlation":"user","draft":{"chars":0,"left_chars":null,"left_in_input":null,"present":false,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":null,"state":"completed_with_reply","steps":["clear","type","submit"],"view_switched":null,"written":true}
+## queue refused with the queue mode unknown
+=> refused ANTIGRAVITY_QUEUE_MODE_UNKNOWN
 ## leading slash refused
 => refused TERMINAL_PAYLOAD_UNSUPPORTED

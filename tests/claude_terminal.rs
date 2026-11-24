@@ -1254,7 +1254,7 @@ async fn typing_golden_herdr_sequences_for_claude() {
         .map(|i| format!("line {i}: {}", "check the build and the tests ".repeat(3)))
         .collect::<Vec<_>>()
         .join("\n");
-    for (name, patch, mode, text) in [
+    let scenarios: Vec<(&str, Value, &str, &str)> = vec![
         ("submit idle", json!({}), "submit", "hello there."),
         (
             "steer busy",
@@ -1262,7 +1262,7 @@ async fn typing_golden_herdr_sequences_for_claude() {
             "steer",
             "also run clippy.",
         ),
-        ("multi-line", json!({}), "submit", long.as_str()),
+        ("multi-line", json!({}), "submit", &long),
         (
             "escaped leading slash",
             json!({}),
@@ -1299,7 +1299,56 @@ async fn typing_golden_herdr_sequences_for_claude() {
             "submit",
             "never typed.",
         ),
-    ] {
+        (
+            "host failure while typing: salvaged",
+            json!({"input":"salvage draft","fail_text_at":2}),
+            "steer",
+            &long,
+        ),
+        (
+            "enter fails",
+            json!({"input":"enter draft","fail_enter":true}),
+            "steer",
+            "enter fails.",
+        ),
+        (
+            "clear unverified",
+            json!({"input":"stuck draft","no_clear":true}),
+            "steer",
+            "never typed.",
+        ),
+        (
+            "box not empty after submit",
+            json!({"input":"kept draft","keep_on_enter":true}),
+            "steer",
+            "kept after enter.",
+        ),
+        (
+            "restore unverified",
+            json!({"input":"my draft","drop_after_submit":true}),
+            "steer",
+            "restore check.",
+        ),
+        (
+            "blocked after typing",
+            json!({"input":"blocked draft","on_type":{"status":"blocked"}}),
+            "steer",
+            "blocked while typing.",
+        ),
+        (
+            "pane is a shell",
+            json!({"input":"keep me","shell_foreground":true}),
+            "steer",
+            "never typed.",
+        ),
+        (
+            "shell in front before enter",
+            json!({"input":"shell draft","on_type":{"shell_foreground":true}}),
+            "steer",
+            "typed then a shell.",
+        ),
+    ];
+    for (name, patch, mode, text) in scenarios {
         reset(patch);
         g.begin(name);
         let b = typed(mode, text);
@@ -1309,5 +1358,31 @@ async fn typing_golden_herdr_sequences_for_claude() {
     }
     g.begin("queue refused");
     g.refused(&f.send_err(&typed("queue", "later.")));
+    // A worker that died with its typed text in the box: the cleanup worker started by a
+    // receipt read withdraws it and puts the draft back.
+    let journal = f.paths.root.join("messaging/claude-steer");
+    reset(
+        json!({"input":"my draft","break_journal":journal,"break_screen_after_type":true,"break_at_chunk":5}),
+    );
+    let msg = "left behind by a dead worker. ".repeat(8);
+    let b = typed("submit", &msg);
+    let m = b["message_id"].as_str().unwrap().to_owned();
+    f.send_ok(&b);
+    wait_for("the worker to give up", || {
+        f.tui()["screen_broken"] == true
+            && std::fs::read_dir(&journal).unwrap().flatten().all(|e| {
+                let p = e.path();
+                p.extension().is_none_or(|x| x != "lock") || sessionsation_worker_stopped(&p)
+            })
+    });
+    mend_journal(&journal);
+    let mut v = f.tui();
+    v["screen_broken"] = json!(false);
+    v.as_object_mut().unwrap().remove("break_journal");
+    v.as_object_mut().unwrap().remove("break_screen_after_type");
+    g.begin("orphan withdrawn by the cleanup worker");
+    f.set_tui(&v);
+    let r = f.settled(&m);
+    g.end(&r);
     g.check("claude");
 }

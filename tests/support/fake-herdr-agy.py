@@ -12,6 +12,8 @@ State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
   queued_mode         queue (default) | send-immediately: what Enter does mid-turn
   transcript          brain/<id>/.system_generated/logs/transcript.jsonl agy appends steps to
   garble_once         drop the last character of the next typed text
+  fail_text_at, fail_enter, no_clear, keep_on_enter, drop_after_submit, on_type,
+  shell_foreground    golden fault options (see the send-text and send-keys handlers)
 Enter while idle records a user turn and its reply and starts a short turn. Mid-turn the
 key that queues (Enter with queue, alt+m with send-immediately) lists the text in agy's
 queue row (`▸ queued: ... (alt+m to send immediately)`); queued texts are recorded, each
@@ -30,15 +32,40 @@ args = sys.argv[1:]
 with open(os.path.join(base, "calls"), "a") as f:
     f.write(json.dumps(args) + "\n")
 # The typing golden tests (tests/support/typing_golden.rs) read the calls made by a
-# terminal delivery worker only: $FAKE_HERDR_DIR/worker-calls.
+# terminal delivery worker only: $FAKE_HERDR_DIR/worker-calls, one JSON object per call
+# with its argv and a digest of what it printed (stdout and stderr).
 try:
     with open("/proc/%d/cmdline" % os.getppid(), "rb") as f:
         _parent = f.read().split(b"\0")
 except OSError:
     _parent = []
 if any(a.endswith(b"-terminal-worker") for a in _parent):
-    with open(os.path.join(base, "worker-calls"), "a") as f:
-        f.write(json.dumps(args) + "\n")
+    import atexit
+    import hashlib
+    import io
+    _logged_args = list(args)
+    _printed = io.StringIO()
+
+    class _Tee:
+        def __init__(self, real):
+            self.real = real
+
+        def write(self, s):
+            _printed.write(s)
+            return self.real.write(s)
+
+        def flush(self):
+            self.real.flush()
+
+    sys.stdout = _Tee(sys.stdout)
+    sys.stderr = _Tee(sys.stderr)
+
+    def _log_call():
+        digest = hashlib.sha256(_printed.getvalue().encode()).hexdigest()[:16]
+        with open(os.path.join(base, "worker-calls"), "a") as f:
+            f.write(json.dumps({"args": _logged_args, "out": digest}) + "\n")
+
+    atexit.register(_log_call)
 while args and args[0] == "--session":
     args = args[2:]
 state = json.load(open(state_file))
@@ -129,6 +156,10 @@ def keys(names):
         elif key == "ctrl+j":
             state["input"] += "\n"
         elif key in ("enter", "alt+m"):
+            if state.get("fail_enter"):
+                save()
+                fail("pane_write_failed")
+            state["submitted"] = True
             submit(key)
 
 
@@ -150,8 +181,8 @@ if cmd == "agent list":
     out({"result": {"agents": [{"agent": "agy", "agent_status": status, "pane_id": state["pane"]}],
                     "type": "agent_list"}})
 elif cmd == "pane process-info":
-    out({"result": {"process_info": {"shell_pid": 1,
-                                     "foreground_processes": [{"pid": state["pid"], "name": "agy"}]}}})
+    front = {"pid": 1, "name": "bash"} if state.get("shell_foreground") else {"pid": state["pid"], "name": "agy"}
+    out({"result": {"process_info": {"shell_pid": 1, "foreground_processes": [front]}}})
 elif cmd == "pane read":
     if args[2] != state["pane"]:
         fail("pane_not_found")
@@ -159,15 +190,35 @@ elif cmd == "pane read":
 elif cmd == "pane send-text":
     if args[2] != state["pane"]:
         fail("pane_not_found")
+    # Golden fault options: the Nth send-text fails untyped (fail_text_at); typing after
+    # an Enter is ignored (drop_after_submit).
+    state["texts"] = state.get("texts", 0) + 1
+    if state.get("fail_text_at") == state["texts"]:
+        save()
+        fail("pane_write_failed")
     text = " ".join(args[3:])
     if state.pop("garble_once", False):
         text = text[:-1]
-    state["input"] += text
+    if not (state.get("drop_after_submit") and state.get("submitted")):
+        state["input"] += text
+    # on_type: state patched in after the first typed text (busy, blocked, shell in front).
+    if "on_type" in state:
+        state.update(state.pop("on_type"))
+        save()
     save()
 elif cmd == "pane send-keys":
     if args[2] != state["pane"]:
         fail("pane_not_found")
-    keys(args[3:])
+    # Golden fault options: clearing keys do nothing (no_clear); the input box keeps its
+    # text after a submit key (keep_on_enter).
+    names = args[3:]
+    if state.get("no_clear"):
+        names = [k for k in names if k not in ("ctrl+u", "ctrl+k", "ctrl+e", "backspace", "alt+>")]
+    submits = any(k in ("enter", "alt+m") for k in names)
+    before = state["input"]
+    keys(names)
+    if submits and state.get("keep_on_enter"):
+        state["input"] = before
     save()
 else:
     fail("unsupported_fake_command")

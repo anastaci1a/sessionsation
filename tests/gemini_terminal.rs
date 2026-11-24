@@ -673,14 +673,14 @@ async fn typing_golden_herdr_sequences_for_gemini() {
         find_chat(&f.home(), &native).is_some_and(|p| read(&p).contains("sessionId"))
     });
     let transcript = chat_file(&f.home(), &native);
-    let reset = |pid: u32, steering: bool, patch: Value| {
+    let reset = |pid: u32, steering: bool, patch: &Value| {
         let mut v = json!({"pane":"w1:p1","pid":pid,"transcript":transcript,"steering":steering});
         for (k, x) in patch.as_object().unwrap() {
             v[k] = x.clone();
         }
         f.set_tui(&v);
     };
-    reset(process.0.id(), false, json!({}));
+    reset(process.0.id(), false, &json!({}));
     let mut s = Value::Null;
     wait_for("attached live gemini session", || {
         s = f.session(&native);
@@ -695,81 +695,115 @@ async fn typing_golden_herdr_sequences_for_gemini() {
     let run = |g: &mut typing_golden::Golden,
                pid: u32,
                steering: bool,
-               name: &str,
-               patch: Value,
-               mode: &str,
-               text: &str| {
-        reset(pid, steering, patch);
-        g.begin(name);
-        let b = body(mode, &f.session(&id), text);
-        f.send_ok(&b);
-        let r = f.settled(b["message_id"].as_str().unwrap());
-        g.end(&r);
+               list: Vec<(&str, Value, &str, &str)>| {
+        for (name, patch, mode, text) in list {
+            reset(pid, steering, &patch);
+            g.begin(name);
+            let b = body(mode, &f.session(&id), text);
+            f.send_ok(&b);
+            let r = f.settled(b["message_id"].as_str().unwrap());
+            g.end(&r);
+        }
     };
     let pid = process.0.id();
     run(
         &mut g,
         pid,
         false,
-        "submit idle",
-        json!({}),
-        "submit",
-        "hello there.",
-    );
-    run(
-        &mut g,
-        pid,
-        false,
-        "queue busy",
-        json!({"status":"working"}),
-        "queue",
-        "also run clippy.",
-    );
-    run(
-        &mut g,
-        pid,
-        false,
-        "submit busy queues",
-        json!({"status":"working"}),
-        "submit",
-        "busy submit.",
-    );
-    run(&mut g, pid, false, "multi-line", json!({}), "submit", &long);
-    run(
-        &mut g,
-        pid,
-        false,
-        "escaped leading slash and help",
-        json!({"view":"help"}),
-        "submit",
-        "/compact the notes.",
-    );
-    run(
-        &mut g,
-        pid,
-        false,
-        "draft present",
-        json!({"input":"half a thought\nsecond line"}),
-        "submit",
-        "please check\nthe build.",
-    );
-    run(
-        &mut g,
-        pid,
-        false,
-        "withdraw after failed verification",
-        json!({"input":"garbled draft","garble_once":true}),
-        "submit",
-        "will be garbled.",
-    );
-    run(
-        &mut g,
-        pid,
-        false,
-        "refused screen",
-        json!({"view":"dialog"}),
-        "submit",
-        "never typed.",
+        vec![
+            ("submit idle", json!({}), "submit", "hello there."),
+            (
+                "queue busy",
+                json!({"status":"working"}),
+                "queue",
+                "also run clippy.",
+            ),
+            (
+                "submit busy queues",
+                json!({"status":"working"}),
+                "submit",
+                "busy submit.",
+            ),
+            (
+                "busy during typing: queued",
+                json!({"on_type":{"status":"working"}}),
+                "submit",
+                "turned busy.",
+            ),
+            ("multi-line", json!({}), "submit", &long),
+            (
+                "escaped leading slash and help",
+                json!({"view":"help"}),
+                "submit",
+                "/compact the notes.",
+            ),
+            (
+                "draft present",
+                json!({"input":"half a thought\nsecond line"}),
+                "submit",
+                "please check\nthe build.",
+            ),
+            (
+                "withdraw after failed verification",
+                json!({"input":"garbled draft","garble_once":true}),
+                "submit",
+                "will be garbled.",
+            ),
+            (
+                "refused screen",
+                json!({"view":"dialog"}),
+                "submit",
+                "never typed.",
+            ),
+            (
+                "host failure while typing",
+                json!({"input":"failure draft","fail_text_at":2}),
+                "submit",
+                &long,
+            ),
+            (
+                "enter fails",
+                json!({"input":"enter draft","fail_enter":true}),
+                "submit",
+                "enter fails.",
+            ),
+            (
+                "clear unverified",
+                json!({"input":"stuck draft","no_clear":true}),
+                "submit",
+                "never typed.",
+            ),
+            (
+                "box not empty after submit",
+                json!({"input":"kept draft","keep_on_enter":true}),
+                "submit",
+                "kept after enter.",
+            ),
+            (
+                "restore unverified",
+                json!({"input":"my draft","drop_after_submit":true}),
+                "submit",
+                "restore check.",
+            ),
+            (
+                "blocked after typing",
+                json!({"input":"blocked draft","on_type":{"status":"blocked"}}),
+                "submit",
+                "blocked while typing.",
+            ),
+            (
+                "pane is a shell",
+                json!({"input":"keep me","shell_foreground":true}),
+                "submit",
+                "never typed.",
+            ),
+            (
+                "shell in front before enter",
+                json!({"input":"shell draft","on_type":{"shell_foreground":true}}),
+                "submit",
+                "typed then a shell.",
+            ),
+        ],
     );
     g.begin("steer refused with steering off");
     g.refused(&f.send_err(&body("steer", &f.session(&id), "x.")));
@@ -779,7 +813,7 @@ async fn typing_golden_herdr_sequences_for_gemini() {
     std::thread::sleep(Duration::from_millis(1100));
     let process = f.gemini("--resume", &native);
     let pid = process.0.id();
-    reset(pid, true, json!({}));
+    reset(pid, true, &json!({}));
     wait_for("restarted session", || {
         let s = f.session(&id);
         s["pid"] == pid && s["attachment"]["host"] == "herdr"
@@ -788,19 +822,26 @@ async fn typing_golden_herdr_sequences_for_gemini() {
         &mut g,
         pid,
         true,
-        "steer busy",
-        json!({"status":"working"}),
-        "steer",
-        "also check the docs.",
-    );
-    run(
-        &mut g,
-        pid,
-        true,
-        "busy submit would steer: withdrawn",
-        json!({"status":"working","input":"my draft"}),
-        "submit",
-        "plain submit.",
+        vec![
+            (
+                "steer busy",
+                json!({"status":"working"}),
+                "steer",
+                "also check the docs.",
+            ),
+            (
+                "busy submit would steer: refused before typing",
+                json!({"status":"working","input":"my draft"}),
+                "submit",
+                "plain submit.",
+            ),
+            (
+                "busy during typing would steer: withdrawn",
+                json!({"input":"my draft","on_type":{"status":"working"}}),
+                "submit",
+                "turned busy.",
+            ),
+        ],
     );
     g.check("gemini");
     drop(process);
