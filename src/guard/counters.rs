@@ -374,7 +374,7 @@ pub const COUNTERS: &[Counter] = &[
     // typing
     Counter {
         name: "typing_dup_fns",
-        regex: r"fn (deliver|observe_loop|recheck|restore|until|clear|withdraw)\(",
+        regex: r"fn (deliver|observe_loop|recheck|restore|until|clear|withdraw|salvage|type_checked|left)\s*[<(]",
         exclude: &["src/messaging/claude_steer/typing.rs"],
         scope: Some("src/messaging/claude_steer/"),
         files: &[],

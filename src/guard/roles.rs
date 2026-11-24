@@ -42,7 +42,7 @@ pub struct Role {
 
 /// sha256 (hex) of the bytes between the `guard-roles-begin` line and the
 /// `guard-roles-end` line of this file.
-pub const ROLES_DIGEST: &str = "c606308479800069ee3ff3b0ac43232f0889ebbc210ca81e5d1b75139ec1e273";
+pub const ROLES_DIGEST: &str = "a1f92d442a9adaa9b5219be0240237eb215c62dc35ddd1c733c751b2f7700ce0";
 
 // guard-roles-begin
 pub const ROLES: &[Role] = &[
@@ -198,9 +198,11 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "typing",
-        owners: &[],
+        owners: &["src/messaging/claude_steer/typing.rs"],
         scope: Some("src/messaging/claude_steer/"),
-        forbidden: &[r"fn (deliver|observe_loop|recheck|restore|until|clear|withdraw)\("],
+        forbidden: &[
+            r"fn (deliver|observe_loop|recheck|restore|until|clear|withdraw|salvage|type_checked|left)\s*[<(]",
+        ],
         permitted: &[],
         counters: &[
             "typing_dup_fns",
@@ -208,8 +210,8 @@ pub const ROLES: &[Role] = &[
             "typing_allow_markers",
         ],
         mech: Mech::Regex,
-        mode: Mode::Counted,
-        hint: "use claude_steer::typing::Typist with a ScreenProfile",
+        mode: Mode::Enforced,
+        hint: "use claude_steer::typing (deliver, until, clear, restore, withdraw, salvage, observe_loop, recheck, Host::type_checked) with a ScreenProfile impl",
     },
     Role {
         name: "waits",

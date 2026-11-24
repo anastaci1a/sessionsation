@@ -78,7 +78,9 @@ impl ProviderOps for Ops {
         }
     }
     fn add_session_input(&self, paths: &Paths, value: &mut Value, home: Option<&Path>) {
-        crate::messaging::claude_steer::antigravity::apply_session_input(
+        crate::messaging::claude_steer::typing::apply_session_input::<
+            crate::messaging::claude_steer::antigravity::Antigravity,
+        >(
             value,
             home,
             crate::messaging::claude_steer::terminal::enabled(paths),

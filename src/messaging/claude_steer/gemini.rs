@@ -1,7 +1,7 @@
 //! Gemini CLI 0.66.0 terminal input (contract revision 17): submit, queue and
 //! steer for an interactive Gemini session that Sessionsation tracks and that
-//! runs in a verified HERDR pane. It reuses the Claude terminal-input machinery
-//! ([`super::terminal`]): HERDR typed input without bracketed paste, the draft
+//! runs in a verified HERDR pane. It is a [`ScreenProfile`] of the typing engine
+//! ([`super::typing`]): HERDR typed input without bracketed paste, the draft
 //! round-trip, screen checks, journaling before every write, transcript
 //! anchoring and no replay.
 //!
@@ -28,8 +28,12 @@
 use super::{
     Record, Request, abandon_unsent, change, dir, finish, is_terminal, read,
     terminal::{
-        self, CONFIRM_SECONDS, Cell, Host, SCREEN_WAIT, SETTLE, Terminal, columns, now_ms, reason,
-        reject, row_text, squash, step, timestamp_ms,
+        self, CONFIRM_SECONDS, Cell, Host, Terminal, columns, now_ms, reason, row_text, squash,
+        timestamp_ms,
+    },
+    typing::{
+        self, ClearKeys, Draft, Key, Leave, Prefix, Screen, ScreenProfile, SessionInput, Typing,
+        code,
     },
     worker_lock,
 };
@@ -38,7 +42,7 @@ use crate::{
     paths::{Paths, lock_file, private_dir},
     provider::{ProviderId, claude, gemini, gemini::steering},
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -46,7 +50,7 @@ use std::{
     fs,
     io::{BufRead, Read, Seek},
     path::Path,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 pub const AGENT: &str = "gemini";
@@ -119,39 +123,7 @@ pub struct Facts {
 /// The text as typed: CRLF normalized, trimmed; a leading `/`, `!` or `?`
 /// gets a backslash so it stays plain text (command, shell mode, shortcuts).
 pub fn deliverable(text: &str) -> Result<(String, bool, bool)> {
-    let normalized = text.replace("\r\n", "\n");
-    ensure!(
-        !normalized
-            .chars()
-            .any(|c| c != '\n' && (c.is_control() || c == '\u{7f}')),
-        "TERMINAL_PAYLOAD_UNSUPPORTED: tabs and control characters cannot be typed verbatim"
-    );
-    let trimmed = normalized.trim();
-    ensure!(!trimmed.is_empty(), "INVALID_REQUEST: empty text");
-    ensure!(
-        trimmed.len() <= MAX_TEXT && trimmed.lines().count() <= MAX_LINES,
-        "TERMINAL_TEXT_TOO_LONG: Gemini's input box shows 10 rows, so terminal input takes at most {MAX_TEXT} bytes and {MAX_LINES} lines"
-    );
-    ensure!(
-        !trimmed.ends_with('\\'),
-        "TERMINAL_PAYLOAD_UNSUPPORTED: a trailing backslash turns Enter into a newline"
-    );
-    let last = trimmed.split_whitespace().last().unwrap_or_default();
-    ensure!(
-        !last.starts_with('@') && !last.starts_with('/'),
-        "TERMINAL_PAYLOAD_UNSUPPORTED: text ending in an @ or / token would submit a completion; add punctuation after it"
-    );
-    let escaped = trimmed.starts_with(['/', '!', '?']);
-    let out = if escaped {
-        format!("\\{trimmed}")
-    } else {
-        trimmed.to_owned()
-    };
-    Ok((
-        out,
-        escaped,
-        normalized.len() != text.len() || trimmed != normalized,
-    ))
+    typing::deliverable::<Gemini>(text)
 }
 
 // ---------------------------------------------------------------- screen
@@ -367,39 +339,6 @@ fn cell(ch: char) -> Cell {
         style: Default::default(),
     }
 }
-fn is_main(v: &Result<View, &'static str>, f: impl Fn(&str) -> bool) -> bool {
-    matches!(v, Ok(View::Main { draft, .. }) if f(draft))
-}
-
-/// Read the screen until `want` holds or the wait ends; returns the last view.
-async fn until(
-    host: &Host,
-    strict: bool,
-    want: impl Fn(&Result<View, &'static str>) -> bool,
-) -> Result<Result<View, &'static str>> {
-    let deadline = Instant::now() + SCREEN_WAIT;
-    loop {
-        tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
-        let v = classify(&host.screen()?, strict);
-        if want(&v) || Instant::now() >= deadline {
-            return Ok(v);
-        }
-    }
-}
-/// Clear the input: per round ctrl+e (end of line), ctrl+u (kill to line
-/// start), ctrl+k (join the next line) and backspace (join the previous one).
-/// None of these keys does anything else in Gemini's prompt.
-async fn clear(host: &Host, text: &str) -> Result<()> {
-    let rows = text
-        .split('\n')
-        .map(|l| l.chars().count() / 30 + 1)
-        .sum::<usize>();
-    for _ in 0..(rows + 2).min(100) {
-        host.keys(&["ctrl+e", "ctrl+u", "ctrl+k", "backspace"])?;
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------- admission
 
 /// What the session's own settings make of Enter mid-turn.
@@ -428,9 +367,6 @@ fn mode_refusal(mode: &str, s: &steering::Effective, busy: Option<bool>) -> Opti
         (_, None) if busy == Some(true) => Some(unknown),
         _ => None,
     }
-}
-fn code(s: &str) -> &str {
-    s.split(':').next().unwrap_or(s)
 }
 
 /// Admission of a Gemini submit/queue/steer: the terminal target and facts.
@@ -481,43 +417,107 @@ pub(super) fn admit(
 
 // ---------------------------------------------------------------- worker
 
-/// Same catalog entry, live process and pane; the steering state re-read.
-fn recheck(paths: &Paths, r: &Record) -> Result<(Terminal, steering::Effective)> {
-    ensure!(terminal::enabled(paths), "{}", terminal::DISABLED);
-    let account =
-        crate::messaging::headless::usable_account(paths, ProviderId::Gemini, &r.account)?;
-    let session = catalog::find(paths, &r.session_id)?;
-    ensure!(session.conversation_id == r.conversation_id, "STALE_TARGET");
-    let recorded = r.terminal.clone().context("STALE_TARGET")?;
-    let o = gemini::observe(
-        &account.home,
-        &r.conversation_id,
-        session.attachment.as_ref(),
-    );
-    let now = terminal::eligible(&o).map_err(|code| anyhow::anyhow!("{code}"))?;
-    ensure!(
-        now.pid == recorded.pid
-            && now.process_start == recorded.process_start
-            && now.target == recorded.target,
-        "STALE_TARGET: the attached Gemini process or pane changed"
-    );
-    let s = steering_of(&account.home, &o);
-    Ok((
-        Terminal {
-            transcript: now.transcript.or(recorded.transcript.clone()),
-            ..recorded
-        },
-        s,
-    ))
+/// Gemini CLI 0.66.0's terminal for the typing engine, with the session's model steering
+/// read at the recheck: the box between half-block borders under a `>` marker
+/// ([`classify`]), ctrl+e / ctrl+u / ctrl+k / backspace clearing, the shortcut panel
+/// closed with backspace, typed whole and compared, one Enter.
+pub(crate) struct Gemini {
+    steering: steering::Effective,
 }
-
-fn set_facts(paths: &Paths, id: &str, f: impl FnOnce(&mut Facts)) -> Result<()> {
-    change(paths, id, |r| {
-        if let Some(t) = r.terminal.as_mut() {
-            f(t.gemini.get_or_insert_with(Facts::default));
+impl ScreenProfile for Gemini {
+    const AGENT: &'static str = AGENT;
+    const PROVIDER: ProviderId = ProviderId::Gemini;
+    const PROCESS: &'static str = "Gemini";
+    const MAX_TEXT: usize = MAX_TEXT;
+    const MAX_LINES: Option<usize> = Some(MAX_LINES);
+    const PREFIX: Prefix = Prefix::Escape(&['/', '!', '?']);
+    /// Per round ctrl+e (end of line), ctrl+u (kill to line start), ctrl+k (join the next
+    /// line) and backspace (join the previous one). None of these keys does anything else
+    /// in Gemini's prompt.
+    const CLEAR: ClearKeys = ClearKeys {
+        first: &[],
+        round: &["ctrl+e", "ctrl+u", "ctrl+k", "backspace"],
+        row_chars: 30,
+        rounds_per_row: 1,
+        extra: 2,
+        max: 100,
+    };
+    const VIEW_SWITCHES: usize = 1;
+    const TYPING: Typing = Typing::Whole;
+    const DRAFT: Draft = Draft::Kept;
+    const ONE_BLOCKED_READ: bool = false;
+    const RESTORE_ERROR_NAMES_HOST: bool = false;
+    const REREAD_DRAFT: bool = false;
+    const REFUSAL_LAYOUT: bool = false;
+    const MODE_GATED: bool = true;
+    fn too_long() -> String {
+        format!(
+            "TERMINAL_TEXT_TOO_LONG: Gemini's input box shows 10 rows, so terminal input takes at most {MAX_TEXT} bytes and {MAX_LINES} lines"
+        )
+    }
+    fn classify(rows: &[Vec<Cell>], strict: bool) -> Screen {
+        classify(rows, strict).map(|v| match v {
+            View::Main { draft, busy } => typing::View::Main { draft, busy },
+            View::Help => typing::View::Help,
+        })
+    }
+    fn leave(view: &typing::View) -> Option<(&'static str, Leave)> {
+        matches!(view, typing::View::Help).then_some(("help", Leave::Keys(&["backspace"])))
+    }
+    /// Typing it back would toggle a mode, the shortcut panel or a completion.
+    fn restorable(draft: &str) -> bool {
+        let last = draft.split_whitespace().last().unwrap_or_default();
+        !(draft.starts_with(['?', '!', '/'])
+            || last.starts_with(['@', '/'])
+            || draft.contains('\t'))
+    }
+    fn observe_process(
+        home: &Path,
+        conversation: &str,
+        attachment: Option<&catalog::Attachment>,
+    ) -> claude::Observation {
+        gemini::observe(home, conversation, attachment)
+    }
+    fn refusal(&self, mode: &str, busy: bool) -> Option<&'static str> {
+        mode_refusal(mode, &self.steering, Some(busy))
+    }
+    fn key(&self, mode: &str, busy: bool) -> Result<Key, &'static str> {
+        match mode_refusal(mode, &self.steering, Some(busy)) {
+            Some(refusal) => Err(refusal),
+            None => Ok(Key {
+                key: "enter",
+                expected: None,
+            }),
         }
-        Ok(())
-    })
+    }
+    fn submit_facts(&self, t: &mut Terminal, busy: bool, _key: &Key) {
+        t.gemini.get_or_insert_with(Facts::default).busy_at_submit = Some(busy);
+    }
+    /// A busy Enter shows Gemini's queue or the steering hint.
+    fn evidence(&self, lines: &[String], text: &str) -> Option<&'static str> {
+        let head: String = squash(text).chars().take(24).collect();
+        let shown = |prefix: &str| {
+            lines
+                .iter()
+                .any(|l| l.contains(prefix) && squash(l).contains(&head))
+        };
+        if lines.iter().any(|l| l.contains("Steering Hint:")) && shown("Steering Hint:") {
+            Some("steering_hint")
+        } else if lines.iter().any(|l| l.contains("Queued (press")) {
+            Some("queued")
+        } else {
+            None
+        }
+    }
+    fn record_evidence(t: &mut Terminal, evidence: &str) {
+        t.gemini.get_or_insert_with(Facts::default).screen_evidence = Some(evidence.into());
+    }
+    fn confirm_window(r: &Record) -> Duration {
+        confirm_window(r)
+    }
+    fn apply_transcript(paths: &Paths, id: &str, idle: bool) -> Result<()> {
+        observe(paths, id, idle)
+    }
 }
 
 pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
@@ -535,8 +535,9 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
             Ok(())
         });
     }
-    let (t, s) = match recheck(paths, &r) {
-        Ok(x) => x,
+    // Same catalog entry, live process and pane; the steering state re-read.
+    let (t, s) = match typing::recheck::<Gemini>(paths, &r) {
+        Ok((t, home, o)) => (t, steering_of(&home, &o)),
         Err(e) => return abandon_unsent(paths, id, &reason(&e)),
     };
     if let Some(refusal) = mode_refusal(&r.request.mode, &s, None) {
@@ -559,277 +560,12 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         Ok(())
     })?;
     let host = Host::for_agent(&t, AGENT)?;
-    let outcome = deliver(paths, id, &host, &t, &s).await;
+    let outcome = typing::deliver(&Gemini { steering: s }, paths, id, &host, &t).await;
     if let Err(e) = outcome {
-        change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut()
-                && t.draft.as_deref().is_some_and(|d| !d.is_empty())
-                && t.draft_restored != Some(true)
-            {
-                t.draft_restored = Some(false);
-                t.restore_error
-                    .get_or_insert_with(|| "host_failed_draft_kept_in_journal".into());
-            }
-            if is_terminal(r) {
-                return Ok(());
-            }
-            if r.facts.written {
-                r.observation_error = Some(format!("worker_error: {}", reason(&e)));
-            } else if r.phase == "admitted" {
-                finish(r, "rejected", Some(&reason(&e)));
-            } else {
-                finish(r, "rejected", Some("TERMINAL_HOST_FAILED_BEFORE_SUBMIT"));
-            }
-            Ok(())
-        })?;
+        typing::worker_failed(paths, id, &e)?;
     }
     drop(pane_lock);
-    observe_loop(paths, id, &host).await
-}
-
-fn blocked(host: &Host) -> bool {
-    matches!(host.agent_status(), Ok(Some(s)) if s == "blocked")
-}
-fn working(host: &Host) -> bool {
-    matches!(host.agent_status(), Ok(Some(s)) if s == "working")
-}
-
-/// Withdraw typed text and put the draft back; then refuse with `code`.
-async fn withdraw(
-    paths: &Paths,
-    id: &str,
-    host: &Host,
-    typed: &str,
-    draft: &str,
-    code: &str,
-) -> Result<()> {
-    step(paths, id, "withdraw", |_| {})?;
-    clear(host, typed).await?;
-    let cleared = until(host, true, |v| is_main(v, str::is_empty)).await?;
-    if is_main(&cleared, str::is_empty) {
-        restore(paths, id, host, draft).await?;
-    } else {
-        change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.draft_restored = Some(false);
-                t.restore_error = Some("withdraw_unverified_draft_kept_in_journal".into());
-            }
-            Ok(())
-        })?;
-    }
-    reject(paths, id, code)
-}
-
-async fn deliver(
-    paths: &Paths,
-    id: &str,
-    host: &Host,
-    t: &Terminal,
-    s: &steering::Effective,
-) -> Result<()> {
-    let mode = read(paths, id)?.request.mode;
-    // 1. HERDR agent state (read-only).
-    match host.agent_status() {
-        Ok(Some(s)) if s == "blocked" => return reject(paths, id, "TERMINAL_AGENT_BLOCKED"),
-        Ok(Some(_)) => {}
-        Ok(None) => return reject(paths, id, "TERMINAL_AGENT_UNKNOWN"),
-        Err(_) => return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE"),
-    }
-    // Contract 1.63.0: the pane must run the exact provider process, not a shell.
-    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
-        return reject(paths, id, code);
-    }
-    // 2. View: the input prompt; the shortcut panel is closed with backspace.
-    let Ok(screen) = host.screen() else {
-        return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE");
-    };
-    let mut view = classify(&screen, true);
-    if matches!(view, Ok(View::Help)) {
-        step(paths, id, "leave_help", |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.view_switched = Some("help".into());
-            }
-        })?;
-        host.keys(&["backspace"])?;
-        view = until(host, true, |v| {
-            matches!(v, Ok(View::Main { .. })) || v.is_err()
-        })
-        .await?;
-    }
-    let (draft, busy_screen) = match view {
-        Ok(View::Main { draft, busy }) => (draft, busy),
-        Ok(View::Help) => return reject(paths, id, "TERMINAL_VIEW_UNDETERMINED"),
-        Err(code) => return reject(paths, id, code),
-    };
-    let last = draft.split_whitespace().last().unwrap_or_default();
-    if draft.starts_with(['?', '!', '/']) || last.starts_with(['@', '/']) || draft.contains('\t') {
-        // Typing it back would toggle a mode, the shortcut panel or a completion.
-        return reject(paths, id, "TERMINAL_DRAFT_UNRESTORABLE");
-    }
-    let busy = busy_screen || working(host);
-    if let Some(refusal) = mode_refusal(&mode, s, Some(busy)) {
-        return reject(paths, id, code(refusal));
-    }
-    if blocked(host) {
-        return reject(paths, id, "TERMINAL_AGENT_BLOCKED");
-    }
-    // 3. Journal the draft, then clear.
-    step(paths, id, "clear", |r| {
-        r.phase = "dispatching".into();
-        r.dispatched_at = Some(crate::daemon::now());
-        if let Some(t) = r.terminal.as_mut() {
-            t.draft = Some(draft.clone());
-            t.draft_chars = Some(draft.chars().count());
-        }
-    })?;
-    if !draft.is_empty() {
-        clear(host, &draft).await?;
-        let v = until(host, true, |v| is_main(v, str::is_empty)).await?;
-        if !is_main(&v, str::is_empty) {
-            return change(paths, id, |r| {
-                if let Some(t) = r.terminal.as_mut() {
-                    t.draft_restored = Some(false);
-                    t.restore_error = Some("clear_unverified_draft_kept_in_journal".into());
-                }
-                finish(r, "rejected", Some("TERMINAL_CLEAR_UNVERIFIED"));
-                Ok(())
-            });
-        }
-    }
-    // 4. Type the message and check it on screen.
-    step(paths, id, "type", |_| {})?;
-    host.type_text(&t.delivered_text).await?;
-    let want = squash(&t.delivered_text);
-    let typed = until(host, false, |v| is_main(v, |d| squash(d) == want)).await?;
-    if !is_main(&typed, |d| squash(d) == want) || blocked(host) {
-        let code = if blocked(host) {
-            "TERMINAL_AGENT_BLOCKED"
-        } else {
-            "TERMINAL_TYPED_TEXT_MISMATCH"
-        };
-        return withdraw(paths, id, host, &t.delivered_text, &draft, code).await;
-    }
-    // 5. What Enter will do now: the mode must still fit.
-    let busy = matches!(typed, Ok(View::Main { busy: true, .. })) || working(host);
-    if let Some(refusal) = mode_refusal(&mode, s, Some(busy)) {
-        return withdraw(paths, id, host, &t.delivered_text, &draft, code(refusal)).await;
-    }
-    let anchor = t
-        .transcript
-        .as_ref()
-        .and_then(|p| fs::metadata(p).ok())
-        .map(|m| m.len());
-    let at = now_ms() - 2000;
-    step(paths, id, "submit", |r| {
-        if let Some(t) = r.terminal.as_mut() {
-            t.anchor_offset = anchor;
-            t.submitted_at_ms = Some(at);
-            t.gemini.get_or_insert_with(Facts::default).busy_at_submit = Some(busy);
-        }
-    })?;
-    // The screen read above came well after the last typed key, so Gemini's
-    // 30 ms fast-return rule (Enter right after typing is a newline) is past.
-    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
-        return reject(paths, id, code);
-    }
-    let sent = host.keys(&["enter"]);
-    change(paths, id, |r| {
-        if sent.is_ok() {
-            r.phase = "written".into();
-            r.facts.written = true;
-        } else {
-            finish(r, "delivery_unknown", Some("TERMINAL_SUBMIT_UNCERTAIN"));
-        }
-        Ok(())
-    })?;
-    if sent.is_err() {
-        return Ok(());
-    }
-    // 6. The input must empty; a busy Enter shows Gemini's queue or the hint.
-    let empty = until(host, true, |v| is_main(v, str::is_empty)).await?;
-    if busy {
-        let lines: Vec<String> = host
-            .screen()
-            .map(|s| s.iter().map(|r| row_text(r)).collect())
-            .unwrap_or_default();
-        let head: String = squash(&t.delivered_text).chars().take(24).collect();
-        let shown = |prefix: &str| {
-            lines
-                .iter()
-                .any(|l| l.contains(prefix) && squash(l).contains(&head))
-        };
-        let evidence =
-            if lines.iter().any(|l| l.contains("Steering Hint:")) && shown("Steering Hint:") {
-                Some("steering_hint")
-            } else if lines.iter().any(|l| l.contains("Queued (press")) {
-                Some("queued")
-            } else {
-                None
-            };
-        if let Some(e) = evidence {
-            set_facts(paths, id, |f| f.screen_evidence = Some(e.into()))?;
-            change(paths, id, |r| {
-                if !is_terminal(r) && r.state == "pending_local" {
-                    r.state = "native_accepted".into();
-                }
-                Ok(())
-            })?;
-        }
-    }
-    // 7. Put the draft back, unsubmitted.
-    if !draft.is_empty() {
-        if is_main(&empty, str::is_empty) {
-            restore(paths, id, host, &draft).await?;
-        } else {
-            change(paths, id, |r| {
-                if let Some(t) = r.terminal.as_mut() {
-                    t.draft_restored = Some(false);
-                    t.restore_error = Some("input_not_empty_after_submit".into());
-                }
-                Ok(())
-            })?;
-        }
-    } else {
-        change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.draft = None;
-            }
-            Ok(())
-        })?;
-    }
-    Ok(())
-}
-
-/// Type the draft back (no Enter) and verify it exactly; never retried.
-async fn restore(paths: &Paths, id: &str, host: &Host, draft: &str) -> Result<()> {
-    if draft.is_empty() {
-        return change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.draft = None;
-                t.draft_restored = Some(true);
-            }
-            Ok(())
-        });
-    }
-    step(paths, id, "restore", |_| {})?;
-    let typed = host.type_text(draft).await;
-    let v = until(host, true, |v| is_main(v, |d| d == draft)).await;
-    let ok = typed.is_ok() && matches!(&v, Ok(v) if is_main(v, |d| d == draft));
-    change(paths, id, |r| {
-        if let Some(t) = r.terminal.as_mut() {
-            t.draft_restored = Some(ok);
-            if ok {
-                t.draft = None;
-            } else {
-                t.restore_error = Some(match (&typed, &v) {
-                    (Err(_), _) => "restore_keys_failed".into(),
-                    (_, Ok(Err(code))) => format!("restore_unverified:{code}"),
-                    _ => "restore_unverified".into(),
-                });
-            }
-        }
-        Ok(())
-    })
+    typing::observe_loop::<Gemini>(paths, id, &host).await
 }
 
 // ---------------------------------------------------------------- transcript
@@ -1054,62 +790,6 @@ fn confirm_window(r: &Record) -> Duration {
     })
 }
 
-async fn observe_loop(paths: &Paths, id: &str, host: &Host) -> Result<()> {
-    let r = read(paths, id)?;
-    if is_terminal(&r) || !r.facts.written {
-        return Ok(());
-    }
-    let timeout = r
-        .request
-        .timeout_seconds
-        .unwrap_or(super::DEFAULT_TIMEOUT_SECONDS);
-    let start = Instant::now();
-    let confirm = confirm_window(&r);
-    let total = Duration::from_secs(timeout);
-    let mut worked = false;
-    let mut idle_since: Option<Instant> = None;
-    loop {
-        let status = host.agent_status().ok().flatten();
-        worked |= matches!(status.as_deref(), Some("working" | "blocked"));
-        let idle = matches!(status.as_deref(), Some("idle" | "done"));
-        if !idle {
-            idle_since = None;
-        } else if idle_since.is_none() {
-            idle_since = Some(Instant::now());
-        }
-        let settled = worked && idle_since.is_some_and(|s| s.elapsed() >= crate::timing::secs(2));
-        observe(paths, id, settled)?;
-        let r = read(paths, id)?;
-        if is_terminal(&r) {
-            return Ok(());
-        }
-        let anchored = r.terminal.as_ref().is_some_and(|t| t.input_uuid.is_some());
-        if !anchored && start.elapsed() >= confirm {
-            return change(paths, id, |r| {
-                finish(r, "delivery_unknown", Some("TERMINAL_INPUT_UNCONFIRMED"));
-                Ok(())
-            });
-        }
-        if anchored && settled {
-            return change(paths, id, |r| {
-                if let Some(t) = r.terminal.as_mut() {
-                    t.turn_ended = true;
-                }
-                if r.reply_text.is_empty() {
-                    finish(r, "completed_without_reply", None);
-                } else {
-                    finish(r, "completed_with_reply", None);
-                }
-                Ok(())
-            });
-        }
-        if start.elapsed() >= total {
-            return Ok(());
-        }
-        tokio::time::sleep(crate::timing::scaled(Duration::from_millis(250))).await;
-    }
-}
-
 /// With the worker gone, a submit never matched within its window stays
 /// uncertain for good: `delivery_unknown`.
 pub(crate) fn unconfirmed_after_exit(paths: &Paths, id: &str) -> Result<()> {
@@ -1180,71 +860,49 @@ pub fn steer_semantics() -> Value {
         "not_applied":"submitted_after_turn_as_steering_prompt"})
 }
 
-/// Per-session submit/queue/steer for a Gemini session row (typed input only).
-pub fn apply_session_input(value: &mut Value, home: Option<&Path>, terminal_enabled: bool) {
-    let running = value["availability"] == "running";
-    let typed = super::terminal_reason(value, terminal_enabled);
-    let steering = home.map(|home| {
-        let pid = value["pid"].as_u64().map(|p| p as u32);
-        let env = pid.and_then(claude::environ);
-        steering::effective(
-            home,
-            value["directory"].as_str().map(Path::new),
-            env.as_deref(),
-            value["process_start"]
-                .as_u64()
-                .and_then(claude::process_started_at),
+/// Per-session submit/queue/steer for a Gemini session row (typed input only), through
+/// [`typing::apply_session_input`].
+impl SessionInput for Gemini {
+    const NAME: &'static str = "Gemini";
+    const LABEL: &'static str = LABEL;
+    type Gates = Option<steering::Effective>;
+    fn gates(value: &Value, home: Option<&Path>) -> Self::Gates {
+        home.map(|home| {
+            let pid = value["pid"].as_u64().map(|p| p as u32);
+            let env = pid.and_then(claude::environ);
+            steering::effective(
+                home,
+                value["directory"].as_str().map(Path::new),
+                env.as_deref(),
+                value["process_start"]
+                    .as_u64()
+                    .and_then(claude::process_started_at),
+            )
+        })
+    }
+    fn mode_reason(steering: &Self::Gates, mode: &str) -> Option<String> {
+        let s = steering.clone().unwrap_or(steering::Effective {
+            enabled: None,
+            configured: None,
+            source: "default",
+            restart_required: false,
+            reason: Some(steering::UNKNOWN),
+        });
+        mode_refusal(mode, &s, None).map(str::to_owned)
+    }
+    fn steer_semantics() -> Value {
+        steer_semantics()
+    }
+    fn row_extra(steering: Self::Gates) -> (&'static str, Value) {
+        (
+            "model_steering",
+            json!(
+                steering.map(|s| json!({"enabled":s.enabled,"configured":s.configured,
+                "source":s.source,"restart_required":s.restart_required,
+                "reason":s.reason.map(code)}))
+            ),
         )
-    });
-    let mut modes: [(&str, Option<&str>, Option<String>); 3] = [
-        ("submit", None, None),
-        ("queue", None, None),
-        ("steer", None, None),
-    ];
-    let terminal_reason: Option<String> = if !running {
-        Some("SESSION_NOT_RUNNING".into())
-    } else {
-        typed.map(str::to_owned)
-    };
-    for m in &mut modes {
-        if !running {
-            m.2 = Some(
-                "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Gemini session"
-                    .into(),
-            );
-        } else if let Some(code) = typed {
-            m.2 = Some(format!(
-                "{code}: Gemini takes live input only as typed input into a verified HERDR pane"
-            ));
-        } else {
-            let s = steering.clone().unwrap_or(steering::Effective {
-                enabled: None,
-                configured: None,
-                source: "default",
-                restart_required: false,
-                reason: Some(steering::UNKNOWN),
-            });
-            match mode_refusal(m.0, &s, None) {
-                None => m.1 = Some(terminal::SEMANTICS),
-                Some(refusal) => m.2 = Some(refusal.into()),
-            }
-        }
     }
-    for (k, path, reason) in &modes {
-        value["capabilities"][*k] = json!(path.is_some());
-        value["capability_reasons"][*k] = json!(reason);
-    }
-    let available = terminal_reason.is_none();
-    let path = modes[0].1;
-    value["input_delivery"] = json!({"semantics":path,"interrupt":false,
-        "label":path.map(|_| LABEL),
-        "steer":modes[2].1.map(|_| steer_semantics()),
-        "modes":{"submit":modes[0].1,"queue":modes[1].1,"steer":modes[2].1},
-        "available":if available {vec![terminal::SEMANTICS]} else {vec![]},
-        "terminal_input":{"available":available,"reason":terminal_reason},
-        "model_steering":steering.map(|s| json!({"enabled":s.enabled,"configured":s.configured,
-            "source":s.source,"restart_required":s.restart_required,
-            "reason":s.reason.map(code)}))});
 }
 
 /// `capabilities.gemini_input_delivery`.
@@ -1322,7 +980,9 @@ mod tests {
             })
         );
         let unfocused = screen(&[], &[" >   Type your message or @path/to/file"], FOOT);
-        assert!(is_main(&classify(&unfocused, true), str::is_empty));
+        assert!(
+            matches!(classify(&unfocused, true), Ok(View::Main { ref draft, .. }) if draft.is_empty())
+        );
         let draft = screen(
             &[" ⠋ Thinking (esc to cancel, 3s)"],
             &[" > half a thought", "   second line\u{1b}[7m \u{1b}[0m"],

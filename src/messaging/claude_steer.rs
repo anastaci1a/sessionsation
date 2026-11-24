@@ -54,6 +54,7 @@ use std::{
 pub mod antigravity;
 pub mod gemini;
 pub mod terminal;
+pub(crate) mod typing;
 
 pub const PEER_SEMANTICS: &str = "peer_message";
 pub const PEER_LABEL: &str = "Delivered as a Claude Code peer message: the session sees it as a message from another Claude session and may only partially comply";
@@ -2005,6 +2006,7 @@ fn terminal_reason(value: &Value, enabled: bool) -> Option<&'static str> {
 /// Per-session submit/queue/steer support (and the hosted host summary) for a
 /// Claude session row. Hosted sessions also report `availability:"running"`.
 /// Path choice: hosted, else terminal input (submit/steer), else peer message.
+// guard-allow(typing): Claude rows choose hosted, terminal or peer input; typing::apply_session_input covers typed-only providers
 pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>) {
     let Some(c) = value["conversation_id"].as_str().map(str::to_owned) else {
         return;

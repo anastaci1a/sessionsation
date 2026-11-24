@@ -27,15 +27,18 @@
 //! 7. The transcript is read for the human record carrying exactly the typed
 //!    text after the submit; its uuid anchors the reply. Without it the
 //!    receipt is `delivery_unknown`. Nothing is ever re-sent.
+pub(crate) use super::typing::{CONFIRM_SECONDS, Host};
 use super::{
-    Record, Request, abandon_unsent, all, change, dir, finish, is_terminal, read, worker_lock,
+    Record, Request, abandon_unsent, all, change, dir, finish, is_terminal, read,
+    typing::{self, ClearKeys, Draft, Leave, Prefix, Screen, ScreenProfile, Typing, is_main},
+    worker_lock,
 };
 use crate::{
     catalog,
     paths::{Paths, lock_file, private_dir},
     provider::{ProviderId, claude, claude::hosted},
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::Result;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -43,25 +46,16 @@ use std::{
     fs,
     io::{BufRead, Read, Seek},
     path::{Path, PathBuf},
-    time::{Duration, Instant},
 };
 
 pub const SEMANTICS: &str = "terminal_input";
 pub const LABEL: &str = "Typed into the session's HERDR terminal as the user's own input: Claude records it as a human message (queued mid-turn, or a new turn when idle)";
 /// Longest text typed into a terminal (the prompt must stay verifiable on screen).
 pub const MAX_TEXT: usize = 8192;
-const CHUNK: usize = 32;
-/// Non-blank characters typed between two screen checks.
-pub(crate) const SEGMENT: usize = 80;
-const CHUNK_PAUSE: Duration = Duration::from_millis(15);
-pub(crate) const SETTLE: Duration = Duration::from_millis(120);
-pub(crate) const SCREEN_WAIT: Duration = Duration::from_secs(3);
 /// Rows a draft may occupy and still be read back exactly.
 const MAX_DRAFT_ROWS: usize = 12;
 /// Rows a typed message may occupy and still be verified.
 const MAX_TYPED_ROWS: usize = 200;
-/// Window in which the typed input must appear in the transcript.
-pub(crate) const CONFIRM_SECONDS: u64 = 60;
 const MAX_SCAN: u64 = 16 * 1024 * 1024;
 
 pub const DISABLED: &str = "TERMINAL_INPUT_DISABLED: terminal input is turned off by the operator (config terminal_input_enabled)";
@@ -150,39 +144,73 @@ pub struct Terminal {
 /// `?` escaped with a backslash so it stays plain text (command, shell,
 /// memory and help triggers). Refuses text the prompt cannot take verbatim.
 pub fn deliverable(text: &str) -> Result<(String, bool, bool)> {
-    let normalized = text.replace("\r\n", "\n");
-    ensure!(
-        !normalized
-            .chars()
-            .any(|c| c != '\n' && (c.is_control() || c == '\u{7f}')),
-        "TERMINAL_PAYLOAD_UNSUPPORTED: tabs and control characters cannot be typed verbatim"
-    );
-    let trimmed = normalized.trim();
-    ensure!(!trimmed.is_empty(), "INVALID_REQUEST: empty text");
-    ensure!(
-        trimmed.len() <= MAX_TEXT,
-        "TERMINAL_TEXT_TOO_LONG: terminal input takes at most {MAX_TEXT} bytes"
-    );
-    ensure!(
-        !trimmed.ends_with('\\'),
-        "TERMINAL_PAYLOAD_UNSUPPORTED: a trailing backslash turns Enter into a newline"
-    );
-    let last = trimmed.split_whitespace().last().unwrap_or_default();
-    ensure!(
-        !last.starts_with('@') && !last.starts_with('/'),
-        "TERMINAL_PAYLOAD_UNSUPPORTED: text ending in an @ or / token would submit a completion; add punctuation after it"
-    );
-    let escaped = trimmed.starts_with(['/', '!', '#', '?']);
-    let out = if escaped {
-        format!("\\{trimmed}")
-    } else {
-        trimmed.to_owned()
+    typing::deliverable::<Claude>(text)
+}
+
+/// Claude Code 2.1.312's terminal for the typing engine: the box under a rule with `❯` in
+/// column 0 ([`classify`]), ctrl+k / ctrl+u clearing, the transcript view left with ctrl+o
+/// and the shortcut help with `?`, typed in verified segments, one Enter, and what the box
+/// holds reported whenever a restore is not verified.
+pub(crate) struct Claude;
+impl ScreenProfile for Claude {
+    const AGENT: &'static str = "claude";
+    const PROVIDER: ProviderId = ProviderId::Claude;
+    const PROCESS: &'static str = "Claude";
+    const MAX_TEXT: usize = MAX_TEXT;
+    const MAX_LINES: Option<usize> = None;
+    const PREFIX: Prefix = Prefix::Escape(&['/', '!', '#', '?']);
+    /// ctrl+k / ctrl+u pairs (kill to end / start of the line, each also removing an
+    /// adjacent newline); ctrl+l is only a redraw in 2.1.312.
+    const CLEAR: ClearKeys = ClearKeys {
+        first: &[],
+        round: &["ctrl+k", "ctrl+u"],
+        row_chars: 40,
+        rounds_per_row: 2,
+        extra: 2,
+        max: 600,
     };
-    Ok((
-        out,
-        escaped,
-        normalized.len() != text.len() || trimmed != normalized,
-    ))
+    const VIEW_SWITCHES: usize = 2;
+    const TYPING: Typing = Typing::Checked { reread: false };
+    const DRAFT: Draft = Draft::Reported;
+    const ONE_BLOCKED_READ: bool = true;
+    const RESTORE_ERROR_NAMES_HOST: bool = true;
+    const REREAD_DRAFT: bool = true;
+    const REFUSAL_LAYOUT: bool = true;
+    const MODE_GATED: bool = false;
+    fn too_long() -> String {
+        format!("TERMINAL_TEXT_TOO_LONG: terminal input takes at most {MAX_TEXT} bytes")
+    }
+    fn classify(rows: &[Vec<Cell>], strict: bool) -> Screen {
+        classify(rows, strict).map(|v| match v {
+            View::Main(draft) => typing::View::Main { draft, busy: false },
+            View::Transcript => typing::View::Transcript,
+            View::Help => typing::View::Help,
+        })
+    }
+    fn leave(view: &typing::View) -> Option<(&'static str, Leave)> {
+        match view {
+            typing::View::Transcript => Some(("transcript", Leave::Keys(&["ctrl+o"]))),
+            typing::View::Help => Some(("help", Leave::Text("?"))),
+            typing::View::Main { .. } => None,
+        }
+    }
+    fn restorable(draft: &str) -> bool {
+        restorable(draft)
+    }
+    fn observe_process(
+        home: &Path,
+        conversation: &str,
+        attachment: Option<&catalog::Attachment>,
+    ) -> claude::Observation {
+        claude::observe(home, conversation, attachment)
+    }
+    /// No hosted worker serves the conversation.
+    fn before_observe(paths: &Paths, r: &Record) -> Result<()> {
+        hosted::ensure_not_hosted(paths, &r.conversation_id)
+    }
+    fn apply_transcript(paths: &Paths, id: &str, idle: bool) -> Result<()> {
+        observe(paths, id, idle)
+    }
 }
 
 // ---------------------------------------------------------------- screen
@@ -545,184 +573,6 @@ pub(crate) fn squash(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-// ---------------------------------------------------------------- host
-
-pub(crate) struct Host {
-    session: String,
-    pane: String,
-    socket: Option<PathBuf>,
-    /// HERDR's agent kind for this provider (`claude`, `gemini`).
-    agent: &'static str,
-}
-impl Host {
-    fn new(t: &Terminal) -> Result<Self> {
-        Self::for_agent(t, "claude")
-    }
-    pub(crate) fn for_agent(t: &Terminal, agent: &'static str) -> Result<Self> {
-        let (session, pane) = crate::terminal::target(&t.target)?;
-        Ok(Self {
-            session: session.into(),
-            pane: pane.into(),
-            socket: t.socket.clone(),
-            agent,
-        })
-    }
-    fn raw(&self, args: &[&str]) -> Result<Vec<u8>> {
-        crate::terminal::raw_at(&self.session, args, self.socket.as_deref())
-    }
-    /// HERDR's agent status for this pane (`idle|working|blocked|done|unknown`),
-    /// None when HERDR reports no agent of this kind there.
-    pub(crate) fn agent_status(&self) -> Result<Option<String>> {
-        let v =
-            crate::terminal::call_at(&self.session, &["agent", "list"], self.socket.as_deref())?;
-        Ok(v["agents"].as_array().and_then(|a| {
-            a.iter()
-                .find(|x| x["pane_id"] == self.pane.as_str() && x["agent"] == self.agent)
-                .and_then(|x| x["agent_status"].as_str().map(str::to_owned))
-        }))
-    }
-    /// Contract 1.63.0: the exact provider process (pid and start time) still runs and the
-    /// pane's foreground is not a bare shell. A provider that exited (for example after a
-    /// folder-trust restart that never came back) leaves the pane's shell in front, and typed
-    /// keys would run there. `Err` is the refusal code; nothing was typed.
-    pub(crate) fn provider_in_front(&self, pid: u32, start: u64) -> Result<(), &'static str> {
-        if crate::external::attachment_definitely_gone(pid, start) {
-            return Err("TERMINAL_PROVIDER_EXITED");
-        }
-        let info = crate::terminal::call_at(
-            &self.session,
-            &["pane", "process-info", "--pane", &self.pane],
-            self.socket.as_deref(),
-        )
-        .map_err(|_| "TERMINAL_HOST_UNAVAILABLE")?;
-        match crate::terminal::process_state(&info["process_info"]) {
-            Ok((true, _)) => Err("TERMINAL_PANE_IS_SHELL"),
-            _ => Ok(()),
-        }
-    }
-    pub(crate) fn screen(&self) -> Result<Vec<Vec<Cell>>> {
-        let out = self.raw(&[
-            "pane", "read", &self.pane, "--source", "visible", "--format", "ansi",
-        ])?;
-        Ok(cells(&String::from_utf8_lossy(&out)))
-    }
-    pub(crate) fn keys(&self, keys: &[&str]) -> Result<()> {
-        let mut args = vec!["pane", "send-keys", self.pane.as_str()];
-        args.extend_from_slice(keys);
-        self.raw(&args).map(|_| ())
-    }
-    pub(crate) fn text(&self, s: &str) -> Result<()> {
-        // HERDR 0.9.5 takes the text verbatim (leading hyphens included) and
-        // writes it without a bracketed-paste wrapper.
-        self.raw(&["pane", "send-text", &self.pane, s]).map(|_| ())
-    }
-    /// Type text as keystrokes: small chunks, ctrl+j (`chat:newline`) for
-    /// newlines; never Enter.
-    pub(crate) async fn type_text(&self, s: &str) -> Result<()> {
-        for (i, line) in s.split('\n').enumerate() {
-            if i > 0 {
-                self.keys(&["ctrl+j"])?;
-                tokio::time::sleep(crate::timing::scaled(CHUNK_PAUSE)).await;
-            }
-            let chars: Vec<char> = line.chars().collect();
-            for chunk in chars.chunks(CHUNK) {
-                self.text(&chunk.iter().collect::<String>())?;
-                tokio::time::sleep(crate::timing::scaled(CHUNK_PAUSE)).await;
-            }
-        }
-        Ok(())
-    }
-    /// Type text like [`Self::type_text`], reading the screen every `SEGMENT`
-    /// non-blank characters. Claude and agy draw a long draft in a box of
-    /// limited height that shows only its tail, so the whole text is never on
-    /// screen at once. Each check requires the visible text to be a suffix of
-    /// everything typed so far and at least as long as what was typed since the
-    /// last check: consecutive windows then tile the text, and every character
-    /// is seen on screen. Stops at the first failed check (false); the caller
-    /// withdraws. `view` gives the box text of a main prompt, None otherwise.
-    pub(crate) async fn type_checked(
-        &self,
-        s: &str,
-        view: impl Fn(&[Vec<Cell>]) -> Option<String>,
-    ) -> Result<bool> {
-        let mut typed = String::new();
-        let mut pending = 0usize;
-        let lines: Vec<&str> = s.split('\n').collect();
-        for (i, line) in lines.iter().enumerate() {
-            if i > 0 {
-                self.keys(&["ctrl+j"])?;
-                tokio::time::sleep(crate::timing::scaled(CHUNK_PAUSE)).await;
-            }
-            let chars: Vec<char> = line.chars().collect();
-            let chunks: Vec<&[char]> = chars.chunks(CHUNK).collect();
-            for (j, chunk) in chunks.iter().enumerate() {
-                let part: String = chunk.iter().collect();
-                self.text(&part)?;
-                tokio::time::sleep(crate::timing::scaled(CHUNK_PAUSE)).await;
-                let sq = squash(&part);
-                pending += sq.chars().count();
-                typed.push_str(&sq);
-                let last = i + 1 == lines.len() && j + 1 == chunks.len();
-                if (pending >= SEGMENT || last) && pending > 0 {
-                    if !self.window_ok(&typed, pending, &view).await? {
-                        return Ok(false);
-                    }
-                    pending = 0;
-                }
-            }
-        }
-        Ok(true)
-    }
-    async fn window_ok(
-        &self,
-        typed: &str,
-        pending: usize,
-        view: &impl Fn(&[Vec<Cell>]) -> Option<String>,
-    ) -> Result<bool> {
-        let deadline = Instant::now() + SCREEN_WAIT;
-        loop {
-            tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
-            if let Some(d) = view(&self.screen()?) {
-                let w = squash(&d);
-                if w.chars().count() >= pending && typed.ends_with(&w) {
-                    return Ok(true);
-                }
-            }
-            if Instant::now() >= deadline {
-                return Ok(false);
-            }
-        }
-    }
-    /// Kill the whole input with ctrl+k / ctrl+u pairs (each removes the rest
-    /// of a row, or the newline next to the cursor).
-    async fn clear(&self, text: &str) -> Result<()> {
-        let rows = text
-            .split('\n')
-            .map(|l| l.chars().count() / 40 + 1)
-            .sum::<usize>();
-        let pairs = rows * 2 + 2;
-        for _ in 0..pairs.min(600) {
-            self.keys(&["ctrl+k", "ctrl+u"])?;
-        }
-        Ok(())
-    }
-    /// Read the screen until `want` holds or the wait ends; returns the last view.
-    async fn until(
-        &self,
-        strict: bool,
-        want: impl Fn(&Result<View, &'static str>) -> bool,
-    ) -> Result<Result<View, &'static str>> {
-        let deadline = Instant::now() + SCREEN_WAIT;
-        loop {
-            tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
-            let v = classify(&self.screen()?, strict);
-            if want(&v) || Instant::now() >= deadline {
-                return Ok(v);
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------- admission
 
 /// The verified HERDR attachment of a running session, or why there is none.
@@ -859,34 +709,6 @@ pub(crate) fn reject(paths: &Paths, id: &str, code: &str) -> Result<()> {
     })
 }
 
-/// Recheck the target before touching the pane: same catalog entry and live
-/// process, still attached to the same HERDR pane, no hosted worker.
-fn recheck(paths: &Paths, r: &Record) -> Result<Terminal> {
-    ensure!(enabled(paths), "{DISABLED}");
-    let account =
-        crate::messaging::headless::usable_account(paths, ProviderId::Claude, &r.account)?;
-    let session = catalog::find(paths, &r.session_id)?;
-    ensure!(session.conversation_id == r.conversation_id, "STALE_TARGET");
-    hosted::ensure_not_hosted(paths, &r.conversation_id)?;
-    let recorded = r.terminal.clone().context("STALE_TARGET")?;
-    let o = claude::observe(
-        &account.home,
-        &r.conversation_id,
-        session.attachment.as_ref(),
-    );
-    let now = eligible(&o).map_err(|code| anyhow::anyhow!("{code}"))?;
-    ensure!(
-        now.pid == recorded.pid
-            && now.process_start == recorded.process_start
-            && now.target == recorded.target,
-        "STALE_TARGET: the attached Claude process or pane changed"
-    );
-    Ok(Terminal {
-        transcript: now.transcript.or(recorded.transcript.clone()),
-        ..recorded
-    })
-}
-
 pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     let lock = lock_file(&worker_lock(paths, id)?)?;
     if lock.try_lock_exclusive().is_err() {
@@ -909,8 +731,8 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
             Ok(())
         });
     }
-    let t = match recheck(paths, &r) {
-        Ok(t) => t,
+    let t = match typing::recheck::<Claude>(paths, &r) {
+        Ok((t, _, _)) => t,
         Err(e) => return abandon_unsent(paths, id, &reason(&e)),
     };
     // One delivery per pane at a time.
@@ -926,126 +748,15 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         r.terminal = Some(t.clone());
         Ok(())
     })?;
-    let host = Host::new(&t)?;
+    let host = Host::for_agent(&t, Claude::AGENT)?;
     // A dead worker's typed message or taken-away draft must not poison this delivery.
     withdraw_orphans(paths, id, &host, &t.target).await;
-    let outcome = deliver(paths, id, &host, &t).await;
+    let outcome = typing::deliver(&Claude, paths, id, &host, &t).await;
     if let Err(e) = outcome {
-        // A HERDR failure mid-procedure: never retried. Before Enter the
-        // request is unsent; after it, the transcript decides. A draft whose
-        // restore was not verified stays in the private journal.
-        change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut()
-                && t.draft.as_deref().is_some_and(|d| !d.is_empty())
-                && t.draft_restored != Some(true)
-            {
-                t.draft_restored = Some(false);
-                t.restore_error
-                    .get_or_insert_with(|| "host_failed_draft_kept_in_journal".into());
-            }
-            if is_terminal(r) {
-                return Ok(());
-            }
-            if r.facts.written {
-                r.observation_error = Some(format!("worker_error: {}", reason(&e)));
-            } else if r.phase == "admitted" {
-                finish(r, "rejected", Some(&reason(&e)));
-            } else {
-                finish(r, "rejected", Some("TERMINAL_HOST_FAILED_BEFORE_SUBMIT"));
-            }
-            Ok(())
-        })?;
+        typing::worker_failed(paths, id, &e)?;
     }
     drop(pane_lock);
-    observe_loop(paths, id, &host).await
-}
-
-async fn deliver(paths: &Paths, id: &str, host: &Host, t: &Terminal) -> Result<()> {
-    // 1. HERDR agent state (read-only).
-    match host.agent_status() {
-        Ok(Some(s)) if s == "blocked" => return reject(paths, id, "TERMINAL_AGENT_BLOCKED"),
-        Ok(Some(_)) => {}
-        Ok(None) => return reject(paths, id, "TERMINAL_AGENT_UNKNOWN"),
-        Err(_) => return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE"),
-    }
-    // Contract 1.63.0: the pane must run the exact provider process, not a shell.
-    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
-        return reject(paths, id, code);
-    }
-    // 2. View: main prompt, or a view left with its own toggle.
-    let Ok(screen) = host.screen() else {
-        return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE");
-    };
-    let mut view = classify(&screen, true);
-    for _ in 0..2 {
-        let (key, name): (&[&str], &str) = match &view {
-            Ok(View::Transcript) => (&["ctrl+o"], "transcript"),
-            Ok(View::Help) => (&[], "help"),
-            _ => break,
-        };
-        step(paths, id, &format!("leave_{name}"), |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.view_switched = Some(name.into());
-            }
-        })?;
-        if key.is_empty() {
-            host.text("?")?;
-        } else {
-            host.keys(key)?;
-        }
-        view = host
-            .until(true, |v| matches!(v, Ok(View::Main(_))) || v.is_err())
-            .await?;
-    }
-    let draft = match view {
-        Ok(View::Main(d)) => d,
-        Ok(_) => return reject(paths, id, "TERMINAL_VIEW_UNDETERMINED"),
-        Err(code) => return reject_screen(paths, id, code, &host.screen().unwrap_or(screen)),
-    };
-    if !restorable(&draft) {
-        // Typing it back would toggle help, a mode or a menu instead.
-        return reject(paths, id, "TERMINAL_DRAFT_UNRESTORABLE");
-    }
-    // Re-check the agent just before the first destructive key.
-    if matches!(host.agent_status(), Ok(Some(s)) if s == "blocked") {
-        return reject(paths, id, "TERMINAL_AGENT_BLOCKED");
-    }
-    // Re-read the draft right before the first clearing key: text typed since
-    // the first read would be destroyed by ctrl+k/ctrl+u. Nothing was sent yet.
-    match host.screen() {
-        Ok(rows) if draft_unchanged(&rows, &draft) => {}
-        Ok(_) => return reject(paths, id, "TERMINAL_DRAFT_CHANGED"),
-        Err(_) => return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE"),
-    }
-    // 3. Journal the draft, then clear. From here on every exit restores the
-    //    draft or reports exactly what the input box holds.
-    step(paths, id, "clear", |r| {
-        r.phase = "dispatching".into();
-        r.dispatched_at = Some(crate::daemon::now());
-        if let Some(t) = r.terminal.as_mut() {
-            t.draft = Some(draft.clone());
-            t.draft_chars = Some(draft.chars().count());
-        }
-    })?;
-    let mut submitted = false;
-    let outcome = typed_input(paths, id, host, t, &draft, &mut submitted).await;
-    if let Err(e) = &outcome {
-        salvage(paths, id, host, &draft, &t.delivered_text, submitted, e).await;
-        if submitted {
-            change(paths, id, |r| {
-                if !is_terminal(r) && !r.facts.written {
-                    finish(r, "delivery_unknown", Some("TERMINAL_SUBMIT_UNCERTAIN"));
-                }
-                Ok(())
-            })?;
-        }
-    }
-    outcome
-}
-
-/// Whether the screen still shows the main prompt holding exactly `draft`.
-pub(crate) fn draft_unchanged(rows: &[Vec<Cell>], draft: &str) -> bool {
-    matches!(classify(rows, true), Ok(View::Main(d)) if d == draft)
+    typing::observe_loop::<Claude>(paths, id, &host).await
 }
 
 /// A draft that typing reproduces as text: not a help/shell/memory trigger,
@@ -1053,230 +764,6 @@ pub(crate) fn draft_unchanged(rows: &[Vec<Cell>], draft: &str) -> bool {
 pub(crate) fn restorable(draft: &str) -> bool {
     let last = draft.split_whitespace().last().unwrap_or_default();
     !draft.starts_with(['?', '!', '#', '/']) && !draft.contains('\t') && !last.starts_with('@')
-}
-
-/// Steps 3-6 after the draft is journaled. `submitted` is set once Enter went out.
-async fn typed_input(
-    paths: &Paths,
-    id: &str,
-    host: &Host,
-    t: &Terminal,
-    draft: &str,
-    submitted: &mut bool,
-) -> Result<()> {
-    if !draft.is_empty() {
-        host.clear(draft).await?;
-        let v = host
-            .until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
-            .await?;
-        if !matches!(&v, Ok(View::Main(d)) if d.is_empty()) {
-            // Unknown input state: never type over it. What is there is reported.
-            left(
-                paths,
-                id,
-                "clear_unverified_draft_kept_in_journal",
-                &v,
-                draft,
-                "",
-            )?;
-            return reject(paths, id, "TERMINAL_CLEAR_UNVERIFIED");
-        }
-    }
-    // 4. Type the message and check it on screen.
-    step(paths, id, "type", |_| {})?;
-    let matches = host
-        .type_checked(&t.delivered_text, |rows| match classify(rows, false) {
-            Ok(View::Main(d)) => Some(d),
-            _ => None,
-        })
-        .await?;
-    let blocked = matches!(host.agent_status(), Ok(Some(s)) if s == "blocked");
-    if !matches || blocked {
-        let code = if blocked {
-            "TERMINAL_AGENT_BLOCKED"
-        } else {
-            "TERMINAL_TYPED_TEXT_MISMATCH"
-        };
-        step(paths, id, "withdraw", |_| {})?;
-        host.clear(&t.delivered_text).await?;
-        let cleared = host
-            .until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
-            .await?;
-        if matches!(&cleared, Ok(View::Main(d)) if d.is_empty()) {
-            restore(paths, id, host, draft, &t.delivered_text).await?;
-        } else {
-            left(
-                paths,
-                id,
-                "withdraw_unverified_draft_kept_in_journal",
-                &cleared,
-                draft,
-                &t.delivered_text,
-            )?;
-        }
-        return reject(paths, id, code);
-    }
-    // 5. Submit: journal first, then exactly one Enter.
-    let anchor = t
-        .transcript
-        .as_ref()
-        .and_then(|p| fs::metadata(p).ok())
-        .map(|m| m.len());
-    let at = now_ms() - 2000;
-    step(paths, id, "submit", |r| {
-        if let Some(t) = r.terminal.as_mut() {
-            t.anchor_offset = anchor;
-            t.submitted_at_ms = Some(at);
-        }
-    })?;
-    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
-        return reject(paths, id, code);
-    }
-    let sent = host.keys(&["enter"]);
-    *submitted = true;
-    // Whether a failed Enter landed is unknown: the caller first salvages the
-    // draft (only onto an input box seen empty), then ends the request
-    // `delivery_unknown` (TERMINAL_SUBMIT_UNCERTAIN).
-    sent?;
-    change(paths, id, |r| {
-        r.phase = "written".into();
-        r.facts.written = true;
-        Ok(())
-    })?;
-    // 6. Put the draft back, unsubmitted. Claude Code empties the input box on
-    //    Enter whether it starts a turn (idle) or queues the text (busy); text
-    //    typed while a turn runs stays in the box.
-    if draft.is_empty() {
-        return change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.draft = None;
-            }
-            Ok(())
-        });
-    }
-    let empty = host
-        .until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
-        .await?;
-    if matches!(&empty, Ok(View::Main(d)) if d.is_empty()) {
-        restore(paths, id, host, draft, &t.delivered_text).await
-    } else {
-        left(
-            paths,
-            id,
-            "input_not_empty_after_submit",
-            &empty,
-            draft,
-            &t.delivered_text,
-        )
-    }
-}
-
-/// What the input box holds when a restore could not be verified.
-fn left_in_input(
-    v: &Result<View, &'static str>,
-    draft: &str,
-    message: &str,
-) -> (&'static str, Option<usize>) {
-    match v {
-        Ok(View::Main(d)) if d.is_empty() => ("empty", Some(0)),
-        Ok(View::Main(d)) if d == draft => ("draft", Some(d.chars().count())),
-        Ok(View::Main(d)) if !message.is_empty() && squash(d) == squash(message) => {
-            ("message", Some(d.chars().count()))
-        }
-        Ok(View::Main(d)) => ("other", Some(d.chars().count())),
-        _ => ("unknown", None),
-    }
-}
-
-/// Record an unverified restore: the error, and what the input box holds.
-/// The draft stays in the private journal.
-fn left(
-    paths: &Paths,
-    id: &str,
-    error: &str,
-    v: &Result<View, &'static str>,
-    draft: &str,
-    message: &str,
-) -> Result<()> {
-    let (what, chars) = left_in_input(v, draft, message);
-    change(paths, id, |r| {
-        if let Some(t) = r.terminal.as_mut() {
-            t.draft_restored = Some(what == "draft");
-            if what == "draft" {
-                t.draft = None;
-            } else {
-                t.restore_error = Some(error.into());
-            }
-            t.left_in_input = Some(what.into());
-            t.left_chars = chars;
-        }
-        Ok(())
-    })
-}
-
-/// After a HERDR failure past the clear: one best-effort pass that puts the
-/// draft back when the input box is seen empty (or still holds the unsent
-/// message), else records what it holds. Never sends Enter.
-async fn salvage(
-    paths: &Paths,
-    id: &str,
-    host: &Host,
-    draft: &str,
-    message: &str,
-    submitted: bool,
-    error: &anyhow::Error,
-) {
-    let done = read(paths, id)
-        .ok()
-        .and_then(|r| r.terminal)
-        .is_some_and(|t| t.draft_restored.is_some());
-    // An empty draft still needs the pass: the typed message itself may be sitting in the box.
-    if done {
-        return;
-    }
-    let note = format!("host_failed:{}", reason(error));
-    let Ok(rows) = host.screen() else {
-        let _ = left(
-            paths,
-            id,
-            &note,
-            &Err("TERMINAL_HOST_UNAVAILABLE"),
-            draft,
-            message,
-        );
-        return;
-    };
-    let mut v = classify(&rows, false);
-    let unsent = !submitted && matches!(&v, Ok(View::Main(d)) if typed_remains(d, message));
-    if unsent && host.clear(message).await.is_ok() {
-        v = host
-            .until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
-            .await
-            .unwrap_or(Err("TERMINAL_HOST_UNAVAILABLE"));
-    }
-    if matches!(&v, Ok(View::Main(d)) if d.is_empty()) {
-        if restore(paths, id, host, draft, message).await.is_err() {
-            let _ = left(
-                paths,
-                id,
-                &note,
-                &Err("TERMINAL_HOST_UNAVAILABLE"),
-                draft,
-                message,
-            );
-        }
-    } else {
-        let _ = left(paths, id, &note, &v, draft, message);
-    }
-}
-
-/// Whether `shown` (the input box as read) is what is left of the typed `message`: all of it,
-/// or the tail of it while the box shows only its last rows, or what an interrupted typing
-/// had written so far.
-fn typed_remains(shown: &str, message: &str) -> bool {
-    let s = squash(shown);
-    let m = squash(message);
-    !s.is_empty() && (s == m || (s.chars().count() >= 12 && (m.ends_with(&s) || m.starts_with(&s))))
 }
 
 /// A terminal request whose worker is gone after the clear and before Enter: the typed
@@ -1332,20 +819,20 @@ async fn withdraw_orphan(paths: &Paths, id: &str, host: &Host) {
     let draft = t.draft.clone().unwrap_or_default();
     let message = t.delivered_text.clone();
     let typed = t.steps.iter().any(|s| s == "type");
-    match host.screen().map(|rows| classify(&rows, false)) {
-        Ok(Ok(View::Main(d))) if typed && typed_remains(&d, &message) => {
-            let ok = host.clear(&message).await.is_ok();
+    match host.screen().map(|rows| Claude::classify(&rows, false)) {
+        Ok(v) if typed && is_main(&v, |d| typing::typed_remains(d, &message)) => {
+            let ok = typing::clear::<Claude>(host, &message).await.is_ok();
             let v = if ok {
-                host.until(true, |v| matches!(v, Ok(View::Main(d)) if d.is_empty()))
+                typing::until::<Claude>(host, true, |v| is_main(v, str::is_empty))
                     .await
                     .unwrap_or(Err("TERMINAL_HOST_UNAVAILABLE"))
             } else {
                 Err("TERMINAL_HOST_UNAVAILABLE")
             };
-            if matches!(&v, Ok(View::Main(d)) if d.is_empty()) {
-                let _ = restore(paths, id, host, &draft, &message).await;
+            if is_main(&v, str::is_empty) {
+                let _ = typing::restore::<Claude>(paths, id, host, &draft, &message).await;
             } else {
-                let _ = left(
+                let _ = typing::left(
                     paths,
                     id,
                     "orphan_withdraw_unverified",
@@ -1355,14 +842,14 @@ async fn withdraw_orphan(paths: &Paths, id: &str, host: &Host) {
                 );
             }
         }
-        Ok(Ok(View::Main(d))) if d.is_empty() => {
-            let _ = restore(paths, id, host, &draft, &message).await;
+        Ok(v) if is_main(&v, str::is_empty) => {
+            let _ = typing::restore::<Claude>(paths, id, host, &draft, &message).await;
         }
         Ok(v) => {
-            let _ = left(paths, id, "orphan_input_not_ours", &v, &draft, &message);
+            let _ = typing::left(paths, id, "orphan_input_not_ours", &v, &draft, &message);
         }
         Err(_) => {
-            let _ = left(
+            let _ = typing::left(
                 paths,
                 id,
                 "orphan_host_unavailable",
@@ -1398,8 +885,8 @@ async fn withdraw_orphans(paths: &Paths, id: &str, host: &Host, target: &str) {
 
 /// Worker entry for an orphaned request found by a receipt read.
 async fn cleanup_orphan(paths: &Paths, id: &str, r: &Record) -> Result<()> {
-    let t = match recheck(paths, r) {
-        Ok(t) => t,
+    let t = match typing::recheck::<Claude>(paths, r) {
+        Ok((t, _, _)) => t,
         Err(_) => {
             // The target is gone: nothing can be withdrawn; say what is unknown.
             return change(paths, id, |r| {
@@ -1421,45 +908,9 @@ async fn cleanup_orphan(paths: &Paths, id: &str, r: &Record) -> Result<()> {
         .collect();
     let pane_lock = lock_file(&dir(paths).join(format!("terminal-{key}.lock")))?;
     pane_lock.lock_exclusive()?;
-    let host = Host::new(&t)?;
+    let host = Host::for_agent(&t, Claude::AGENT)?;
     withdraw_orphan(paths, id, &host).await;
     Ok(())
-}
-
-/// Type the draft back (no Enter) and verify it exactly; never retried.
-async fn restore(paths: &Paths, id: &str, host: &Host, draft: &str, message: &str) -> Result<()> {
-    if draft.is_empty() {
-        return change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.draft = None;
-                t.draft_restored = Some(true);
-            }
-            Ok(())
-        });
-    }
-    step(paths, id, "restore", |_| {})?;
-    let typed = host.type_text(draft).await;
-    let v = host
-        .until(true, |v| matches!(v, Ok(View::Main(d)) if d == draft))
-        .await
-        .unwrap_or(Err("TERMINAL_HOST_UNAVAILABLE"));
-    if typed.is_ok() && matches!(&v, Ok(View::Main(d)) if d == draft) {
-        return change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.draft_restored = Some(true);
-                t.draft = None;
-                t.left_in_input = Some("draft".into());
-                t.left_chars = Some(draft.chars().count());
-            }
-            Ok(())
-        });
-    }
-    let error = match (&typed, &v) {
-        (Err(_), _) => "restore_keys_failed".to_owned(),
-        (_, Err(code)) => format!("restore_unverified:{code}"),
-        _ => "restore_unverified".to_owned(),
-    };
-    left(paths, id, &error, &v, draft, message)
 }
 
 // ---------------------------------------------------------------- transcript
@@ -1661,66 +1112,6 @@ pub(crate) fn observe(paths: &Paths, id: &str, idle: bool) -> Result<()> {
     })
 }
 
-/// After a submit: wait for the human record (or report the send uncertain),
-/// then follow the reply until the turn ends or the timeout. The turn ends at
-/// the next real input in the transcript, or when HERDR has reported the agent
-/// working and then idle for two seconds.
-async fn observe_loop(paths: &Paths, id: &str, host: &Host) -> Result<()> {
-    let r = read(paths, id)?;
-    if is_terminal(&r) || !r.facts.written {
-        return Ok(());
-    }
-    let timeout = r
-        .request
-        .timeout_seconds
-        .unwrap_or(super::DEFAULT_TIMEOUT_SECONDS);
-    let start = Instant::now();
-    let confirm = Duration::from_secs(timeout.min(CONFIRM_SECONDS));
-    let total = Duration::from_secs(timeout);
-    let mut worked = false;
-    let mut idle_since: Option<Instant> = None;
-    loop {
-        let status = host.agent_status().ok().flatten();
-        worked |= matches!(status.as_deref(), Some("working" | "blocked"));
-        let idle = matches!(status.as_deref(), Some("idle" | "done"));
-        if !idle {
-            idle_since = None;
-        } else if idle_since.is_none() {
-            idle_since = Some(Instant::now());
-        }
-        let settled = worked && idle_since.is_some_and(|s| s.elapsed() >= crate::timing::secs(2));
-        observe(paths, id, settled)?;
-        let r = read(paths, id)?;
-        if is_terminal(&r) {
-            return Ok(());
-        }
-        let anchored = r.terminal.as_ref().is_some_and(|t| t.input_uuid.is_some());
-        if !anchored && start.elapsed() >= confirm {
-            return change(paths, id, |r| {
-                finish(r, "delivery_unknown", Some("TERMINAL_INPUT_UNCONFIRMED"));
-                Ok(())
-            });
-        }
-        if anchored && settled {
-            return change(paths, id, |r| {
-                if let Some(t) = r.terminal.as_mut() {
-                    t.turn_ended = true;
-                }
-                if r.reply_text.is_empty() {
-                    finish(r, "completed_without_reply", None);
-                } else {
-                    finish(r, "completed_with_reply", None);
-                }
-                Ok(())
-            });
-        }
-        if start.elapsed() >= total {
-            return Ok(());
-        }
-        tokio::time::sleep(crate::timing::scaled(Duration::from_millis(250))).await;
-    }
-}
-
 /// Receipt fields of a terminal record.
 pub fn receipt_fields(r: &Record, v: &mut Value) {
     let Some(t) = &r.terminal else {
@@ -1762,6 +1153,11 @@ pub(crate) fn unconfirmed_after_exit(paths: &Paths, id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+    /// The engine's re-read before the first clearing key (`ScreenProfile::REREAD_DRAFT`).
+    fn draft_unchanged(rows: &[Vec<Cell>], draft: &str) -> bool {
+        is_main(&Claude::classify(rows, true), |d| d == draft)
+    }
     const RULE: &str = "────────────────────────────────────────";
     fn screen(prompt: &[&str], footer: &[&str]) -> Vec<Vec<Cell>> {
         let mut s = format!("● earlier output\n{RULE}\n");
@@ -2037,21 +1433,6 @@ mod tests {
         for bad in ["/mo", "?", "!ls", "# note", "look at @", "see @src", "a\tb"] {
             assert!(!restorable(bad), "{bad:?}");
         }
-    }
-    #[test]
-    fn what_is_left_in_the_input_is_reported_exactly() {
-        let main = |s: &str| Ok(View::Main(s.into()));
-        assert_eq!(left_in_input(&main(""), "d", "m"), ("empty", Some(0)));
-        assert_eq!(left_in_input(&main("d"), "d", "m"), ("draft", Some(1)));
-        assert_eq!(
-            left_in_input(&main("a b"), "d", "a\nb"),
-            ("message", Some(3))
-        );
-        assert_eq!(left_in_input(&main("xy"), "d", "m"), ("other", Some(2)));
-        assert_eq!(
-            left_in_input(&Err("TERMINAL_VIEW_NOT_MAIN"), "d", "m"),
-            ("unknown", None)
-        );
     }
     #[test]
     fn a_background_session_is_typed_into_only_through_its_exact_attach_client() {

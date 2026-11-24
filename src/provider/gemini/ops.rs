@@ -73,7 +73,9 @@ impl ProviderOps for Ops {
         table_stop_reason(caps)
     }
     fn add_session_input(&self, paths: &Paths, value: &mut Value, home: Option<&Path>) {
-        crate::messaging::claude_steer::gemini::apply_session_input(
+        crate::messaging::claude_steer::typing::apply_session_input::<
+            crate::messaging::claude_steer::gemini::Gemini,
+        >(
             value,
             home,
             crate::messaging::claude_steer::terminal::enabled(paths),

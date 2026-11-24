@@ -1,7 +1,7 @@
 //! Antigravity CLI 1.4.10 terminal input (contract revision 24): submit, queue
 //! and steer for an interactive agy session that Sessionsation tracks and that
-//! runs in a verified HERDR pane (HERDR agent kind `agy`). It reuses the Claude
-//! terminal-input machinery ([`super::terminal`]): HERDR typed input without
+//! runs in a verified HERDR pane (HERDR agent kind `agy`). It is a [`ScreenProfile`]
+//! of the typing engine ([`super::typing`]): HERDR typed input without
 //! bracketed paste, the draft round-trip, screen checks, journaling before
 //! every write, transcript anchoring and no replay.
 //!
@@ -26,17 +26,20 @@
 use super::{
     Record, Request, abandon_unsent, change, dir, finish, is_terminal, read,
     terminal::{
-        self, CONFIRM_SECONDS, Cell, Host, SCREEN_WAIT, SETTLE, Terminal, columns, now_ms, reason,
-        reject, row_text, squash, step, timestamp_ms,
+        self, CONFIRM_SECONDS, Cell, Host, Terminal, columns, now_ms, reason, row_text, squash,
+        timestamp_ms,
+    },
+    typing::{
+        self, ClearKeys, Draft, Key, Prefix, Screen, ScreenProfile, SessionInput, Typing, code,
     },
     worker_lock,
 };
 use crate::{
     catalog,
     paths::{Paths, lock_file, private_dir},
-    provider::{ProviderId, antigravity, antigravity::QueueMode},
+    provider::{ProviderId, antigravity, antigravity::QueueMode, claude},
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,7 +47,7 @@ use std::{
     fs,
     io::{BufRead, Read, Seek},
     path::Path,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// HERDR's agent kind for agy panes.
@@ -112,37 +115,7 @@ pub struct Facts {
 /// The text as typed: CRLF normalized and trimmed. agy has no verified escape
 /// for a leading `/` (slash menu), `?` (shortcuts) or `!`, so those are refused.
 pub fn deliverable(text: &str) -> Result<(String, bool, bool)> {
-    let normalized = text.replace("\r\n", "\n");
-    ensure!(
-        !normalized
-            .chars()
-            .any(|c| c != '\n' && (c.is_control() || c == '\u{7f}')),
-        "TERMINAL_PAYLOAD_UNSUPPORTED: tabs and control characters cannot be typed verbatim"
-    );
-    let trimmed = normalized.trim();
-    ensure!(!trimmed.is_empty(), "INVALID_REQUEST: empty text");
-    ensure!(
-        trimmed.len() <= MAX_TEXT && trimmed.lines().count() <= MAX_LINES,
-        "TERMINAL_TEXT_TOO_LONG: terminal input into agy takes at most {MAX_TEXT} bytes and {MAX_LINES} lines"
-    );
-    ensure!(
-        !trimmed.starts_with(['/', '?', '!']),
-        "TERMINAL_PAYLOAD_UNSUPPORTED: agy treats a leading / ? or ! as a command, its shortcuts or a mode; rephrase the start of the text"
-    );
-    ensure!(
-        !trimmed.ends_with('\\'),
-        "TERMINAL_PAYLOAD_UNSUPPORTED: a trailing backslash turns Enter into a newline"
-    );
-    let last = trimmed.split_whitespace().last().unwrap_or_default();
-    ensure!(
-        !last.starts_with('@') && !last.starts_with('/'),
-        "TERMINAL_PAYLOAD_UNSUPPORTED: text ending in an @ or / token would submit a completion; add punctuation after it"
-    );
-    Ok((
-        trimmed.to_owned(),
-        false,
-        normalized.len() != text.len() || trimmed != normalized,
-    ))
+    typing::deliverable::<Antigravity>(text)
 }
 
 // ---------------------------------------------------------------- screen
@@ -313,39 +286,6 @@ pub(crate) fn classify(rows: &[Vec<Cell>], strict: bool) -> Result<View, &'stati
     };
     Ok(View::Main { draft, busy })
 }
-fn is_main(v: &Result<View, &'static str>, f: impl Fn(&str) -> bool) -> bool {
-    matches!(v, Ok(View::Main { draft, .. }) if f(draft))
-}
-
-async fn until(
-    host: &Host,
-    strict: bool,
-    want: impl Fn(&Result<View, &'static str>) -> bool,
-) -> Result<Result<View, &'static str>> {
-    let deadline = Instant::now() + SCREEN_WAIT;
-    loop {
-        tokio::time::sleep(crate::timing::scaled(SETTLE)).await;
-        let v = classify(&host.screen()?, strict);
-        if want(&v) || Instant::now() >= deadline {
-            return Ok(v);
-        }
-    }
-}
-/// Clear the input: alt+> (end of input), then per round ctrl+u (kill to the
-/// line start) and backspace (join the previous line). None of these keys does
-/// anything else in agy's prompt.
-async fn clear(host: &Host, text: &str) -> Result<()> {
-    let rows = text
-        .split('\n')
-        .map(|l| l.chars().count() / 30 + 1)
-        .sum::<usize>();
-    host.keys(&["alt+>"])?;
-    for _ in 0..(rows + 2).min(400) {
-        host.keys(&["ctrl+u", "backspace"])?;
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------- admission
 
 /// The session's queuedMessages (inline --settings on its command line first).
@@ -375,10 +315,6 @@ fn busy_key(
         (_, None) => Ok(("enter", "unknown")),
     }
 }
-fn code(s: &str) -> &str {
-    s.split(':').next().unwrap_or(s)
-}
-
 /// Admission of an Antigravity submit/queue/steer: the terminal target and facts.
 pub(super) fn admit(
     request: &Request,
@@ -427,40 +363,108 @@ pub(super) fn admit(
 
 // ---------------------------------------------------------------- worker
 
-fn recheck(paths: &Paths, r: &Record) -> Result<(Terminal, std::path::PathBuf)> {
-    ensure!(terminal::enabled(paths), "{}", terminal::DISABLED);
-    let account =
-        crate::messaging::headless::usable_account(paths, ProviderId::Antigravity, &r.account)?;
-    let session = catalog::find(paths, &r.session_id)?;
-    ensure!(session.conversation_id == r.conversation_id, "STALE_TARGET");
-    let recorded = r.terminal.clone().context("STALE_TARGET")?;
-    let o = antigravity::observe(
-        &account.home,
-        &r.conversation_id,
-        session.attachment.as_ref(),
-    );
-    let now = terminal::eligible(&o).map_err(|code| anyhow::anyhow!("{code}"))?;
-    ensure!(
-        now.pid == recorded.pid
-            && now.process_start == recorded.process_start
-            && now.target == recorded.target,
-        "STALE_TARGET: the attached agy process or pane changed"
-    );
-    Ok((
-        Terminal {
-            transcript: now.transcript.or(recorded.transcript.clone()),
-            ..recorded
-        },
-        account.home,
-    ))
+/// Antigravity CLI 1.4.10's terminal for the typing engine, with the session's
+/// queuedMessages read at the recheck: the box between full-width rules with a `>`
+/// prompt and a one-row footer ([`classify`]), alt+> then ctrl+u / backspace clearing,
+/// typed in verified segments, Enter or alt+m per the mode and the setting.
+pub(crate) struct Antigravity {
+    queue_mode: Option<QueueMode>,
 }
-fn set_facts(paths: &Paths, id: &str, f: impl FnOnce(&mut Facts)) -> Result<()> {
-    change(paths, id, |r| {
-        if let Some(t) = r.terminal.as_mut() {
-            f(t.antigravity.get_or_insert_with(Facts::default));
+impl ScreenProfile for Antigravity {
+    const AGENT: &'static str = AGENT;
+    const PROVIDER: ProviderId = ProviderId::Antigravity;
+    const PROCESS: &'static str = "agy";
+    const MAX_TEXT: usize = MAX_TEXT;
+    const MAX_LINES: Option<usize> = Some(MAX_LINES);
+    const PREFIX: Prefix = Prefix::Refuse(
+        &['/', '?', '!'],
+        "TERMINAL_PAYLOAD_UNSUPPORTED: agy treats a leading / ? or ! as a command, its shortcuts or a mode; rephrase the start of the text",
+    );
+    /// alt+> (end of input), then per round ctrl+u (kill to the line start) and backspace
+    /// (join the previous line). None of these keys does anything else in agy's prompt.
+    const CLEAR: ClearKeys = ClearKeys {
+        first: &["alt+>"],
+        round: &["ctrl+u", "backspace"],
+        row_chars: 30,
+        rounds_per_row: 1,
+        extra: 2,
+        max: 400,
+    };
+    const VIEW_SWITCHES: usize = 0;
+    const TYPING: Typing = Typing::Checked { reread: true };
+    const DRAFT: Draft = Draft::Kept;
+    const ONE_BLOCKED_READ: bool = false;
+    const RESTORE_ERROR_NAMES_HOST: bool = false;
+    const REREAD_DRAFT: bool = false;
+    const REFUSAL_LAYOUT: bool = false;
+    const MODE_GATED: bool = true;
+    fn too_long() -> String {
+        format!(
+            "TERMINAL_TEXT_TOO_LONG: terminal input into agy takes at most {MAX_TEXT} bytes and {MAX_LINES} lines"
+        )
+    }
+    fn classify(rows: &[Vec<Cell>], strict: bool) -> Screen {
+        classify(rows, strict).map(|View::Main { draft, busy }| typing::View::Main { draft, busy })
+    }
+    /// Typing it back would open a menu, the shortcuts or a completion.
+    fn restorable(draft: &str) -> bool {
+        let last = draft.split_whitespace().last().unwrap_or_default();
+        !(draft.starts_with(['?', '!', '/'])
+            || last.starts_with(['@', '/'])
+            || draft.contains('\t'))
+    }
+    fn observe_process(
+        home: &Path,
+        conversation: &str,
+        attachment: Option<&catalog::Attachment>,
+    ) -> claude::Observation {
+        antigravity::observe(home, conversation, attachment)
+    }
+    fn refusal(&self, mode: &str, busy: bool) -> Option<&'static str> {
+        if busy {
+            busy_key(mode, self.queue_mode).err()
+        } else {
+            None
         }
-        Ok(())
-    })
+    }
+    /// Idle Enter is a user turn; busy follows the setting.
+    fn key(&self, mode: &str, busy: bool) -> Result<Key, &'static str> {
+        let (key, expected) = if busy {
+            busy_key(mode, self.queue_mode)?
+        } else {
+            ("enter", "user_turn")
+        };
+        Ok(Key {
+            key,
+            expected: Some(expected),
+        })
+    }
+    fn anchor(&self, paths: &Paths, id: &str, _t: &Terminal) -> Result<Option<u64>> {
+        Ok(antigravity_log(paths, &read(paths, id)?)
+            .and_then(|p| fs::metadata(p).ok())
+            .map(|m| m.len()))
+    }
+    fn submit_facts(&self, t: &mut Terminal, busy: bool, key: &Key) {
+        let f = t.antigravity.get_or_insert_with(Facts::default);
+        f.busy_at_submit = Some(busy);
+        f.key = Some(key.key.into());
+        f.expected = key.expected.map(Into::into);
+    }
+    /// A busy key shows agy's queue row or "Sending".
+    fn evidence(&self, lines: &[String], text: &str) -> Option<&'static str> {
+        screen_evidence(lines, text)
+    }
+    fn record_evidence(t: &mut Terminal, evidence: &str) {
+        t.antigravity
+            .get_or_insert_with(Facts::default)
+            .screen_evidence = Some(evidence.into());
+    }
+    fn confirm_window(r: &Record) -> Duration {
+        confirm_window(r)
+    }
+    fn apply_transcript(paths: &Paths, id: &str, idle: bool) -> Result<()> {
+        observe(paths, id, idle)
+    }
 }
 
 pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
@@ -478,8 +482,8 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
             Ok(())
         });
     }
-    let (t, home) = match recheck(paths, &r) {
-        Ok(x) => x,
+    let (t, home) = match typing::recheck::<Antigravity>(paths, &r) {
+        Ok((t, home, _)) => (t, home),
         Err(e) => return abandon_unsent(paths, id, &reason(&e)),
     };
     let (q, source) = queue_mode_of(&home, Some(t.pid));
@@ -503,226 +507,12 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         Ok(())
     })?;
     let host = Host::for_agent(&t, AGENT)?;
-    let outcome = deliver(paths, id, &host, &t, q).await;
+    let outcome = typing::deliver(&Antigravity { queue_mode: q }, paths, id, &host, &t).await;
     if let Err(e) = outcome {
-        change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut()
-                && t.draft.as_deref().is_some_and(|d| !d.is_empty())
-                && t.draft_restored != Some(true)
-            {
-                t.draft_restored = Some(false);
-                t.restore_error
-                    .get_or_insert_with(|| "host_failed_draft_kept_in_journal".into());
-            }
-            if is_terminal(r) {
-                return Ok(());
-            }
-            if r.facts.written {
-                r.observation_error = Some(format!("worker_error: {}", reason(&e)));
-            } else if r.phase == "admitted" {
-                finish(r, "rejected", Some(&reason(&e)));
-            } else {
-                finish(r, "rejected", Some("TERMINAL_HOST_FAILED_BEFORE_SUBMIT"));
-            }
-            Ok(())
-        })?;
+        typing::worker_failed(paths, id, &e)?;
     }
     drop(pane_lock);
-    observe_loop(paths, id, &host).await
-}
-
-fn blocked(host: &Host) -> bool {
-    matches!(host.agent_status(), Ok(Some(s)) if s == "blocked")
-}
-fn working(host: &Host) -> bool {
-    matches!(host.agent_status(), Ok(Some(s)) if s == "working")
-}
-
-async fn withdraw(
-    paths: &Paths,
-    id: &str,
-    host: &Host,
-    typed: &str,
-    draft: &str,
-    code: &str,
-) -> Result<()> {
-    step(paths, id, "withdraw", |_| {})?;
-    clear(host, typed).await?;
-    let cleared = until(host, true, |v| is_main(v, str::is_empty)).await?;
-    if is_main(&cleared, str::is_empty) {
-        restore(paths, id, host, draft).await?;
-    } else {
-        change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.draft_restored = Some(false);
-                t.restore_error = Some("withdraw_unverified_draft_kept_in_journal".into());
-            }
-            Ok(())
-        })?;
-    }
-    reject(paths, id, code)
-}
-
-async fn deliver(
-    paths: &Paths,
-    id: &str,
-    host: &Host,
-    t: &Terminal,
-    q: Option<QueueMode>,
-) -> Result<()> {
-    let mode = read(paths, id)?.request.mode;
-    // 1. HERDR agent state (read-only).
-    match host.agent_status() {
-        Ok(Some(s)) if s == "blocked" => return reject(paths, id, "TERMINAL_AGENT_BLOCKED"),
-        Ok(Some(_)) => {}
-        Ok(None) => return reject(paths, id, "TERMINAL_AGENT_UNKNOWN"),
-        Err(_) => return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE"),
-    }
-    // Contract 1.63.0: the pane must run the exact provider process, not a shell.
-    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
-        return reject(paths, id, code);
-    }
-    // 2. View: the input prompt with no menu, panel or dialog.
-    let Ok(screen) = host.screen() else {
-        return reject(paths, id, "TERMINAL_HOST_UNAVAILABLE");
-    };
-    let (draft, busy_screen) = match classify(&screen, true) {
-        Ok(View::Main { draft, busy }) => (draft, busy),
-        Err(code) => return reject(paths, id, code),
-    };
-    let last = draft.split_whitespace().last().unwrap_or_default();
-    if draft.starts_with(['?', '!', '/']) || last.starts_with(['@', '/']) || draft.contains('\t') {
-        // Typing it back would open a menu, the shortcuts or a completion.
-        return reject(paths, id, "TERMINAL_DRAFT_UNRESTORABLE");
-    }
-    let busy = busy_screen || working(host);
-    if busy && let Err(refusal) = busy_key(&mode, q) {
-        return reject(paths, id, code(refusal));
-    }
-    if blocked(host) {
-        return reject(paths, id, "TERMINAL_AGENT_BLOCKED");
-    }
-    // 3. Journal the draft, then clear.
-    step(paths, id, "clear", |r| {
-        r.phase = "dispatching".into();
-        r.dispatched_at = Some(crate::daemon::now());
-        if let Some(t) = r.terminal.as_mut() {
-            t.draft = Some(draft.clone());
-            t.draft_chars = Some(draft.chars().count());
-        }
-    })?;
-    if !draft.is_empty() {
-        clear(host, &draft).await?;
-        let v = until(host, true, |v| is_main(v, str::is_empty)).await?;
-        if !is_main(&v, str::is_empty) {
-            return change(paths, id, |r| {
-                if let Some(t) = r.terminal.as_mut() {
-                    t.draft_restored = Some(false);
-                    t.restore_error = Some("clear_unverified_draft_kept_in_journal".into());
-                }
-                finish(r, "rejected", Some("TERMINAL_CLEAR_UNVERIFIED"));
-                Ok(())
-            });
-        }
-    }
-    // 4. Type the message and check it on screen.
-    step(paths, id, "type", |_| {})?;
-    let ok = host
-        .type_checked(&t.delivered_text, |rows| match classify(rows, false) {
-            Ok(View::Main { draft, .. }) => Some(draft),
-            _ => None,
-        })
-        .await?;
-    let typed = classify(&host.screen()?, false);
-    if !ok || !is_main(&typed, |_| true) || blocked(host) {
-        let code = if blocked(host) {
-            "TERMINAL_AGENT_BLOCKED"
-        } else {
-            "TERMINAL_TYPED_TEXT_MISMATCH"
-        };
-        return withdraw(paths, id, host, &t.delivered_text, &draft, code).await;
-    }
-    // 5. The key now: idle Enter is a user turn; busy follows the setting.
-    let busy = matches!(typed, Ok(View::Main { busy: true, .. })) || working(host);
-    let (key, expected) = if busy {
-        match busy_key(&mode, q) {
-            Ok(k) => k,
-            Err(refusal) => {
-                return withdraw(paths, id, host, &t.delivered_text, &draft, code(refusal)).await;
-            }
-        }
-    } else {
-        ("enter", "user_turn")
-    };
-    let anchor = antigravity_log(paths, &read(paths, id)?)
-        .and_then(|p| fs::metadata(p).ok())
-        .map(|m| m.len());
-    let at = now_ms() - 2000;
-    step(paths, id, "submit", |r| {
-        if let Some(t) = r.terminal.as_mut() {
-            t.anchor_offset = anchor;
-            t.submitted_at_ms = Some(at);
-            let f = t.antigravity.get_or_insert_with(Facts::default);
-            f.busy_at_submit = Some(busy);
-            f.key = Some(key.into());
-            f.expected = Some(expected.into());
-        }
-    })?;
-    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
-        return reject(paths, id, code);
-    }
-    let sent = host.keys(&[key]);
-    change(paths, id, |r| {
-        if sent.is_ok() {
-            r.phase = "written".into();
-            r.facts.written = true;
-        } else {
-            finish(r, "delivery_unknown", Some("TERMINAL_SUBMIT_UNCERTAIN"));
-        }
-        Ok(())
-    })?;
-    if sent.is_err() {
-        return Ok(());
-    }
-    // 6. The input must empty; a busy key shows agy's queue row or "Sending".
-    let empty = until(host, true, |v| is_main(v, str::is_empty)).await?;
-    if busy {
-        let lines: Vec<String> = host
-            .screen()
-            .map(|s| s.iter().map(|r| row_text(r)).collect())
-            .unwrap_or_default();
-        if let Some(e) = screen_evidence(&lines, &t.delivered_text) {
-            set_facts(paths, id, |f| f.screen_evidence = Some(e.into()))?;
-            change(paths, id, |r| {
-                if !is_terminal(r) && r.state == "pending_local" {
-                    r.state = "native_accepted".into();
-                }
-                Ok(())
-            })?;
-        }
-    }
-    // 7. Put the draft back, unsubmitted.
-    if !draft.is_empty() {
-        if is_main(&empty, str::is_empty) {
-            restore(paths, id, host, &draft).await?;
-        } else {
-            change(paths, id, |r| {
-                if let Some(t) = r.terminal.as_mut() {
-                    t.draft_restored = Some(false);
-                    t.restore_error = Some("input_not_empty_after_submit".into());
-                }
-                Ok(())
-            })?;
-        }
-    } else {
-        change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.draft = None;
-            }
-            Ok(())
-        })?;
-    }
-    Ok(())
+    typing::observe_loop::<Antigravity>(paths, id, &host).await
 }
 
 /// `queued`: agy listed the message as `▸ text (alt+m to send immediately)`;
@@ -749,37 +539,6 @@ pub(crate) fn screen_evidence(lines: &[String], text: &str) -> Option<&'static s
         }
     }
     None
-}
-
-async fn restore(paths: &Paths, id: &str, host: &Host, draft: &str) -> Result<()> {
-    if draft.is_empty() {
-        return change(paths, id, |r| {
-            if let Some(t) = r.terminal.as_mut() {
-                t.draft = None;
-                t.draft_restored = Some(true);
-            }
-            Ok(())
-        });
-    }
-    step(paths, id, "restore", |_| {})?;
-    let typed = host.type_text(draft).await;
-    let v = until(host, true, |v| is_main(v, |d| d == draft)).await;
-    let ok = typed.is_ok() && matches!(&v, Ok(v) if is_main(v, |d| d == draft));
-    change(paths, id, |r| {
-        if let Some(t) = r.terminal.as_mut() {
-            t.draft_restored = Some(ok);
-            if ok {
-                t.draft = None;
-            } else {
-                t.restore_error = Some(match (&typed, &v) {
-                    (Err(_), _) => "restore_keys_failed".into(),
-                    (_, Ok(Err(code))) => format!("restore_unverified:{code}"),
-                    _ => "restore_unverified".into(),
-                });
-            }
-        }
-        Ok(())
-    })
 }
 
 // ---------------------------------------------------------------- transcript
@@ -956,62 +715,6 @@ fn confirm_window(r: &Record) -> Duration {
     })
 }
 
-async fn observe_loop(paths: &Paths, id: &str, host: &Host) -> Result<()> {
-    let r = read(paths, id)?;
-    if is_terminal(&r) || !r.facts.written {
-        return Ok(());
-    }
-    let timeout = r
-        .request
-        .timeout_seconds
-        .unwrap_or(super::DEFAULT_TIMEOUT_SECONDS);
-    let start = Instant::now();
-    let confirm = confirm_window(&r);
-    let total = Duration::from_secs(timeout);
-    let mut worked = false;
-    let mut idle_since: Option<Instant> = None;
-    loop {
-        let status = host.agent_status().ok().flatten();
-        worked |= matches!(status.as_deref(), Some("working" | "blocked"));
-        let idle = matches!(status.as_deref(), Some("idle" | "done"));
-        if !idle {
-            idle_since = None;
-        } else if idle_since.is_none() {
-            idle_since = Some(Instant::now());
-        }
-        let settled = worked && idle_since.is_some_and(|s| s.elapsed() >= crate::timing::secs(2));
-        observe(paths, id, settled)?;
-        let r = read(paths, id)?;
-        if is_terminal(&r) {
-            return Ok(());
-        }
-        let anchored = r.terminal.as_ref().is_some_and(|t| t.input_uuid.is_some());
-        if !anchored && start.elapsed() >= confirm {
-            return change(paths, id, |r| {
-                finish(r, "delivery_unknown", Some("TERMINAL_INPUT_UNCONFIRMED"));
-                Ok(())
-            });
-        }
-        if anchored && settled {
-            return change(paths, id, |r| {
-                if let Some(t) = r.terminal.as_mut() {
-                    t.turn_ended = true;
-                }
-                if r.reply_text.is_empty() {
-                    finish(r, "completed_without_reply", None);
-                } else {
-                    finish(r, "completed_with_reply", None);
-                }
-                Ok(())
-            });
-        }
-        if start.elapsed() >= total {
-            return Ok(());
-        }
-        tokio::time::sleep(crate::timing::scaled(Duration::from_millis(250))).await;
-    }
-}
-
 /// With the worker gone, a submit never matched within its window stays
 /// uncertain for good: `delivery_unknown`.
 pub(crate) fn unconfirmed_after_exit(paths: &Paths, id: &str) -> Result<()> {
@@ -1062,54 +765,31 @@ pub fn steer_semantics() -> Value {
         "interrupt_option":null,"label":LABEL_STEER,"caveat":STEER_CAVEAT})
 }
 
-/// Per-session submit/queue/steer for an Antigravity session row.
-pub fn apply_session_input(value: &mut Value, home: Option<&Path>, terminal_enabled: bool) {
-    let running = value["availability"] == "running";
-    let typed = super::terminal_reason(value, terminal_enabled);
-    let pid = value["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
-    let (q, source) = match home {
-        Some(home) => queue_mode_of(home, pid),
-        None => (None, "unknown"),
-    };
-    let mut modes: [(&str, Option<&str>, Option<String>); 3] = [
-        ("submit", None, None),
-        ("queue", None, None),
-        ("steer", None, None),
-    ];
-    let terminal_reason: Option<String> = if !running {
-        Some("SESSION_NOT_RUNNING".into())
-    } else {
-        typed.map(str::to_owned)
-    };
-    for m in &mut modes {
-        if !running {
-            m.2 = Some(
-                "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Antigravity session"
-                    .into(),
-            );
-        } else if let Some(code) = typed {
-            m.2 = Some(format!(
-                "{code}: Antigravity takes live input only as typed input into a verified HERDR pane"
-            ));
-        } else if m.0 != "submit" && q.is_none() {
-            m.2 = Some(QUEUE_MODE_UNKNOWN.into());
-        } else {
-            m.1 = Some(terminal::SEMANTICS);
+/// Per-session submit/queue/steer for an Antigravity session row, through
+/// [`typing::apply_session_input`].
+impl SessionInput for Antigravity {
+    const NAME: &'static str = "Antigravity";
+    const LABEL: &'static str = LABEL;
+    type Gates = (Option<QueueMode>, &'static str);
+    fn gates(value: &Value, home: Option<&Path>) -> Self::Gates {
+        let pid = value["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+        match home {
+            Some(home) => queue_mode_of(home, pid),
+            None => (None, "unknown"),
         }
     }
-    for (k, path, reason) in &modes {
-        value["capabilities"][*k] = json!(path.is_some());
-        value["capability_reasons"][*k] = json!(reason);
+    fn mode_reason(&(q, _): &Self::Gates, mode: &str) -> Option<String> {
+        (mode != "submit" && q.is_none()).then(|| QUEUE_MODE_UNKNOWN.into())
     }
-    let available = terminal_reason.is_none();
-    let path = modes[0].1;
-    value["input_delivery"] = json!({"semantics":path,"interrupt":false,
-        "label":path.map(|_| LABEL),
-        "steer":modes[2].1.map(|_| steer_semantics()),
-        "modes":{"submit":modes[0].1,"queue":modes[1].1,"steer":modes[2].1},
-        "available":if available {vec![terminal::SEMANTICS]} else {vec![]},
-        "terminal_input":{"available":available,"reason":terminal_reason},
-        "queued_messages":{"value":q.map(|q| q.as_str()),"source":source}});
+    fn steer_semantics() -> Value {
+        steer_semantics()
+    }
+    fn row_extra((q, source): Self::Gates) -> (&'static str, Value) {
+        (
+            "queued_messages",
+            json!({"value":q.map(|q| q.as_str()),"source":source}),
+        )
+    }
 }
 
 /// `capabilities.antigravity_input_delivery`.
