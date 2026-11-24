@@ -1102,3 +1102,117 @@ async fn unified_send_types_into_a_live_agy_pane_and_queues_behind_a_busy_turn()
     );
     drop(child);
 }
+
+#[path = "support/typing_golden.rs"]
+mod typing_golden;
+
+/// Step S8 golden: the exact HERDR command sequence of representative agy deliveries
+/// (recorded on main before the typing engine refactor; see `support/typing_golden.rs`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typing_golden_herdr_sequences_for_antigravity() {
+    let (mut f, home) = logged_in().await;
+    let herdr = f._tmp.path().join("fake-herdr");
+    std::fs::create_dir_all(herdr.join("bin")).unwrap();
+    let script = herdr.join("bin/herdr");
+    std::fs::write(&script, include_str!("support/fake-herdr-agy.py")).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    f.herdr = Some(herdr.clone());
+    let id = uuid::Uuid::new_v4().to_string();
+    f.send_ok(&new_body(&id, "antigravity:life", &f.project, "start"));
+    let native = f.settled(&id)["provider_conversation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let log = home
+        .join(".gemini/antigravity-cli/brain")
+        .join(&native)
+        .join(".system_generated/logs/transcript.jsonl");
+    let child = Process(
+        Command::new(&f.fake)
+            .args(["--conversation", &native])
+            .env("HOME", &home)
+            .env("AGY_ACCOUNT_HOME", &home)
+            .env("HERDR_PANE_ID", "w1:p1")
+            .env("HERDR_SESSION", "fixture")
+            .env("HERDR_ENV", "1")
+            .current_dir(&f.project)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let tui = herdr.join("tui.json");
+    let reset = |patch: Value| {
+        let mut v = json!({"pane":"w1:p1","pid":child.0.id(),"transcript":log,"status":"idle",
+            "input":"","queue":[]});
+        for (k, x) in patch.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        std::fs::write(&tui, v.to_string()).unwrap();
+    };
+    reset(json!({}));
+    let mut s = Value::Null;
+    wait_for("attached live agy session", || {
+        s = f.by_conversation(&native);
+        s["availability"] == "running" && s["attachment"]["host"] == "herdr"
+    });
+    let body = |mode: &str, text: &str| {
+        let s = f.by_conversation(&native);
+        json!({"api_version":1,"message_id":uuid::Uuid::new_v4().to_string(),"mode":mode,
+            "session_id":s["id"],"expected_generation":s["generation"],"text":text,
+            "expires_at":now()+600})
+    };
+    let complete = |id: &str, busy: bool| {
+        let mut last = Value::Null;
+        let mut ended = false;
+        wait_for("terminal receipt", || {
+            last = f.api(&["receipt", id]);
+            if busy && !ended && last["facts"]["written"] == true {
+                // The running turn ends once the key went out.
+                std::fs::write(herdr.join("end-turn"), "").unwrap();
+                ended = true;
+            }
+            last["execution"]["phase"] == "complete"
+        });
+        last
+    };
+    let mut g = typing_golden::Golden::new(&herdr);
+    let long = (0..3)
+        .map(|i| format!("line {i}: {}", "check the build and the tests ".repeat(3)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let busy = json!({"status":"working","working_polls":100000});
+    for (name, patch, mode, text) in [
+        ("submit idle", json!({}), "submit", "hello there."),
+        ("queue busy", busy.clone(), "queue", "also run clippy."),
+        ("steer busy", busy.clone(), "steer", "also check the docs."),
+        ("submit busy", busy.clone(), "submit", "busy submit."),
+        ("multi-line", json!({}), "submit", long.as_str()),
+        (
+            "draft present",
+            json!({"input":"half a thought\nsecond line"}),
+            "submit",
+            "please check\nthe build.",
+        ),
+        (
+            "withdraw after failed verification",
+            json!({"input":"garbled draft","garble_once":true}),
+            "submit",
+            "will be garbled.",
+        ),
+    ] {
+        reset(patch.clone());
+        g.begin(name);
+        let b = body(mode, text);
+        f.send_ok(&b);
+        let r = complete(
+            b["message_id"].as_str().unwrap(),
+            patch["status"] == "working",
+        );
+        g.end(&r);
+    }
+    g.begin("leading slash refused");
+    g.refused(&f.send_err(&body("submit", "/compact the notes.")));
+    g.check("antigravity");
+    drop(child);
+}

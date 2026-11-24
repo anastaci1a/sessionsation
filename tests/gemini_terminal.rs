@@ -641,3 +641,167 @@ async fn gemini_terminal_input_submits_queues_and_steers_as_the_user() {
     assert!(!f.herdr.join("forbidden").exists());
     drop(process);
 }
+
+#[path = "support/typing_golden.rs"]
+mod typing_golden;
+
+/// Step S8 golden: the exact HERDR command sequence of representative Gemini deliveries
+/// (recorded on main before the typing engine refactor; see `support/typing_golden.rs`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typing_golden_herdr_sequences_for_gemini() {
+    let f = fixture().await;
+    let out = f.run(&[
+        "account",
+        "add",
+        "--platform",
+        "gemini",
+        "--no-login",
+        "personal",
+    ]);
+    assert!(out.status.success());
+    let creds = f.home().join(".gemini");
+    std::fs::write(creds.join("oauth_creds.json"), "synthetic fixture").unwrap();
+    std::fs::write(
+        creds.join("google_accounts.json"),
+        r#"{"active":"fixture@example.invalid","old":[]}"#,
+    )
+    .unwrap();
+    f.api(&["account", "refresh", "gemini:personal"]);
+    let native = uuid::Uuid::new_v4().to_string();
+    let process = f.gemini("--session-id", &native);
+    wait_for("chat file", || {
+        find_chat(&f.home(), &native).is_some_and(|p| read(&p).contains("sessionId"))
+    });
+    let transcript = chat_file(&f.home(), &native);
+    let reset = |pid: u32, steering: bool, patch: Value| {
+        let mut v = json!({"pane":"w1:p1","pid":pid,"transcript":transcript,"steering":steering});
+        for (k, x) in patch.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        f.set_tui(&v);
+    };
+    reset(process.0.id(), false, json!({}));
+    let mut s = Value::Null;
+    wait_for("attached live gemini session", || {
+        s = f.session(&native);
+        s["availability"] == "running" && s["attachment"]["host"] == "herdr"
+    });
+    let id = s["id"].as_str().unwrap().to_owned();
+    let mut g = typing_golden::Golden::new(&f.herdr);
+    let long = (0..3)
+        .map(|i| format!("line {i}: {}", "check the build and the tests ".repeat(3)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let run = |g: &mut typing_golden::Golden,
+               pid: u32,
+               steering: bool,
+               name: &str,
+               patch: Value,
+               mode: &str,
+               text: &str| {
+        reset(pid, steering, patch);
+        g.begin(name);
+        let b = body(mode, &f.session(&id), text);
+        f.send_ok(&b);
+        let r = f.settled(b["message_id"].as_str().unwrap());
+        g.end(&r);
+    };
+    let pid = process.0.id();
+    run(
+        &mut g,
+        pid,
+        false,
+        "submit idle",
+        json!({}),
+        "submit",
+        "hello there.",
+    );
+    run(
+        &mut g,
+        pid,
+        false,
+        "queue busy",
+        json!({"status":"working"}),
+        "queue",
+        "also run clippy.",
+    );
+    run(
+        &mut g,
+        pid,
+        false,
+        "submit busy queues",
+        json!({"status":"working"}),
+        "submit",
+        "busy submit.",
+    );
+    run(&mut g, pid, false, "multi-line", json!({}), "submit", &long);
+    run(
+        &mut g,
+        pid,
+        false,
+        "escaped leading slash and help",
+        json!({"view":"help"}),
+        "submit",
+        "/compact the notes.",
+    );
+    run(
+        &mut g,
+        pid,
+        false,
+        "draft present",
+        json!({"input":"half a thought\nsecond line"}),
+        "submit",
+        "please check\nthe build.",
+    );
+    run(
+        &mut g,
+        pid,
+        false,
+        "withdraw after failed verification",
+        json!({"input":"garbled draft","garble_once":true}),
+        "submit",
+        "will be garbled.",
+    );
+    run(
+        &mut g,
+        pid,
+        false,
+        "refused screen",
+        json!({"view":"dialog"}),
+        "submit",
+        "never typed.",
+    );
+    g.begin("steer refused with steering off");
+    g.refused(&f.send_err(&body("steer", &f.session(&id), "x.")));
+    // Model steering on: read at start, so the session restarts.
+    f.steering("--enable");
+    drop(process);
+    std::thread::sleep(Duration::from_millis(1100));
+    let process = f.gemini("--resume", &native);
+    let pid = process.0.id();
+    reset(pid, true, json!({}));
+    wait_for("restarted session", || {
+        let s = f.session(&id);
+        s["pid"] == pid && s["attachment"]["host"] == "herdr"
+    });
+    run(
+        &mut g,
+        pid,
+        true,
+        "steer busy",
+        json!({"status":"working"}),
+        "steer",
+        "also check the docs.",
+    );
+    run(
+        &mut g,
+        pid,
+        true,
+        "busy submit would steer: withdrawn",
+        json!({"status":"working","input":"my draft"}),
+        "submit",
+        "plain submit.",
+    );
+    g.check("gemini");
+    drop(process);
+}

@@ -14,6 +14,7 @@ State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
   tool_follows        a steering update reaches a tool step (default true)
   transcript          the chat jsonl user/gemini records are appended to
   record              on (default) | none (Enter records nothing)
+  garble_once         drop the last character of the next typed text
 Enter while idle records a user turn. While working it queues the text (steering
 off; all queued texts become one prompt joined by a blank line when the turn
 ends) or keeps it as a steering hint (steering on), applied with the next tool
@@ -32,6 +33,16 @@ state_file = os.path.join(base, "tui.json")
 args = sys.argv[1:]
 with open(os.path.join(base, "calls"), "a") as f:
     f.write(json.dumps(args) + "\n")
+# The typing golden tests (tests/support/typing_golden.rs) read the calls made by a
+# terminal delivery worker only: $FAKE_HERDR_DIR/worker-calls.
+try:
+    with open("/proc/%d/cmdline" % os.getppid(), "rb") as f:
+        _parent = f.read().split(b"\0")
+except OSError:
+    _parent = []
+if any(a.endswith(b"-terminal-worker") for a in _parent):
+    with open(os.path.join(base, "worker-calls"), "a") as f:
+        f.write(json.dumps(args) + "\n")
 while args and args[0] == "--session":
     args = args[2:]
 state = json.load(open(state_file))
@@ -122,6 +133,8 @@ def render():
 def type_text(text):
     if "\x1b[200~" in text:
         fail("bracketed_paste_not_expected")
+    if state.pop("garble_once", False):
+        text = text[:-1]
     if state["view"] in ("dialog", "blank"):
         return
     for ch in text:

@@ -11,6 +11,7 @@ State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
   ($FAKE_HERDR_DIR/end-turn: the next `agent list` ends the running turn)
   queued_mode         queue (default) | send-immediately: what Enter does mid-turn
   transcript          brain/<id>/.system_generated/logs/transcript.jsonl agy appends steps to
+  garble_once         drop the last character of the next typed text
 Enter while idle records a user turn and its reply and starts a short turn. Mid-turn the
 key that queues (Enter with queue, alt+m with send-immediately) lists the text in agy's
 queue row (`▸ queued: ... (alt+m to send immediately)`); queued texts are recorded, each
@@ -28,6 +29,16 @@ state_file = os.path.join(base, "tui.json")
 args = sys.argv[1:]
 with open(os.path.join(base, "calls"), "a") as f:
     f.write(json.dumps(args) + "\n")
+# The typing golden tests (tests/support/typing_golden.rs) read the calls made by a
+# terminal delivery worker only: $FAKE_HERDR_DIR/worker-calls.
+try:
+    with open("/proc/%d/cmdline" % os.getppid(), "rb") as f:
+        _parent = f.read().split(b"\0")
+except OSError:
+    _parent = []
+if any(a.endswith(b"-terminal-worker") for a in _parent):
+    with open(os.path.join(base, "worker-calls"), "a") as f:
+        f.write(json.dumps(args) + "\n")
 while args and args[0] == "--session":
     args = args[2:]
 state = json.load(open(state_file))
@@ -148,7 +159,10 @@ elif cmd == "pane read":
 elif cmd == "pane send-text":
     if args[2] != state["pane"]:
         fail("pane_not_found")
-    state["input"] += " ".join(args[3:])
+    text = " ".join(args[3:])
+    if state.pop("garble_once", False):
+        text = text[:-1]
+    state["input"] += text
     save()
 elif cmd == "pane send-keys":
     if args[2] != state["pane"]:

@@ -48,6 +48,16 @@ state_file = os.path.join(base, "tui.json")
 args = sys.argv[1:]
 with open(os.path.join(base, "calls"), "a") as f:
     f.write(json.dumps(args) + "\n")
+# The typing golden tests (tests/support/typing_golden.rs) read the calls made by a
+# terminal delivery worker only: $FAKE_HERDR_DIR/worker-calls.
+try:
+    with open("/proc/%d/cmdline" % os.getppid(), "rb") as f:
+        _parent = f.read().split(b"\0")
+except OSError:
+    _parent = []
+if any(a.endswith(b"-terminal-worker") for a in _parent):
+    with open(os.path.join(base, "worker-calls"), "a") as f:
+        f.write(json.dumps(args) + "\n")
 while args and args[0] == "--session":
     args = args[2:]
 state = json.load(open(state_file))

@@ -1234,3 +1234,80 @@ async fn a_dispatching_orphan_is_not_dispatched_again() {
         "never submitted"
     );
 }
+
+#[path = "support/typing_golden.rs"]
+mod typing_golden;
+
+/// Step S8 golden: the exact HERDR command sequence of representative Claude deliveries
+/// (recorded on main before the typing engine refactor; see `support/typing_golden.rs`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typing_golden_herdr_sequences_for_claude() {
+    let f = fixture().await;
+    let (_claude, id, reset) = live_pane(&f).await;
+    let mut g = typing_golden::Golden::new(&f.herdr);
+    let typed = |mode: &str, text: &str| {
+        let mut b = body(mode, &f.session(&id), text);
+        b["delivery"] = json!("terminal_input");
+        b
+    };
+    let long = (0..3)
+        .map(|i| format!("line {i}: {}", "check the build and the tests ".repeat(3)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (name, patch, mode, text) in [
+        ("submit idle", json!({}), "submit", "hello there."),
+        (
+            "steer busy",
+            json!({"status":"working"}),
+            "steer",
+            "also run clippy.",
+        ),
+        ("multi-line", json!({}), "submit", long.as_str()),
+        (
+            "escaped leading slash",
+            json!({}),
+            "submit",
+            "/compact the notes.",
+        ),
+        (
+            "draft present",
+            json!({"input":"half a thought\nsecond line"}),
+            "steer",
+            "please check\nthe build.",
+        ),
+        (
+            "withdraw after failed verification",
+            json!({"input":"garbled draft","garble_once":true}),
+            "steer",
+            "will be garbled.",
+        ),
+        (
+            "leave help",
+            json!({"view":"help"}),
+            "submit",
+            "after help.",
+        ),
+        (
+            "leave transcript",
+            json!({"view":"transcript"}),
+            "submit",
+            "after the transcript.",
+        ),
+        (
+            "refused screen",
+            json!({"view":"subagent"}),
+            "submit",
+            "never typed.",
+        ),
+    ] {
+        reset(patch);
+        g.begin(name);
+        let b = typed(mode, text);
+        f.send_ok(&b);
+        let r = f.settled(b["message_id"].as_str().unwrap());
+        g.end(&r);
+    }
+    g.begin("queue refused");
+    g.refused(&f.send_err(&typed("queue", "later.")));
+    g.check("claude");
+}
