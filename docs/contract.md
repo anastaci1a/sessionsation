@@ -8,21 +8,21 @@ native-provider compatibility interfaces.
 
 The [JSON Schema](contract/v1.json) describes envelopes, snapshots, sessions,
 accounts and message requests/receipts. [Examples](contract/fixtures.json) are
-checked alongside the CLI regression tests. See [CLI setup](cli.md) and
-[verification evidence and limits](operations.md).
+checked alongside the CLI regression tests. Command usage is in [CLI](cli.md),
+verification scope in [operations](operations.md), and the per-version history in
+the [changelog](changelog.md). Each section here describes current behaviour.
 
 ## Contract versioning (semver)
 
 The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
-`contract_version` (a string such as `"1.25.0"`) by `api version` and
-`api capabilities`. The integer `contract_revision` is retained for backward
-compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.64.0`
-(the 1.62.1 PATCH is described under [Idle Codex meters stay fresh](#idle-codex-meters-stay-fresh-1621) and the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
+`contract_version` (for example `"1.64.0"`) by `api version` and `api capabilities`.
+The integer `contract_revision` always equals MINOR (revision N is contract `1.N.0`).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
-`api_version` stays the integer MAJOR (`1`), and the package version is independent.
-Negotiate with `contract_version`: same MAJOR, MINOR at least what you need, and
+`api_version` stays the integer MAJOR (`1`); the package version is independent.
+Negotiate with `contract_version` (same MAJOR, MINOR at least what you need) and
 prefer `api capabilities` fields over version numbers for individual features.
+Capability objects carry `since_revision`/`since_contract` markers where a client
+needs them.
 
 `api --api-version X` accepts `MAJOR`, `MAJOR.MINOR` or `MAJOR.MINOR.PATCH` and
 serves any client that requests the same MAJOR (currently 1); another MAJOR is
@@ -42,8 +42,6 @@ refused with exit 2 and an `INVALID_ARGUMENT` envelope.
 
 ### Client rules for additive data
 
-Clients must treat unknown data as forward-compatible and never misuse it:
-
 - Ignore unknown result fields. (Request objects still reject unknown fields.)
 - Unknown providers: show them generically (the provider's own `id`/platform text
   and a neutral icon); offer only operations and delivery modes the provider's
@@ -60,17 +58,16 @@ Clients must treat unknown data as forward-compatible and never misuse it:
 1. Classify the change as MAJOR, MINOR or PATCH using the rules above.
 2. Update `CONTRACT_MAJOR`/`CONTRACT_MINOR`/`CONTRACT_PATCH`/`CONTRACT_VERSION` in
    `src/api.rs` together (`contract_revision` follows MINOR; a unit test enforces this).
-3. MINOR: add a `since_revision` marker and a section in this document;
-   update `docs/contract/v1.json` and `fixtures.json` for new shapes, keeping
-   them additive. MAJOR: add a new `contract/vN.json` and migration notes.
+3. MINOR: add the `since_revision`/`since_contract` marker, update the reference
+   section here, add one [changelog](changelog.md) entry, and update
+   `docs/contract/v1.json` and `fixtures.json` for new shapes, keeping them
+   additive. MAJOR: add a new `contract/vN.json` and migration notes.
 4. Update tests (the `contract_version`/`contract_revision` assertions in
    `tests/*.rs`) and `scripts/check_contract.py`.
-5. Run `scripts/check.sh` once (fmt, clippy, tests, docs, contract; iterate with
-   `--quick` and targeted tests first) and review.
-6. Release and publish the new package; the `current` symlink moves it live.
-   Clients that follow `current` and gate on semver need no change for MINOR or
-   PATCH releases. A MAJOR release needs client releases first or in the same
-   cutover.
+5. Run `scripts/check.sh` once and review.
+6. Release; the `current` symlink moves it live. Clients that follow `current` and
+   gate on semver need no change for MINOR or PATCH releases. A MAJOR release needs
+   client releases first or in the same cutover.
 
 ## Transport and errors
 
@@ -86,43 +83,65 @@ Clients must treat unknown data as forward-compatible and never misuse it:
 
 ## Identity and snapshots
 
-`api version` identifies the actual executable path, SHA-256, package/API versions
-and contract version (`contract_version`, with `contract_revision` = its MINOR),
-without contacting a provider or a supervisor. Clients that follow the `current`
-release negotiate by semver and capabilities (see Contract versioning) and log the
-SHA-256 for audit; exact hash pins remain an option for clients that want one.
-`api capabilities` publishes provider-specific operations and unsupported reasons.
-`attachment_lookup.version:1` advertises
-`api attachment --session ID --expected-generation GENERATION`: a read-only,
-constant-target catalog/process-epoch lookup for terminal viewers. It returns
-the catalog session and attachment with `observed_at`,
-`scope:catalog_generation_and_process_identity`, `starts_process:false` and
-`sends_input:false`. It does no provider/history discovery and is not message
-readiness evidence. A stale generation, missing attachment or unverifiable PID
-is refused. Clients still verify the intended host/socket and pane membership
-before focusing, then repeat this cheap lookup to reject replacements.
+`api version` identifies the executable path, SHA-256, embedded commit,
+package/API versions and contract version, without contacting a provider or a
+supervisor. Clients negotiate by semver and capabilities and log the SHA-256 for
+audit; exact hash pins remain an option. `api capabilities` publishes
+provider-specific operations and unsupported reasons: every `providers[]` entry
+has flat booleans and an `operations` object (`{supported, reason}` per operation).
+
+`attachment_lookup.version:1` advertises `api attachment --session ID
+--expected-generation GENERATION`: a read-only, constant-target catalog/process-epoch
+lookup for terminal viewers. It returns the catalog session and attachment with
+`observed_at`, `scope:catalog_generation_and_process_identity`,
+`starts_process:false` and `sends_input:false`. It does no provider/history
+discovery and is not message readiness evidence. A stale generation, missing
+attachment or unverifiable PID is refused. Clients still verify the intended
+host/socket and pane membership before focusing, then repeat this lookup to reject
+replacements.
+
 `api state` publishes accounts, sessions, capabilities and `observed_at` (Unix
 seconds). `account_source` is `supervisor`, `offline_snapshot` or `uninitialized`;
 offline metadata does not prove an account can presently launch.
 
 - `session.id` is a stable backend UUID. `conversation_id` is a separate opaque
-  provider identifier. Neither is a pane ID.
+  provider identifier (`conversation_id_source:"native"` for Claude, Gemini and
+  Antigravity). Neither is a pane ID.
 - `attachment` is null or identifies the current host/process generation. Treat its
   `target` as opaque and discover it again after replacement. A missing attachment
   does not authorize starting another client; inspect `availability` and capabilities.
 - `session.generation` changes on rename, account transfer, replacement or loss of
   an attachment. Mutations require the current `--expected-generation` and fail
   with `STALE_TARGET` rather than selecting a replacement.
-- Names are display labels, never identities. Revision 6 uses HERDR’s tab label
-  for every verified live HERDR session (working or idle). Sessions sharing a tab
-  share its label, and HERDR can contain duplicate labels. Use UUIDs for targets.
-  New launches and catalog-only renames still reject name collisions.
+- Names are display labels, never identities (see
+  [session names](#herdr-owned-session-names) and
+  [Space-scoped names](#space-scoped-session-names)). Use UUIDs for targets.
 - Account IDs are provider-qualified, such as `codex:example`. A removed membership
   remains represented for recovery with `membership:"removed"` and `selectable:false`.
   Disabled memberships remain enrolled. Use `selectable`, not name or plan, for selection.
 
 Session capabilities are fresh snapshot hints; the backend revalidates them at the
-mutation boundary. Unmanaged external sessions are not lifecycle targets through v1.
+mutation boundary. Every false capability carries a `capability_reasons` code
+(for example `SESSION_NOT_RUNNING`, `AMBIGUOUS_SESSION`, `ACCOUNT_UNKNOWN`,
+`NOT_IN_HERDR`, `SESSION_ALREADY_RUNNING`, `SESSION_RUNNING_STOP_FIRST`,
+`HISTORY_UNAVAILABLE`, `SESSION_ARCHIVED`, `UNSUPPORTED_PROVIDER_OPERATION`,
+`SESSION_OPERATION_IN_PROGRESS`). Unmanaged external sessions are not lifecycle
+targets through v1.
+
+Native sessions (Claude, Gemini, Antigravity) add `native_status`, `native_name`,
+`native` (`kind`, `job_id`; `kind:"bg"` for Claude background-daemon sessions),
+`pid`, `process_start`, `host_known` and `capability_reasons`, and use availability
+`running|stopped|stale|unknown`. `name`/`name_source` are Sessionsation metadata;
+`native_*` are the provider's. A launched Claude process that has not yet
+registered or written a transcript (for example on its trust prompt) reports
+`availability:"running"` with the discovery warning `NO_CONVERSATION_YET`.
+
+Session snapshots optionally expose `activity`, `last_accessed`, `active_since`,
+`conversation_created_at` (the native recorded timestamp, never inferred from
+mtime) and `history_file_bytes` (observed history bytes, excluding shared account
+databases); see [timestamps](#session-timestamps). Normal provider exit (including
+Codex `/exit`) clears the runtime attachment on discovery while retaining stable
+identity, conversation files, names and resume availability.
 
 ### Lifecycle actions after a provider error
 
@@ -138,7 +157,7 @@ For native `systemError`, lifecycle checks read only the latest turn summary
 and recheck the thread identity/status. Completed, failed and interrupted terminal
 turns with no active flags are quiescent; missing evidence and active work still
 block destructive steps. Queued input, active goals and background terminals keep
-their existing checks and confirmations. Submit/Queue semantics do not change.
+their existing checks and confirmations.
 
 An inactive conversation can retain a writable history descriptor in its native
 app-server. If that server positively verifies the same history and idle state,
@@ -157,17 +176,158 @@ provider archive status comes from positively discovered history placement.
 proof that it is active or stopped. Unknown entries remain in the default list.
 `--archive-filter archived` selects only positive archive evidence; `all` retains
 both, excluding permanently deleted managed records. Archived entries use
-`availability:archived`; this is independent of runtime liveness. Managed archives
-remain accessible through `api archives` and explicit Restore/Delete commands.
-Provider archives do not acquire automatic restore or messaging capability.
+`availability:archived`, independent of runtime liveness, and remain accessible
+through `api archives` and explicit Restore/Delete. Provider archives do not
+acquire automatic restore or messaging capability.
 
 Recovered histories from deleted-account vaults remain saved resume sources, even
 if their retained provider file is under `archived_sessions`; the optional
 `provider_storage_archived` describes storage rather than a current managed archive.
-Labels (including prefix variants) are not identity. Two similar labels may belong
-to different backend/provider UUIDs; never merge them by display name or infer an
-archive from a missing attachment. Discovery/filtering sends no message, deletes no
-history and never unarchives or resumes a thread.
+Labels (including prefix variants) are not identity: never merge sessions by
+display name or infer an archive from a missing attachment. Discovery/filtering
+sends no message, deletes no history and never unarchives or resumes a thread.
+
+### Cached state
+
+`api state --cached [--archive-filter F]` serves the last full result of the same
+filter with the identical JSON shape plus `snapshot: {observed_at, fresh, cached}`;
+`fresh` is true while the snapshot is at most 30 seconds old. It performs no
+transcript scan, process probe or catalog write (`capabilities` is current), but
+re-reads the local Gemini authentication-failure record. Every full `api state`
+stores its result atomically as `DATA_ROOT/cache/state-snapshot-<filter>.json`
+(`snapshot.cached:false`); with no snapshot yet, `--cached` computes a full state.
+While it runs, the supervisor rebuilds the `active` snapshot every 20 s, so
+`--cached` is at most about 20 s old without anyone running a full `state`; a
+stopped supervisor leaves the file as it was and `snapshot.fresh` says so. A
+lifecycle job that ends updates the cached rows it changed. `state_cached:true`
+advertises it. A cached read never reflects a session started after the snapshot.
+
+A full `state` reuses unchanged per-file transcript facts
+(`cache/claude-transcript-facts.json`, keyed by path, size and mtime), runs
+inventory and the supervisor status concurrently, takes one `/proc` pass for all
+native accounts and resolves deleted-account checks once per account.
+
+### Session identity and continuations
+
+`api capabilities.session_identity` describes the sources. A live process is attached
+to exactly one catalog entry, the one whose conversation it currently runs: Claude the
+registry `sessions/<pid>.json` `sessionId` (PID and start time verified); Codex the
+thread of its single open rollout (tmux TUIs), else its `resume <thread>` argv; Gemini
+a process whose command line names the id (`gemini_process_source:
+"cmdline_session_id_argument"`); Antigravity the open `presence/UUID.lock` or the
+`--conversation` argument. When a process switches conversation in its terminal, the
+existing entry of the new conversation takes over the attachment (name, account,
+history kept) and the entry it left is released to `stopped`. A Codex TUI connected
+to an app-server (`--remote`) and a Gemini `/resume` do not expose a switch, so it is
+not observed.
+
+Claude continuations: when Claude Code sends a conversation to its background daemon
+under a new session id, it appends `{"type":"continued-in","sessionId":OLD,
+"continuedInSessionId":NEW}` to the old transcript. Only that record is read
+(bounded tail; it counts only while no `user`/`assistant` record follows it and NEW
+is a transcript of the same account home). The entry of OLD then follows NEW: stable
+id, name and account are kept, `previous_conversation_ids` lists OLD, and an entry
+already registered for NEW is merged into it. Generation-checked lookups of a merged
+id fail with `SESSION_MERGED: ...` naming the surviving id. The survivor is the entry
+that already records the lineage, else the pre-existing entry of the earliest
+conversation. Aliases and lineage are mirrored in `session-catalog/identity.json` and
+restored from it on every catalog access. `api session repair-identity` runs that
+restore plus continuation linking and reports `{restored_aliases,restored_lineage,
+restored_spaces,merged,aliases,lineages,unresolved_ids,unresolved_reason}`; it never
+deletes, recreates or renames an entry. Branches (`forkedFrom.sessionId`) stay
+separate conversations, exposed as `forked_from_conversation_id`. No other lineage is
+inferred.
+
+### HERDR-owned session names
+
+Negotiate `session_names.version:1`. Inventory/state/watch reads one bounded host
+snapshot per server/socket and maps each verified attachment's pane ID to its tab ID
+and label, for every provider; it never matches by display name. The catalog
+caches the last observed label for host outages and retains it after the process
+exits; it is not an independent naming authority for live HERDR sessions.
+`name_source` is `herdr_last_observed` for HERDR attachments and `catalog`
+otherwise; it is provenance, not freshness. Unavailable/ambiguous host observations
+leave the cached name unchanged. Sessions sharing a tab share its label, and HERDR
+can contain duplicate labels. New launches and catalog-only renames still reject
+name collisions within a Space.
+
+`api rename` validates generation, lifecycle locks and exact host process, renames
+the containing HERDR tab, then reads it back before reporting success. A lost
+acknowledgement is reconciled by that read, never replayed. Failed verification
+returns `HOST_RENAME_UNCONFIRMED` or `HOST_RENAME_NOT_APPLIED`; refresh state before
+retrying. Concurrent host edits win on subsequent observation. Inactive and
+non-HERDR sessions keep catalog naming. Host labels are neither truncated nor given
+synthetic suffixes. Native Claude/Gemini/Antigravity titles are never changed live
+(`native_rename:false`); the label is applied as `--name` on the next launch/resume.
+Renames do not restart agents, alter conversations or change accounts. Catalog
+generations change when a new label is observed; runtime generations do not.
+
+### Space-scoped session names
+
+A session belongs to a HERDR Space and its name is unique only within that Space.
+Negotiate `capabilities.session_spaces.version == 1`.
+
+- **Row fields.** Every session row carries `space` (the Space label, or `null` for an
+  unscoped entry), `name` (bare) and `canonical` (`<space>:<name>`, `null` when
+  unscoped or when the label contains `:`). Display `canonical`; never split it.
+- **Inactive sessions keep their Space** whether or not the HERDR Space still exists or
+  was renamed. Only `move-space`, `session set-space` (including `--clear`), a
+  resume/add-to-herdr into another Space, or a host observation of a live session in
+  a different Space changes it. Recording a Space where none was known changes no
+  generation; every change between Spaces does.
+- **Grammar.** Bare name: non-empty, no surrounding spaces, no control characters, no
+  `/`, not `.`/`..`, at most 64 characters, no `:`. Canonical: exactly one `:`, a valid
+  Space label before it and a valid bare name after it; anything else (`a:b:c`, `:x`,
+  `x:`, `x: y`) is `INVALID_SESSION_NAME`. Case is preserved; uniqueness is
+  case-insensitive within one Space (unscoped entries form their own bucket). Host
+  observations may still create duplicates.
+- **Targets.** Every `api … --session` (and `--notify-session`) accepts the id,
+  `<space>:<name>` or a bare name: id, then merged id (`SESSION_MERGED`), then
+  canonical, then bare; an exact match wins over a case-insensitive one; several
+  matches are `AMBIGUOUS_SESSION`. A target matching nothing is passed on unchanged.
+  JSON request `session_id` fields stay ids.
+- **Rename** takes a bare name or a canonical name of the session's own Space and
+  never moves (`SPACE_MISMATCH`, also for an unscoped session: use `session
+  set-space`). HERDR always gets the bare name; the read-back accepts a tab label
+  `<own space>:<name>`. A pane label equal to the old name is renamed too
+  (`pane_label`: `confirmed`, `unconfirmed` or `null`).
+- **Host observation.** The tab label becomes `name` and the pane's workspace label
+  `space`. A label `<space>:<name>` whose prefix is the pane's own Space is read as
+  `<name>`; any other label with `:` is `INVALID_HOST_NAME` and leaves the cached name.
+- **`api session set-space --session T --expected-generation G (--space LABEL |
+  --clear)`** is catalog only, refused with `ALREADY_IN_HERDR` for a verified-live
+  HERDR terminal (use `move-space`). The Space need not exist; the name must be unique
+  there.
+- **Placement names.** `api launch`/`resume-launch` accept a canonical `name` that must
+  agree with `space` (`SPACE_MISMATCH`); receipts store the bare name and the launch
+  receipt records `space_label`. `create_space` is a CLI flag only. A `resume --name` is
+  checked for uniqueness only in the destination Space. Automatic names avoid the same
+  folded name in every Space.
+- **Storage.** `space` is stored in `catalog.json` and mirrored in
+  `registry/session-catalog/spaces.json`; a catalog rewritten by a release without
+  Space support is healed from it (`restored_spaces`). Name reservations are keyed by
+  `space/name`. New refusal code `SPACE_MISMATCH`; reused `AMBIGUOUS_SESSION`,
+  `SESSION_NAME_EXISTS`, `INVALID_SESSION_NAME`, `WORKSPACE_NAME_EXISTS`,
+  `SPACE_NOT_FOUND`, `ALREADY_IN_HERDR`.
+
+### Session timestamps
+
+`active_since` (Unix seconds) measures the current verified attachment's process
+lifetime, not conversation age; it is null when no honest source exists (stopped,
+archived, unverified or unobserved sessions). Codex: the verified process start.
+Claude: the registry `sessions/<pid>.json` `startedAt` when the registry process is
+verified against /proc and `startedAt` is neither before that process start nor in
+the future, else the verified /proc start; a session whose process is a pre-started
+`claude bg-spare` uses only the verified HERDR `claude attach` client start; a hosted
+session without a registry time uses the worker's `started_at`. Gemini and
+Antigravity: the verified /proc start.
+
+`last_accessed` is in Unix milliseconds. Codex reports the open/attach time. Claude,
+Gemini and Antigravity report the conversation's most recent activity: Claude and
+Gemini the `timestamp` (else `lastUpdated`) of the last transcript record from a
+bounded, cached tail read (else the file mtime), following continued-in and parked-job
+lineage; Antigravity the mtime of the brain `transcript.jsonl`, else of the
+conversation db. A missing source, a deleted account or an archived entry gives null.
 
 ## Passive readiness
 
@@ -176,84 +336,72 @@ optional native enrichment has a shared five-second budget and reads only matchi
 loaded identities when all discovered terminals have conversation IDs. A slow
 account supervisor falls back to the stored snapshot after one second;
 `account_source` identifies that fallback. `timing` reports inventory, account
-status and total milliseconds. These bounds exclude filesystem/host discovery;
-they are not an end-to-end latency guarantee. `discovery_warnings` marks incomplete
-native enrichment without discarding positively discovered identities.
+status and total milliseconds; these bounds exclude filesystem/host discovery.
+`discovery_warnings` marks incomplete native enrichment without discarding
+positively discovered identities.
 
 `directory` is the discovered working directory (process/launch or native thread
 metadata), not a directory inferred from a display name or HERDR Space. Renaming
-or moving a tab does not change the agent working directory. A desired root can
-differ from both process and provider metadata; reporting the desired root would
-be false until an explicit supported directory/lifecycle operation applies it.
+or moving a tab does not change it.
 
-For a
-selected session use:
+For a selected session use:
 
 ```sh
-sessionsation api observe --session BACKEND-ID --expected-generation GENERATION
+sessionsation api observe --session BACKEND-ID --expected-generation GENERATION [--history [N]]
 ```
 
-Since [1.63.0](#provider-parity-observe-one-stop-shape-early-provider-exit-empty-archive-1630) it answers for every
-provider and adds a `conversation` block (last reply, last instruction, compaction time; `--history [N]` adds the recent
-turns); the readiness rules below are Codex's.
+It answers for every provider and adds a `conversation` block (see
+[observe for every provider](#observe-for-every-provider)); the readiness rules below
+are Codex's. It performs read-only native status/public-summary requests on the
+existing owner-managed socket. It never sends input, resumes/loads a thread, starts
+a worker or probes with a message. Native observation is bounded to five seconds;
+known launcher bindings avoid terminal-host discovery and rollout scans. The result
+is typed by `Readiness` in the schema: idle/working/interrupted/errored/
+disconnected/unknown, diagnostic reason, `observed_at`, `valid_until`, freshness and
+a separate `runtime_generation`. `process_state` and `process_observed_at` report a
+kernel-validated running, exited or unattached process; an idle native thread is
+not a process-stop claim. `observation.status` distinguishes fresh, stale and
+unobserved evidence. Freshness expires five seconds after the native evidence was
+obtained; cache hits never extend it. It is not a reservation.
 
-This performs read-only native status/public-summary requests on the existing
-owner-managed socket. It never sends input, resumes/loads a thread, starts a worker
-or probes with a message. Native observation is bounded to five seconds; known launcher bindings avoid
-terminal-host discovery and rollout scans. The result is typed by `Readiness` in
-the schema: idle/working/interrupted/errored/disconnected/unknown, diagnostic reason,
-`observed_at`, `valid_until`, freshness and a separate `runtime_generation`.
-`process_state` and `process_observed_at` separately report a kernel-validated
-running, exited or unattached process; an idle native thread is not a process-stop
-claim. `observation.status` distinguishes absent evidence from expired evidence.
-Freshness expires five seconds after the native evidence was obtained; neither
-batch-cache nor summary-cache hits extend it. It is not a reservation.
 For local legacy histories, last-turn summaries are indexed by runtime generation,
 canonical history path, device/inode, size and nanosecond modification/change
 times. Every reuse still makes fresh native status reads before and after it and
-rechecks the file identity. Changed files, processes or endpoints invalidate the
-index; concurrent readers share one reconstruction. No history text is stored in
-this index. `observation.turn_summary` identifies `native_summary` versus
-`unchanged_history_cache` and retains the original summary's `observed_at`.
-The public observation keeps that original timestamp and expiry too: unchanged
-disk contents cannot exclude a newly started in-memory turn. Summary entries
-expire after five seconds even when the file is unchanged. Cold reconstruction
-shares the existing five-second overall observation budget; it no longer has an
-earlier three-second cutoff when this indexed path is available. A cold provider
-read can still exceed that budget and must fail closed. Nonlocal/unverifiable
-history paths retain uncached native observation.
-RPC timeouts identify `native_initialize_timeout`, `native_thread_read_timeout`,
-or `native_turn_summary_timeout`; the overall bound is `observation_timeout`.
-`observation.failure` supplies the RPC method (null for the overall budget),
-budget in milliseconds, a readable explanation and retryability. Missing evidence
-keeps both timestamps null and every action unavailable. Slow provider reads are
-not proof of idle readiness; back off instead of repeatedly forcing refresh.
-Cached-only failed observations remain `observation.status: unobserved`, not stale
-evidence. The compatibility `freshness` field remains fresh/stale.
-A changed catalog or runtime rejects the result as `STALE_TARGET`.
+rechecks the file identity; changed files, processes or endpoints invalidate the
+index, and concurrent readers share one reconstruction. No history text is stored.
+`observation.turn_summary` identifies `native_summary` versus
+`unchanged_history_cache` and keeps the original summary's `observed_at` and expiry:
+unchanged disk contents cannot exclude a newly started in-memory turn. Cold
+reconstruction shares the five-second budget and fails closed when exceeded.
+Nonlocal/unverifiable history paths use uncached native observation.
+
+RPC timeouts identify `native_initialize_timeout`, `native_thread_read_timeout` or
+`native_turn_summary_timeout`; the overall bound is `observation_timeout`.
+`observation.failure` supplies the RPC method (null for the overall budget), budget
+in milliseconds, a readable explanation and retryability. Missing evidence keeps
+both timestamps null and every action unavailable. Slow provider reads are not
+proof of idle readiness; back off instead of forcing refresh. A changed catalog or
+runtime rejects the result as `STALE_TARGET`.
 
 `explicit_intent` reports a positively recorded stop token or unknown; an idle
-process never proves absence of deliberate stop/pause intent. Fresh interrupted
-turns (1.37.0: not failed turns, see below) expose `actions.resume.available:true` when otherwise eligible; Submit and
-Queue report `explicit_resume_required`, matching dispatch. They are recoverable
-targets, not permanently unavailable sessions. Clients should offer explicit
-Resume-and-submit using the observed runtime, previous turn and stop token; do not
-turn this reason into an unsupported-delivery result or silently substitute Resume
-for an ordinary send. The obsolete `terminal_turn_requires_review` reason is no
-longer emitted. Unknown queue depth remains null.
+process never proves absence of deliberate stop intent. Fresh interrupted turns
+(not failed turns) expose `actions.resume.available:true` when otherwise eligible;
+Submit and Queue then report `explicit_resume_required`, matching dispatch. Offer
+explicit [Resume-and-submit](#explicit-resume-and-submit) using the observed runtime,
+previous turn and stop token; never silently substitute Resume for an ordinary
+send. Unknown queue depth remains null.
+
 Stop intent is a permission gate, separate from observed execution: it may coexist
 with working state while a stop drains or after continuation outside Sessionsation.
 Polling never clears it merely because the agent is working. Newly recorded stop
-tokens identify their durable stop-operation journal; older tokens have no proven
-operation attribution. Explicit saved-session Open clears its prior token only
-after confirming the reopened process, using a compare-and-clear that preserves
-any newer stop request. Focusing an already-live terminal does not clear it.
-Submit is available only for positively idle eligible observations; Queue may be
-available while working. Sending-disabled, removed-account, stale, explicit-stop
-and unknown observations withhold readiness with reasons. These are conservative
-hints, not a new dispatch policy: actual sending still rechecks its existing gates.
-No legacy busy-Steer capability is adopted. Explicit Resume is described below. Poll a selected
-session no faster than every five seconds; use backoff after errors.
+tokens identify their durable stop-operation journal. Explicit saved-session Open
+clears its prior token only after confirming the reopened process, using a
+compare-and-clear that preserves any newer stop request; focusing an already-live
+terminal does not clear it. Submit is available only for positively idle eligible
+observations; Queue may be available while working. Sending-disabled,
+removed-account, stale, explicit-stop and unknown observations withhold readiness
+with reasons. These are hints: sending rechecks its own gates. Poll a selected
+session no faster than every five seconds; back off after errors.
 
 ### Batch readiness and client polling
 
@@ -267,27 +415,138 @@ Results preserve input order and carry individual `{session_id,ok,data}` or
 Launcher records are checked against kernel process identities and catalog
 ownership. Passive observation performs no terminal-host discovery and takes no
 mutation lock. Unrecorded live attachments return `ATTACHMENT_UNOBSERVED` rather
-than guessing. Dispatch still independently verifies terminal/runtime ownership.
-The private cache is disposable; it stores typed status, not conversation bodies.
-Cache hits never renew `observed_at` or `valid_until`. `observation.status`
-distinguishes fresh, stale and unobserved; null timestamps mean no native evidence.
-The compatibility `state` enum remains unchanged; additive `runtime_state`
+than guessing. The private cache is disposable; it stores typed status, not
+conversation bodies, and cache hits never renew `observed_at` or `valid_until`.
+The compatibility `state` enum is unchanged; additive `runtime_state`
 distinguishes a recorded deliberate stop. Stale evidence withholds sending hints.
 
 Clients should batch their visible targets, keep stable IDs as keys, preserve old
-receipts, and avoid independent per-target sequential discovery loops. Timeouts
-and unknown states are pending evidence, not proof of a stopped or unavailable
-agent. A late provider cannot extend this command's native budget. Host scheduling
-and local filesystem overhead remain outside that budget. This change removes
-backend discovery/lock overhead; it does not establish the cause of a downstream
-36–44-second refresh cycle, which can also include adapter concurrency/backoff.
+receipts, and avoid per-target sequential discovery loops. Timeouts and unknown
+states are pending evidence, not proof of a stopped or unavailable agent. A late
+provider cannot extend this command's native budget.
 
+### Passive current-turn binding
+
+`api turn-target --session ID --expected-generation GENERATION` reads the latest
+native turn identity/status without an old receipt or sending permission.
+Negotiate `turn_observation.version:1`. It uses the same owned endpoint and verified
+native profiles as checkpoints, validates catalog/runtime before and after, and
+compares two bounded summaries. Active, completed, failed and interrupted turns are
+supported; empty history returns `available:false` with `no_observed_turn`. It never
+launches, steers, clears stop tokens or reads private items. Failures/races return
+errors, never guessed targets or renewed stale timestamps. Use its `turn_id` and
+`runtime_generation` to bind a new checkpoint stream; existing receipt streams still
+reject `checkpoint_stale_turn`. This is turn-associated observation, not delivery or
+causal reply evidence, and does not authorize sending. Schema: `TurnTarget`;
+fixture: `turn_target`.
+
+### Observe for every provider
+
+`api observe --session ID --expected-generation G [--history [N]]` returns the
+`Readiness` keys plus a `conversation` block (`capabilities.observe_conversation`):
+
+```json
+{"supported":true,"reason":null,"source":"transcript","history_turns":10,
+ "last_reply":{"text":"done","at":1800000000,"truncated":false},"last_reply_source":"transcript","last_reply_reason":null,
+ "last_instruction":{"text":"fix it","at":1799999990,"truncated":false},"last_instruction_source":"transcript","last_instruction_reason":null,
+ "compacted_at":1799990000,"compacted_at_source":"transcript","compacted_at_reason":null,
+ "recent_turns":[{"instruction":{"text":"fix it","at":1799999990,"truncated":false},"reply":{"text":"done","at":1800000000,"truncated":false},"started_at":1799999990,"ended_at":1800000000}],
+ "recent_turns_source":"transcript","recent_turns_reason":null}
+```
+
+An unknown value is null with `<field>_reason` (`no_history_file`,
+`history_unreadable`, `not_recorded`, `not_compacted`, `history_not_requested`, or the
+provider reason). `--history` alone means 10 turns, at most 50. Texts are cut at 8192
+bytes (`last_*`) and 2048 bytes (turn texts) on a character boundary with
+`truncated:true`. Every read is a bounded tail (256 KiB, then 1 MiB, then 4 MiB) of one
+provider file; nothing is cached and no provider process is contacted.
+
+| Field | Codex (`rollout`) | Claude (`transcript`) | Antigravity (`transcript_log`) |
+|---|---|---|---|
+| `last_instruction` | `event_msg` `user_message` | human `user` record (not meta, tool results or the compaction summary) | `USER_INPUT` from `USER_EXPLICIT` (inside `<USER_REQUEST>`) |
+| `last_reply` | `event_msg` `agent_message` | text blocks of `assistant` records | `PLANNER_RESPONSE` |
+| `compacted_at` | `compacted` / `context_compacted` | `system` `compact_boundary` | null (not recorded) |
+| `recent_turns` | instruction to next instruction; `task_complete` / `turn_aborted` end it | same | same |
+
+Gemini is `conversation.supported:false` with the reason "Gemini CLI no longer
+supports individual accounts (migrate to Antigravity)", `state:"unknown"`,
+`reason:"provider_unsupported"`. Claude and Antigravity readiness: `state`
+`idle`/`working`/`errored` from the live activity facts while a verified process runs,
+`disconnected` otherwise; `reason` `native_input_via_send` while running (every
+`actions.*` unavailable with that reason), `no_live_process` or `session_archived`;
+`runtime_generation` null, `delivery_semantics:"api_send"`. `api observations` stays
+Codex-only.
+
+`api session resolve --session TARGET [--expected-generation G]` returns the row
+without side effects and fills `availability`, `activity`, `pid` and
+`live_activity` from the last cached snapshot (`active`, then `all`), adding
+`snapshot: {"observed_at","age_seconds","fresh","cached":true,"source":"state_snapshot"}`
+(`fresh`: at most 30 s old); a session in no snapshot has those fields null and
+`snapshot: null`.
+
+### Live activity and pending operations
+
+Capabilities `live_activity` (with `providers`) and `pending_operations`.
+`sessions[].live_activity` is `{state, error, last_turn_status, source, observed_at}`
+for running sessions of every provider (null otherwise; also in `state --cached`), and
+`activity` is `busy`, `idle` or `unknown`. `state` is `working` (a turn is in
+progress), `idle` (ready, no turn seen), `turn_ended` (the latest turn completed or
+was interrupted and nothing has started since), `blocked` (waiting on an approval or
+user input), `error` (the latest turn failed; `error` holds the provider's text, at
+most 300 characters, one line) or `unknown` (no usable evidence; never a guess).
+`observed_at` is the time of the evidence, not of the snapshot. Signals are local and
+read-only, bounded tail reads (128 KiB, one retry at 1 MiB), never message text:
+
+- Codex: `app_server` (thread status read during the state scan) or `rollout`
+  (bounded tail of the history file). `api observe` adds `last_turn:{status,error}`.
+- Claude `transcript_tail`: an assistant record with `stop_reason` `tool_use` (or
+  still streaming), a `tool_result` or an unanswered user prompt is `working`; an
+  `end_turn`/`stop_sequence`/`max_tokens` assistant record or a `turn_duration` system
+  record is `turn_ended`; `[Request interrupted by user]` is `turn_ended` with
+  `last_turn_status:"interrupted"`; an API-error record is `error`. Claude
+  `native_registry`: `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json` `status` (`waiting` is
+  `blocked`), used only when newer than the newest transcript record. A session with
+  `pending_questions` is `blocked` while a turn is in progress.
+- Gemini and Antigravity `transcript_tail`: the last chat/step record (no tool calls:
+  `turn_ended`; tool calls, or an unanswered input or tool step: `working`; an
+  unanswered input older than 10 minutes, or a step that is not `DONE`: `unknown`).
+
+`sessions[].pending_operations` lists unfinished operations of that conversation as
+`[{id, kind, phase, created_at, expires_at, unresolved, resolve}]` (`kind` `stop`,
+`pause`, `switch`, `restart`, `resume`, `auto_recover`, `space_move`, `conversation`,
+`move` or `message_recovery`; `expires_at` only for a stop). A session blocked by an
+`uncertain` or stuck operation reports `RECOVERY_UNRESOLVED` (with
+`resume_block_reason:"recovery_unresolved"`), otherwise
+`SESSION_OPERATION_IN_PROGRESS`; refusals name the operation id, kind and phase.
+
+### Session meters and session id
+
+Every session row (`api state`, `state --cached`, `session resolve`) has the same
+keys for every provider: `context_pct`, `subagents_running` and `background_tasks`,
+each with `<field>_source`, `<field>_observed_at` and `<field>_reason`, plus
+`context_tokens` and `context_window_size`. A value nobody reported is null with the
+reason. `capabilities.session_meters` lists the fields and sources.
+
+| Field | Codex | Claude | Gemini | Antigravity |
+|---|---|---|---|---|
+| `context_pct` | `rollout`: the newest `token_count` event of a running conversation (`last_token_usage.total_tokens` of `model_context_window`, the raw share; Codex's footer subtracts a 12,000-token baseline first), read by a full `api state` | `statusline`: `context_window.used_percentage`, recorded per conversation by the status-line hook; read on every row | null | null |
+| `subagents_running` | null | `hook_events`: subagents started and not stopped in this process, counted only when its `SessionStart` is at or after the row's `active_since` | null | null |
+| `background_tasks` | null | null (no hook reports a finish) | null | null |
+
+Every provider process Sessionsation starts for a session carries
+`SESSIONSATION_SESSION_ID=<session id>` (the catalog id, not the conversation id), on
+every start path: launch and `session launch`, resume (also by Auto Start and account
+switch), Codex restart and move, hosted Claude, headless runs and Claude
+`add-to-herdr`. For Codex it is also set as the thread's shell environment
+(`shell_environment_policy.set` on `thread/start` and `thread/resume`; a thread the
+app-server already has loaded keeps its value). An inherited value is removed from
+every child and from the supervisor. `capabilities.session_env` describes it.
 
 ## Session and operation commands
 
 `api session --session ID --expected-generation GENERATION` returns the current
-public session with `directory`, `availability`, and `original_host`. Missing
-information is null/unavailable. Original host provenance comes only from a
+public session with `directory`, `availability`, `placement` and `original_host`.
+Missing information is null/unavailable. Original host provenance comes only from a
 matching recorded launch; it includes the host session/socket and workspace/tab/pane
 IDs. Clients must verify those host resources still exist. Capability
 `session_details:true` advertises this read-only command.
@@ -302,71 +561,788 @@ sessionsation api operations
 sessionsation api recover OPERATION-ID
 ```
 
-Lifecycle mutations return journaled operation objects, whose `id`, `source_session_id`, `kind`, `phase`,
-`detail` and `confirmation_seq` identify progress. A returned job is not completed
-work. Terminal phases include `complete`, `cancelled`, `failed` and `recovered`.
-A failed or uncertain operation must be inspected before retrying. v1 operations
-expose `can_cancel`, `can_recover` and `can_respond` where applicable; consumers
-must not infer recovery support from a failed phase alone. Archive operations do
-not support replay/recovery through `api recover`. Account-deletion status marks
-an orphaned worker failed after a ten-second admission grace period, without
-rewriting its receipt. Recovery explicitly continues the same confirmed request.
-Accounts reserved for deletion expose `deletion` status and remain unselectable
-until cleanup finishes; a partial credential deletion must not be re-enabled.
+Lifecycle mutations return journaled operation objects, whose `id`,
+`source_session_id`, `kind`, `phase`, `detail` and `confirmation_seq` identify
+progress. A returned job is not completed work. Terminal phases include `complete`,
+`cancelled`, `failed`, `recovered` and `abandoned`. A failed or uncertain operation
+must be inspected before retrying. v1 operations expose `can_cancel`, `can_recover`
+and `can_respond` where applicable; consumers must not infer recovery support from a
+failed phase alone. Archive operations do not support `api recover`. A second
+operation on a session that already has a queued or running one fails with
+`SESSION_OPERATION_IN_PROGRESS` (retryable; the message names the queued job id).
+
 Resume, handoff and conversation-archive admissions share a per-conversation lock.
 An admitted or uncertain resume reserves its conversation until a settled receipt;
 only that same request may continue its transfer. Public session capabilities
-disable competing lifecycle actions and expose `pending_operation_id` while reserved.
-A terminal handoff remains reserved while its worker holds the worker lock;
-a completed/failed label alone does not establish that continuation or recovery
-has stopped.
-Submit/Queue admission also retains this reservation until the handoff worker
-exits, including its continuation and rollback tail. This blocks new native
-writes; it does not suspend messages already accepted into Codex's own queue or
-its terminal composer's local queue. The inspected native queue API has no pause
-primitive. Such pending input is not deleted or replayed to simulate a hold;
-the handoff retains its source if queued work prevents a safe unload.
-Durable launch, resume, deletion and archive workers use separate process groups
-so closing a requesting viewer does not stop their work. v1 operations
-wait for positive idle state, send no steer, and do not automatically continue work.
+disable competing lifecycle actions and expose `pending_operation_id` while
+reserved. A terminal handoff remains reserved while its worker holds the worker
+lock; a completed/failed label alone does not establish that continuation or
+recovery has stopped. Submit/Queue admission also retains this reservation until
+the handoff worker exits, including its continuation and rollback tail. This blocks
+new native writes; it does not suspend messages already accepted into Codex's own
+queue or its terminal composer's local queue (the native queue API has no pause
+primitive). Such pending input is not deleted or replayed to simulate a hold; the
+handoff retains its source if queued work prevents a safe unload.
+
+Durable launch, resume, deletion and archive workers use separate process groups,
+so closing a requesting viewer does not stop their work. v1 operations wait for
+positive idle state, send no steer and do not automatically continue work.
 Risk/background-stop consent is separate. `api respond OPERATION-ID yes|no
 --sequence CURRENT-SEQUENCE` rejects stale confirmations. `api cancel-operation
 OPERATION-ID` requests cancellation before an unsafe transition.
 
-`api operations` exposes v1 lifecycle and local account deletion operations; it
-does not adopt legacy switcher jobs. Account deletion records have
-`kind:"account_delete"`, `account_id`, `id`, `phase`, `detail`, `updated_at`,
-`history_home`, `history_preserved` and `can_cancel:false`; they have no source
-session or conversation ID. Their terminal phases are `complete` and `failed`.
-`api account delete ID` previews intent without scanning account files;
-`--confirm ID --request-id UUID` admits the asynchronous operation. The ID binds
-one account permanently; reuse for another account rejects `REQUEST_ID_CONFLICT`.
-`api account deletions [--request-id UUID]` reads receipts; `api recover UUID`
-explicitly resumes a failed/interrupted worker after acquiring its operation lock.
-Do not call `cancel-operation` or `respond` on account deletion records.
-See [local deletion semantics](cli.md) for preservation and sole-owner gates.
-`source_session_id` is the stable backend ID, or null if the source was removed
-from the catalog; historical operations remain inspectable. `provider_conversation_id` remains
-explicitly separate. Public recovery rejects jobs outside this contract.
+`api operations` lists v1 lifecycle, launch, resume, compaction, model-change,
+account-rename, reset-credit, auto-start and local account deletion operations; it
+does not adopt legacy switcher jobs. `source_session_id` is the stable backend ID,
+or null if the source was removed from the catalog; `provider_conversation_id` is
+separate. New launch, resume and account-deletion records expose immutable
+`created_at` admission time; legacy records omit it when unknown (never substitute
+`updated_at`). Public recovery rejects jobs outside this contract.
+
+Account deletion records have `kind:"account_delete"`, `account_id`, `id`, `phase`,
+`detail`, `updated_at`, `history_home`, `history_preserved` and `can_cancel:false`;
+they have no source session. Terminal phases are `complete` and `failed`. See
+[account deletion](#account-removal-and-deletion).
 
 `api launcher new --account codex:example`, `api launcher resume --session ID
---expected-generation GENERATION`, and `api launcher shell` return an opaque
-`{action:"exec",argv:[...],cwd:...}` plan. A terminal client executes the exact argv
-without a shell, applying cwd only when non-null. The backend revalidates the
-session when the resume plan executes. Do not reconstruct provider launch commands
-or handle credentials in a client. Plain-shell launch sets the recursion bypass.
+--expected-generation GENERATION` and `api launcher shell` return an opaque
+`{action:"exec",argv:[...],cwd:...}` plan (`--hosted` returns a `run --hosted` plan
+for Claude). A terminal client executes the exact argv without a shell, applying cwd
+only when non-null. The backend revalidates the session when the resume plan
+executes. Do not reconstruct provider launch commands or handle credentials in a
+client. Plain-shell launch sets the recursion bypass.
+
+## New-session launch
+
+`api launch validate|start` read one JSON request from stdin; `api launch list`
+lists retained receipts, newest first, without replaying requests, and `api launch
+status --request-id UUID` reconciles a durable record. Request v1 has `version`,
+UUID `request_id`, provider-qualified `account_id`, `name`, `host: {session,
+socket}`, `space: {kind: "existing", id}` or `{kind: "new", label}`, and
+`directory: {path, create, confirmed_existing}`, plus optional `permissions`
+([launch permissions](#launch-permissions)), `model`/`reasoning_effort` (Codex) and
+`hosted` (Claude). Paths are absolute. `create` is an ordered contiguous list of
+missing directories ending at `path`; an existing directory requires an empty list
+and `confirmed_existing: true`. Validation creates no directories or HERDR
+resources. Start revalidates, reserves the name and dispatches once. Reusing a UUID
+with different input fails; identical input returns its original record.
+
+Phases are admitted, preparing, creating_terminal, dispatching, starting_provider,
+attached, running, failed, uncertain and abandoned. `attached` means catalog/native
+identity was recorded; `running` requires post-exec process evidence. Records expose
+created directory paths, workspace/tab/pane IDs, stable session ID, generation and
+native conversation ID when known. A failure or timeout must not trigger an
+automatic new Start; reconcile the original request (uncertain operations keep their
+name reservation). Status can reconcile a late attachment after a worker timeout
+using the same catalog generation, account, native UUID, PID/start time and remote
+socket argv. It never replays commands or changes focus. No credentials are in
+requests or receipts. Launch timing, waits and abandonment:
+[launch acknowledgement](#launch-acknowledgement-and-abandoning-uncertain-operations).
+
+`api account list` also reports `prefill: {eligible, reason, observed_at,
+valid_until}`, a conservative preference respecting usage freshness, account
+thresholds and allowance (purchased credits do not justify prefill). `selectable`
+remains separate.
+
+### Saved-session popup Resume
+
+`capabilities.resume.version == 1` exposes `api resume-launch validate|start` with
+JSON stdin, plus `status --request-id UUID` and `list` (schema `ResumeRequest`,
+`ResumeReceipt`). The request has version, request UUID, stable `session_id`,
+`expected_generation`, account ID, editable name, host and Space. A saved Codex
+conversation does not require its original account to remain registered;
+original-account metadata is provenance, not a credential. Optional
+`confirm_unfinished: true` acknowledges only the unfinished-history warning
+(`resume.unfinished_confirmation`); live-writer, directory, conflict and generation
+checks remain. Optional `directory` uses New Session's path, creation plan and
+confirmation (`resume.directory_selection`); omitted, the saved location is used.
+Start journals created directories and keeps `saved_directory` for source
+verification and rollback; no project files move. The chosen location is retained
+after a verified running handoff. Session details report the last verified
+launch/resume Space.
+
+Start journals the intent before creating a tab. A second unfinished Resume for the
+same session is rejected. Generation, saved state, account availability and
+operation ownership are checked again before provider execution. Same-account Resume
+uses the exact-conversation launcher; a changed account delegates to the
+non-steering transfer worker (history, permissions and stable ID kept),
+`operation_id` naming that job. It creates no model turn.
+
+Receipts distinguish admission, preparation, terminal creation, rename, dispatch,
+transfer, provider start, attachment and observed running. `failed` before host
+effects is safe failure; `uncertain` after effects requires inspection, never
+automatic replay; `recovered` describes the transfer worker's rollback. The name may
+already be committed if a later transfer fails (`previous_name`). Closing the popup
+only detaches its observer. A receipt that reached `running` is not regressed by a
+later Stop; read the catalog for current liveness. A lost acknowledgement ends
+`uncertain` with `RESUME_ACK_UNCERTAIN`, keeps the session reserved
+(`RESUME_IN_PROGRESS`) and can be released with `api abandon-operation`.
+
+`api resume` (Codex and native) starts the provider in the session's saved
+directory, refusing with `SAVED_DIRECTORY_UNAVAILABLE` when it is not an absolute
+existing directory. No observed running session within the poll fails with
+`RESUME_LAUNCH_UNCONFIRMED`, and a pane command that returns to an idle shell fails
+promptly with `RESUME_LAUNCH_FAILED`. The new tab is labelled with the session's
+current name. A provider that exits right after starting is detected
+([early provider exit](#early-provider-exit)).
+
+### Resume availability reasons
+
+Session state and details include nullable `resume_block_reason`:
+`unsupported_provider`, `host_unavailable`, `history_unavailable`,
+`already_running`, `moving`, `missing_directory`, `history_busy`,
+`unfinished_history`, `conflicting_history`, `unverified_history`, `archived` or
+`account_deleted`. `unfinished_history` is a confirmation warning, not a disabled
+resume. Capability flags remain authoritative and launch rechecks current state;
+tolerate future codes. Read-only history inspection does not constitute
+`history_busy`; an open writer does, and uninspectable descriptor flags keep the
+busy gate. A recorded terminal blocks resume only while its exact process could
+still hold the conversation; killed processes, reused PIDs, leftover registry files
+of dead processes and terminals that switched conversation do not. Claude
+`capabilities.resume` is false with `SAVED_DIRECTORY_UNAVAILABLE` when no existing
+absolute saved directory is known.
+
+A live terminal can be waiting at Codex's workspace-trust/startup prompt before its
+conversation is loaded. Lifecycle workers report `waiting_for_provider_ready` until
+native state is confirmed; they never approve that prompt. Background-terminal
+checks for unloaded saved/child histories require consistent native read/list/read
+evidence rather than treating a rejected RPC as empty.
+
+### Launch acknowledgement and abandoning uncertain operations
+
+`api launch` waits up to 120 s for `launch-run` to acknowledge. When the wait expires
+while the receipt is still `dispatching`, `launch-run` can no longer start (it
+requires `dispatching`), so the receipt becomes `failed`
+(`LAUNCH_RUN_NEVER_STARTED: provider was not started`) and the name is released.
+Only a launch that `launch-run` claimed stays `uncertain` (`LAUNCH_ACK_UNCERTAIN`).
+A late `launch-run` prints the phase and `LAUNCH_ALREADY_DISPATCHED` in the pane and
+starts nothing. Codex `launch-run` and inline `run` wait up to 120 s (backoff 50 ms
+doubling to 1 s) for the shared account lock while an account operation such as an
+archive holds it, staying `starting_provider` with an `ACCOUNT_BUSY wait` detail (the
+acknowledgement wait does not count that time). A `launch-run` error before the first
+provider mutation (Codex: the app-server thread start), including `ACCOUNT_BUSY: an
+account operation held the lock for 120s`, ends the launch `failed` with the name
+released; `uncertain` is kept for failures after a provider start may have happened
+(and for Claude, Gemini and Antigravity terminal launches, which do not mark that
+point). On any error `launch-run` prints `sessionsation launch failed: <CODE>:
+<reason>` to the pane's stderr and exits 1.
+
+`api abandon-operation --operation ID --confirm ID` (`capabilities.abandon_operation`,
+`applies_to:["resume_launch","launch"]`, `launch_phases:["uncertain"]`) releases an
+operation that is deliberately never replayed. It moves the receipt to the terminal
+phase `abandoned` (`abandoned_from`, `abandoned_at`, a `detail` stating that nothing
+was sent), sends, resumes and replays nothing, and only releases the reservation.
+For a resume-launch it accepts `uncertain`, or a non-terminal receipt older than 10 s
+whose worker has exited; for a new launch only `uncertain` with a stopped worker. The
+same command ends uncertain or stalled account switches, account renames, Auto Start
+operations and inline resumptions. Refusals: `CONFIRMATION_MISMATCH`,
+`OPERATION_ALREADY_TERMINAL`, `OPERATION_WORKER_ACTIVE`, `OPERATION_STILL_ACTIVE` (a
+transfer job is still running; use `cancel-operation`), `OPERATION_NOT_STUCK`,
+`SESSION_PROCESS_LIVE` (the session's process, or the launch pane running something
+other than an idle shell), `SESSION_EXISTS` (a catalog session with the launch's id)
+and `SESSION_STATE_UNVERIFIED`.
+
+### Inline `run` and `resume`
+
+The commands a terminal client types into an existing pane (`sessionsation run
+--account A`, `sessionsation resume SESSION --expected-generation G`) are named and
+journaled (`capabilities.inline_launch`, `{name:true, journaled:true,
+operations:true, ...}`).
+
+- `--name NAME` follows the `api launch` / `api resume --name` rules
+  (`INVALID_SESSION_NAME`, `SESSION_NAME_EXISTS`; inside a HERDR pane a canonical name
+  must name the pane's own Space, outside HERDR it is `INVALID_ARGUMENT`). `run` gives
+  the new entry that name; `resume` renames first (the generation changes). With
+  `HERDR_PANE_ID` set the pane's tab is relabelled (best effort). `run --name` is
+  refused with `--thread`, `--hosted` or `--host herdr`. Without `--name`, `run` uses
+  the directory name (`-2` suffix on a clash).
+- `resume --confirm-unfinished` acknowledges only the `unfinished_history` warning of
+  a saved Codex session (otherwise `UNFINISHED_HISTORY_CONFIRMATION_REQUIRED`; any other
+  block reason fails with `SESSION_STATE_UNVERIFIED`, or names the blocking operation:
+  `RECOVERY_UNRESOLVED`, `SESSION_OPERATION_IN_PROGRESS`).
+- Every inline `run` writes a launch receipt under `operations/launches` and every
+  inline `resume` a resumption receipt under `operations/resumptions`, with
+  `inline:{pid,process_start,pane_id}` and `host.session:"inline"`; `api launch
+  list|status` and `api resume-launch list|status` show them. Phases:
+  `starting_provider`, `attached` (bound to the terminal process, which becomes the
+  provider), `complete` (the exact provider process was observed, or ended after
+  attaching; terminal, holds no lock), `failed` (refused before binding; the name is
+  released; also a resume whose process ended before any provider attached) and
+  `uncertain` (never replayed; holds its reservation; release an inline resumption with
+  `api abandon-operation`). Phases settle lazily when read; an ended process gets the
+  detail "The inline provider process has ended.". Hosted `api launch` /
+  `api resume-launch` receipts keep `running` as their terminal success phase; treat
+  inline `complete` like `running`.
+- `api operations` lists them as `{id, kind:"launch"|"resume", inline:true,
+  session_id, name, account_id, phase, detail, created_at, updated_at, pane_id,
+  can_cancel:false, can_respond:false, can_recover:false}`; finished entries drop out
+  24 hours after they ended or when their session is deleted.
+- Locks: launches take the shared account launch lock and the name reservation;
+  resumes take the resumption admission lock, the per-conversation admission lock,
+  the handoff check and the conversation lock, exactly like `api resume-launch`.
+  `run --thread`, `run --hosted` and `run --host herdr` are not journaled this way.
+
+### Early provider exit
+
+A launch whose exact recorded provider process exits before it is observed running,
+or within 15 s after (`SESSIONSATION_LAUNCH_EXIT_WINDOW_SECONDS`, `0` disables),
+ends `failed` with `detail` `PROVIDER_EXITED: …`; the catalog entry stays as a stopped
+session. A `session launch` whose provider exited before the brief was sent ends
+`failed` / `provider_exited`. Terminal input re-checks right before the first key and
+before Enter that the exact provider process still runs and that HERDR does not
+report a bare shell in front of the pane (`TERMINAL_PROVIDER_EXITED`,
+`TERMINAL_PANE_IS_SHELL`).
+
+## Launch configuration
+
+### Launch permissions
+
+`api capabilities.launch_permissions` (`values` `["yolo","default"]`,
+`built_in_default:"yolo"`, `setting:"launch_permissions"`,
+`request_field:"permissions"`, `requests:["launch","resume-launch"]`,
+`cli_option:"--permissions"`). `LaunchRequest` and `ResumeRequest` accept an optional
+`permissions` (`yolo` | `default`); omitted, the `launch_permissions` setting applies.
+Every provider process started for a session uses one mode: new launches, resume
+launches, inline `run`/`resume`, Codex restart and account switch, saved-session
+open, move recovery and hosted Claude without a `permission_mode`.
+
+| Mode | Codex | Claude Code | Gemini CLI | Antigravity CLI |
+|---|---|---|---|---|
+| `yolo` | `thread/start`/`thread/resume` with approval `never` and the `:danger-full-access` profile, verified on the result | `--dangerously-skip-permissions`, `IS_SANDBOX=1` and the flag setting `skipDangerousModePermissionPrompt` | `--approval-mode yolo` | `--dangerously-skip-permissions` |
+| `default` | no override; resumes, restarts and switches keep the recorded approval/sandbox | no flag | no flag | no flag |
+
+Explicit Codex options after `--` (`-a`, `-s`,
+`--dangerously-bypass-approvals-and-sandbox`, `--full-auto`; `--yolo` is an alias of
+the bypass flag) and a hosted Claude `permission_mode` win. Claude refuses permission
+bypass as root unless `IS_SANDBOX=1`, set only for bypassing starts. Codex rejects
+permission flags on a remote resume, so they are never passed to the remote terminal;
+instead every verified `thread/resume` is followed by `thread/settings/update` with
+the same approval policy and profile, recorded in the conversation, so an unloaded
+and reloaded conversation keeps them instead of falling back to `config.toml` or
+folder-trust defaults. Codex message recovery restores the recorded permissions
+exactly. Headless delivery never bypasses: Claude prints without bypass and Gemini
+uses `--approval-mode default`. A running session keeps its mode until restarted.
+
+### Folder pre-trust
+
+In yolo mode, Sessionsation pre-accepts the provider's folder-trust dialog for the
+launch directory so a new session does not stop at it. Only the trust entry
+changes: every other member keeps its bytes and order, the file is replaced
+atomically with its mode and owner (compare-and-swap against concurrent writes), a
+symlinked file is refused, a missing or malformed file is left untouched, and
+credentials are never read. Failures are reported on stderr and never block the
+start. `default` launch permissions and headless delivery change nothing.
+
+- Claude (`capabilities.claude_folder_trust`: `setting:"claude_pretrust_folders"`,
+  `built_in_default:true`, `applies_when:"launch_permissions_yolo"`,
+  `applies_to:["interactive","hosted"]`): before an interactive bypass start or a
+  hosted worker with effective `bypassPermissions`, it sets
+  `projects["<directory>"].hasTrustDialogAccepted = true` in the account's
+  `CLAUDE_CONFIG_DIR/.claude.json`, under the canonical directory and, when
+  different, the recorded spelling. A directory Claude does not know yet gets
+  Claude's own per-project defaults.
+- Antigravity (`capabilities.antigravity_folder_trust`:
+  `setting:"antigravity_pretrust_folders"`, `built_in_default:true`,
+  `config_file:"AGY_ACCOUNT_HOME/.gemini/antigravity-cli/settings.json"`,
+  `key:"trustedWorkspaces"`, `match:"exact_directory"`, `credentials_read:false`):
+  before a yolo `new` or `resume` it appends the launch directory (canonical and,
+  when different, as recorded) to `trustedWorkspaces`, which is how agy 1.4.10
+  records an accepted dialog (a subdirectory of a trusted directory asks again).
+
+### Claude account settings
+
+Both commands edit one key of the account's `CLAUDE_CONFIG_DIR/settings.json`
+(other keys kept, atomic replace, mode kept, a symlinked file refused with
+`SETTINGS_IS_SYMLINK`, `.credentials.json` never read) and apply to sessions started
+afterwards. Codex, Gemini and Antigravity get `UNSUPPORTED_PROVIDER_OPERATION`.
+
+- **Bypass warning** (`capabilities.claude_bypass_warning`:
+  `setting:"skipDangerousModePermissionPrompt"`, `values:["skip","show"]`,
+  `new_accounts_default:"skip"`). `api account bypass-warning claude:NAME
+  [--skip|--show]` returns `{account_id,provider,bypass_warning,setting,value,
+  previous,changed,settings_file,applies_to:"sessions_started_after_the_change"}`;
+  without a flag it only reads. `--skip` writes `true`, `--show` an explicit
+  `false`; events `account.bypass_warning_skipped|shown` are recorded on change.
+  Accounts Sessionsation creates (`account add` into a new managed home, or
+  `account login` of a managed home with no `settings.json`) default to skip;
+  adopted and existing homes are untouched. Claude account rows add
+  `bypass_warning` (`skip` when the stored value is `true`, else `show`),
+  `bypass_warning_value` and `bypass_warning_setting`.
+- **Default statusline** (`capabilities.claude_default_statusline`, config key
+  `claude_default_statusline_command`; an empty value disables it). A new managed
+  Claude home (the same two cases) gets
+  `{"statusLine":{"type":"command","command":"<the configured command>"}}` seeded;
+  an existing `statusLine`, adopted and existing homes are never touched.
+  Sessionsation's own statusline hook forwards to this command
+  ([Claude usage](#claude-usage-and-statusline)).
+
+## Session model and one-pass launch
+
+Capability `session_model` (version 1), plus `launch_model` for the JSON `api launch`
+fields `model` and `reasoning_effort`.
+
+- **Exact ids only.** Codex: letters, digits and `. _ - : /`, 1-100 characters, not
+  starting with `-` (and for `set-model` an id from the account's `model/list`);
+  efforts `none|minimal|low|medium|high|xhigh`. Claude: `claude-` followed by
+  lower-case letters, digits, dots and dashes, optional `[1m]`; efforts
+  `low|medium|high|xhigh|max`; aliases (`opus`, `sonnet`, `default`, ...) are
+  `INVALID_MODEL`. Hosted Claude with a model is `UNSUPPORTED_PROVIDER_OPERATION`, as
+  are Gemini and Antigravity. A launch model is not checked against what the account
+  can use. Applied values are always the ones the session reports; a substituted
+  model or capped effort is a failure carrying the observed value (ASCII
+  case-insensitive equality; Claude ids compare ignoring a trailing `[1m]`).
+- **Always pass a model.** A Claude `/model` or `/effort` (including the ones
+  `set-model` types) saves the value as the account default for later starts without
+  a model; Sessionsation does not restore it. Resumes (`api resume`, inline `resume`,
+  Auto Start, account switch, hosted resume) pass the conversation's last recorded
+  model and effort; headless sends pass none. A Codex launch model starts the thread
+  with that model and `model_reasoning_effort` and opens the terminal with `-m` and
+  `-c model_reasoning_effort="..."`; Claude terminal launches use `--model`/`--effort`.
+- **Row field `model`** (`state`, `state --cached`, `session`, `session resolve`):
+  `{"id","effort","observed_at","source"}` or null. Sources: `claude_statusline`
+  (Sessionsation's status-line hook writes the payload's `model.id` and
+  `effort.level` to `<account home>/.sessionsation/model/<session_id>.json`),
+  `codex_thread` (`thread/read` during inventory, kept in
+  `registry/session-catalog/models.json`) and `set_model`. Not part of the
+  generation. Claude sessions started by a release without the hook report null
+  until stopped and resumed.
+- **`api session set-model`** journals `operations/model-changes/<id>.json`: `waiting
+  → applying → complete | failed | cancelled | expired`, applied at the next idle
+  point (`--when-idle`: up to `--expires-at`, default one hour; otherwise within
+  60 s). One pending change per session (same values: `existing:true`; other values:
+  `SESSION_OPERATION_IN_PROGRESS`; same `--operation` with other values:
+  `OPERATION_ID_CONFLICT`). Admission refusals: `SESSION_NOT_FOUND`,
+  `AMBIGUOUS_SESSION`, `STALE_TARGET`, `UNSUPPORTED_PROVIDER_OPERATION`,
+  `INVALID_MODEL`, `INVALID_REASONING_EFFORT`, `INVALID_OPERATION_ID`,
+  `INVALID_EXPIRY`, `INVALID_ARGUMENT`, `SESSION_NOT_RUNNING`, `TERMINAL_NOT_ATTACHED`,
+  `TERMINAL_INPUT_DISABLED`, `SESSION_STATE_UNVERIFIED` (Claude: no status-line record
+  from the running process) and the lifecycle codes. Already running the requested
+  values: `complete`, `already_applied`, nothing sent. Cancel while `waiting`
+  (`applying`: `OPERATION_WORKER_ACTIVE`; ended: `OPERATION_ALREADY_TERMINAL`). Listed
+  as `kind:"model_change"`. `--wait N` (default 90, or 0 with `--when-idle`, max 600)
+  blocks until the record ends. Claude admission needs the status-line record of the
+  session's own process; with `--wait` it waits for the first one (250 ms backoff
+  doubling to 2 s), otherwise or after the wait it fails `SESSION_STATE_UNVERIFIED`
+  with `retryable:true` and `detail:"hook_not_recorded"`
+  (`session_model.set.admission_wait`). A record of this process without a model
+  (status line disabled, folder trust not accepted) stays non-retryable.
+  - Codex: at an idle point (no active turn, empty native queue, under session
+    ownership) `thread/settings/update {model}`, then `{effort}`, verified with
+    `thread/read` (`model_not_available`, `effort_unsupported`, `provider_rejected`,
+    `model_not_confirmed`/`effort_not_confirmed` after three attempts). New public
+    `submit`/`queue` input is held (`pending_local`, `model_change_hold`) and released
+    through the compaction release path. Compactions and model changes of one session
+    run in request order (`compaction_pending`, `model_change_pending`). A change stuck
+    in `applying` without progress for 180 s fails `apply_not_observed`. Steering is not
+    held.
+  - Claude (HERDR terminal sessions): a detached worker types `/model <id>` and
+    `/effort <level>` only after two idle observations at least 1.5 s apart (HERDR
+    agent `idle`/`done` and an **empty** main prompt; a draft is never cleared:
+    `draft_present`) and while no terminal delivery is in flight or touched the pane in
+    the last 5 s (`terminal_delivery_active`). Waiting changes back off (Claude 4 s to
+    30 s, Codex 2 s to 30 s). It removes only its own command (by backspaces after
+    verifying a prefix; otherwise `prompt_not_owned`). The `Switch model?` / `Change
+    effort level?` dialog is answered by up/down to `Yes` and Enter (a
+    `PreModelSwitch` hook prompt is declined: `blocked_by_hook`); never Esc, Ctrl+C,
+    Ctrl+D or digit keys. On failure the worker chooses `No` and verifies the main
+    prompt, else `pane_left_in_dialog`. Effort is applied after the model; without
+    `--effort` the effort in force before is re-applied. Confirmation comes only from
+    the status-line record; no change for 8 s is `model_not_confirmed`; an unidentified
+    screen ends with `TERMINAL_OVERLAY_UNIDENTIFIED` and `refusal_layout`. Claude input
+    is not held; terminal deliveries wait for the pane lock.
+- **`api session launch`** admits an ordinary launch request (with `model` and
+  `reasoning_effort`) and journals `operations/session-launches/<request_id>.json`
+  plus the brief (`.brief`, 0600, removed when the record ends): `admitted →
+  launching → verifying_model → delivering_brief → complete | failed | cancelled`.
+  The brief is **held until the model (and requested effort) is verified** from the
+  session itself (`brief.delivery`: Claude `held`, Codex `first_turn`), then sent as an
+  ordinary message (Claude `terminal_input` submit; Codex submit with
+  `if_busy:"queue"`), with a new message id journaled before each attempt; pre-submit
+  refusals are retried every 5 s up to 5 times only when nothing was written, and
+  `delivery_unknown` is never retried. `--brief-delivery initial-prompt` hands the
+  brief to Claude as its start-up prompt (`handed_to_provider`, `delivered` once the
+  transcript holds it; not gated on the model); Codex accepts the flag and still
+  delivers as `first_turn` (`brief.requested_delivery` records it). Mismatch: `failed`
+  `model_not_confirmed` / `effort_not_confirmed` / `effort_unsupported`, brief
+  `not_sent`, session left running. `--deadline` (default 300 s) bounds
+  launch-to-delivered-brief (`ready_timeout`; a send in flight then is
+  `delivery_unknown`, never `not_sent`); no launch receipt 120 s after admission is
+  `launch_failed`. Brief limits: Claude held 8192 bytes and the terminal-input rules,
+  initial prompt 32768 bytes and not starting with `/ ! #`, Codex 16384 bytes.
+  `--wait N` (default 0, max 1800) ends without `complete` as `MODEL_NOT_CONFIRMED`,
+  `PROMPT_NOT_DELIVERED`, `PROVIDER_LAUNCH_FAILED` or `LAUNCH_ACK_UNCERTAIN` with
+  `error.operation`; without it `ok:true` is only the admission. The same
+  `--request-id` with the same request and brief returns the record (`existing:true`);
+  different input is `REQUEST_ID_CONFLICT`. Cancel with `api cancel-operation`.
+- Before rolling back to a release without these records, drain them
+  ([operations](operations.md#rolling-back-a-release)).
+
+## Stop and restart
+
+`api stop --session ID --expected-generation G [--keep-pane] [--wait]
+[--disable-auto-start]` ends the selected agent and preserves resumable history.
+Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
+`session_id`, `source_session_id` (both name the catalog session), `provider`,
+`phase`, `detail`, `already_stopped`, `pid`, `process_start`, `signal`, `pane_closed`,
+`pane_close_reason`, `interrupted_turn`, `auto_start`, `provider_conversation_id`,
+`source_account_id`; a value the provider path did not report is null.
+
+- **Codex** queues a `terminate` job that waits for positive idle (`interrupted_turn`
+  null; `signal:"SIGTERM"` once complete). A stop still waiting for idle
+  (`waiting_for_*` phases) gives up after 1800 s (`TERMINATE_WAIT_SECONDS`, from
+  `created_at`): it fails "the stop request expired while waiting for the session to
+  become idle; nothing was stopped" and releases its stop gate. A cancelled or failed
+  stop job releases its own gate while the exact source process still runs (reads heal
+  an already-stale gate), so a session that kept running is not left
+  `explicit_resume_required`; a completed stop keeps its gate, another job's gate is
+  never released. With `--wait` the call polls the job (300 s bound;
+  `SESSIONSATION_OPERATION_WAIT_MS` in tests): `complete` returns the job;
+  `failed`/`cancelled` is `OPERATION_FAILED` with `error.operation`; no end is
+  `OPERATION_TIMEOUT` (retryable; the stop stays queued). `capabilities.stop_wait`.
+- **Claude** (`capabilities.claude_lifecycle`): the target is the process Claude
+  Code's registry names as the holder of the conversation (exact pid, /proc start time,
+  config home), re-read under the conversation lock and signalled through a pidfd
+  whose start time is checked after opening (otherwise `SESSION_STATE_UNVERIFIED`,
+  nothing signalled). SIGTERM only, then up to 10 s. A turn in progress is interrupted
+  (`interrupted_turn:true`; its unfinished reply is not saved); the transcript stays
+  resumable. Background (`bg`) sessions and pre-started spares are
+  `UNSUPPORTED_PROVIDER_OPERATION` (they belong to Claude's daemon); hosted sessions
+  are `HOSTED_SESSION` (use `api hosted stop`). Rows report `capabilities.stop:true`
+  exactly while the registry-verified interactive process runs.
+- **Antigravity** (`capabilities.antigravity_lifecycle`): SIGTERM to the exact
+  verified agy process (pidfd; pid, start time, `agy` command line, account home, and
+  that it holds the conversation), then up to 20 s. SIGTERM runs agy's normal exit
+  (it prints `Resume with ... agy --conversation=ID`, checkpoints and removes the
+  `-wal`/`-shm` files); a typed `/exit` is not used because Enter during a turn queues
+  text.
+- **Gemini** has no stop: `UNSUPPORTED_PROVIDER_OPERATION` with `error.supported:false`
+  and `error.reason`, also the row's `capability_reasons.stop`.
+- A session with no running process (not archived) returns `already_stopped:true`,
+  `phase:"complete"`, `interrupted_turn:false`, `pane_closed:false`; the generation is
+  still checked. Archived: `SESSION_ARCHIVED`.
+- Errors: `STOP_TIMEOUT` (not exited in time; never killed, SIGKILL is never sent;
+  retryable), `SESSION_STATE_UNVERIFIED`, `AMBIGUOUS_SESSION`, `STOP_UNAVAILABLE`,
+  `STOP_FAILED`, `SESSION_NOT_RUNNING`.
+- **Pane close** (`stop_closes_pane`, `stop_keep_pane`, `stop_pane_close`): after the
+  exact agent process is gone (and, for Codex, the history is back in the resume list)
+  the recorded HERDR pane is closed with `herdr pane close`, but only if it still
+  exists and only its idle shell runs there (`pane process-info`). `--keep-pane` keeps
+  it. `pane_close_reason` is null when closed, else `KEEP_PANE`, `NO_PANE`,
+  `PANE_BUSY`, `PANE_MISSING`, `PANE_STATE_UNVERIFIED`, `PANE_CLOSE_FAILED`,
+  `PANE_CLOSE_UNSUPPORTED` (tmux attachments are never closed) or
+  `PANE_TARGET_INVALID`. A pane that cannot be closed does not fail the stop. Restart,
+  switch, move and Auto Start never close panes.
+- **`--disable-auto-start`** sets the session's Auto Start to `disabled` after a stop
+  without error (including `already_stopped`) and returns the row's `auto_start`
+  projection; for a Codex stop without `--wait` it is applied at admission, with
+  `--wait` after completion. Without the flag an explicit stop only marks the session
+  ([Auto Start](#auto-start)).
+
+`api restart` (Codex only) replaces the terminal client on its selected account,
+keeping the recorded permissions and the account server. Claude and Antigravity
+restart is stop then resume. Before typing a command into a reused HERDR shell
+Sessionsation clears the line with `pane send-keys <pane> ctrl+e ctrl+u`; tmux relaunch
+uses `respawn-pane -k`. After a lifecycle command or job the cached snapshots are
+patched with the new generation, and the `resume`/`stop`/`restart`/`switch` result
+carries it.
+
+### Account switch
+
+`api switch --session ID --expected-generation G --to PROVIDER:NAME [--accept-risks]`
+moves a conversation to another account of the same provider (another prefix or a
+bare name is `ACCOUNT_PROVIDER_REQUIRED`). Codex and Claude support it; Gemini and
+Antigravity do not. `capabilities.switch_account` is true for a stopped session and
+for a running one that can be stopped and resumed in place, otherwise false with
+`capability_reasons.switch_account`.
+
+Switching a **stopped/saved** session only re-homes it, never starts it. Codex copies
+and byte-verifies the rollout and child histories in the target home, retires the old
+copy and lets discovery list the session as `saved` on the target account (new
+catalog account and generation), without loading the thread on the target
+app-server, opening a pane or starting Codex (`complete` detail says the session
+stays saved). A later resume starts it there with the recorded permissions. A
+resume launch that chooses an account (`resume_destination`) and switching a live
+Codex session use the non-steering transfer worker, which waits for positive idle and
+never forces interruption.
+
+A Claude switch returns the Codex-switch operation keys (`id`, `kind:"account"`,
+`phase`, `detail`, `source_session_id`, `source_account_id`, `target_account_id`,
+`provider_conversation_id`, `can_cancel:false`, `can_recover`, `can_respond:false`)
+plus `provider:"claude"`, `uncertain`, `terminal`, `stalled`, `replays:false`,
+`generation`, `resume {state, pane, permissions}` and `receipt` `{files_moved,
+paths, account_memory:{moved:false, stays_with, detail}, shared_state}`.
+
+- **Phases** (journal `operations/claude-switches/ID.json`, driven by a detached
+  `claude-switch-worker`, each journaled before its work): `admitted`, `stopping`,
+  `stopped`, `copying`, `copied`, `switching`, `switched`, `removing`, `removed`,
+  `resume_pending`, `resuming`, then `complete`, `failed` or `abandoned`;
+  `uncertain` waits for `api recover` or `api abandon-operation`.
+- **Admission** (nothing changes on refusal): `STALE_TARGET`, `SWITCH_SAME_ACCOUNT`,
+  `ACCOUNT_UNAVAILABLE`, `ACCOUNT_REMOVED`, `ACCOUNT_RENAME_UNRESOLVED`,
+  `OPERATION_BUSY`, `SESSION_OPERATION_IN_PROGRESS`, a headless delivery in flight,
+  `HISTORY_NOT_FOUND`, `SESSION_STALE`, `SESSION_STATE_UNVERIFIED`, `TARGET_CONFLICT`
+  (a copy in the target home), `SESSION_HOSTED` (stop it first),
+  `SESSION_NOT_SWITCHABLE` (background or parked), `AMBIGUOUS_SESSION`,
+  `SESSION_PANE_UNKNOWN` (a running process outside a recorded pane cannot be resumed
+  afterwards), `SAVED_DIRECTORY_UNAVAILABLE`, `SHARED_STATE_MIXED`, and
+  `RISK_CONFIRMATION_REQUIRED` for a `busy` running session (repeat with
+  `--accept-risks`; stopping interrupts the turn).
+- **Stop**: the live process is identified as discovery does (registry pid, start
+  time, session id and config home), signalled with `SIGTERM` through a pidfd opened
+  before the identity is re-checked, and waited for 30 s. A process that does not exit
+  is `STOP_TIMEOUT`, never killed; a different process holding the conversation is
+  `SESSION_CHANGED`.
+- **What moves**: for every lineage conversation, `projects/<slug>/<id>.jsonl`,
+  `projects/<slug>/<id>/`, `file-history/<id>/`, `session-env/<id>/` and
+  `todos/<id>-agent-*.json` (the archive/delete set; symlinks refused). Per-project
+  `memory/`, `settings.json`, credentials and other account-level files stay with
+  the source. With [shared state](#shared-claude-state) on both accounts the copy and
+  removal phases are journaled but move nothing (`receipt.shared_state:true`,
+  `files_moved:0`).
+- **Crash safety**: digests are journaled once the source is quiescent; each file is
+  copied to staging in the target home, verified, renamed into place; only then is
+  the catalog switched (new revision and generation, attachment cleared) and the
+  source copies removed after a second digest check. A failure before the catalog
+  change ends `failed` with the source intact; after it, `uncertain`. `api recover ID`
+  continues from the journaled phase (copy, switch and removal are idempotent);
+  `api abandon-operation ID --confirm ID` ends an `uncertain` or stalled (no worker,
+  over 10 s old) operation and moves nothing.
+- **Resume**: a session that was running is relaunched in its pane as
+  `sessionsation resume` with the recorded permissions (from the stopped process's
+  command line), the target `CLAUDE_CONFIG_DIR` and the recorded directory.
+  `resume.state` is `confirmed` only after the exact new process is observed on the
+  target account, otherwise the operation is `uncertain` with `unconfirmed`; the
+  dispatch is never replayed. A stopped session gets `resume.state:"not_needed"`.
+
+### Auto Start
+
+Auto Start means "start this session again after a host reboot, an array restart or
+a crash, and not much else". Every provider with a resume path is supported (Codex,
+Claude, Gemini, Antigravity). `api capabilities.auto_start` describes it (clients show
+the control only when present; it carries `default_prompt`, `default_prompt_crash`,
+`max_prompt_bytes`, `enable_requires:"none"`, the classification table under
+`triggers` and `last_result_states`).
+
+- **Command**: `api auto-start --session ID --expected-generation G --mode
+  disabled|start|start_prompt [--prompt TEXT]`. `disabled` is the default for every
+  session; `start` resumes and sends nothing; `start_prompt` resumes, then sends the
+  prompt once (the custom `--prompt`, 1-4000 bytes and only valid with
+  `start_prompt`, else the default). `--mode start_prompt` without `--prompt` clears a
+  custom prompt. The mode can be set on live, stopped and saved sessions; archived,
+  hosted, background and unsupported sessions get `AUTO_RECOVER_UNSUPPORTED`; a stale
+  generation is `STALE_TARGET`, an unfinished operation
+  `SESSION_OPERATION_IN_PROGRESS`, a bad prompt `INVALID_ARGUMENT`. Disabling is always
+  allowed and the toggle never changes the generation. The receipt is
+  `{"session_id","generation","changed","mode","auto_start":{...},"auto_recover":{...}}`.
+  `api auto-start --all --mode disabled` (operator bulk; only `disabled`) returns
+  `{"all":true,"mode":"disabled","changed","disabled_count","disabled":[ids]}`.
+- **State**: every session row has `auto_start:{mode, enabled, prompt, last_pane,
+  last_started_at, last_result, workspace_label, suppressed, starts_last_hour,
+  max_per_hour}` and `capabilities.auto_start` / `capability_reasons.auto_start`.
+  `last_pane` is a `herdr/<session>/<pane>` target kept current while the session is
+  live. `last_result` is `null` or `{state, code, detail, operation_id, at}`.
+- **Triggers.** The supervisor checks shortly after start and then every 15 s
+  (`SESSIONSATION_AUTO_RECOVER_SECONDS`, `0` disables; skipped when no session has a
+  mode). A session is due only after 3 consecutive not-running checks with the
+  `api state` identity rules, when it is not archived, deleted, hosted or suppressed,
+  has no other operation (lifecycle admission) or unfinished recovery, and HERDR
+  answers (`HERDR_UNAVAILABLE` is surfaced and retried).
+  - *Host boot*: `/proc/sys/kernel/random/boot_id` differs from the `boot_id` in
+    `registry/auto-recover.json`; every session with a mode that is not running is
+    started once per boot (`boot_started`), including ones stopped before the reboot.
+  - *Array start*: on the same boot, a changed mount id of `/mnt/user` makes every such
+    session due once (`array_id`, `array_due`/`array_started`). A new boot uses the
+    boot trigger only.
+  - *Crash*: on the same boot, a session seen running whose recorded process (pid and
+    /proc start time) vanished is started only when the kernel log (`dmesg`) has a line
+    naming that pid and not older than the process: `Out of memory: Killed process
+    <pid>`, `<comm>[<pid>]: segfault at`, `traps: <comm>[<pid>] trap ...` or `general
+    protection`. For Claude a removed `sessions/<pid>.json` without a crash line is a
+    clean exit (`skipped_clean_exit`); a left-behind entry without one is
+    `exit_unclassified`. Every other exit (`/exit`, a closed pane, SIGABRT/runtime
+    aborts, a manual `kill -9`, a line that left the ring buffer) is not started.
+  - A supervisor or daemon restart on the same boot starts nothing, and the first
+    pass after an upgrade only records the boot and array ids.
+- **Explicit stop** keeps the mode and only marks the stop
+  (`last_result` `skipped_explicit_stop` / `EXPLICIT_STOP`), so the next boot starts
+  the session; `api stop --disable-auto-start` also sets it to `disabled`. Archive
+  and delete set `disabled` (`ARCHIVED_OR_DELETED`). `switch` and `restart` only
+  suppress it until the session is observed live again.
+- **Pane choice**: the recorded pane is reused only while it exists and only an idle
+  shell runs in it (`herdr pane process-info`: the foreground group is the shell, a
+  single shell process); the input line is cleared with `ctrl+e ctrl+u` first.
+  Otherwise a new tab opens (`--no-focus`, labelled with the session name) in the same
+  workspace (the recorded id while it has the recorded label, else the workspace with
+  that label), else in a new workspace. Pane and tab are renamed after the session.
+- **Resume and prompt**: `sessionsation resume ID --expected-generation G
+  --confirm-unfinished` runs in the pane through the normal path (same flags,
+  permissions and environment as a manual resume). The prompt goes through `api send`
+  (`mode:"submit"`; for Claude it waits up to 60 s,
+  `SESSIONSATION_AUTO_RECOVER_NATIVE_SECONDS`, for the registry entry and socket, then
+  uses `delivery:"native"`). It is `delivered` only when its receipt shows `written`,
+  `input_consumed` or native acceptance. A `rejected` receipt with nothing written and
+  pre-admission refusals are retried with a fresh message id and backoff for up to
+  180 s (`SESSIONSATION_AUTO_RECOVER_PROMPT_SECONDS`); anything that may have been
+  written ends `uncertain` and is never re-sent. `prompt.attempts` and `prompt.detail`
+  list every attempt. Default prompts name the trigger and its UTC time (boot, array
+  restart, or the crash and what was seen).
+- **`last_result.state`**: `started_after_boot`, `started_after_array_start`,
+  `started_after_crash` (each optionally `_with_prompt`, only for a delivered prompt,
+  else code `PROMPT_NOT_DELIVERED`), `skipped_clean_exit`, `exit_unclassified`,
+  `skipped_explicit_stop`, `already_running` (started some other way; not counted
+  toward the rate limit and not suppressing), `failed`, `uncertain`, `rate_limited`,
+  `waiting`, `disabled`, `abandoned`. Older records may read `started` /
+  `started_with_prompt`.
+- **Rate limit**: at most 3 attempts per session per hour; beyond that
+  `rate_limited` until the window passes.
+- **Operations**: each start is journaled in `operations/auto-recoveries/ID.json` and
+  listed as `kind:"auto_recover"` with `mode`, `trigger` (`boot`, `array_start`,
+  `crash`), the account-switch operation keys, `resume {state, pane, pane_reused,
+  recorded_pane}` and `prompt {state, attempts, detail, message_id}`. Phases:
+  `admitted`, `pane_ready`, `resuming`, `resumed`, `prompting` (skipped for `start`;
+  `prompt.state:"skipped"`), then `complete`, `failed` (nothing started) or
+  `abandoned`; `uncertain` (dispatched but not confirmed) and stalled operations
+  (no worker, over 10 s old) wait for `api recover ID` (re-checks, never replays) or
+  `api abandon-operation ID --confirm ID`, and block further automatic starts.
+- **Storage**: `registry/auto-recover.json` (atomic, fsynced, under a lock; schema 2
+  with `mode`, `enabled` mirroring it). It is outside the catalog, so pane bookkeeping
+  never changes a generation.
+- **Deprecated, still served**: `api auto-recover --session ID --expected-generation
+  G (--enable [--prompt TEXT] | --disable)` (`--enable` = `start_prompt`),
+  `sessions[].auto_recover` (`enabled` = mode is not `disabled`; `last_result.state`
+  maps `*_with_prompt` to `recovered`, other starts to `recovered_without_prompt`,
+  skips and `already_running` to `waiting`) and `capabilities.auto_recover`
+  (`deprecated:true`).
+- **Tests only** override the sources: `SESSIONSATION_BOOT_ID_FILE`,
+  `SESSIONSATION_KERNEL_LOG_FILE`, `SESSIONSATION_MOUNTINFO_FILE`,
+  `SESSIONSATION_ARRAY_MOUNT`.
+
+## Compaction at the next idle point
+
+```sh
+api session compact --session ID --expected-generation G --when-idle [--expires-at UNIX] [--operation UUID]
+api session compact-status (--operation UUID | --session ID)
+api session compact-cancel --operation UUID        # or: api cancel-operation UUID
+```
+
+`capabilities.session_compact` lists providers, methods, phases, reasons, expiry
+bounds and hold semantics. `--when-idle` is required. `--expires-at` defaults to one
+hour, at most 24 hours (`INVALID_EXPIRY`); `--operation` is a caller UUID (generated
+when omitted). The supervisor must be running (`SESSIONSATION_COMPACTION_SECONDS`,
+default 2, 0 disables the loop). Records are `operations/compactions/ID.json`, listed
+by `api operations` (`kind:"compaction"`) while pending and for an hour after.
+
+```json
+{"id":"UUID","kind":"compaction","provider":"codex","when":"idle","session_id":"...","accepted_generation":"...",
+ "provider_conversation_id":"...","phase":"waiting","terminal":false,"reason":"turn_active",
+ "detail":"A turn is active; the compaction starts when it ends.",
+ "hold":{"active":true,"released":false,"scope":"new native input for this session"},
+ "created_at":0,"updated_at":0,"expires_at":0,"started_at":null,"finished_at":null,"attempts":0,
+ "compaction_turn_id":null,"can_cancel":true,"can_respond":false,"can_recover":false,
+ "non_steering":true,"replays":false,"existing":false,"held_messages":["message ids"],
+ "supported":true,"method":"app_server","native_method":"thread/compact/start",
+ "already_compacted":false,"nothing_to_compact":false}
+```
+
+- **Phases.** `waiting`, `starting` (journaled just before the start), `running`,
+  then `complete`, `failed`, `cancelled` or `expired`. Waiting reasons: `turn_active`,
+  `native_queue_not_empty`, `approval_or_user_input_required`, `session_not_running`,
+  `session_busy`, `native_sending_disabled`, `explicit_resume_required`,
+  `provider_unavailable`, `state_unverified`, `provider_rejected`,
+  `compaction_pending`, `model_change_pending`, `draft_present`. End reasons:
+  `completed`, `cancelled`, `expired`, `generation_changed`, `provider_rejected`,
+  `unsupported_native_version`, `compaction_failed`, `compaction_interrupted`,
+  `compaction_not_observed`, `compaction_not_started`, `compaction_timeout`.
+- **Nothing to do.** When the history shows no instruction or reply yet the operation
+  completes at once with `nothing_to_compact:true`; when its newest compaction is
+  newer than the last instruction and reply, with `already_compacted:true`.
+- **One per session.** A second `compact` (or the same `--operation`) returns the
+  pending operation with `existing:true`. Cancel only while `waiting`; afterwards
+  `COMPACTION_ALREADY_STARTED` or `COMPACTION_ALREADY_FINISHED`.
+- **Codex** (`method:"app_server"`): `thread/compact/start` at the first true idle point:
+  no active turn (`idle`, or a settled `errored`/`interrupted` last turn), no pending
+  approval or question, an empty native queue, all checked under the session ownership
+  lock. Input already in the native queue runs first. An error answer returns to
+  `waiting` (`provider_rejected`), at most 3 attempts. An unanswered start stays
+  `starting` and is resolved only from the thread's own turns, never issued again.
+  Completion: the first turn not in the pre-start baseline whose summary shows no user
+  message, read once in the full view (one turn, positioned with the server's
+  `nextCursor`), carrying a `contextCompaction` item (`completed` → `complete`;
+  `failed`/`interrupted` → `failed`). Bounds: 30 minutes running
+  (`compaction_timeout`); idle again with no compaction turn after 30 s, or no
+  observable progress for 180 s, is `compaction_not_observed`. Undecided passes are
+  logged once a minute per step. A process replaced before the start fails
+  `generation_changed`. A pending operation does not block `stop`, `restart` or
+  `switch`.
+- **Hold** (Codex). While an operation is `waiting` (until its `expires_at`),
+  `starting` or `running`, and until its held input is released, public `submit` and
+  `queue` sends stay `pending_local` (`reason:"compaction_hold"`). `steer` is refused
+  (`api steer-target` returns `available:false`, `reason:"target_compacting"`; a steer
+  send becomes a terminal `rejected` receipt with `target_compacting`); send `submit`
+  with `if_busy:"queue"` or `queue` instead. `resume` and the legacy `messaging`
+  commands are not held. On release the supervisor re-sends held messages through the
+  idempotent send path in arrival order (at most 20 per tick) with **queue semantics**
+  (`hold_release:{from:"compaction",delivered_as:"queue"}`); a failed step stops the
+  pass at that message (`compaction_release_retry`) until its own `expires_at`.
+  `hold.released` turns true when nothing is left. Compactions typed into the TUI are
+  recognised only by the app-server's structured `compact_turn_not_steerable` refusal.
+- **Claude** (`method:"terminal"`): at the next idle point with an empty prompt (two
+  observations 1.5 s apart, no terminal delivery in flight) it types `/compact` into
+  the verified HERDR pane, reads it back (the highlighted menu entry must be
+  `/compact`), presses Enter once, and completes on the `PostCompact` hook event or a
+  transcript `compact_boundary` at or after the start. A draft is never cleared; a
+  command Enter did not run is removed and the operation fails
+  `compaction_not_started`; an idle pane with no compaction after 2 minutes fails
+  `compaction_not_observed`. Claude compactions hold no input.
+- Gemini and Antigravity refuse with `UNSUPPORTED_PROVIDER_OPERATION`
+  (`error.supported:false`, `error.reason`). Other refusals: `STALE_TARGET`,
+  `SESSION_NOT_RUNNING` (no live app-server attachment), `INVALID_OPERATION_ID`,
+  `OPERATION_ID_CONFLICT`, `OPERATION_NOT_FOUND`.
 
 ## Messaging
 
 `api send` reads a single request from stdin; maximum request size is 32 KiB and
-text is limited to 16 KiB. Supply a new UUID `message_id`, stable backend `session_id`,
-current `expected_generation`, `mode:"submit"|"queue"`, text and an `expires_at`
-Unix timestamp within the next 24 hours. `api_version` must be 1.
+text is limited to 16 KiB. Supply a new UUID `message_id`, stable backend
+`session_id`, current `expected_generation`, a `mode`, text and an `expires_at` Unix
+timestamp within the next 24 hours. `api_version` must be 1. Modes are `submit`,
+`queue`, `steer`, `resume` (explicit recovery or headless continuation) and `new`
+(headless new conversation). One live request shape serves every provider; see
+[one send request](#one-send-request-for-every-provider) for the per-provider
+mapping and `ignored_options`.
 
-Both modes use the verified native **non-steering queue**. Submit requires idle
-preflight and rejects a busy target. A concurrent turn can defer a submitted
-message; it can never turn this request into a steer. Queue accepts idle or busy
-eligible sessions. Existing sending/access gates and ownership locks remain enforced.
+For Codex, Submit and Queue use the verified native **non-steering queue**. Submit
+requires idle preflight and rejects a busy target; a concurrent turn can defer a
+submitted message but never turn it into a steer. Queue accepts idle or busy
+eligible sessions. An optional `"if_busy":"queue"` on a Codex `submit` queues it
+natively (`native_accepted`) instead of `rejected`/`target_busy` when a turn started
+meanwhile (any other value, or another mode, is `INVALID_REQUEST`; the receipt echoes
+it). A Submit or Queue to a session that waits on an approval or user
+input is a definite refusal, `rejected` with reason
+`approval_or_user_input_required`, before any native write; a resend returns that
+refusal. Ordinary Submit/Queue recheck terminal-turn state before native insertion:
+an `interrupted` turn or a recorded stop intent requires explicit Resume even when
+native metadata says idle, while a failed (`errored`) turn, for example a model at
+capacity, leaves a live idle session that accepts input (`actions.resume` stays
+available too).
+
+Native send checks (Codex submit/queue; capability `native_send_checks`): acceptance
+is not consumption. (1) Before the send, up to 20 s are spent (without holding the
+ledger) waiting for input readiness: a process older than 4 s whose thread answers
+native reads with a settled turn state; busy, blocked and interrupted states end the
+wait at once. (2) A late or lost add acknowledgement is reconciled against the native
+queue. (3) After an input accepted by an idle session, up to 8 s are spent confirming
+consumption (the queue entry is gone and a turn records the message id): consumed is
+`execution_started`/`completed_with_reply` with `facts.input_consumed:true`; still
+queued at the deadline, the entry is removed and the receipt is `failed` with
+`input_not_consumed` (nothing ran; safe to resend with a new id); neither seen is
+`delivery_unknown` with `consumption_unverified`. A queue send to a busy target skips
+(3). An unsent `pending_local` submission settles when its receipt is read: past its
+expiry it is `expired`; if its session was replaced (generation changed) it is
+`rejected` with `generation_mismatch`.
+
+`ok:true` from `api send` means the request was processed and a receipt exists, not
+that the input was delivered: read `result.state` and `facts`. `rejected`, `failed`,
+`expired` and `delivery_unknown` were not (provably) delivered.
 
 `api receipt MESSAGE-ID` observes progress; `api cancel MESSAGE-ID` cancels only
 when supported and positively confirmed. Receipt facts distinguish local admission,
@@ -375,65 +1351,99 @@ is not completion or proof of input consumption. Only a correlated terminal repl
 establishes `completed_with_reply`.
 
 A repeated identical ID/request returns or reconciles the original receipt. Changed
-payload, mode, target, generation or expiry gives `MESSAGE_ID_CONFLICT`. Requests
-remain bound to the original conversation/runtime even after rename or transfer.
-An uncertain write is journaled before socket I/O and is never resent. A request that is
-still `admitted` with nothing written or typed is not uncertain: since 1.64.0 the supervisor dispatches it
-once more when its worker died (see [worker ownership](#1640-part-a-send-one-send-request-for-every-provider)). Receipt and
-idempotency storage is bounded at 10,000 and never silently evicts replay protection
-(retired ids keep a tombstone; see [receipt retention](#receipt-retention-revision-18)).
-Revision 18: a Submit or Queue to a session that waits on an approval or user input
-is a definite refusal, `rejected` with reason `approval_or_user_input_required`,
-before any native write; a resend returns that refusal and never dispatches.
-Expiry is an unsent submission deadline, not cancellation of accepted native work.
-Since [1.64.0](#1640-part-a-send-one-send-request-for-every-provider) one live request shape serves every
-provider: the intents `deliver`, `when_idle` and `interrupt` are mapped per provider, and options a provider
-does not use are reported in `ignored_options`, not refused.
+payload, mode, target, generation or expiry gives `MESSAGE_ID_CONFLICT`. Message ids
+share one namespace across every store and provider. Requests remain bound to the
+original conversation/runtime even after rename or transfer. An uncertain write is
+journaled before socket I/O and is never resent. A request still `admitted` with
+nothing written or typed is not uncertain: the supervisor dispatches it once more
+when its worker died ([delivery workers](#one-send-request-for-every-provider)).
+Receipt and idempotency storage is bounded and never silently evicts replay
+protection ([receipt retention](#receipt-retention)). Expiry is an unsent submission
+deadline, not cancellation of accepted native work.
 
-### HERDR-owned session names (revision 6)
+### One send request for every provider
 
-Negotiate `session_names.version:1`. Inventory/state/watch reads one bounded host
-snapshot per server/socket and maps the verified attachment's pane ID to its tab
-ID and label. It never matches by display name. The catalog caches the last
-observed label for host outages and retains it after the process exits; it is not
-an independent naming authority for live HERDR sessions. `name_source` is
-`herdr_last_observed` for HERDR attachments and `catalog` otherwise. This field
-is provenance, not a freshness guarantee. Unavailable/ambiguous host observations
-leave the cached name unchanged. No second background service is needed; existing
-UI/client state polling performs reconciliation in the backend.
+A live `api send` takes the same body for every provider, and the caller never
+branches on the provider (`capabilities.send_request` lists the intents, the mapping
+and the options each provider ignores):
 
-`api rename` validates generation, lifecycle locks and exact host process, renames
-the containing HERDR tab, then reads it back before reporting success. A lost
-acknowledgement is reconciled by that read, never automatically replayed. Failed
-verification returns `HOST_RENAME_UNCONFIRMED` or `HOST_RENAME_NOT_APPLIED`;
-refresh state before retrying. Concurrent host edits win on subsequent observation.
-Since 1.48.0 names are scoped to a HERDR Space; see [Space-scoped session names](#space-scoped-session-names-1480).
-The UI contains no naming/synchronization operations of its own. Inactive and
-non-HERDR sessions retain catalog naming behavior. Host labels are neither
-truncated nor given synthetic suffixes; explicit CLI input keeps the 30-character
-limit. Renames do not restart agents, alter conversations or change accounts.
+```json
+{"api_version":1,"message_id":"<uuid>","session_id":"<uuid>","expected_generation":"<hex>",
+ "mode":"deliver","text":"...","expires_at":1800000600,"origin":"agent","from_component":"guard"}
+```
 
-Logical session/conversation IDs and runtime generations survive label changes;
-catalog generations change when a new label is observed. Clients must refresh
-catalog generations before mutations and must not assume names are unique.
-Submit/Queue/Resume/Steer semantics and existing receipts are unchanged.
+`mode` is an intent, or one of the provider modes `submit`, `queue`, `steer`:
 
-### Deliberate in-turn steering (revision 5)
+| Intent | Codex | Claude | Antigravity, Gemini |
+|---|---|---|---|
+| `deliver` | `submit` with `if_busy:"queue"`: idle starts a turn, busy waits in the native queue | `submit` (priority `next`): idle starts a turn, mid-turn the running turn reads it at its next tool boundary | `submit`: idle Enter starts a turn, busy Enter follows the provider's queue setting |
+| `when_idle` | `queue` (native queue) | `queue` (priority `later`, peer message) | `queue` (the key that queues) |
+| `interrupt` | `steer` of the active turn, its target read by Sessionsation (as `steer-target`); with no turn it can steer, delivered as `deliver` with `delivery.fallback_reason` | `steer` | `steer` (the key that sends immediately) |
 
-Negotiate `contract_revision >= 5` and `steering.version == 1` from `api capabilities`.
-This is a separate explicit `mode:"steer"` on `api send`, never a fallback for Submit,
-Queue or Resume. It sends `turn/steer` to an existing busy Codex turn without
-interrupting, cancelling, restarting, launching, or queuing a later turn. Native
-acceptance does **not** promise immediate consumption or a response.
+`interrupt` hands the text to the running turn as soon as the provider allows; it
+never cancels the turn (only `steering.interrupt:true` on a hosted Claude session
+does). A Codex `interrupt` that names its own `steering` target is sent with it.
+`resume` and `new` (headless and recovery sends) are not intents.
 
-First call `api steer-target --session ID --expected-generation GENERATION`.
-This bounded read-only check returns `active_turn_id`, `runtime_generation`, catalog
+`delivery`, `await_reply`, `timeout_seconds`, `if_busy`, `recovery` and the `steering`
+keys may be sent to any provider. One the target's provider does not use is left out
+and listed in `ignored_options` (a list, empty when nothing was left out) with
+`ignored_reason` (one sentence, or null) on every live result and receipt. Unknown
+option values and a path a provider has but cannot use now
+(`TERMINAL_QUEUE_UNSUPPORTED`, `PEER_INTERRUPT_UNSUPPORTED`) are still refused.
+
+| Option | Used by | Ignored for |
+|---|---|---|
+| `if_busy` | Codex `submit` (an intent sets it) | Claude, Antigravity, Gemini; Codex `when_idle` / `interrupt` |
+| `recovery` | Codex `resume` | Claude, Antigravity, Gemini |
+| `steering.expected_turn_id`, `steering.expected_runtime_generation` | Codex `steer` | Claude, Antigravity, Gemini |
+| `steering.interrupt` | hosted Claude | Codex, Antigravity, Gemini |
+| `timeout_seconds` | Claude, Antigravity, Gemini workers | Codex |
+| `await_reply` | Claude peer messages | Codex, Antigravity, Gemini |
+| `delivery` (`peer_message`, `native`, `hosted_stream_json`, `terminal_input`) | Claude; `terminal_input` also Antigravity and Gemini | every value but `auto` on Codex; `peer_message`, `native`, `hosted_stream_json` on Antigravity and Gemini |
+
+Every live result and receipt has one delivery block:
+
+```json
+"delivery":{"mode_requested":"deliver","intent":"deliver","mode_used":"queue","framing":"native_queue",
+ "queued":true,"held":false,"fallback_reason":null}
+```
+
+`mode_used` is the provider mode that ran; `framing` is `native_queue`,
+`native_steer`, `peer_message`, `terminal_input` or `hosted_stream_json`. `queued` is
+true while the provider keeps the message in its own queue behind a running turn;
+`held` while it is kept back before the conversation (a Codex compaction or
+model-change hold, a Claude peer message reported `held`). Both become false once the
+turn takes the message. Older messages report their own mode as `mode_requested`,
+`intent:null` and empty `ignored_options`.
+
+**Delivery workers belong to the supervisor.** A Claude peer or terminal send and an
+Antigravity or Gemini terminal send are journaled by the sending CLI, which then asks
+the supervisor (control method `message/worker`) to start the delivery worker as the
+supervisor's own child, with the sender's environment, so the sender may exit right
+after `api send` returns. Without a reachable supervisor the CLI starts the worker in
+a new session (`setsid`). A worker's stderr goes to `<message_id>.worker.log` next to
+its journal record (restarted above 64 KiB), retired with the record. A request
+whose worker is gone while still `admitted`, with nothing written, no terminal step
+and no dispatch time, provably never reached the provider: more than 10 s after its
+last change the supervisor (every 5 s, and any receipt read) dispatches it once more
+(`execution.redispatches`, at most 1; `execution.redispatched_at`). Only if that
+worker dies the same way does it end `rejected` / `WORKER_EXITED_BEFORE_DELIVERY`.
+Nothing at or past `dispatching`, written or typed is dispatched again.
+
+### Deliberate in-turn steering
+
+Negotiate `steering.version == 1`. `mode:"steer"` is never a fallback for Submit,
+Queue or Resume. For Codex it sends `turn/steer` to an existing busy turn without
+interrupting, cancelling, restarting, launching or queuing a later turn. Native
+acceptance does **not** promise immediate consumption or a response. Claude, Gemini
+and Antigravity steering are described per provider.
+
+First call `api steer-target --session ID --expected-generation GENERATION`. This
+bounded read-only check returns `active_turn_id`, `runtime_generation`, catalog
 `generation`, availability/reason and five-second evidence timestamps. Normal
 observations advertise `actions.steer`; callers still need the explicit target
-lookup because ordinary busy polling avoids reconstructing turn history.
-
-The ordinary request fields remain required. Set `mode:"steer"`, omit `recovery`,
-and add:
+lookup. Set `mode:"steer"`, omit `recovery`, and add:
 
 ```json
 {
@@ -446,78 +1456,106 @@ and add:
 ```
 
 Admission rechecks catalog/runtime identity, active turn, explicit-stop and sending
-gates under the existing lifecycle locks. Idle, approval-blocked, stale, moved or
-changed-turn targets are rejected without substitution. The native operation
-also enforces the expected active turn, covering a turn transition after preflight.
-The immutable request reserves its UUID across public and legacy transports.
-The journal enters uncertainty **before** native I/O. Retries after an attempted
-steer, process restart or lost acknowledgement return the original receipt and
-never resend; changed payload, mode or preconditions conflict. Before dispatch,
-a failed preflight produces a terminal rejected receipt. Cancellation can cancel
-only provably unsent local intent; accepted/uncertain steering cannot be cancelled
-through this API (`STEERING_CANCELLATION_UNSUPPORTED`).
+gates under the lifecycle locks. Idle, approval-blocked, stale, moved or
+changed-turn targets are rejected without substitution, and the native operation
+also enforces the expected active turn. The journal enters uncertainty **before**
+native I/O. Retries after an attempted steer, process restart or lost
+acknowledgement return the original receipt and never resend. Before dispatch, a
+failed preflight produces a terminal rejected receipt. Only provably unsent local
+intent can be cancelled; accepted/uncertain steering cannot
+(`STEERING_CANCELLATION_UNSUPPORTED`). A steer to a session with a pending
+compaction is refused ([compaction](#compaction-at-the-next-idle-point)).
 
-Native 0.164.0, 0.165.0 and 0.166.0 distinguish automatic compaction within a regular turn from a
-dedicated compact turn. Automatic compaction retains accepted Steer input until
-model continuation; it does not interrupt the compaction request. No extra local
-queue or automatic retry is added. Dedicated compact/review turns reject injection
-before acceptance; the exact structured native rejection becomes a terminal
-`rejected` receipt with `compact_turn_not_steerable` or
-`review_turn_not_steerable`. Generic rejections and lost acknowledgements remain
-uncertain. Native metadata has no compact-task flag, so a preflight can still
-advertise eligibility before this final native rejection. After rejection, observe
-again and explicitly choose a new action; never reuse the ID with a different turn
-or payload. Capabilities publish this behavior and the verified profile. The
-[native fixture](operations.md#native-messaging-compatibility) describes verification.
+The verified native profiles distinguish automatic compaction within a regular turn
+from a dedicated compact turn. Automatic compaction retains accepted Steer input
+until model continuation. Dedicated compact/review turns reject injection before
+acceptance; the exact structured native rejection becomes a terminal `rejected`
+receipt with `compact_turn_not_steerable` or `review_turn_not_steerable`. Generic
+rejections and lost acknowledgements remain uncertain. Native metadata has no
+compact-task flag, so a preflight can still advertise eligibility before this final
+rejection. The [native fixture](operations.md#native-messaging-compatibility)
+describes verification.
 
 Steering receipts use `delivery_semantics:"deliberate_in_turn_steer"`.
 `acknowledged_turn_id` is present only after a matching native acknowledgement.
 `facts.native_acceptance` distinguishes `accepted`, `input_observed` (no
 acknowledgement, but the steer's own input item was found), `unknown` (possible
-dispatch), and `not_attempted`. A lost/malformed acknowledgement or unclassified
-native error remains `delivery_unknown`; it is not safe to resend. Before revision
-15 receipts were acceptance-only; reply attribution is described in
-[steer reply correlation](#steer-reply-correlation-revision-15). Receipt polling
-never attempts delivery. The native queue ID is null.
+dispatch) and `not_attempted`. A lost/malformed acknowledgement or unclassified
+native error remains `delivery_unknown`. Receipt polling never attempts delivery.
+The native queue ID is null. Reply attribution:
+[steer reply correlation](#steer-reply-correlation). Schema: `SteeringIntent`,
+`SteeringTarget` and the conditional `MessageRequest`/`Receipt` rules.
 
-Schema definitions `SteeringIntent`, `SteeringTarget`, and the conditional
-`MessageRequest`/`Receipt` rules are in [v1.json](contract/v1.json); request
-examples and accepted/uncertain receipts are in [fixtures.json](contract/fixtures.json).
-Older requests/receipts remain valid. Clients must negotiate this capability,
-retain their original UUID/request, and handle acceptance separately from delivery.
+### Steer reply correlation
 
-### Passive current-turn binding (revision 8)
+Negotiate `capabilities.steering.reply_correlation == "after_steer_item"`
+(`steering.reply_observation` publishes the bounds). Steering receipts,
+`api steer-target` and readiness `actions.steer` report `acceptance_only:false`.
+`turn/steer` carries `clientUserMessageId` = the request `message_id`; the steered
+turn's full item history then contains a `userMessage` whose `clientId` is that ID,
+after the input that started the turn. An assistant item still streaming when the
+steer arrived can be discarded natively. The summary items view omits steer inputs,
+so only the full view of the single steered turn is read.
 
-`api turn-target --session ID --expected-generation GENERATION` reads the latest
-native turn identity/status without an old receipt or sending permission.
-Negotiate `turn_observation.version:1`. It uses the same owned endpoint and verified
-native profiles as checkpoints, validates catalog/runtime before and after, and
-compares two bounded summaries. Active, completed, failed and interrupted turns are
-supported; empty history returns `available:false` with `no_observed_turn`. It never
-launches, steers, clears stop tokens or reads private items. Failures/races return
-errors, never guessed targets or renewed stale timestamps.
+- **Anchor.** Immediately before `turn/steer`, Sessionsation reads that turn
+  (`thread/turns/list`, `itemsView:full`, `limit:1`) and records item identifiers
+  only: the count of earlier user inputs and items, and the last assistant item ID.
+  The turn must still be latest and in progress and must not already contain the
+  ID, otherwise the steer is rejected unsent (`active_turn_changed`,
+  `ambiguous_native_correlation`).
+- **Read bound.** Anchor and observation reads accept one native frame of up to
+  64 MiB; only item identifiers, client IDs and assistant text are retained. A larger
+  frame fails closed with `native_frame_limit` before `turn/steer`; more than 8192
+  items is `steer_turn_too_large`. Full-turn reads scale their time budget with the
+  frame bound (base plus about one second per 16 MiB).
+- **Observation.** `api receipt` on a `native_accepted`, `delivery_unknown` or
+  `execution_started` steer reads the same turn newest-first (at most 8 one-turn
+  pages, 8192 items) and locates the steer input by `clientId`. It never resends and
+  does not hold the writer lock during the read.
+- **Attribution.** The reply window starts after the steer input and ends at the
+  next user input or the end of the turn. `reply` is the last `final_answer`
+  assistant item in that window, otherwise the last non-empty one. When the window
+  runs to the end of the turn the same text also answers the turn's earlier input:
+  `facts.shared_with_turn_tail:true`. A later steer bounds the window
+  (`correlation.next_input_item_id`).
+- **States.** `execution_started` (input recorded, turn in progress, `reply` may be
+  partial with `final:false`); `completed_with_reply` (`reply.final:true`);
+  `completed_without_reply`; `failed` with `steer_turn_interrupted` (partial reply
+  kept) or `input_not_consumed` (acknowledged, but the turn ended without the steer
+  input). An unacknowledged steer only gains positive evidence; it never becomes
+  `input_not_consumed`. Terminal states are cached and never regressed.
+- **Re-verification.** Every read re-checks the anchor: the steer input must keep
+  its item ID, appear after at least as many user inputs as at steer time, and the
+  recorded pre-steer assistant item must not appear after it. A lost input reports
+  `observation.error_code:"steer_anchor_lost"` and keeps the stored evidence; the ID
+  in a different turn reports `correlation_changed`. Ambiguous or oversized evidence
+  (`ambiguous_native_correlation`, `reply_too_large`) is never attributed. Codex
+  renumbers legacy `item-N` ids when it rebuilds a finished turn: an input found
+  under another legacy id (same `clientId`, exactly once) is reconciled, keeping
+  `steer_input_item_id` and naming the new id in
+  `correlation.completion_input_item_id`; the legacy `last_agent_item_id` is then
+  not compared.
 
-Use its `turn_id` and `runtime_generation` to explicitly bind a new checkpoint
-stream. Existing receipt streams still reject `checkpoint_stale_turn`: do not
-retarget them or attribute the latest turn's text to an old send/Steer. This is
-turn-associated observation, not delivery or causal reply evidence. Schema:
-`TurnTarget`; fixture: `turn_target`. Steering eligibility is separate; this lookup
-does not authorize sending.
+Receipt fields: `facts.turn_status`, `facts.reply_final`,
+`facts.shared_with_turn_tail`, `facts.input_recorded`, `input_consumed` (`true`,
+`false` or `"unknown"`) and `turn_completed`; `correlation` is `{native_turn_id,
+steer_input_item_id, next_input_item_id, reply_item_id, observed_runtime_generation,
+anchor}`; `reply` is `{item_id, text, phase, final, shared_with_turn_tail}`.
+`observation.state` is `acceptance_only`, `observed`, `uncorrelated`, `unavailable`
+(with `error_code`) or `cached`. Receipts without an anchor are correlated by
+`clientId` alone. Fixtures: `receipt_steer_progress`, `receipt_steer_reply`,
+`receipt_steer_interrupted`, `receipt_steer_not_consumed`.
 
 ### Explicit Resume-and-submit
 
-API v1 contract revision 3 adds `api send` with `mode:"resume"`. Negotiate
-`message_recovery` from `api capabilities`; the older provider `resume` flag
-refers to saved-session launching and does not imply this message mode. Codex's
-verified native protocol profiles are **0.163.0, 0.164.0, 0.165.0 and 0.166.0**. Claude recovery is unsupported.
-This is caller-requested continuation of the same conversation, never conversion,
-new-conversation creation, steering, forced interruption or automatic restart.
-Revision 4 adds `message_recovery.exact_item_idle_start` and separate native start
-evidence. Clients requiring interrupted-thread recovery should require that
-capability, rather than relying on the package version alone. Existing requests
-and receipts keep their identity; upgrading never replays an older request.
-Ordinary Submit/Queue behavior and historical receipts are preserved. Submit,
-Queue, observation, discovery and receipt polling never launch an exited agent.
+`api send` with `mode:"resume"` on a Codex session is caller-requested continuation
+of the same conversation, never conversion, new-conversation creation, steering,
+forced interruption or automatic restart. Negotiate `message_recovery` (and
+`message_recovery.exact_item_idle_start` for interrupted-thread recovery); the
+provider `resume` flag refers to saved-session launching and does not imply this
+mode. Submit, Queue, observation, discovery and receipt polling never launch an
+exited agent. For Claude, Gemini and Antigravity, `mode:"resume"` is
+[headless delivery](#headless-delivery) instead.
 
 The request retains the ordinary message fields and adds `recovery`:
 
@@ -530,15 +1568,13 @@ The request retains the ordinary message fields and adds `recovery`:
 }
 ```
 
-These are placeholders, not runnable identifiers. Copy current observation values;
-previous-turn and stop keys must be explicitly present, using null only when none
-was observed. Supported expected states are `interrupted`, `errored` and `stopped`.
-A retained live attachment requires its exact native runtime generation. A live
-idle session requires a recorded stop token to use `stopped`; idle alone is not a
-stop. Ordinary readiness and process existence are separate facts. Unknown,
-unobserved, stale or nonterminal history is not proof that recovery is supported.
-A live process with an unloaded conversation must reconnect or be explicitly
-stopped first; this mode does not silently load a retained, unverified attachment.
+Copy current observation values; previous-turn and stop keys must be present, null
+only when none was observed. Expected states are `interrupted`, `errored` and
+`stopped`. A retained live attachment requires its exact native runtime generation.
+A live idle session requires a recorded stop token to use `stopped`; idle alone is
+not a stop. Unknown, unobserved, stale or nonterminal history is not proof that
+recovery is supported. A live process with an unloaded conversation must reconnect
+or be explicitly stopped first.
 
 For an **exited agent**, first generate an explicit launch plan:
 
@@ -546,92 +1582,61 @@ For an **exited agent**, first generate an explicit launch plan:
 sessionsation api recovery-plan < recovery-target.json > recovery-plan-envelope.json
 ```
 
-`recovery-target.json` contains `session_id`, `expected_generation` and one host:
-
-```json
-{"kind":"herdr","session":"HOST-NAME","socket":"/absolute/owned/herdr.sock","workspace_id":"SPACE-ID"}
-```
-
-or:
-
-```json
-{"kind":"tmux","socket":"/absolute/owned/tmux.sock","session":"unused-session-name"}
-```
-
-Use an existing HERDR Space or a new, unused tmux session name on an existing
-owned server. A new normal tab/pane is created without moving any live agent.
-The returned `result` is an opaque `RecoveryPlan`: supply it unchanged as
-`recovery.launch`. Its `previous_turn_id`, `previous_turn_status` and
-`stop_intent_id` describe the saved target for the explicit preconditions. Null
-runtime generation is acceptable only for exited-process recovery with a plan.
-The saved account and directory cannot be overridden in this mode. Account transfer,
-working-directory changes and ordinary saved-session launching remain separate
-lifecycle actions. Missing recorded permissions require an explicitly configured
-launch; this mode never falls back to permissive/default-account settings.
+`recovery-target.json` contains `session_id`, `expected_generation` and one host,
+`{"kind":"herdr","session":"HOST-NAME","socket":"/absolute/owned/herdr.sock","workspace_id":"SPACE-ID"}`
+or `{"kind":"tmux","socket":"/absolute/owned/tmux.sock","session":"unused-session-name"}`.
+A new normal tab/pane is created without moving any live agent. Supply the returned
+opaque `RecoveryPlan` unchanged as `recovery.launch`; its `previous_turn_id`,
+`previous_turn_status` and `stop_intent_id` describe the saved target. Null runtime
+generation is acceptable only for exited-process recovery with a plan. The saved
+account and directory cannot be overridden in this mode. Missing recorded
+permissions require an explicitly configured launch; this mode never falls back to
+permissive/default-account settings.
 
 Planning and admission validate conversation identity/history, account eligibility,
-recorded approval/sandbox policy, existing native owner/profile, empty queued work,
-no active background work, directory identity, provider/backend executable hashes,
-configuration fingerprint, and destination socket/Space identity. The worker and
-account-aware launcher recheck these before their respective transitions. Changed
-material requires a new reviewed plan. No credential owner is started. All mutators
-sharing the root must understand `message-recoveries` reservations; an older
-supervisor is refused with `RECOVERY_SUPERVISOR_UPGRADE_REQUIRED_COORDINATE_ALL_ROOT_WRITERS`.
-Upgrade coordination is separate from installing a candidate CLI.
+recorded approval/sandbox policy, native owner/profile, empty queued work, no active
+background work, directory identity, provider/backend executable hashes,
+configuration fingerprint and destination socket/Space identity. The worker and
+launcher recheck these before their transitions; changed material requires a new
+plan. No credential owner is started. All mutators sharing the root must understand
+`message-recoveries` reservations; an older supervisor is refused with
+`RECOVERY_SUPERVISOR_UPGRADE_REQUIRED_COORDINATE_ALL_ROOT_WRITERS`.
 
-The immutable message UUID is journaled **before launch**. One explicit invocation
-can start one worker; retries and status queries only inspect its original journal
-and delivery receipt. Changed payload/preconditions/plan under the same UUID are
-`MESSAGE_ID_CONFLICT`. Launch dispatch uncertainty is `launch_unknown`; it is
-separate from `delivery_unknown` for an uncertain native queue write. Once native
-write intent exists, the original queue request is never automatically replayed.
-Native queue addition uses the provider's atomic non-steering dispatch path; a
-concurrent turn may defer input, but cannot turn it into a steer. This was checked
-against the [inspected native queue implementation](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/ext/queue/src/service.rs).
+The message UUID is journaled **before launch**. One explicit invocation can start
+one worker; retries and status queries only inspect its original journal and
+receipt. Changed payload/preconditions/plan under the same UUID are
+`MESSAGE_ID_CONFLICT`. Launch dispatch uncertainty is `launch_unknown`, separate
+from `delivery_unknown` for an uncertain native queue write. Once native write
+intent exists, the queue request is never replayed. Queue addition uses the
+provider's atomic non-steering dispatch path, checked against the
+[native queue implementation](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/ext/queue/src/service.rs).
 
-`api capabilities.native_protocol.supported_versions` lists exact verified
-app-server versions. `api observe` reports the actual handshake version under
-`observation.native_protocol`, including on a rejected version. Unknown versions
-fail closed with `unsupported_native_version`; running processes alone never
-prove messaging support. Check the account app-server version, which can differ
-from the terminal executable. No automatic downgrade, restart or message replay
-occurs after a provider upgrade.
-Client IDs are correlation values, not an assumed native uniqueness guarantee.
+`api capabilities.native_protocol.supported_versions` lists the exact verified
+app-server versions (0.163.0 through 0.166.0). `api observe` reports the actual
+handshake version under `observation.native_protocol`, including on a rejected
+version. Unknown versions fail closed with `unsupported_native_version`; check the
+account app-server version, which can differ from the terminal executable. No
+automatic downgrade, restart or replay occurs after a provider upgrade.
 
 Resume receipts add `launch: {required, phase, confirmed, detail, generation,
-target, created_at, updated_at, reconcile_command}`. `launch.generation` is the
-candidate post-launch **catalog** generation, usable as launch evidence only once confirmed; `accepted_runtime_generation` is the distinct
-native attachment generation and is null until delivery is bound. `confirmed`
-requires a positive process/attachment check. It does not mean the message was
-accepted. Always inspect the ordinary receipt `facts`, correlation and reply.
-A successful launch can still have expired, rejected or uncertain input. The stop
-token is cleared after a positive, idle-checked `thread/queue/start`
-acknowledgement for the exact newly accepted queue item, or later durable
-correlation proving that the original explicit Resume input executed. Queue insertion alone
-does not wake an interrupted native thread. Resume receipts additionally expose
-`recovery_start: {state, turn_id}` (null for older receipts and other modes).
-`confirmed` means the native start was acknowledged, not that input was recorded
-or a reply exists. `unknown` means the start may have executed; `rejected` means
-it was refused, possibly because automatic dispatch already consumed the item.
-Neither state permits replay. Until start or input execution is proven, the stop
-token remains for review. Clearing compares the original expected token under
-the conversation lock; a newer stop request always survives. Receipt observation
-may reconcile this metadata but never invokes a native start.
-Ordinary public Submit/Queue recheck terminal-turn state before native insertion.
-An interrupted/failed turn requires explicit Resume even when native thread
-metadata says idle; queue insertion is not a substitute for recovery. The legacy
-compatibility send interface is unchanged.
-Recovery preflight freshly reads the native summary within one five-second
-observation budget; it does not authorize a start from cached readiness.
-Only the original explicit Resume dispatch invokes the native start. Ordinary
-Submit/Queue, retries, reconciliation and polling never invoke it.
-Before binding delivery, recovery waits up to ten seconds for the local receipt
-ledger lock, so a concurrent status reader need not fail the operation. This waits
-only for local admission; it never retries a native write. Exhausted lock waiting
-still reports a confirmed launch separately from input that was never accepted.
-Public receipt polling releases the root-wide receipt writer lock during native
-observation, then commits only if the durable receipt still matches its starting
-snapshot. A concurrent cancellation or delivery change takes precedence.
+target, created_at, updated_at, reconcile_command}` and `recovery_start: {state,
+turn_id}`. `launch.generation` is the candidate post-launch **catalog** generation,
+usable only once confirmed; `accepted_runtime_generation` is the native attachment
+generation, null until delivery is bound. `launch.confirmed` requires a positive
+process/attachment check, not message acceptance; always inspect `facts`,
+correlation and reply. `recovery_start.state` `confirmed` means the native start was
+acknowledged; `unknown` means it may have executed; `rejected` means it was refused,
+possibly because automatic dispatch already consumed the item. Neither permits
+replay. The stop token is cleared after a positive, idle-checked
+`thread/queue/start` acknowledgement for the exact new queue item, or durable
+correlation proving that the Resume input executed, by compare-and-clear under the
+conversation lock (a newer stop request survives). Queue insertion alone does not
+wake an interrupted thread. Recovery preflight reads the native summary freshly
+within one five-second budget. Only the original Resume dispatch invokes the native
+start; retries, reconciliation and polling never do. Before binding delivery,
+recovery waits up to ten seconds for the local receipt ledger lock. Public receipt
+polling releases the root-wide receipt writer lock during native observation, then
+commits only if the durable receipt still matches its starting snapshot.
 
 ```sh
 sessionsation api receipt MESSAGE-ID
@@ -641,90 +1646,69 @@ sessionsation api recovery-reconcile MESSAGE-ID
 Reconciliation acquires the original worker lease and never launches, resumes,
 sends, cancels or retries input. Before recorded dispatch it can mark a stopped
 worker failed (a created plain shell may remain). After dispatch it requires
-positive evidence of the original attachment; it can settle launch facts and
-release the local reservation, preserving the original delivery ledger. If launch
-remains ambiguous, it refuses and retains the reservation: inspect the destination
-and original IDs instead of starting a replacement. Routine receipt polling does
-not take over a worker. Pending recovery cancellation without verified worker
-quiescence is unsupported. The 10,000-entry bound never evicts replay protection:
-retired ids keep a tombstone ([receipt retention](#receipt-retention-revision-18)).
-
-Actionable refusals distinguish missing plans, changed executable/configuration/
-history/runtime/stop/turn, missing permissions or directories, unavailable accounts,
-queued/background work, busy or unverified native state, and incompatible owners.
-`ADAPTER_BUSY` on send or receipt is transient contention, not failed delivery;
-retry receipt lookup or the **identical request ID**, never a replacement message.
+positive evidence of the original attachment; it can settle launch facts and release
+the local reservation, preserving the delivery ledger. If launch remains ambiguous it
+refuses and keeps the reservation. Routine receipt polling does not take over a
+worker. Pending recovery cancellation without verified worker quiescence is
+unsupported. Actionable refusals distinguish missing plans, changed
+executable/configuration/history/runtime/stop/turn, missing permissions or
+directories, unavailable accounts, queued/background work, busy or unverified native
+state, and incompatible owners.
 
 ### Admission and contention
 
-The messaging ledger has one exclusive `adapter.lock` across legacy and v1
-send/status/receipt/cancel operations. It is held through native dispatch or
-observation. Contention returns `ADAPTER_BUSY` without waiting; an adapter-local
-serialized lane reduces self-contention but cannot coordinate other processes.
-Do not remove locks, stop legacy observers or introduce another owner to bypass it.
-Revision 18: Claude and Gemini sends check the shared message-id namespace under
-this lock; that check waits up to three seconds for a concurrent Codex observer
-instead of returning `ADAPTER_BUSY` at once (observations hold the lock for up
-to their native-read budget, which was the cause of intermittent `ADAPTER_BUSY`
-on Claude/Gemini sends). Codex sends and receipts still refuse at once.
+The messaging ledger has one exclusive `adapter.lock` (lease) across legacy and v1
+send/status/receipt/cancel operations. Codex `api send`, `api receipt`, `api cancel`,
+`steer-target`, recovery and the legacy `messaging` commands wait for the lease (up to
+20 s for sends, 10 s for reads) and for the per-session ownership lock (otherwise
+`OPERATION_BUSY`); `ADAPTER_BUSY` is returned only after that budget. The lease is not
+held across Codex app-server I/O (status read, `thread/queue/add`, steer, anchor read,
+reconciliation, reply observation, native cancel): the submission is journalled
+`unknown` (`steer_dispatch_intent`, `cancellation_uncertain`) under the lease before
+the I/O, so exactly one process delivers a message id, and the result is saved only
+if the receipt is unchanged, so a stale result or error never regresses a state
+recorded meanwhile. Claude, Gemini and Antigravity sends check the shared message-id
+namespace under this lock and wait up to three seconds. Do not remove locks, stop
+legacy observers or introduce another owner to bypass it.
 
-For **that invocation of `api send`**, `ADAPTER_BUSY` precedes request binding,
-admission and native dispatch. It does not negate an earlier admission of the same ID.
-Ordinary messages bind in SQLite; explicit Resume first binds in its recovery
-journal before any launch. Submission uncertainty is saved before touching the
-queue socket. Receipts and bindings are retired only by
-[receipt retention](#receipt-retention-revision-18), which keeps a tombstone. For `api receipt`, `ADAPTER_BUSY` means lookup could not run;
-it says nothing about whether the send succeeded. Preserve operation context and
-the original error instead of converting a receipt error into a send rejection.
-
-After contention clears, `RECEIPT_NOT_FOUND` means no v1 binding or recovery journal exists for that ID
-in the selected root. Verify the exact root/instance and original immutable request
-before drawing an admission conclusion. A wrong root, unbound legacy ID or lost
-original error must not trigger a replacement send. This is not a Queue retry or
-new model-use authorization. Receipt polling may resume with backoff; uncertain
-delivery is never automatically replayed. Historical backend reconciliation and
-its limits are linked from [operations](operations.md#legacy-coexistence-and-review-gates).
+`ADAPTER_BUSY` on `api send` precedes request binding, admission and native
+dispatch for that invocation; it does not negate an earlier admission of the same ID.
+Retry receipt lookup or the **identical request**, never a replacement message. For
+`api receipt`, it means lookup could not run and says nothing about the send. After
+contention clears, `RECEIPT_NOT_FOUND` means no v1 binding or recovery journal exists
+for that ID in the selected root; verify the exact root and original request before
+drawing a conclusion. A wrong root, unbound legacy ID or lost original error must not
+trigger a replacement send.
 
 ### Receipt evidence
 
 `accepted_generation` is the original backend generation; the independent
-`accepted_runtime_generation` is the original native attachment generation
-(or null while Resume has not yet bound delivery).
-`correlation` is null until positively matched by request ID, or contains
-`native_turn_id`, `original_input_item_id`, optional `completion_input_item_id`,
-`observed_runtime_generation` and optional `reply_item_id`. Completion projection
-IDs never overwrite original input IDs. Runtime replacement may change the observed
-runtime generation without rebinding the request. `native_queue_id` is separate.
-Only public final reply item/text/phase are projected; histories, tools and reasoning
-are excluded.
+`accepted_runtime_generation` is the original native attachment generation (or null
+while Resume has not yet bound delivery). `correlation` is null until positively
+matched by request ID, or contains `native_turn_id`, `original_input_item_id`,
+optional `completion_input_item_id`, `observed_runtime_generation` and optional
+`reply_item_id`. Completion projection IDs never overwrite original input IDs;
+runtime replacement may change the observed runtime generation without rebinding.
+`native_queue_id` is separate. Only public final reply item/text/phase are projected.
 
 `observation` reports not_checked, observed, uncorrelated, unavailable, cached or
 not_applicable. `checked_at` is the receipt-query time; `native_attempted_at` is
-null when no native read occurred. `evidence_observed_at` is durably recorded for
-v1 when correlation was positively observed; old bindings may have unknown age.
-Cached queries do not refresh it. Freshness is fresh for less than five seconds,
-otherwise stale; missing evidence time is unknown. `error_code` is a bounded
-observer diagnostic, not proof that delivery failed. Correlation, acceptance and
-completed replies survive observation errors and restarts. Poll receipts no faster
-than every five seconds, backing off after errors; there is no public event cursor.
+null when no native read occurred. `evidence_observed_at` is durably recorded when
+correlation was positively observed; cached queries do not refresh it. Freshness is
+fresh for less than five seconds, otherwise stale. `error_code` is a bounded observer
+diagnostic, not proof that delivery failed. Correlation, acceptance and completed
+replies survive observation errors and restarts. Poll receipts no faster than every
+five seconds; for push-style waiting use [session events](#session-events).
 
-For verified local legacy histories, public receipt reads preserve bounded scan
-progress between polls instead of restarting pagination after every timeout.
-Each poll reads at most one 50-turn summary page (or rechecks the newest page),
-within a five-second native-read budget. Progress is private and keyed to the
-immutable receipt, runtime generation and file identity/revision. It expires
-after five minutes; changed history or runtime discards it. All pages must be
-checked for duplicate client IDs and the newest page must agree before any
-candidate is published. No partial match grants input/reply evidence.
-
-`reply_scan_pending` means continue polling the same receipt; it is not a send
-failure and never warrants another send. `reply_scan_changed` and
-`history_changed_during_observation` mean the snapshot changed; existing durable
-facts remain intact. `reply_scan_limit_exceeded` identifies the existing
-1,000-turn bound, and `reply_observation_busy` means another observer owns that
-receipt's scan. Missing/unverifiable local history retains the bounded uncached
-scan. Stock legacy storage still reconstructs history for each native page;
-persisting progress avoids lost work, not that upstream reconstruction cost.
+For verified local legacy histories, receipt reads preserve bounded scan progress
+between polls: each poll reads at most one 50-turn summary page (or rechecks the
+newest page) within a five-second budget. Progress is private, keyed to the receipt,
+runtime generation and file identity, and expires after five minutes. All pages must
+be checked for duplicate client IDs and the newest page must agree before a candidate
+is published. `reply_scan_pending` means keep polling the same receipt;
+`reply_scan_changed` and `history_changed_during_observation` mean the snapshot
+changed; `reply_scan_limit_exceeded` is the 1,000-turn bound; `reply_observation_busy`
+means another observer owns that receipt's scan.
 
 | State | Evidence |
 | --- | --- |
@@ -734,460 +1718,100 @@ persisting progress avoids lost work, not that upstream reconstruction cost.
 | completed_with_reply | Correlated public terminal reply observed |
 | delivery_unknown | Submission may have occurred; never automatically replay |
 | rejected | Preflight refused this request |
-| expired | Submission deadline passed while provably unsent; or, with reason `outcome_unknown_at_retention_horizon`, retired unfinished (see [receipt retention](#receipt-retention-revision-18)) |
+| expired | Submission deadline passed while provably unsent; or, with reason `outcome_unknown_at_retention_horizon`, retired unfinished |
 | cancelled | Local cancellation or positive supported native cancellation |
 | failed | Correlated native turn failed/interrupted; no successful reply |
 
-`facts` contains bounded positive booleans for local admission, native acceptance,
-recorded input and observed reply. `input_consumed` remains unknown. Native
-acceptance survives expiry; TTL is not native execution cancellation. The schema
-fixtures include reconnect errors, acceptance after expiry and projection recovery.
+Native-provider receipts add `held`, `completed_without_reply`, `interrupted` and
+`refused`. `facts` contains bounded positive booleans for local admission, native
+acceptance, recorded input and observed reply; `input_consumed` remains unknown
+unless observed. Native acceptance survives expiry.
 
-## Account operations
+**Codex submit diagnostics** (`capabilities.codex_submit_diagnostics`). After a
+transport error the receipt carries `facts.native_error` `{kind, message, at}` with
+`kind` `endpoint_unavailable` (socket missing, connection refused, handshake failed,
+connect timeout), `disconnected`, `timeout`, `native_rejected`, `malformed_response`,
+`native_frame_limit` or `unsafe_endpoint`, and a fixed sentence per kind (never message
+text, provider output or paths); the first error of an uncertain receipt is kept. An
+error after the add was written keeps `delivery_unknown` (`submission_uncertain`,
+`facts.retryable:false`). A connection that could not be made before anything was
+written is `rejected` with `endpoint_unavailable` and `facts.retryable:true` (send again
+with a new id); a held-input release keeps its retry loop. Codex rows carry
+`input_delivery.health` `{last_outcome: accepted|not_delivered|uncertain|null,
+last_attempt_at, last_success_at, consecutive_failures, last_native_error}` from
+`messaging/input-health/<conversation>.json`, written by submit attempts only.
 
-`api account list|add|login|auth|managed-home|enable|disable|usage|limits|remove|restore|delete|deletions` are documented in
-[the CLI guide](cli.md). Removal is local membership removal, not provider deletion,
-credential purging or disabling the original switcher enrollment. The separately
-confirmed `delete` operation deletes local credentials/data while preserving
-conversations; it requires a capable sole owner. Arbitrary history purging remains
-unsupported. Since revision 11 `remove`, `restore` and `delete` also accept
-`claude:` IDs (see revision 11 below; revision 10 rejected them).
-`api account managed-home claude:NAME` (additive) switches an adopted Claude account to
-`<root>/accounts/claude/NAME` and returns `{account_id,provider,home,previous_home,relocated,already_managed}`
-(`note:"ALREADY_MANAGED"` when idempotent). Error codes: `UNSUPPORTED_PROVIDER_OPERATION`,
-`ACCOUNT_HOME_UNAVAILABLE`, `UNSAFE_ACCOUNT_HOME`, `ACCOUNT_IN_USE`, `AUTH_REQUIRED`,
-`WRONG_AUTH_MODE`, `AUTH_IDENTITY_MISMATCH`. Claude session `capabilities.resume` is false with
-`capability_reasons.resume:"SAVED_DIRECTORY_UNAVAILABLE"` when no existing absolute saved directory is known.
+### Receipt retention
 
-Codex capability `account_limits` enables `account limits ID`, returning
-`{account_id,limits,saved:false}`. Supplying both `--short-used` and `--weekly-used`
-saves through the existing supervisor and returns its limits with `saved:true`.
-The `limits` object is the existing account snapshot's `switch_thresholds` object;
-clients display remaining-position markers as `100 - *_percent` and only mark
-custom limits when `customized:true`. Saving does not acknowledge plan changes.
-New launch, resume and account-deletion records expose immutable `created_at` Unix
-admission time. Legacy records omit it when their creation time is unknown; never
-substitute `updated_at`, which changes with progress. Legacy records are not
-rewritten to invent dates. Adapters can sort known creation times descending and
-place unknown dates last with stable ID ties.
+`api capabilities.receipt_retention` describes it. Each receipt store (Codex
+messaging ledger, native input journal, headless deliveries) holds at most 10,000
+receipts; a retention pass runs at most once per hour during send admission under
+the exclusive messaging lock (and in the supervisor's hourly
+[retention](operations.md#retention) pass), so sends never hit
+`RECEIPT_CAPACITY_REACHED` in normal use:
 
-`new_account_name_max:30` (also the folder name; display names allow `account_display_name_max:64` and session names `session_name_max:64`, both new in 1.35.0) limits new enrollments in both the public API and sole account owner; longer existing IDs
-continue to work. Clients must gate new commands on published capabilities.
+- A certainly terminal receipt (`completed_with_reply`, `completed_without_reply`,
+  `failed`, `rejected`, `cancelled`, `expired`) is retired once it is older than
+  `receipt_retention_days` (default 14). Age is counted from `expires_at` for Codex
+  receipts and from the last record update for journals.
+- A native journal record whose `phase` is `written` (or `complete`), whose worker
+  has exited and whose state is `execution_started`, or `native_accepted` backed by
+  positive evidence (the receiver's `delivered` status, a native queue or screen
+  evidence), retires like a terminal receipt and keeps its real state in the
+  tombstone (`delivered_journal_states_retire_as_terminal`, `delivered_requires`).
+- Any other non-terminal or uncertain receipt (`pending_local`, `native_accepted`
+  with only a silent transport acceptance, `execution_started`, `delivery_unknown`,
+  or a record with a live worker) is never retired before
+  `receipt_unknown_horizon_days` (default 90). Past that horizon it is saved as
+  terminal `expired` with reason `outcome_unknown_at_retention_horizon` (a provably
+  unsent `pending_local` becomes `expired` without that reason), then retired. That
+  reason means Sessionsation stopped observing; never resend the message.
+- A Codex binding that never produced a receipt is retired as `cancelled` (when
+  cancelled) or, past the horizon, `expired`. Recovery journals and unreadable
+  records are kept.
 
-## New-session popup admission
+Every retired id keeps a compact tombstone (id, final state, reason, retirement
+time; no text, target or reply), not counted toward capacity and never pruned. A
+retired id is never accepted again by any path: `api send` and `api receipt` return
+`RECEIPT_RETIRED` with the final state (legacy messaging: `receipt_retired`). Keep
+your own copy of a reply you need beyond the window. Both settings are config keys
+(1..=3650 days; the horizon must not be shorter than the retention).
+`retention run` reports `policy` (the values used) and `config_error` (null, or why
+`config.json` failed to validate and built-in defaults were used, also warned on
+stderr).
 
-The additive `api launch validate|start` commands read one JSON request from stdin;
-`api launch list` lists retained receipts, newest first, without replaying requests.
-`api launch status --request-id UUID` reconciles its durable record. Request v1 has
-`version`, UUID `request_id`, provider-qualified `account_id`, unique `name`,
-`host: {session, socket}`, `space: {kind: "existing", id}` or
-`{kind: "new", label}`, and `directory: {path, create, confirmed_existing}`.
-Paths are absolute. `create` is an ordered contiguous list of explicitly staged
-missing directories ending at `path`; an existing directory requires an empty list
-and `confirmed_existing: true`. Validation creates no project directories or HERDR
-resources. Start revalidates, reserves the name and dispatches once. Reusing a UUID
-with different input fails; repeating identical input returns its original record.
+### Component sender names
 
-Launch records are separate from message receipts. Phases are admitted, preparing,
-creating_terminal, dispatching, starting_provider, attached, running, failed and
-uncertain. `attached` means catalog/native identity was recorded; `running` requires
-post-exec process evidence. Records expose created directory paths, selected/new
-workspace/tab/pane IDs, stable session ID, generation and native conversation ID
-when known. A failure or timeout must not trigger an automatic new Start. Preserve
-created resources and reconcile the original request; uncertain operations retain
-their name reservation. No credentials are in requests or receipts.
+A native Claude message from a process that is not inside a managed session is
+labelled by the component behind it: optional `from_component` (string or null) on
+every `api send` request shape, else `SESSIONSATION_SENDER_COMPONENT` in the
+environment of the `api send` process (the field wins; messages Sessionsation sends
+itself never read the variable). A component must match
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`: an invalid field is `INVALID_ARGUMENT` before
+anything is admitted, an invalid variable is ignored with a stderr warning. The
+envelope shows the bare component (`from-name="resource-guard"`,
+`from-mode="prompting"`). When it equals, case-insensitively, the name of any catalog
+session (any Space, running or not) or `sessionsation`, it is shown as
+`from-name="sessionsation:<component>"`; nothing is refused, a field that fell back is
+reported as `facts.from_component_prefixed:"collides_with_session"`, a variable that
+fell back prints a warning (an unreadable catalog also falls back). A caller inside a
+managed session keeps its own name (its canonical name when it fits 64 characters)
+and a supplied field is reported as `facts.from_component_ignored:"caller_is_session"`.
+Codex targets and headless sends validate and ignore it. The component is not part of
+the stored request; the sender of the first admission stands. Capability
+`session_spaces.from_component` (`since_contract` 1.50.0, `request_field`, `env`,
+`pattern`, `from_name:"<component>"`, `collision_fallback`, `collision_rule`,
+`changed_in`, `prefixed_fact`, `applies_when:"caller_not_a_managed_session"`).
 
-Status can reconcile a late attachment after a worker timeout using the same
-catalog generation, account, native UUID, PID/start time and remote socket argv.
-It never replays provider/terminal commands. Terminal focus is a client presentation
-action after `running`; status itself does not change the user's focused tab.
+### Headless delivery
 
-`api account list` additionally reports `prefill: {eligible, reason, observed_at,
-valid_until}`. This conservative preference respects usage freshness, existing
-account thresholds and ordinary allowance. Purchased credits do not justify
-prefill. Explicit `selectable` remains separate; the popup can explain and permit
-manual selection without rewriting thresholds. The installed supervisor remains
-the sole account-data/credential owner.
-
-Installed client provenance and isolated acceptance are recorded in
-[verification scope](operations.md). Adding commands does not itself change a
-consumer’s selected artifact or data-root owner. The existing `launcher` exec-plan
-interface is unchanged.
-
-### Saved-session popup Resume
-
-`capabilities.resume.version == 1` exposes `api resume-launch validate|start`
-with JSON stdin, plus `status --request-id UUID` and `list`. A saved Codex
-conversation does not require its original account to remain registered. The
-caller selects an available target account; preserved history, stable identity
-and launch validation still apply. Original-account metadata is provenance, not
-a resume credential. See `ResumeRequest`
-and `ResumeReceipt` in the schema. The request has version, request UUID, stable
-`session_id`, `expected_generation`, account ID, editable name, host and Space.
-Optional `confirm_unfinished: true` acknowledges only the unfinished-history warning;
-it defaults to false and is advertised by `resume.unfinished_confirmation`.
-Unfinished histories remain resumable after this explicit confirmation; no user
-message is replayed and live-writer, directory, conflict and generation checks remain.
-Optional `directory` uses New Session's canonical path, deferred creation plan
-and existing-directory confirmation; `resume.directory_selection` advertises it.
-Omission preserves the saved location, including for old receipts. Validation
-creates nothing. Start rechecks and journals created directories, retaining the
-original `saved_directory` for source verification and rollback. Same-account and
-account-transfer resume both use the chosen directory; no project files move.
-
-A missing old directory can be replaced. Writable history, unfinished-history
-consent, conflicts and lifecycle locks remain enforced. The chosen location is
-retained after a verified running handoff; partial failure retains created
-directories for review. Session details report the last verified launch/resume
-Space; clients may prefer it only when the host and Space match their inventory.
-
-Start journals the intent before creating a new normal tab. A repeated UUID with
-identical input returns its original receipt; different input is a conflict. A
-second unfinished Resume for the same stable session is rejected. Generation,
-saved state, account availability and operation ownership are checked again before
-provider execution. Same-account Resume uses the existing exact-conversation
-launcher. A changed account delegates to the existing non-steering transfer worker,
-retaining history, permissions and stable ID; `operation_id` identifies that job
-for its normal confirmation/recovery APIs. It creates no model turn.
-
-Receipts distinguish admission, preparation, terminal creation, rename, dispatch,
-transfer, provider start, attachment and positively observed running. `failed`
-before host effects is safe failure; `uncertain` after effects requires inspection,
-never automatic replay. `recovered` describes the transfer worker's rollback.
-The selected name may already be committed if a later transfer fails; the receipt
-retains `previous_name`. Tabs and history are retained on partial failure. There
-is no implicit cancellation, cleanup, or credential change. Closing the popup
-only detaches its observer. List/status reconcile records without resubmitting.
-Existing `api resume`, launcher plans and message receipts retain their semantics.
-Once a Resume receipt reaches `running`, it records the completed handoff. A later
-Stop does not regress that receipt; read the session catalog for current liveness.
-
-Session snapshots optionally expose `activity`, `last_accessed` and `active_since`
-(Unix seconds, null when unavailable). `active_since` measures the current verified
-attachment's process lifetime, not conversation age or cumulative model work. Saved
-conversations have no live attachment time. Normal provider exit (including Codex
-`/exit`) clears runtime attachment on discovery while retaining stable identity,
-conversation files, names and resume availability.
-
-Revision 17 populates `active_since` for running Claude and Gemini
-sessions from the first honest source, never a guess, and leaves it null otherwise
-(`last_accessed` stays null for them until 1.26.0). Claude: the live registry
-`sessions/<pid>.json` `startedAt`, accepted only when the registry process is
-verified against /proc (PID plus start ticks) and `startedAt` is neither before that
-process start nor in the future, else the verified /proc process start. A session
-whose process is a pre-started `claude bg-spare` (the row `pid`/`process_start` may be
-the spare) never uses the spare's start or its `startedAt`: only the exact, verified
-HERDR `claude attach` client start counts, otherwise null. A Sessionsation-hosted
-session without a registry time uses the hosted worker's recorded `started_at`.
-Gemini: the verified /proc start of the session process. Stopped, archived, unverified
-or unobserved sessions are null.
-
-Account removal previews scan metadata with four bounded readers and deterministic
-ordering. Their revision and fresh-confirmation checks still include the same
-stored-file metadata; no cached or partial inventory grants consent.
-
-Session snapshots/details optionally include `conversation_created_at` (the native
-recorded timestamp, otherwise null) and `history_file_bytes` (observed rollout
-bytes, excluding shared account databases). Creation is never inferred from mtime.
-
-## Conversation archives
-
-Capability `conversation_archive.version:1` advertises list/archive/restore/delete,
-`compression:"gzip"` and `storage:"sessionsation_data_root"` for Codex. Claude and
-Gemini sessions use the same commands since
-[revision 17](#claude-and-gemini-archive-restore-and-delete-revision-17). `api archives`
-returns archived/prepared entries with stable `id`, fresh `generation`, provider
-conversation identity, original creation timestamp, original history bytes and
-`compressed_bytes` (null if stored files cannot be measured safely).
-Archive/Delete availability depends on verified inactive history and operation ownership, not enrollment. External homes remain eligible with final native-server, live-writer and generation checks. Confirmed conversation jobs retain their source-home provenance for background discovery without borrowing the viewer’s account environment.
-
-`api archive`, `api restore-session` and `api delete-session` require `--session`,
-`--expected-generation`, `--request-id` (UUID) and `--confirm` equal to the stable
-session ID. A successful command returns a queued conversation operation, also
-reported by `api operations`. Its immutable `created_at` and `id` correlate polling;
-`kind` is `archive_session`, `restore_session` or `delete_session`. Intermediate
-phases describe history verification/compression/restoration/removal; terminal
-phases are `complete` and `failed`. These jobs are not cancellable. Admission is
-not completion. The same request/target/generation returns its original job;
-reusing an ID with different input is rejected. No automatic replay occurs.
-
-Archive/Restore/Delete invalidate the captured generation. Archive hides the
-session from normal state; Restore returns the same backend/provider identities
-as saved history, without starting a model. Loaded threads and live copies block
-unsafe changes. Delete is permanent, including known managed archives, and
-preserves project files and credentials. Storage and recovery rules belong to
-[the CLI reference](cli.md#saved-and-archived-conversations). Existing send receipts
-and New/Resume receipt phases are unchanged.
-
-### Resume availability reasons
-
-Session state also publishes nullable `directory` from the observed source, so clients can warn about a shared project directory and show cached details without generation-bound reads.
-Session state and details include nullable `resume_block_reason`: `unsupported_provider`, `host_unavailable`,
-`history_unavailable`, `already_running`, `moving`, `missing_directory`,
-`history_busy`, `unfinished_history`, `conflicting_history`, or `unverified_history`.
-`unfinished_history` is a confirmation warning, not a disabled resume capability.
-Other values explain observed resume gates; capability flags remain authoritative and
-launch rechecks current state. Consumers must tolerate future reason codes.
-Read-only history inspection does not constitute `history_busy`; an open writer
-does. If descriptor access flags cannot be inspected, discovery conservatively
-retains the busy gate. Live attachment and operation ownership checks still apply.
-
-A live terminal can be waiting at Codex’s workspace-trust/startup prompt before its
-conversation is loaded. Lifecycle workers report `waiting_for_provider_ready` and
-retain it until native state is confirmed; they never approve that prompt or treat
-the unloaded root as a ready agent. Background-terminal checks for unloaded
-saved/child histories require consistent native read/list/read evidence rather
-than treating a rejected RPC as empty.
-
-## HERDR Space placement
-
-`capabilities.space_move.version == 1` advertises the additive placement API;
-`session.capabilities.move_space` gates the selected current attachment.
-`api spaces --session ID --expected-generation GENERATION` returns
-`SpaceChoices`: stable session ID, captured generation, current Space ID,
-existing Spaces with `id/name/current`, and positive pane/terminal identity.
-The bound host socket is authoritative even in an unrelated caller environment.
-Since 1.48.0 `move-space` also takes `--create-space LABEL` (a label that must not exist), checks the
-session name's uniqueness in the destination Space at admission, and writes the verified destination
-label to the session's `space`; see [Space-scoped session names](#space-scoped-session-names-1480).
-
-`api move-space --session ID --expected-generation GENERATION --space SPACE-ID
---request-id UUID` returns `SpaceMoveOperation`, also listed by `api operations`.
-Phases: `admitted → dispatching → reconciling → complete`, or `failed/uncertain`.
-Admission returns before host dispatch. A detached, per-request locked worker
-revalidates the saved target and completes placement independently of the caller.
-Clients must observe the returned operation ID until a terminal phase; an
-`admitted` response does not confirm that the terminal moved. This adds no
-supervisor and does not restart the agent.
-No cancel/respond action is offered. Reuse of the same UUID and exact target
-observes the saved result before generation resolution; changed input is
-`REQUEST_ID_CONFLICT`. Stale generation or missing destination is rejected before
-dispatch. Selecting the current Space completes without mutation.
-
-New Space (revision 20): `api move-space ... --new-space LABEL --request-id UUID`
-replaces `--space` (the two are mutually exclusive; one is required). The
-label passes the Space-label rule (`INVALID_SPACE_LABEL`: 1-128 bytes, no surrounding
-whitespace, control characters or `/`, not `.`/`..`; spaces inside are fine) and must not match any Space label in a fresh
-`workspace list` of the session's own HERDR instance (`WORKSPACE_NAME_EXISTS`,
-before any journal or host mutation). The worker issues one host request,
-`pane move PANE --new-workspace --label LABEL --no-focus`: HERDR creates the
-Space around the moved pane, so no initial shell pane exists and nothing is
-closed. `workspace create` is not used. The created Space id is journaled
-(`created_space`) only after it is verified as absent before admission, carrying
-the label and holding the exact terminal; it is reported as `space_id` and
-`created_space_id` (both null until then; `new_space` echoes the label).
-A retry with the same UUID observes the saved result, a changed payload is
-`REQUEST_ID_CONFLICT`, a lost reply is `uncertain` and `api recover` finds
-the terminal by its stable terminal id in any Space (read-only), so no second
-Space is ever created. `capabilities.new_space.move_space` gates this form.
-
-HERDR can change the pane ID during a move. The stable terminal ID and verified
-kernel process identity tie the returned pane to the original runtime. Only
-attachment placement/revision changes; the backend ID, provider conversation ID,
-PID/start identity, native runtime generation and old message receipts remain
-intact. Discovery, account-switch/restart and `original_host` follow verified
-placement provenance within the launch/resume request’s epoch; historical
-launch/resume receipts are never rewritten. Reused host pane IDs in a subsequent
-launch do not import earlier placement history.
-
-Admission shares lifecycle and messaging locks. In-flight or uncertain placement
-blocks competing lifecycle mutations. A lost reply or incomplete ownership update
-is `uncertain`, never permission to retry. `api recover UUID` is read-only toward
-HERDR: it finds the original terminal in the requested destination and repairs
-binding/catalog metadata. A crash before dispatch can release its unissued intent.
-An unconfirmed destination remains reserved; disappearance, timeout or observing
-only the source does not prove that a move is safe to replay. Fresh snapshots
-are required after completion. Existing Submit/Queue semantics are unchanged.
-
-The [CLI reference](cli.md#move-a-running-session-between-herdr-spaces) owns host
-scope, UI-visible effects and operational limitations.
-
-## Client upgrade notes
-
-Source package 0.2.0, contract revision 3, retains API v1 with additive capability
-negotiation. New clients may opt into batch observations and explicit message
-recovery; accept Resume-only null runtime generations and `launch_unknown` receipts.
-Existing Submit/Queue requests and receipt domains are unchanged. Package/API
-numbers alone do not identify a build: inspect the executable path and SHA-256
-from `api version` alongside `api capabilities`. Older builds without `api version`
-need `--version` and an external SHA-256. Readiness reason codes are extensible;
-prefer optional `observation.failure.message` for timeout explanations and inspect
-`observation.status` to distinguish unobserved from stale. A timeout never grants
-permission to resend, resume or infer readiness.
-Do not substitute PATH, another data root or an older receipt domain when pinning.
-Keep the sole supervisor and existing receipt databases; a client upgrade is not
-an owner handoff. Current installation selection and consumer pins stay unchanged
-until their separate compatibility review. New archive views require accepting
-`availability:archived`; keep default filtering for existing active-session clients.
-
-1.64.0 (SM1) turns refusals into success: a live `api send` option that the target's provider does not
-use (a recovery intent or a Codex turn target sent to Claude or Antigravity; `delivery:"peer_message"`
-sent to Codex or Antigravity; `timeout_seconds` sent to Codex; `steering.interrupt` sent to Codex or
-Antigravity) is now accepted, left out, and named in the result's `ignored_options` with `ignored_reason`. Before 1.64.0 these were
-`PROVIDER_DELIVERY_UNSUPPORTED`, `DELIVERY_UNAVAILABLE`, `UNSUPPORTED_PROVIDER_OPERATION` or
-`INVALID_REQUEST`. A client that relied on the refusal to detect a provider must read `ignored_options`
-(or `capabilities.send_request.providers`) instead. Unknown option values and a path a provider has but
-cannot use now (`TERMINAL_QUEUE_UNSUPPORTED`, `PEER_INTERRUPT_UNSUPPORTED`) are still refused.
-
-## Public turn checkpoints (revision 7)
-
-Negotiate `capabilities.checkpoints.version == 1`; package 0.2.0 remains API v1.
-`api checkpoints < request.json` is an explicit read-only observation, independent
-of sending and receipt polling. The request includes `version:1`, stable
-`session_id`, `expected_generation`, `expected_runtime_generation`,
-`expected_turn_id`, and optional `cursor` (initially null). Obtain exact turn/runtime
-identity from a tracked receipt or `api steer-target`; never select a turn by name.
-See `CheckpointRequest`, `Checkpoints`, and `CheckpointEvent` in the schema and
-`checkpoint_request`/`checkpoints` in the fixtures.
-
-The response exposes only native `agentMessage` text explicitly marked
-`commentary`, `partial_answer`, or `final_answer`. Other payloads are structurally
-skipped: no reasoning, user input, tool output, terminal capture or raw transcript
-is returned or journaled. History mode is read from the attached server using metadata-only `thread/read`,
-not inferred from the terminal/PATH executable. On native profiles 0.163.0 and
-0.164.0, `thread/items/list` is supported only for **paginated** histories. Legacy
-histories deliberately reject it with -32601. For **legacy** histories the observer
-uses `thread/turns/list` with `itemsView:full`, `limit:1`, descending, verifies the
-exact latest turn, and discards every non-public item before journaling. It never
-uses whole-thread `thread/read(includeTurns:true)` or reads transcript files.
-Both routes retain native-version and attachment security checks. Unknown profiles fail closed; Claude is unsupported.
-No observer, terminal supervisor, credential writer or subscription is started.
-
-- Every event has a stable content revision `event_id`, native `item_id`, monotonic
-  journal `sequence`, and `observed_at`. Text is a full snapshot, not an append delta;
-  a changed item emits another revision. Order is first observation in native page
-  order, not proof of causal ordering between messages. Deduplicate by `event_id`.
-- Association is **turn-only**. Text does not prove Steer consumption, causation,
-  a correlated reply, message delivery or completion; steer replies come only
-  from steering receipts (revision 15). Even `phase:final_answer` is not completion evidence by itself;
-  `turn_status` is separately observed native state.
-- The exact requested turn must still be the latest visible native turn, before and
-  after the item read. Its status may be in progress, completed, failed or interrupted.
-  A different turn returns `CHECKPOINT_STALE_TURN`; a transition during the read
-  returns `CHECKPOINT_TURN_CHANGED`. Retain previous evidence and retry only the read,
-  or resolve a newly tracked target explicitly. Never silently attribute another turn.
-- Catalog/runtime changes return `STALE_TARGET`. Resolve fresh identity, but do not
-  carry a cursor into another runtime/turn. Endpoint failure, unsupported native
-  profile or timeout yields an error, no fresh events, and no advanced cursor.
-  Reads have an eight-second overall budget and never send/replay input or launch.
-- Paginated reads scan at most 50 native items. Legacy reads inspect one exact
-  latest turn, bounded to **8 MiB native wire input and 8192 items**, and project
-  at most 50 unseen public snapshots per scan. `scan_pending` remains true while
-  additional unseen legacy snapshots remain; subsequent scans deduplicate by the
-  existing event IDs. Both routes return at most 50 retained events.
-  `history_mode` reports the selected native route; capability
-  `checkpoints.history_modes` advertises this compatibility correction. The 8 MiB
-  input allowance is exclusive to checkpoint connections; steer anchor and reply
-  observation reads use a 64 MiB bound (see Steer reply correlation); other ordinary
-  messaging connections retain their 1 MiB frame limit. `NATIVE_FRAME_LIMIT` or
-  `CHECKPOINT_LEGACY_LIMIT` refuses oversized input without returning partial text.
-  The complete compact success JSON envelope plus trailing newline is capped at
-  **786432 bytes (768 KiB)**, below a 1 MiB client transport ceiling. JSON escaping
-  and UTF-8 bytes count toward this limit. `byte_limited:true` marks a page shortened
-  by bytes; whole events are preserved and the cursor advances only past returned
-  events. A single public text item up to 65536 UTF-8 bytes remains supported.
-  Capability `checkpoints.max_response_bytes` advertises the envelope limit.
-  `scan_pending` means native pages or unseen legacy snapshots remain; `has_more` means journal events remain.
-  Save the returned opaque cursor only after processing the response. Poll again
-  while the exact turn is tracked; reaching the native page tail starts another
-  scan from the beginning next time, so edits to an existing item are observed.
-  While unread journal events remain, reads drain that backlog before scanning more
-  native items; byte pagination therefore cannot evict its own unread events.
-  `native_page_read:false` identifies this replay: exact-turn/runtime checks still
-  run, but observation/event timestamps retain their original age.
-  This is polling, not lossless token streaming; short-lived intermediate revisions
-  between polls may be missed. Empty events do not mean the agent is idle.
-- Up to 256 events and 4096 deduplication revisions are retained per exact
-  session/runtime/turn in the Sessionsation root. `CHECKPOINT_CURSOR_GAP` means
-  the cursor is expired, from a different journal, or beyond its tail. Start a new
-  read with null cursor to consume the retained window; `history_gap:true` explicitly
-  marks truncated older events. Reaching the revision ceiling returns
-  `CHECKPOINT_RETENTION_LIMIT`; do not pretend the stream is complete.
-- Journal writes are atomic and serialized by an observer-only lock. Retries and
-  CLI restarts replay stable IDs/order without touching message ledgers. A provider
-  restart changing runtime identity requires a new explicitly resolved stream.
-  `CHECKPOINT_OBSERVER_BUSY` means another read is updating that same journal;
-  retry the read. Native pagination errors leave the prior journal intact.
-  Native rejections expose only `error.native:{method,code}`; provider error text,
-  error data, raw frames and non-public payloads are never diagnostic output.
-  Missing or changed history mode fails closed instead of guessing another route.
-- `observed_at` timestamps the item-page read; `checked_at` is response preparation,
-  and `valid_until` is five seconds after observation. `freshness` can already be
-  stale if verification was slow. Replayed events retain their original timestamps.
-
-Clients should use checkpoint events for an intermediate activity feed, while
-continuing to use the original receipt for delivery/correlation. Do not promote a
-checkpoint to a completed mailbox reply. Compatible additive API revisions should
-be negotiated by capability rather than exact build equality.
-
-### Claude provider (revision 10)
-
-Additive. `capabilities.providers[]` reports `claude` with `implemented:true`, the
-existing flat booleans and an `operations` object (`{supported, reason}` per
-operation; Codex has the same object). `capabilities.account_names` states that
-names are unique per provider since 1.30.0 (see [Account names](#per-provider-account-names-and-backend-rename-1300)). Account snapshots add `provider`,
-`provider_capabilities`, `config_home` (adopted Claude homes), `auth_detail`
-(`AUTH_REQUIRED`/`WRONG_AUTH_MODE`, never identity), `usage_state`
-(`fresh|partial|stale|missing|no_windows|error`) and `usage.source`/`usage.semantics`
-for every provider. Claude usage keeps the shared `usage.short`/`usage.weekly`
-shape (`duration_minutes` 300/10080); a missing window is `null`, never 0.
-
-`account add claude:NAME` returns `existing_home` (an operator-populated managed
-home was registered unchanged) and `auth` (`logged_in`, `auth_method`,
-`api_provider`, `subscription_type`, `problem`). `account add` accepts `claude:NAME` and `--config-dir`; `account login claude:NAME`
-returns `{login:{action:"exec",argv,...}}`; `account list --platform` filters.
-Bare names fail with `ACCOUNT_PROVIDER_REQUIRED`; a provider that differs from the
-enrolled one fails with `ACCOUNT_PROVIDER_MISMATCH`; a taken name fails with
-`ACCOUNT_NAME_EXISTS`.
-
-Claude sessions add `conversation_id_source:"native"`, `native_status`,
-`native_name`, `native`, `pid`, `process_start`, `host_known`,
-`capability_reasons`, and use availability `running|stopped|stale|unknown`.
-`name`/`name_source` (`catalog`, or `herdr_last_observed` for HERDR-attached sessions since revision 11) are Sessionsation metadata; `native_*` are Claude's.
-`launcher new|resume`, `launch` and `resume` accept Claude accounts/sessions;
-launch receipts keep `account_id: "claude:NAME"`.
-
-### Claude lifecycle, login, headless delivery and display names (revision 11)
-
-Additive; negotiate `contract_revision >= 11`. Provider entries add flat
-`account_rename:true` (both) and, for Claude, `account_removal:true`,
-`account_deletion:true`, `account_refresh:true` and a `headless_delivery` object
-(`version:1`, `modes:["resume","new"]`, `semantics:"headless_print"`,
-`requires_stopped_session:true`, `timeout_seconds:{default:600,max:3600}`,
-`timeout_is_uncertain:true`, `automatic_replay:false`, `cancellation:false`).
-`operations` adds `account_rename` and `headless_delivery` (`supported:false` for
-Codex); Claude `account_deletion` carries a reason describing the adopted-home case.
-
-Accounts: `remove|restore|delete|deletions|recover` accept `claude:NAME` with the
-Codex request/response shapes. Removal previews add `active_processes` and
-`stored_data.adopted`. Deletion previews add `home_disposition`
-(`deleted|left_in_place`) and `adopted_config_home`; `deletes_local_credentials` is
-false for an adopted directory. Deletion receipts add `external_home` and
-`home_disposition`; an adopted directory is never modified. Sessions of a deleted
-Claude account report `availability:"stopped"`, `resume_block_reason:"account_deleted"`,
-`history_preserved:true` and `capability_reasons.resume:"ACCOUNT_DELETED"`.
-
-Login: `api account add claude:NAME` returns `login` equal to
-`api account login claude:NAME`'s `login` (`{action:"exec",interactive:true,
-credentials_in_client:false,argv}`) plus `login_required` (boolean). `api account
-refresh claude:NAME` probes `claude auth status` now and returns
-`{account_id,provider:"claude",auth_required,auth_detail,auth_mode,observed_at}`
-where `auth_mode` is `{logged_in,auth_method,api_provider,subscription_type}` (plus `rate_limit_tier` only when `claude auth status` reports one) or
-null when the probe failed. The supervisor also re-probes every 3 seconds while a
-Claude account is `auth_required`.
-
-Session names: a Claude session with a verified HERDR attachment now follows the
-Codex HERDR name contract (revision 6): `name_source:"herdr_last_observed"`, tab
-label changes observed into `name`, and `api rename` renames the tab. Detached and
-stopped Claude sessions keep `name_source:"catalog"`; `native_rename` stays
-unsupported (the label is applied as `--name` on the next launch/resume).
-
-Display names: account snapshots add optional `display_name`. `api account rename
-PROVIDER:NAME --display-name X|--clear` returns `{account_id,name,display_name,changed}`;
-`id`, `name` and the home never change. Errors: `INVALID_DISPLAY_NAME`,
-`ACCOUNT_DISPLAY_NAME_EXISTS`, `ACCOUNT_DELETION_IN_PROGRESS`.
-
-Headless delivery (`api send`, Claude sessions/accounts only):
+For a **stopped** Claude, Gemini or Antigravity session, `mode:"resume"` continues
+the conversation in a one-shot provider run in its recorded directory; `mode:"new"`
+creates a conversation (`ClaudeHeadlessRequest`; the provider entry's
+`headless_delivery`: `version:1`, `modes:["resume","new"]`,
+`semantics:"headless_print"`, `requires_stopped_session:true`,
+`timeout_seconds:{default:600,max:3600}`, `timeout_is_uncertain:true`,
+`automatic_replay:false`, `cancellation:false`):
 
 ```json
 {"api_version":1,"message_id":"UUID","mode":"resume","session_id":"UUID",
@@ -1196,897 +1820,114 @@ Headless delivery (`api send`, Claude sessions/accounts only):
  "directory":"/abs/dir","name":"optional label","text":"...","expires_at":UNIX}
 ```
 
-`recovery`/`steering` must be absent or null; `timeout_seconds` is optional. Submit,
-Queue and Steer addressed to a Claude session failed with
-`UNSUPPORTED_PROVIDER_OPERATION` until revision 16 (see
-[Claude steering](#claude-steering-hosted-sessions-and-live-peer-messages-revision-16)). Admission refuses (nothing is
-journaled) on `STALE_TARGET`, `SESSION_ALREADY_RUNNING`, `SESSION_STALE`,
+The message goes on stdin, never argv. Commands: Claude `claude -p (--resume|--session-id)
+UUID --output-format json` (no permission bypass); Gemini `gemini -p "" -o json
+--approval-mode default (-r|--session-id) UUID` with `GEMINI_CLI_TRUST_WORKSPACE=true`;
+Antigravity `agy --conversation UUID --input-format stream-json --output-format
+stream-json --print-timeout Ns --disable-slash-commands -p=` with one stream-json user
+event (`N` is the timeout minus 5 s; `mode:"new"` first creates the conversation as a
+launch does), never `--dangerously-skip-permissions`. Admission refuses before
+journaling on `STALE_TARGET`, `SESSION_ALREADY_RUNNING`, `SESSION_STALE`,
 `SESSION_OPERATION_IN_PROGRESS`, `SAVED_DIRECTORY_UNAVAILABLE`, `ACCOUNT_REMOVED`,
 `ACCOUNT_DELETED`, `ACCOUNT_UNAVAILABLE`, `AUTH_REQUIRED`, `WRONG_AUTH_MODE`,
-`INVALID_EXPIRY`, `INVALID_TIMEOUT`. The response and `api receipt MESSAGE-ID` return:
+`INVALID_EXPIRY`, `INVALID_TIMEOUT`. The request is journaled under
+`DATA_ROOT/messaging/claude-deliveries/` (all providers; records without `provider`
+are Claude) before a detached worker starts the provider once. Interactive resume is
+refused while a delivery runs.
+
+Receipt (`ClaudeHeadlessReceipt`, also `api receipt`):
 
 ```json
-{"message_id","session_id","accepted_generation","provider":"claude",
- "provider_conversation_id","account_id","mode","delivery_semantics":"headless_print",
- "state","reason","facts":{"accepted_local","accepted_native","input_recorded",
- "input_consumed","reply_observed"},"correlation":{"session_id","reported_session_id","matched"}|null,
+{"message_id","session_id","accepted_generation","provider","provider_conversation_id","account_id",
+ "mode","delivery_semantics":"headless_print","state","reason",
+ "facts":{"accepted_local","accepted_native","input_recorded","input_consumed","reply_observed"},
+ "correlation":{"session_id","reported_session_id","matched"}|null,
  "reply":{"text","text_truncated","is_error","subtype","session_id","num_turns","usage","duration_ms"}|null,
  "execution":{"phase","directory","timeout_seconds","created_at","started_at","finished_at",
  "new_conversation","automatic_replay":false},"observation":{...}}
 ```
 
-`state`: `pending_local` (journaled), `execution_started` (journaled before the
-process starts), `completed_with_reply` (session id matched, `is_error:false`),
-`failed` (matched, `is_error:true`), `rejected` (provably not executed, e.g.
-rechecks failed or `WORKER_EXITED_BEFORE_EXECUTION`), `expired`, or
-`delivery_unknown` (`EXECUTION_TIMEOUT`, `SESSION_ID_MISMATCH`,
-`UNPARSEABLE_OUTPUT`, `OUTPUT_TOO_LARGE`, `WORKER_EXITED_DURING_EXECUTION`). `reply`
-is non-null only for a matched session id. Uncertain outcomes are never replayed;
-the same `message_id` with an identical payload returns the original receipt and a
-changed payload is `MESSAGE_ID_CONFLICT` (message ids are shared with the Codex
-stores). `api cancel` returns `HEADLESS_CANCELLATION_UNSUPPORTED` while a delivery is
-pending or executing. Schemas: `ClaudeHeadlessRequest`, `ClaudeHeadlessReceipt`,
-`AccountLoginPlan`, `AccountRefresh`, `AccountRename` in [API v1](contract/v1.json).
-
-### Session identity, continuations and Add to HERDR (revision 12)
-
-Additive; negotiate `contract_revision >= 12`. `api capabilities` adds
-`session_identity`, `add_to_herdr` and `resume_placement` objects.
-
-Native-id re-attachment: a live process is attached to exactly one catalog entry,
-the one whose conversation the process currently runs: for Claude the registry
-`sessions/<pid>.json` `sessionId` (PID and start time verified); for Codex the
-thread of its single open rollout (tmux TUIs), else its `resume <thread>` argv.
-When the same process switches conversation in its terminal, the existing entry
-of the new conversation takes over the exact attachment (name, account, history
-kept) and the entry it left is released to `stopped`; no entry is created for a
-conversation that already has one. A Codex TUI connected to an app-server
-(`--remote`) does not expose a thread switch in argv or open files, so such a
-switch is not observed.
-
-Claude continuations: when Claude Code sends a conversation to its background
-daemon under a new session id, it appends
-`{"type":"continued-in","sessionId":OLD,"continuedInSessionId":NEW}` to the old
-transcript. Only that record type and those two ids are read (bounded tail; it
-counts only while no `user`/`assistant` record follows it and NEW is a transcript
-of the same account home). The entry of OLD then follows NEW: stable id, name and
-account are kept, `previous_conversation_ids` lists OLD, and an entry already
-registered for NEW is merged into it. Generation-checked lookups of a merged id
-fail with `SESSION_MERGED: ...` naming the surviving id; refresh the list. Merging
-never deletes and recreates identity: the survivor is the entry that already
-records the lineage, else the pre-existing entry of the earliest conversation; a
-later entry for a conversation already in a lineage (for example one re-registered
-by an older release) is merged into it, not the reverse. Aliases and lineage are
-mirrored in `session-catalog/identity.json`, which older releases do not rewrite,
-and are restored from it on every catalog access. `api session repair-identity`
-runs that restore plus continuation linking explicitly and reports
-`{restored_aliases,restored_lineage,merged,aliases,lineages,unresolved_ids,unresolved_reason}`;
-`unresolved_ids` are ids that placement evidence names but no entry, alias or
-identity record resolves. They are reported, never recreated. Branches (copied
-records stamped `forkedFrom.sessionId`) stay separate conversations and are
-exposed as `forked_from_conversation_id`. No other lineage is inferred, so no
-manual link operation exists.
-
-Parked Claude sessions: moving an interactive session to the background with
-Claude Code's left-arrow gesture records `parkedJobId` in the interactive
-process's registry entry and forks the conversation into that `bg` job
-(`continued-in` on the old transcript). The interactive process stays in its
-terminal as the job's frontend (the agents view with the job open), and input
-typed there lands in the job's transcript. That process is therefore the
-entry's terminal: the attachment is kept (or verified anew from its HERDR pane),
-`terminal_input` uses it, peer messages go to the job's own messaging socket,
-and a generated job title (`nameSource:"auto"`) never replaces the name given to
-the parked session. A parked record no longer holds its old session id. When
-Claude clears `parkedJobId`, the process is no longer a terminal of the job.
-
-Claude sessions add `native.kind` (registry kind, `bg` for background-daemon
-sessions) and `native.job_id`; all sessions add `previous_conversation_ids`,
-`capabilities.add_to_herdr` and `capability_reasons.add_to_herdr`
-(`SESSION_NOT_RUNNING`, `ALREADY_IN_HERDR`, `INTERACTIVE_ELSEWHERE`,
-`ATTACHED_ELSEWHERE`, `CODEX_TERMINAL_NOT_MOVABLE`, each followed by `: text`).
-
-Resume: a recorded terminal blocks resume only while its exact process could
-still hold the conversation. Killed processes, reused PIDs, leftover or unreadable
-registry files of dead processes and terminals that switched conversation do not.
-
-`api spaces --session ID --expected-generation G --herdr-session SERVER
-[--herdr-socket PATH]` lists that server's Spaces for a session not in HERDR:
-`{session_id,generation,herdr_session,current_space_id:null,spaces:[{id,name,current:false}],pane:null}`.
-
-`api session add-to-herdr --session ID --expected-generation G --herdr-session
-SERVER [--herdr-socket PATH] --space SPACE-ID [--name NAME]` opens a running Claude
-background session in a new tab (label NAME, default the session name; a
-different NAME also renames the catalog entry) by running `claude attach <job>`
-with the account environment. The pane records itself before exec and success
-requires the pane's foreground PID to be that recorded `claude attach` client:
-
-```json
-{"state":"attached","session_id","generation","host":"herdr","herdr_session","space_id",
- "tab_id","pane_id","target","name","job_id","attachment":{...},"starts_agent":false,
- "sends_input":false}
-```
-
-`state:"attach_unconfirmed"` (generation/attachment null) is never retried;
-refresh. Refusals: the capability reasons above, `SPACE_NOT_FOUND`, `STALE_TARGET`,
-`UNSUPPORTED_PROVIDER_OPERATION` (Codex). `api resume` adds optional `--space
-SPACE-ID` (new tab in that existing Space instead of a new Space) and `--name`
-(tab label and catalog name). Schemas: `HostSpaceChoices`, `AddToHerdrResult`.
-
-Revision 18: `api resume` (Codex and native) starts the provider in the session's saved
-directory, refusing with `SAVED_DIRECTORY_UNAVAILABLE` when it is not an absolute
-existing directory. It no longer reports `ok` for an unconfirmed launch: no observed
-running session within the poll fails with `RESUME_LAUNCH_UNCONFIRMED`, and a pane
-command that runs and then returns to an idle shell fails promptly with
-`RESUME_LAUNCH_FAILED`. `move-space` keeps the session label on the new tab, and
-restoring an archive keeps a relocated directory. New-session launches are unchanged.
-
-### Batch placement observations (revision 9)
-
-Negotiate `capabilities.placement.version == 1`. `api state` includes each
-session's `placement` and a top-level `hosts` catalog. `api placements` returns
-all catalog memberships keyed by stable session ID plus the host/Space catalog;
-`api session` includes the same placement. No per-session `api spaces` or
-`original_host` join is needed. Those older fields/commands remain compatible
-launch provenance and move-admission helpers, not exhaustive membership discovery.
-
-One bounded HERDR snapshot per bound host is shared with name discovery. Verified
-live catalog attachments, including legacy owner-managed sessions without launch
-receipts, supply membership. Pane → tab → Space must agree. Host and Space IDs
-are opaque UUIDs persisted under the Sessionsation data root; labels are not keys.
-Multiple hosts can have identical labels/native Space IDs without colliding.
-Each membership includes `catalog_generation` for joining against the captured
-catalog. Placement polling does not itself change lifecycle generations.
-Public placement projections contain no socket, filesystem locator or raw pane.
-
-`state` is `observed`, `last_known`, or `unobserved`. `observed_at` and `valid_until`
-(30 seconds later) describe the actual evidence, not response time; `checked_at`
-records the last attempt. Failed snapshots, changed attachments, expired evidence
-and stopped sessions retain the prior placement with a reason, never freshened
-by a failed read. Concurrent readers may reuse the last bounded observation
-while name synchronization is locked. Placement is not message readiness or move
-authorization. Revalidate lifecycle generations through existing APIs.
-
-Host identity is scoped to the persisted explicit HERDR endpoint and server name;
-Space identity to that host's native Space ID. Endpoint relocation or replacing a
-host while reusing native IDs cannot be inferred as continuity. No network host
-probing or caller-focused-Space inference occurs. Previously stopped sessions
-never observed by this contract remain `unobserved`; no historical label is guessed.
-The host catalog retains last-observed Spaces (including now absent ones), with
-per-Space observation times; absence does not prove deletion. Archive filtering in
-`api state` is unchanged; `api placements` includes catalog history, so consumers
-should join it to their desired state/archive filter by session ID.
-
-Schemas: `Placement`, `PlacementHost`, `Placements` in
-[API v1](contract/v1.json); synthetic observed/stopped/outage/unknown examples in
-[fixtures](contract/fixtures.json). Clients should accept additive revision changes
-within API 1 and negotiate the placement capability rather than pin a package
-version equality. Existing observation, delivery and owner protocols are unchanged.
-
-### Gemini provider (revision 13)
-
-Additive; negotiate `contract_revision >= 13`. `api capabilities` `providers`
-gains `{"id":"gemini",...}` (same shape as Claude): `enrollment:true`,
-`adopt_config_dir:false`, `login:"interactive_exec"`, `usage:false`,
-`usage_state:"unsupported"`, `usage_source:"gemini-cli-unsupported"`,
-`native_rename:false`, `account_refresh:true`, `account_limits:false`, and
-`headless_delivery` (modes `resume`, `new`; `requires_stopped_session`;
-`approval_mode:"default"`, never `yolo`). `operations` carries the per-operation
-`{supported,reason}` table. `add_to_herdr` gains
-`unsupported:{"gemini":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"}`;
-`session_identity` gains `gemini_process_source:"cmdline_session_id_argument"`.
-
-Accounts use `gemini:NAME` ids. `api account add|login|refresh|rename|remove|restore|
-delete` behave as for Claude (`auth_mode.auth_method` is `"oauth-personal"`;
-`auth_detail` is `AUTH_REQUIRED` or null; there is no `WRONG_AUTH_MODE`). Account
-rows report `usage_state:"unsupported"`, `usage_fresh:false` and `usage` with
-`short`/`weekly` null and `state:"unsupported"`: absence of usage is never 0%.
-`account limits ... --short-used` is `UNSUPPORTED_PROVIDER_OPERATION`.
-
-Sessions have `provider:"gemini"`, `conversation_id_source:"native"`, `native`
-(`kind`/`job_id` null) and the same lifecycle fields as Claude sessions.
-`capabilities.add_to_herdr` is false with `capability_reasons.add_to_herdr`
-`SESSION_NOT_RUNNING`, `ALREADY_IN_HERDR` or `NO_NATIVE_ATTACH`; `api session
-add-to-herdr` for Gemini fails with `UNSUPPORTED_PROVIDER_OPERATION: NO_NATIVE_ATTACH...`.
-`api resume --space/--name` and `launcher` work. `api send` mode `resume`/`new`
-accepts `gemini:` sessions/accounts; receipts carry `provider:"gemini"` and
-`account_id:"gemini:NAME"` (schemas `ClaudeHeadlessRequest`/`ClaudeHeadlessReceipt`
-admit both providers). Records of both providers share
-`DATA_ROOT/messaging/claude-deliveries/`; older records without a `provider` field are Claude.
-Login and headless delivery are verified only against fakes until a real login exists.
-
-### Account log out (revision 14)
-
-Additive; negotiate `contract_revision >= 14`. Every `providers[]` entry of `api
-capabilities` gains `account_logout:true`, and `operations.account_logout` is
-`{supported:true,reason:<method text>}`. `api account logout <provider:name>`
-returns
-
-```json
-{"account_id":"claude:work","provider":"claude","logged_out":true,"auth_required":true,"method":"claude auth logout"}
-```
-
-`method` names the mechanism: Codex `account/logout` of the account's app-server
-(or `codex logout` when none runs), Claude `claude auth logout`, Gemini the
-credential clearing of gemini-cli's `clearCachedCredentialFile` (no logout
-command exists in 0.66.0). Errors: `ACCOUNT_IN_USE` (live session or provider
-process, or held Codex lease), `ACCOUNT_NOT_FOUND` (unknown or deleted),
-`ACCOUNT_REMOVED`, `ACCOUNT_PROVIDER_MISMATCH`, `ACCOUNT_DELETION_IN_PROGRESS`,
-`LOGOUT_INCOMPLETE` (the provider still reports a login). The call is idempotent.
-Afterwards the account row has `auth_required:true`, `selectable:false`, and the
-supervisor's probe agrees; `api account login` returns the plan. The supervisor
-records event `account.logged_out` when the stored state changed.
-
-Also in revision 14: `usage.observed_at` is `null` (never `0`) whenever the
-account has no real usage observation (Gemini always; Codex and Claude until
-first observed).
-
-### Cached state (revision 14)
-
-`api state --cached [--archive-filter F]` serves the last full result of the same
-filter with the identical JSON shape plus `snapshot: {observed_at, fresh, cached}`;
-`fresh` is true while the snapshot is at most 30 seconds old (15 before 1.62.1; the supervisor now rebuilds it every 20 s). It performs no
-transcript scan, process probe or catalog write (`capabilities` is current).
-Every full `api state` stores its result atomically as
-`DATA_ROOT/cache/state-snapshot-<filter>.json` (and reports `snapshot.cached:false`);
-there is no second writer. With no snapshot yet, `--cached` computes a full state.
-`api capabilities` advertises `state_cached:true`. Clients should refresh with a full
-`state` periodically and render `--cached` between refreshes; a cached read never
-reflects a session started after the snapshot.
-
-Full `state` also runs inventory and the supervisor status concurrently, takes one
-`/proc` pass for all Gemini accounts, and resolves deleted-account checks once per
-account. Identity and merge semantics are unchanged.
-
-### Account order (revision 14)
-
-Accounts have a persistent order shared by the CLI and UI: field `order` (0-based,
-dense) on each account row; `account list` and `state` accounts are sorted by it.
-Existing accounts get today's alphabetical order once (event
-`account.order_migrated`, idempotent); a new account is appended last. `api account
-reorder <provider:name> --position N` (human: `account reorder NAME --position N`)
-moves it and renumbers: `{"account_id","provider","position","changed","order":[ids]}`,
-event `account.reordered` only when the order changed; `N` beyond the last position
-is `INVALID_POSITION`. `api capabilities` advertises top-level `account_reorder:true`.
-
-### Steer reply correlation (revision 15)
-
-Additive; negotiate `contract_revision >= 15` and
-`capabilities.steering.reply_correlation == "after_steer_item"`
-(`steering.reply_observation` publishes the bounds). Requests are unchanged.
-Steering receipts, `api steer-target` and readiness `actions.steer` now report
-`acceptance_only:false` and `reply_correlation:"after_steer_item"`.
-
-Native behavior (verified live on Codex 0.165.0): `turn/steer` carries
-`clientUserMessageId` = the request `message_id`, and the steered turn's full
-item history then contains a `userMessage` whose `clientId` is that ID, placed
-after the input that started the turn. Assistant items produced after it follow
-it in the same turn. An assistant item that was still streaming when the steer
-arrived can be discarded natively and never appear in history. The summary items
-view omits steer inputs, so only the full view of the single steered turn is read.
-
-- **Anchor.** Immediately before `turn/steer`, Sessionsation reads that turn
-  (`thread/turns/list`, `itemsView:full`, `limit:1`) and records item identifiers
-  only: the count of earlier user inputs and items, and the last assistant item ID.
-  The turn must still be latest and in progress and must not already contain the
-  ID, otherwise the steer is rejected unsent (`active_turn_changed`,
-  `ambiguous_native_correlation`).
-- **Read bound.** Anchor and observation reads accept one native frame of up to
-  64 MiB (a long turn's full items include tool output; 1.86 MB was observed live).
-  Only item identifiers, client IDs and assistant text are retained while parsing.
-  A larger frame fails closed with `native_frame_limit` before `turn/steer`, so the
-  steer stays provably unsent; more than 8192 items is `steer_turn_too_large`.
-- **Observation.** `api receipt` on a `native_accepted`, `delivery_unknown` or
-  `execution_started` steer reads the same turn newest-first (at most 8 one-turn
-  pages, 8192 items) and locates the steer input by `clientId`. Only item IDs,
-  client IDs and assistant text are read; user text, reasoning and tool output are
-  skipped. It never resends and does not hold the writer lock during the read.
-- **Attribution.** The reply window starts after the steer input and ends at the
-  next user input (a later steer) or the end of the turn. `reply` is the last
-  `final_answer` assistant item in that window, otherwise the last non-empty one.
-  When the window runs to the end of the turn the same text also answers the turn's
-  earlier input: `facts.shared_with_turn_tail:true`. A later steer bounds the window
-  (`correlation.next_input_item_id`).
-- **States.** `execution_started` (input recorded, turn in progress, `reply` may be
-  a partial with `final:false`); `completed_with_reply` (turn completed;
-  `reply.final:true`); `completed_without_reply`; `failed` with reason
-  `steer_turn_interrupted` (turn interrupted or failed, partial reply kept) or
-  `input_not_consumed` (acknowledged, but the turn ended without the steer input).
-  An unacknowledged (`delivery_unknown`) steer only gains positive evidence; it never
-  becomes `input_not_consumed`. Terminal states are cached and never regressed.
-- **Re-verification.** Every read re-checks the anchor: the steer input must keep
-  its item ID, appear after at least as many user inputs as at steer time, and the
-  recorded pre-steer assistant item must not appear after it. A recorded input that
-  disappears (for example after a history rewrite around compaction) reports
-  `observation.error_code:"steer_anchor_lost"` and keeps the stored evidence. The
-  ID appearing in a different turn reports `correlation_changed`. Ambiguous or
-  oversized evidence (`ambiguous_native_correlation`, `reply_too_large`) is never
-  attributed.
-
-New receipt fields: `facts.turn_status`, `facts.reply_final`,
-`facts.shared_with_turn_tail`; `facts.input_recorded`, `input_consumed`
-(`true`, `false` or `"unknown"`) and `turn_completed` now carry observed values.
-`correlation` is `{native_turn_id, steer_input_item_id, next_input_item_id,
-reply_item_id, observed_runtime_generation, anchor}` once the input is recorded;
-`reply` is `{item_id, text, phase, final, shared_with_turn_tail}`. `observation.state`
-is `acceptance_only` (send result or non-observable), `observed`, `uncorrelated`,
-`unavailable` (with `error_code`) or `cached`. Receipts made before revision 15 have
-no anchor and are still correlated by `clientId` without the anchor checks. Fixtures:
-`receipt_steer_progress`, `receipt_steer_reply`, `receipt_steer_interrupted`,
-`receipt_steer_not_consumed`. The account switcher's pause steer now also sends a
-`clientUserMessageId`.
-
-Revision 18: Codex renumbers legacy `item-N` ids when it rebuilds a finished
-turn. As for submit, a steer input first observed in progress as one legacy id
-and found under another legacy id in the completed, interrupted or failed turn
-(same `clientId`, still exactly once) is reconciled: `steer_input_item_id` keeps
-the in-progress id and the optional `correlation.completion_input_item_id` names
-the finished-turn id. The anchor's legacy `last_agent_item_id` is then not
-compared (it names a different item after renumbering); the earlier-input count
-still is. Any other id change remains `correlation_changed`. Receipts left at
-`execution_started` by that error progress on their next poll. Full-turn reads
-scale their time budget with the 64 MiB frame bound (base plus about one second
-per 16 MiB).
-
-### Claude steering, hosted sessions and live peer messages (revision 16)
-
-Additive; negotiate `contract_revision >= 16` and `capabilities.claude_input_delivery`
-(`version:1`; the Claude provider entry repeats it as `input_delivery` and now
-reports `submit`, `queue` and `steer` true with `operations.*.reason` naming the
-conditions). Gate each send on the session row: `capabilities.submit|queue|steer`
-are true only for a **hosted** session whose worker is running, or a **live**
-interactive session of an account with live steering enabled and a verified
-messaging socket; otherwise false with `capability_reasons` (`SESSION_NOT_RUNNING`,
-`LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`,
-`SESSION_OPERATION_IN_PROGRESS`). Rows add `input_delivery`
-(`{semantics:"hosted_stream_json"|"peer_message"|null, interrupt, label}`) and
-`hosted` (the `HostedSession` object or null); a hosted session reports
-`availability:"running"` and `resume:false`. Gemini is unchanged.
-
-Request (`ClaudeSteerRequest`): the ordinary `api send` fields with
-`mode:"submit"|"queue"|"steer"`, optional `timeout_seconds` (peer reply wait,
-default 600, max 3600) and, for steer only, `"steering":{"version":1,"interrupt":bool}`
-(a Codex `expected_turn_id` target is `INVALID_REQUEST`). Priorities: submit `next`,
-queue `later`, steer `next`. There is no idle preflight: the provider orders inputs.
-Claude Code 2.1.312 folds a `next` input into a running turn at its next tool round
-(or runs it as the next turn when the turn ends without one) and never cuts the
-turn for it; `later` runs as its own later turn; `now` would **cancel** the running
-turn, so Sessionsation never sends it. A steer therefore never interrupts:
-`claude_input_delivery.steer` and each session row's `input_delivery.steer`
-(`ClaudeSteerSemantics`, null when the row takes no input) report
-`{priority:"next",interrupts:false,delivery:"next_tool_boundary_or_next_turn",
-interrupt_option:"steering.interrupt",interrupted_inputs_state:"interrupted"}`.
-Only `steering.interrupt:true` cancels the running turn (its inputs end
-`interrupted`) before the steer runs as a new turn.
-Admission refuses without journaling on `STALE_TARGET`, `SESSION_NOT_RUNNING` (use
-mode `resume`), `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`,
-`PEER_INTERRUPT_UNSUPPORTED`, `SESSION_OPERATION_IN_PROGRESS`, account/auth errors and
-`INVALID_EXPIRY`. Message ids are shared with every other store; same id and
-payload return the original receipt, a change is `MESSAGE_ID_CONFLICT`.
-
-Revision 17 also adds the capability/admission reason
-`PEER_SOCKET_UNLINKED`: the live registry names a `messagingSocketPath` but the
-socket file is missing (typically elogind removed `/run/user/<uid>`); the reason text
-adds that the process still listens when `/proc/net/unix` and its fds show it.
-Resume or restart the session to rebind. `PEER_ENDPOINT_UNAVAILABLE` remains for
-genuinely absent or unusable endpoints. Every Claude child sessionsation launches
-now runs without `XDG_RUNTIME_DIR`, so its socket lives under `/tmp/cc-socks`.
-
-Revision 18: reason honesty. A second operation on a session that already has a queued
-or running one fails with `SESSION_OPERATION_IN_PROGRESS` (retryable; the message still
-names the queued job id) instead of `OPERATION_FAILED`. Every false Codex capability
-now has a `capability_reasons` code: `SESSION_NOT_RUNNING`, `AMBIGUOUS_SESSION`,
-`ACCOUNT_UNKNOWN`, `NOT_IN_HERDR`, `SESSION_ALREADY_RUNNING`,
-`SESSION_RUNNING_STOP_FIRST`, `HISTORY_UNAVAILABLE`, `SESSION_ARCHIVED`,
-`UNSUPPORTED_PROVIDER_OPERATION`, `SESSION_OPERATION_IN_PROGRESS` (a pending move).
-Hosted Claude rows give `stop` and `restart` the reason `HOSTED_SESSION` (stop with
-`api hosted stop`) and `add_to_herdr` a hosted-specific `HOSTED_SESSION` reason, not the
-interactive-terminal ones. A launched Claude process that has not yet registered or
-written a transcript (for example on its trust prompt) reports `availability:"running"`
-with the discovery warning `NO_CONVERSATION_YET`; no conversation is invented. Peer
-endpoint failures keep their own code (`PEER_SOCKET_UNLINKED`, ...), falling back to
-`PEER_ENDPOINT_UNAVAILABLE` with the message; when `api send` (delivery auto) finds neither path usable, the
-`LIVE_STEERING_DISABLED` message also names why terminal input is ineligible.
-
-Revision 18: Gemini authentication failures. Account rows add `auth_failed`,
-`auth_failure_reason` (`AUTH_CLIENT_UNSUPPORTED`, `AUTH_TIER_INELIGIBLE`,
-`AUTH_GRANT_INVALID`, `AUTH_UNAUTHENTICATED`, `AUTH_PERMISSION_DENIED`,
-`AUTH_REAUTH_REQUIRED` or `AUTH_FAILED`, with fixed text) and
-`auth_failure_observed_at`. They come from the last recognizable failure in a headless
-Gemini run's stderr/JSON error (known messages such as Google's "client is no longer
-supported" tier rejection, or the CLI's fatal-authentication exit status 41; a network
-error never counts) or the `account login` terminal, stored in a
-sessionsation-owned file outside the account home (reason code, timestamp and the
-credential file's stat identity only; never raw output or credential content). While
-set, the row also reports `auth_required:true`, `selectable:false` (a login is needed
-although credential files exist) and `auth_detail:"AUTH_FAILED"`. A generic crash never
-sets it; a later successful headless run or successful login clears it, and a newer
-credential file supersedes it. Interactive Gemini launches are not observed.
-`api state --cached` re-reads this local record for Gemini rows, so a failure recorded
-or cleared after the snapshot shows at once. A headless Gemini delivery whose output
-is unparseable after the CLI failed while establishing its sign-in, with the
-conversation file unchanged, ends `rejected` (a definite refusal: nothing reached the
-model) with reason `<CODE>: <fixed text>; nothing was sent to the model`; any other
-unparseable outcome stays `delivery_unknown`. `api resume` (with or without
-`--space`) labels the new tab with the session's current name, so the resumed session
-keeps it.
-
-Receipt (`ClaudeSteerReceipt`, also from `api receipt`): `delivery_semantics`,
-`priority`, `state`, `reason`, `facts` (`written`, `accepted_native`,
-`input_recorded`, `input_consumed`, `reply_observed`, `reply_final`, `folded`,
-`shared_with_turn`, `interrupt_requested`, `lifecycle[]`, `held`, `peer_status[]`,
-`idle_notice`), `correlation`, `reply` (`{text,text_truncated,final,shared_with_turn}`
-plus the hosted `result` fields `is_error,subtype,num_turns,duration_ms,usage`),
-`execution` (`phase` admitted/dispatching/written/complete, `host_epoch`,
-`automatic_replay:false`) and `observation`. States: `pending_local`, `held`,
-`native_accepted`, `execution_started`, `completed_with_reply`,
-`completed_without_reply`, `failed`, `interrupted`, `cancelled`, `refused`, `rejected`,
-`expired`, `delivery_unknown`. Terminal states are never regressed. Only
-`completed_*` carries `reply.final:true`/`facts.reply_final:true`; every other state
-keeps any partial text with `final:false`.
-
-- **Hosted** (`hosted_stream_json`). The record is journaled, then the worker
-  marks it `dispatching` before writing the stdin frame (`uuid` = `message_id`);
-  a request the worker never claimed becomes `rejected` (`HOST_UNREACHABLE_NOT_SENT`,
-  `HOST_STOPPED_BEFORE_DELIVERY`). `command_lifecycle` `queued` → `native_accepted`,
-  `started` → `execution_started`; `cancelled`/`discarded` before `started` →
-  `cancelled` (`NATIVE_CANCELLED`/`NATIVE_DISCARDED`), `refused` → `refused`. The
-  terminal state needs both the `result` whose `user_message_uuids` contains the id
-  (all started inputs when absent) and the id's terminal lifecycle, in either order
-  (a fresh turn's `completed` follows its result, a folded input's precedes it):
-  `completed` → `completed_with_reply` / `completed_without_reply`, or `failed`
-  (`PROVIDER_REPORTED_ERROR`) for an error result. `cancelled`/`discarded` after
-  `started` means the consuming turn was cut: Claude Code still emits a `success`
-  result with the partial text, so the input ends `interrupted` (`TURN_INTERRUPTED`
-  after a requested interrupt, else `TURN_CANCELLED_BY_PROVIDER`; `failed` with
-  `PROVIDER_REPORTED_ERROR` when the result was an error), the partial reply kept with
-  `final:false`, never replayed. Another reported `session_id` is
-  `delivery_unknown` (`SESSION_ID_MISMATCH`). If a later turn starts first, a
-  result without a terminal lifecycle is settled from the result; if the provider
-  exits first it is `delivery_unknown` (`…_BEFORE_TURN_OUTCOME`). `correlation` is
-  `{kind:"command_uuid",command_uuid,lifecycle,user_message_uuids}`. A provider or
-  worker exit makes in-flight messages `failed` (`*_DURING_TURN`, turn started) or
-  `delivery_unknown` (`PROVIDER_EXITED…`, `HOST_WORKER_EXITED`, `STDIN_WRITE_FAILED`).
-- **Peer message** (`peer_message`, with `peer_message:{label,status}`). Status
-  frames: `held` → `held`, `delivered` → `native_accepted`, `denied`/`refused`/`dropped`
-  → `refused` (`PEER_MESSAGE_*`), `expired` → `expired`. `correlation` is
-  `{kind:"transcript_anchor",message_id,anchor_found,anchor_offset,turn_ended,notify_msg_id}`.
-  The reply is the assistant text after the transcript record that carries the
-  message id, until the next input; it is final after that input or the idle
-  notice. Without the anchor, `reply` stays null and `observation.error_code` is
-  `peer_anchor_not_found`: delivered is never reported as answered. A connection
-  that never opened is `rejected` (`PEER_SOCKET_UNREACHABLE`); a failed write is
-  `delivery_unknown`.
-
-`api cancel` cancels only a request still `admitted`; afterwards it returns
-`STEERING_CANCELLATION_UNSUPPORTED` (interrupt a hosted turn with `api hosted stop
---interrupt` or a new steer with `interrupt:true`).
-
-Hosted sessions (`HostedSession`): `api hosted start` (`--account claude:N
---directory DIR [--name]` or `--session ID --expected-generation G`,
-`--permission-mode account|default|acceptEdits|plan|bypassPermissions`), `status`,
-`events`, `stop` and `respond`; `api launch start` accepts `"hosted":{"permission_mode"}`
-for `claude:` accounts and `api launcher new|resume ... --hosted` return a
-`run --hosted` plan. Fields: `state` (`starting|running|stopping|stopped|failed`),
-`reason` (`STOPPED`, `WORKER_LOST`, `WORKER_LOST_PROVIDER_DRAINING`,
-`PROVIDER_EXITED[_CODE]`, …), `permission_mode`, `effective_permission_mode` (never
-`bypassPermissions` for `account`), `epoch`, `busy`, `worker`, `provider_process`,
-`pending_permissions[]` (`request_id`, `tool_name`, `input`, `input_preview`,
-`requested_at`), `viewer_argv` and `take_over_argv`. A worker, or a provider it
-started that is still running, blocks interactive/headless resume and a second
-host (`SESSION_ALREADY_RUNNING`). Account removal lists live hosts as
-`hosted_session` activity.
-
-Live steering opt-in (`LiveSteering`): `api account live-steering claude:NAME
-[--enable|--disable]` returns `{account_id,provider,live_steering,setting:
-"crossSessionInbound",value,previous,changed,settings_file}`; events
-`account.live_steering_enabled|disabled` are recorded only on change. Fixtures:
-`claude_steer_request`, `claude_steer_receipt_hosted`,
-`claude_steer_receipt_interrupted`, `claude_steer_receipt_cut`, `claude_steer_semantics`, `claude_steer_receipt_peer`,
-`claude_steer_receipt_peer_unanchored`, `claude_steer_receipt_held`,
-`hosted_session`, `live_steering`, `launch_request_hosted`. Both paths are verified
-against fakes only; see [CLI](cli.md#hosted-claude-sessions-and-steering-revision-16).
-
-### Claude and Gemini archive, restore and delete (revision 17)
-
-Additive; negotiate `contract_revision >= 17`. Claude and Gemini provider entries
-now report `operations.archive` and `operations.delete_session` as
-`supported:true`, and their reasons name the per-session conditions.
-`conversation_archive` adds `providers:["codex","claude","gemini"]` and `native`
-(`NativeConversationArchive`): `version:1`, `since_revision:17`,
-`storage:"moved_native_files"`, `compression:"none"`,
-`restore_target:"original_account_home"`,
-`scope:"exact_conversation_ids_including_previous_conversation_ids"`,
-`delete_removes_catalog_entry:true`, `delete_removes_merged_aliases:true`,
-`delete_staging:"deletions"`, `dead_registry_entries_deleted:true`,
-`credentials_touched:false`, `session_capabilities` and `refusal_reasons`.
-
-The commands, request fields, operation records (`api operations`, kinds
-`archive_session|restore_session|delete_session`) and the no-replay rules are the
-[Codex ones](#conversation-archives). A merged id fails with `SESSION_MERGED`
-naming its survivor. Archive and delete act on the survivor's whole lineage, meaning its
-`conversation_id` and every `previous_conversation_ids` member. Native session rows carry
-`capabilities.archive|delete|restore`. Their `capability_reasons` are:
-
-- `archive`/`delete`: `SESSION_RUNNING` (a verified registry entry or process
-  names a lineage conversation), `SESSION_HOSTED` (a live Sessionsation-hosted
-  worker), `SESSION_STATE_UNKNOWN` (the live probe failed), `ACCOUNT_DELETED`, or
-  for `archive` only `HISTORY_UNAVAILABLE` (no transcript; delete still removes the
-  entry). Otherwise null. `restore` is false with `SESSION_NOT_ARCHIVED`.
-- Archived rows: `availability:"archived"`, `archived:true`, `archive.kind:"managed"`
-  (`storage:"moved_native_files"`), `resume_block_reason:"archived"`, and every
-  capability false except `restore` and `delete`.
-
-Admission and the worker both refuse with `SESSION_RUNNING`, `SESSION_HOSTED`,
-`SESSION_STATE_UNKNOWN`, `SESSION_ALREADY_ARCHIVED` or `SESSION_NOT_ARCHIVED` (Codex
-keeps `SESSION_ACTIVE`). The worker also refuses with `HISTORY_IN_USE` (open
-writer), `HISTORY_SYMLINK`, `HISTORY_CHANGED`, `RESTORE_CONFLICT` (an original path
-exists again) and `ACCOUNT_HOME_CHANGED`. Archive moves the files into Sessionsation
-storage, and Claude Code or Gemini CLI then neither lists nor resumes the conversation.
-Restore moves the identical files back to the same account-home paths. Delete is
-permanent: it removes the files, Claude `sessions/PID.json` entries of dead
-processes that name the conversation, the catalog entry and the merged aliases that resolved to it, so
-the id then fails with `SESSION_NOT_FOUND`. `api archives` lists native entries with
-`compressed_bytes:null`, `compression:"none"` and `previous_conversation_ids`.
-Fixtures: `archived_session_claude`, `native_conversation_archive`. File scope and
-storage are in the [CLI reference](cli.md#claude-and-gemini-archive-and-delete-revision-17).
-
-### Claude terminal input (revision 17)
-
-Additive in revision 17. `capabilities.claude_input_delivery` adds `terminal_input`
-(`ClaudeTerminalInputDelivery`), `preference:["hosted_stream_json","terminal_input","peer_message"]`
-and `delivery_request`. A third delivery path, `delivery_semantics:"terminal_input"`,
-types the text into the session's HERDR pane as the user's own keystrokes. Claude
-Code records it as a human turn: a `user` record when idle, or a `queued_command`
-attachment with `origin.kind:"human"` mid-turn, read at the next tool round like
-a `next` input. The peer path is unchanged; its text arrives as a message from
-another session, which Agent-DM labels a weak steer.
-
-Eligibility: a catalog session (launched or tracked by Sessionsation) that is
-running and not hosted, whose `attachment` is a verified HERDR pane
-(`attachment.host:"herdr"` with the exact PID and start time of the running Claude
-process). A background session (`native.kind:"bg"`) qualifies through its
-`claude attach <job>` client instead: the attachment must be that exact client
-process (PID, start time and `attach <native.job_id>` argv), and at admission
-and before the first key HERDR must report it as the pane's only foreground
-process. Keys typed there reach the background session and land in its
-transcript. Otherwise terminal input is unavailable with `TERMINAL_NOT_ATTACHED`.
-The operator switch `terminal_input_enabled` in `DATA_ROOT/config.json`
-(default `true`) turns terminal input off for Claude and Gemini: rows report
-`terminal_input:{available:false,reason:"TERMINAL_INPUT_DISABLED"}`, requests
-naming `terminal_input` are refused with that code (an `auto` request uses
-another path when one applies), and an admitted request still unsent when the
-switch goes off ends `rejected` with it.
-Only `submit` and `steer` are typed. `queue` (`later`) cannot be typed
-(`TERMINAL_QUEUE_UNSUPPORTED`). `steering.interrupt` is refused
-(`TERMINAL_INTERRUPT_UNSUPPORTED`): typed input never sends Esc or Ctrl+C.
-
-Path choice. Requests take an optional `delivery`: `auto` (default),
-`hosted_stream_json`, `terminal_input` or `peer_message`. With `auto`, a running
-hosted worker wins. Otherwise submit and steer use `terminal_input` when the row is
-attached and `peer_message` otherwise, and queue uses `peer_message`. A named path
-that does not apply is refused (`DELIVERY_UNAVAILABLE`, `TERMINAL_NOT_ATTACHED`,
-`LIVE_STEERING_DISABLED`, ...), never silently replaced. Session rows extend
-`input_delivery` with `modes` (`{submit,queue,steer}` → path or null),
-`available` (every applicable path, in preference order) and
-`terminal_input:{available,reason}`. `semantics`, `label` and `steer` describe
-the submit/steer path. A terminal row's `steer` has `interrupt_option:null`, and
-`capability_reasons.queue` is `TERMINAL_QUEUE_UNSUPPORTED` without live steering.
-
-The text must be typeable verbatim, or admission refuses it without journaling.
-Tabs and control characters are `TERMINAL_PAYLOAD_UNSUPPORTED`. So are a trailing
-backslash (Enter would become a newline) and a last token starting with `@` or `/`
-(Enter would accept a completion). The limit is 8192 bytes after trimming
-(`TERMINAL_TEXT_TOO_LONG`). CRLF becomes LF and surrounding whitespace is trimmed
-(`text_normalized`). A leading `/`, `!`, `#` or `?` gets a backslash
-(`escaped_prefix`), so command, shell, memory and help triggers stay plain text.
-The receipt correlates on that delivered text.
-
-Delivery is journaled under `DATA_ROOT/messaging/claude-steer/` before every write, one
-request per pane at a time. Procedure, with codes ending the request `rejected`
-before anything is submitted:
-
-1. `herdr agent list` must show a Claude agent on the pane (`TERMINAL_AGENT_UNKNOWN`)
-   that is not `blocked` (`TERMINAL_AGENT_BLOCKED`). The agent is checked again
-   before the first destructive key and before Enter.
-2. `pane read --format ansi` must show the main prompt with no overlay. The
-   detailed transcript view is left with ctrl+o and the shortcut help with `?` on
-   the empty prompt; the receipt then has `view_switched`. The input box is the
-   last `❯` in column 0 directly under a plain rule, closed by the next rule. The
-   pointer's colour is not a marker: Claude Code draws it grey while a turn runs,
-   so idle and busy main prompts are read alike. A viewed agent (its name as a
-   pill on a coloured background in the top rule, a `Message @name…` placeholder,
-   or `◯ main` in the agent list; a background session's own name in that rule is
-   plain text) is `TERMINAL_VIEW_NOT_MAIN`. No key returns to the main view
-   safely: Esc there stops a running subagent. Other refusals:
-   `TERMINAL_VIM_MODE`, `TERMINAL_SHELL_MODE`, `TERMINAL_OVERLAY_UNIDENTIFIED`
-   (a command or `@` completion menu drawn above the box, a focused footer item
-   or agent list, pickers, dialogs) and `TERMINAL_VIEW_UNDETERMINED`.
-3. The draft in the input box must be reconstructable exactly. Paste or image
-   placeholders, a row reaching the right edge (possible soft wrap), more than 12
-   rows and dim text mixed with typed text are `TERMINAL_DRAFT_UNRECONSTRUCTABLE`.
-   A draft starting with `?`, `!`, `#` or `/`, or ending in an `@` token, cannot
-   be typed back as text (`TERMINAL_DRAFT_UNRESTORABLE`). The draft is then journaled privately; it
-   never appears in receipts.
-4. The input is cleared with ctrl+k/ctrl+u pairs and verified empty
-   (`TERMINAL_CLEAR_UNVERIFIED`, draft kept in the journal).
-5. The text is typed with `pane send-text` (no bracketed paste, so Claude never collapses it to a `[Pasted text]` placeholder) in small chunks,
-   with ctrl+j between lines, and checked on screen. On a mismatch or a block it
-   is withdrawn and the draft restored (`TERMINAL_TYPED_TEXT_MISMATCH`). Enter is
-   journaled (`steps` gains `submit`) and sent once. A failed Enter is
-   `delivery_unknown` (`TERMINAL_SUBMIT_UNCERTAIN`).
-6. Enter empties the input box whether it starts a turn (idle) or queues the
-   text (busy). Once the box is seen empty the draft is typed back unsubmitted,
-   also while the turn runs (typed text stays in the box), and verified with
-   `pane read` (`terminal_input.draft.restored`, `restore_error`). Every exit
-   after the clear either restores the draft or reports what the box holds:
-   `draft.left_in_input` (`draft`, `empty`, `message`, `other`, `unknown`) and
-   `left_chars`; the draft then stays in the private journal. A HERDR failure
-   after the clear gets one best-effort restore onto a box seen empty (or still
-   holding the unsent message). A failed restore is reported, never retried.
-7. The transcript after the submit is searched for the human record carrying
-   exactly the delivered text with a timestamp at or after the submit. Its `uuid`
-   is `correlation.input_uuid` (`{kind:"transcript_record",input_uuid,record_type,
-   anchor_offset,turn_ended}`), and only it anchors `reply`. Without it within
-   60 seconds (or `timeout_seconds` if shorter) the receipt is `delivery_unknown`
-   (`TERMINAL_INPUT_UNCONFIRMED`). The turn ends at the next real input, or when
-   HERDR reports the agent working and then idle. Nothing is re-sent automatically.
-
-Revision 18: step 3's draft is read once more immediately before the first
-ctrl+k/ctrl+u. If the input box no longer holds exactly that draft (the user typed
-in between), the request is rejected with `TERMINAL_DRAFT_CHANGED` and no key or
-text is sent. Deleting a session also removes the now-empty Claude project
-directory of its own conversation (never a non-empty or unrelated one), and the
-deleted-session manifest keeps ids only (no name, directory, pane or home path);
-a completed Codex delete removes its session-catalog entry and recovery journal.
-
-Other codes: `TERMINAL_HOST_UNAVAILABLE`, `TERMINAL_HOST_FAILED_BEFORE_SUBMIT`
-and `TERMINAL_WORKER_EXITED_BEFORE_SUBMIT`. In those cases a draft whose restore
-was not verified stays in the journal. Receipts add `terminal_input`
-(`ClaudeTerminalInput`): `label`, `target`, `escaped_prefix`, `text_normalized`,
-`view_switched`, `draft:{present,chars,restored,restore_error,left_in_input,left_chars}` and `steps`.
-Fixtures: `claude_steer_request_terminal`, `claude_steer_receipt_terminal`,
-`claude_steer_receipt_terminal_unconfirmed`,
-`claude_steer_receipt_terminal_refused`. The screen grammar and keys come from
-the Claude Code 2.1.312 bundle and HERDR 0.9.5; the markers are checked
-against real 2.1.312 screens (`tests/fixtures/claude-screens/`, redacted), which
-the fake HERDR used by the tests replays (see
-[CLI](cli.md#claude-terminal-input-revision-17)).
-
-### Gemini terminal input (revision 17)
-
-Additive in revision 17. Gemini sessions take `api send` modes `submit`, `queue`
-and `steer` (the `ClaudeSteerRequest` shape; `delivery` `auto` or
-`terminal_input`, anything else `DELIVERY_UNAVAILABLE`) as typed input into the
-session's verified HERDR pane, through the same journal, procedure and refusal
-codes as [Claude terminal input](#claude-terminal-input-revision-17). The
-provider entry reports `submit`, `queue` and `steer` true with
-`input_delivery`, and `capabilities.gemini_input_delivery`
-(`GeminiTerminalInputDelivery`) describes the path. Gemini rows fill
-`capabilities.submit|queue|steer`, `capability_reasons` and `input_delivery`
-(`semantics`, `label`, `steer` as `GeminiSteerSemantics`, `modes`, `available`,
-`terminal_input:{available,reason}`, `model_steering:{enabled,configured,source,
-restart_required,reason}`).
-
-Enter in Gemini CLI 0.66.0 means: a user turn when idle; mid-turn, the native
-message queue with `experimental.modelSteering` off, or a user steering update
-with it on. Hence `queue` needs the setting off (`GEMINI_QUEUE_WOULD_STEER`),
-`steer` needs it on (`GEMINI_STEERING_DISABLED`), and a mid-turn `submit` is
-refused when it is on (`GEMINI_SUBMIT_WOULD_STEER`). The CLI reads the setting at
-startup only; a settings file changed after the process started makes it
-`GEMINI_STEERING_RESTART_REQUIRED`, an unreadable or trust-dependent value
-`GEMINI_STEERING_UNKNOWN`. The admission and the worker (before the first key and
-again before Enter) check these.
-
-Receipts (`GeminiSteerReceipt`: a `ClaudeSteerReceipt` with `provider:"gemini"`,
-`account_id` `gemini:NAME` and `delivery_semantics:"terminal_input"`) add
-`gemini_input` (`GeminiTerminalInput`): `model_steering`, `steering_source`,
-`busy_at_submit`, `expected` (`user_turn`, `native_queue`, `steering_update`),
-`screen_evidence` (`queued` or `steering_hint` seen right after a mid-turn Enter;
-then `facts.accepted_native` is true and the state `native_accepted`), `outcome`
-and `steering:{applied,fate}`. The anchor is the first `user` chat record at or
-after the submit whose text contains the typed text:
-
-- `submitted` / `queued`: a prompt carrying the text (`record_type:"user"`). A
-  queued message shares its record with every other message queued during that
-  turn (joined with a blank line); `batched` is then true and
-  `facts.shared_with_turn` true.
-- `steering_applied`: a record that carries the steering update with the next
-  tool response (`record_type:"steering_update"`, `steering.applied:true`,
-  `fate:"applied_at_next_tool_step"`, `facts.folded` true).
-- `steering_after_turn`: the turn ended without a tool call, and Gemini submitted
-  the update alone as a new prompt once idle (`steering.applied:false`,
-  `fate:"submitted_after_turn_as_steering_prompt"`). It is not dropped; it is
-  lost only if the process exits before it is idle again, which leaves the
-  receipt `delivery_unknown`.
-
-The reply is Gemini's text after the anchor until the next user prompt (tool
-responses continue the turn). A mid-turn Enter that Gemini visibly queued or took
-as a hint may stay unrecorded until the turn reaches it, so its confirmation
-window is `timeout_seconds`; otherwise 60 seconds, as for Claude. Nothing is
-re-sent. Never sent: Esc and Ctrl+C (both cancel a running Gemini request),
-Ctrl+D, Ctrl+L.
-
-`api account live-steering gemini:NAME [--enable|--disable]` returns
-`GeminiLiveSteering`: it sets or removes only `experimental.modelSteering` in
-`GEMINI_CLI_HOME/.gemini/settings.json` (atomic replace, mode kept, symlinks and
-commented files refused), with `applies_to:"sessions_started_after_the_change"`,
-`restart_required` and `running_sessions`. Fixtures: `gemini_steer_request`,
-`gemini_steer_receipt_queued`, `gemini_steer_receipt_steer_applied`,
-`gemini_steer_receipt_steer_after_turn`, `gemini_steer_receipt_refused`,
-`gemini_live_steering`. Grammar and keys come from the Gemini CLI 0.66.0 bundle;
-tests use a fake HERDR pane (see [CLI](cli.md#gemini-terminal-input-revision-17)).
-
-### Receipt retention (revision 18)
-
-Additive; negotiate `contract_revision >= 18` (`api capabilities.receipt_retention`).
-Each receipt store (Codex messaging ledger, Claude/Gemini input journal, headless
-deliveries) holds at most 10,000 receipts. Without retention every send would
-eventually fail with `RECEIPT_CAPACITY_REACHED`, so a retention pass runs at most
-once per hour during send admission, under the exclusive messaging lock:
-
-- A certainly terminal receipt (`completed_with_reply`, `completed_without_reply`,
-  `failed`, `rejected`, `cancelled`, `expired`) is retired once it is older than
-  `receipt_retention_days` (default 14). Age is counted from the submission deadline
-  (`expires_at`) for Codex receipts and from the last record update for journals.
-- A non-terminal or uncertain receipt (`pending_local`, `native_accepted`,
-  `execution_started`, `delivery_unknown`) is never retired before
-  `receipt_unknown_horizon_days` (default 90). Past that horizon it is first saved
-  as terminal `expired` with reason `outcome_unknown_at_retention_horizon` (a
-  provably unsent `pending_local` becomes `expired` without that reason), then
-  retired. That reason means Sessionsation stopped observing: the native outcome
-  is unknown, and the message must never be resent.
-- A Codex binding that never produced a receipt is retired as `cancelled` (when
-  cancelled) or, past the horizon, `expired`. Recovery journals are not retired.
-- Unreadable records are kept.
-
-Every retired id keeps a compact tombstone (id, final state, reason, retirement
-time; no text, target or reply). Tombstones are not counted toward capacity and
-are not pruned. A retired id is never accepted again by any delivery path, with
-the same or different content: `api send` and `api receipt` return
-`RECEIPT_RETIRED` with the final state in the message (legacy messaging:
-`receipt_retired`). Clients must keep their own copy of a reply they need beyond
-the retention window. Both settings are `sessionsation config set` keys
-(1..=3650 days; the horizon must not be shorter than the retention).
-
-**1.52.0: delivered journal records retire as terminal.** A Claude/Gemini/Antigravity journal record
-whose `phase` is `written` (or `complete`), whose worker lock is free (its worker has exited), and whose
-state is `execution_started` (the message is in the transcript or the turn started), or `native_accepted`
-backed by positive evidence (the receiver's `delivered` status, a native queue or screen evidence), is
-retired after `receipt_retention_days` like a terminal receipt, not after the unknown horizon. Its
-tombstone keeps its real state (for example `execution_started`) with no horizon reason; the record and
-`api receipt` are unchanged while it exists. A Claude peer message that only got a silent transport
-acceptance (`native_accepted` with `facts.silent_accept`, reported as
-`peer_message.evidence:"transport_accepted_silent"`), and every `unknown`, `delivery_unknown` or
-`pending_local` record or record with a live worker, still follows the horizon rule. `retention run` (and
-the daemon's hourly `retention:` log line) now reports `policy`, the values actually used, and
-`config_error`: `null`, or the message when `config.json` failed to load or validate (for example a
-horizon shorter than the retention) and the built-in defaults were used instead; `retention run` also
-prints a warning on stderr then. Capability: `receipt_retention.delivered_journal_states_retire_as_terminal`
-`["execution_started","native_accepted"]` with `delivered_requires`.
-
-### Launch permissions (revision 19)
-
-Additive; negotiate `contract_revision >= 19` (`api capabilities.launch_permissions`:
-`values` `["yolo","default"]`, `built_in_default:"yolo"`, `setting:"launch_permissions"`,
-`request_field:"permissions"`, `requests:["launch","resume-launch"]`,
-`cli_option:"--permissions"`). `LaunchRequest` and `ResumeRequest` accept an optional
-`permissions` (`LaunchPermissions`: `yolo` | `default`); omitted, the operator's
-`launch_permissions` setting applies (default `yolo`). Requests without the field are
-unchanged in shape; older backends reject it as an unknown field, so send it only
-after negotiating the revision.
-
-`yolo` starts Codex threads with approval `never` and the `:danger-full-access`
-profile (verified on the `thread/start`/`thread/resume` result), Claude Code with
-`--dangerously-skip-permissions` (plus `IS_SANDBOX=1`, which Claude requires as root,
-and the flag setting `skipDangerousModePermissionPrompt`) and Gemini CLI with
-`--approval-mode yolo`. `default` passes no override; Codex resumes, restarts and
-account switches then keep the conversation's recorded permissions. It applies to
-new launches, resume launches, Codex restart and account switch, saved-session open,
-move recovery and hosted Claude without a `permission_mode`. Explicit Codex options
-and a hosted `permission_mode` win; Codex message recovery restores the recorded
-permissions; headless delivery keeps `approval_mode:"default"`, never `yolo`.
-See [CLI](cli.md#launch-permissions-revision-19).
-
-### New Space by label (revision 20)
-
-Additive; negotiate `contract_revision >= 20`. `capabilities.new_space` ({version, resume, add_to_herdr, move_space}, booleans)
-advertises `--new-space LABEL` on `api resume`, `api session add-to-herdr` and
-`api move-space`. Each is exclusive with `--space`, validated with
-the Space-label rule (`label_validation:"space_label"`) and refused with `WORKSPACE_NAME_EXISTS` when a Space of that
-label already exists on the session's HERDR server. Resume and add-to-herdr use
-the new Space's own initial shell pane for the session (nothing extra is created
-or closed); add-to-herdr names its first tab with the session name, and its result
-adds `new_space: bool`. Without any Space flag, `api resume` still opens an
-unnamed new Space. `capabilities.add_to_herdr.requires_one_of` is
-`["space","new_space"]` (`space` is no longer in `requires`).
-The `move-space` form is described under Space moves (`New Space (revision 20)`).
-`capabilities.new_space` carries `since_revision: 20`; older backends lack it and
-reject `--new-space`, so send it only when the capability advertises the operation.
-
-### Claude folder pre-trust (revision 20)
-
-Additive; negotiate `contract_revision >= 20` (`api capabilities.claude_folder_trust`:
-`setting:"claude_pretrust_folders"`, `built_in_default:true`,
-`applies_when:"launch_permissions_yolo"`, `applies_to:["interactive","hosted"]`).
-Before Sessionsation starts or resumes a Claude process in yolo mode (an interactive
-`--dangerously-skip-permissions` start, or a hosted worker whose effective
-permission mode is `bypassPermissions`), it pre-accepts Claude Code's folder-trust
-dialog for the launch directory in that account's `CLAUDE_CONFIG_DIR/.claude.json`:
-`projects["<directory>"].hasTrustDialogAccepted = true`, under the canonical
-directory and, when different, the recorded spelling. A directory Claude does not
-know yet gets Claude's own per-project defaults. Only that key changes: every other
-member keeps its bytes and order, the file is replaced atomically with its mode and
-owner (compare-and-swap against concurrent writes), a symlinked `.claude.json` is
-refused, and a missing or malformed file is left untouched. `.credentials.json` is
-never read. Failures are reported on stderr and never block the start. `default`
-launch permissions, headless delivery and `claude_pretrust_folders:false` change
-nothing.
-
-### Gemini authentication modes (revision 21)
-
-Additive; negotiate `contract_revision >= 21`. The Gemini entry of
-`api capabilities.providers` adds:
-
-- `auth_modes`: the ordered client choices
-  `[{id,mode,label,available,reason,...}]`: `google_personal` (`mode:"google"`,
-  `available:false`, `reason` set: Google ended Gemini CLI login for personal
-  accounts on 2026-06-18), `google_workspace` (`mode:"google"`, available) and
-  `api_key` (`mode:"api_key"`, available, `input:"stdin_json"`, `field:"api_key"`).
-  Clients show unavailable entries disabled with their `reason` and never hard-code
-  availability; a later revision can re-enable an entry.
-- `auth_command`: `{since_revision:21,command:"account auth",modes:["google","api_key"],
-  key_input:"stdin_json",validation_timeout_seconds:15,unsupported_modes:["vertex"]}`.
-
-`api account auth gemini:NAME` returns `{account_id,provider,auth_mode,api_key_present,
-auth_required,auth_failed,auth_failure_reason,auth_failure_observed_at,changed,
-running_sessions,applies_to}` (plus `login_required` in `google` mode).
-`--mode google` selects Login with Google and adds `login` (the `api account login`
-plan). `--mode api-key --key-stdin` reads exactly `{"api_key":"..."}` from stdin
-(at most 32 KiB, unknown fields refused), stores the key in the account's
-`secrets/gemini-api-key` (0600, atomic, no symlinks), selects `gemini-api-key` and
-adds `validation:{state,code,reason,timeout_seconds}` with `state`
-`valid|auth_failed|inconclusive` from one headless run in a throwaway home. The key
-is never part of any result, error, receipt, state or log. Errors:
-`INVALID_REQUEST`, `INVALID_API_KEY_FORMAT`, `API_KEY_REQUIRED` (api-key without a
-stored or supplied key), `UNSUPPORTED_AUTH_MODE` (`vertex`), `UNSAFE_SECRET_PATH`,
-`UNSUPPORTED_PROVIDER_OPERATION` (not Gemini). `api account login` keeps its plan;
-the plan's `account login` refuses an `api_key` account with `AUTH_MODE_API_KEY`.
-
-Account rows add `auth_mode` (`google|api_key`, null for other providers) and
-`api_key_present` (stat only; null for other providers). `auth_failed` and
-`auth_failure_reason` (revision 18) also cover API keys: `AUTH_API_KEY_INVALID`
-(the Gemini API rejected the key) and `AUTH_API_KEY_MISSING` (API-key mode without a
-key in the child environment). A failure recorded for a key is superseded by a newly
-stored key; `AUTH_CLIENT_UNSUPPORTED` remains the classification for a retired
-personal Google login.
-
-### Claude bypass-permissions warning (revision 22)
-
-Additive; negotiate `contract_revision >= 22` (`api capabilities.claude_bypass_warning`:
-`setting:"skipDangerousModePermissionPrompt"`, `values:["skip","show"]`,
-`new_accounts_default:"skip"`). `api account bypass-warning claude:NAME
-[--skip|--show]` (CLI `account bypass-warning`) returns `{account_id,provider,
-bypass_warning:"skip"|"show",setting,value,previous,changed,settings_file,
-applies_to:"sessions_started_after_the_change"}`; without a flag it only reads.
-`--skip` writes `skipDangerousModePermissionPrompt:true` and `--show` writes an
-explicit `false` in the account's `CLAUDE_CONFIG_DIR/settings.json`. Only that key
-changes: other keys are preserved, the file is replaced atomically with its mode
-kept, a symlinked file is refused (`SETTINGS_IS_SYMLINK`) and `.credentials.json`
-is never read. Events `account.bypass_warning_skipped|shown` are recorded only on
-change. A new Claude account created by Sessionsation (`account add` into a new
-managed home, or `account login` of a managed home with no `settings.json`)
-defaults to skip when the key is absent; adopted and existing homes are not
-touched. Claude account rows add `bypass_warning` (`skip` when the stored value is
-`true`, else `show`), `bypass_warning_value` (the raw boolean or `null`) and
-`bypass_warning_setting`. Codex and Gemini rows lack the fields; the command
-fails with `UNSUPPORTED_PROVIDER_OPERATION` for them.
-
-### Pending questions (revision 23)
-
-Additive; negotiate `contract_revision >= 23` and `capabilities.questions.version == 1`.
-Every `api state` session row has `pending_questions` (empty when none or the
-session is not running): questions an agent asked the user and is waiting on.
-Question text and option labels are included; they are not secret.
+`state`: `pending_local`, `execution_started` (journaled before the process starts),
+`completed_with_reply` (session id matched, no error), `failed` (matched with an
+error; Antigravity: a status other than `SUCCESS`), `rejected` (provably not executed,
+for example `WORKER_EXITED_BEFORE_EXECUTION`; an Antigravity sign-in prompt with no
+turn is `AUTH_REQUIRED`; a Gemini run whose output is unparseable after the CLI failed
+while establishing its sign-in, with the conversation unchanged, is
+`<CODE>: <text>; nothing was sent to the model`), `expired`, or `delivery_unknown`
+(`EXECUTION_TIMEOUT`, `SESSION_ID_MISMATCH`, `UNPARSEABLE_OUTPUT`, `OUTPUT_TOO_LARGE`,
+`WORKER_EXITED_DURING_EXECUTION`). `reply` is non-null only for a matched session id;
+uncertain outcomes are never replayed. `api cancel` returns
+`HEADLESS_CANCELLATION_UNSUPPORTED` while pending or executing.
+
+### Public turn checkpoints
+
+Negotiate `capabilities.checkpoints.version == 1`. `api checkpoints < request.json`
+is an explicit read-only observation, independent of sending and receipt polling
+(Codex only). The request has `version:1`, stable `session_id`,
+`expected_generation`, `expected_runtime_generation`, `expected_turn_id` and
+optional `cursor` (initially null). Obtain exact turn/runtime identity from a
+tracked receipt, `api steer-target` or `api turn-target`; never select a turn by
+name. Schema: `CheckpointRequest`, `Checkpoints`, `CheckpointEvent`; fixtures
+`checkpoint_request`/`checkpoints`.
+
+The response exposes only native `agentMessage` text marked `commentary`,
+`partial_answer` or `final_answer`. No reasoning, user input, tool output, terminal
+capture or raw transcript is returned or journaled. History mode is read from the
+attached server with metadata-only `thread/read`. `thread/items/list` is used only
+for **paginated** histories (legacy histories reject it with -32601); for **legacy**
+histories the observer uses `thread/turns/list` with `itemsView:full`, `limit:1`,
+descending, verifies the exact latest turn and discards every non-public item before
+journaling. It never uses whole-thread `thread/read(includeTurns:true)` or reads
+transcript files. Unknown profiles fail closed. No observer, terminal supervisor,
+credential writer or subscription is started.
+
+- Every event has a stable content revision `event_id`, native `item_id`, monotonic
+  journal `sequence` and `observed_at`. Text is a full snapshot, not a delta; a
+  changed item emits another revision. Deduplicate by `event_id`.
+- Association is **turn-only**: text does not prove Steer consumption, causation,
+  delivery or completion; even `phase:final_answer` is not completion evidence.
+  `turn_status` is separately observed native state.
+- The requested turn must still be the latest visible turn before and after the
+  read. A different turn returns `CHECKPOINT_STALE_TURN`; a transition during the
+  read returns `CHECKPOINT_TURN_CHANGED`. Catalog/runtime changes return
+  `STALE_TARGET`; never carry a cursor into another runtime/turn. Endpoint failure,
+  unsupported profile or timeout yields an error and no advanced cursor. Reads have
+  an eight-second overall budget and never send input or launch.
+- Paginated reads scan at most 50 native items. Legacy reads inspect one exact
+  latest turn, bounded to **8 MiB native wire input and 8192 items**, and project at
+  most 50 unseen public snapshots per scan. Both routes return at most 50 retained
+  events. `history_mode` reports the route; `checkpoints.history_modes` advertises
+  `legacy` and `paginated`. Ordinary messaging connections keep their 1 MiB frame
+  limit. `NATIVE_FRAME_LIMIT` or `CHECKPOINT_LEGACY_LIMIT` refuses oversized input
+  without partial text.
+- The compact success envelope plus trailing newline is capped at **786432 bytes**
+  (`checkpoints.max_response_bytes`). `byte_limited:true` marks a page shortened by
+  bytes; whole events are preserved and the cursor advances only past returned
+  events. A single public text item up to 65536 UTF-8 bytes is supported.
+  `scan_pending` means native pages or unseen legacy snapshots remain; `has_more`
+  means journal events remain. Save the cursor only after processing the response.
+  Unread journal events drain before more native items are scanned
+  (`native_page_read:false`, original timestamps kept). This is polling, not
+  lossless streaming; empty events do not mean the agent is idle.
+- Up to 256 events and 4096 deduplication revisions are retained per exact
+  session/runtime/turn. `CHECKPOINT_CURSOR_GAP` means the cursor is expired, from a
+  different journal or beyond its tail; start again with a null cursor
+  (`history_gap:true` marks truncated older events). The revision ceiling returns
+  `CHECKPOINT_RETENTION_LIMIT`.
+- Journal writes are atomic and serialized by an observer-only lock
+  (`CHECKPOINT_OBSERVER_BUSY`: retry the read). Native rejections expose only
+  `error.native:{method,code}`. `observed_at` timestamps the item-page read,
+  `checked_at` the response, and `valid_until` is five seconds after observation.
+
+Use checkpoint events for an intermediate activity feed and the original receipt for
+delivery/correlation. Do not promote a checkpoint to a completed mailbox reply.
+
+## Pending questions
+
+Negotiate `capabilities.questions.version == 1`. Every `api state` session row has
+`pending_questions` (empty when none or the session is not running): questions an
+agent asked the user and is waiting on. Question text and option labels are
+included.
 
 ```json
 {"request_id":"call_…","asked_at":1793285639,"kind":"codex_request_user_input_async",
@@ -2095,1709 +1936,1241 @@ Question text and option labels are included; they are not secret.
    "multi":false,"allow_free_text":true}]}
 ```
 
-Detection is passive (incremental history scan; no provider contact, no extra
-process) and also survives `state --cached`:
+Detection is passive (incremental history scan; no provider contact) and survives
+`state --cached`:
 
 | kind | provider tool | ends when | answer path |
 |---|---|---|---|
 | `codex_request_user_input` | Plan-mode `request_user_input` (blocking) | its tool output, or the turn ends | `item/tool/requestUserInput` response |
-| `codex_request_user_input_async` | Default-mode `request_user_input_async` (the turn keeps running) | a new turn starts, or Sessionsation answers | follow-up message on the public non-steering queue |
+| `codex_request_user_input_async` | Default-mode `request_user_input_async` (the turn keeps running) | a new turn starts, or Sessionsation answers | follow-up message on the public non-steering queue, delivered when the turn ends |
 | `claude_hosted_ask_user_question` | `AskUserQuestion` in a hosted session | its permission request is answered | `can_use_tool` allow with `updatedInput.answers` |
 | `claude_ask_user_question` | `AskUserQuestion` in a Claude terminal | its `tool_result` | none: `answerable:false`, `unanswerable_reason` `PROVIDER_TERMINAL_ONLY` |
 
-Gemini CLI records `ask_user` tool calls only after they complete, so its rows have
-`pending_questions:[]` and `pending_questions_unsupported_reason`. An async Codex
-question answered in the TUI is not visible to Sessionsation until the next turn
-starts; answer each question in one place.
+Gemini records `ask_user` calls only after they complete and Antigravity questions
+are not detected, so their rows have `pending_questions:[]` and
+`pending_questions_unsupported_reason`. An async Codex question answered in the TUI
+is not visible until the next turn starts; answer each question in one place.
 
 `api answer --session ID --expected-generation G --request-id R [--answers JSON]`
 (stdin when `--answers` is absent, at most 16 KiB) answers once. `QuestionAnswers`
 maps every question id to `{"option_ids":[…],"text":"…"}`: at least one of them,
 one option unless `multi`, text only when `allow_free_text`. Codex encodes text as
 `user_note: …` after the selected labels; Claude joins labels and text with `, `.
-The result is a `QuestionAnswerReceipt`:
+The `QuestionAnswerReceipt` state is `answered` (Codex `serverRequest/resolved`, or
+the hosted worker wrote its control response), `queued` (an async Codex answer
+accepted by `api send` mode `queue`; `message_receipt` is that receipt),
+`delivery_unknown` (never resent) or `rejected` (nothing sent; `reason`).
 
-- `answered`: the provider confirmed it (Codex `serverRequest/resolved`; the hosted
-  worker wrote its control response).
-- `queued`: an async Codex answer accepted by `api send` mode `queue`;
-  `message_receipt` is that public receipt.
-- `delivery_unknown`: the write may have happened. It is never resent.
-- `rejected`: nothing was sent (`reason`); the question stays pending.
+The catalog generation is checked (`STALE_TARGET`) and one answer per session runs
+at a time (`OPERATION_BUSY`). The receipt is journaled before the native write;
+repeating the identical answer returns it with no native I/O. A different answer
+after an attempt is `QUESTION_ALREADY_ANSWERED`; a question that is gone, answered
+elsewhere or superseded is `QUESTION_NOT_PENDING`. For a blocking Codex question
+Sessionsation reads the thread first and never loads it, subscribes with
+`thread/resume` (`excludeTurns`) so the app-server replays the pending request, and
+answers only the replayed request whose `itemId` equals `request_id`; if it is not
+replayed it sends nothing. Codex accepts the first response from any client.
+Answers are recorded in `messaging/questions/events.jsonl`.
 
-Safety: the catalog generation is checked (`STALE_TARGET`) and one answer per
-session runs at a time (`OPERATION_BUSY`). The receipt is journaled before the
-native write. Repeating the identical answer returns the original receipt with no
-native I/O. A different answer after an attempt is `QUESTION_ALREADY_ANSWERED`.
-A question that is gone, answered elsewhere or superseded is `QUESTION_NOT_PENDING`.
-For a blocking Codex question Sessionsation reads the thread first and never loads
-it. It subscribes with `thread/resume` (`excludeTurns`), which makes the app-server
-replay the pending request to the new client. It answers only the replayed request
-whose `itemId` equals `request_id`; if the request is not replayed it sends
-nothing. Codex accepts the first response from any client and ignores later ones.
-Answers are recorded in `questions/events.jsonl` under the data root.
-See [CLI](cli.md#pending-questions-revision-23).
+## Session events and notifications
 
-### Antigravity provider (revision 24)
+### Session events
 
-Additive; negotiate `contract_revision >= 24`. `api capabilities` `providers` gains
-`{"id":"antigravity","since_revision":24,...}` shaped like the Gemini entry without
-`auth_modes`/`auth_command`: `enrollment:true`, `login:"interactive_exec"`,
-`usage:false`, `usage_state:"unsupported"`, `usage_source:"antigravity-cli-unsupported"`,
-`account_limits:false`, `account_logout:false`, `submit`/`queue`/`steer` true,
-`input_delivery` and `headless_delivery` (modes `resume`, `new`; `print_timeout:true`;
-`new_conversation` created first without a prompt). `operations` reports `archive`,
-`delete_session` and `account_logout` unsupported with reasons. New top-level
-`antigravity_input_delivery` (version 1: `herdr_agent:"agy"`,
-`keys_by_queued_messages`, refusal reasons including `ANTIGRAVITY_QUEUE_MODE_UNKNOWN`
-and `TERMINAL_EXIT_ARMED`); `launch_permissions.antigravity.yolo` is
-`--dangerously-skip-permissions`; `add_to_herdr.unsupported.antigravity` is
-`NO_NATIVE_ATTACH`; `session_identity.antigravity_process_source` is
-`open_presence_lock_or_conversation_argument`; `questions.providers.antigravity` is
-`{detect:false,answer:false}`. `conversation_archive.providers` is unchanged.
+`api events [--after SEQ] [--wait SECONDS] [--session ID] [--kind KIND] [--limit N]`
+returns `{events, cursor, gap, oldest_seq, latest_seq, more, waited}`
+(`capabilities.session_events`). Every event is `{seq, session_id, provider, kind, at,
+source, provider_conversation_id, detail}`; `kind` is `turn_started`, `turn_completed`
+(`detail.status` `completed`/`interrupted`/`failed`), `subagent_started` /
+`subagent_stopped` (`detail.agent_id`, `agent_type`), `background_task_started`
+(`detail.task_id`), `background_task_finished`, `compacted`, `idle`, `session_started`
+or `session_ended`. No event carries prompt, reply or tool text. Pass `cursor` as the
+next `--after`; `--wait` (at most 300) blocks for the first new one; `more:true` means
+`--limit` (default 500, at most 2000) cut the page. The journal
+(`registry/events.jsonl`) is trimmed to 5000 past 10000; `gap:true` says events after
+`--after` were dropped. The first look at a running process records it without an
+event.
 
-Accounts use `antigravity:NAME` ids; `api account add` returns the login plan (as for
-Gemini), `refresh` reports `auth_mode.auth_method:"google-oauth"` when the token file
-exists, `logout` and `limits` fail with `UNSUPPORTED_PROVIDER_OPERATION`. Account rows
-report `usage_state:"unsupported"` with null windows. Session rows have
-`provider:"antigravity"`, the Gemini-style `input_delivery` plus
-`input_delivery.queued_messages {value,source}`, `capabilities.archive|delete|restore`
-false (`UNSUPPORTED_PROVIDER_OPERATION`) and `pending_questions_unsupported_reason`.
-`api send` accepts `antigravity:` accounts and sessions: headless receipts and
-terminal-input receipts carry `provider:"antigravity"`; terminal receipts add
-`antigravity_input` `{label,queue_mode,queue_mode_source,busy_at_submit,key,expected,
-screen_evidence,outcome,caveat}`. Behaviour and limits: [CLI](cli.md#antigravity-cli-accounts-and-sessions-revision-24).
+| Provider | Source | Kinds |
+|---|---|---|
+| Claude | `hook`: Claude Code hooks (below), ingested every 2 s by the supervisor (`SESSIONSATION_EVENTS_SECONDS`, 0 disables) and on every `api events` / full `api state` | all but `background_task_finished` |
+| Codex | `supervisor`: each full state observation of a running session's turn facts (a turn end is identified by its rollout timestamp) | `turn_started`, `turn_completed`; `compacted` (`source:"operation"`) when a Sessionsation compaction completes |
+| Antigravity | `supervisor`: the agy step log, as transitions between observations (a very short turn can be missed) | `turn_started`, `turn_completed` |
+| Gemini | none (`supported:false`) | |
 
-### Semantic contract version (1.24.0)
+**Hooks** (`capabilities.hooks`). Every Claude launch (and `api hooks install
+[--account ID]`) puts one async command hook per needed event (`SessionStart`,
+`SessionEnd`, `UserPromptSubmit`, `Stop`, `StopFailure`, `SubagentStart`,
+`SubagentStop`, `PostToolUse` matcher `Bash`, `PostCompact`, `Notification` matcher
+`idle_prompt`) into the account's `settings.json` as its own entry
+`{"hooks":[{"type":"command","command":"<sessionsation> provider-hook claude-event 2>/dev/null || true","async":true,"timeout":10}]}`.
+The path is the package's stable `<pkg>/current/sessionsation` when the running
+binary is the release it points at (otherwise the running path); a missing binary
+makes the hook exit 0 silently, and an entry naming another path is rewritten in
+place. An entry is Sessionsation's only when its command contains `provider-hook
+claude-event`; user hooks and other keys are kept; an installed file is not rewritten
+(`changed:false`, `already_installed:true`). A symlinked or invalid settings file is
+refused (`SETTINGS_IS_SYMLINK`, `SETTINGS_INVALID`) and reported; a launch never fails
+for it, and `SESSIONSATION_CLAUDE_HOOKS=0` skips the launch-time install. The hook
+appends a content-free line to `<home>/.sessionsation/hook-events.jsonl` and always
+exits 0. Hooks apply to Claude processes started after the install. Codex and
+Antigravity need no hook (`method:"supervisor"`; Codex's one `notify` slot belongs to
+the user). `api hooks` returns one row per account (`account_id, provider, supported,
+method, required, events, installed, missing_events, stale_events, user_hooks,
+last_event_at, reason`, plus `changed`/`already_installed` for `install`) and one per
+Claude conversation the hooks reported (`session_id, provider_conversation_id,
+process_started_at, last_event_at, ended, subagents_running`).
 
-Adds `contract_version: "1.24.0"` to `api version` and `api capabilities` (additive;
-`contract_revision` is unchanged and equals the MINOR part) and lets
-`--api-version` take `MAJOR[.MINOR[.PATCH]]`, accepted whenever MAJOR is 1. See
-[Contract versioning](#contract-versioning-semver). No behavior changed.
+### Turn-end notifications
 
-### Antigravity folder trust, stop, archive and delete (1.25.0, revision 25)
+`api turn-notify --session ID --expected-generation G (--enable [--notify-session ID2]
+| --disable)` (Codex sessions; capability `turn_notify`; rows carry
+`turn_notify:{enabled,notify_session,enabled_at}`). While enabled the supervisor (poll
+`SESSIONSATION_TURN_NOTIFY_SECONDS`, default 5, 0 disables) records an event each time
+a turn ends: `kind:"turn_ended"` (completed or interrupted) or `kind:"error"` (the
+provider text in `error`). A turn is identified by the rollout timestamp of its end,
+so it is reported exactly once; the first observation after enabling is a baseline.
+Settings and the last 500 events live in `registry/turn-notify.json` and never change
+a generation. `api turn-events [--after SEQ] [--wait SECONDS]` returns
+`{events:[{seq,at,session_id,name,kind,error,delivery}],cursor,gap}` (also the
+`idle`/`exited` events of `api idle-notify`); `--wait` is at most 300. With
+`--notify-session` the supervisor also queues one short message (`mode:"queue"`,
+never a steer, never retried; the session's name and id and, for an error, the
+provider text) to that session; its outcome is the event's `delivery`. The journal is
+the source of truth. For every provider use [session events](#session-events).
 
-Additive MINOR; negotiate `contract_version` `1.25` or later, or the capabilities
-below. Clients that gate on semver need no change.
+## HERDR placement
 
-- `api capabilities.antigravity_folder_trust`: `setting:"antigravity_pretrust_folders"`
-  (`built_in_default:true`), `applies_when:"launch_permissions_yolo"`,
-  `config_file:"AGY_ACCOUNT_HOME/.gemini/antigravity-cli/settings.json"`,
-  `key:"trustedWorkspaces"`, `match:"exact_directory"`, `credentials_read:false`.
-  Before a yolo interactive start or resume Sessionsation appends the launch
-  directory to that array (other content preserved, atomic replace, symlink
-  refused); `launch_permissions:default` and `antigravity_pretrust_folders:false`
-  change nothing.
-- `api capabilities.antigravity_lifecycle` documents the three operations below.
-  The Antigravity provider entry reports `stop:true`, and `operations.stop`,
-  `operations.archive` and `operations.delete_session` are supported with reasons
-  (`restart` stays unsupported). `conversation_archive.providers` and
-  `conversation_archive.native.providers` gain `"antigravity"`.
-- `api stop --session ID --expected-generation G` on a running Antigravity session
-  (`capabilities.stop:true`, otherwise `capability_reasons.stop`, for example
-  `SESSION_NOT_RUNNING`) sends SIGTERM to the exact verified agy process and returns
-  after it exited: `{id,source_session_id,kind:"terminate",phase:"complete",provider,
-  signal:"SIGTERM",pid,process_start,provider_conversation_id,detail}`. Errors:
-  `SESSION_NOT_RUNNING`, `SESSION_STATE_UNVERIFIED`, `AMBIGUOUS_SESSION`,
-  `STOP_TIMEOUT` (not killed), `STOP_UNAVAILABLE`, `STOP_FAILED`. SIGKILL is never used.
-- Antigravity sessions now report `capabilities.archive|delete|restore` like Claude
-  and Gemini; `api archive`, `restore-session` and `delete-session` accept them. The
-  exact-id file set, the index-row handling and the refusals are in
-  [CLI](cli.md#antigravity-stop-archive-restore-and-delete-revision-25).
+### Batch placement observations
 
-The revision 24 statement that Antigravity archive, restore, delete and stop are
-unsupported no longer applies.
+Negotiate `capabilities.placement.version == 1`. `api state` includes each session's
+`placement` and a top-level `hosts` catalog; `api placements` returns all catalog
+memberships keyed by stable session ID plus the host/Space catalog; `api session`
+includes the same placement. `api spaces` and `original_host` remain launch
+provenance and move-admission helpers, not membership discovery. One bounded HERDR
+snapshot per bound host is shared with name discovery; pane → tab → Space must agree.
+Host and Space IDs are opaque UUIDs persisted under the data root (scoped to the
+explicit HERDR endpoint and server name, and to that host's native Space ID); labels
+are not keys. Each membership includes `catalog_generation`. Public projections contain
+no socket, filesystem locator or raw pane.
 
-### Codex 0.166.0 native profile (1.25.1)
+`state` is `observed`, `last_known` or `unobserved`. `observed_at` and `valid_until`
+(30 seconds later) describe the evidence; `checked_at` the last attempt. Failed
+snapshots, changed attachments, expired evidence and stopped sessions keep the prior
+placement with a reason, never freshened by a failed read. Sessions never observed
+remain `unobserved`. The host catalog retains last-observed Spaces with per-Space
+times; absence does not prove deletion. `api placements` includes catalog history;
+join it to your state/archive filter by session ID. Placement is not message readiness
+or move authorization. Schemas: `Placement`, `PlacementHost`, `Placements`.
 
-PATCH: no schema, field, command or enum change. `native_protocol.supported_versions`
-and `steering.compaction_verified_profiles` gain `"0.166.0"` after the generated-schema
-diff and offline fixture recorded in [operations](operations.md#profile-01660).
-Version gating is unchanged: any other `initialize.userAgent` version (including a
-later 0.166.x or 0.167.0) still fails closed with `unsupported_native_version`, and
-observations keep reporting `native_protocol.version` and `supported:false` for it.
+### Choosing a Space and a pane
 
-### Native `last_accessed` (1.26.0)
+A requested Space (`--space` on `resume`, `launch`, `move-space`, `add-to-herdr`) is
+resolved as the HERDR workspace id, then the visible label (exact, then
+case-insensitive). The Space-label rule (`INVALID_SPACE_LABEL`): 1-128 bytes, no
+surrounding whitespace, control characters or `/`, not `.`/`..`.
+`capabilities.new_space` (`{version, resume, add_to_herdr, move_space}`) advertises
+`--new-space LABEL`, exclusive with `--space`: it reuses an existing Space of that
+label, else creates one. `--create-space` requires that no Space of that label exists
+(`WORKSPACE_NAME_EXISTS`); for `resume`/`add-to-herdr` its label is the Space part of a
+canonical `--name`. A new Space uses its own initial shell pane for the session, so
+nothing extra is created or closed (`add-to-herdr` names that tab and returns
+`new_space: bool`).
 
-MINOR, additive: Claude, Gemini and Antigravity session snapshots and details now
-populate `last_accessed` (previously always null for them), in Unix milliseconds,
-the same unit Codex rows use, so the popup can sort inactive sessions by last
-opened. The value is the time of the conversation's most recent activity, never the
-time of the call: Claude and Gemini use the timestamp (`timestamp`, else
-`lastUpdated`) of the last record in the transcript jsonl, read from a bounded
-tail and cached per file (path, mtime, length), falling back to the file mtime when
-no record carries one. Claude follows the entry's current conversation (continued-in
-and parked-job lineage is already resolved onto the entry). Antigravity uses the mtime
-of the brain `transcript.jsonl`, else of the conversation db; no database is opened.
-A missing or unreadable source, a deleted account or an archived entry gives null.
-Unlike Codex it is not an open/attach time. Existing fields are unchanged.
+`api resume` places the session, in order: `--space`, `--new-space`, `--create-space`,
+else the stored Space (an existing Space with that label, or a new Space with exactly
+that label), else the Space of a canonical `--name` (`SPACE_NOT_FOUND`), else a new
+Space labelled `sessionsation`. A canonical `--name` must agree with the destination
+(`SPACE_MISMATCH`) and be free there (`SESSION_NAME_EXISTS`); the destination label is
+stored on a verified start (best effort).
 
-### Claude default statusline (1.27.0)
+**Idle-tab reuse** (`capabilities.pane_reuse`, setting `reuse_idle_tabs`, default
+`true`). A start or resume into an existing Space (`api launch start`, `session
+launch`, `api resume-launch start`, `api resume --space/--new-space`, Auto Start) first
+picks, in order: (1) for resumes, the session's recorded pane (the attachment, else
+`auto_start.last_pane`) if it is in the destination Space and reusable: the foreground
+process group is the shell and a single idle shell (`bash`, `sh`, `zsh`, `fish`) runs
+there; (2) a tab whose label equals the label a new tab would get, with exactly one
+reusable pane that is no other session's attachment (first in tab order); (3) a new
+tab. A reused pane gets exactly the command a new tab would get; no other keys are
+sent and the screen is not cleared. The pane is re-tested right before typing (else a
+new tab opens) and claimed for two minutes (`registry/pane-claims.json`). Any
+uncertainty means a new tab. Receipts and the `api resume` result gain
+`pane_reused:true` and a `detail`. `session add-to-herdr` does not reuse panes.
 
-MINOR, additive: new config key `claude_default_statusline_command` and
-`api capabilities.claude_default_statusline`. A new managed Claude account home gets
-`statusLine` seeded in its `settings.json` (see
-[Claude default statusline](cli.md#claude-default-statusline-contract-1270)).
-Existing fields, adopted homes and existing homes are unchanged.
+### Move a running session between Spaces
 
-### Abandon uncertain operations (1.28.0)
+`capabilities.space_move.version == 1` advertises it; `session.capabilities.move_space`
+gates the selected attachment. `api spaces --session ID --expected-generation G`
+returns `SpaceChoices`: stable session ID, captured generation, current Space ID,
+existing Spaces with `id/name/current`, and positive pane/terminal identity, read
+from the session's own bound host socket even in an unrelated caller environment.
 
-MINOR, additive: command `api abandon-operation --operation ID --confirm ID` and
-`api capabilities.abandon_operation`. Applies to resume-launch receipts
-(`api resume-launch status|list`). Phase `abandoned` is a new terminal value
-alongside `running`, `failed` and `recovered`: it never reverts, never replays or
-sends, and releases the session reservation. Receipts gain optional
-`abandoned_from` and `abandoned_at`. Refused while the target session's process is
-live (`SESSION_PROCESS_LIVE`); see [cli](cli.md#abandoning-an-uncertain-resume-launch-contract-1280)
-for the error codes.
+`api move-space --session ID --expected-generation G (--space SPACE | --new-space
+LABEL | --create-space LABEL) --request-id UUID` returns `SpaceMoveOperation`, also in
+`api operations`. Phases: `admitted → dispatching → reconciling → complete`, or
+`failed`/`uncertain`. Admission returns before host dispatch, checks the session
+name's uniqueness in the destination Space and a fresh `workspace list` for a new
+label; a detached, per-request locked worker revalidates the saved target and
+completes placement independently of the caller. Observe the operation until a
+terminal phase. No cancel/respond action is offered. The same UUID and target observes
+the saved result; changed input is `REQUEST_ID_CONFLICT`. Selecting the current Space
+completes without mutation. A new Space is created in the same host request (`pane
+move PANE --new-workspace --label LABEL --no-focus`), so it holds only the moved tab;
+its id is journaled (`created_space`, reported as `space_id` and `created_space_id`;
+`new_space` echoes the label), so Recover or a retry never creates a second one. The
+verified destination label becomes the session's `space`; the session label stays on
+the new tab.
 
-### Data-root layout and retention (1.29.0)
+The pane moves into a new normal tab without focus stealing; the agent process,
+account, conversation, working directory and permissions survive, and busy agents
+move without interruption. Split siblings stay in the source tab; HERDR may close an
+empty source tab/Space; a zoomed tab may need unzooming. tmux sessions, inactive
+conversations and cross-instance moves are out of scope (use New/Resume). HERDR can
+change the pane ID: the stable terminal ID and kernel process identity tie the
+returned pane to the original runtime. Only attachment placement/revision changes;
+backend ID, conversation ID, PID/start identity, runtime generation and old receipts
+stay. Discovery, switch/restart and `original_host` follow verified placement
+provenance within the launch/resume request's epoch; historical receipts are never
+rewritten, and reused pane IDs in a later launch do not import earlier history.
 
-MINOR, additive. Account rows gain `home` (the home in use: an adopted Claude
-config home, the managed `accounts/<platform>/<name>`, or a deferred legacy
-path) and `home_deferred` (true while the layout migration left an in-use home
-at its legacy path). `api capabilities` gains `data_layout` (layout version,
-directories, the account fields and the `layout` commands) and `retention`
-(classes, settings and built-in defaults). New config keys
-`log_retention_days`, `log_max_bytes`, `cache_retention_days` and
-`operation_retention_days`. New error codes `LAYOUT_MIGRATION_REQUIRED`
-(a legacy root; every command except `api version` and `layout`),
-`LAYOUT_MIGRATION_IN_PROGRESS`, `LAYOUT_CONFLICT`, `LAYOUT_UNSUPPORTED`,
-`BACKUP_REQUIRED` and `DAEMON_RUNNING` (layout commands). Request and result
-shapes of existing commands are unchanged; clients that read data-root files
-directly must use the new paths (see
-[Data-root layout](operations.md#data-root-layout-contract-1290)).
+Admission shares lifecycle and messaging locks; in-flight or uncertain placement
+blocks competing lifecycle mutations. A lost reply or incomplete ownership update is
+`uncertain`, never permission to retry: `api recover UUID` is read-only toward HERDR,
+finds the original terminal by its stable id in any Space and repairs binding/catalog
+metadata. A crash before dispatch can release its unissued intent. Durable
+`space-moves/` records keep the original process, terminal and socket identity.
 
-### Per-provider account names and backend rename (1.30.0)
+### Add a running session to HERDR
 
-MINOR, additive. Account names are unique **per provider** (`codex:work` and `claude:work`
-coexist); `capabilities.account_names.unique_across_providers` becomes `false`. A bare name that
-exists under several providers fails with `ACCOUNT_AMBIGUOUS` (unambiguous bare names keep
-working); `ACCOUNT_NAME_EXISTS` now names the same-provider owner only. Account rows gain
-`folder_name`, `name_mismatch`, `running_sessions`, `generation` and `backend_rename`
-(`capabilities.account_names` lists them). New command `api account rename-backend ID [NEW_NAME]
---expected-generation G [--request-id UUID]` ("Rename & update backend"; without `NEW_NAME` it
-renames the folder and id to match the display name); `api account rename` gains
-`--expected-generation`. New operation kind `account_rename` in `api operations`, resolved with
-`api recover` or `api abandon-operation`. New error codes: `ACCOUNT_AMBIGUOUS`,
-`ACCOUNT_SESSIONS_RUNNING`, `ACCOUNT_NAME_UNCHANGED`, `ACCOUNT_HOME_EXISTS`, `ACCOUNT_HOME_ADOPTED`,
-`ACCOUNT_HOME_MOVE_FAILED`, `ACCOUNT_RENAME_UNRESOLVED`. A backend rename changes the account id:
-clients must re-read accounts and sessions (session generations change) and treat old
-receipts and digests as historical. See [cli](cli.md#account-folder-name-versus-display-name-contract-1300).
+A running session without a HERDR terminal reports `capabilities.add_to_herdr` and
+`capability_reasons.add_to_herdr` (`SESSION_NOT_RUNNING`, `ALREADY_IN_HERDR`,
+`INTERACTIVE_ELSEWHERE`, `ATTACHED_ELSEWHERE`, `CODEX_TERMINAL_NOT_MOVABLE`,
+`NO_NATIVE_ATTACH` (Gemini, Antigravity), `HOSTED_SESSION`, each followed by `: text`).
+`api spaces --session ID --expected-generation G --herdr-session SERVER
+[--herdr-socket PATH]` lists that server's Spaces (`HostSpaceChoices`,
+`current_space_id:null`, `pane:null`).
 
-### Home-path robustness and `resume --confirm-unfinished` (1.31.0)
+`api session add-to-herdr --session ID --expected-generation G --herdr-session
+SERVER [--herdr-socket PATH] (--space SPACE | --new-space LABEL | --create-space)
+[--name NAME]` (`capabilities.add_to_herdr.requires_one_of:["space","new_space"]`)
+opens a running Claude background session in a new tab (label NAME, default the
+session name; a different NAME also renames the catalog entry) by running `claude
+attach <job>` with the account environment; no agent is started. The pane records
+itself before exec and success requires its foreground PID to be that `claude attach`
+client:
 
-MINOR, additive. `sessionsation resume SESSION --expected-generation G` gains
-`--confirm-unfinished`, matching `api resume-launch`'s `confirm_unfinished`: it acknowledges only
-the `unfinished_history` warning of a saved Codex session (without it the command fails with
-`UNFINISHED_HISTORY_CONFIRMATION_REQUIRED`; every other block reason still fails with
-`SESSION_STATE_UNVERIFIED`). Behavior fixes, no request or result shape changes: owner and
-binding home paths recorded before a home moved (`layout migrate`, backend rename) are compared
-by resolved path, so conversation owners, pane bindings and Codex history paths that use a
-legacy compatibility symlink no longer hide live attachments (`ATTACHMENT_UNOBSERVED`,
-`SESSION_UNAVAILABLE`) or fail a same-account resume. `layout migrate` and backend rename now
-also rewrite the stored `owner` (conversations) and `home` (managed-panes, herdr-panes
-bindings) of the moved home; `layout migrate` reports `home_refs_rewritten`. Journals and
-receipts are never rewritten.
+```json
+{"state":"attached","session_id","generation","host":"herdr","herdr_session","space_id",
+ "tab_id","pane_id","target","name","job_id","attachment":{...},"starts_agent":false,
+ "sends_input":false}
+```
 
-### Deletion after a home move (1.31.1)
+`state:"attach_unconfirmed"` (generation/attachment null) is never retried; refresh.
+Refusals: the capability reasons, `SPACE_NOT_FOUND`, `STALE_TARGET`,
+`UNSUPPORTED_PROVIDER_OPERATION`. Stopped sessions use `api resume` with a placement
+instead. Schema: `AddToHerdrResult`.
 
-PATCH, no request or result shape changes. Conversation archive and deletion resolve every
-candidate Codex home (the session's home, hosted instances, jobs and preserved homes) to one path
-before scanning, so a home reachable through both its legacy compatibility symlink and its
-`accounts/codex/<name>` path is scanned once. Previously the same rollout was listed twice and
-the second `thread/read` failed with `-32600` after the first `thread/delete`, leaving the
-deletion `failed` with the history already removed.
+## Conversation archives
 
-### Named, journaled inline `run` and `resume` (1.32.0)
+Capability `conversation_archive.version:1` advertises list/archive/restore/delete
+(`providers:["codex","claude","gemini","antigravity"]`; Codex `compression:"gzip"`,
+`storage:"sessionsation_data_root"`; `wait`, `account_wait`) and `native`
+(`NativeConversationArchive`: `storage:"moved_native_files"`, `compression:"none"`,
+`restore_target:"original_account_home"`,
+`scope:"exact_conversation_ids_including_previous_conversation_ids"`,
+`delete_removes_catalog_entry:true`, `delete_removes_merged_aliases:true`,
+`delete_staging:"deletions"`, `dead_registry_entries_deleted:true`,
+`credentials_touched:false`, `session_capabilities`, `refusal_reasons`). `api archives`
+returns archived/prepared entries with stable `id`, fresh `generation`, provider
+conversation identity, original creation time, original history bytes,
+`compressed_bytes` (null for native entries or when unmeasurable) and
+`previous_conversation_ids`.
 
-MINOR, additive. The commands a terminal client types into an existing pane
-(`sessionsation run --account A`, `sessionsation resume SESSION --expected-generation G`)
-gain two things, advertised as `capabilities.inline_launch`
-(`{since_revision:32, name:true, journaled:true, operations:true, ...}`; absent before 1.32,
-so gate on it):
+`api archive`, `api restore-session` and `api delete-session` require `--session`,
+`--expected-generation`, `--request-id` (UUID) and `--confirm` equal to the stable
+session ID, and admit a durable background job (`kind` `archive_session`,
+`restore_session` or `delete_session`, with immutable `created_at`); only phase
+`complete` confirms it, and the terminal phases are `complete` and `failed`. Jobs are
+not cancellable and never replayed; the same request/target/generation returns the
+original job, a reused ID with different input is rejected. The worker waits up to
+120 s for the exclusive account lock (backoff 50 ms to 1 s; phase
+`waiting_for_account`; then `ACCOUNT_BUSY: an account operation held the lock for
+120s`). `--wait` polls until `complete` (`ok:true` with the operation) or `failed`
+(`OPERATION_FAILED`, `error.operation`, retryable when the detail starts with
+`ACCOUNT_BUSY`), at most 300 s (`OPERATION_TIMEOUT`). Every record carries
+`nothing_to_archive`.
 
-- `--name NAME` on both (`name:true`). Validated like `api launch` / `api resume --name`
-  (`INVALID_SESSION_NAME`, `SESSION_NAME_EXISTS`). `run` gives the new catalog entry that name;
-  `resume` renames the session first, as `api resume --name` does (the generation changes).
-  When `HERDR_PANE_ID` is set the pane's tab is relabelled with the name, as hosted launches
-  label their tabs (best effort; the catalog name is authoritative). `run --name` is refused
-  with `--thread`, `--hosted` or `--host herdr` (`INVALID_ARGUMENT`). Without `--name`, `run`
-  names the session as before (directory name, `-2` suffix on a clash).
-- Journaling (`journaled:true`). Every inline `run` (Codex, Claude, Gemini, Antigravity)
-  writes an ordinary launch receipt under `operations/launches` and every inline `resume` a
-  resumption receipt under `operations/resumptions`, so `api launch list|status` and
-  `api resume-launch list|status` show them. The receipt has `inline:{pid,process_start,pane_id}`
-  and a placeholder host (`host.session:"inline"`). Phases: `starting_provider` (nothing has
-  started), `attached` (the session is bound to the terminal process, which then becomes the
-  provider), `complete` (the exact provider process was observed, or has ended after attaching; 1.35.1, earlier receipts say `running`), `failed`
-  (the command was refused before the session was bound; the reserved name is released),
-  `uncertain` (the outcome after binding is unknown, or the process ended without attaching).
-  `uncertain` is never replayed and holds its reservation; an inline resumption is released
-  with `api abandon-operation`. A phase is settled lazily when the receipt is read.
-- `api operations` lists them (`operations:true`) as `{id, kind:"launch"|"resume", inline:true,
-  session_id, name, account_id, phase, detail, created_at, updated_at, pane_id, can_cancel:false,
-  can_respond:false, can_recover:false}`. Existing operation kinds and shapes are unchanged;
-  hosted `api launch` / `api resume-launch` receipts are still not listed there.
-- Locks: new launches take the shared account launch lock and the name reservation; resumes
-  take the resumption admission lock, the per-conversation admission lock, the handoff check
-  and the conversation lock (`RESUME_IN_PROGRESS` / `SESSION_OPERATION_IN_PROGRESS`),
-  exactly like `api resume-launch`. A non-terminal resumption of the session blocks an inline
-  resume and vice versa.
+Archive/Restore/Delete invalidate the captured generation. Archive hides the session
+from normal state (`availability:"archived"`, `archived:true`,
+`archive.kind:"managed"`, `resume_block_reason:"archived"`, every capability false
+except `restore` and `delete`); Restore returns the same identities as saved history
+without starting an agent; Delete is permanent, including known managed archives,
+and removes the catalog entry and every merged alias that resolved to it (the id then
+fails `SESSION_NOT_FOUND`). Project files, account credentials and upstream accounts
+are never touched; external backups are outside its scope. Archive and Delete need
+inactive sessions; Archive also disables Auto Start. Prepared archives are listed for
+explicit recovery. Do not edit archive manifests or move managed history manually.
+Deleted sessions leave only ids in their manifest.
 
-Not covered: `run --thread`, `run --hosted` and `run --host herdr` are unchanged and not
-journaled here (hosted HERDR launches already use `api launch`); inline operations cannot be
-cancelled or recovered through `api operations`. See [cli](cli.md#inline-run-and-resume-names-and-journal-contract-1320).
+**Codex.** Archive exports verified gzip history to
+`DATA_ROOT/sessions/archived/SESSION-ID`, outside credential homes, and removes native
+copies only after the export verifies. Restore keeps backend and provider IDs and
+rejects live/loaded conversations, stale generations and changed compressed files.
+Delete uses the native deletion path for the conversation and its subagents and
+removes its catalog entry and recovery journal. Availability depends on verified
+inactive history and operation ownership, not enrollment; external homes remain
+eligible with final native-server, live-writer and generation checks; every candidate
+home is resolved to one path before scanning. Admission refuses with `SESSION_ACTIVE`.
 
-### Long terminal messages verified on a scrolling input box (1.33.0)
+**Claude, Gemini and Antigravity.** The provider owns its home, so jobs move only the
+exact-id files of the selected entry's lineage (its `conversation_id` and every
+`previous_conversation_ids` member; forks are separate entries):
 
-MINOR, behavior and limits. Claude Code (and agy) draw a long draft in an input box of
-limited height that shows only the last rows of the text; the rest scrolls out of view.
-Until 1.32 the whole typed text had to be on screen at once, so a message of roughly
-1.5 KB or more was withdrawn with `TERMINAL_TYPED_TEXT_MISMATCH` in a short or narrow pane
-(the receipt then showed `written:false`, `input_recorded:false`) although it was typed correctly.
-Typed input is not a paste, so Claude never collapsed it to a `[Pasted text #N +K lines]`
-placeholder; keystroke typing is kept because that is what the transcript correlation relies on.
+- Claude: `projects/DIR/ID.jsonl`, the `projects/DIR/ID/` sidecar (subagent
+  transcripts, tool results), `file-history/ID/`, `session-env/ID/` and
+  `todos/ID-agent-*.json`. Delete also stages `sessions/PID.json` entries naming a
+  lineage conversation whose process is gone, and removes the now-empty project
+  directory of its own conversation.
+- Gemini: every `.gemini/tmp/SLUG/chats/session-*.jsonl` whose header names the id.
+- Antigravity: `conversations/ID.db` (plus `-wal`/`-shm`), `brain/ID/`,
+  `annotations/ID.pbtxt`, the empty `presence/ID.lock`, the row of
+  `conversation_summaries.db` and the entry in `jetbox_summaries_proto.pb` (the set
+  agy's own `/resume` delete removes). The index is edited only through SQLite, one
+  `BEGIN IMMEDIATE` transaction per row, after a `VACUUM INTO` backup kept in the
+  archive bundle or delete staging; Archive saves the whole row for Restore, Delete
+  also drops the cache entry. Not touched: `history.jsonl`, `implicit/*.pb` and the
+  OAuth token.
 
-- The text is still typed in small chunks, but the screen is now read every 80 non-blank
-  characters. Each read must show a tail of everything typed so far, at least as long as the text
-  typed since the previous read. Consecutive reads then tile the message, so every character is
-  seen on screen; the first failed read withdraws the text (`TERMINAL_TYPED_TEXT_MISMATCH`)
-  before Enter, as before. A message that fits is compared whole. Blank lines and soft wraps do
-  not matter (whitespace is ignored in the comparison). The transcript correlation after Enter is unchanged.
-- Limits: Claude `max_text_bytes` 4096 -> 8192 (`TERMINAL_TEXT_TOO_LONG` above it).
-  agy `max_text_bytes` 1000 -> 8192 and `max_lines` 8 -> 200. agy shows `> ↑ N more lines`
-  over the tail; that row is skipped for typed text. A user draft read that way is never
-  reconstructed (refused as before). Gemini is unchanged (1000 bytes, 8 lines).
-- Input clearing (withdrawal, draft clear) now sends up to 600 (Claude) / 400 (agy) key rounds,
-  so long text can be removed; a clear that cannot be verified is still `TERMINAL_CLEAR_UNVERIFIED`.
-- No file-backed fallback: direct delivery is verified, so none is needed.
-- Capabilities: `terminal_input.max_text_bytes` (Claude) and the agy `max_text_bytes`/`max_lines`
-  report the new limits; there is no new field.
+Archive writes `DATA_ROOT/sessions/archived/SESSION-ID/native.json` (original path and
+SHA-256 tree digest of each item) first, then moves the files into
+`native/OPERATION-ID/` (rename, or copy, verify and remove across file systems;
+uncompressed); the provider then neither lists nor resumes the conversation. Restore
+moves the identical files back to the same paths of the same home. Delete stages the
+files under `DATA_ROOT/operations/deletions/native-OPERATION-ID/` with a `plan.json`,
+removes the catalog entry and aliases (in `catalog.json` and `identity.json`), then
+the staging directory; an interrupted delete leaves both for review. A session with no
+history file and no other files archives and restores cleanly with
+`nothing_to_archive:true` (such a `stale` row has `capabilities.archive:true`); files
+without the transcript still fail `HISTORY_NOT_FOUND`. Credentials are never read.
 
-### Inline journal settling (1.33.1)
+Row reasons (`capability_reasons.archive|delete`) and refusals: `SESSION_RUNNING` (a
+verified registry entry or process, interactive or headless, holds a lineage
+conversation), `SESSION_HOSTED`, `SESSION_STATE_UNKNOWN` (the live probe failed),
+`ACCOUNT_DELETED`, `HISTORY_UNAVAILABLE` (archive only), `SESSION_ALREADY_ARCHIVED`,
+`SESSION_NOT_ARCHIVED` (`restore` on a live row), `SESSION_MERGED` (act on the
+survivor); the worker also refuses `HISTORY_IN_USE` (open writer), `HISTORY_SYMLINK`,
+`HISTORY_CHANGED`, `RESTORE_CONFLICT` (an original path exists again),
+`ACCOUNT_HOME_CHANGED` and `ACCOUNT_DELETED`. Fixtures: `archived_session_claude`,
+`native_conversation_archive`.
 
-PATCH, no shape changes. An inline receipt whose provider process has ended after it was
-observed `running` now gets the detail "The inline provider process has ended." (lazy, once; the
-phase `running` is the documented terminal phase, so `api abandon-operation` answers
-`OPERATION_ALREADY_TERMINAL` consistently with `api operations`). Finished inline entries drop out
-of `api operations` when their session no longer exists (deleted), or 24 hours after they ended
-(`failed`/`abandoned` after 24 hours). Receipt files are kept for history and listed by
-`api launch list` / `api resume-launch list`.
+## Accounts
 
-### Claude account switch (1.34.0)
+Command usage is in the [CLI guide](cli.md#accounts). Every account belongs to one
+provider; IDs are `<provider>:<name>`. The machine API takes qualified IDs only (a bare
+name is `ACCOUNT_PROVIDER_REQUIRED`; a provider that differs from the enrolled one is
+`ACCOUNT_PROVIDER_MISMATCH`). Human commands also accept an unambiguous bare name or
+display name (several providers: `ACCOUNT_AMBIGUOUS`).
 
-MINOR, additive. `api switch --session ID --expected-generation G --to claude:B [--accept-risks]` now
-works for a Claude session (same provider only: another provider prefix or a bare name is
-`ACCOUNT_PROVIDER_REQUIRED`). The Claude provider capability `account_switch` and the operation
-capability `operations.account_switch` are `true`; each session's `capabilities.switch_account` is
-`true` for a stopped session and for a running interactive one whose process sits in a pane
-Sessionsation recorded, otherwise `false` with the reason in `capability_reasons.switch_account`.
-Gemini and Antigravity are unchanged. Codex switching is unchanged.
+Account rows carry `provider`, `provider_capabilities`, `membership`, `selectable`,
+`order`, `display_name`, `folder_name`, `name_mismatch`, `running_sessions`,
+`generation`, `backend_rename`, `home`, `home_deferred`, `config_home` (adopted Claude
+homes), `auth_required`, `auth_detail` (`AUTH_REQUIRED`, `WRONG_AUTH_MODE`,
+`AUTH_FAILED`; never identity), `usage_state`
+(`fresh|partial|stale|missing|no_windows|error|unsupported`), `usage`, `plan`,
+`prefill` and provider fields (`bypass_warning*`, `auth_mode`, `api_key_present`,
+`auth_failed*`). Disabled accounts remain listed; disabling prevents future selection
+and does not stop agents.
 
-The result and the `api operations` row have the Codex-switch keys (`id`, `kind:"account"`, `phase`,
-`detail`, `source_session_id`, `source_account_id`, `target_account_id`, `provider_conversation_id`,
-`can_cancel:false`, `can_recover`, `can_respond:false`) plus `provider:"claude"`, `uncertain`,
-`terminal`, `stalled`, `replays:false`, `generation` (the session's generation after the catalog
-switch), `resume {state, pane, permissions}` and a `receipt`:
-`{"files_moved":N,"paths":[...],"account_memory":{"moved":false,"stays_with":"claude:A","detail":...}}`.
+### Names
 
-- **Phases** (journal `operations/claude-switches/ID.json`): `admitted`, `stopping`, `stopped`, `copying`,
-  `copied`, `switching`, `switched`, `removing`, `removed`, `resume_pending`, `resuming`, then the
-  terminal `complete`, `failed` or `abandoned`; `uncertain` waits for `api recover` or
-  `api abandon-operation`. Each phase is journaled before its work, a detached worker
-  (`claude-switch-worker`) drives them, and nothing is replayed automatically.
-- **Admission** (synchronous, nothing changes on refusal): generation (`STALE_TARGET`), the same
-  account (`SWITCH_SAME_ACCOUNT`), both accounts enrolled, enabled and authenticated
-  (`ACCOUNT_UNAVAILABLE`, `ACCOUNT_REMOVED`, `ACCOUNT_RENAME_UNRESOLVED`), no other unfinished
-  operation on the session (`OPERATION_BUSY`, `SESSION_OPERATION_IN_PROGRESS`), no headless delivery
-  in flight, a verified transcript (`HISTORY_NOT_FOUND`, `SESSION_STALE`,
-  `SESSION_STATE_UNVERIFIED`) and no copy of the conversation in the target home (`TARGET_CONFLICT`).
-- **Refusals for sessions that cannot be switched now**: `SESSION_HOSTED` (a Sessionsation-hosted
-  stream-json session; stop it first, hosted switching is not implemented), `SESSION_NOT_SWITCHABLE`
-  (background or parked sessions), `AMBIGUOUS_SESSION`, `SESSION_PANE_UNKNOWN` (a running process that
-  is not in a recorded pane cannot be resumed afterwards; end it first), `SAVED_DIRECTORY_UNAVAILABLE`,
-  and `RISK_CONFIRMATION_REQUIRED` for a running session that is `busy`: stopping it interrupts the
-  turn, so the request must repeat with `--accept-risks` (an idle running session needs no flag).
-- **Stop**: the live process is identified exactly as discovery does (registry pid, start time,
-  session id and config home), signalled with `SIGTERM` through a pidfd opened before the identity is
-  re-checked, and waited for (30 s). A process that does not exit is reported (`STOP_TIMEOUT`), never
-  killed; a different process holding the conversation is `SESSION_CHANGED` and nothing is signalled.
-- **What moves**: for every conversation of the lineage, `projects/<slug>/<id>.jsonl`,
-  `projects/<slug>/<id>/`, `file-history/<id>/`, `session-env/<id>/` and `todos/<id>-agent-*.json`, from
-  A's home to B's home (the exact set archive and delete use; symlinks are refused). **What stays**:
-  per-project `projects/<slug>/memory/`, `settings.json`, credentials and every other account-level
-  file stay with A and B gains none of them; `account_memory` in the receipt says so.
-- **Crash safety**: digests are journaled once the source is quiescent; each file is copied to a staging
-  directory in B's home, verified, then renamed into place; only then is the catalog switched (account
-  becomes B, a new revision so a new generation, attachment cleared) and A's copies removed after a
-  second digest check (stale registry entries of the stopped process are removed too). A failure
-  before the catalog change removes only what the operation placed and ends `failed` with A intact; a
-  failure after it ends `uncertain`. `api recover ID` continues from the journaled phase (copy,
-  switch and removal are idempotent; staging left by a crash is discarded and redone).
-  `api abandon-operation ID --confirm ID` ends an `uncertain` or stalled (no worker, over 10 s old)
-  operation and moves nothing.
-- **Resume**: a session that was running is relaunched in its pane (`resume_pending`, then
-  `resuming`) as `sessionsation resume` with the recorded permissions (`--permissions yolo|default`
-  from the stopped process's command line), the target account's `CLAUDE_CONFIG_DIR` and the recorded
-  directory; the new process's attachment re-establishes pane, messaging and steering bindings (they
-  follow the live process). `resume.state` is `confirmed` only after the exact new process is
-  observed on the target account; otherwise the operation is `uncertain` with
-  `resume.state:"unconfirmed"`. The dispatch is never replayed: `api recover` only re-checks. A
-  session that was not running is only moved (`resume.state:"not_needed"`).
-- UI and Agent-DM integration are not part of this revision; the API is additive and clients ignore
-  unknown fields.
+Account names are **unique per provider** (`codex:work` and `claude:work` coexist;
+`capabilities.account_names`, `unique_across_providers:false`). New names allow 1-30
+ASCII letters, digits, hyphens or underscores (`new_account_name_max:30`, also the
+folder name); existing longer names keep working. A taken name is
+`ACCOUNT_NAME_EXISTS` naming the same-provider owner. Under a deep data root a Codex
+control socket (`<root>/accounts/codex/<folder>/app-server-control/app-server-control.sock`)
+can exceed the 107-byte `sun_path` limit for folder names longer than about 17
+characters. Session names allow at most 64 Unicode scalar values
+(`session_name_max:64`) without controls or surrounding whitespace; automatic labels
+get collision-safe suffixes.
 
-### Session auto-recover (1.35.0)
+**Display names** (`api account rename PROVIDER:NAME --display-name X|--clear
+[--expected-generation G]`) return `{account_id,name,display_name,changed}` and change
+only `display_name` (`null` when it equals the name) for every provider, also while
+sessions run. They use the account-name characters, at most 64
+(`account_display_name_max`), and are unique among the names and display names of
+the provider's accounts (`ACCOUNT_DISPLAY_NAME_EXISTS`; a new account name equal to a
+display name is `ACCOUNT_NAME_EXISTS`). Errors also `INVALID_DISPLAY_NAME`,
+`ACCOUNT_DELETION_IN_PROGRESS`. Event `account.renamed`.
 
-MINOR, additive. `api auto-recover --session ID --expected-generation G (--enable [--prompt TEXT] |
---disable)` turns a per-session toggle on or off. When it is on and the session's process later
-disappears without an explicit stop (a host restart, a crash), the supervisor resumes the same
-conversation, in its old HERDR pane when that is safe, and sends it a prompt. It works for every
-provider with a resume path (Codex, Claude, Gemini, Antigravity).
+**Backend rename** (`api account rename-backend ID [NEW_NAME] --expected-generation G
+[--request-id UUID]`; without `NEW_NAME` the folder and id are renamed to match the
+display name) returns `{account_id, previous_account_id, name, folder_name,
+display_name, name_mismatch, generation, home, operation, changed}`; clients must
+switch to the new id and re-read sessions (their generations change). The home moves
+to `accounts/<platform>/<new>` even from a deferred legacy path; the registry, catalog
+entries, switching policies, Gemini auth-failure state and usage history move with
+it; old receipts, digests and message journals keep the old id. Refusals:
+`ACCOUNT_SESSIONS_RUNNING` (any session or provider process runs or launches),
+`ACCOUNT_NAME_EXISTS`, `ACCOUNT_NAME_UNCHANGED`, `ACCOUNT_HOME_EXISTS`,
+`ACCOUNT_HOME_ADOPTED`, `ACCOUNT_REMOVED`, `ACCOUNT_DELETION_IN_PROGRESS`,
+`ACCOUNT_POLL_IN_PROGRESS`, `ACCOUNT_RENAME_UNRESOLVED`, `ACCOUNT_HOME_MOVE_FAILED`,
+`STALE_TARGET`. It is journaled in `operations/account-renames/` (`kind:"account_rename"`),
+never replayed, reconciled from evidence at supervisor start or by `api recover`;
+what cannot be decided stays `uncertain` until `api abandon-operation`.
+`backend_rename` on the row is `{available, reason, update_backend,
+update_backend_target}` with `reason` the code a rename would return now.
 
-- **Only for live sessions.** `--enable` is refused unless the session is running (`active` or
-  `idle`): a stopped, saved, stale, unavailable or archived session gets `AUTO_RECOVER_REQUIRES_LIVE`.
-  Hosted (stream-json) Claude sessions, background Claude sessions, Codex sessions of an unknown
-  account and any provider without a resume path get `AUTO_RECOVER_UNSUPPORTED`. A stale generation
-  is `STALE_TARGET`; an unfinished operation on the session is `SESSION_OPERATION_IN_PROGRESS`; a
-  bad `--prompt` (empty, over 4000 bytes) is `INVALID_ARGUMENT`. `--disable` is always allowed
-  (idempotent; `changed:false` when it was already off). Enabling again with the same prompt is
-  `changed:false`. The toggle does not change the session's generation.
-- **Receipt**: `{"session_id","generation","changed","auto_recover":{...}}`; clients ignore unknown fields.
-- **State**: every session row of `api state` adds `auto_recover:{enabled, prompt, last_pane,
-  last_recovered_at, last_result, workspace_label, suppressed, recoveries_last_hour, max_per_hour}`
-  and `capabilities.auto_recover` with `capability_reasons.auto_recover` (`AUTO_RECOVER_REQUIRES_LIVE`
-  or `AUTO_RECOVER_UNSUPPORTED[: reason]`; `true` while already enabled so it can be turned off).
-  `last_pane` is a `herdr/<session>/<pane>` target kept current while the session is live.
-  `last_result` is `null` or `{state, code, detail, operation_id, at}` with `state` one of
-  `recovered`, `recovered_without_prompt`, `failed`, `uncertain`, `rate_limited`, `waiting`,
-  `disabled`, `abandoned`. `api capabilities` adds the top-level `auto_recover` descriptor.
-- **Storage**: the setting lives in `registry/auto-recover.json` (atomic, fsynced writes under a
-  lock), not in the session catalog entry, so it survives restarts and pane bookkeeping never changes
-  a generation.
-- **Trigger**: the supervisor checks enabled sessions shortly after it starts and then every 15 s
-  (`SESSIONSATION_AUTO_RECOVER_SECONDS`, `0` turns the loop off). A session qualifies only when it is
-  enabled and not live by the same identity checks as `api state` for 3 consecutive checks (so a
-  session that is running again is never started twice), it is not archived, deleted, hosted or
-  suppressed, no other operation is running on it (`lifecycle` admission), no earlier recovery is
-  unfinished, and HERDR answers (`HERDR_UNAVAILABLE` is surfaced in `last_result` and retried). The
-  check is skipped entirely when no session has the toggle on.
-- **Explicit stop**: `api stop`, `api archive` and `api delete-session` on the session **disable**
-  auto-recover (`last_result.code:"EXPLICIT_STOP"`): a deliberate stop is never undone. `api switch`
-  and `api restart` only **suppress** it until the session is observed live again, so the process they
-  stop and relaunch themselves is not recovered a second time.
-- **Pane choice**: the recorded pane is reused only if it still exists and only an idle shell runs in
-  it (`herdr pane process-info`: foreground process group is the shell, a single shell process).
-  Otherwise a new tab is opened (`--no-focus`, labelled with the session name) in the same workspace
-  (the recorded id while it still has the recorded label, else the workspace with that label), else
-  in a new workspace. The pane and tab are renamed after the session.
-- **Resume**: through the normal path, as `sessionsation resume ID --expected-generation G
-  --confirm-unfinished` in the pane (same flags, permissions and environment as a manual resume; an
-  interrupted turn is expected). The prompt (default `Auto-recovery: the host restarted at <UTC time>
-  and sessionsation resumed this session. Re-check your state and continue your work.`) is then sent
-  once through the normal `api send` path (`mode:"submit"`) with a fixed `message_id`. A send is
-  retried only on refusals that precede any admission (`SESSION_NOT_RUNNING`, `STALE_TARGET`,
-  `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`, `PEER_SOCKET_UNLINKED`,
-  `SESSION_OPERATION_IN_PROGRESS`) for up to 90 s; a clean refusal ends the operation `complete` with
-  `prompt.state:"failed"` (`recovered_without_prompt`); anything ambiguous ends `uncertain` and is
-  never re-sent.
-- **Rate limit**: at most 3 recovery attempts per session per hour; beyond that nothing is started
-  and `last_result` is `rate_limited` until the window passes.
-- **Operations**: each recovery is journaled in `operations/auto-recoveries/ID.json` and listed by
-  `api operations` as `kind:"auto_recover"` with the operation keys of an account switch plus
-  `resume {state, pane, pane_reused, recorded_pane}` and `prompt {state, attempts, detail,
-  message_id}`. **Phases**: `admitted`, `pane_ready`, `resuming`, `resumed`, `prompting`, then the
-  terminal `complete`, `failed` (nothing was started) or `abandoned`; `uncertain` (the resume or prompt
-  was dispatched but not confirmed) waits for `api recover ID` (re-checks, never replays) or
-  `api abandon-operation ID --confirm ID`. A stalled operation (supervisor died, no worker, over 10 s
-  old) is recoverable the same way, and blocks further automatic recoveries of that session.
+**Order.** `order` is 0-based and dense; `account list` and `state` are sorted by it,
+and a new account is appended. `api account reorder ID --position N` returns
+`{"account_id","provider","position","changed","order":[ids]}` (event
+`account.reordered` on change; `N` beyond the last position is `INVALID_POSITION`;
+`account_reorder:true`).
 
-Known limitation: a new account's name is its folder name, and Codex's control socket lives at
-`<root>/accounts/codex/<folder>/app-server-control/app-server-control.sock`. Under a deep data root,
-folder names longer than about 17 characters can exceed the 107-byte `sun_path` limit. This is
-pre-existing and not widened here: `new_account_name_max` stays 30.
+### Enrollment, login and log out
 
-### Switching a stopped session only re-homes it (1.35.0)
+`api account add ID` enrolls the account. Codex add/login return the provider's
+verification URL and user code. For Claude, Gemini and Antigravity, `api account add`
+and `api account login` return an exec plan `{login:{action:"exec",interactive:true,
+credentials_in_client:false,argv}}` plus `login_required`; Claude add also returns
+`existing_home` (an operator-populated managed home registered unchanged) and `auth`
+(`logged_in`, `auth_method`, `api_provider`, `subscription_type`, `problem`). `api
+account refresh ID` (Claude, Gemini, Antigravity; Codex
+`UNSUPPORTED_PROVIDER_OPERATION`) probes now and returns
+`{account_id,provider,auth_required,auth_detail,auth_mode,observed_at}` with
+`auth_mode` `{logged_in,auth_method,api_provider,subscription_type}` (plus
+`rate_limit_tier` when Claude reports one) or null when the probe failed. The
+supervisor re-probes every 3 seconds while a Claude account is `auth_required`.
+Provider homes and authentication: [Claude](#claude-code), [Gemini](#gemini-cli),
+[Antigravity](#antigravity-cli).
 
-`api switch` (and `move`) of a **stopped/saved** session is a quick re-homing, never a start. Claude
-already behaved this way (it resumes only if it was running). For Codex, `capabilities.switch_account`
-is now `true` for a saved session (with the usual `capability_reasons` otherwise) and `api switch`
-no longer refuses it with `SESSION_NOT_RUNNING`. The job copies and byte-verifies the rollout and
-child histories in the target home, retires the old copy and lets discovery list the session as
-`saved` on the target account (new catalog account and generation). It does **not** load the thread
-on the target app-server, open any pane or terminal, or start Codex; the journal phases are the
-usual ones minus `launching_target` (`... verifying_history`, `complete` with a detail that says the
-session stays saved). A later normal resume (or opening it in the UI) starts it there with the
-recorded permissions: native resume rebuilds the target's index from the copied rollout. A resume
-launch that explicitly chooses an account (`resume_destination`) is unchanged, and so is switching a
-live session. Gemini and Antigravity do not support account switch.
+`api account managed-home claude:NAME` switches a Claude account adopted with
+`--config-dir` to `<root>/accounts/claude/NAME` (which the operator copied there
+first: 0700, owned by the user, not a symlink; nothing is created, copied or moved)
+and returns `{account_id,provider,home,previous_home,relocated,already_managed}`
+(`note:"ALREADY_MANAGED"` when idempotent). Errors:
+`UNSUPPORTED_PROVIDER_OPERATION`, `ACCOUNT_HOME_UNAVAILABLE`, `UNSAFE_ACCOUNT_HOME`,
+`ACCOUNT_IN_USE` (a verified live session or any readable process with
+`CLAUDE_CONFIG_DIR` set to either home), `AUTH_REQUIRED`, `WRONG_AUTH_MODE`,
+`AUTH_IDENTITY_MISMATCH` (a hash of the `auth status` identity differs; identity
+values are never printed). Event `account.claude_home_relocated`.
 
-### Observed inline operations are complete (1.35.1)
+`api account logout ID` signs out with the provider's own mechanism and leaves the
+account enrolled with `auth_required:true`, `selectable:false`:
 
-PATCH, no shape changes. An inline `run` / `resume` receipt used to stay in phase `running`
-("Exact provider process observed; no launch replay") for the whole life of the provider
-process, so `api operations` listed it as an ongoing resume although the session was up.
-Once the exact provider process is observed the operation is finished: the receipt moves to
-the terminal success phase `complete` (same detail), is never an unfinished resumption of the
-session (it does not block a later resume or hold a lock), and drops out of `api operations`
-24 hours after it completed (or when its session is deleted). Receipts already in `running`
-(written by 1.33.0 - 1.35.0) settle to `complete` on the next read or settle pass: a live
-process keeps the detail, an ended one gets "The inline provider process has ended.".
-A process that ends before the provider attached is still `uncertain` and never replayed.
-Hosted `api launch` / `api resume-launch` receipts keep `running` as their terminal success
-phase. Clients treat inline `complete` like `running` as final.
+```json
+{"account_id":"claude:work","provider":"claude","logged_out":true,"auth_required":true,"method":"claude auth logout"}
+```
 
-### Stop closes the HERDR pane (1.36.0)
+Codex uses the account app-server's `account/logout` (or `codex logout` with the
+account's `CODEX_HOME` when none runs); Claude `claude auth logout`, confirmed with
+`claude auth status`; Gemini applies `clearCachedCredentialFile`'s two effects
+(removes `.gemini/oauth_creds.json`, moves the active `google_accounts.json` entry to
+`old`), and in `api_key` mode deletes the key; Antigravity is unsupported
+(`account_logout:false`; use `/logout` inside agy). Errors: `ACCOUNT_IN_USE` (live
+session, provider process or held Codex lease), `ACCOUNT_NOT_FOUND` (unknown or
+deleted), `ACCOUNT_REMOVED`, `ACCOUNT_PROVIDER_MISMATCH`,
+`ACCOUNT_DELETION_IN_PROGRESS`, `LOGOUT_INCOMPLETE`. Idempotent; event
+`account.logged_out` when the stored state changed.
 
-MINOR, additive. `api stop` (Codex and Antigravity; the hidden CLI `terminate` likewise) now also
-closes the session's HERDR pane by default, after the session has actually stopped. `--keep-pane`
-keeps the pane open (the previous behaviour). Capability flags: `stop_closes_pane: true`,
-`stop_keep_pane: true`, and `stop_pane_close` (details and reason codes). Restart, switch,
-move and auto-recover never close panes; the explicit stop already disables auto-recover.
+### Account removal and deletion
 
-- **What is closed**: only the exact pane recorded for the session (its catalog attachment, for Codex
-  the source pane of the job), via `herdr pane close`, and only once the exact agent process is gone
-  (verified by identity: pid and start time) and, for Codex, the history is restored to the resume
-  list. A stop that fails, is refused, times out or is uncertain never closes anything.
-- **Safety**: just before closing, the pane must still exist and nothing but its shell may run in it
-  (`pane process-info`: foreground group is the shell, a single shell process; the same test as
-  auto-recover's reusable pane). A pane running anything else (the user started another program) is
-  left open.
-- **tmux**: a tmux attachment is never closed (documented choice: skipped with a reason).
-- **Receipt** (additive, on the stop result and `api operations` entries): `pane_closed` (bool) and
-  `pane_close_reason` (null when closed, else `KEEP_PANE`, `NO_PANE` (no recorded pane),
-  `PANE_BUSY`, `PANE_MISSING`, `PANE_STATE_UNVERIFIED`, `PANE_CLOSE_FAILED`,
-  `PANE_CLOSE_UNSUPPORTED` (tmux) or `PANE_TARGET_INVALID`). A pane that cannot be closed does not
-  fail the stop: the phase is still `complete`. For a Codex stop the outcome is final when the
-  operation reaches `complete`; before that `pane_closed` is `false` with a null reason.
+`api account remove ID` previews affected catalog sessions, active/loaded
+conversations, pending operations and stored-data counts/paths (four bounded readers,
+deterministic order; Claude adds `active_processes`, hosted sessions and
+`stored_data.adopted`). `--confirm ID --revision PREVIEW-REVISION` removes the local
+membership; `api account restore ID` reverses it. Removal refuses active/loaded
+conversations or pending lifecycle jobs, never disables the original enrollment,
+stops agents or deletes credentials/history; a removed account refuses launch,
+resume and headless delivery with `ACCOUNT_REMOVED`.
 
-Related (1.36.0, no shape change): before sessionsation types a command into a reused, retained
-HERDR shell (auto-recover's reused pane, Codex relaunch into a shell pane) it clears the input line with
-`pane send-keys <pane> ctrl+e ctrl+u` (best effort, only when the foreground is the bare shell), so
-leftover unsubmitted text is not prepended. tmux relaunch uses `respawn-pane -k`, which replaces
-the shell, so nothing is cleared there.
+`api account delete ID` previews intent without scanning account files;
+`--confirm ID --request-id UUID` admits a durable background operation (the request
+id binds one account permanently; reuse for another is `REQUEST_ID_CONFLICT`; repeat
+it only to inspect). The worker checks active/loaded sessions and pending work,
+reserves the account through its sole owner, preserves saved/archived history in
+`sessions/preserved/REQUEST-ID/home`, then deletes the remaining account files and
+credentials; active processes block it, and it never stops agents. Preserved
+histories stay discoverable with their stable IDs; resume needs an explicit enrolled
+destination account. Per provider it preserves: Codex rollouts and native history
+metadata (paginated history needs native verification first); Claude `projects/`,
+`history.jsonl`, `file-history/` and `todos/` of a managed home (an adopted
+`--config-dir` home is never modified: `home_disposition:"left_in_place"`,
+`external_home`); Gemini chat files, `projects.json` and prompt history;
+Antigravity `conversations`, `brain`, `annotations`, `implicit`, the index and
+`history.jsonl`. With [shared Claude state](#shared-claude-state) only the links are
+removed. Previews add `home_disposition` (`deleted|left_in_place`),
+`adopted_config_home` and `deletes_local_credentials`. Sessions of a deleted account
+report `availability:"stopped"`, `resume_block_reason:"account_deleted"`,
+`history_preserved:true` and `ACCOUNT_DELETED` for resume and headless delivery.
 
-### Live activity, send checks, stop expiry (1.37.0)
+`api account deletions [--request-id UUID]` reads receipts; `api recover UUID`
+explicitly resumes a failed/interrupted worker after acquiring its operation lock (a
+running worker rejects it). Deletion cannot be cancelled once admitted; do not call
+`cancel-operation` or `respond` on it. An orphaned worker is marked failed after a
+ten-second admission grace. Accounts reserved for deletion expose `deletion` status
+and stay unselectable; a partial credential deletion must not be re-enabled. The
+owner must advertise `account_deletion`; an older owner returns
+`owner_upgrade_required:true` and refuses with `OWNER_UPGRADE_REQUIRED`.
 
-MINOR, additive. Capability flags `live_activity`, `pending_operations`, `native_send_checks`.
+### Limits, plan and usage
 
-- **Failed turns accept input.** A Codex turn that ends in failure (for example "Selected model is
-  at capacity", quota) leaves a live, idle session. Before 1.37.0 `api send` (submit/queue) and the
-  passive readiness `actions.submit|queue` treated the `errored` state like an interrupted turn and
-  refused with `explicit_resume_required`; the cause was the latest-turn status `failed` being
-  mapped to `errored` and `errored` being gated like `interrupted`. Now `errored` is
-  submit/queue-eligible when nothing else blocks (`actions.resume` stays available as well). Only an
-  `interrupted` turn, a recorded stop intent and an approval/input prompt still require explicit action.
-  `api observe` additionally carries `last_turn:{status,error}` and `activity`.
-- **`sessions[].live_activity`** (Codex, running sessions; null otherwise; also in `api state --cached`
-  since it is part of the stored snapshot):
-  `{state, error, last_turn_status, source, observed_at}`. `state` is `working` (a turn is in
-  progress), `idle` (ready, no turn seen), `turn_ended` (the latest turn completed or was
-  interrupted and nothing has started since), `blocked` (waiting on an approval or user input),
-  `error` (the latest turn failed; `error` holds the provider's text, at most 300 characters, one line)
-  or `unknown` (no evidence). `source` is `app_server` (thread status read during the state scan) or
-  `rollout` (bounded tail of the history file). `observed_at` is the snapshot time.
-  A cached snapshot shows the activity of its own `observed_at`.
-- **`sessions[].pending_operations`**: unfinished session operations of that conversation as
-  `[{id, kind, phase, created_at, expires_at}]`; `kind` is `stop`, `pause`, `switch` or `restart`;
-  `expires_at` is null except for a stop. (`pending_operation_id` is unchanged.)
-- **Stop expiry.** A queued stop that is still waiting for the session to become idle
-  (`waiting_for_*` phases) gives up after 1800 seconds (`TERMINATE_WAIT_SECONDS`, from the
-  operation's `created_at`; journals without `expires_at` use that default): the operation fails with
-  "the stop request expired while waiting for the session to become idle; nothing was stopped",
-  the session keeps running and the stop gate recorded for that request is released (a newer stop's
-  gate never is). Cancel with `api cancel-operation` is unchanged.
-- **Native send checks (submit/queue to Codex).** Acceptance by the app-server is not consumption.
-  (1) Before the send, up to 20 seconds are spent waiting (without holding the receipt ledger) for
-  real input readiness: a process older than 4 seconds whose thread answers native reads with a
-  settled turn state; busy, blocked and interrupted states end the wait at once and are then
-  refused as before. (2) A late or lost add acknowledgement is reconciled against the native queue
-  instead of left unknown when the entry is there. (3) After an input accepted by an idle session,
-  up to 8 seconds are spent confirming it was consumed (the queue entry is gone and a turn records
-  the message id). Consumed: `execution_started`/`completed_with_reply`, `facts.input_consumed:true`.
-  Still queued at the deadline: the entry is removed again and the receipt is `failed` with reason
-  `input_not_consumed` (`facts.input_consumed:false`, nothing ran, safe to resend with a new
-  message id). Neither seen: `delivery_unknown` with reason `consumption_unverified`; never replay.
-  A busy-target queue send is not subject to (3).
-  Environment `SESSIONSATION_NATIVE_SEND_CHECKS=off` disables (1) and (3) (test fixtures only).
+`api account limits ID` (capability `account_limits`, Codex and Claude) returns
+`{account_id,limits,saved:false}`; `--short-used P --weekly-used P` (both, finite
+0-100, maximum **used** percentages) saves through the supervisor and returns
+`saved:true`. `limits` is the snapshot's `switch_thresholds`; display markers as
+`100 - *_percent` and mark custom limits only when `customized:true`. Concurrent edits
+are last-write; after an uncertain response read the limits first. Gemini and
+Antigravity are `UNSUPPORTED_PROVIDER_OPERATION`.
 
-### Launch model override and turn-end notifications (1.38.0)
+`accounts[].plan` (`account_plan`) is the subscription plan the provider last
+reported, read-only: `{"provider","raw","name","rate_limit_tier","source","verified_at"}`.
+`raw` is the value as reported; `name` is a label only where certain (Claude `pro`;
+Codex `free`, `plus`, `pro`, `team`, `business`, `enterprise`), else null (Claude
+`max` covers both Max and Ultra). `rate_limit_tier` is Claude's `rateLimitTier` when
+reported. `source` is `auth_status` (Claude probe, kept in the registry and refreshed
+at most hourly while unchanged) or `usage_snapshot` (Codex `planType`). Gemini and
+Antigravity report null.
 
-MINOR, additive. Capability flags `launch_model` and `turn_notify`.
+**Usage meter** (`capabilities.usage_meter`). Every account row and `api usage
+[--account ID] [--cached]` (one row per account of every provider; `--cached` never
+contacts a provider) carry `usage.meter`:
 
-- **Launch model override.** `LaunchRequest` (`api launch` validate/start) accepts optional
-  `model` (a Codex model name such as `gpt-6-astra`: letters, digits and `. _ - : /`, 1-100
-  characters, not starting with `-`) and `reasoning_effort` (`none`, `minimal`, `low`, `medium`,
-  `high` or `xhigh`), for Codex accounts only (`UNSUPPORTED_PROVIDER_OPERATION` otherwise;
-  `INVALID_MODEL` / `INVALID_REASONING_EFFORT` for bad values, rejected by `validate` as well as
-  `start`). They override the account default for that session only: the new thread is started with
-  that model and `model_reasoning_effort`, and the terminal is opened with `-m` and
-  `-c model_reasoning_effort="..."`. Omitted fields keep the account default. The model name is not
-  checked against what the account can use; an unavailable model is reported by Codex when a turn runs.
-- **`api turn-notify --session ID --expected-generation G (--enable [--notify-session ID2] | --disable)`**
-  (Codex sessions; default disabled; `sessions[].turn_notify:{enabled,notify_session,enabled_at}`).
-  While enabled, the supervisor (poll `SESSIONSATION_TURN_NOTIFY_SECONDS`, default 5, 0 disables)
-  records an event each time a turn of that session ends: `kind:"turn_ended"` (completed or
-  interrupted) or `kind:"error"` (the turn failed; `error` has the provider text). A turn is identified
-  by the rollout timestamp of its end, so it is reported exactly once and a turn shorter than the poll
-  interval is still reported; the first observation after enabling is only a baseline (a turn that
-  already ended is not reported). Settings and a journal of the last 500 events live in
-  `registry/turn-notify.json`; they never change a session generation.
-- **Delivery.** (1) The event journal: `api turn-events [--after SEQ] [--wait SECONDS]` returns
-  `{events:[{seq,at,session_id,name,kind,error,delivery}],cursor,gap}`; pass `cursor` as the next
-  `--after`; `--wait` (at most 300) blocks until an event after the cursor exists; `gap:true` means
-  events before the oldest kept one were dropped. (2) With `--notify-session`, the supervisor also
-  queues one short message (`mode:"queue"`, never a steer, never retried; content: the session's name and
-  id and, for an error, the provider's error text; no conversation content) to that other Codex session; its
-  outcome is the event's `delivery` (`{message_id,to,state,reason}` or `{state:"failed",error}`).
-  Delivery to the designated session is best effort: the journal is the source of truth.
+```json
+{"supported":true,"requires_session":false,"source":"oauth","fresh":true,"observed_at":1800000000,
+ "age_seconds":12,"windows":{"five_hour":{"used_percent":31.0,"resets_at":1800003600,
+ "observed_at":1800000000,"source":"oauth"},"seven_day":null},"reason":null}
+```
 
-### Shared Claude conversation state (1.39.0)
+- Codex `app_server`: the supervisor's `account/rateLimits/read` of every enabled
+  account (up to 20 s, also through a shared app-server, never a second one). The
+  supervisor skips an account while a possible destination terminal or a held
+  `.switcher-lease` could contend for the login; the meter then says so in `reason`.
+  `api usage` (not `--cached`) and `api account limits` ask the supervisor to read when
+  the reading is older than 60 s and a read is safe
+  (`SESSIONSATION_CODEX_METER_CACHE_SECONDS`).
+- Claude: `statusline` (a running session's status-line payload, below) and `oauth`
+  (the account's `GET https://api.anthropic.com/api/oauth/usage`, `{utilization,
+  resets_at}` per window, clamped to 100) share one owner (`usage.lock`) and
+  `usage.json`. `api usage` and `api account limits` read a meter older than 60 s, at
+  most once per 60 s per account; the supervisor reads idle accounts older than 600 s
+  once a minute at most (`SESSIONSATION_CLAUDE_METER_SECONDS`, 0 off) with the stored
+  token only, so a background read never rotates a refresh token (`AUTH_STALE` in
+  `<home>/.sessionsation/usage-read.json`).
+- Gemini and Antigravity: `supported:false` with `reason`.
+- Within one reset cycle a window never goes down, whichever source reported it (two
+  readings whose `resets_at` differ by at most 300 s are one cycle,
+  `same_cycle_seconds`); a different `resets_at` replaces. `fresh`: some window is
+  present, none is past its reset and the newest reading is younger than the
+  provider's limit (Codex `stale_seconds`, Claude 1800 s). A meter that is not fresh
+  always has a `reason`. A missing window is null, never 0%. `usage.observed_at` is
+  null without a real observation.
+- The row's `read` (`api usage`) or `meter_read` (`api account limits`) is
+  `{attempted, ok, code|reason, message, attempted_at, retryable}` or null when no
+  read was needed; codes `AUTH_REQUIRED`, `AUTH_STALE`, `USAGE_READ_FAILED`. A failed
+  read keeps the last value.
+- `api usage` rows keep `account`, `state`, `fresh`, `source`, `semantics`,
+  `observed_at`, `age_seconds`, `claude_version`, `short`, `weekly` (each with its own
+  `observed_at` and `age_seconds`), `exhausted`, and add `account_id`, `provider`,
+  `supported`, `requires_session`, `meter` and `read`. `api account usage ID --start
+  UNIX --end UNIX --step 1800` returns history.
+- `state --cached` overlays the supervisor's current Codex usage (a local read, 2 s
+  bound); when it does not answer, a frozen value is marked `stale` by its age. A
+  stored `observed_at` ahead of the clock never blocks new polls and is clamped
+  (`usage.observed_at_clamped_from`).
 
-MINOR, additive. Capability `shared_claude_state` (`api capabilities`).
+### Reset credits
 
-A session must behave the same, and see the same information, on any account, so Claude's
-non-credential per-conversation state moves out of the account homes into one store in the data root:
-`<root>/shared/claude/<name>` for `name` in `projects` (transcripts and per-project `memory/`),
-`file-history`, `todos` and `session-env` (the real subdirectory names of the Claude config dir).
-Every managed Claude account home gets a directory symlink `<account home>/<name>` whose stored
-target is exactly the absolute path `<root>/shared/claude/<name>` (as the root is configured, for
-example `/mnt/user/appdata/sessionsation/...`). Credentials, settings, `sessions/` and everything else
-stay per account. Adopted (`--config-dir`) homes are never linked (`shared status` reports them as
-`applicable:false`).
+`api account reset-credit ID [--credit-id ID] [--kind 5-hour|weekly|fable|full]
+[--request-id UUID]` spends a stored rate-limit reset (`capabilities.account_reset_credit`,
+`providers:["codex","claude"]`, `idempotent_by:"request_id"`, `auto_retry:false`,
+`reversible:false`). **It is not reversible** and is sent only by this command.
 
-- **Dormant until enabled.** Nothing changes on a root until `shared enable` or the first
-  `shared migrate` writes `shared/claude/.sessionsation-shared`. Deploying the build alone changes
-  no behavior.
-- **Trusted-link model.** Sessionsation still refuses symlinks everywhere (generic walkers such as
-  digest, copy and remove fail with `HISTORY_SYMLINK` on a link, so nothing can copy, digest or delete
-  *through* one). One helper, `shared_state::trusted_link`, accepts exactly these links: a symlink at
-  exactly `<managed Claude home>/<name>` for a listed name, owned by this user, whose stored target is
-  exactly `<root>/shared/claude/<name>`, which resolves (no other symlink on the way) to that
-  directory, and which is a real private (no group/other access) directory owned by this user inside
-  real private `shared/` and `shared/claude/`. A link to another place, a link replaced by another
-  link, a relative spelling, a link owned by another user, a link at an unlisted name or outside an
-  account home, or a store entry that is itself a symlink is not trusted and is refused as before.
-  The helper is consulted only where code explicitly handles a link: launch-time repair, the parent
-  check when restoring archived files (`file-history/<id>`, `todos/...`), account deletion and the
-  switch no-op.
-- **Ensure-links.** On `account add`, before every Claude launch, resume, hosted start, headless
-  delivery and attach, and on a switch, a missing link is created, an empty real directory is
-  replaced by a link and a trusted link is kept. Errors: `SHARED_STATE_UNMIGRATED` (an account home
-  has a real directory with data where a link belongs: nothing is merged automatically; run
-  `sessionsation shared migrate --account claude:NAME`), `SHARED_STATE_LINK_UNTRUSTED` (another
-  symlink or a file is there; left unchanged), `SHARED_STATE_STORE_UNSAFE`. `account add` reports
-  `shared_state:{state:"linked"|"disabled"|"not_applicable"|"error"}`. Once the store is enabled, an
-  account that is not migrated cannot be launched or resumed until it is migrated; running sessions
-  are not affected.
-- **Account switch.** When both accounts are fully linked the `copying`/`copied` and
-  `removing`/`removed` phases are still journaled but copy and delete nothing (`receipt.shared_state:true`,
-  `files_moved:0`; only dead `sessions/<pid>.json` entries of the source account are cleared). Per-project
-  `memory/` is the same on both accounts. Two plain accounts keep the old move. A half-linked pair is
-  refused with `SHARED_STATE_MIXED`, because the old move
-  would delete from the shared store.
-- **Delete, log out, rename.** Account deletion removes the links only (`unlink`; shared data is
-  never moved or deleted, so conversations survive the account). Log out runs the provider's own
-  logout and touches no history. Rename is a directory rename and the links stay valid.
-- **`shared migrate --account claude:NAME [--dry-run] [--allow-full-copy] [--fs-path DIR]`** (CLI,
-  not an `api` command; prints JSON). Journaled in `operations/shared-migrations/<id>.json`,
-  idempotent (`already_migrated:true`) and resumable (the same command continues an unfinished
-  journal). Steps: (1) preflight: account home and store on one file system (`st_dev`), the alias
-  proven, `renameat2(RENAME_EXCHANGE)` and (unless `--allow-full-copy`) reflink probed on the real
-  disk; `--dry-run` runs only the read-only checks and prints the per-name plan. (2) Backup: a reflink
-  copy (`FICLONE`) of each directory to `<root>/backups/shared-migrate-<UTC time>/<account>/<name>`;
-  without reflink support it fails with `BACKUP_REFLINK_UNSUPPORTED` unless `--allow-full-copy`.
-  (3) Link, per name, with no moment in which the account path is missing and no data copied (inodes
-  are unchanged, so file descriptors of live Claude processes keep working): if the store has no
-  `<name>` yet, a placeholder symlink to `<root>/shared/claude/<name>` is created at that store path
-  and exchanged in one `RENAME_EXCHANGE` with the account's real directory (the real directory is now
-  in the store, the link at the account path); if the store already has `<name>`, non-conflicting
-  entries are moved by `RENAME_NOREPLACE`, directories present on both sides are merged recursively,
-  a file present on both sides is a reported conflict (never overwritten), and a temporary link is then
-  exchanged with the emptied account directory the same way. Conflicts leave that name a real
-  directory, print the paths under `results.<name>.conflicts`, exit non-zero with
-  `SHARED_STATE_MIGRATION_INCOMPLETE`, and the command is repeated after the operator resolves them.
-  Leftover `-tmp-*` project slugs are moved like any other entry.
-- **`--fs-path`.** The Unraid user share (`/mnt/user`) is a FUSE union with no `RENAME_EXCHANGE` and
-  no reflink. `--data-dir` stays the logical root, so every link target is `/mnt/user/...`, while
-  `--fs-path /mnt/disk1/appdata/sessionsation` makes all file operations run on the real disk. The alias
-  is proven by creating a probe file there and finding it under the data root. If the account's
-  directories sit on another disk than the store, the preflight fails with `SHARED_STATE_CROSS_DEVICE`.
+- **Result** `{account_id, request_id, outcome, rate_limits_after, attempts,
+  operation}` (Claude adds `credit_id` and `claude {result, reason, resets_left,
+  cleared, weekly_resets_at, cooldown_until}`). `outcome` (`ok:true`): `reset`,
+  `nothingToReset` (nothing spent), `noCredit`, `alreadyRedeemed` (this request id
+  already succeeded), and for Claude `cooldown` (nothing spent; try after
+  `cooldown_until`). After `reset`/`alreadyRedeemed` usage is read again at once
+  (`rate_limits_after`, or `rate_limits_after_error`).
+- **Idempotency.** The request id (a lowercase UUID, generated when omitted) is
+  journaled in `operations/account-reset-credits/<request_id>.json` (`requesting`)
+  **before** sending, then `complete`, `failed` or `uncertain`. Retry with the same
+  request id (it can never spend a second credit); a new id is a new attempt. The same
+  id for another account or credit is `REQUEST_ID_CONFLICT`. Listed as
+  `kind:"account_reset_credit"`, never pruned. The account's operation lock is held
+  throughout (`ACCOUNT_BUSY`, nothing sent; also while a direct Codex terminal holds
+  the account).
+- **Errors.** `RESET_CREDIT_OUTCOME_UNKNOWN` (no answer, 5xx, unreadable or unknown
+  result: `uncertain`) and `RESET_CREDIT_FAILED` (an error answer, 4xx/429, or never
+  connected: `failed`) both name the request id to retry with. Also
+  `UNSUPPORTED_PROVIDER_OPERATION` (other providers, or a Codex without the method,
+  naming its version), `INVALID_REQUEST_ID`, `AUTH_REQUIRED`, `AUTH_STALE`
+  (retryable), `ACCOUNT_DELETION_IN_PROGRESS`, `ACCOUNT_REMOVED`,
+  `RESET_CREDITS_READ_FAILED`, `RESET_CREDITS_UNREADABLE`. Provider error text is
+  never echoed.
+- **Stored credits** appear as `usage.reset_credits` `{available, observed_at,
+  credits}` (or null): Codex from the app-server's `rateLimitResetCredits`
+  (`credits` `[{id, status, expires_at}]`, possibly shorter than `available`); Claude
+  from the `cedar_ember` block of `GET .../api/oauth/usage?cedar_ember=1&skip_spend=1`
+  (`available` sums `resets_left` of grants that are not paused; one row per grant
+  `{id, status, expires_at, kind: session|weekly|fable|full, label, resets_left,
+  resets_total, paused, usable_now, starts_at, clears, unavailable_reason}`, plus
+  `eligible`, `ineligible_reason`, `at_limit`, `next_grant_id`, `cooldown_until`,
+  `weekly_resets_at`). `api account limits claude:NAME` reads it when older than 60 s
+  (`reset_credits_read`); `account list` and `state` show the stored read
+  (`<home>/.sessionsation/reset-credits.json`) and never call the API.
+- **Codex** sends `account/rateLimitResetCredit/consume` `{creditId, idempotencyKey}`
+  through the supervisor's worker or the shared app-server (Codex 0.165.0 and later).
+- **Claude** posts `{program:"cedar_ember", grant_id, request_id}` to
+  `https://api.anthropic.com/api/organizations/<organizationUuid>/reset_rate_limits`.
+  The grant is `--credit-id`, else a usable grant of `--kind`, else `next_grant_id`,
+  else the first usable grant (none: `noCredit`, `sent:false`, nothing journaled). The
+  access token comes from `CLAUDE_CONFIG_DIR/.credentials.json` (`claudeAiOauth`) and
+  is only on curl's stdin (`curl -q -K -`, config `curl_binary`), with Claude Code's
+  headers. Renewal matches Claude Code so the two never race a refresh-token rotation:
+  only when the token expires within 300 s or after a 401 (then sent once more), under
+  Claude Code's `.oauth_refresh.lock` (and the legacy `<realpath>.lock`), re-reading
+  the file under the lock, posting to `https://platform.claude.com/v1/oauth/token` and
+  writing back atomically (0600) under `.storage-write.lock` with compare-and-swap.
+
+## Providers
+
+`capabilities.providers[]` reports `codex`, `claude`, `gemini` and `antigravity`
+(`implemented:true`, flat booleans, `operations` with `{supported, reason}`). The
+`operations` table is the source of truth; this section lists provider-specific
+behaviour. There is no cross-provider conversation conversion. Every provider child
+is built by one environment function per provider that sets the account home, removes
+ambient credentials and backend overrides so billing cannot switch silently, removes
+`XDG_RUNTIME_DIR` (Claude, Antigravity) and sets `SESSIONSATION_SESSION_ID`.
+
+### Codex
+
+The full lifecycle: usage, stop, restart, account switch, relocation
+(`change_directory`, `move_project`), Space moves, checkpoints, steering,
+Resume-and-submit and compaction through the account app-server. Verified native
+profiles are listed in `native_protocol.supported_versions` and
+`steering.compaction_verified_profiles` ([operations](operations.md#native-messaging-compatibility));
+any other `initialize.userAgent` version fails closed with `unsupported_native_version`.
+Sessionsation writes `{"updater":{"autoUpdateEnabled":false}}` into each account's
+`app-server-daemon/settings.json` (other keys kept, 0600) at supervisor start and
+before every `account prepare`/`restart-server`, so the managed daemon is not moved to
+an unverified release ([release pinning](operations.md#codex-daemon-release-pinning)).
+
+`api relocate --session ID --expected-generation G --to /absolute/destination
+[--move-files] [--dry-run]` changes a live managed session's directory (`--move-files`
+also moves the project folder; otherwise the destination must exist). `--dry-run`
+returns source, destination, affected sessions and confirmation detail without
+changes. Admission rechecks the generation; lifecycle reservations, idle checks,
+background-work consent and recovery apply; account, conversation and session
+identity stay and a live agent is restarted in the new directory. Folder moves reject
+existing destinations, symlinks and protected roots, wait for other sessions using
+the source, and keep the original backup across file systems. For inactive sessions
+choose the directory in the Resume plan.
+
+### Claude Code
+
+Each account is an isolated `CLAUDE_CONFIG_DIR`: the managed home
+`DATA_ROOT/accounts/claude/NAME` (0700), or with `--config-dir DIR` an adopted directory
+used **in place** (absolute, existing, outside the data root, not overlapping another
+account's home; never copied or moved). An operator-placed managed home is registered
+as is if it is a 0700 directory owned by the user and not a symlink (otherwise
+`UNSAFE_ACCOUNT_HOME`); it is never wiped or re-permissioned. Config keys:
+`claude_binary` (default `claude`), `claude_session_home` (optional absolute `HOME` for
+Claude children), `claude_statusline_refresh_seconds`, `claude_pretrust_folders`,
+`claude_default_statusline_command`. Every Claude child gets `CLAUDE_CONFIG_DIR`,
+`DISABLE_AUTOUPDATER=1`, and has `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`ANTHROPIC_BASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK|VERTEX|FOUNDRY`,
+`ANTHROPIC_BEDROCK_BASE_URL`, `ANTHROPIC_VERTEX_PROJECT_ID` and `XDG_RUNTIME_DIR`
+removed. Before any launch `claude auth status --json` (bounded) must report a
+`claude.ai` login on `firstParty`, else `AUTH_REQUIRED` or `WRONG_AUTH_MODE`; email and
+organization fields are never stored or printed. Login runs `claude auth login
+--claudeai` through the same environment; the human `account add` starts it when a
+fresh managed home is not logged in and stdin is a terminal (`--no-login` skips it).
+
+A new session generates its native id, records the catalog entry (provider, account,
+`conversation_id`, directory) and execs `claude --session-id UUID --name LABEL
+--settings JSON` (the settings carry the statusline hook and
+`crossSessionInbound:"accept"`); resume runs `claude --resume UUID --name LABEL` in the
+recorded directory and refuses a verified live session or a missing transcript
+(`SESSION_STALE`). Discovery reads only `sessionId`/`cwd`/`timestamp` from transcript
+headers in `projects/*/*.jsonl`. A session is `running` only when a `sessions/PID.json`
+registry entry names it, the PID exists with the recorded `procStart` and, when
+readable, the process's config dir is the account home; `native_status` and
+`native_name` come from that entry. Otherwise `stopped`, `stale` (transcript missing)
+or `unknown` (probe failed). Supported: new, resume, rename (HERDR tab), stop, account
+switch, archive/restore/delete, compaction, set-model, Add to HERDR for background
+sessions, live delivery ([input delivery](#claude-input-delivery)), headless delivery,
+pending questions (hosted answers), events and hooks. Unsupported: restart (stop,
+then resume), relocation and Space moves.
+
+#### Claude usage and statusline
+
+Launches pass a statusline that runs the hidden `sessionsation provider-hook
+claude-statusline`, which atomically writes `CLAUDE_CONFIG_DIR/.sessionsation/usage.json`
+(0600; rate-limit windows only) and the per-conversation model and context records,
+then runs the account's own `settings.json` `statusLine.command` with the same input
+and passes its output through; recorder errors never break the statusline.
+`refreshInterval` (`claude_statusline_refresh_seconds`, default 300, `0` omits it)
+makes Claude Code re-run it while idle. Rate limits appear only for subscription
+accounts after the first API response. Recording merges per window (`five_hour`,
+`seven_day`): the same `resets_at` with a lower value keeps the stored window (an idle
+session replays its last response); a window missing from a payload is carried until
+its own `resets_at`; `usage.json` is rewritten only when a window changed, so an
+account with only replaying sessions turns `stale`. Readings older than 30 minutes or
+past their reset are stale. `.tmp*` files older than 10 minutes are swept from
+`.sessionsation/`. Claude usage keeps the shared `usage.short`/`usage.weekly` shape
+(`duration_minutes` 300/10080). No model request is made to obtain usage; the OAuth
+read is described under [usage meter](#limits-plan-and-usage).
+
+### Shared Claude state
+
+Capability `shared_claude_state`. Claude's non-credential per-conversation state
+lives in one store, `<root>/shared/claude/<name>`, for `name` in `projects`
+(transcripts and per-project `memory/`), `file-history`, `todos`, `session-env`,
+`agents` (custom subagents) and `commands`. Every managed Claude account home has a
+directory symlink `<account home>/<name>` whose stored target is exactly that
+absolute path (as the root is configured). Credentials, `settings.json`,
+`sessions/`, `skills/` (it holds `skills/synced/<org-bucket-id>`, claude.ai
+cloud-synced skills of one account) and everything else stay per account. Adopted
+(`--config-dir`) homes are never linked (`applicable:false`). Nothing changes on a
+root until `shared enable` or the first `shared migrate` writes
+`shared/claude/.sessionsation-shared`.
+
+- **Trusted links.** Sessionsation refuses symlinks everywhere (digest, copy and
+  remove fail with `HISTORY_SYMLINK`). Only `shared_state::trusted_link` accepts a
+  symlink at exactly `<managed Claude home>/<name>` for a listed name, owned by this
+  user, whose stored target is exactly `<root>/shared/claude/<name>` and resolves
+  (no other symlink on the way) to a real private directory owned by this user
+  inside private `shared/` and `shared/claude/`. Anything else is refused as before.
+  The helper is consulted only for launch-time repair, the parent check when
+  restoring archived files, account deletion and the switch no-op.
+- **Ensure-links.** On `account add` and before every Claude launch, resume, hosted
+  start, headless delivery, attach and switch, a missing link is created, an empty
+  real directory is replaced by a link and a trusted link is kept. Errors:
+  `SHARED_STATE_UNMIGRATED` (a real directory with data where a link belongs; run
+  `shared migrate`), `SHARED_STATE_LINK_UNTRUSTED`, `SHARED_STATE_STORE_UNSAFE`.
+  `account add` reports `shared_state:{state:"linked"|"disabled"|"not_applicable"|"error"}`.
+  Once enabled, an unmigrated account cannot be launched or resumed; running
+  sessions are not affected.
+- **Delete, log out, rename.** Account deletion removes the links only; shared data
+  survives the account. Log out touches no history. Rename keeps the links valid.
+- **`shared migrate --account claude:NAME [--dry-run] [--allow-full-copy]
+  [--fs-path DIR]`** (CLI only; prints JSON) is journaled in
+  `operations/shared-migrations/<id>.json`, idempotent (`already_migrated:true`) and
+  resumable. (1) Preflight: account home and store on one file system (`st_dev`;
+  otherwise `SHARED_STATE_CROSS_DEVICE`), the alias proven, `renameat2(RENAME_EXCHANGE)`
+  and (unless `--allow-full-copy`) reflink probed; `--dry-run` stops here and prints
+  the plan. (2) Backup: a reflink copy of each directory to
+  `<root>/backups/shared-migrate-<UTC time>/<account>/<name>`
+  (`BACKUP_REFLINK_UNSUPPORTED` without reflink unless `--allow-full-copy`).
+  (3) Link per name with no moment in which the account path is missing and no data
+  copied (inodes unchanged, so open files keep working): with no `<name>` in the
+  store yet, a placeholder link is exchanged with the account's real directory; with
+  one, non-conflicting entries move by `RENAME_NOREPLACE`, shared directories merge
+  recursively, and the emptied account directory is exchanged with a link. A file
+  present on both sides is a conflict, never overwritten: the name stays a real
+  directory, paths are printed under `results.<name>.conflicts`, and the command
+  exits with `SHARED_STATE_MIGRATION_INCOMPLETE` until resolved. For `agents` and
+  `commands`, identical files are kept once and of two different files the newer
+  stays in the store and the other is set aside in `<backup_dir>/set-aside/`
+  (`--dry-run` prints one `report` line per such file).
+- **`--fs-path`.** On a FUSE union such as the Unraid user share (no
+  `RENAME_EXCHANGE`, no reflink) `--data-dir` stays the logical root, so link targets
+  keep that spelling, while `--fs-path /mnt/disk1/...` runs all file operations on
+  the real disk. The alias is proven with a probe file.
 - **`shared status`** lists the store state and each Claude account's per-name state
-  (`linked`, `missing`, `empty_directory`, `unmigrated`, `untrusted`); **`shared enable`** turns the
-  feature on without migrating.
+  (`linked`, `missing`, `empty_directory`, `unmigrated`, `untrusted`);
+  **`shared enable`** turns the feature on without migrating.
 
-### Native delivery to Claude sessions (1.40.0)
+### Claude input delivery
 
-MINOR, additive. Capability flags `claude_native_delivery` and `claude_idle_notify`.
+`capabilities.claude_input_delivery` (`version:1`; the provider entry repeats it as
+`input_delivery`) describes three live paths plus [headless delivery](#headless-delivery)
+for stopped sessions. Session rows carry `capabilities.submit|queue|steer`,
+`capability_reasons` (`SESSION_NOT_RUNNING`, `LIVE_STEERING_DISABLED`,
+`PEER_ENDPOINT_UNAVAILABLE`, `PEER_SOCKET_UNLINKED`, `TERMINAL_NOT_ATTACHED`,
+`TERMINAL_QUEUE_UNSUPPORTED`, `SESSION_OPERATION_IN_PROGRESS`) and `input_delivery`
+(`semantics`, `interrupt`, `label`, `steer`, `modes` `{submit,queue,steer}` → path or
+null, `available` in preference order, `terminal_input:{available,reason}`). A hosted
+session reports `availability:"running"`, `resume:false`, `stop`/`restart` reason
+`HOSTED_SESSION` (use `api hosted stop`) and `add_to_herdr` reason `HOSTED_SESSION`.
 
-Sessionsation already delivered a Claude `peer_message` (revision 16); 1.40.0 makes it the
-agent-to-agent path and aligns it with Claude Code 2.1.312/2.1.314 cross-session messaging.
+Request (`ClaudeSteerRequest`): the ordinary `api send` fields with
+`mode:"submit"|"queue"|"steer"`, optional `timeout_seconds` (reply wait, default 600,
+max 3600), `delivery` (`auto` default, `hosted_stream_json`, `terminal_input`,
+`peer_message` or `native`), `origin` (`operator`|`agent`), `await_reply` (boolean,
+default false) and, for steer, `"steering":{"version":1,"interrupt":bool}`.
+Priorities: submit `next`, queue `later`, steer `next`. There is no idle preflight:
+the provider orders inputs. Claude Code folds a `next` input into a running turn at
+its next tool round (or runs it as the next turn) and never cuts the turn for it;
+`later` runs as its own later turn; `now` would **cancel** the running turn, so
+Sessionsation never sends it. `input_delivery.steer` (`ClaudeSteerSemantics`) reports
+`{priority:"next",interrupts:false,delivery:"next_tool_boundary_or_next_turn",
+interrupt_option:"steering.interrupt",interrupted_inputs_state:"interrupted"}`; only
+`steering.interrupt:true` on a hosted session cancels the running turn first.
 
-- **Selection.** `api send` takes `origin:"operator"|"agent"` (default `operator`). With
-  `delivery:"auto"`, an operator send keeps the old preference (terminal input before peer
-  message, so human-input authority is unchanged) and an `agent` send tries the native peer
-  message first. `delivery:"native"` asks for it explicitly. `delivery:"peer_message"` stays
-  native-only. Receipts carry `origin` and `native_fallback`.
-- **Fallback, never both.** For `agent`/`native` sends of mode `submit` or `steer`, typing into the
-  HERDR pane is the fallback when nothing native was possible: no verified registry entry or
-  `peerProtocol` other than 1, inbound messages not accepted, the socket file gone
-  (`PEER_SOCKET_UNLINKED`), or the connection never opened (`PEER_SOCKET_UNREACHABLE`). The
-  receipt then has `native_fallback:{from:"peer_message",to:"terminal_input",reason,stage}`
-  (`stage` is `admission` or `delivery`). Once a byte was written (accepted, held, or a write error)
-  the message is never typed or resent: a failed write is `delivery_unknown`. `queue` and interrupts
-  cannot be typed, so they stay native-only and are refused with the native reason.
-- **Acceptance.** A session accepts inbound messages when the account sets
-  `crossSessionInbound: accept` (`account live-steering`) or the live process itself was started
-  with `--settings` saying so. Sessionsation launches and resumes Claude with
-  `crossSessionInbound:"accept"` merged into its existing `--settings` JSON (other keys are kept)
-  unless the account's own setting is an explicit `hold` or `refuse`. Bypass-permission sessions
-  hold external messages by default, which is why the launch sets it.
-- **Wire protocol** (one module, `provider/claude/native_peer.rs`, with the version pins): frame
-  `{"type":"user","message":{"role":"user","content":TEXT},"priority":"next"|"later","from":"uds:<our socket>",
-  "msgV":1,"msg_id":ID,...}`, newline terminated; control frames are `{"type":"control","action":...}`.
-  Our reply socket is bound in the receiver's own socket directory as `<our pid>-<8 hex>.sock`
-  (the receiver checks it against SO_PEERCRED and otherwise drops its receipts silently; the
-  receipt's `peer_message.reply_socket` says `namespaced` or `private`). The optional auth line is
-  not needed on Linux and the `*.key` token files are never read. Frames over 1 MiB are refused
-  (`PEER_MESSAGE_TOO_LARGE`).
-- **Receipts.** Success is silent. `peer_message_status` `delivered` gives `native_accepted`;
-  `held` gives `held` (a bypass-permission receiver); `denied`/`refused`/`dropped` end `refused`
-  (`PEER_MESSAGE_DENIED|REFUSED|DROPPED`, the drop reason is recorded) and `expired` ends `expired`.
-  With no receipt inside 3 seconds the state is `native_accepted` with
-  `peer_message.evidence:"transport_accepted_silent"`: the transport took the frame, which is not
-  proof that Claude read it (a receiver that dropped the connection looks the same). The existing
-  transcript correlation upgrades any of these to `input_recorded` and the reply
-  (`evidence:"transcript_anchor"`); delivery is never reported as answered without it.
-- **`api idle-notify --session ID --expected-generation G [--notify-session ID2]`** (Claude,
-  running, inbound accepted). Subscribes with `notify_when_idle` for one `peer_idle_notice`
-  (idle or exit), without a model request in the watched session. Journaled in
-  `operations/claude-idle-notify/`; a detached worker keeps the subscription for 12 hours (Claude's
-  own expiry). The notice becomes a `kind:"idle"` (or `"exited"`) event in `api turn-events`
-  with `detail:{state,finished_at,status}` and, with `--notify-session`, one queued message. A
-  repeat call returns the active subscription; a lost worker shows `stalled:true`; nothing is replayed.
-- Errors: existing `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`, `PEER_SOCKET_UNLINKED`,
-  `PEER_SOCKET_UNREACHABLE`, `PEER_INTERRUPT_UNSUPPORTED`; new `PEER_MESSAGE_TOO_LARGE`,
-  `PEER_REPLY_SOCKET_UNAVAILABLE`, `INVALID_REQUEST` for an unknown `origin`.
+**Path choice** (`claude_input_delivery.preference`
+`["hosted_stream_json","terminal_input","peer_message"]`). A running hosted worker
+always wins. Otherwise, with `delivery:"auto"`, a `submit` or `steer` from an `agent`
+origin (or `delivery:"native"`) tries the native peer message first, waiting up to
+5 s for the endpoint, and types into the HERDR pane only when nothing native was
+possible: no verified registry entry, `peerProtocol` other than 1, inbound messages
+not accepted, `PEER_SOCKET_UNLINKED` or `PEER_SOCKET_UNREACHABLE` (receipt
+`native_fallback:{from:"peer_message",to:"terminal_input",reason,stage}`, `stage`
+`admission` or `delivery`). An `operator` send prefers terminal input. `queue` and
+interrupts cannot be typed, so they use the peer path only. Once a byte was written
+the message is never typed or resent. A named path that does not apply is refused
+(`DELIVERY_UNAVAILABLE`, `TERMINAL_NOT_ATTACHED`, `LIVE_STEERING_DISABLED`, ...),
+never replaced; when neither path is usable, the `LIVE_STEERING_DISABLED` message
+also names why terminal input is ineligible.
 
-### Stale stop gates and unsent receipts (1.40.1)
+**Origin.** Without `origin`, Sessionsation walks the caller's process tree
+(`/proc/<pid>/stat` parent chain, at most 64 hops) and treats the send as `agent` when
+an ancestor is the verified process of a live catalog attachment. For Codex callers,
+whose tool commands run under the daemon-owned app-server, it then maps the caller's
+or an ancestor's `CODEX_THREAD_ID` (only that variable is read from
+`/proc/<pid>/environ`) to the Codex catalog session. Otherwise it is `operator`. An
+explicit `origin` always wins. Receipts (Claude and Codex) carry `origin` and
+`origin_source` (`explicit`, `detected`, `default`). Only the catalog is consulted; an
+unreadable catalog means `default`.
 
-PATCH, no new fields.
+Admission refuses without journaling on `STALE_TARGET`, `SESSION_NOT_RUNNING` (use
+mode `resume`), `LIVE_STEERING_DISABLED`, `PEER_ENDPOINT_UNAVAILABLE`,
+`PEER_SOCKET_UNLINKED`, `PEER_INTERRUPT_UNSUPPORTED`, `SESSION_OPERATION_IN_PROGRESS`,
+account/auth errors, `INVALID_EXPIRY` and `INVALID_REQUEST` (an unknown `origin`).
+Every path journals under `DATA_ROOT/messaging/claude-steer/` before writing.
 
-- **A cancelled or failed stop no longer blocks sends.** `terminate`/move jobs record a stop
-  gate (`stop_intent`) when they are admitted; it makes `steer-target` and the delivery gate report
-  `explicit_resume_required` until the session is explicitly resumed. A job that was cancelled (or
-  failed) before it stopped anything left that gate behind, so a session that kept running
-  (state `working`, app-server confirmed) had no steer target and every submit was rejected
-  `target_busy`. The worker now releases the job's own gate when it ends `cancelled`/`failed` while
-  the exact source process (pid and start time) is still alive, and reads of the gate heal an
-  already-stale one the same way. A completed stop keeps its gate; a gate of another job is never
-  released.
-- **An unsent `pending_local` submission always ends.** A message admitted while the session was
-  `migrating` (or otherwise blocked by a transient reason) stayed `pending_local` for ever because
-  nothing re-examined it. Reading its receipt now settles it: past its expiry it is `expired`; if the
-  session it was admitted for has been replaced (its generation changed, for example by a stop and
-  relaunch) it is `rejected` with `generation_mismatch`. Nothing was sent in either case.
+Receipt (`ClaudeSteerReceipt`, also from `api receipt`): `delivery_semantics`,
+`priority`, `origin`, `origin_source`, `native_fallback`, `state`, `reason`, `facts`
+(`written`, `accepted_native`, `input_recorded`, `input_consumed`, `reply_observed`,
+`reply_final`, `folded`, `shared_with_turn`, `interrupt_requested`, `lifecycle[]`,
+`held`, `peer_status[]`, `idle_notice`), `correlation`, `reply`
+(`{text,text_truncated,final,shared_with_turn}` plus the hosted `result` fields
+`is_error,subtype,num_turns,duration_ms,usage`), `execution` (`phase`
+admitted/dispatching/written/complete, `host_epoch`, `automatic_replay:false`) and
+`observation`. States: `pending_local`, `held`, `native_accepted`,
+`execution_started`, `completed_with_reply`, `completed_without_reply`, `failed`,
+`interrupted`, `cancelled`, `refused`, `rejected`, `expired`, `delivery_unknown`.
+Terminal states are never regressed; only `completed_*` carries `reply.final:true`.
+`api cancel` cancels only a request still `admitted`, otherwise
+`STEERING_CANCELLATION_UNSUPPORTED` (interrupt a hosted turn with `api hosted stop
+--interrupt` or a steer with `interrupt:true`). Fixtures: `claude_steer_request`,
+`claude_steer_receipt_*`, `claude_steer_semantics`, `hosted_session`, `live_steering`,
+`launch_request_hosted`.
 
-### Detected agent origin, safer terminal typing, disk-space guard (1.41.0)
+#### Hosted sessions
 
-MINOR, additive. Capability additions: `claude_native_delivery.origin_detection`, `disk_space`.
+A hosted session is run by a detached Sessionsation worker instead of a terminal: it
+owns the stdin of `claude -p --input-format stream-json --output-format stream-json
+--verbose --replay-user-messages --permission-prompt-tool stdio` with `--session-id
+UUID` (new) or `--resume UUID` (a stopped conversation), appends a normalized
+`events.jsonl` for the viewer and serves a private control socket. `api hosted start`
+(`--account claude:N --directory DIR [--name]` or `--session ID
+--expected-generation G`, `--permission-mode account|default|acceptEdits|plan|bypassPermissions`),
+`status`, `events`, `stop [--interrupt] [--timeout-seconds N]` and `respond
+--request-id R --allow|--deny [--message TEXT]`; `api launch start` accepts
+`"hosted":{"permission_mode"}`. `account` passes no flag (an account default of
+`bypassPermissions` becomes `default`); without a `permission_mode` the
+[launch permissions](#launch-permissions) decide (`yolo` → `bypassPermissions`). Tool
+permission prompts arrive as `can_use_tool` requests and stay pending until answered
+with `api hosted respond`; nothing is auto-approved.
 
-- **Origin detection.** `api send` with no `origin` used to mean `operator` (typing into the pane).
-  Callers that are agents (and scripts they run) rarely set it, so their messages were typed into a busy
-  Claude's input box. When `origin` is omitted, Sessionsation now walks the caller's process tree
-  (`/proc/<pid>/stat` parent chain, at most 64 hops) and treats the send as `agent` when an ancestor is the
-  verified process (pid and start time) of a live catalog attachment, that is, when the caller runs
-  inside a Sessionsation-managed session. A plain shell or the HERDR UI has no such ancestor and stays
-  `operator`. An explicit `origin` always wins and is never second-guessed. The receipt carries
-  `origin` (the resolved value) and `origin_source`: `explicit`, `detected` or `default`. Idempotent
-  repeats return the original receipt, whatever the caller looks like the second time. Only the
-  catalog is consulted (no provider, no HERDR); an unreadable catalog means `default`.
-- **Terminal typing after a worker failure.** A typed message is never reported as delivered unless Enter
-  went out (`submit` is journaled first). New:
-  - When the worker fails after typing and before Enter (a HERDR error, or a journal write that fails on a
-    full disk) it withdraws the message it typed even when the user had no draft; before, only a
-    non-empty draft triggered that pass and the message stayed in the input box.
-  - A worker that dies past the clear (`steps` has `clear`, not `submit`) leaves an orphan. A receipt
-    read after the 10 second grace starts a cleanup worker (step `orphan_cleanup`) that withdraws the
-    text if the box still holds it (all of it, its tail, or the part typed so far), types the user's
-    journaled draft back, and ends the request `rejected` with `TERMINAL_WORKER_EXITED_BEFORE_SUBMIT`.
-    The next delivery to the same pane does the same for any orphan found there before it reads the pane,
-    so a stranded message no longer makes every later send fail `TERMINAL_DRAFT_UNRECONSTRUCTABLE`.
-    A box that holds anything else is left alone and reported (`left_in_input`).
-  - A refused screen records `terminal_input.refusal_layout`: `screen_rows`, `rules`, `box_rows`,
-    `max_draft_rows` and the footer rows under the input box (UI chrome; never draft text), so
-    `TERMINAL_DRAFT_UNRECONSTRUCTABLE` (a draft taller than `max_draft_rows`) and
-    `TERMINAL_OVERLAY_UNIDENTIFIED` (an unrecognised footer) can be told apart.
-- **Disk space.** `config.json` `min_free_disk_mb` (default 512, 0 disables). Archive, restore, delete,
-  switch, restart, resume, relocate (not `--dry-run`), move-space, launch start, resume-launch start,
-  account delete, `shared migrate` and `layout migrate` (not dry runs) check the free space of the
-  filesystem holding the data root before changing anything and refuse with
-  `INSUFFICIENT_DISK_SPACE` (error fields `free_bytes`, `needed_bytes`, `operation`). `api disk-space`
-  reports the same figures read-only, so a script can check before a multi-step sequence (for example
-  before stopping a session it is going to archive). Any ENOSPC/EDQUOT anywhere in an `api` or CLI
-  failure is reported as `DISK_FULL` instead of a raw I/O message. A non-cached `api state` whose
-  refresh fails that way serves the last cached snapshot with `snapshot.refresh_failed:"DISK_FULL"`,
-  `snapshot.fresh:false` and a `warnings[]` entry `STATE_REFRESH_FAILED_DISK_FULL`; without a snapshot it
-  fails `DISK_FULL`.
-- **`api idle-notify` exit event.** A notice reporting `state:"exited"` is journaled as kind `exited`
-  (it was `idle` with `detail.state:"exited"`); `detail` is unchanged.
+`HostedSession` fields: `state` (`starting|running|stopping|stopped|failed`), `reason`
+(`STOPPED`, `WORKER_LOST`, `WORKER_LOST_PROVIDER_DRAINING`, `PROVIDER_EXITED[_CODE]`,
+…), `permission_mode`, `effective_permission_mode`, `epoch`, `busy`, `worker`,
+`provider_process`, `pending_permissions[]` (`request_id`, `tool_name`, `input`,
+`input_preview`, `requested_at`), `viewer_argv` and `take_over_argv`. The worker lock
+(`DATA_ROOT/sessions/hosted/UUID/worker.lock`) makes it the only writer: a worker, or
+a provider it started that still drains, blocks interactive/headless resume and a
+second host (`SESSION_ALREADY_RUNNING`). The worker survives supervisor restarts and
+is re-adopted by the next read; a lost worker is `stopped` (`WORKER_LOST`) and its
+in-flight deliveries settle as below. Closing the viewer does not stop the worker;
+`take-over` stops it cleanly, then execs the interactive `claude --resume UUID` in
+the same terminal.
 
-### Native live activity, usage read, uncertain operations (1.42.0)
+Hosted delivery writes one stream-json user frame with `uuid` = `message_id`. The
+worker marks the record `dispatching` before writing; a request it never claimed is
+`rejected` (`HOST_UNREACHABLE_NOT_SENT`, `HOST_STOPPED_BEFORE_DELIVERY`).
+`command_lifecycle` `queued` → `native_accepted`, `started` → `execution_started`;
+`cancelled`/`discarded` before `started` → `cancelled`
+(`NATIVE_CANCELLED`/`NATIVE_DISCARDED`), `refused` → `refused`. The terminal state needs
+both the `result` whose `user_message_uuids` contains the id and the id's terminal
+lifecycle, in either order: `completed` → `completed_with_reply` /
+`completed_without_reply`, or `failed` (`PROVIDER_REPORTED_ERROR`). The reply is the
+assistant text streamed between `started` and that result. `cancelled`/`discarded`
+after `started` means the consuming turn was cut: the input ends `interrupted`
+(`TURN_INTERRUPTED` after a requested interrupt, else `TURN_CANCELLED_BY_PROVIDER`)
+with the partial reply and `final:false`. A steer folded into a running turn has
+`facts.folded:true` and `shared_with_turn:true`. Another reported `session_id` is
+`delivery_unknown` (`SESSION_ID_MISMATCH`). A provider or worker exit makes
+in-flight messages `failed` (`*_DURING_TURN`) or `delivery_unknown`
+(`PROVIDER_EXITED…`, `HOST_WORKER_EXITED`, `STDIN_WRITE_FAILED`). `correlation` is
+`{kind:"command_uuid",command_uuid,lifecycle,user_message_uuids}`.
 
-MINOR, additive. Capability additions: `usage_read`; `live_activity.providers` now lists `claude`,
-`gemini` and `antigravity`.
+#### Native peer messages
 
-- **`activity` and `live_activity` for running Claude, Gemini and Antigravity sessions** (also in
-  `api state --cached`). Same shape and states as Codex rows: `activity` is `busy`, `idle` or `unknown`;
-  `live_activity` is `{state, error, last_turn_status, source, observed_at}`. Not-running native rows keep
-  `null`. Signals are local and read-only, bounded tail reads only (128 KiB, one retry at 1 MiB), and
-  never include message text:
-  - Claude `source:"transcript_tail"`: the newest decisive transcript record. An assistant record with
-    `stop_reason` `tool_use` (or still streaming), a `tool_result`, or a user prompt with no reply
-    is `working`; an `end_turn`/`stop_sequence`/`max_tokens` assistant record or a `turn_duration` system
-    record is `turn_ended`; a `[Request interrupted by user]` record is `turn_ended` with
-    `last_turn_status:"interrupted"`; an API-error record is `error` (`error` is Claude's short error
-    code, or `api_error`). Sidechain, meta and bookkeeping records are skipped.
-  - Claude `source:"native_registry"`: `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json` (`status` `busy`, `idle`
-    or `waiting`, with `statusUpdatedAt`; pid and process start must match the observed process). It is
-    used only when it is newer than the newest transcript record, because Claude does not rewrite it on
-    every transition. `waiting` (a permission prompt or question) is `blocked`. A session that also has
-    `pending_questions` is `blocked` while a turn is in progress.
-  - Gemini and Antigravity `source:"transcript_tail"`: the last chat/step record (a `gemini` record with
-    no tool calls, or a planner response with no tool calls, is `turn_ended`; with tool calls, or a
-    user input or tool step with no answer yet, `working`). An unanswered user input older than 10
-    minutes, or a step that is not `DONE`, is `unknown`.
-  - No usable evidence is `unknown` (`activity:"unknown"`), never a guess. `observed_at` is the time of
-    the evidence used (the record or registry update), not of the snapshot; `api idle-notify` remains the
-    push signal for the next idle transition.
-- **`api usage [--account claude:NAME]`**: the projected Claude usage per account with `state`, `fresh`,
-  `source`, `observed_at`, `age_seconds`, and `short` / `weekly` windows each carrying their own
-  `observed_at` and `age_seconds`. The statusline recorder carries each window (`five_hour`,
-  `seven_day`) forward until its own `resets_at` when a payload lacks it (Claude Code drops a window
-  after its reset until the next API response), records a per-window `observed_at`, and sweeps
-  `.tmp*` files older than 10 minutes from `<home>/.sessionsation/`. `usage.<window>.observed_at` is
-  also in the account rows of `api state`. Since [1.62.0](#provider-parity-usage-meter-session-meters-session-id-env-1620)
-  `api usage` lists every account of every provider and adds the one `meter` shape.
-- **Uncertain operations are named.** A session blocked by an unfinished journaled operation reports it
-  in `sessions[].pending_operations` (`{id, kind, phase, created_at:null, expires_at:null, unresolved,
-  resolve}` for journals that are not queued jobs; `kind` also `resume`, `auto_recover`, `switch`,
-  `space_move`, `conversation`, `move` or `message_recovery`). Capability reasons are
-  `RECOVERY_UNRESOLVED` for an `uncertain` or `stuck` operation (with `resume_block_reason:
-  "recovery_unresolved"`) and `SESSION_OPERATION_IN_PROGRESS` otherwise; refusals carry the operation
-  id (`RECOVERY_UNRESOLVED: operation ID (kind, phase uncertain); ...`), and `api resume` no longer
-  answers `SESSION_STATE_UNVERIFIED` for them. An inline `resume` whose terminal process ended before
-  any provider attached (nothing resumed, no input sent) settles as `failed` instead of `uncertain`,
-  so the session is not left blocked; such receipts an earlier release left `uncertain` settle the same
-  way on the next read.
-- **Codex receipts carry `origin` and `origin_source`** (resolved by caller detection as for Claude;
-  `operator`/`default` for receipts recorded before 1.42.0).
-- **Daemon start** writes a fresh `api state` snapshot two seconds after the socket serves requests, so
-  `api state --cached` does not show the previous process's data after a cutover.
+The peer path (`peer_message`) delivers through Claude Code's cross-session
+messaging; the receiver sees a message from another session (Agent-DM labels it a
+weak steer). A session accepts inbound messages when the account sets
+`crossSessionInbound: accept` (`api account live-steering claude:NAME
+[--enable|--disable]`, returning `LiveSteering` `{account_id,provider,live_steering,
+setting:"crossSessionInbound",value,previous,changed,settings_file}`, events
+`account.live_steering_enabled|disabled` on change; an operator's own `hold`/`refuse`
+is never removed) or the process was started with `--settings` saying so.
+Sessionsation launches and resumes Claude with `crossSessionInbound:"accept"` merged
+into its `--settings` JSON unless the account's own value is `hold` or `refuse`.
 
-### Auto Start modes (1.43.0)
+Wire protocol (`provider/claude/native_peer.rs`, with the version pins): frame
+`{"type":"user","message":{"role":"user","content":TEXT},"priority":"next"|"later","from":"uds:<our socket>","msgV":1,"msg_id":ID,...}`,
+newline terminated; control frames are `{"type":"control","action":...}`. The reply
+socket is bound in the receiver's socket directory as `<our pid>-<8 hex>.sock` (the
+receiver checks it against SO_PEERCRED; `peer_message.reply_socket` says `namespaced`
+or `private`). The `*.key` token files are never read. Frames over 1 MiB are refused
+(`PEER_MESSAGE_TOO_LARGE`). The receiver's socket path comes from its registry entry
+(`messagingSocketPath`); Claude children run without `XDG_RUNTIME_DIR`, so sockets
+live under `/tmp/cc-socks/<pid>.sock` where elogind cannot unlink them. A registry
+naming a socket file that is gone is `PEER_SOCKET_UNLINKED` (the text adds whether
+the process still listens); resume or restart the session to rebind.
 
-MINOR, additive. "Auto recover" is renamed **Auto Start** and gains three modes per session:
-`disabled` (the default for every session, including new ones; a session with no record is
-`disabled`), `start` (when the process disappears, resume the session and send **nothing**) and
-`start_prompt` (resume, then send the prompt once: the custom `--prompt` or the default `Auto-start:
-the host restarted at <UTC time> and sessionsation resumed this session. Re-check your state and
-continue your work.`). Everything in [Session auto-recover (1.35.0)](#session-auto-recover-1350)
-(liveness checks, pane choice, explicit-stop disable, suppression, the 3 per hour rate limit,
-journaled never-replayed operations) applies to both start modes.
-
-- **Command**: `api auto-start --session ID --expected-generation G --mode disabled|start|start_prompt
-  [--prompt TEXT]`. `--prompt` is only valid with `start_prompt` (`INVALID_ARGUMENT` otherwise; 1-4000
-  bytes). `--mode start_prompt` without `--prompt` clears a custom prompt (the default applies);
-  the descriptor carries `default_prompt` and `max_prompt_bytes` for clients that show a hint. Until 1.44.0 enabling a mode (from `disabled`) needed a live session exactly like `--enable` before (no longer: see [1.44.0](#auto-start-semantics-host-boot-and-crash-1440))
-  (`AUTO_RECOVER_REQUIRES_LIVE`, `AUTO_RECOVER_UNSUPPORTED`); switching between `start` and
-  `start_prompt` on an already enabled session, and `disabled`, are always allowed. The receipt is
-  `{"session_id","generation","changed","mode","auto_start":{...},"auto_recover":{...}}`.
-- **Bulk**: `api auto-start --all --mode disabled` disables every session at once (operator-only,
-  like the other local admin commands; no `--session` or generation; only `disabled` is accepted
-  since it can only stop actions). Receipt `{"all":true,"mode":"disabled","changed","disabled_count","disabled":[ids]}`.
-- **State**: every session row adds `auto_start:{mode, enabled, prompt, last_pane, last_started_at,
-  last_result, workspace_label, suppressed, starts_last_hour, max_per_hour}` and
-  `capabilities.auto_start` / `capability_reasons.auto_start` (same rules as `auto_recover`).
-  `last_result.state` is `started` (resumed, nothing to send or the prompt was not delivered; see
-  `code`), `started_with_prompt`, `failed`, `uncertain`, `rate_limited`, `waiting`, `disabled` or
-  `abandoned`. `api capabilities` adds the top-level `auto_start` descriptor (clients show the control
-  only when it is present).
-- **Journal**: operations keep `kind:"auto_recover"` and add `mode`. With `start` the `prompting`
-  phase is skipped (`resumed` -> `complete`) and `prompt.state` is `skipped`.
-- **Deprecated, still served**: `api auto-recover` (`--enable` = `start_prompt`, `--disable` =
-  `disabled`), `sessions[].auto_recover` (`enabled` = mode is not `disabled`; `last_result.state`
-  keeps the 1.35.0 names `recovered` / `recovered_without_prompt`) and `capabilities.auto_recover`
-  (marked `deprecated:true`). Older clients keep working; they cannot see or set `start`.
-- **Storage migration**: `registry/auto-recover.json` records gain `mode` (schema_version 2). A record
-  without `mode` that is enabled reads, and is rewritten, as `start_prompt` with its prompt kept; a
-  disabled one as `disabled`. The rewrite is one atomic replace under the store lock (a crash leaves the
-  old or the new file) and running it again changes nothing. `enabled` stays in the file, mirroring
-  the mode.
-
-### Auto Start semantics: host boot and crash (1.44.0)
-
-MINOR, a behavioural change to Auto Start (1.43.0). Auto Start now means "start this session after a
-host reboot or a crash, and not much else". It supersedes the live-only, disable-on-stop and
-start-on-any-disappearance rules of [Session auto-recover (1.35.0)](#session-auto-recover-1350) and
-[Auto Start modes (1.43.0)](#auto-start-modes-1430); everything else there (pane choice, journaled
-never-replayed operations, the 3 per hour rate limit, `RECOVERY_UNRESOLVED`, suppression by
-`switch`/`restart`, HERDR availability, the 3 consecutive checks as settle delay) is unchanged.
-
-- **The setting is independent of running state.** `api auto-start --mode start|start_prompt` (and the
-  deprecated `--enable`) works on live, stopped and saved sessions; `AUTO_RECOVER_REQUIRES_LIVE` is no
-  longer returned. `capabilities.auto_start` / `auto_recover` are true for inactive sessions;
-  only archived sessions (and hosted/background/unsupported ones: `AUTO_RECOVER_UNSUPPORTED`) are
-  excluded. The descriptor reports `enable_requires:"none"`.
-- **An explicit stop no longer changes the mode**; it only marks the stop (so it is not a crash) and
-  sets `last_result` to `skipped_explicit_stop` / `EXPLICIT_STOP`. **Archive and delete still set the
-  mode to `disabled`** (`last_result.code` `ARCHIVED_OR_DELETED`; it was `EXPLICIT_STOP`).
-  `switch` and `restart` still only pause until the session is live again.
-- **Trigger A, host boot.** The supervisor compares `/proc/sys/kernel/random/boot_id` with the boot id
-  persisted in `registry/auto-recover.json` (`boot_id`). When it differs, every session whose mode is not
-  `disabled` and that is not running is started, including ones stopped (explicitly or not) before the
-  reboot, after 3 consecutive not-running checks and once HERDR answers. Each session is started once
-  per boot (`boot_started` records the boot id). A supervisor or daemon restart on the same boot (a
-  cutover) starts nothing. The first pass after upgrading only records the boot id: it starts nothing.
-- **Trigger B, crash.** On the same boot, a session that was seen running and whose process then
-  vanished is started again only when the exit is classified as a crash. A clean exit (`/exit`), a closed
-  pane (SIGHUP/SIGTERM from the terminal) and an explicit stop start nothing, and neither does an exit
-  that cannot be classified (unknown means no start).
-- **Classification** (`sessions[].auto_start.last_result`), using the process recorded while it ran
-  (pid and /proc start time):
-  - Kernel log (`dmesg`), any provider: a line naming that exact pid and not older than the process:
-    `Out of memory: Killed process <pid>` (OOM killer, SIGKILL), `<comm>[<pid>]: segfault at` (SIGSEGV),
-    `traps: <comm>[<pid>] trap ...` / `general protection` (SIGILL, SIGSEGV, SIGFPE). This is a crash:
-    `started_after_crash`.
-  - Claude additionally: the registry entry `<home>/sessions/<pid>.json` is removed by an orderly
-    shutdown. Gone and no crash line: `skipped_clean_exit`. Left behind and no crash line: a hard kill,
-    but a closed pane may look the same, so `exit_unclassified` (no start).
-  - Codex, Gemini and Antigravity: the kernel log only; any other exit is `exit_unclassified`.
-  - HERDR exposes no pane exit status and no provider transcript carries a reliable exit marker, so
-    those are not used. **Cannot be classified**: SIGABRT and runtime aborts (e.g. a JavaScript heap
-    out-of-memory abort) without a kernel line, a manual `kill -9`, a non-zero exit that still shuts down
-    cleanly, and a crash whose kernel line already left the kernel ring buffer or that `dmesg` may not
-    read. A hard kill the kernel did not log is deliberately not started.
-- **`last_result.state`** is `started_after_boot`, `started_after_boot_with_prompt`,
-  `started_after_crash`, `started_after_crash_with_prompt`, `skipped_clean_exit`, `exit_unclassified`,
-  `skipped_explicit_stop`, `failed`, `already_running`, `uncertain`, `rate_limited`, `waiting`, `disabled` or `abandoned`
-  (codes `STARTED_AFTER_BOOT[_WITH_PROMPT]`, `STARTED_AFTER_CRASH[_WITH_PROMPT]`, `CLEAN_EXIT`,
-  `EXIT_UNCLASSIFIED`, `EXPLICIT_STOP`, `PROMPT_NOT_DELIVERED`, ...). Records from 1.43.0 may still read
-  `started` / `started_with_prompt`.
-- **Default prompts**: after a boot `Auto-start: the host restarted at <UTC boot time> and sessionsation
-  started this session again after the restart. Re-check your state and continue your work.`; after a
-  crash `Auto-start: this session's process crashed (<what was seen>) and sessionsation started it again
-  at <UTC time>. Re-check your state and continue your work.` The descriptor carries both
-  (`default_prompt`, `default_prompt_crash`) and the classification table under `triggers`.
-- **Deprecated projection**: `auto_recover.last_result.state` maps every `started_after_*_with_prompt` to
-  `recovered`, every other `started*` to `recovered_without_prompt`, and the `skipped_*` /
-  `exit_unclassified` states to `waiting`. `enabled` still mirrors the mode.
-- **Data**: existing records stay valid. New optional fields in `registry/auto-recover.json`
-  (`boot_id` at the top; `boot_due`, `boot_started`, `stopped_explicitly_at`, `live_pid`, `live_start`,
-  `live_boot` per session) default to absent. Operations gain an optional `trigger` (`boot` | `crash`).
-- **Tests only** override the sources: `SESSIONSATION_BOOT_ID_FILE` and `SESSIONSATION_KERNEL_LOG_FILE`.
-
-
-### Auto Start delivery, array start and Space names (1.45.0)
-
-MINOR (includes the 1.44.1 fixes). Auto Start and resume no longer fail on things that change after a
-reboot or an array restart.
-
-- **Delivered means delivered (1.44.1).** The Auto Start prompt is read back through its message receipt.
-  `prompt.state` is `delivered` only when the receipt shows `written`, `input_consumed` or native
-  acceptance (or later). A `rejected` receipt with nothing written (for example
-  `TERMINAL_VIEW_UNDETERMINED`, `ADAPTER_BUSY`) and the pre-admission refusals
-  (`PEER_SOCKET_UNLINKED`, `SESSION_NOT_RUNNING`, ...) are retried with backoff for up to 180 s
-  (`SESSIONSATION_AUTO_RECOVER_PROMPT_SECONDS`) with a fresh message id, while the session keeps its
-  generation. Anything that may have been written (`delivery_unknown`, uncertain) is never retried and ends
-  `uncertain`. `prompt.attempts` and `prompt.detail` list every attempt with its final receipt state
-  (`attempt 1 (<id>): rejected/TERMINAL_VIEW_UNDETERMINED; attempt 2 (<id>): native_accepted`);
-  `last_result` is `started_after_*_with_prompt` only for a delivered prompt, else `PROMPT_NOT_DELIVERED`.
-- **Native first.** For Claude the prompt waits up to 60 s (`SESSIONSATION_AUTO_RECOVER_NATIVE_SECONDS`) for
-  `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json` and its socket, then is sent with `delivery: native`.
-  Every other Sessionsation-to-Claude `submit`/`steer` with `delivery: auto` now also prefers the native
-  peer message (shown by Claude Code as a collapsed `@ sender` entry) and waits up to 5 s
-  (`SESSIONSATION_NATIVE_WAIT_SECONDS`) for the endpoint; it types only when native is unavailable.
-- **Classifier fix.** The input box of a resumed Claude session has a short labelled top rule
-  (`──── <session name> ─`, 8 dashes in 58 cells). It was not read as a rule, so every typed send was refused
-  `TERMINAL_VIEW_UNDETERMINED`. A rule that starts with 3 or more dashes followed by a space now counts
-  (fixture `labelled-top-rule-resumed.ansi`).
-- **Trigger C, array start.** On the same boot, a changed mount id of `/mnt/user` (the shfs array mount;
-  every mount gets a new id) makes every session with a mode that is not running due one start
-  (`array_due`/`array_started` per session, `array_id` at the top of `registry/auto-recover.json`). A
-  supervisor restart or cutover keeps the id and starts nothing; the first pass after upgrading only records it;
-  a new boot uses the boot trigger, not both. Results are `started_after_array_start[_with_prompt]`;
-  operations carry `trigger: array_start`. Default prompt: `Auto-start: the array was restarted at <UTC time>
-  and sessionsation started this session again after the restart. ...`. Tests override with
-  `SESSIONSATION_MOUNTINFO_FILE` and `SESSIONSATION_ARRAY_MOUNT`.
-- **Space names.** A requested Space (`--space`, `resume`, `launch`, `move-space`, `add-to-herdr`) is resolved
-  as the HERDR workspace id, then the visible name (exact, then case-insensitive). `--new-space <label>`
-  whose name already exists reuses that Space instead of `WORKSPACE_NAME_EXISTS`. Auto Start already falls
-  back from the recorded id to the recorded Space label.
-  Since 1.48.0 these reuse semantics are retained for `--new-space`; `--create-space` is strict
-  (`WORKSPACE_NAME_EXISTS` when the label exists).
-- **No stale generation.** After `resume`, `stop`, `restart`, `switch`, `move-space`, `launch` the cached
-  snapshots are refreshed at once (the session's `generation` is patched immediately, then a full
-  refresh), and the `resume`/`stop`/`restart`/`switch` result carries the new `generation`.
-- **Build identity.** `api version` reports `commit`, the git commit embedded at build time
-  (`SESSIONSATION_COMMIT`, else `git rev-parse HEAD`). `scripts/smoke-installed.sh BIN COMMIT` checks the
-  installed binary (`api version`, `api capabilities`, `api state --cached`) and the commit.
-- **Sender name (not changed).** Claude Code labels a native message with the registry `name` of the
-  sending process (`nameSource` `auto` = an AI title, `user` = `/rename`). `--name` on resume does not
-  override an existing AI title; `/rename` does. Sessionsation does not edit transcripts or registries.
-
-- **Idle subscription is opt-in (`await_reply`).** A native Claude delivery used to also ask for Claude's idle
-  notice, which Claude Code shows to the receiving user as "A process claiming the address
-  uds:/tmp/cc-socks/<pid>-<hex>.sock asked to be told when this session is next idle". The send request now has
-  an optional boolean `await_reply` (default false); only `true` sends that subscription so the receipt can
-  reach `completed_with_reply`. Without it (sends, Auto Start prompts and notices) nothing is requested, the
-  receipt settles `native_accepted` (upgraded to `input_recorded`/consumed from the transcript anchor) after at most the
-  3 s status window, and the worker exits promptly instead of lingering up to the 600 s timeout.
-
-### Cached snapshots follow asynchronous lifecycle jobs (1.45.1)
-
-PATCH. 1.45.0 refreshed the cached snapshots when a lifecycle command returned, but `stop`, `restart`,
-`switch`, move, archive/delete/restore, resume and launch finish in a background worker: the refresh ran
-when the job was only queued, so `api state --cached` kept `availability: running` and the old generation
-until a full `state`, and archive/delete were refused `STALE_TARGET`. Every job worker now rewrites the
-`active`, `archived` and `all` snapshots when its job completes (or fails), before it releases its lock.
-No field or command changed.
-
-### Codex send options, opt-in native sender registration, Codex usage clock (1.45.2)
-
-PATCH (additive).
-
-- **Codex targets accept the Claude send options.** `origin` (`operator` or `agent`; auto-detected when
-  omitted, recorded on the receipt as `origin`/`origin_source`), `delivery` and `await_reply` no longer fail
-  the whole request with `ok:false`. `delivery` other than `auto` names a Claude path and returns
-  `PROVIDER_DELIVERY_UNSUPPORTED` (an unknown value is `INVALID_REQUEST`); `await_reply` is ignored for Codex.
-  A refused unknown field now answers `INVALID_REQUEST: unknown field \`x\`, expected one of ...`.
-- **`native_sender_registration` (config.json, default `false`).** When on, the native-message worker writes
-  one registry entry for its own pid into the receiving Claude account (`<home>/sessions/<pid>.json`) before
-  the frame is written, so Claude shows a Codex-originated or agent-originated message as the collapsed
-  `@<sender> ❯` entry instead of an unidentified block. `name` is the sending session's catalog name
-  (`sessionsation` for system messages); `messagingSocketPath` is the worker's reply socket, which is also the
-  frame's `from`. Fields written: `pid`, `procStart` (the `/proc/<pid>/stat` start tick, as Claude writes it),
-  `pidDomain`, `startedAt`, `updatedAt`, `cwd`, `version` (`sessionsation-<version>`), `peerProtocol` 1,
-  `name`, `nameSource` `peer`, `nameSince`, `messagingSocketPath`, and the ownership markers `entrypoint`
-  `sessionsation-peer-worker` plus `registeredBy` `sessionsation`. Deliberately absent: `sessionId`, `kind`,
-  `peerFeatures`, `status`. No Claude process runs and no API call is made.
-  - Receipt `sender_registration`: `{"name":..,"registered":true}` or `{"registered":false,"reason":..}`
-    (`SENDER_NAME_COLLIDES_WITH_LIVE_SESSION` when a live non-sessionsation record already has that name,
-    `SENDER_REGISTRY_UNAVAILABLE`, `SENDER_PID_FILE_FOREIGN`, `SENDER_NAME_INVALID`); the message is then
-    delivered unregistered.
-  - Cleanup: removed by a drop guard on success, error and timeout, and by a SIGTERM/SIGINT handler (which
-    also unlinks the reply socket). After SIGKILL the entry is swept: by the next worker for that account and by
-    the supervisor every 60 s, for every Claude account, whether or not the setting is still on. A sweep removes
-    only entries carrying both ownership markers whose pid is dead or whose `procStart` no longer matches; it
-    never matches by name and never touches any other entry.
-  - Caveats: the entry is visible to Claude (for example in `/list-agents`) for the seconds the worker lives.
-    Replies Claude sends back go to the worker's reply socket: with `await_reply` the worker records them into
-    the receipt as before, otherwise they are ignored. Claude Code's use of the registry is undocumented; the
-    rendering was derived from Claude Code 2.1.314 and is not asserted for other versions.
-- **Codex usage clock and staleness.** An `observed_at` ahead of the clock (a clock step back) used to make
-  `Account::observe` drop every later reading as older, freezing usage until the clock caught up, and was
-  reported as is. A stored reading ahead of the clock no longer blocks new polls, and status never reports
-  `observed_at` after now. `api state --cached` replayed Codex usage frozen at the last full `state`
-  (hours old); it now overlays the supervisor's current Codex usage (a local read, no provider contact,
-  2 s bound) and, when the supervisor does not answer, marks the frozen value `stale` by its age and clamps a
-  future `observed_at` (adding `usage.observed_at_clamped_from`).
-
-### Shared Claude customisation: agents, skills, commands (1.46.0, skills withdrawn in 1.46.1)
-
-MINOR, additive. Capability `shared_claude_state` (names extended; `core_names`, `custom_names`,
-`custom_since_contract`, `custom_merge`, `per_account` added).
-
-After `api switch` to another account, user-level custom subagents vanished because only the four
-conversation directories were shared. The shared set now also contains `agents` (custom subagents),
-`skills` and `commands` (slash commands), the user-level directories of the Claude config dir. They use
-the same store (`<root>/shared/claude/<name>`), the same trusted-link rule, the same migration (reflink
-backup, `RENAME_EXCHANGE`, journal) and the same `shared status` reporting (`names.<name>`, and `linked`
-is true only when all six are links (seven in 1.46.0, before `skills` was withdrawn)).
-
-- **Per account on purpose.** `settings.json` and credentials are not shared: values such as `statusLine`
-  and `permissions` may legitimately differ between accounts, and credentials are the account.
-- **Launch is never blocked by these three.** `ensure_links` links a missing or empty `agents`, `skills` or
-  `commands`; a real directory that holds data is left untouched and listed under `unmigrated` in the
-  `shared_state` of the launch result until `shared migrate` runs. (For the four conversation names such
-  data still fails with `SHARED_STATE_UNMIGRATED`.) An account switch depends only on the four conversation
-  names.
-- **Migration merges instead of reporting conflicts, for these three names.** When the store already holds
-  the directory (a second account), each file present on both sides is resolved: identical content is kept
-  once; for different content the file with the newest modification time stays in the store (the shared copy
-  on a tie) and the other is moved, never deleted, to `<backup_dir>/set-aside/<name>/<relative path>`
-  (a numeric suffix if that exists). Files only on one side move into the store. Entries that cannot be
-  resolved (a file against a directory, a symlink) are still listed under `conflicts` and nothing is
-  overwritten. Every account file is also in the reflink backup `<backup_dir>/<name>`.
-- **`--dry-run` shows exactly this.** Per name: `would_move`, `would_keep_once`, `would_replace_with_newer`,
-  `would_set_aside`, `conflicts` and `report`, one line per resolved file:
-  `identical agents/a.md: kept once`,
-  `differs agents/b.md: account copy is newer, kept in the shared store; the previous shared copy is set aside at <backup_dir>/set-aside/agents/b.md`,
-  `differs agents/c.md: shared copy is newer, kept in the shared store; the account copy is set aside at <backup_dir>/set-aside/agents/c.md`.
-  A real run reports the same lines under `results.<name>.report` with `duplicates`, `replaced` and
-  `set_aside` counts.
-- Accounts get the links when they are added (and at every launch) once shared state is enabled, as for the
-  other directories. A journal written before 1.46.0 is resumed with the three names added.
-
-### Statusline refresh and `skills` no longer shared (1.46.1)
-
-PATCH. No request or result shape changes except the lists noted below.
-
-- **Statusline refresh.** The `--settings` that sessionsation injects on Claude launch and resume now
-  carries `"refreshInterval": 300` in `statusLine`. Claude Code re-runs the statusline command every N
-  seconds even while the session is idle, so `usage.json` no longer goes stale for sessions that are driven
-  only by background messages. New config key `claude_statusline_refresh_seconds` (default 300; `0`
-  omits `refreshInterval`, restoring the previous behaviour).
-- **`skills` is no longer shared.** A live `skills/` holds `skills/synced/<org-bucket-id>`, claude.ai
-  cloud-synced skills that are specific to each account, so linking it across accounts mixed them up. The
-  shared set is `projects`, `file-history`, `todos`, `session-env`, `agents`, `commands`: `names` in
-  `shared status` and `api capabilities` has six entries, `custom_names` is `["agents","commands"]`, and
-  `linked` is true when those six are links. `skills` is never linked, migrated or reported as `unmigrated`.
-  A `skills/` that an earlier 1.46.x run linked is left as it is. A migration journal from 1.46.0 that listed
-  `skills` without having moved it is resumed with that entry dropped; nothing in `skills/` is touched.
-
-### Launch ack timeout and abandoning an uncertain launch (1.46.2)
-
-PATCH. No request or result shape changes except `api capabilities.abandon_operation.applies_to`,
-which is now `["resume_launch","launch"]` (plus `launch_phases: ["uncertain"]`).
-
-- **Ack timeout is decided atomically.** `api launch` waits up to 120 s (was 30 s) for `launch-run` to
-  acknowledge. When the wait expires while the receipt is still `dispatching`, `launch-run` never claimed it
-  and can no longer start (it requires `dispatching`), so the receipt becomes `failed` with detail
-  `LAUNCH_RUN_NEVER_STARTED: provider was not started` and the name reservation is released. Only a launch
-  that `launch-run` did claim stays `uncertain` (`LAUNCH_ACK_UNCERTAIN`).
-- **`launch-run` is loud.** Started after the receipt left `dispatching`, it prints the phase and
-  `LAUNCH_ALREADY_DISPATCHED` to stderr in the pane and starts nothing.
-- **Recovery.** `api abandon-operation --operation REQUEST-ID --confirm REQUEST-ID` now also ends a new launch stuck in
-  `uncertain` whose worker has stopped: terminal `abandoned` (`abandoned_from: "uncertain"`), name released,
-  nothing sent. Refused with `SESSION_EXISTS` when a catalog session with that id exists,
-  `SESSION_PROCESS_LIVE` when the launch pane still runs something other than an idle shell,
-  `SESSION_STATE_UNVERIFIED` when the pane state cannot be read, `OPERATION_NOT_STUCK` for any phase other
-  than `uncertain`.
-
-### Codex sender and origin detection (1.46.3)
-
-PATCH. No request or result shape changes.
-
-Codex tool commands run under the daemon-owned app-server, not under the TUI attachment process, so the
-process-ancestry match missed Codex sessions: native sender registration fell back to `sessionsation` and an
-omitted `origin` was detected as `operator`. After the ancestry match fails, the caller's own `CODEX_THREAD_ID`,
-then that of each ancestor (read from `/proc/<pid>/environ`, only that one variable, bounded hops, so it also
-works under `env -i`), is mapped to the catalog session with provider `codex` and that `conversation_id`. The
-ancestry match still wins when both apply. An unknown thread id resolves as before (`sessionsation` sender,
-`operator` origin).
-
-#### Native frame sender envelope (1.46.3)
-
-Claude Code renders a native peer frame as the collapsed `@<name> ❯` row only when
-`message.content` is a well-formed envelope (the sender registry entry is never used for rendering). Every
-native (peer) frame now carries
+`message.content` is always the envelope Claude Code renders as the collapsed
+`@<name> ❯` row:
 
 ```
 <cross-session-message from="<from>" from-name="<name>" from-mode="bypass|prompting">\n<body>\n</cross-session-message>
 ```
 
-- Fixed attribute order; `from-session`, `hop-chain` and `from-plugin` are omitted. `from` is the frame's
-  own `from` value (the reply socket address), percent-encoded except `[A-Za-z0-9:_/.-]`.
-- `from-name` is the sender's session name (`caller_origin::sender`, resolved in the calling process when the
-  message is admitted, since the detached worker is not the caller's descendant), with `"`, `<`, `>`, control
-  characters and newlines removed, capped at 64 characters, `sessionsation` when empty or when the caller is
-  not a managed session.
-- `from-mode` is the SENDER's permission class, never the receiver's: Claude sender, `bypass` when its
-  attachment process was launched with `--dangerously-skip-permissions` or `--permission-mode
-  bypassPermissions`; Codex sender, `bypass` when the latest `turn_context` in its rollout records approval
-  `never` with sandbox `danger-full-access`; everything else (operator, system, unknown, any read failure, a
-  mode changed mid-session) is `prompting`. A mismatch with the receiver's permission class makes Claude hold
-  the message for approval; that is intended and is not worked around.
-- The body is escaped so it cannot close or forge an envelope: every `</cross-session-message` and
-  `<cross-session-message` inside it gets a zero-width space (U+200B) after the `<`.
-- `native_sender_registration` is now a documented no-op (the config key still loads; nothing is registered
-  and the worker writes no registry entry). Receipts no longer gain `sender_registration`; records written
-  by 1.45.2 keep any value they have.
+`from` is the frame's reply address, percent-encoded except `[A-Za-z0-9:_/.-]`.
+`from-name` is the sender's session name, resolved when the message is admitted, or
+the [component name](#component-sender-names) for an outside-session sender, with
+`"`, `<`, `>`, controls and newlines removed, capped at 64 characters, `sessionsation`
+when empty. `from-mode` is the SENDER's permission class: a Claude sender launched with
+`--dangerously-skip-permissions` or `--permission-mode bypassPermissions`, or a Codex
+sender whose latest `turn_context` records approval `never` with sandbox
+`danger-full-access`, is `bypass`; everything else is `prompting`. A mismatch with the
+receiver makes Claude hold the message for approval; that is intended. Inside the
+body every `<cross-session-message` and `</cross-session-message` gets a zero-width
+space after the `<`. The config key `native_sender_registration` is a no-op.
 
-### Codex messaging waits for the ledger (1.46.4)
+Status frames: `delivered` → `native_accepted`, `held` → `held` (a bypass-permission
+receiver), `denied`/`refused`/`dropped` → `refused` (`PEER_MESSAGE_DENIED|REFUSED|DROPPED`),
+`expired` → `expired`. With no status inside 3 seconds the state is `native_accepted`
+with `peer_message.evidence:"transport_accepted_silent"` (`facts.silent_accept`):
+the transport took the frame, which is not proof that Claude read it. The transcript
+anchor (the record carrying the message id) upgrades any of these to
+`input_recorded` and the reply (`evidence:"transcript_anchor"`): the assistant text
+after it until the next input, final after that input or an idle notice. Without the
+anchor, `reply` stays null (`observation.error_code:"peer_anchor_not_found"`). A
+connection that never opened is `rejected` (`PEER_SOCKET_UNREACHABLE`); a failed
+write is `delivery_unknown`. `correlation` is `{kind:"transcript_anchor",message_id,
+anchor_found,anchor_offset,turn_ended,notify_msg_id}`. Only `await_reply:true`
+subscribes to Claude's idle notice (which Claude shows the receiving user) so the
+receipt can reach `completed_with_reply`; otherwise the worker exits after the
+3-second status window. Errors also include `PEER_REPLY_SOCKET_UNAVAILABLE`.
 
-PATCH. No request or result shape changes.
+`api idle-notify --session ID --expected-generation G [--notify-session ID2]` (a
+running Claude session that accepts inbound messages) subscribes with
+`notify_when_idle` for one `peer_idle_notice`, without a model request in the watched
+session. Journaled in `operations/claude-idle-notify/`; a detached worker keeps the
+subscription for 12 hours. The notice becomes a `kind:"idle"` or `"exited"` event in
+`api turn-events` with `detail:{state,finished_at,status}` and, with
+`--notify-session`, one queued message. A repeat call returns the active
+subscription; a lost worker shows `stalled:true`; nothing is replayed.
 
-Since 1.46.3 agent sends to Codex sessions go through the public messaging path, so several agents sending and
-polling receipts at once collided on the single messaging ledger lease and failed at once with `ADAPTER_BUSY`
-(`ok:false`, retryable) before acceptance. Now:
+Parked sessions: moving an interactive session to the background with Claude Code's
+left-arrow gesture records `parkedJobId` in the interactive process's registry entry
+and forks the conversation into that `bg` job. The interactive process remains the
+job's frontend, so it stays the entry's terminal: `terminal_input` uses it, peer
+messages go to the job's own socket, and a generated job title never replaces the
+session name. When Claude clears `parkedJobId` the process is no longer a terminal of
+the job.
 
-- `api send` (Codex), `api receipt`, `api cancel` and the legacy `messaging` enqueue/status/observe/events/cancel
-  wait for the lease: up to 20 s for sends and 10 s for reads, and for the per-session ownership lock
-  (otherwise `OPERATION_BUSY`). `ADAPTER_BUSY` is returned only after that budget runs out.
-- The lease is no longer held across Codex app-server I/O (status read, `thread/queue/add`, queue reconciliation,
-  reply observation). A submission is journalled `unknown` under the lease before the add is sent, so exactly one
-  process delivers a message id; every other process only reconciles. After the I/O the lease is re-taken and
-  the result is saved only if the receipt is unchanged, so a stale result never regresses a state recorded
-  meanwhile (cancelled, observed, terminal).
-- A send to a busy (mid-turn) target is unchanged: `queue` queues natively, `submit` is refused with
-  `target_busy`, `steer` steers.
+### Terminal input
 
-### Codex steer waits, cancel waits, `if_busy` (1.46.5)
+`delivery_semantics:"terminal_input"` types the text into the session's HERDR pane as
+the user's own keystrokes, so the provider records a real human turn. It is the
+strongest steer for a session Sessionsation does not host. Claude Code records a
+`user` record when idle, or a `queued_command` attachment with `origin.kind:"human"`
+mid-turn, read at the next tool round. Capabilities: `claude_input_delivery.terminal_input`
+(`ClaudeTerminalInputDelivery`, with `max_text_bytes`), `gemini_input_delivery`
+(`GeminiTerminalInputDelivery`) and `antigravity_input_delivery` (with
+`herdr_agent:"agy"`, `keys_by_queued_messages`, `max_text_bytes`, `max_lines`).
 
-PATCH, plus one optional request field. Defaults are unchanged.
+**Eligibility.** A running, non-hosted catalog session whose `attachment` is a
+verified HERDR pane (`attachment.host:"herdr"` with the exact PID and start time of
+the provider process). A Claude background session (`native.kind:"bg"`) qualifies
+through its `claude attach <job>` client: the attachment must be that exact client
+(PID, start time and `attach <native.job_id>` argv) and, at admission and before the
+first key, HERDR must report it as the pane's only foreground process. Otherwise
+`TERMINAL_NOT_ATTACHED`. The config switch `terminal_input_enabled` (default `true`)
+turns it off for every provider: rows report `TERMINAL_INPUT_DISABLED`, requests
+naming `terminal_input` are refused with it, and an admitted request still unsent
+when it goes off ends `rejected`. Claude types only `submit` and `steer`
+(`TERMINAL_QUEUE_UNSUPPORTED`); `steering.interrupt` is refused
+(`TERMINAL_INTERRUPT_UNSUPPORTED`): typed input never sends Esc or Ctrl+C.
 
-- **Steer no longer fails fast.** A `steer` that overlapped another send was rejected with reason
-  `operation_busy` (the session or jobs queue lock was held for a moment). It now waits for session ownership
-  (up to 20 s) and for the messaging ledger, and releases the ledger lease during the Codex status read, the
-  steer RPC and the anchor read. The `unknown` / `steer_dispatch_intent` journal is still saved under the lease
-  before the steer is sent, and the result is saved only if the receipt is unchanged, so one message id is
-  never steered twice and a state recorded meanwhile is never regressed. `api steer-target` waits up to 10 s for
-  the session lock instead of reporting it unavailable.
-- **Cancel waits.** `api cancel` of a `native_accepted` message waits for the ledger and session lock, and runs
-  the native delete without the ledger lease (`cancellation_uncertain` is journalled first; a concurrent
-  writer's record wins).
-- **Recovery and legacy `messaging` commands** wait for the ledger too (`resume` send and recovery
-  reconciliation, `modes sending`, `modes events`).
-- **Stale errors cannot overwrite a settled receipt.** When a delivery error is recorded on a receipt that another
-  sender of the same id already advanced, the stored record is returned and kept.
-- **`if_busy` on `submit` (new, optional).** `submit` refuses with `target_busy` when a turn is active; a sender
-  that checked `steer-target`, saw no turn and lost the race to a starting turn got that rejection. The mode
-  `queue` already means "dispatch now when idle, queue behind the active turn when busy", so a new optional
-  request field `"if_busy":"queue"` on a Codex `submit` applies exactly that policy: an idle target takes it at
-  once as before, a target whose turn started meanwhile gets it queued natively (`native_accepted`,
-  non-steering) instead of `rejected`/`target_busy`. Any other value, or `if_busy` with another mode, is
-  `INVALID_REQUEST`. The receipt echoes `if_busy`. `"steer"` is deliberately not offered: a steer needs the
-  exact `expected_turn_id` and runtime generation of the turn it targets, which a submit does not have. For
-  Claude and Gemini targets the field is accepted and ignored. Omitted, behaviour is unchanged.
+**Text.** The text must be typeable verbatim, or admission refuses it without
+journaling: tabs and control characters, a trailing backslash (Enter would become a
+newline) and a last token starting with `@` or `/` (Enter would accept a completion)
+are `TERMINAL_PAYLOAD_UNSUPPORTED`; the limit after trimming is
+`TERMINAL_TEXT_TOO_LONG` (Claude 8192 bytes; Gemini 1000 bytes and 8 lines;
+Antigravity 8192 bytes and 200 lines). CRLF becomes LF and surrounding whitespace is
+trimmed (`text_normalized`). A leading `/`, `!`, `#` or `?` gets a backslash
+(`escaped_prefix`; Gemini escapes `/`, `!`, `?`; Antigravity refuses text starting
+with `/`, `?` or `!`). The receipt correlates on the delivered text.
 
-### Launch status and validate no longer rescan state (1.46.6)
+**Procedure** (journaled under `DATA_ROOT/messaging/claude-steer/` before every write,
+one request per pane at a time; each code ends the request `rejected` before anything
+is submitted):
 
-PATCH, no schema change. `api launch status|list|validate` and `api resume-launch status|list|validate` only
-read receipts, but each ended with a full refresh of the cached state snapshots (Active, Archived and All, three
-scans), so a status poll or the "Checking choices" validate took tens of seconds to minutes on a large archive.
-They no longer rescan anything and return as soon as the receipt is read. Mutating lifecycle calls (`resume`,
-`stop`, `restart`, `switch`, `move-space`, `launch start`, `resume-launch start`) patch the session generation in
-the snapshots at once and refresh only the Active snapshot (in line for a named session, in a detached background process for `launch start`, `resume-launch start` and `move-space`); the launch,
-resume, switch and move workers likewise refresh only Active when they finish. Archive, restore and delete
-workers still refresh all three. `state --cached` after a launch may show the new session in the Active view
-before the All view, until the next full `state`.
+1. `herdr agent list` must show the provider's agent on the pane
+   (`TERMINAL_AGENT_UNKNOWN`) and not `blocked` (`TERMINAL_AGENT_BLOCKED`), checked
+   again before the first destructive key and before Enter.
+2. `pane read --format ansi` must show the main prompt with no overlay. Claude: the
+   transcript view is left with ctrl+o and the shortcut help with `?` on the empty
+   prompt (`view_switched`); the input box is the last `❯` in column 0 directly under a
+   rule (a plain rule, or a labelled top rule starting with 3 or more dashes and a
+   space), closed by the next rule; the pointer colour is not a marker. A viewed agent
+   (its name as a pill in the top rule, a `Message @name…` placeholder, or `◯ main` in
+   the agent list) is `TERMINAL_VIEW_NOT_MAIN`: no key returns safely, because Esc
+   stops a running subagent. Other refusals: `TERMINAL_VIM_MODE`,
+   `TERMINAL_SHELL_MODE`, `TERMINAL_OVERLAY_UNIDENTIFIED` (completion menus, focused
+   footer items, pickers, dialogs) and `TERMINAL_VIEW_UNDETERMINED`.
+3. The draft in the input box must be reconstructable exactly: paste or image
+   placeholders, a row reaching the right edge (possible soft wrap), more than the
+   box's rows (`max_draft_rows`; Claude 12) and dim text mixed with typed text are
+   `TERMINAL_DRAFT_UNRECONSTRUCTABLE`. A draft starting with `?`, `!`, `#` or `/`, or
+   ending in an `@` token, is `TERMINAL_DRAFT_UNRESTORABLE`. Trailing spaces of a draft
+   line are not visible and not preserved. The draft is journaled privately and never
+   appears in receipts. It is read once more immediately before clearing; if the box
+   changed, the request is `TERMINAL_DRAFT_CHANGED` and nothing is sent.
+4. The input is cleared and verified empty (`TERMINAL_CLEAR_UNVERIFIED`, draft kept
+   in the journal). Claude uses ctrl+k/ctrl+u pairs (up to 600 rounds; ctrl+l only
+   redraws); Gemini ctrl+e, ctrl+u, ctrl+k and backspace; Antigravity alt+> then
+   ctrl+u/backspace (up to 400 rounds).
+5. The text is typed with `pane send-text` (no bracketed paste, so it is never
+   collapsed into a paste placeholder) in chunks of 32 characters, ctrl+j between
+   lines. The screen is read every 80 non-blank characters; each read must show a tail
+   of everything typed so far at least as long as the text typed since the previous
+   read, so consecutive reads tile the message even when the box scrolls (whitespace
+   and soft wraps are ignored; agy's `> ↑ N more lines` row is skipped). A mismatch or
+   a block withdraws the text and restores the draft (`TERMINAL_TYPED_TEXT_MISMATCH`).
+   Enter is journaled (`steps` gains `submit`) and sent once (Gemini: at least 30 ms
+   after the last key, since a faster Enter becomes a newline). A failed Enter is
+   `delivery_unknown` (`TERMINAL_SUBMIT_UNCERTAIN`).
+6. Enter empties the input box whether it starts a turn or queues the text. The draft
+   is then typed back unsubmitted and verified (`draft.restored`, `restore_error`).
+   Every exit after the clear restores the draft or reports what the box holds:
+   `draft.left_in_input` (`draft`, `empty`, `message`, `other`, `unknown`) and
+   `left_chars`, with the draft kept in the journal. A failed restore is reported,
+   never retried. A worker that fails after typing and before Enter withdraws its text.
+   A worker that died past the clear leaves an orphan: a receipt read after a
+   10-second grace, or the next delivery to the same pane, withdraws the stranded text
+   if the box still holds it, types the journaled draft back and ends the request
+   `rejected` with `TERMINAL_WORKER_EXITED_BEFORE_SUBMIT`.
+7. The transcript after the submit is searched for the human record carrying exactly
+   the delivered text with a timestamp at or after the submit. Its uuid is
+   `correlation.input_uuid` (`{kind:"transcript_record",input_uuid,record_type,
+   anchor_offset,turn_ended}`) and anchors `reply`. Without it within 60 seconds (or
+   `timeout_seconds` if shorter; a mid-turn Gemini/agy Enter that was visibly queued
+   waits up to `timeout_seconds`) the receipt is `delivery_unknown`
+   (`TERMINAL_INPUT_UNCONFIRMED`). Nothing is re-sent.
 
-### Account plan (1.46.7)
+Other codes: `TERMINAL_HOST_UNAVAILABLE`, `TERMINAL_HOST_FAILED_BEFORE_SUBMIT`. Keys
+never sent: Esc, Ctrl+C, Ctrl+D, Ctrl+L (and for agy Ctrl+K and up/down). Receipts add
+`terminal_input` (`ClaudeTerminalInput`): `label`, `target`, `escaped_prefix`,
+`text_normalized`, `view_switched`, `draft:{present,chars,restored,restore_error,
+left_in_input,left_chars}`, `steps`, and on a refused screen `refusal_layout`
+(`screen_rows`, `rules`, `box_rows`, `max_draft_rows`, footer rows; never draft text).
+A key the user presses during the few hundred milliseconds of a delivery can land
+between steps. Screen grammars and key bindings come from the Claude Code 2.1.312,
+Gemini CLI 0.66.0 and agy 1.4.10 bundles and HERDR 0.9.5; the Claude markers are
+checked against redacted real screens in `tests/fixtures/claude-screens/`, which the
+fake HERDR replays. Fixtures: `claude_steer_request_terminal`,
+`claude_steer_receipt_terminal*`.
 
-PATCH, additive field. Every account row of `api state` (live and `--cached`), `api account list` and the
-supervisor status carries `accounts[].plan`, the subscription plan the provider last reported, so tools stop
-hand-maintaining it. It is read-only and non-secret; capabilities advertises it as `account_plan`.
+**Gemini.** Gemini CLI 0.66.0 has no usable live input API (no stream-json input; ACP
+cancels the running turn on a new prompt), so `submit`, `queue` and `steer` are typed
+(`delivery` `auto` or `terminal_input`, otherwise `DELIVERY_UNAVAILABLE`). Enter means a
+user turn when idle; mid-turn, Gemini's own queue with `experimental.modelSteering`
+off, or a "user steering update" with it on. Hence `queue` needs the setting off
+(`GEMINI_QUEUE_WOULD_STEER`), `steer` needs it on (`GEMINI_STEERING_DISABLED`), and a
+mid-turn `submit` is refused when it is on (`GEMINI_SUBMIT_WOULD_STEER`). The CLI reads
+the setting at startup only: a settings file changed after the process started is
+`GEMINI_STEERING_RESTART_REQUIRED`, an unreadable or trust-dependent value
+`GEMINI_STEERING_UNKNOWN`. `input_delivery.model_steering` is `{enabled,configured,
+source,restart_required,reason}` from the user, workspace and system layers.
+`api account live-steering gemini:NAME [--enable|--disable]` (`GeminiLiveSteering`)
+sets or removes only `experimental.modelSteering` in `.gemini/settings.json` (atomic,
+mode kept, symlinked or commented files refused), with
+`applies_to:"sessions_started_after_the_change"`, `restart_required` and
+`running_sessions`. Refused before any key: shell mode, vim mode, reverse search,
+completions, dialogs, `[Pasted Text: N lines]`, ghost text and possibly soft-wrapped
+drafts; the input box is recognised only with its half-block or line borders. Receipts
+(`GeminiSteerReceipt`) add `gemini_input`: `model_steering`, `steering_source`,
+`busy_at_submit`, `expected` (`user_turn`, `native_queue`, `steering_update`),
+`screen_evidence` (`queued` or `steering_hint` seen after a mid-turn Enter, then
+`native_accepted`), `outcome` and `steering:{applied,fate}`. The anchor is the first
+`user` record at or after the submit containing the text:
+`submitted`/`queued` (queued messages are joined into one prompt when the turn ends:
+`batched` and `facts.shared_with_turn` true); `steering_applied` (added to the next
+tool response: `record_type:"steering_update"`, `fate:"applied_at_next_tool_step"`,
+`facts.folded`); `steering_after_turn` (the turn ended without a tool call and Gemini
+submitted the update alone once idle: `steering.applied:false`,
+`fate:"submitted_after_turn_as_steering_prompt"`; Gemini collapses its whitespace,
+shown as `input_delivery.steer.caveat`). Fixtures: `gemini_steer_*`,
+`gemini_live_steering`.
 
-```json
-"plan": {"provider":"codex","raw":"prolite","name":null,"rate_limit_tier":null,"source":"usage_snapshot","verified_at":1762790000}
-```
+**Antigravity.** The screen must show agy's main prompt: the input box between two
+full-width rules and one footer row (`? for shortcuts`, `esc to cancel` or `Press up
+to edit queued messages`); menus, panels, pickers, the trust or permission dialog and
+an armed exit (`TERMINAL_EXIT_ARMED`) are refused. Idle, Enter starts a turn. Busy,
+agy's `queuedMessages` setting decides: `queue` (default) Enter queues and alt+m sends
+to the running turn; `send-immediately` the reverse. `queue` and `steer` press the
+matching key and are refused (`ANTIGRAVITY_QUEUE_MODE_UNKNOWN`) when the setting cannot
+be read (an inline `--settings` JSON wins over `settings.json`); rows carry
+`input_delivery.queued_messages {value,source}`. The receipt is anchored on the first
+explicit `USER_INPUT` step in `brain/UUID/.system_generated/logs/transcript.jsonl`
+whose `<USER_REQUEST>` holds the text and adds `antigravity_input` `{label,queue_mode,
+queue_mode_source,busy_at_submit,key,expected,screen_evidence (queued|sending),
+outcome (submitted|queued|sent_immediately),caveat}`.
 
-- `raw` is the provider value exactly as reported (never normalised or guessed). `name` is a human label only
-  where the meaning is certain (Claude `pro` "Claude Pro" only; Codex `free`, `plus`, `pro`,
-  `team`, `business`, `enterprise` as "ChatGPT <Plan>"); any other value, such as `prolite`, has `name: null`
-  with `raw` kept. A Max 5x/20x multiplier is never inferred: `rate_limit_tier` is the string `claude auth status`
-  reports as `rateLimitTier` when it reports one, otherwise null. Codex has no tier (null).
-  Claude `auth status` reports `subscriptionType` `max` for both the Claude Max and the Claude Ultra plans, so raw
-  `max` covers both and `name` stays null for it (since 1.46.8; earlier 1.46.7 labelled it "Claude Max").
-- `source` is `auth_status` (Claude: the supervisor's own `claude auth status --json` probe, run on its account
-  poll, `account refresh` and enrollment) or `usage_snapshot` (Codex: `planType` of the last rate-limit
-  snapshot). `verified_at` is the unix time of that observation (Codex: the usage `observed_at`), not of the read.
-- The last Claude observation is kept in the account registry, so it survives restarts and shows in
-  `state --cached` without a probe; the stored time is refreshed at most hourly while the value is unchanged.
-  A failed or logged-out probe keeps the previous observation. Codex `plan` follows the supervisor's usage
-  snapshot in cached state like `usage`. Gemini and Antigravity report `plan: null`. A not yet observed plan is null.
-- `usage.json` (the Claude statusline recorder) is unchanged; it carries no plan.
+### Gemini CLI
 
-### Auto Start already running (1.46.8)
+Google ended Gemini CLI login for individual accounts, so Gemini sessions cannot be
+started with a personal login; the provider is kept for Workspace and API-key
+accounts and reports `supported:false` with that reason for observe, stop and events.
+Each account is an isolated `GEMINI_CLI_HOME` at `DATA_ROOT/accounts/gemini/NAME`
+(0700; state in `HOME/.gemini/`); adoption is not supported. `gemini_binary` (default
+`gemini`) selects the executable (the pinned `@google/gemini-cli` through the host
+launcher). Every child gets `GEMINI_CLI_HOME`, `GEMINI_CLI_NO_RELAUNCH=1`,
+`GEMINI_FORCE_FILE_STORAGE=true`, and has `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+`GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_CLOUD_PROJECT`,
+`GOOGLE_CLOUD_LOCATION`, `GOOGLE_CLOUD_ACCESS_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`,
+`GOOGLE_GEMINI_BASE_URL`, `GOOGLE_VERTEX_BASE_URL`, `CLOUD_SHELL`,
+`GEMINI_CLI_USE_COMPUTE_ADC` and `GEMINI_MODEL` removed. `.gemini/settings.json` is
+seeded on enrollment and before every launch without clobbering other keys:
+auto-update and its notice off, usage statistics off, automatic session deletion off,
+and the Login-with-Google auth type when none is selected.
 
-PATCH. When an Auto Start or Auto Recover attempt finds the session already running (a boot or array turn arrives
-after the session was started some other way; start refuses `SESSION_ALREADY_RUNNING`), `last_result` is now
-`state: "already_running"`, `code: "ALREADY_RUNNING"` (detail keeps the refusal text) instead of `failed` /
-`RECOVERY_FAILED`. Nothing was started, so the attempt is not counted in `recoveries_last_hour` / `starts_last_hour`
-and never contributes to `max_per_hour` (`rate_limited`), and it does not suppress the session. The boot or array
-epoch is still marked handled, so it is not retried within the same boot. The deprecated `auto_recover` projection
-reads it as `waiting`. Capabilities `auto_start.last_result_states` lists `already_running`.
+**Authentication modes** (provider entry `auth_modes` and `auth_command`). The mode
+is the account's `security.auth.selectedType` in `.gemini/settings.json`: `google`
+(`oauth-personal`; `google_personal` is `available:false` with its reason,
+`google_workspace` available) or `api_key` (`gemini-api-key`; `input:"stdin_json"`,
+`field:"api_key"`); Vertex is `UNSUPPORTED_AUTH_MODE`. Clients show unavailable
+entries disabled with their `reason`. `api account auth gemini:NAME [--mode google |
+--mode api-key --key-stdin]` returns `{account_id,provider,auth_mode,api_key_present,
+auth_required,auth_failed,auth_failure_reason,auth_failure_observed_at,changed,
+running_sessions,applies_to}` (plus `login_required` and `login` in `google` mode).
+`--key-stdin` reads exactly `{"api_key":"..."}` (at most 32 KiB; 1-512 visible ASCII
+characters after trimming, else `INVALID_API_KEY_FORMAT`), stores it atomically in
+`HOME/secrets/gemini-api-key` (0600 in a 0700 directory; symlinks refused with
+`UNSAFE_SECRET_PATH`; a key file that is not owner-only is ignored) and adds
+`validation:{state,code,reason,timeout_seconds}` from one headless run (at most 15 s)
+in a throwaway home under `registry/provider-state/gemini-validate/`: `valid`,
+`auth_failed` or `inconclusive` (the key stays stored). The key reaches only that
+account's children as `GEMINI_API_KEY` and `SESSIONSATION_GEMINI_API_KEY` and never
+appears in argv, state, receipts, logs, errors or output. Other errors:
+`INVALID_REQUEST`, `API_KEY_REQUIRED`. In `api_key` mode the account is logged in when
+the key file exists, `account login` is refused (`AUTH_MODE_API_KEY`) and logout
+deletes the key. Running sessions keep the mode they started with.
 
-### Codex compaction at the next idle point (1.47.0)
+In `google` mode an account is logged in when `.gemini/oauth_creds.json` is a non-empty
+file (stat only) and `google_accounts.json` records an active account; login runs
+interactive `gemini` with `NO_BROWSER=true`. Account rows add `auth_mode`,
+`api_key_present`, `auth_failed`, `auth_failure_reason` (`AUTH_CLIENT_UNSUPPORTED`,
+`AUTH_TIER_INELIGIBLE`, `AUTH_GRANT_INVALID`, `AUTH_UNAUTHENTICATED`,
+`AUTH_PERMISSION_DENIED`, `AUTH_REAUTH_REQUIRED`, `AUTH_API_KEY_INVALID`,
+`AUTH_API_KEY_MISSING`, `AUTH_FAILED`) and `auth_failure_observed_at`, from the last
+recognizable failure of a headless run or the login terminal (fatal-authentication
+exit 41 or known messages; a network error never counts), stored outside the account
+home as a code, time and credential-file stat identity. While set the row is
+`auth_required:true`, `selectable:false`, `auth_detail:"AUTH_FAILED"`; a later
+successful run, login, newer credential file or newly stored key clears it.
 
-MINOR, new action. Leads compact Codex agents at phase boundaries, but typing `/compact` into the Codex TUI
-is refused while a task is in progress, and incoming native messages keep starting new turns. Sessionsation
-speaks the app-server protocol the TUIs already run against, so it queues the compaction and fires the
-protocol request (`thread/compact/start`, empty response; the work is an ordinary turn with a
-`contextCompaction` item) at the first true idle point. Nothing is typed into a terminal.
+Sessions: `gemini --session-id UUID` (new) and `gemini -r UUID` in the recorded
+directory. Discovery reads only the first line (`sessionId`, `projectHash`,
+`startTime`) of `.gemini/tmp/SLUG/chats/session-*.jsonl` plus `projects.json`. A
+session is `running` only when a process's command line names its id after
+`gemini.js` or `gemini`, its environment has this `GEMINI_CLI_HOME` and its PID and
+start time verify. Usage is unsupported (`usage_state:"unsupported"`, null windows,
+never 0%). Supported: new, resume, rename, terminal input, headless delivery, archive.
+Unsupported: stop, restart, account switch, relocation, Space moves, Add to HERDR
+(`NO_NATIVE_ATTACH`), compaction, set-model, observe, events and pending questions.
+Login, headless JSON and the command-line shape are verified against fakes and the
+installed CLI's source only.
 
-```sh
-api session compact --session ID --expected-generation G --when-idle [--expires-at UNIX] [--operation UUID]
-api session compact-status (--operation UUID | --session ID)
-api session compact-cancel --operation UUID        # or: api cancel-operation UUID
-```
+### Antigravity CLI
 
-`--when-idle` is required (the only mode; it reserves room for an immediate mode later). `--expires-at` is a
-unix time like `api send`, default one hour from now, at most 24 hours (`INVALID_EXPIRY`). `--operation` is a
-caller-chosen UUID (generated when omitted).
+Google Antigravity CLI (`agy`, verified with 1.4.10). Each account is an isolated
+`HOME` at `DATA_ROOT/accounts/antigravity/NAME` (0700; state in
+`HOME/.gemini/antigravity-cli/`, `.gemini/config`, `.config/antigravity`).
+`antigravity_binary` (default `agy`) selects the executable. Every child gets
+`AGY_ACCOUNT_HOME` and `HOME` set to the account home, `XDG_CACHE_HOME=HOME/.cache` and
+`AGY_CLI_DISABLE_AUTO_UPDATE=1`; ambient Google/Gemini keys, Vertex/Cloud project and
+endpoint overrides, `GEMINI_MODEL`, `ANTIGRAVITY_API_KEY`, `AGY_LLM_GATEWAY_*`,
+`AGY_ADC_AUTH` and `XDG_RUNTIME_DIR` are removed. An account is logged in when
+`.gemini/antigravity-cli/antigravity-oauth-token` is a non-empty file (stat only);
+launch and headless delivery are refused with `AUTH_REQUIRED` otherwise. Login runs
+`agy` (Google OAuth: open the URL, paste the code) and ends when the token file
+appears; `refresh` reports `auth_mode.auth_method:"google-oauth"`. Usage is
+unsupported.
 
-**Result** (all three commands; `api operations` lists the same rows with `kind:"compaction"` while pending
-and for an hour after they finish):
+agy cannot pre-assign a conversation id, so a new session first creates an empty
+conversation with a bounded headless run that sends no prompt (`agy --input-format
+stream-json --output-format stream-json --print-timeout 20s
+--disable-slash-commands -p=` with empty stdin, at most 30 s), records the id from its
+`init` event, then execs `agy --conversation UUID`; resume runs the same command in
+the recorded directory. Discovery reads agy's index `conversation_summaries.db`
+read-only (id, workspace URI, step count, modification time); conversations with at
+least one step are registered, and a conversation exists while `conversations/UUID.db`
+does. A session is `running` when an interactive `agy` process whose `HOME` is this
+home holds `presence/UUID.lock` (or the db) open, or names `--conversation UUID`;
+because the open lock is read, `/resume` or `/clear` inside agy is followed.
+Supported: new, resume, rename, stop, terminal input, headless delivery, archive,
+observe and events. Unsupported: restart, account switch, relocation, Space moves, Add
+to HERDR (`NO_NATIVE_ATTACH`), log out, compaction, set-model and pending questions.
 
-```json
-{"id":"UUID","kind":"compaction","provider":"codex","when":"idle","session_id":"...","accepted_generation":"...",
- "provider_conversation_id":"...","phase":"waiting","terminal":false,"reason":"turn_active",
- "detail":"A turn is active; the compaction starts when it ends.",
- "hold":{"active":true,"released":false,"scope":"new native input for this session"},
- "created_at":0,"updated_at":0,"expires_at":0,"started_at":null,"finished_at":null,"attempts":0,
- "compaction_turn_id":null,"can_cancel":true,"can_respond":false,"can_recover":false,
- "non_steering":true,"replays":false,"existing":false,"held_messages":["message ids"]}
-```
+## Data root
 
-`existing` is returned by `compact` (true when the call returned an operation that was already pending);
-`held_messages` (ids, arrival order, null when the ledger is busy) by `compact-status`.
+### Layout and retention
 
-- **Phases.** `waiting` (journaled, not started), `starting` (journaled just before the app-server call),
-  `running` (the app-server accepted it), then `complete`, `failed`, `cancelled` or `expired`. `reason` says
-  why a `waiting` operation has not started: `turn_active`, `native_queue_not_empty`,
-  `approval_or_user_input_required`, `session_not_running`, `session_busy`, `native_sending_disabled`,
-  `explicit_resume_required`, `provider_unavailable`, `state_unverified`, `provider_rejected`; and why a
-  finished one ended: `completed`, `cancelled`, `expired`, or a failure code (`generation_changed`,
-  `provider_rejected`, `unsupported_native_version`, `compaction_failed`, `compaction_interrupted`,
-  `compaction_not_observed`, `compaction_timeout`).
-- **True idle.** The supervisor starts it only when the thread has no active turn (the same fresh native
-  status the Codex send path uses: `idle`, or a settled `errored`/`interrupted` last turn), is not waiting on an
-  approval or question, and its native queue is empty, all checked under the session ownership lock every send
-  takes, so no input can begin between the check and the start. Input that was already accepted into the native
-  queue before the request cannot be paused (the native queue has no pause) and runs first; the compaction waits
-  until it has drained, which new input no longer prevents because of the hold below. `--when-idle` does not wait
-  forever: it expires at `expires_at`.
-- **Hold.** While an operation is pending (a `waiting` one stops holding at its `expires_at`, even if the supervisor
-  is down), `starting` or `running`, a public `submit` or `queue` send to that Codex session is not added to the
-  native queue: the receipt stays `pending_local` with `reason:"compaction_hold"` (and a `reason_detail`) and the
-  message is bound to its id as usual. Held paths: `api send` modes `submit` and `queue` (also used by questions
-  and notices). Not held: `steer` (refused with `target_compacting` since 1.48.1, see below) and `resume`, the legacy `messaging enqueue` command and the `messaging modes`
-  commands (they have no public message row to release). The hold lasts until the held input is released, not just
-  until the operation ends, so a new send cannot overtake a held one (`hold.released` turns true when a release pass
-  found nothing left to deliver or retry).
-- **Release.** When the operation completes, fails, expires or is cancelled, the supervisor re-sends the held
-  messages through the ordinary idempotent send path (same message id), in arrival order, at most 20 per tick
-  and after all pending operations were advanced, so a backlog cannot stall another compaction. Every released
-  message is sent with **queue semantics**, including one that was a `submit`: after the first one starts a turn a
-  submit would be refused as `target_busy`, so the native queue runs them in order instead. The receipt stays honest:
-  `mode` is still `submit` and carries `hold_release:{from:"compaction",delivered_as:"queue"}`. A failed or
-  uncertain step stops the pass at that message (later ones never overtake it): the receipt keeps `pending_local`
-  with `reason:"compaction_release_retry"` and the next tick re-queries and retries, until the message's own
-  `expires_at` makes it `expired`. A held message's `expires_at` and `api cancel` work as for any unsent message,
-  nothing is lost or sent twice (an uncertain add is never replayed), and the release survives a supervisor restart.
-- **One per session.** A second `compact` for a session with a pending operation (or the same `--operation` id)
-  returns that operation with `existing:true` and creates nothing, whatever its expiry.
-- **Cancel.** Only while `waiting`: the operation becomes `cancelled`, held input is released, and a repeat is a
-  no-op. Once the start was attempted it is `COMPACTION_ALREADY_STARTED`; after it finished,
-  `COMPACTION_ALREADY_FINISHED`. `api cancel-operation` accepts the id too.
-- **Background terminals and rejected starts.** A thread with only background terminals and no active turn is
-  idle by the rule above. If the app-server nevertheless answers `thread/compact/start` with an error (for
-  example because it counts background work as in progress), the operation returns to `waiting` with
-  `reason:"provider_rejected"` and is retried at the next check, at most 3 attempts in all, then `failed`
-  (`provider_rejected`) with the hold released. Nothing was started in that case, so no turn is repeated. An
-  unanswered start (timeout, dropped connection) stays `starting`: it is resolved only from the thread's own
-  turns (a compaction turn appeared: `running`/`complete`) and is never issued again, since a slow app-server could
-  then compact twice. If none appears within 30 seconds of the thread being idle, or nothing is observable for
-  3 minutes (1.47.1), it fails `compaction_not_observed` and releases the hold.
-- **Completion** is observed from the thread's recent turns: the first turn that was not in the baseline taken
-  just before the start and carries a positive `contextCompaction` item. A turn whose summary shows a user message
-  is never it; any other new turn is read once in the full view, exactly that turn (`thread/turns/list`,
-  `itemsView:"full"`, `limit:1`, positioned with the server cursor; since 1.47.1, see below). `completed` is
-  `complete`; `failed` or `interrupted` is `failed`; a run that is still going after 30 minutes, that never shows
-  as a turn once the thread is idle again, or that shows no observable progress for 3 minutes (below), is `failed`
-  (`compaction_timeout`, `compaction_not_observed`) and releases the hold.
-- **Restarts.** The operation is bound to the native runtime generation at request time. If the session process
-  was replaced before the start, it fails `generation_changed` and releases the hold. A pending operation does
-  not block `stop`, `restart` or `switch`.
-- **Refusals.** Since [1.64.0](#1640-part-b-events-compact) Claude terminal sessions are compacted too and Gemini and
-  Antigravity refuse with `UNSUPPORTED_PROVIDER_OPERATION` (`error.supported:false`, `error.reason`; was `COMPACT_UNSUPPORTED`); `STALE_TARGET` or the usual session errors for a bad generation; `SESSION_NOT_RUNNING`
-  when the Codex session has no live app-server attachment; `INVALID_EXPIRY`; `INVALID_OPERATION_ID`;
-  `OPERATION_ID_CONFLICT` (the id belongs to another session); `OPERATION_NOT_FOUND`.
-- **Journal and capability.** Records are `operations/compactions/ID.json` (retained like other finished
-  operations). `api capabilities` advertises `session_compact` (providers, phases, reasons, expiry bounds, hold
-  semantics). The supervisor must be running for a queued compaction to start
-  (`SESSIONSATION_COMPACTION_SECONDS`, default 2, 0 disables the loop; a panic in one pass is caught, logged to the daemon log and retried). The native app-server profile is the one
-  messaging already requires (`unsupported_native_version` otherwise).
+`api capabilities.data_layout` reports the layout version, directories, account
+fields and the `layout` commands; `retention` reports classes, settings and built-in
+defaults. The layout, migration, rollback and retention procedures are in
+[operations](operations.md#data-root-layout). Account rows carry `home` (the home in
+use: an adopted Claude config home, the managed `accounts/<platform>/<name>`, or a
+deferred legacy path) and `home_deferred`. A legacy root is refused by every command
+except `api version` and `layout` with `LAYOUT_MIGRATION_REQUIRED`; other codes are
+`LAYOUT_MIGRATION_IN_PROGRESS`, `LAYOUT_CONFLICT`, `LAYOUT_UNSUPPORTED`,
+`BACKUP_REQUIRED` and `DAEMON_RUNNING`. Owner and home paths recorded before a home
+moved are compared by resolved path, and `layout migrate` and backend rename rewrite
+stored conversation `owner` and pane-binding `home` values (`home_refs_rewritten`);
+journals and receipts are never rewritten. Only `sessionsation setup` creates a
+missing root; every other command fails closed with `DATA_ROOT_MISSING`.
 
-### Compaction follow-up observes real compaction turns (1.47.1)
+### Disk-space guard
 
-PATCH. 1.47.0 identified the compaction turn by a `contextCompaction` item in the `thread/turns/list` summary, or
-else by reading the turn with `thread/items/list`. Real app-servers (0.163.0-0.166.0) list a compaction turn in
-the summary view with no items at all (the summary keeps only user and agent messages) and refuse
-`thread/items/list` with -32601 ("not supported yet") for legacy-history threads. The follow-up then stopped at that
-error on every pass without recording anything: a started compaction stayed `running` and kept holding input until
-`compaction_timeout` (30 minutes), although the turn had completed minutes earlier.
+Capability `disk_space`; config `min_free_disk_mb` (default 512, 0 disables). Archive,
+restore, delete, switch, restart, resume, relocate, move-space, launch start,
+resume-launch start, account delete, `shared migrate` and `layout migrate` (not dry
+runs) check the free space of the file system holding the data root first and refuse
+with `INSUFFICIENT_DISK_SPACE` (`free_bytes`, `needed_bytes`, `operation`). `api
+disk-space` reports the same figures read-only. Any ENOSPC/EDQUOT is reported as
+`DISK_FULL`. A non-cached `api state` whose refresh fails that way serves the last
+snapshot with `snapshot.refresh_failed:"DISK_FULL"`, `snapshot.fresh:false` and a
+`warnings[]` entry `STATE_REFRESH_FAILED_DISK_FULL`; without a snapshot it fails
+`DISK_FULL`.
 
-- **Detection.** Every new turn whose summary shows no user message is read once in the full view (one turn,
-  positioned with the server's own `nextCursor`, its id verified). The `contextCompaction` item is listed there
-  once the compaction completed; a still-running new turn without a user message is treated as the compaction in
-  progress. `thread/items/list` is no longer used.
-- **Bounded, never silent.** A started compaction that shows no observable progress for 180 seconds fails
-  `compaction_not_observed` and releases the hold (held input is then delivered with queue semantics, so it never
-  overtakes a compaction that is still running). Progress is a pass that read the thread and found it idle, or found
-  a running new turn without a user message; failing reads (connection, `thread/read`, `thread/turns/list`, the
-  full-turn read) and a thread that stays non-idle with no such turn (for example background work) are not. A long
-  compaction turn is therefore bounded by the 30-minute run limit only. The progress clock is process memory: after
-  a supervisor restart it starts from the operation's start time. The idle rule is unchanged (idle again with no
-  compaction turn after 30 seconds fails `compaction_not_observed`).
-- **Diagnostics.** Every pass that cannot decide writes one line to the daemon log naming the operation, the step
-  (`connect`, `thread_read`, `turns_list`, `turn_read`, `no_compaction_turn`, `idle_without_compaction_turn`) and
-  the error code, at most once a minute per operation and step; the give-up decision is logged too.
+### Root alias and re-key
 
-No field, phase, reason or command changed.
-### Space-scoped session names (1.48.0)
-
-MINOR, additive. A session belongs to a HERDR Space (workspace) and its name is unique only within that
-Space. Negotiate `capabilities.session_spaces.version == 1`; `session_names` is unchanged (`version:1`,
-byte-identical to 1.47.0).
-
-- **Row fields.** Every session row (`api state`, `api session`, `rename`, `session resolve`,
-  `session set-space`) carries `space` (the Space label, or `null` for an unscoped legacy entry), `name`
-  (the bare name, unchanged field) and `canonical` (`<space>:<name>`, `null` when unscoped or when the Space
-  label itself contains `:`). Clients display `canonical` when present and never re-derive it by splitting.
-- **Inactive sessions keep their Space.** A stopped, saved or detached session keeps its stored `space` and
-  `canonical`, whether or not the HERDR Space still exists or was renamed. Nothing clears it as a side
-  effect (refresh, an unobserved or missing workspace, detach, stop, a backfill rerun). Only `move-space`,
-  `session set-space` (including `--clear`), a resume/add-to-herdr into another Space, or a host observation
-  of a live attached session placed in a different Space changes it.
-- **Generation.** `space` is not part of the generation hash. Recording a Space where none was known (the
-  one-time backfill, healing after a rollback, the first host observation of a live session) changes no
-  generation. Every explicit change (set-space, move-space, resume into another Space, a live session seen in
-  a different Space) also increments `revision`, so it changes the generation like any other mutation.
-  Deploying 1.48.0 changes no generation and renames nothing.
-- **Grammar.** Bare name: the session-name rules (non-empty, no surrounding spaces, no control characters, no
-  `/`, not `.`/`..`, at most 64 characters) and no `:`. Canonical: exactly one `:`, a valid Space label before
-  it and a valid bare name after it; anything else (`a:b:c`, `:x`, `x:`, `x: y`) is `INVALID_SESSION_NAME`.
-  `#` is allowed. Case is preserved; uniqueness is case-insensitive within one Space (unscoped entries form
-  their own bucket). Host observations may still create duplicates (HERDR owns live labels).
-- **Targets.** Every `api … --session` (and `--notify-session`) accepts the session id, `<space>:<name>` or a
-  bare name: id, then merged id (`SESSION_MERGED`), then canonical, then bare; an exact (case-sensitive)
-  match wins over a case-insensitive one; several matches are `AMBIGUOUS_SESSION` (`AMBIGUOUS_SESSION: N
-  sessions match "…" (…); use the canonical <space>:<name> or the session id`). A target matching nothing is
-  passed on unchanged, so every command keeps its own refusal. JSON request ids (`session_id`) stay ids.
-  `api session resolve --session TARGET [--expected-generation G]` returns the row without side effects.
-- **Rename.** `api rename --name` takes a bare name or a canonical name of the session's own Space; rename
-  never moves (`SPACE_MISMATCH`, also for an unscoped session: use `session set-space`). HERDR always
-  gets the bare name. The read-back accepts a tab label `<own space>:<name>` as `<name>`. When the pane has a
-  pane label equal to the old name, it is renamed too; the result's `pane_label` is `confirmed`,
-  `unconfirmed` (presentation only, not a failure) or `null` (nothing sent).
-- **Host observation.** A live HERDR tab label becomes `name` (as before) and the pane's workspace label
-  becomes `space`. A label `<space>:<name>` whose prefix is the pane's own Space (case-insensitive) is read as
-  `<name>`; any other label with `:` is `INVALID_HOST_NAME` and leaves the cached name unchanged.
-- **Placement.** `api resume` places the session, in order: `--space`, `--new-space` (1.45 reuse),
-  `--create-space` (the Space of a canonical `--name`, which must not exist: `WORKSPACE_NAME_EXISTS`), else
-  the session's stored Space (an existing Space with that label, or a new Space with exactly that label when
-  it no longer exists), else the Space of a canonical `--name` (`SPACE_NOT_FOUND`), else a new Space labelled
-  `sessionsation` (unchanged). A canonical `--name` must agree with the destination (`SPACE_MISMATCH`), and
-  the name must be free there (`SESSION_NAME_EXISTS`); the destination label is stored on a verified start.
-  `session add-to-herdr` takes `--space | --new-space | --create-space` the same way. `api launch` and
-  `api resume-launch` accept a canonical `name` that must agree with `space` (`SPACE_MISMATCH`); the receipt
-  stores the bare name, and the launch receipt records `space_label`. `create_space` is a CLI flag only:
-  the JSON requests have no new field, so 1.47 can read every receipt. Inline `run`/`resume --name` take a
-  canonical name of the pane's own Space; outside HERDR a canonical name is `INVALID_ARGUMENT`.
-- **`api session set-space --session T --expected-generation G (--space LABEL | --clear)`.** Catalog only;
-  refused with `ALREADY_IN_HERDR` for a verified-live HERDR terminal (use `move-space`). The Space need not
-  exist. Unique in the new Space.
-- **Generation and Space.** Storing a Space where none was known (backfill, host observation, the Space
-  recorded after a verified `resume`/`add-to-herdr`/launch) never changes the generation. A change between two
-  different Spaces (host move, recorded destination) and explicit `session set-space` / `move-space` do. The
-  Space recording after a verified start is best effort: a failure is logged, the start still reports
-  success, and the next live refresh records the Space. A `resume --name` is checked for uniqueness only in the
-  destination Space (case-insensitive, excluding the session itself), never in the old Space. Automatic names
-  (discovery, first launch record) avoid the same folded name in every Space.
-- **Message sender.** `from-name` of native messages is the canonical name when it fits 64 characters, else
-  the bare name.
-- **Storage and rollback.** `space` is stored in `catalog.json` (omitted when null) and mirrored in
-  `registry/session-catalog/spaces.json`, which older releases never touch. A 1.47 binary reads and rewrites
-  `catalog.json` without `space`; the next 1.48 transaction restores it from the sidecar (reported as
-  `restored_spaces` by `session repair-identity`). The first 1.48 transaction backfills `space` once from
-  placement evidence, else the Auto Start workspace label, else null. Name reservations are keyed by
-  `space/name`; a 1.47 binary cannot see them during a rollback (launch admission transients only).
-- **New refusal code.** `SPACE_MISMATCH`. Reused: `AMBIGUOUS_SESSION`, `SESSION_NAME_EXISTS`,
-  `INVALID_SESSION_NAME`, `WORKSPACE_NAME_EXISTS`, `SPACE_NOT_FOUND`, `ALREADY_IN_HERDR`.
-
-### No steering while a compaction is pending (1.48.1)
-
-PATCH. Up to 1.48.0 a queued `session compact --when-idle` held `submit` and `queue` sends but not `steer`, and
-`api steer-target` kept advertising the running turn, including the dedicated compaction turn. Two losses
-followed in practice: a note meant for after the compaction was steered into the turn before it, so it landed
-ahead of the compaction and was summarized away; and a steer into the compaction turn itself was refused by the
-app-server (`compact_turn_not_steerable`), leaving the agent idle after the compaction with nothing to run.
-
-- **Rule.** While a compaction operation holds input for the session (the hold window above: `waiting` before its
-  `expires_at`, `starting`, `running`, and a finished operation until its held input is released), steering is not
-  used. `api steer-target` returns `available:false`, `active_turn_id:null` and `reason:"target_compacting"`; a
-  `mode:"steer"` send is refused before any native call and becomes a terminal `rejected` receipt with
-  `reason:"target_compacting"` (`facts.accepted_native:false`, nothing was sent, the id is not reusable).
-- **What to do instead.** Send with `mode:"submit"` (Codex: `if_busy:"queue"`) or `mode:"queue"`. That input is held
-  (`pending_local`, `compaction_hold`) and delivered as a queued turn after the compaction, in arrival order.
-- **Compactions Sessionsation did not start** (a `/compact` typed in the TUI) are still recognised only by the
-  app-server's structured refusal: a terminal `rejected` receipt with `compact_turn_not_steerable`, nothing
-  delivered. Automatic compaction inside a regular turn keeps accepted steer input (unchanged).
-- **Receipts.** A steer receipt is `native_accepted` only on the app-server's matching acknowledgement and
-  `execution_started` only once the steer's own `userMessage` item is observed in the turn; a generic native
-  rejection or a lost acknowledgement stays `delivery_unknown` (reason `native_rejected` or the transport code),
-  which is not a delivery.
-- **Envelope.** `ok:true` from `api send` means the request was processed and a receipt exists, not that the input
-  was delivered. Read `result.state` (and `facts`): `rejected`, `failed`, `expired` and `delivery_unknown` were not
-  delivered (or not provably so). A client that only checks `ok` reports dropped input as sent.
-
-`target_compacting` is a new reason value in existing fields; no field, command or state changed.
-
-### Session model, set-model and one-pass launch (1.49.0)
-
-MINOR. Adds the observed model of a session, `api session set-model` and the one-pass `api session launch`.
-Capability `session_model` (version 1); every existing capability object is unchanged (`launch_model` still
-lists `codex` for the JSON `api launch`, which since 1.49.0 also accepts `model`/`reasoning_effort` for Claude
-terminal launches: exact Claude id, efforts `low|medium|high|xhigh|max`; hosted + model is
-`UNSUPPORTED_PROVIDER_OPERATION`; still not checked against the account).
-
-- **Exact ids only.** Claude: `claude-` followed by lower-case letters, digits, dots and dashes, optional `[1m]`;
-  aliases never match (`INVALID_MODEL`). Codex: the launch-request model grammar, and for `set-model` the
-  account's `model/list`. Applied values are always the ones the session reports; a substituted model or a
-  capped effort is a failure carrying the observed value, never "close enough" (ASCII case-insensitive equality).
-- **Callers must always pass a model.** `session launch` and `set-model` require `--model`. A Claude `/model` or
-  `/effort` (including the ones `set-model` types) saves the value as the account's default for later starts
-  without a model; Sessionsation does not restore it. New starts without a model (plain `api launch`, `run`)
-  get the last switched-to value. **Resumes** (`api resume`, inline `resume`, Auto Start/auto-recover, account
-  switch, hosted resume) pass the conversation's last recorded model and effort as `--model`/`--effort`
-  (the row's `model`); with nothing recorded they start as before. Headless `-p` sends do not pass one.
-- **Row field `model`** (`state`, `state --cached`, `session`, `session resolve`): `{"id","effort","observed_at",
-  "source"}` or null. Sources: `claude_statusline` (Sessionsation's status-line hook records the payload's
-  `model.id` and `effort.level` per conversation in `<account home>/.sessionsation/model/<session_id>.json`),
-  `codex_thread` (`thread/read` during inventory, kept in `registry/session-catalog/models.json`) and
-  `set_model`. Not part of the generation: a model change never makes a target stale. Claude sessions started by
-  an older release run that release's hook and report `model:null` until stopped and resumed.
-- **`session set-model`** journals `operations/model-changes/<id>.json`: `waiting → applying → complete | failed |
-  cancelled | expired`; one pending change per session (same values: `existing:true`; other values:
-  `SESSION_OPERATION_IN_PROGRESS`; same `--operation` with other values: `OPERATION_ID_CONFLICT`). Admission
-  refusals: `SESSION_NOT_FOUND`, `AMBIGUOUS_SESSION`, `STALE_TARGET`, `UNSUPPORTED_PROVIDER_OPERATION` (gemini,
-  antigravity, hosted Claude), `INVALID_MODEL`, `INVALID_REASONING_EFFORT`, `INVALID_OPERATION_ID`,
-  `INVALID_EXPIRY`, `INVALID_ARGUMENT`, `SESSION_NOT_RUNNING`, `TERMINAL_NOT_ATTACHED`, `TERMINAL_INPUT_DISABLED`,
-  `SESSION_STATE_UNVERIFIED` (Claude: no status-line record from the running process), and the lifecycle codes.
-  Already running the requested values: journaled `complete`, `already_applied`, nothing sent. Cancel while
-  `waiting` (`applying`: `OPERATION_WORKER_ACTIVE`; ended: `OPERATION_ALREADY_TERMINAL`). Listed by
-  `api operations` (`kind:"model_change"`).
-- **Codex.** At an idle point (no active turn, empty native queue, under session ownership):
-  `thread/settings/update {model}`, then `{effort}`, verified with `thread/read`. Model not offered:
-  `model_not_available`; effort not offered: `effort_unsupported`; JSON-RPC error: `provider_rejected`; never
-  visible after three attempts: `model_not_confirmed` / `effort_not_confirmed`. New public `submit`/`queue` input
-  is held (`pending_local`, `model_change_hold`) and released in arrival order through the compaction release
-  path. Compactions and model changes of one session run in request order (waiting reasons
-  `compaction_pending`, `model_change_pending`), and held input is released only when neither remains. A change
-  stuck in `applying` with no observable progress for 180 s fails `apply_not_observed` and releases its hold.
-  Steering is not held by a model change.
-- **Claude.** A detached worker types `/model <id>` and `/effort <level>` into the verified HERDR pane only after
-  **two** idle observations at least 1.5 s apart (HERDR agent `idle`/`done` and an **empty** main prompt; a draft
-  is never cleared: waiting reason `draft_present`) and while no terminal delivery to the conversation is in
-  flight or touched the pane in the last 5 s (`terminal_delivery_active`). Waiting changes are retried with
-  back-off (Claude 4 s doubling to 30 s, Codex 2 s to 30 s). Text it must remove is only its own command, by
-  backspaces after verifying the prompt holds exactly a prefix of it (otherwise `prompt_not_owned`, nothing
-  cleared); a command left typed by a dead worker of the same operation is recognized exactly and cleared. A
-  dialog is never left open: on every failure the worker chooses `No` (or Esc when the options cannot be read)
-  and verifies the main prompt; if that cannot be verified the operation fails `pane_left_in_dialog` and
-  `detail` names the pane. Dialog options must match the captured format (`❯ 1. Yes, switch to …`,
-  `2. No, go back`). Model ids compare ignoring a trailing `[1m]`. The typed command must read back exactly with no menu; then Enter. A `Switch model?` /
-  `Change effort level?` dialog is answered by moving the pointer with up/down to `Yes` and Enter (a
-  `PreModelSwitch` hook prompt is declined: `blocked_by_hook`); never Esc, Ctrl+C, Ctrl+D or digit keys.
-  Confirmation comes only from the status-line record (the footer text is never parsed). An empty prompt with no
-  change for 8 s is `model_not_confirmed` (for example `Model '<id>' not found`); an unidentified screen ends the
-  operation with `TERMINAL_OVERLAY_UNIDENTIFIED` and `refusal_layout` instead of waiting. Claude input is not held;
-  terminal deliveries wait for the pane lock the worker holds. Screens: `tests/fixtures/claude-screens/model-*`,
-  `effort-*` (Claude Code 2.1.314).
-- **`session launch`** admits an ordinary launch request (`model`, `reasoning_effort`; nothing new in the request
-  or receipt, so 1.48 binaries read both) and journals `operations/session-launches/<request_id>.json` plus the
-  brief (`.brief`, 0600, removed when the record ends): `admitted → launching → verifying_model →
-  delivering_brief → complete | failed | cancelled`. The brief is **held until the model (and requested effort) is
-  verified** (`brief.delivery`: Claude `held`, Codex `first_turn`), then sent as an ordinary message (Claude
-  `terminal_input` submit; Codex submit with `if_busy:"queue"`), a new message id journaled before each attempt,
-  pre-submit refusals retried every 5 s up to 5 times (only when the receipt shows nothing was written, or
-  provably does not exist; any other read error is retried as a read, never as a send, so the brief goes out at
-  most once), `delivery_unknown` never retried. A deadline that passes while a send is in flight ends the record
-  `failed`/`ready_timeout` with `brief.state:"delivery_unknown"`, never `not_sent`. A record with no launch
-  receipt 120 s after admission ends `launch_failed`. Opt-in
-  `--brief-delivery initial-prompt` (Claude) passes the brief as Claude's start-up prompt (`handed_to_provider`,
-  `delivered` once the transcript holds it) and cannot be gated on the model. Mismatch: `failed`
-  `model_not_confirmed` / `effort_not_confirmed` / `effort_unsupported`, brief `not_sent`, session left running.
-  Deadline: `ready_timeout`. Brief limits: Claude held 8192 bytes and terminal-input rules, initial prompt 32768
-  bytes and not starting with `/ ! #`, Codex 16384 bytes. `--wait` ends without `complete` as
-  `MODEL_NOT_CONFIRMED`, `PROMPT_NOT_DELIVERED`, `PROVIDER_LAUNCH_FAILED` or `LAUNCH_ACK_UNCERTAIN` with
-  `error.operation`. New error code: `MODEL_NOT_CONFIRMED`.
-
-Rollback: drain first (see [operations](operations.md#data-root-layout-contract-1290)). An older binary ignores `models.json`, the hook records and both journal directories; pending
-one-pass launches freeze and end `ready_timeout` (brief unsent) after re-upgrade.
-
-### Launches wait for account operations (1.49.1)
-
-PATCH. Up to 1.49.0 a launch tried the shared account lock once. While an account operation held it exclusively
-(an archive holds it for its whole run, often 15 s or more), a `launch-run` refused at once with `ACCOUNT_BUSY`,
-the launch record ended `uncertain` although nothing had been started, and `launch-run` returned to the pane's
-shell with no output.
-
-- **Wait.** Codex `launch-run` and inline `run` launches now wait for the account lock (backoff 50 ms doubling to
-  1 s) for up to **120 s**. While waiting, the launch stays `starting_provider` with `detail` "waiting for an
-  account operation (such as an archive) to finish; nothing has been started (ACCOUNT_BUSY wait)"; the worker's
-  acknowledgement wait does not count that time. An inline launch prints a waiting line to its terminal. The
-  exclusive side (archive, rename, removal) is unchanged and still refuses at once while a launch holds the lock.
-- **Pre-start refusals are certain failures.** A `launch-run` error before the first provider mutation (Codex:
-  before the app-server thread start), including `ACCOUNT_BUSY: an account operation held the lock for 120s`,
-  ends the launch `failed` with the error in `detail` and releases the reserved name. `uncertain` is kept for
-  failures after a provider start may have happened (and for Claude, Gemini and Antigravity terminal launches,
-  which do not mark that point).
-- **Never silent.** On any error `launch-run` prints `sessionsation launch failed: <CODE>: <reason>` to the pane's
-  stderr (the same text as the record's `detail`) and exits 1.
-
-No field, phase, command or error code is new.
-
-### Named outside-session senders: `from_component` (1.50.0)
-
-MINOR. A native Claude message from a process that is not inside a managed session carries
-`from-name="sessionsation"`. Monitors and relays run from cron or scripts can now name the component behind
-them, so the receiver sees for example `from-name="sessionsation:resource-guard"`.
-
-- **Request field.** `api send` accepts an optional `from_component` (string or `null`) on every request shape
-  (`submit`, `queue`, `steer`, `resume`, `new`; Claude, Gemini, Antigravity and Codex targets).
-- **Env var.** When the request has no `from_component`, `SESSIONSATION_SENDER_COMPONENT` in the environment of
-  the `api send` process is used. The request field always wins over the env var. Only the `api send` command
-  reads it: messages Sessionsation sends itself (daemon, workers, auto-recover, launch briefs) never do, even when
-  the daemon was started from a script that set it.
-- **Validation.** A component must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`. An invalid request field (or a
-  non-string) is refused with `INVALID_ARGUMENT` before anything is admitted or sent. An invalid env var is
-  ignored with a warning line on stderr
-  (`sessionsation: warning: ignoring SESSIONSATION_SENDER_COMPONENT=...`) and the send proceeds as before.
-- **Only for outside-session callers.** When the caller is not a managed session (the same detection as the
-  default sender since 1.46.3), the envelope says `from-name="sessionsation:<component>"` with
-  `from-mode="prompting"`. The longest name is 54 characters, under the 64-character `from-name` cap, so it is never
-  truncated. A caller inside a managed session keeps its own canonical name (no spoofing); when such a caller
-  supplied the request field, the Claude receipt reports `facts.from_component_ignored: "caller_is_session"`.
-  The env var is ignored the same way and is not reported.
-- **Codex.** Codex targets receive plain text with no envelope; the field is validated and otherwise has no effect,
-  and Codex receipts are unchanged. Headless (`resume`/`new`) sends likewise validate and ignore it.
-- **Storage.** The component is not part of the stored request (idempotent re-sends match with or without it; the
-  sender of the first admission stands). The sender record stores the computed name in its existing `name`
-  field, so records stay readable by older binaries.
-
-Capability: `session_spaces.from_component` (`since_contract` `1.50.0`, `request_field`, `env`, `pattern`,
-`from_name: "sessionsation:<component>"`, `applies_when: "caller_not_a_managed_session"`). Since 1.51.0 the
-default rendering is the bare component; see below.
-
-### Bare component sender names (1.51.0)
-
-MINOR (changed rendering of an existing field). An outside-session caller with a valid component (request
-`from_component` or `SESSIONSATION_SENDER_COMPONENT`) is now shown by the bare component, for example
-`from-name="resource-guard"`, `from-name="gated-run"`, `from-name="opus-simplicity-popup"` (`from-mode="prompting"`).
-Before 1.51.0 it was `from-name="sessionsation:<component>"`.
-
-- **Collision fallback.** When the component equals, case-insensitively (Unicode lowercase, the same folding as
-  session names), the name of any session in the catalog, in any Space and whether or not it is running, or
-  equals `sessionsation`, it is not rendered bare: the envelope says `from-name="sessionsation:<component>"`
-  (the 1.50.0 form). Nothing is refused. When the component came from the request field, the Claude receipt
-  reports `facts.from_component_prefixed: "collides_with_session"`. When it came from the env var, a warning
-  line goes to stderr (`sessionsation: warning: SESSIONSATION_SENDER_COMPONENT=... collides ...`) and no fact
-  is recorded.
-- **When checked.** At admission, where the sender is resolved; the stored sender stands for retries and
-  idempotent re-sends. If the catalog cannot be read, the fallback is used (fail safe).
-- **No canonical look-alikes.** A component cannot contain `:`, so neither form can look like a canonical
-  `<space>:<name>`.
-- **Unchanged.** A managed-session caller keeps its own canonical name and ignores the component
-  (`facts.from_component_ignored: "caller_is_session"` when the request field was given). Codex text, headless
-  sends and validation are unchanged.
-- **Storage.** The rendered name goes into the existing `Sender.name`; no stored field is added, so records stay
-  readable by older binaries. The new fact is omitted when absent.
-
-Capability: `session_spaces.from_component` keeps `since_contract` `1.50.0` and now says
-`from_name: "<component>"`, `collision_fallback: "sessionsation:<component>"`,
-`changed_in: {"contract":"1.51.0",...}`, a `collision_rule` object and
-`prefixed_fact: {"field":"from_component_prefixed","value":"collides_with_session"}`.
-
-### Idle-tab reuse for starts and resumes (1.52.0)
-
-MINOR (additive). A HERDR start or resume into an existing Space no longer always opens a new tab. Before it
-creates one, it picks a pane in this order:
-
-1. **The session's recorded pane** (resumes only): the catalog attachment, else the pane auto-start last saw
-   the session in (`auto_recover.last_pane`). It must still exist, be in the destination Space, and be
-   reusable: the foreground process group is the shell and a single idle shell (`bash`, `sh`, `zsh`, `fish`)
-   is all that runs in it (the test auto-recover has used since 1.35.0).
-2. **A same-named tab in the destination Space.** Its label equals, case-sensitively, the label a new tab
-   would get (the bare session name, or the requested name); it has exactly one pane; that pane is reusable
-   by the same test; and it is not the recorded attachment of any other catalog session. Several qualify:
-   the first in HERDR's tab order.
-3. **Otherwise a new tab**, as before.
-
-- **Paths.** `api launch start` (and the one-pass `session launch`), `api resume-launch start`, `api resume
-  --space/--new-space` when the Space exists, and auto-start (which keeps its recorded-pane-first rule and now
-  tries step 2 before opening a new tab in the old workspace). A new Space uses its own first shell, as before.
-  `session add-to-herdr` (which attaches a running session) is unchanged.
-- **Same command.** A reused pane gets exactly the command a new tab would get (`cd -- <directory> && ...`, the
-  same environment, including `SESSIONSATION_LAUNCHER_BYPASS=1`); no other keys are sent and the screen is not
-  cleared. A reused recorded pane's tab is renamed to the new tab's label; a same-named tab already has it.
-- **Re-check.** Right before the command is typed the pane is tested again; if it is no longer reusable, it is
-  left alone and a new tab is opened instead. Picked panes are claimed for two minutes
-  (`registry/pane-claims.json`) so two concurrent starts never pick the same one. Any uncertainty (a HERDR
-  without `tab list`, an unreadable catalog) means a new tab.
-- **Receipts.** The launch receipt and the resume-launch receipt gain `pane_reused: true` and the `api resume`
-  result gains `pane_reused: true` with `detail` (`"Reused an idle tab with the same name."` or
-  `"Reused the session's previous pane (an idle shell)."`); receipts also carry that `detail` until the
-  launch reports progress in it. The field is omitted when false, so older binaries read the records.
-  Auto-start operations keep `resume.pane_reused`, now also true for a same-named tab.
-- **Setting.** `reuse_idle_tabs` in `config.json` (boolean, default `true`). `false` restores the pre-1.52.0
-  behaviour (auto-start keeps its recorded-pane reuse).
-
-Capability: `pane_reuse` (`since_contract` `1.52.0`, `order: ["recorded_pane_if_idle_shell",
-"same_name_single_pane_idle_tab_in_space", "new_tab"]`, `setting: "reuse_idle_tabs"`, `built_in_default`,
-`receipt_field: "pane_reused"`, `rechecked_before_typing: true`). The deprecated `auto_recover` capability adds
-`same_name_tab_reuse`.
-
-### Codex rate-limit reset credits (1.53.0)
-
-MINOR (additive). Codex accounts can earn rate-limit reset credits. Sessionsation shows how many are stored and
-can spend one.
-
-```sh
-sessionsation api account reset-credit codex:NAME [--credit-id ID] [--request-id UUID]
-# or: sessionsation api account reset-credit --account codex:NAME ...
-```
-
-- **What it does.** Sends `account/rateLimitResetCredit/consume` (`{creditId, idempotencyKey}`) to the account's
-  app-server through the supervisor: the supervisor's own worker for that account, or the account's shared
-  app-server when one runs (never a second one). Without `--credit-id` the backend picks the next available
-  credit. **Spending a credit is not reversible.** It is never sent on its own: only this command sends it.
-- **Result.** `{account_id, request_id, outcome, rate_limits_after, attempts, operation}`. `outcome` is the
-  backend's answer, each one `ok:true`: `reset` (a credit was spent and the eligible windows were reset),
-  `nothingToReset` (no current window can be reset; nothing spent), `noCredit` (no credit available) or
-  `alreadyRedeemed` (this request id already completed a reset). After `reset` and `alreadyRedeemed` the
-  supervisor reads the rate limits again and updates its cached usage at once, so `api account limits`,
-  `api account list`, `api account usage` and `api state` show the reset without waiting for the next poll;
-  `rate_limits_after` is that account usage object, else `null`.
-- **Idempotency.** `--request-id` (a lowercase UUID; generated when omitted and returned) is the backend
-  `idempotencyKey`. It is journaled in `operations/account-reset-credits/<request_id>.json` (phase
-  `requesting`) **before** the request is sent, then ends `complete` (with `outcome`), `failed` (the
-  app-server answered with an error) or `uncertain` (no answer). Retrying with the same `--request-id` sends
-  the same key (`attempts` counts the sends), so it can never spend a second credit; the backend answers
-  `alreadyRedeemed` when the first attempt succeeded. Sessionsation never retries on its own and never with a
-  new key. The same request id for another account or another `--credit-id` is `REQUEST_ID_CONFLICT`. The
-  records are listed by `api operations` (`kind: "account_reset_credit"`) and are not pruned by retention.
-- **Locking.** The account's operation lock is held for the whole request, so it cannot race a backend rename,
-  removal or archive (`ACCOUNT_BUSY`, nothing sent). It is also `ACCOUNT_BUSY` while a direct Codex terminal
-  holds the account without a shared app-server (the case where account monitoring pauses).
-- **Errors.** Other providers: `UNSUPPORTED_PROVIDER_OPERATION`. A codex whose app-server does not know the
-  method (JSON-RPC method not found, or an invalid request naming an unknown method):
-  `UNSUPPORTED_PROVIDER_OPERATION` with a message naming the codex version (no credit spent). Any other
-  error answer: `RESET_CREDIT_FAILED`; no answer (timeout or disconnect): `RESET_CREDIT_OUTCOME_UNKNOWN`. Both
-  messages give the request id to retry with. Also `INVALID_REQUEST_ID`, `AUTH_REQUIRED`,
-  `ACCOUNT_DELETION_IN_PROGRESS`, `ACCOUNT_REMOVED`. The provider's error text is never echoed.
-- **Stored credits.** A Codex account's `usage` object (account rows of `api account list`, `api state`,
-  `api account limits`) gains `reset_credits`: `{available, observed_at, credits}` from the app-server's
-  `rateLimitResetCredits` (`available` is its `availableCount`; `credits` is `null` or `[{id, status,
-  expires_at}]`, possibly shorter than `available`), or `null` when the app-server did not report it. `api
-  account usage` (history) has the same `reset_credits` at the top level. The field is optional: older
-  records read as `null`.
-- **Codex.** The method is in Codex app-server 0.165.0. Sessionsation's app-server connections already
-  initialize with `capabilities.experimentalApi: true`; no other opt-in is sent.
-
-Capability: `account_reset_credit` (`since_contract` `1.53.0`, `providers: ["codex"]`,
-`method: "account/rateLimitResetCredit/consume"`, `idempotent_by: "request_id"`, `outcomes: ["reset",
-"nothingToReset", "noCredit", "alreadyRedeemed"]`, `auto_retry: false`, `reversible: false`, `journal`,
-`usage_field`, `errors`).
-
-### Root alias and re-key (1.54.0)
-
-MINOR (additive commands; path spellings of migrated rows change once). On Unraid `/mnt/user/<share>` is a bind
-mount of `/mnt/disk1/<share>`: one tree, two spellings, and `canonicalize` keeps each spelling (a bind is not a
-symlink). `sessionsation root migrate` moves a data root and its sessions from one spelling to the other.
+On Unraid `/mnt/user/<share>` and `/mnt/disk1/<share>` can be one tree with two
+spellings (a bind, not a symlink). `sessionsation root migrate` moves a data root and
+its sessions from one spelling to the other; the operator procedure is in
+[operations](operations.md#root-re-key). Capability `root_alias` (`since_contract`
+1.54.0, `version`, `layout_version: 3`, `state`, `entries`, `commands`,
+`session_states`, `normalize_requests`, `gate`, `retained_copies`, `memory_merge`,
+`errors`).
 
 ```sh
 sessionsation root status
@@ -3807,725 +3180,91 @@ sessionsation root rollback [--session S] [--dry-run]
 sessionsation root finalize [--dry-run] [--accept-unresumed]
 ```
 
-- **Alias.** `--from F --to T` becomes one entry per first path component found in stored paths (for example
-  `/mnt/user/appdata` -> `/mnt/disk1/appdata`). An entry is accepted only when proven: both are real directories
-  (no symlink), no other array disk (`disk<N>`) or local pool mount point beside the two spellings holds
-  content under the same share (an empty directory is not divergence; `user`, `user0`, `remotes`, `addons`,
-  `rootshare`, `disks` and network/FUSE mounts are never consulted; each check is bounded to 2 s,
-  `stat_timeout` otherwise), and `st_dev:st_ino` match (or, outside `--dry-run`, a probe file written under `T`
-  is read under `F`). An unproven
-  share is not mapped and is reported (`unproven`, `unmapped`). The block is stored in `layout.json` as
-  `root_alias` (`version`, `state` `pending|active|inactive`, `root_id`, `canonical_root`, `previous_root`,
-  `entries`, `normalize_requests`, `run`, `backup`, `activated_at`).
-- **Layout version 3.** Activation stamps layout version 3; builds before 1.54.0 refuse it
-  (`LAYOUT_UNSUPPORTED`). New roots are still stamped 2. `root rollback` returns a root to version 2, so a
-  binary downgrade is only possible after it.
-- **Opening a root.** A root opened by either spelling resolves to `canonical_root` when both spellings are the
-  same directory (`st_dev:st_ino`) or show the same `layout.json` (same `root_id`); otherwise
-  `ROOT_ALIAS_UNVERIFIED` and nothing is opened. One runtime directory and control socket follow. `api version`
-  adds `requested_root` and `root`.
-- **Comparisons.** Every equality or prefix test between two paths (account homes, working directories,
-  roots, transcripts, process environments such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`) compares the alias
-  forms, so a process started with the old spelling stays a verified live session. Stored values keep the
-  spelling in which they were recorded. New request directories (launch, resume `--directory`, relocate,
-  `session launch`) take the new spelling once the alias is active.
-- **Tier R** (supervisor stopped; `DAEMON_RUNNING` otherwise). Preconditions: layout version 2 complete or an
-  unfinished run of the same `--from/--to` (`LAYOUT_MIGRATION_REQUIRED`, `ROOT_MIGRATION_MISMATCH`); the
-  root's entry proven (`ROOT_ALIAS_UNPROVEN`); no non-terminal operation and no live hosted (stream-json)
-  Claude worker, whose socket lives in the runtime directory that moves with the root spelling
-  (`ROOT_MIGRATION_BLOCKED` with the list; an unreadable journal or catalog also blocks); the rollback-gate
-  snapshot succeeds for every attached or running session (`ROOT_MIGRATION_BLOCKED` otherwise); disk space;
-  `--backup` new or empty and outside the root under either spelling (`BACKUP_REQUIRED`,
-  `BACKUP_NOT_EMPTY`); without `--allow-full-copy` a reflink from the root into the backup directory must
-  work (`BACKUP_REFLINK_UNSUPPORTED`). Only a session positively known to be stopped is re-keyed: a probe
-  that cannot decide leaves it on its old path (`left_behind`, reason `probe_failed: ...`).
-  Steps, journaled in `operations/root-migrations/<run>.json` (values in `<run>.changes.jsonl`), each
-  idempotent: `backup` (metadata copy, `VACUUM INTO` copies of the databases, a reflink copy of
-  `shared/claude/projects` (full copy only with `--allow-full-copy`), every managed home's `.claude.json`;
-  manifest `root-backup.json` with a sha256 per file; a copy that differs from its source is taken once more,
-  then a remaining difference or a vanished source fails with `BACKUP_VERIFY_FAILED`), `mark` (version 3,
-  migrating), `links` (the six
-  shared-store links re-pointed by `rename(2)`), `registry` (conversation owners, managed and HERDR pane homes,
-  thread locations, `config.json` `codex_binary` when the mapped file is the same inode), `claude`
-  (`.claude.json` project entries cloned to the new key, memory merged per key, every Claude session that is
-  neither running nor archived re-keyed), `codex` (thread locations for threads that are not running),
-  `activate`, `verify` (`ROOT_VERIFY_FAILED` items leave the alias active). Journals, receipts, archives,
-  logs and every other record are never rewritten; they are read through the alias.
-- **Claude re-key of one session.** All lineage transcripts are located (two transcripts for one id:
-  `ROOT_REKEY_CONFLICT`). Every name to move (`<id>.jsonl`, `<id>/`) is copied to
-  `<backup>/sessions/<session>/<attempt>/<old key>/` and the copy verified by sha256 (tree digest for the
-  sidecar) **before** any rename, which happens only while the session is stopped. A name already in the new
-  key is a collision (`ROOT_REKEY_CONFLICT`; nothing moves); the move uses `RENAME_NOREPLACE` and adds names
-  only. Memory (`projects/<key>/memory/`) is merged per file and never moved: a missing file is copied, a file
-  changed on one side only since the last sync fast-forwards by an atomic exchange that is undone when a
-  concurrent writer changed the target meanwhile (then a conflict); the replaced version is always kept under
-  `<backup>/memory-versions/`. A file changed on both sides is a conflict (both kept in place and copied to
-  `<backup>/memory-conflicts/`; the session is not switched; nothing picks a winner). Then the catalog
-  `directory` changes (one generation change). The quiet check fails closed: an unreadable live registry or
-  account list, a process naming the conversation on its command line, or a writer of the transcript
-  (compared by resolved path) refuses. Any error after the move moves the names back (and restores the
-  catalog) before the session is reported `left_behind`; an interrupted re-key continues from its own
-  journal; a new attempt over names still moved is refused (`ROOT_REKEY_CONFLICT`) until the session is
-  rolled back.
-- **Tier S** (`--session`, alias active). A running Claude session in a HERDR pane is stopped (pidfd-bound
-  SIGTERM; a busy one needs `--accept-risks`), re-keyed, resumed once in the same pane in the new directory
-  and verified: same conversation id in the recorded pane (V1), registry and `/proc` cwd equal the new
-  directory (V2), the pre-move bytes are a prefix of the one live transcript (V3), memory (V5). A positive
-  failure moves it back and resumes it on the old path (`left_behind`); an unconfirmed resume is
-  `uncertain`, never reverted on a timeout alone. `--prompt` is delivered once after verification. A stopped
-  Claude session is re-keyed in place (`rekeyed`). A Codex thread that is not running gets a thread location;
-  a running one goes through the existing directory job (`relocating`, then `verified`). Archived sessions:
-  `archived_rekey_at_restore` (a restore then lands in the new key). Gemini and Antigravity:
-  `ROOT_REKEY_UNSUPPORTED_PROVIDER`. Other refusals: `ROOT_REKEY_UNSUPPORTED`. Records:
-  `operations/root-migrations/session-<session>.json`, listed by `api operations` (`kind: "root_rekey"`)
-  while in flight; lifecycle admission blocks other operations on the conversation meanwhile.
-- **`root status`.** `{layout_version, requested_root, root, root_alias, run, counts, sessions,
-  deferred_running, left_behind, memory_split, memory_conflicts, collisions, unmapped, retained, gate,
-  gate_detail}`. Session states: `verified`, `rekeyed`, `archived_rekey_at_restore`, `deferred_running`,
-  `left_behind`, `unsupported_provider`, `not_applicable`, `verify_failed`, `failed`, `uncertain`,
-  `relocating`. Each row carries its retained copies (`retained[].copy`, `sha256`, `verified`).
-- **Rollback gate.** `gate` is `pass` when every session that the catalog showed attached, or that was
-  recognised as running, before activation is still recognised as running, and every probe (Claude
-  registry, enriched Codex inventory) succeeded (`gate_detail.sessions[]`: `running_before`, `running_now`,
-  `in_tier_s`, `probe_error_before`, `probe_error_now`, `ok`; `gate_detail.codex_inventory_error`); `fail`
-  means a missed comparison site or a blind probe: run `root rollback`. `not_applicable` without an activated
-  run.
-- **Rollback.** `root rollback` (supervisor stopped): every session this run changed and that is not
-  `verified` moves back (whatever its reported state, including one interrupted mid re-key), every journaled
-  value is restored (original bytes when unchanged since), links re-pointed, cloned `.claude.json` entries
-  removed when unchanged, a thread location restored only when it is still the record the re-key wrote,
-  `layout.json` restored (version 2). It is refused while a re-key worker runs, and while any process uses
-  the new spelling of a home under the root in `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GEMINI_CLI_HOME`
-  (`ROOT_ROLLBACK_BLOCKED` with the pids): after the rollback such a process would no longer be recognised.
-  Revert the boot files, launcher and `/usr/bin` link with it. `verified` sessions stay on their new
-  directory. `root rollback --session S` undoes one session; a running one is stopped, moved back and resumed
-  on the old path by a detached worker under lifecycle admission. Rollback also moves back every name of the
-  session's lineage found in the new key that the old key lacks (for example a sidecar created after the
-  resume, or a rename the journal had not recorded yet; never overwriting), and maps records of the rewritten
-  classes written after activation back to the old spelling. A rollback with problems ends
-  `rollback_incomplete` (alias still active) and can be rerun.
-- **Journaling.** Each rename is journaled before (intent) and after it; a Codex thread location is journaled
-  (previous record and the exact new one) before it is written; `.claude.json` clones are journaled before
-  they are written. After the worker stopped a running session, any failure moves its files back, restores
-  the catalog and resumes it on the old path (`left_behind`). Tier S waits up to 30 s for Claude deliveries
-  in flight to the conversation (`SESSION_DELIVERY_IN_PROGRESS`, retryable). Memory problems found when
-  verifying the resumed session end `verify_failed` (never a revert).
-- **Runtime compatibility.** While the alias is active each old spelling's runtime path
-  (`/tmp/sessionsation-<uid>-<hash>`) is a directory symlink to the canonical runtime directory, so clients
-  that derive the control socket from the old root string keep reaching the supervisor.
-- **Finalize.** Removes empty old project-key directories (`rmdir` only). Retained copies under the backup
-  directory are never deleted by any 1.54 command, `finalize` included; old `memory/` directories are only
-  reported (`memory_removable`).
-
-Capability: `root_alias` (`since_contract` `1.54.0`, `version`, `layout_version: 3`, `state`, `entries`,
-`commands`, `session_states`, `normalize_requests`, `gate`, `retained_copies`, `memory_merge`, `errors`).
-Client note: path-valued fields (`directory`, `home`, `cwd`, rollout and transcript paths) change spelling
-for migrated rows; treat them as opaque or compare after mapping.
-
-### Archive workers wait for the account; `--wait`; idempotent stop (1.55.0)
-
-MINOR (additive flag and result; no error code is removed).
-
-- **Workers wait for the account lock.** The background worker of `api archive`, `restore-session` and
-  `delete-session` (Codex archive and delete, and the native providers' archive, restore and delete) took the
-  exclusive account lock with ~50 ms of retries and failed permanently with `ACCOUNT_BUSY ... (os error 11)`
-  when another archive or a launch held it. It now waits like a launch does (backoff 50 ms doubling to 1 s, up to
-  120 s, `SESSIONSATION_ACCOUNT_WAIT_MS` shortens it in tests) and fails `ACCOUNT_BUSY: an account operation held
-  the lock for 120s` only after that window. While waiting the operation is in phase `waiting_for_account` with
-  `detail` "waiting for another account operation to finish (ACCOUNT_BUSY wait)"; nothing is read or changed
-  before the lock is held. Account rename, removal, the daemon and migration keep their immediate refusal.
-- **`--wait`.** `api archive|restore-session|delete-session --wait` queues as before, then polls the operation
-  until `complete` or `failed` (bound 300 s, `SESSIONSATION_OPERATION_WAIT_MS` in tests). `complete` returns
-  `ok:true` with the final operation. `failed` returns `ok:false`, code `OPERATION_FAILED`, the operation's
-  `detail` in the message and the operation in `error.operation`; `retryable` is true when the detail starts with
-  `ACCOUNT_BUSY`. No end in time returns `OPERATION_TIMEOUT` (retryable) with the operation. Without `--wait`
-  the queued operation is returned unchanged. Capability `conversation_archive.wait` and `.account_wait`.
-- **Idempotent stop.** `api stop` of an existing, unarchived session with no running process (Codex or
-  Antigravity) returns `ok:true` with `{"session_id":…,"already_stopped":true,"phase":"complete"}` instead of
-  `SESSION_UNAVAILABLE` / `SESSION_NOT_RUNNING`. The generation is still checked; an archived session keeps
-  `SESSION_ARCHIVED` and an unknown one its error.
-
-### Usage replays, reaped workers, cached facts in `session resolve` (1.56.0)
-
-MINOR (additive fields; no error code or field is removed).
-
-- **`session resolve` fills `availability`, `activity`, `pid` and `live_activity`** from the last cached state
-  snapshot (the file `api state --cached` serves: the `active` snapshot, then `all`), and adds
-  `snapshot: {"observed_at","age_seconds","fresh","cached":true,"source":"state_snapshot"}`. `fresh` means at most
-  30 s old (15 s before 1.62.1). Resolve stays one local file read: no provider refresh, transcript scan, process probe or write. A
-  session with no row in any snapshot keeps the four fields `null` and `snapshot: null`; callers needing live
-  facts still call `api state`. The facts can be stale by `age_seconds`; the generation is unaffected.
-- **Claude statusline replays never lower usage.** An idle Claude session re-renders its statusline with the
-  rate limits of its last API response. Recording a payload now merges per window (`five_hour`, `seven_day`): the
-  same `resets_at` with a lower `used_percentage` than recorded keeps the stored window with its own
-  `observed_at`; an equal or higher value refreshes `observed_at`; a different `resets_at` is a new cycle and
-  replaces. When no window changes, `usage.json` is not rewritten, so `usage.observed_at` means "last time usage
-  was learned" and an account with only replaying sessions turns `stale` instead of reporting old numbers as fresh.
-- **No defunct workers.** The supervisor reaps every detached worker it starts (`background::SpawnReaped`: a
-  small thread waits on the child). Workers keep their own process group and still outlive the supervisor; before
-  this, each finished worker stayed `<defunct>` until the supervisor restarted.
-
-### Cheap full `state` (1.57.0)
-
-MINOR (performance only; no field, error code or ordering changes). A full `api state` on a host with
-about 190 sessions read 951 MB in 1.06 M reads (3.1 s CPU, 4-5 s wall) and the supervisor repeated it every 20 s.
-The result is the same bytes of facts; the work is not.
-
-- **One pass over the operation journals.** `state` used to rescan every journal directory (`resumptions`,
-  `conversation-operations`, `handoff-jobs`, `space-moves`, `claude-switches`, `auto-recoveries`,
-  `message-recoveries`, `root-migrations`) once per session (sessions x journals reads, about 90 % of the bytes).
-  It now reads each journal once and answers every session from that pass; the blocking operation chosen for a
-  session, and the error a journal that cannot be read produces, are exactly what the per-session scan gave.
-- **Per-transcript facts are remembered.** For Claude transcripts the head metadata (`directory`,
-  `conversation_created_at`), `forked_from_conversation_id`, the `continued-in` hand-off and `last_accessed` are
-  derived by at most one bounded read per transcript and kept while the file is unchanged, in memory and in
-  `cache/claude-transcript-facts.json` (regenerable; deleting it only costs one re-read). Entries are keyed by file
-  identity (device and inode), so accounts that share one projects directory share them, and are valid for an
-  exact (size, mtime); a head survives appends when the first 4 KiB still hash the same. A truncated, rewritten or
-  replaced transcript is read again. A stopped session's transcript is not read again while unchanged.
-- **No write without a change.** `state` writes the host placement file (`placements.json`) and the facts cache
-  only when their content changed (no rename, no fsync otherwise). Host evidence for sessions attached to HERDR
-  carries `observed_at`/`checked_at`, which change on every observation, so that file still changes then. The
-  `cache/state-snapshot-*.json` file that `state --cached` serves is still written by every full `state`.
-
-### Cheap supervisor loop (1.57.1)
-
-PATCH (performance only; no field, error code, ordering or lock change). With about 190 catalog entries, 700
-compaction, 380 model-change and several hundred handoff records and 900 pane bindings, the supervisor
-(`daemon serve`) alone read about 3.4 GB a minute at 18 % of a core, because each periodic pass reread whole
-journal directories and `catalog.json` for every session. On a fixture of that shape it now reads about 11 MB a
-minute at under 1 % of a core. Results are what the same reads gave before.
-
-- **Parsed files are remembered by version.** The compaction, model-change and one-pass-launch journals, the
-  handoff jobs, the operation-admission journals (`lifecycle`), the turn-notify and auto-recover settings and the
-  HERDR pane bindings are parsed once per file version and served from memory while the file keeps its device,
-  inode, size, mtime and ctime. Every access still stats the file, so a record replaced by an atomic write (a new
-  inode) or rewritten in place is read again at once; a file modified within the last 2 s is never served from
-  memory. Unreadable or unparseable files are never remembered, and a removed file leaves the cache at the next
-  directory pass. The worker-liveness inference for unfinished handoff jobs is applied to a copy on every call.
-- **The session catalog is read once per change.** `catalog.json`, `identity.json` and `spaces.json` are read
-  and healed under `catalog.lock` as before; when that transaction had nothing to write, the result is kept and
-  the next transaction under the same lock reuses it while the three files keep their stamps. Reads
-  (`list`, `find`, `resolve`, aliases, name checks) then cost a lock and three `stat` calls. A write by any
-  process under the lock changes a stamp and the next transaction reads the files again, healing as before.
-  Every mutation still runs inside the locked transaction and writes only when the catalog changed.
-- **Gone pane bindings are skipped for good.** A binding whose process id no longer exists (or now has another
-  start time, or is a zombie) cannot come back, so the supervisor stops reading `/proc` for it.
-
-### Set-model admission wait and Codex submit diagnostics (1.58.0)
-
-MINOR (additive fields; no error code is removed or renamed).
-
-**Claude `session set-model` on a fresh session.** Admission needs the status-line (hook) record the
-session's own process writes; a session launched moments ago has none yet, which used to fail at once with
-`SESSION_STATE_UNVERIFIED`.
-
-- With `--wait` (the default for a non-`--when-idle` change is 90 s), admission waits, bounded by the wait, with
-  a 250 ms doubling backoff capped at 2 s, for the first record of this process, then proceeds as before.
-- If no record of this process exists when the wait ends (or without `--wait`), the error is
-  `SESSION_STATE_UNVERIFIED` with `error.retryable: true` and `error.detail: "hook_not_recorded"`; the message
-  contains `hook_not_recorded`. Only this not-yet-recorded case is retryable: a record of this process that has
-  no model (status line disabled, folder trust not accepted, a build before 1.49) keeps the old, non-retryable
-  `SESSION_STATE_UNVERIFIED`. A record left by an earlier process of the conversation does not count.
-- `capabilities.session_model.set.admission_wait` describes this.
-
-**Codex submit diagnostics.** A transport failure while submitting used to leave the receipt
-`delivery_unknown` (`submission_uncertain`) with no reason why.
-
-- `facts.native_error` `{kind, message, at}` is present on the public receipt (and `native_error` on the
-  ledger receipt) after a transport error. `kind` is one of `endpoint_unavailable` (socket missing, connection
-  refused, handshake failed, connect timeout), `disconnected` (EOF or a failed write), `timeout`,
-  `native_rejected` (JSON-RPC error), `malformed_response`, `native_frame_limit`, `unsafe_endpoint`.
-  `message` is a fixed bounded sentence per kind: never message text, provider output or paths. The first
-  error of an uncertain receipt is kept; later reconciliation failures do not replace it.
-- Uncertain stays uncertain: an error after the add was written (`disconnected`, `timeout`, `native_rejected`,
-  ...) keeps `state: "delivery_unknown"`, `reason: "submission_uncertain"` and is still reconciled without
-  resending; `facts.retryable` is `false`.
-- A definite failure: when the connection could not be made (`endpoint_unavailable`) before anything was
-  written, a new public send is `state: "rejected"`, `reason: "endpoint_unavailable"`, `facts.accepted_native:
-  false`, `facts.retryable: true` (the same state the repo uses for other pre-submit refusals; send again with a
-  new message id). A release of held input (compaction or model change) keeps its `pending_local` retry loop and
-  only records the `native_error`.
-- `capabilities.codex_submit_diagnostics` (version 1) lists the kinds and states.
-
-**Per-session input health.** Codex `api state` rows gain `input_delivery.health` (the key `input_delivery`
-already exists on Claude, Gemini and Antigravity rows with other members; Codex rows now carry it with only
-`health`): `{since_revision: 58, last_outcome: accepted|not_delivered|uncertain|null, last_attempt_at,
-last_success_at, consecutive_failures, last_native_error}`. An accepted submit sets `last_success_at` and
-resets `consecutive_failures` to 0; a `not_delivered` or `uncertain` submit adds 1. It is read from
-`messaging/input-health/<conversation>.json` (a few hundred bytes, written by the submit path under the session
-lock): no provider call and no ledger lock. Only submit attempts count (not observation reads).
-
-### Claude stop and `stop --disable-auto-start` (1.59.0)
-
-MINOR (additive: a provider gains `stop`, a flag and result fields; no error code is removed or renamed).
-
-**Claude `api stop`.** Before 1.59.0 every Claude session was refused with `UNSUPPORTED_PROVIDER_OPERATION`,
-even one with no process left. Now:
-
-- **No process** (availability `stopped` or `stale`, not archived): the idempotent result of 1.55.0,
-  `{"session_id":…,"already_stopped":true,"phase":"complete"}`. Archived: `SESSION_ARCHIVED`.
-- **Running interactive session:** the target is the process Claude Code's own registry
-  (`sessions/<pid>.json`) names as the holder of the conversation, verified as for every observation (exact
-  pid, `/proc` start time, config home). Under the conversation lock it is re-read and must still be the exact
-  process that was observed (pid and start time; otherwise `SESSION_STATE_UNVERIFIED`, nothing signalled). The
-  signal goes through a pidfd whose start time is checked after it was opened (the owner the Claude account
-  switch uses), so a reused pid is never signalled. SIGTERM only, then a wait of up to 10 s
-  (`capabilities.claude_lifecycle.stop.wait_seconds`). Claude Code appends its transcript as records happen, so
-  the conversation is saved and resumable after the exit. A turn in progress is interrupted (its unfinished
-  reply is not saved); the result says so with `interrupted_turn: true` (the registry reported `busy`).
-- **Result** (synchronous, like Antigravity): `{id, source_session_id, kind:"terminate", phase:"complete",
-  provider:"claude", signal:"SIGTERM", pid, process_start, interrupted_turn, provider_conversation_id,
-  source_account_id, detail, pane_closed, pane_close_reason}`. The recorded HERDR pane is then closed as in
-  [1.36.0](#stop-closes-the-herdr-pane-1360) unless `--keep-pane` (`KEEP_PANE`), and `NO_PANE` without one.
-- **Errors:** `STOP_TIMEOUT` (not exited in time; the process is **not** killed, SIGKILL is never sent;
-  `error.retryable: true`, also for Antigravity), `SESSION_STATE_UNVERIFIED` (the registry does not name this
-  exact process, for example a session still at its trust prompt with no registry entry yet, or the state could
-  not be observed), `AMBIGUOUS_SESSION`, `STOP_UNAVAILABLE`, `STOP_FAILED`. Refused unsignalled: background
-  (`bg`) sessions and pre-started spares (`UNSUPPORTED_PROVIDER_OPERATION`: they belong to Claude's background
-  daemon) and hosted sessions (`HOSTED_SESSION`: use `api hosted stop`).
-- **Capabilities.** The Claude provider entry reports `stop: true` and `operations.stop.supported: true`;
-  `restart` stays unsupported (stop, then resume). Session rows report `capabilities.stop: true` exactly while
-  the registry-verified interactive process runs; otherwise `capability_reasons.stop` is `SESSION_NOT_RUNNING`,
-  the background reason, `SESSION_STATE_UNVERIFIED: …`, or `HOSTED_SESSION`. `capabilities.claude_lifecycle`
-  describes the stop.
-
-**`api stop --disable-auto-start`** (every provider: Codex, Claude, Antigravity). After the stop returned
-without an error, including an `already_stopped` result, the session's Auto Start is set to `disabled` through
-the same owner as `api auto-start --mode disabled`, and the result gains `auto_start` (the row's
-`auto_start` projection after the change). A Codex stop is an asynchronous operation: there the setting is
-disabled when the stop is admitted (the operation is returned queued), not when it completes (with `--wait`, 1.61.0, it is disabled after completion). A refused stop
-changes nothing. Without the flag nothing changes: an explicit stop only marks the session
-([1.44.0](#auto-start-semantics-host-boot-and-crash-1440) semantics) and there is no `auto_start` field.
-
-### Claude limit resets (1.60.0)
-
-MINOR (additive). Claude subscriptions can hold stored limit resets (Claude Code 2.1.314's hidden
-`/limit-reset [fable|full|5-hour|weekly]`, internally "cedar-ember"). The
-[reset-credit operation](#codex-rate-limit-reset-credits-1530) now has a Claude adapter: the same command, journal,
-lock, idempotency and outcome names.
-
-```sh
-sessionsation api account limits claude:NAME        # usage.reset_credits (read on demand, cached 60 s)
-sessionsation api account reset-credit claude:NAME [--credit-id GRANT] [--kind 5-hour|weekly|fable|full] [--request-id UUID]
-```
-
-- **Status.** `GET https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1` (Claude Code's
-  `cedar_ember` read). Its `cedar_ember` block becomes `usage.reset_credits` with the Codex shape:
-  `available` is the sum of `resets_left` over grants that are not `paused`; `credits` has one row per grant
-  `{id, status: available|paused|used, expires_at (ends_at, unix seconds), kind: session|weekly|fable|full,
-  label, resets_left, resets_total, paused, usable_now, starts_at, clears, unavailable_reason}` (malformed
-  grants are skipped, as Claude Code does). Claude-only optional keys: `eligible`, `ineligible_reason`,
-  `at_limit`, `next_grant_id`, `cooldown_until`, `weekly_resets_at` (unix seconds). An answer without the block
-  stores `null`. `api account limits claude:NAME` reads it when the stored read is older than 60 s and adds
-  `reset_credits_read` `{ok}` or `{ok:false, code, message, retryable}` (a failed read keeps the last value and
-  is not fatal). `api account list` and `api state` show the stored read
-  (`<home>/.sessionsation/reset-credits.json`) and never call the API. The supervisor never polls it. Since
-  1.62.0 the windows of the same answer, when present, are recorded as an `oauth` usage reading.
-- **Claim.** `POST https://api.anthropic.com/api/organizations/<oauthAccount.organizationUuid>/reset_rate_limits`
-  with `{program: "cedar_ember", grant_id, request_id}`. The grant is `--credit-id`, else a usable grant
-  (`usable_now`, not paused, not ended) of `--kind`, else the status's `next_grant_id`, else the first usable
-  grant in Claude Code's kind order; with none, `outcome: "noCredit"`, `sent: false`, nothing journaled. A retry
-  with the same `--request-id` resends the grant its first attempt named.
-- **Outcomes** (`ok:true`): `reset` (`result: reset`), `nothingToReset` (`not_limited`), `noCredit`
-  (`ineligible`, or `already_used` on a first attempt), `alreadyRedeemed` (`already_used` when an earlier send
-  of this request id may have reached the API), `cooldown` (Claude-only: nothing spent, claim after
-  `cooldown_until`). `unavailable`, an unknown result, an unreadable answer, a 5xx or no answer is
-  `RESET_CREDIT_OUTCOME_UNKNOWN` (phase `uncertain`); a 4xx/429 or a request that never connected is
-  `RESET_CREDIT_FAILED` (phase `failed`). The result adds `credit_id`, `claude {result, reason, resets_left,
-  cleared, weekly_resets_at, cooldown_until}` and, after `reset`/`alreadyRedeemed`, `rate_limits_after` from a
-  fresh status read (`rate_limits_after_error` when that read failed). The journal record has `provider:
-  "claude"` and `provider_result` (`result/reason`).
-- **Credentials.** The access token is read from the account's `CLAUDE_CONFIG_DIR/.credentials.json`
-  (`claudeAiOauth`). It is only on curl's stdin (`curl -q -K -`, config `curl_binary`, default `/usr/bin/curl`);
-  never in argv, the environment, logs, journals, errors or results. Headers are Claude Code's:
-  `Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`, `Content-Type: application/json`,
-  `User-Agent: claude-cli/2.1.314 (external, cli)`.
-- **Renewal** matches Claude Code so the two never race a refresh-token rotation: only when the token expires
-  within 300 s, or after a 401 for that token (then the request is sent once more, same request id). It takes
-  Claude Code's proper-lockfile lock `CLAUDE_CONFIG_DIR/.oauth_refresh.lock` (stale after 60 s; 5 tries 1-2 s
-  apart) and the legacy `<realpath(CLAUDE_CONFIG_DIR)>.lock`, re-reads the file under the lock and uses another
-  process's renewed token when there is one, posts `{grant_type: refresh_token, refresh_token, client_id,
-  scope}` to `https://platform.claude.com/v1/oauth/token`, and writes back under `.storage-write.lock` with
-  Claude Code's compare-and-swap (a sibling's newer refresh token wins and is adopted). The write keeps every
-  other field, is atomic and mode 0600.
-- **Errors.** `AUTH_STALE` (`retryable: true`; the lock is held by another process or the renewal failed
-  transiently: a running Claude session on the account refreshes the token itself, and the next attempt
-  renews it here). `AUTH_REQUIRED` (no stored login, no refresh token, the refresh token was revoked
-  (`invalid_grant`), or no `organizationUuid`). `RESET_CREDITS_READ_FAILED`, `RESET_CREDITS_UNREADABLE` (status
-  reads). Plus the 1.53.0 codes.
-
-Capability: `account_reset_credit.providers` is `["codex", "claude"]`; `account_reset_credit.claude`
-(`since_contract` `1.60.0`) describes the status, claim, outcomes, kinds and credential handling.
-
-### Provider parity: Codex `initial-prompt` and `stop --wait` (1.61.0)
-
-MINOR (additive: a flag value and a flag become valid for Codex; one response field is added; no error code is
-removed or renamed). 1.60.0 is described separately.
-
-**`api session launch --brief-delivery initial-prompt` for Codex.** One call now works for every launch
-provider. For a Codex account the value is accepted and treated exactly like Codex's own `first_turn` delivery:
-the brief is held until the model (and requested effort) is verified, then sent as an ordinary message, with the
-Codex limit of 16384 bytes (`INPUT_TOO_LARGE`) and the same retry and `delivery_unknown` rules. The record states
-what happened: `brief.delivery` is `first_turn`, and the new `brief.requested_delivery` is `initial_prompt` when
-the caller asked for it (otherwise `null`; it is `null` for every Claude launch). Claude's `initial_prompt`
-contract is unchanged (32768 bytes, not starting with `/ ! #`, handed over before the model can be verified, and
-exclusive with `--when-ready`). Gemini and Antigravity have no launch (`session launch` supports Codex and Claude
-accounts) and keep refusing with `UNSUPPORTED_PROVIDER_OPERATION`. `capabilities.session_model.launch.brief.codex`
-lists `accepts: ["first_turn","initial_prompt"]`, and names `gemini` and `antigravity` as unsupported.
-
-**`api stop --wait`** (every provider). Claude and Antigravity stops are already synchronous: the flag is accepted
-and changes nothing. A Codex stop queues a `terminate` job. With `--wait` the call polls that job with the owner
-`archive --wait` uses ([1.55.0](#archive-workers-wait-for-the-account---wait-idempotent-stop-1550)) and returns
-only when it ended:
-
-- `complete`: the job record, the same shape the queued result has (`kind:"terminate"`, `phase:"complete"`,
-  `pane_closed`, ...);
-- `failed` (or `cancelled`): `OPERATION_FAILED` with the job's detail and `error.operation`;
-- no end within 300 s (`SESSIONSATION_OPERATION_WAIT_MS` shortens it, for tests): `OPERATION_TIMEOUT`,
-  `error.retryable: true`, with `error.operation` (the stop is still queued; poll `api operations`).
-
-An already-stopped session returns the same `{"session_id":…,"already_stopped":true,"phase":"complete"}` with or
-without `--wait`. `capabilities.stop_wait` describes the flag.
-
-**`--disable-auto-start` with `--wait`** (Codex). The setting is applied after the stop completed, not at
-admission; a failed or timed-out wait changes nothing. Without `--wait` the 1.59.0 behaviour stays: disabled when
-the stop is admitted.
-
-### Provider parity: usage meter, session meters, session id env (1.62.0)
-
-MINOR (additive: new fields, one new capability block each, one new flag, a new environment variable in
-provider children; `api usage` now also answers for Codex, Gemini and Antigravity accounts instead of
-refusing with `UNSUPPORTED_PROVIDER_OPERATION`; no error code is removed or renamed). 1.61.0 is described
-separately.
-
-**Account usage meter without a session (SM8).** Every account row (`api account list`, `api account
-limits`, `api state`, supervisor `status`) gains `usage.meter`, and `api usage` lists one row per account
-of every provider (`--account ID` for one, `--cached` never contacts a provider). The meter has one shape
-for every provider:
-
-```json
-{"supported":true,"requires_session":false,"source":"oauth","fresh":true,"observed_at":1800000000,
- "age_seconds":12,"windows":{"five_hour":{"used_percent":31.0,"resets_at":1800003600,
- "observed_at":1800000000,"source":"oauth"},"seven_day":null},"reason":null}
-```
-
-- Codex: the supervisor's `account/rateLimits/read` of every enabled account (`source:"app_server"`,
-  `requires_session:false`), as before; only the shape is new.
-- Claude: two sources share one owner, the statusline recorder. `statusline` is Claude Code's status-line
-  payload of a running session; `oauth` is the account's own `GET https://api.anthropic.com/api/oauth/usage`
-  (Claude Code's plain `fetchUtilization` read) through the 1.60.0 OAuth owner, so no session is needed.
-  That answer's `five_hour` / `seven_day` windows are `{utilization, resets_at}`: `utilization` is the
-  percentage used (0-100; above 100 is reported as 100, as Claude Code shows it) or null, `resets_at` an
-  ISO 8601 time or null; a window with either null is not observed. Every window names its `source`; the
-  meter's `source` is the newest window's. The fresher reading wins, but within one reset cycle a window
-  never goes down, whichever source reported it (the 1.56.0 rule across sources): two readings whose
-  `resets_at` differ by at most 300 s are the same cycle (`usage_meter.same_cycle_seconds`).
-- On demand: `api usage` and `api account limits` read a Claude meter that is older than 60 s, at most
-  once per 60 s per account (a failed attempt counts). The token is renewed only as the 1.60.0 rules allow
-  (expiring within 5 minutes, or after a 401). The row's `read` (`api usage`) or `meter_read` (`api account
-  limits`) is `{attempted, ok, code, message, attempted_at, retryable}`, or null when no read was needed;
-  a failed read keeps the last value. Codes: `AUTH_REQUIRED`, `AUTH_STALE` (retryable),
-  `USAGE_READ_FAILED` (retryable). The token never appears in a result, log or file other than the
-  account's own credentials.
-- In the background: the supervisor reads, once a minute at most, every enabled Claude account whose
-  meter is older than 600 s (`SESSIONSATION_CLAUDE_METER_SECONDS` overrides it; `0` turns it off), with
-  the stored token only: a token due for renewal is left alone (`AUTH_STALE` in
-  `<home>/.sessionsation/usage-read.json`, the last attempt), so a background read never rotates a refresh
-  token.
-- Gemini and Antigravity: `supported:false` with `reason`; nothing is invented.
-- `fresh`: some window is present, none is past its reset, and the newest reading is younger than the
-  provider's staleness limit (Codex `stale_seconds`, Claude 1800 s). A missing window is null, never 0%.
-
-`api usage` rows keep their 1.42.0 keys (`account`, `state`, `fresh`, `source`, `semantics`,
-`observed_at`, `age_seconds`, `claude_version`, `short`, `weekly`, `exhausted`) and add `account_id`,
-`provider`, `supported`, `requires_session`, `meter` and `read`; every row has the same keys.
-`capabilities.usage_meter` describes the shape, sources, cache and refresh.
-
-**Session meters (SM3).** Every session row (`api state`, `state --cached`, `session resolve`) has the same
-keys for every provider: `context_pct`, `subagents_running` and `background_tasks`, each with
-`<field>_source`, `<field>_observed_at` (Unix seconds) and `<field>_reason`, plus `context_tokens` and
-`context_window_size`. A value nobody reported is null with the reason, never a guess.
-
-| Field | Codex | Claude | Gemini | Antigravity |
-|---|---|---|---|---|
-| `context_pct` | `rollout`: the newest `token_count` event of a running conversation (`last_token_usage.total_tokens` of `model_context_window`, the raw share; Codex's footer subtracts a 12,000-token baseline first), read by a full `api state`; cached rows keep it with its time | `statusline`: Claude Code's `context_window.used_percentage`, recorded per conversation by the status-line hook; read on every row, so `state --cached` is current | null (the share is footer screen state; it will be `screen` once the shared typing engine reads it) | null (not reported) |
-| `subagents_running` | null (app-server only, per loaded thread) | `hook_events` since 1.64.0 (`SubagentStart`/`SubagentStop`; null before) | null | null |
-| `background_tasks` | null (app-server only: background terminals per loaded thread) | null (no hook reports a finish) | null | null |
-
-`capabilities.session_meters` lists the fields and sources.
-
-**`SESSIONSATION_SESSION_ID` (SM7).** Every provider process Sessionsation starts for a session carries
-`SESSIONSATION_SESSION_ID=<session id>` (the `api state` `sessions[].id`, not the provider conversation
-id), for every provider and start path: launch and `session launch`, resume (also by auto-start,
-auto-recover and an account switch), Codex restart and move, hosted Claude, headless runs and Claude
-`add-to-herdr`. Codex tool commands run under the account's app-server, not the TUI, so the id is also
-set as the thread's own shell environment (`shell_environment_policy.set` on `thread/start` and
-`thread/resume`; a thread the app-server already has loaded keeps the value it was loaded with). An
-inherited value is removed from every provider child and from the supervisor, so a child never carries
-its caller's id. `capabilities.session_env` describes it.
-
-### Idle Codex meters stay fresh (1.62.1)
-
-PATCH (no new field, error code or capability; `usage.meter.reason` and `meter_read`/`read` now carry text in cases
-that were silent). The 1.62.0 promise is that `usage.meter` is readable with no session running. Two gaps broke it
-for Codex:
-
-- The supervisor skipped an account without saying so (no shared app-server and either a possible destination
-  terminal or a held `.switcher-lease`), and its rate-limits read through a shared app-server inherited the 3 s
-  control timeout, so a slow provider answer left the meter stale with `reason:null`.
-- `api account limits` and `api usage` returned the cached reading and never read.
-
-Now:
-
-- **One safety decision.** The poll loop, `monitoring_pause_reason` and the on-demand read use the same rule. The
-  skips stay (a second app-server must not contend with a terminal's, or with a session's lease, for the login),
-  but while one holds, the meter says so: `fresh:false` with `reason` naming the lease or the possible terminal.
-  A reading that failed says why (`the rate-limits read failed: ...`, `the app-server could not be reached or
-  started: ...`). A meter that is not fresh always has a `reason`; a fresh one never does. A rate-limits read
-  now waits up to 20 s, also through a shared app-server (which is read as before, never a second one).
-- **On-demand read.** `api usage` (not `--cached`) and `api account limits` for a Codex account ask the supervisor
-  (`account/usage_read`) to read when the cached reading is older than 60 s (the Claude period) and a read is
-  safe. `api usage` rows carry the outcome as `read` (`{attempted, ok, reason}`; `null` when the cache was young
-  and nothing was attempted), `api account limits` as `meter_read`. A supervisor that is not running is the
-  read's `reason`; the cached reading is shown, still never `fresh:true` when stale.
-- Operators can set `SESSIONSATION_CODEX_METER_CACHE_SECONDS` on the supervisor to change the 60 s (tests).
-
-### The supervisor keeps `state --cached` fresh (1.62.1)
-
-PATCH. The `active` state snapshot that `api state --cached` and `session resolve` serve was rewritten only by a
-full `state` (and once when the supervisor starts), so with no full-state caller it went minutes stale. While
-`daemon serve` runs it now rebuilds the active snapshot itself every 20 s when the current one is older than that
-(`SNAPSHOT_REFRESH_SECONDS`, compressed by the test time scale), never two builds at once, and not at all when
-another process wrote a fresh one. Cached state is therefore at most about 20 s old while the supervisor runs
-(plus a build of well under a second), and `snapshot.fresh` (at most 30 s old, was 15) and `age_seconds` stay
-truthful: they describe the file, which is no fresher when the supervisor is down.
-
-### Provider parity: observe, one stop shape, early provider exit, empty archive (1.63.0)
-
-MINOR (additive: new fields and one flag; `api observe` now answers for Claude, Antigravity and Gemini
-sessions instead of refusing with `UNSUPPORTED_PROVIDER_OPERATION`; two new reason codes,
-`TERMINAL_PROVIDER_EXITED` and `TERMINAL_PANE_IS_SHELL`, and `PROVIDER_EXITED` (a hosted Claude reason) now also ends a launch; an archive of a session without history now completes
-instead of failing `HISTORY_NOT_FOUND`; no error code is removed or renamed). 1.62.x is described
-separately.
-
-**Observe for every provider (SM4).** `api observe --session ID --expected-generation G [--history [N]]`
-returns the `Readiness` keys for every provider plus a `conversation` block with one shape:
-
-```json
-{"supported":true,"reason":null,"source":"transcript","history_turns":10,
- "last_reply":{"text":"done","at":1800000000,"truncated":false},"last_reply_source":"transcript","last_reply_reason":null,
- "last_instruction":{"text":"fix it","at":1799999990,"truncated":false},"last_instruction_source":"transcript","last_instruction_reason":null,
- "compacted_at":1799990000,"compacted_at_source":"transcript","compacted_at_reason":null,
- "recent_turns":[{"instruction":{"text":"fix it","at":1799999990,"truncated":false},"reply":{"text":"done","at":1800000000,"truncated":false},"started_at":1799999990,"ended_at":1800000000}],
- "recent_turns_source":"transcript","recent_turns_reason":null}
-```
-
-A known value has its `<field>_source` and a null reason; an unknown one is null with `<field>_reason`
-(`no_history_file`, `history_unreadable`, `not_recorded`, `not_compacted`, `history_not_requested`, or the
-provider reason), never a guess. `--history` alone means 10 turns, at most 50; without it
-`recent_turns` is null (`history_not_requested`). Texts are cut at 8192 bytes (`last_*`) and 2048 bytes
-(turn texts) on a character boundary, with `truncated:true`. Every read is a bounded tail (256 KiB,
-then 1 MiB, then 4 MiB) of one provider file; nothing is cached, no provider process is contacted.
-
-| Field | Codex (`rollout`) | Claude (`transcript`) | Antigravity (`transcript_log`) | Gemini |
-|---|---|---|---|---|
-| `last_instruction` | `event_msg` `user_message` | human `user` record (not meta, tool results or the compaction summary) | `USER_INPUT` from `USER_EXPLICIT` (text inside `<USER_REQUEST>`) | null |
-| `last_reply` | `event_msg` `agent_message` | text blocks of `assistant` records | `PLANNER_RESPONSE` | null |
-| `compacted_at` | `compacted` / `context_compacted` | `system` `compact_boundary` | null (agy records no compaction step) | null |
-| `recent_turns` | instruction to next instruction; `task_complete` / `turn_aborted` end it | same | same | null |
-
-Gemini is `conversation.supported:false` with `reason` "Gemini CLI no longer supports individual
-accounts (migrate to Antigravity)", every field null with that reason, and `state:"unknown"`,
-`reason:"provider_unsupported"`. Claude and Antigravity readiness comes from the native observation:
-`state` `idle`/`working`/`errored` while a verified process runs it (from the live activity facts),
-`disconnected` otherwise; `reason` is `native_input_via_send` while running (input is gated by
-`api send`, so every `actions.*` is unavailable with that reason), `no_live_process` or
-`session_archived`; `runtime_generation` is null and `delivery_semantics` is `api_send`. Codex keeps
-its native readiness unchanged. `api observations` (batch) stays Codex-only. `capabilities.observe_conversation`
-describes the block.
-
-**One stop result shape (P1).** Every `api stop` result (Codex terminate job, Claude and Antigravity
-SIGTERM, the idempotent `already_stopped` answer) has the same keys: `id`, `kind`, `session_id`,
-`source_session_id`, `provider`, `phase`, `detail`, `already_stopped`, `pid`, `process_start`, `signal`,
-`pane_closed`, `pane_close_reason`, `interrupted_turn`, `auto_start`, `provider_conversation_id`,
-`source_account_id`. A value the provider path did not report is null. `session_id` and
-`source_session_id` both name the catalog session for one minor version (1.55.0's `already_stopped`
-used `session_id`, the others `source_session_id`). `already_stopped` is now always present (false
-after a real stop); `auto_start` is null unless `--disable-auto-start` was given. Codex adds `pid` and
-`process_start` of the verified source process, `signal:"SIGTERM"` once the job is complete (null while
-queued) and `interrupted_turn:null` (the job waits for idle); its job keys stay. An already-stopped
-result has `interrupted_turn:false` and `pane_closed:false`. Gemini has no stop: the refusal is
-`UNSUPPORTED_PROVIDER_OPERATION` with `error.supported:false` and `error.reason` (the text above), also
-the row's `capability_reasons.stop`. `capabilities.stop_result` lists the keys.
-
-**A provider that exits right after launch.** A launch whose exact recorded provider process (pid and
-start time) exits before it is observed running, or within 15 s after
-(`SESSIONSATION_LAUNCH_EXIT_WINDOW_SECONDS`, `0` turns the watch off), ends `phase:"failed"` with
-`detail` `PROVIDER_EXITED: …`, not `running` or `uncertain`; the catalog entry stays, as a stopped
-session (seen live: Gemini's folder-trust "restarting" exited and left a bare shell). A
-`session launch` whose provider exited before the brief was sent ends `failed` / `provider_exited`.
-
-**Typing checks the pane.** Terminal input (Claude `terminal_input`, Gemini, Antigravity) re-checks right
-before the first key and right before Enter that the exact provider process still runs and that HERDR
-does not report a bare shell in front of the pane. Otherwise the request is `rejected` with
-`TERMINAL_PROVIDER_EXITED` or `TERMINAL_PANE_IS_SHELL` and nothing (more) is typed.
-
-**Archive of a session that never had a conversation.** A native session with no history file and no
-other files archives cleanly: the operation completes with `nothing_to_archive:true`, the entry is
-hidden like any archived session, and restore shows it again (also `nothing_to_archive:true`). Every
-archive/restore/delete operation record now carries `nothing_to_archive` (false otherwise). Such a row
-(`availability:"stale"`) now has `capabilities.archive:true`. Files without the transcript still fail
-`HISTORY_NOT_FOUND`. A Codex session is listed only with a rollout, so it always has history.
-
-### 1.64.0 (part A: send): one send request for every provider
-
-MINOR (new mode values, new result and receipt fields, and a capability; options a provider does not
-use are now accepted and reported instead of refused, see [Client upgrade notes](#client-upgrade-notes);
-no error code is removed or renamed; receipt states and facts keep their meaning).
-
-**One request (SM1).** A live `api send` takes the same body for Codex, Claude, Antigravity and Gemini
-sessions, and the caller never branches on the provider:
-
-```json
-{"api_version":1,"message_id":"<uuid>","session_id":"<uuid>","expected_generation":"<hex>",
- "mode":"deliver","text":"...","expires_at":1800000600,"origin":"agent","from_component":"guard"}
-```
-
-`message_id` is the idempotency key, as before: the same body again returns the same message, and an
-uncertain write is never sent again. `origin` and `from_component` (the sender) keep their meaning.
-`mode` is an intent, or one of the provider modes `submit`, `queue`, `steer` (unchanged). The intent is
-mapped inside Sessionsation:
-
-| Intent | Codex | Claude | Antigravity, Gemini |
-|---|---|---|---|
-| `deliver` | `submit` with `if_busy:"queue"`: idle starts a turn, busy waits in the native queue | `submit` (priority `next`): idle starts a turn, mid-turn the running turn reads it at its next tool boundary (typed `queued_command` or peer message) | `submit`: idle Enter starts a turn, busy Enter follows `queuedMessages` |
-| `when_idle` | `queue` (native queue) | `queue` (priority `later`, peer message) | `queue` (the key that queues) |
-| `interrupt` | `steer` of the active turn, its target read by Sessionsation (as `steer-target`); with no turn it can steer, delivered as `deliver` with `delivery.fallback_reason` | `steer` | `steer` (the key that sends immediately) |
-
-`interrupt` hands the text to the running turn as soon as the provider allows; it never cancels the
-turn (only `steering.interrupt:true` on a hosted Claude session does). A Codex `interrupt` that names
-its own `steering` target is sent with it. Per-session serialization, the peer-message protocol and the
-initial-prompt (`first_turn`) launch contract are unchanged; `resume` and `new` (headless and recovery
-sends) are not affected.
-
-**Options any provider accepts.** `delivery`, `await_reply`, `timeout_seconds`, `if_busy`, `recovery`
-and the `steering` keys may be sent to any provider. One the target's provider does not use is left out
-and listed:
-
-| Option | Used by | Ignored for |
-|---|---|---|
-| `if_busy` | Codex `submit` (with an intent, the intent sets it) | Claude, Antigravity, Gemini; Codex `when_idle` / `interrupt` |
-| `recovery` | Codex `resume` | Claude, Antigravity, Gemini |
-| `steering.expected_turn_id`, `steering.expected_runtime_generation` | Codex `steer` | Claude, Antigravity, Gemini |
-| `steering.interrupt` | hosted Claude | Codex, Antigravity, Gemini |
-| `timeout_seconds` | Claude, Antigravity, Gemini workers | Codex |
-| `await_reply` | Claude peer messages | Codex, Antigravity, Gemini (accepted as before, now also listed) |
-| `delivery` (`peer_message`, `native`, `hosted_stream_json`, `terminal_input`) | Claude; `terminal_input` also Antigravity and Gemini | every value but `auto` on Codex; `peer_message`, `native`, `hosted_stream_json` on Antigravity and Gemini |
-
-Every live result and receipt carries `ignored_options` (a list, empty when nothing was left out) and
-`ignored_reason` (one sentence naming each option and why, or null), and is otherwise unchanged.
-
-**One delivery block.** Every live result and receipt (any provider, also re-sends and older messages)
-has
-
-```json
-"delivery":{"mode_requested":"deliver","intent":"deliver","mode_used":"queue","framing":"native_queue",
- "queued":true,"held":false,"fallback_reason":null}
-```
-
-`mode_used` is the provider mode that ran (`queue` for a Codex submit that went through the native
-queue), `framing` the path: `native_queue`, `native_steer`, `peer_message`, `terminal_input` or
-`hosted_stream_json`. `queued` is true while the provider keeps the message in its own queue behind a
-running turn (Codex `native_accepted`; Claude typed `queued_command` not yet read, a peer message not yet
-recorded, a hosted `queued` event; agy's queue row). `held` is true while it is kept back before the
-conversation (a Codex compaction or model-change hold, a Claude peer message reported `held`). Both
-become false once the turn takes the message. A message sent before 1.64.0 reports its own mode as
-`mode_requested`, `intent:null` and empty `ignored_options`. `capabilities.send_request` lists the
-intents, the per-provider mapping and the options each provider ignores.
-
-**Delivery workers belong to the supervisor.** A Claude peer or terminal send and an Antigravity or
-Gemini terminal send are journaled by the sending CLI, which then asks the supervisor (control method
-`message/worker`) to start the delivery worker as the supervisor's own child, with the sender's
-environment, outside the sender's process tree. The sender may exit right after `api send` returns (or
-its session, sandbox or PID namespace may end) without taking the delivery down; before 1.64.0 the worker
-was the sender's descendant and could die with it, leaving the request `admitted` until it was rejected
-`WORKER_EXITED_BEFORE_DELIVERY`. Without a reachable supervisor the CLI starts the worker itself in a new
-session (`setsid`). A worker's stderr goes to `<message_id>.worker.log` next to its journal record
-(started afresh above 64 KiB, one line per start), retired with the record by receipt retention.
-
-**Safe re-dispatch.** A request whose worker is gone while it is still `admitted`, with nothing written,
-no terminal step journaled and no dispatch time, provably never reached the provider, so it is not an
-uncertain send. More than 10 s after its last change the supervisor (every 5 s, and any receipt read)
-dispatches it once more; the receipt's `execution.redispatches` counts this (at most 1) and
-`execution.redispatched_at` lists when. Only if that worker dies the same way does the request end
-`rejected` / `WORKER_EXITED_BEFORE_DELIVERY`. Nothing at or past `dispatching`, written or typed is ever
-dispatched again: those keep their existing outcomes (withdrawn and `rejected`, or `delivery_unknown`).
-
-### 1.64.0 (part B: events, compact)
-
-MINOR (additive: commands `api events`, `api hooks [install]`; capabilities `session_events` and `hooks`;
-`session compact` result keys; Claude `subagents_running` values. One refusal changes code: compacting a
-Gemini or Antigravity session was `COMPACT_UNSUPPORTED` and is now `UNSUPPORTED_PROVIDER_OPERATION` with
-`error.supported:false` and `error.reason`; compacting a Claude session is no longer refused).
-
-**Session events in one shape (SM5).** `api events [--after SEQ] [--wait SECONDS] [--session ID] [--kind KIND]
-[--limit N]` returns `{events, cursor, gap, oldest_seq, latest_seq, more, waited}`. Every event is
-`{seq, session_id, provider, kind, at, source, provider_conversation_id, detail}`; `kind` is one of
-`turn_started`, `turn_completed` (`detail.status` `completed`/`interrupted`/`failed`), `subagent_started` /
-`subagent_stopped` (`detail.agent_id`, `agent_type`), `background_task_started` (`detail.task_id`),
-`background_task_finished`, `compacted`, `idle`, `session_started`, `session_ended`. No event carries prompt,
-reply or tool text. Pass `cursor` as the next `--after`; `--wait` (at most 300) blocks for the first new one;
-`more:true` means `--limit` (default 500, at most 2000) cut the page. The journal (`registry/events.jsonl`)
-keeps the newest events (trimmed to 5000 past 10000); `gap:true` says events after `--after` were dropped.
-
-| Provider | Source | Kinds |
-|---|---|---|
-| Claude | `hook`: Claude Code hooks Sessionsation installs (below), ingested every 2 s by the supervisor and on every `api events` / full `api state` | all but `background_task_finished` (Claude has no hook for it) |
-| Codex | `supervisor`: each full state observation of a running session's turn facts; a turn end is identified by its rollout timestamp, so a short turn is still reported once | `turn_started`, `turn_completed`; `compacted` (`source:"operation"`) when a Sessionsation compaction completes |
-| Antigravity | `supervisor`: the agy step log, as transitions between observations (a very short turn can be missed) | `turn_started`, `turn_completed` |
-| Gemini | none (`supported:false`, the Gemini reason) | |
-
-The first look at a running process records it without an event. `api turn-events` is unchanged.
-
-**Hook installation and health (SM5).** Every Claude launch (and `api hooks install [--account ID]`) puts one
-async command hook per needed event (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`, `StopFailure`,
-`SubagentStart`, `SubagentStop`, `PostToolUse` matcher `Bash`, `PostCompact`, `Notification` matcher
-`idle_prompt`) into the account's `settings.json` as its own entry
-`{"hooks":[{"type":"command","command":"<sessionsation> provider-hook claude-event 2>/dev/null || true","async":true,"timeout":10}]}`.
-The path is the package's stable `<pkg>/current/sessionsation` when the running binary is the release it
-points at (otherwise the running path), so a release swap or a pruned release leaves the entry valid; a missing
-binary makes the hook exit 0 silently. An older entry naming a release path is stale and rewritten once.
-An entry is Sessionsation's only when its command contains `provider-hook claude-event`; user hooks and every
-other key are kept. An installed file is not rewritten (`changed:false`, `already_installed:true`); an entry
-with another executable path is replaced in place. A symlinked or invalid settings file is refused
-(`SETTINGS_IS_SYMLINK`, `SETTINGS_INVALID`) and reported, never edited; a launch never fails for it, and
-`SESSIONSATION_CLAUDE_HOOKS=0` skips the launch-time install. The hook appends a content-free line to
-`<home>/.sessionsation/hook-events.jsonl`, prints nothing and always exits 0. Hooks apply to Claude processes
-started after the install. Codex and Antigravity need no hook (`method:"supervisor"`): Codex has one `notify`
-slot, which belongs to the user, and its hooks need per-hook trust, so Sessionsation writes neither. `api hooks`
-returns one row per account (`account_id, provider, supported, method, required, events, installed,
-missing_events, stale_events, user_hooks, last_event_at, reason`, plus `changed` and `already_installed` for
-`install`) and one per Claude conversation the hooks reported (`session_id, provider_conversation_id,
-process_started_at, last_event_at, ended, subagents_running`).
-
-**Subagents from the events (SM3).** A running Claude row's `subagents_running` is the number of subagents
-started and not stopped in this process (`source:"hook_events"`, `observed_at` the newest hook event), counted
-only when its `SessionStart` (startup or resume) is at or after the row's `active_since`; otherwise null with
-the reason (for example a session started before the hooks were installed). `background_tasks` stays null for
-Claude: its start is an event, but Claude reports no finish. Codex, Gemini and Antigravity are unchanged.
-
-**Compact for every provider (SM6).** `api session compact --session ID --expected-generation G --when-idle`
-now also compacts a Claude terminal session: at the next idle point with an empty prompt (twice, 1.5 s apart,
-no terminal delivery in flight) it types `/compact` into the verified HERDR pane, reads it back (with or without
-Claude's command menu, whose highlighted entry must be `/compact`), presses Enter once, and completes when Claude
-reports the compaction (`PostCompact` hook event or a transcript `compact_boundary` at or after the start). A
-draft is never cleared (`draft_present`, it waits); a typed command Enter did not run is removed with
-backspaces and the operation fails `compaction_not_started`; a submitted one is never retyped (an idle pane
-with no compaction after 2 minutes fails `compaction_not_observed`). Claude compactions hold no input. Every
-result has `supported:true`, `method` (`app_server` | `terminal`), `native_method`, `already_compacted` and
-`nothing_to_compact`. When the provider's history file shows no instruction or reply yet, the operation
-completes at once with `nothing_to_compact:true`; when its newest compaction is newer than the last instruction
-and reply, with `already_compacted:true`; nothing is started either way. Gemini and Antigravity refuse with
-`UNSUPPORTED_PROVIDER_OPERATION` (`error.supported:false`, `error.reason`). `capabilities.session_compact`
-lists the providers and methods.
+- **Alias.** `--from F --to T` becomes one entry per first path component found in
+  stored paths (for example `/mnt/user/appdata` -> `/mnt/disk1/appdata`), accepted only
+  when proven: both are real directories, no other array disk or pool mount beside the
+  two spellings holds content under the share (network/FUSE mounts are never
+  consulted; each check bounded to 2 s, `stat_timeout`), and `st_dev:st_ino` match or a
+  probe file written under `T` is read under `F`. Unproven shares are reported
+  (`unproven`, `unmapped`). The block is stored in `layout.json` as `root_alias`
+  (`version`, `state` `pending|active|inactive`, `root_id`, `canonical_root`,
+  `previous_root`, `entries`, `normalize_requests`, `run`, `backup`, `activated_at`).
+  Activation stamps layout version 3; earlier builds refuse it (`LAYOUT_UNSUPPORTED`)
+  and `root rollback` returns the root to version 2.
+- **Opening and comparing.** A root opened by either spelling resolves to
+  `canonical_root` when both are the same directory or show the same `root_id`,
+  otherwise `ROOT_ALIAS_UNVERIFIED`. `api version` adds `requested_root` and `root`.
+  Every path equality or prefix test (homes, working directories, transcripts,
+  process environments such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`) compares the alias
+  forms, so a process started with the old spelling stays verified. Stored values keep
+  their spelling; new request directories take the new spelling once the alias is
+  active. Path-valued fields change spelling for migrated rows; treat them as opaque
+  or compare after mapping. While active, each old spelling's runtime path
+  (`/tmp/sessionsation-<uid>-<hash>`) is a directory symlink to the canonical runtime
+  directory, so clients that derive the control socket from the old root keep working.
+- **Root step** (supervisor stopped, else `DAEMON_RUNNING`). Preconditions: layout 2
+  complete or an unfinished run of the same `--from/--to` (`LAYOUT_MIGRATION_REQUIRED`,
+  `ROOT_MIGRATION_MISMATCH`), the root's entry proven (`ROOT_ALIAS_UNPROVEN`), no
+  non-terminal operation and no live hosted Claude worker (`ROOT_MIGRATION_BLOCKED`
+  with the list; an unreadable journal also blocks), a rollback-gate snapshot for every
+  attached or running session, disk space, `--backup` new or empty and outside the
+  root (`BACKUP_REQUIRED`, `BACKUP_NOT_EMPTY`), and reflink unless `--allow-full-copy`
+  (`BACKUP_REFLINK_UNSUPPORTED`). Steps, journaled and idempotent in
+  `operations/root-migrations/<run>.json` (values in `<run>.changes.jsonl`): `backup`
+  (metadata, `VACUUM INTO` database copies, a reflink copy of `shared/claude/projects`,
+  every managed `.claude.json`; manifest `root-backup.json` with sha256 per file;
+  `BACKUP_VERIFY_FAILED`), `mark`, `links` (the shared-store links re-pointed),
+  `registry` (conversation owners, pane homes, thread locations, `codex_binary`),
+  `claude` (`.claude.json` project entries cloned to the new key, memory merged,
+  stopped sessions re-keyed), `codex` (thread locations of threads not running),
+  `activate`, `verify` (`ROOT_VERIFY_FAILED`). Only a session positively known to be
+  stopped is re-keyed; an undecided probe leaves it (`left_behind`, `probe_failed`).
+  Journals, receipts, archives and logs are never rewritten.
+- **Claude re-key of one session.** All lineage transcripts are located (two for one
+  id: `ROOT_REKEY_CONFLICT`). Every name to move (`<id>.jsonl`, `<id>/`) is copied to
+  `<backup>/sessions/<session>/<attempt>/<old key>/` and verified by sha256 **before**
+  any rename, which happens only while the session is stopped, with
+  `RENAME_NOREPLACE` (a name already in the new key is a collision). Memory
+  (`projects/<key>/memory/`) is merged per file, never moved: a missing file is copied,
+  a file changed on one side fast-forwards by an atomic exchange (undone if a writer
+  changed the target meanwhile), replaced versions are kept under
+  `<backup>/memory-versions/`, and a file changed on both sides is a conflict (copied to
+  `<backup>/memory-conflicts/`; the session is not switched). Then the catalog
+  `directory` changes once. The quiet check fails closed (unreadable registry or
+  account list, a process naming the conversation, a transcript writer). Any error
+  after the move moves the names back before `left_behind`.
+- **Session step** (`--session`, alias active). A running Claude session in a HERDR
+  pane is stopped (pidfd SIGTERM; a busy one needs `--accept-risks`; Claude deliveries
+  in flight are waited for up to 30 s, `SESSION_DELIVERY_IN_PROGRESS`), re-keyed,
+  resumed once in the same pane and verified (same conversation in the recorded pane;
+  registry and `/proc` cwd equal the new directory; the pre-move bytes are a prefix of
+  the live transcript; memory). A positive failure moves it back and resumes it on the
+  old path (`left_behind`); an unconfirmed resume is `uncertain`; memory problems end
+  `verify_failed`. `--prompt` is delivered once after verification. A stopped Claude
+  session is re-keyed in place (`rekeyed`); a Codex thread that is not running gets a
+  thread location, a running one goes through the directory job (`relocating`, then
+  `verified`); archived sessions are `archived_rekey_at_restore`; Gemini and
+  Antigravity are `ROOT_REKEY_UNSUPPORTED_PROVIDER`; other refusals
+  `ROOT_REKEY_UNSUPPORTED`. Records `operations/root-migrations/session-<session>.json`
+  (`kind:"root_rekey"` while in flight; never pruned).
+- **`root status`** returns `{layout_version, requested_root, root, root_alias, run,
+  counts, sessions, deferred_running, left_behind, memory_split, memory_conflicts,
+  collisions, unmapped, retained, gate, gate_detail}`. Session states: `verified`,
+  `rekeyed`, `archived_rekey_at_restore`, `deferred_running`, `left_behind`,
+  `unsupported_provider`, `not_applicable`, `verify_failed`, `failed`, `uncertain`,
+  `relocating`; rows carry their retained copies (`copy`, `sha256`, `verified`). `gate`
+  is `pass` when every session attached or running before activation is still
+  recognised as running and every probe succeeded (`gate_detail.sessions[]`), `fail`
+  otherwise (run `root rollback`), `not_applicable` without an activated run.
+- **Rollback** (supervisor stopped): every session this run changed that is not
+  `verified` moves back, journaled values are restored (original bytes when unchanged
+  since), links re-pointed, unchanged cloned `.claude.json` entries removed, thread
+  locations restored when still the re-key's record, `layout.json` back to version 2.
+  Refused while a re-key worker runs or a process uses the new spelling of a home in
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GEMINI_CLI_HOME` (`ROOT_ROLLBACK_BLOCKED` with
+  the pids). `root rollback --session S` undoes one session (a running one is stopped,
+  moved back and resumed by a detached worker). Rollback also moves back lineage names
+  found only in the new key and maps records written after activation back. Problems
+  end `rollback_incomplete` (alias still active; rerun).
+- **Finalize** removes empty old project-key directories (`rmdir` only) and reports old
+  `memory/` directories (`memory_removable`). No command deletes the retained copies.

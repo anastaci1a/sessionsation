@@ -1,0 +1,187 @@
+# Contract changelog
+
+One entry per contract version: what changed and where the current behaviour is
+described in the [contract](contract.md). Revision N is contract `1.N.0`. Releases
+and package history are in Git.
+
+## Upgrade notes
+
+- Negotiate by `contract_version` and capabilities, never by package version; log the
+  executable SHA-256 from `api version`. A client upgrade is not an owner handoff:
+  keep the sole supervisor and existing receipt databases.
+- 1.64.0 turned some refusals into success: a live `api send` option the target's
+  provider does not use is accepted, left out and named in `ignored_options` (before:
+  `PROVIDER_DELIVERY_UNSUPPORTED`, `DELIVERY_UNAVAILABLE`,
+  `UNSUPPORTED_PROVIDER_OPERATION` or `INVALID_REQUEST`). Detect providers with
+  `capabilities.send_request.providers` instead.
+- 1.54.0 activates layout version 3; binaries before 1.54.0 refuse it, so run
+  `root rollback` before a downgrade. 1.49.0 adds journals older releases ignore; drain
+  them before rolling back ([operations](operations.md#rolling-back-a-release)).
+
+## Versions
+
+- **1.64.0** One `api send` body for every provider (intents `deliver`, `when_idle`,
+  `interrupt`; `ignored_options`; one `delivery` block), supervisor-owned delivery
+  workers with one safe re-dispatch; `api events`, `api hooks [install]`, Claude
+  `subagents_running` from hooks; compaction for Claude terminal sessions, Gemini and
+  Antigravity refuse with `UNSUPPORTED_PROVIDER_OPERATION` (was `COMPACT_UNSUPPORTED`).
+  [Send](contract.md#one-send-request-for-every-provider),
+  [events](contract.md#session-events), [compaction](contract.md#compaction-at-the-next-idle-point).
+- **1.63.0** `api observe` for every provider with a `conversation` block; one stop
+  result shape; early provider exit fails a launch (`PROVIDER_EXITED`,
+  `TERMINAL_PROVIDER_EXITED`, `TERMINAL_PANE_IS_SHELL`); archive of a session without
+  history (`nothing_to_archive`). [Observe](contract.md#observe-for-every-provider),
+  [stop](contract.md#stop-and-restart), [early exit](contract.md#early-provider-exit).
+- **1.62.1** Codex meters say why they are stale and read on demand; the supervisor
+  rebuilds the active snapshot every 20 s (`snapshot.fresh` up to 30 s, was 15).
+  [Usage](contract.md#limits-plan-and-usage), [cached state](contract.md#cached-state).
+- **1.62.0** `usage.meter` for every account (Claude OAuth read without a session),
+  `api usage` for every provider; session meters `context_pct`, `subagents_running`,
+  `background_tasks`; `SESSIONSATION_SESSION_ID` in every provider child.
+  [Usage](contract.md#limits-plan-and-usage), [meters](contract.md#session-meters-and-session-id).
+- **1.61.0** `session launch --brief-delivery initial-prompt` accepted for Codex;
+  `api stop --wait`. [Model](contract.md#session-model-and-one-pass-launch),
+  [stop](contract.md#stop-and-restart).
+- **1.60.0** Claude limit resets through `api account reset-credit` (OAuth owner,
+  token renewal as Claude Code does). [Reset credits](contract.md#reset-credits).
+- **1.59.0** Claude `api stop` (SIGTERM to the verified process); `api stop
+  --disable-auto-start`. [Stop](contract.md#stop-and-restart).
+- **1.58.0** Claude `set-model` admission waits for the first hook record
+  (`hook_not_recorded`); Codex `facts.native_error` and `input_delivery.health`.
+  [Model](contract.md#session-model-and-one-pass-launch), [receipts](contract.md#receipt-evidence).
+- **1.57.1** Supervisor loop serves parsed journals and the catalog from memory while
+  files are unchanged (performance only).
+- **1.57.0** Full `state` reads each journal once and caches per-transcript facts
+  (performance only). [Cached state](contract.md#cached-state).
+- **1.56.0** `session resolve` fills cached facts; statusline replays never lower
+  usage; detached workers are reaped. [Observe](contract.md#observe-for-every-provider),
+  [Claude usage](contract.md#claude-usage-and-statusline).
+- **1.55.0** Archive workers wait for the account lock; `--wait` on archive, restore,
+  delete; idempotent `api stop` (`already_stopped`).
+  [Archives](contract.md#conversation-archives), [stop](contract.md#stop-and-restart).
+- **1.54.0** Root alias and re-key (`root status|migrate|rollback|finalize`, layout
+  version 3; capability `root_alias`, `since_contract` 1.54.0).
+  [Root alias](contract.md#root-alias-and-re-key).
+- **1.53.0** Codex rate-limit reset credits (`api account reset-credit`,
+  `usage.reset_credits`). [Reset credits](contract.md#reset-credits).
+- **1.52.0** Idle-tab reuse for starts and resumes (`reuse_idle_tabs`, `pane_reused`);
+  delivered native journal records retire as terminal.
+  [Pane reuse](contract.md#choosing-a-space-and-a-pane), [retention](contract.md#receipt-retention).
+- **1.51.0** Outside-session senders shown by the bare component, prefixed only on a
+  collision. [Component names](contract.md#component-sender-names).
+- **1.50.0** `from_component` and `SESSIONSATION_SENDER_COMPONENT`
+  (`session_spaces.from_component`, `since_contract` 1.50.0).
+  [Component names](contract.md#component-sender-names).
+- **1.49.1** Launches wait up to 120 s for account operations; pre-start refusals end
+  `failed`. [Launch](contract.md#launch-acknowledgement-and-abandoning-uncertain-operations).
+- **1.49.0** Session `model`, `api session set-model`, one-pass `api session launch`;
+  Claude launch models. [Model](contract.md#session-model-and-one-pass-launch).
+- **1.48.1** No steering while a compaction is pending (`target_compacting`).
+  [Compaction](contract.md#compaction-at-the-next-idle-point).
+- **1.48.0** Space-scoped session names (`space`, `canonical`, `--create-space`,
+  `session set-space`, `session resolve`; `session_spaces`, `since_contract` 1.48.0).
+  [Names](contract.md#space-scoped-session-names).
+- **1.47.1** Compaction completion read from the full view of new turns; 180 s
+  no-progress bound. [Compaction](contract.md#compaction-at-the-next-idle-point).
+- **1.47.0** `api session compact --when-idle` for Codex with an input hold.
+  [Compaction](contract.md#compaction-at-the-next-idle-point).
+- **1.46.8** Auto Start `already_running` result. [Auto Start](contract.md#auto-start).
+- **1.46.7** `accounts[].plan`. [Plan](contract.md#limits-plan-and-usage).
+- **1.46.6** Launch status/validate no longer rescan state; lifecycle calls refresh only
+  the active snapshot.
+- **1.46.5** Codex steer and cancel wait for the ledger; `if_busy:"queue"` on submit.
+  [Contention](contract.md#admission-and-contention), [messaging](contract.md#messaging).
+- **1.46.4** Codex messaging waits for the ledger lease and releases it during
+  app-server I/O. [Contention](contract.md#admission-and-contention).
+- **1.46.3** Codex callers detected by `CODEX_THREAD_ID`; every native frame carries the
+  `cross-session-message` envelope; `native_sender_registration` is a no-op.
+  [Peer messages](contract.md#native-peer-messages).
+- **1.46.2** Launch acknowledgement wait 120 s (`LAUNCH_RUN_NEVER_STARTED`); abandon an
+  uncertain new launch.
+  [Abandon](contract.md#launch-acknowledgement-and-abandoning-uncertain-operations).
+- **1.46.1** Statusline `refreshInterval`; `skills` no longer shared.
+  [Shared state](contract.md#shared-claude-state).
+- **1.46.0** `agents` and `commands` shared with merge on migration.
+  [Shared state](contract.md#shared-claude-state).
+- **1.45.2** Codex accepts Claude send options; Codex usage clock fixes.
+  [Usage](contract.md#limits-plan-and-usage).
+- **1.45.1** Lifecycle job workers refresh the cached snapshots when they finish.
+- **1.45.0** Auto Start prompt delivery read back from its receipt, native first for
+  Claude, array-start trigger; Space names resolved by label; `api version.commit`;
+  opt-in `await_reply`. [Auto Start](contract.md#auto-start),
+  [Spaces](contract.md#choosing-a-space-and-a-pane).
+- **1.44.0** Auto Start means host boot or classified crash; an explicit stop keeps
+  the mode. [Auto Start](contract.md#auto-start).
+- **1.43.0** Auto Start modes `disabled|start|start_prompt`; `api auto-recover`
+  deprecated. [Auto Start](contract.md#auto-start).
+- **1.42.0** `live_activity` for Claude, Gemini and Antigravity; `api usage`; uncertain
+  operations named in `pending_operations`.
+  [Live activity](contract.md#live-activity-and-pending-operations).
+- **1.41.0** Caller origin detection; terminal typing withdraws orphans
+  (`refusal_layout`); disk-space guard. [Delivery](contract.md#claude-input-delivery),
+  [disk space](contract.md#disk-space-guard).
+- **1.40.1** Cancelled stops release their gate; unsent `pending_local` receipts settle.
+  [Stop](contract.md#stop-and-restart).
+- **1.40.0** Native peer delivery as the agent path, `origin`, `api idle-notify`.
+  [Peer messages](contract.md#native-peer-messages).
+- **1.39.0** Shared Claude conversation state (`shared` commands).
+  [Shared state](contract.md#shared-claude-state).
+- **1.38.0** Codex launch `model`/`reasoning_effort`; `api turn-notify` and
+  `api turn-events`. [Notifications](contract.md#turn-end-notifications).
+- **1.37.0** `live_activity`, `pending_operations`, failed turns accept input, stop
+  expiry, native send checks. [Messaging](contract.md#messaging).
+- **1.36.0** `api stop` closes the HERDR pane (`--keep-pane`).
+  [Stop](contract.md#stop-and-restart).
+- **1.35.1** Observed inline operations end `complete`.
+  [Inline](contract.md#inline-run-and-resume).
+- **1.35.0** Session auto-recover (now Auto Start); switching a stopped session only
+  re-homes it. [Account switch](contract.md#account-switch).
+- **1.34.0** Claude account switch. [Account switch](contract.md#account-switch).
+- **1.33.1** Inline journal settling. **1.33.0** Long terminal messages verified on a
+  scrolling input box (Claude and agy 8192 bytes). [Terminal input](contract.md#terminal-input).
+- **1.32.0** Named, journaled inline `run`/`resume`. [Inline](contract.md#inline-run-and-resume).
+- **1.31.1** Deletion after a home move scans each home once. **1.31.0** Resolved-path
+  home comparisons; `resume --confirm-unfinished`. [Layout](contract.md#layout-and-retention).
+- **1.30.0** Per-provider account names, `rename-backend`.
+  [Names](contract.md#names).
+- **1.29.0** Data-root layout version 2 and retention.
+  [Layout](contract.md#layout-and-retention).
+- **1.28.0** `api abandon-operation`.
+  [Abandon](contract.md#launch-acknowledgement-and-abandoning-uncertain-operations).
+- **1.27.0** Claude default statusline. [Settings](contract.md#claude-account-settings).
+- **1.26.0** Native `last_accessed`. [Timestamps](contract.md#session-timestamps).
+- **1.25.1** Codex 0.166.0 native profile. **1.25.0** Antigravity folder trust, stop,
+  archive and delete. [Antigravity](contract.md#antigravity-cli).
+- **1.24.0** Semantic `contract_version`. [Versioning](contract.md#contract-versioning-semver).
+- **Revision 24** Antigravity provider. [Antigravity](contract.md#antigravity-cli).
+- **Revision 23** Pending questions and `api answer`. [Questions](contract.md#pending-questions).
+- **Revision 22** Claude bypass-permissions warning. [Settings](contract.md#claude-account-settings).
+- **Revision 21** Gemini authentication modes. [Gemini](contract.md#gemini-cli).
+- **Revision 20** `--new-space LABEL`; Claude folder pre-trust.
+  [Spaces](contract.md#choosing-a-space-and-a-pane), [trust](contract.md#folder-pre-trust).
+- **Revision 19** Launch permissions. [Permissions](contract.md#launch-permissions).
+- **Revision 18** Receipt retention; definite refusal for approval-blocked sends;
+  capability reason codes; Gemini auth failures; resume in the saved directory;
+  terminal draft re-check. [Retention](contract.md#receipt-retention).
+- **Revision 17** Claude and Gemini archive/restore/delete; terminal input; native
+  `active_since`; `PEER_SOCKET_UNLINKED`. [Archives](contract.md#conversation-archives),
+  [terminal input](contract.md#terminal-input).
+- **Revision 16** Claude hosted sessions and live peer messages.
+  [Delivery](contract.md#claude-input-delivery).
+- **Revision 15** Steer reply correlation. [Steer replies](contract.md#steer-reply-correlation).
+- **Revision 14** Account log out, cached state, account order.
+  [Accounts](contract.md#accounts), [cached state](contract.md#cached-state).
+- **Revision 13** Gemini provider. [Gemini](contract.md#gemini-cli).
+- **Revision 12** Session identity, continuations, Add to HERDR.
+  [Identity](contract.md#session-identity-and-continuations).
+- **Revision 11** Claude removal/deletion, login plans, headless delivery, display names.
+  [Headless](contract.md#headless-delivery).
+- **Revision 10** Claude provider and the per-operation capability table.
+  [Claude](contract.md#claude-code).
+- **Revision 9** Batch placement observations. [Placement](contract.md#batch-placement-observations).
+- **Revision 8** `api turn-target`. [Turn binding](contract.md#passive-current-turn-binding).
+- **Revision 7** Public turn checkpoints. [Checkpoints](contract.md#public-turn-checkpoints).
+- **Revision 6** HERDR-owned session names. [Names](contract.md#herdr-owned-session-names).
+- **Revision 5** Deliberate in-turn steering. [Steering](contract.md#deliberate-in-turn-steering).
+- **Revisions 3-4** Explicit Resume-and-submit and exact-item idle start.
+  [Recovery](contract.md#explicit-resume-and-submit).

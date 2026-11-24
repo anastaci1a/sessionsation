@@ -17,10 +17,11 @@
     "doc_bytes:agents/README.md": { "value": 9276 },
     "doc_bytes:docs/README.md": { "value": 711 },
     "doc_bytes:docs/architecture.md": { "value": 10016 },
+    "doc_bytes:docs/changelog.md": { "value": 13278 },
     "doc_bytes:docs/cli.md": { "value": 113092 },
-    "doc_bytes:docs/contract.md": { "value": 344658 },
+    "doc_bytes:docs/contract.md": { "value": 222202 },
     "doc_bytes:docs/operations.md": { "value": 29501 },
-    "doc_bytes_total": { "value": 512857 },
+    "doc_bytes_total": { "value": 403679 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -592,6 +593,27 @@
       "reason": "1.64.0 part B: provider::events (journal, Claude hook ingest, supervisor turn observer), provider::hooks and claude::hooks (install, health, the hook writer), provider::compact, the Claude terminal compaction and their unit and integration tests; claude::hooks::stable and the silent-failure hook command",
       "considered": "n/a",
       "step": "1.64.0"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 13278,
+      "reason": "D1: new terse docs/changelog.md, one entry per contract version pointing at its reference section, plus the client upgrade notes",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": -122456,
+      "reason": "D1: contract.md reorganised by topic; per-version history moved to changelog.md, superseded and narrative text removed, semantics previously only in cli.md merged in",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": -109178,
+      "reason": "D1: contract.md rewrite and the new changelog.md",
+      "considered": "n/a",
+      "step": "D1"
     }
   ],
   "enforced"
