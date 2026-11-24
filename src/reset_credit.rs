@@ -149,9 +149,12 @@ pub fn admit(
             phase: "requesting".into(),
             outcome: None,
             attempts: 1,
-            detail: match provider {
-                ProviderId::Claude => "claim sent to the Claude API (reset_rate_limits)".into(),
-                _ => "request sent to the account app-server".into(),
+            detail: if crate::provider::ops::facts(provider).reset_credits
+                == crate::provider::ops::Reader::OAuth
+            {
+                "claim sent to the Claude API (reset_rate_limits)".into()
+            } else {
+                "request sent to the account app-server".into()
             },
             codex_version: codex_version.into(),
             provider_result: None,
@@ -215,9 +218,10 @@ pub fn failure(error: &anyhow::Error, version: &str, request_id: &str) -> (&'sta
     if crate::rpc::unknown_method(error) {
         (
             "failed",
-            format!(
-                "UNSUPPORTED_PROVIDER_OPERATION: codex {version} does not support {METHOD} (method not found); update Codex (0.165.0 has it). No credit was spent"
-            ),
+            crate::provider::ops::unsupported(format_args!(
+                "codex {version} does not support {METHOD} (method not found); update Codex (0.165.0 has it). No credit was spent"
+            ))
+            .to_string(),
         )
     } else if crate::rpc::rejected(error) {
         (
@@ -255,7 +259,7 @@ pub fn capability() -> Value {
         "rate_limits_refreshed_after":["reset","alreadyRedeemed"],
         "lock":"account_operation_lock","reversible":false,
         "usage_field":{"field":"usage.reset_credits","shape":{"available":"integer","observed_at":"unix_seconds","credits":"array|null"},"absent":null},
-        "errors":["UNSUPPORTED_PROVIDER_OPERATION","INVALID_REQUEST_ID","REQUEST_ID_CONFLICT","ACCOUNT_BUSY","AUTH_REQUIRED","AUTH_STALE","RESET_CREDIT_FAILED","RESET_CREDIT_OUTCOME_UNKNOWN"]})
+        "errors":[crate::provider::ops::UNSUPPORTED,"INVALID_REQUEST_ID","REQUEST_ID_CONFLICT","ACCOUNT_BUSY","AUTH_REQUIRED","AUTH_STALE","RESET_CREDIT_FAILED","RESET_CREDIT_OUTCOME_UNKNOWN"]})
 }
 
 #[cfg(test)]

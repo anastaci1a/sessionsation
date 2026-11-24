@@ -759,34 +759,31 @@ pub async fn answer(paths: &Paths, request: AnswerRequest) -> Result<Value> {
     let s = catalog::resolve(paths, &request.session, &request.expected_generation)?;
     let _lock = session_lock(paths, &s.id)?;
     let provider = ProviderId::parse(&s.provider)?;
-    let (pending, codex_endpoint) = match provider {
-        ProviderId::Codex => {
-            let source = crate::api::codex_source(paths, &s).await?;
-            let rollout = source
-                .as_ref()
-                .filter(|i| !i.inactive)
-                .map(|i| i.rollout.clone());
-            let open = match &rollout {
-                Some(path) => scan(paths, Format::Codex, path)?,
-                None => vec![],
-            };
-            (
-                open,
-                source.map(|i| i.home.join("app-server-control/app-server-control.sock")),
-            )
-        }
-        ProviderId::Claude => {
-            let observed = crate::provider::native::reconcile(paths).unwrap_or_default();
-            let transcript = observed.get(&s.id).map(|(_, h)| h.clone());
-            (
-                claude_pending(paths, &s.id, &s.conversation_id, transcript.as_deref()),
-                None,
-            )
-        }
-        ProviderId::Gemini => bail!("UNSUPPORTED_PROVIDER_OPERATION: {NO_DETECTION_GEMINI}"),
-        ProviderId::Antigravity => {
-            bail!("UNSUPPORTED_PROVIDER_OPERATION: {NO_DETECTION_ANTIGRAVITY}")
-        }
+    let facts = crate::provider::ops::facts(provider);
+    if let Some(reason) = facts.questions_unsupported {
+        return Err(crate::provider::ops::unsupported(reason));
+    }
+    let (pending, codex_endpoint) = if facts.supervised {
+        let source = crate::api::codex_source(paths, &s).await?;
+        let rollout = source
+            .as_ref()
+            .filter(|i| !i.inactive)
+            .map(|i| i.rollout.clone());
+        let open = match &rollout {
+            Some(path) => scan(paths, Format::Codex, path)?,
+            None => vec![],
+        };
+        (
+            open,
+            source.map(|i| i.home.join("app-server-control/app-server-control.sock")),
+        )
+    } else {
+        let observed = crate::provider::native::reconcile(paths).unwrap_or_default();
+        let transcript = observed.get(&s.id).map(|(_, h)| h.clone());
+        (
+            claude_pending(paths, &s.id, &s.conversation_id, transcript.as_deref()),
+            None,
+        )
     };
     let found = pending.iter().find(|p| p.request_id == request.request_id);
     let mut receipt = match admit(paths, &s.id, found, &request.request_id, &request.answers)? {
@@ -910,9 +907,9 @@ pub async fn answer(paths: &Paths, request: AnswerRequest) -> Result<Value> {
             save_receipt(paths, &mut receipt)?;
             Ok(public_receipt(&receipt, None))
         }
-        _ => bail!(
-            "UNSUPPORTED_PROVIDER_OPERATION: this question cannot be answered outside its terminal"
-        ),
+        _ => Err(crate::provider::ops::unsupported(
+            "this question cannot be answered outside its terminal",
+        )),
     }
 }
 

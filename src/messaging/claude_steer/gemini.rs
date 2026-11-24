@@ -835,7 +835,11 @@ async fn restore(paths: &Paths, id: &str, host: &Host, draft: &str) -> Result<()
 // ---------------------------------------------------------------- transcript
 
 pub(super) fn is_gemini(r: &Record) -> bool {
-    r.provider.as_deref() == Some("gemini")
+    r.provider.as_deref().is_some_and(|p| {
+        crate::provider::ops::holds(p, |f| {
+            f.terminal_input == crate::provider::ops::TerminalInput::Gemini
+        })
+    })
 }
 /// Text of a record's `content`/`displayContent`: a string, or the `text` of
 /// its parts (thoughts excluded).
@@ -924,7 +928,7 @@ pub(crate) fn find(path: &Path, offset: u64, text: &str, since_ms: i64) -> Resul
             continue;
         }
         match v["type"].as_str() {
-            Some("gemini") => {
+            Some(crate::provider::gemini::MODEL_RECORD_TYPE) => {
                 let id = v["id"].as_str().map(str::to_owned);
                 if let Some(slot) = replies.iter_mut().find(|(i, _)| i.is_some() && *i == id) {
                     // A record rewritten later (tool calls added) replaces its text.

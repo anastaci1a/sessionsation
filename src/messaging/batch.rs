@@ -30,7 +30,7 @@ struct Cached {
 }
 async fn one(paths: &Paths, t: Target, policy: &Policy) -> anyhow::Result<Value> {
     let s = crate::catalog::resolve(paths, &t.session_id, &t.expected_generation)?;
-    anyhow::ensure!(s.provider == "codex", "UNSUPPORTED_PROVIDER_OPERATION");
+    crate::provider::ops::require_bare(crate::provider::ops::supervised(&s.provider))?;
     let runtime = readiness::recorded(paths, &s)?
         .as_ref()
         .map(Attachment::generation);

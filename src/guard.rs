@@ -1409,6 +1409,51 @@ fn clippy_roles_are_configured() {
     fail_on(clippy_problems(&clippy_paths(&toml)));
 }
 
+/// Design §4.7 (from S1a): every provider answers every [`Op`] (a refusal always names its
+/// reason), `OP_KEYS` names each capability key exactly once, and the ops table agrees with
+/// `provider::capabilities` (the `api capabilities` source).
+///
+/// [`Op`]: crate::provider::ops::Op
+#[test]
+fn provider_ops_table_is_total() {
+    use crate::provider::{
+        ProviderId, capabilities,
+        ops::{OP_KEYS, Op, ops},
+    };
+    let mut out = vec![];
+    let keys: BTreeSet<&str> = OP_KEYS.iter().map(|(_, k)| *k).collect();
+    if keys.len() != OP_KEYS.len() || Op::ALL.len() != OP_KEYS.len() {
+        out.push("guard: OP_KEYS names a capability key twice".to_owned());
+    }
+    for p in ProviderId::ALL {
+        let o = ops(p);
+        if o.id() != p {
+            out.push(format!("guard: ops({p}) answers for {}", o.id()));
+        }
+        let table = serde_json::to_value(capabilities(p)).unwrap();
+        let listed: BTreeSet<&str> = table
+            .as_object()
+            .map(|m| m.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        for k in listed.difference(&keys) {
+            out.push(format!("guard: capability key {k} of {p} has no Op"));
+        }
+        for (op, key) in OP_KEYS {
+            assert_eq!(op.key(), key);
+            let c = o.capability(op);
+            if !c.supported && c.reason.is_none() {
+                out.push(format!("guard: provider {p} has no row for Op::{op:?}"));
+            }
+            if serde_json::to_value(&c).unwrap() != table[key] {
+                out.push(format!(
+                    "guard: provider {p} Op::{op:?} disagrees with capabilities().{key}"
+                ));
+            }
+        }
+    }
+    fail_on(out);
+}
+
 #[test]
 fn roles_have_one_owner() {
     let mut out = vec![];
@@ -2165,8 +2210,31 @@ fn provider_dispatch_pattern() {
         "let yes = matches!(p, ProviderId::Codex);",
         "if let Some(ProviderId::Claude) = p {",
         "if let crate::provider::ProviderId::Claude = p {",
+        // Tuple arms (review of S1: `plan::name`).
+        "(ProviderId::Codex, \"plus\") => Some(\"ChatGPT Plus\"),",
+        "(ProviderId::Gemini, _) => {",
     ] {
         assert!(rx.is_match(hit), "should match: {hit}");
+    }
+    let strings = re(COUNTERS
+        .iter()
+        .find(|c| c.name == "provider_string_compares")
+        .unwrap()
+        .regex);
+    for hit in [
+        "if s.provider == \"codex\" {",
+        "\"claude\" | \"codex\" => x,",
+        "r.provider.as_deref() == Some(\"gemini\")",
+        "Some(\"gemini\") => {",
+        "let n = id.strip_prefix(\"codex:\")?;",
+    ] {
+        assert!(strings.is_match(hit), "should match: {hit}");
+    }
+    for miss in [
+        "Some(gemini::MODEL_RECORD_TYPE) => {",
+        "let n = ops::supervised_name(id)?;",
+    ] {
+        assert!(!strings.is_match(miss), "should not match: {miss}");
     }
     for miss in [
         "let o = ops(ProviderId::Codex);",

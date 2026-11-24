@@ -123,7 +123,7 @@ pub fn capability() -> Value {
         "event_kinds":["turn_ended","error"],"poll_seconds":POLL_SECONDS,"max_events":MAX_EVENTS,
         "max_wait_seconds":MAX_WAIT_SECONDS,"delivery":["event_journal","queued_message_to_notify_session"],
         "message_mode":"queue","message_replays":false,"first_observation":"baseline_only",
-        "refusal_codes":["UNSUPPORTED_PROVIDER_OPERATION","STALE_TARGET","INVALID_ARGUMENT","SESSION_NOT_FOUND"]})
+        "refusal_codes":[crate::provider::ops::UNSUPPORTED,"STALE_TARGET","INVALID_ARGUMENT","SESSION_NOT_FOUND"]})
 }
 
 /// `api turn-notify`: enable (optionally naming the session to message) or disable.
@@ -135,10 +135,10 @@ pub fn set(
     notify_session: Option<String>,
 ) -> Result<Value> {
     let s = catalog::resolve(paths, session, expected_generation)?;
-    ensure!(
-        s.provider == "codex",
-        "UNSUPPORTED_PROVIDER_OPERATION: turn notifications are Codex-only"
-    );
+    crate::provider::ops::require(
+        crate::provider::ops::supervised(&s.provider),
+        "turn notifications are Codex-only",
+    )?;
     if !enable {
         ensure!(
             notify_session.is_none(),
@@ -148,7 +148,7 @@ pub fn set(
     if let Some(target) = &notify_session {
         let t = catalog::find(paths, target).context("SESSION_NOT_FOUND: --notify-session")?;
         ensure!(
-            t.provider == "codex" && t.id != s.id,
+            crate::provider::ops::supervised(&t.provider) && t.id != s.id,
             "INVALID_ARGUMENT: --notify-session must be another Codex session"
         );
     }

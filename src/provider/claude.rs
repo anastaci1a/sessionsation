@@ -23,6 +23,7 @@ pub mod launch;
 pub mod meter;
 pub mod native_peer;
 pub mod oauth;
+pub mod ops;
 pub mod peer;
 pub mod sender_registry;
 pub mod statusline_seed;

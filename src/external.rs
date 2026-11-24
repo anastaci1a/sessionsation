@@ -802,7 +802,10 @@ pub fn instances() -> Result<Vec<Instance>> {
     let mut result = Vec::new();
     for row in text.lines() {
         let fields: Vec<_> = row.split('\t').collect();
-        if fields.len() != 6 || fields[3] != "codex" || fields[5] != "0" {
+        if fields.len() != 6
+            || fields[3] != crate::provider::codex::PROCESS_NAME
+            || fields[5] != "0"
+        {
             continue;
         }
         let Ok(pane_pid) = fields[2].parse::<u32>() else {
@@ -810,9 +813,11 @@ pub fn instances() -> Result<Vec<Instance>> {
         };
         let is_codex = |pid| {
             process_args(pid).is_ok_and(|args| {
-                args.first()
-                    .is_some_and(|a| Path::new(a).file_name().is_some_and(|n| n == "codex"))
-                    && !args.iter().any(|a| a == "app-server")
+                args.first().is_some_and(|a| {
+                    Path::new(a)
+                        .file_name()
+                        .is_some_and(|n| n == crate::provider::codex::PROCESS_NAME)
+                }) && !args.iter().any(|a| a == "app-server")
             })
         };
         let pid = if is_codex(pane_pid) {
@@ -1213,7 +1218,7 @@ fn display_account_for_home(
     }
     let identity = crate::identity::read_identity(home).ok()?;
     let mut matches = state?.accounts.values().filter(|candidate| {
-        candidate.provider == crate::provider::ProviderId::Codex
+        crate::provider::ops::facts(candidate.provider).supervised
             && !candidate.identity.is_empty()
             && candidate.identity == identity
             && paths
@@ -1428,7 +1433,7 @@ async fn run_account_thread_inner(
         status["accounts"]
             .as_array()
             .is_some_and(|a| a.iter().any(|a| a["name"] == account
-                && a["provider"].as_str().unwrap_or("codex") == "codex"
+                && crate::provider::ops::supervised(a["provider"].as_str().unwrap_or("codex"))
                 && a["enabled"] == true)),
         "account is not enrolled or is disabled"
     );
@@ -1871,7 +1876,8 @@ pub async fn queue_move(
         .as_array()
         .and_then(|a| {
             a.iter().find(|a| {
-                a["name"] == target && a["provider"].as_str().unwrap_or("codex") == "codex"
+                a["name"] == target
+                    && crate::provider::ops::supervised(a["provider"].as_str().unwrap_or("codex"))
             })
         })
         .context("unknown destination account")?;
@@ -2549,7 +2555,9 @@ pub async fn queue_snapshot(
             status["accounts"]
                 .as_array()
                 .is_some_and(|accounts| accounts.iter().any(|a| a["name"] == target
-                    && a["provider"].as_str().unwrap_or("codex") == "codex"
+                    && crate::provider::ops::supervised(
+                        a["provider"].as_str().unwrap_or("codex")
+                    )
                     && a["enabled"] == true
                     && a["auth_required"] == false)),
             "ACCOUNT_UNAVAILABLE"

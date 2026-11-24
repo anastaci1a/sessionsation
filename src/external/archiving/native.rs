@@ -18,7 +18,10 @@
 //! `<root>/deletions/native-<op>/` with a `plan.json` journal, removes the
 //! catalog entry and its merged aliases, then removes the staged files.
 use super::*;
-use crate::provider::{ProviderId, antigravity, claude, gemini, native};
+use crate::provider::{
+    ProviderId, antigravity, claude, gemini, native,
+    ops::{self, ArchiveLayout},
+};
 use std::collections::BTreeSet;
 use std::os::unix::fs::DirBuilderExt;
 
@@ -138,7 +141,7 @@ fn activity(
     home: Option<&Path>,
     ids: &[String],
 ) -> Result<Option<String>> {
-    if provider == ProviderId::Claude {
+    if ops::facts(provider).hosted_sessions {
         for id in ids {
             if claude::hosted::live(paths, id) {
                 return Ok(Some(format!(
@@ -159,7 +162,7 @@ fn activity(
                 l.session_id
             )));
         }
-        if provider == ProviderId::Antigravity {
+        if ops::facts(provider).archive == ArchiveLayout::AgyIndex {
             // Headless (-p) runs are not live sessions but still hold the conversation.
             for id in ids {
                 if let Some(pid) = antigravity::conversation_in_use(home, id) {
@@ -265,7 +268,7 @@ pub fn apply_session(
 
 /// Admission checks before a job is journaled (rechecked by the worker).
 pub(super) fn admit(paths: &Paths, kind: Kind, s: &Session) -> Result<()> {
-    let provider = native::of(&s.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
+    let provider = native::of(&s.provider).context(ops::UNSUPPORTED)?;
     let archived = load(paths, &s.id)?.is_some_and(|m| archived_state(&m.state));
     match kind {
         Kind::Archive => ensure!(!archived, "SESSION_ALREADY_ARCHIVED"),
@@ -403,13 +406,13 @@ pub(crate) fn collect(provider: ProviderId, home: &Path, ids: &[String]) -> Resu
     };
     for id in ids {
         uuid::Uuid::parse_str(id)?;
-        match provider {
-            ProviderId::Gemini => {
+        match ops::facts(provider).archive {
+            ArchiveLayout::GeminiChats => {
                 for p in gemini::chat_paths(home, id) {
                     add(p)?;
                 }
             }
-            ProviderId::Antigravity => {
+            ArchiveLayout::AgyIndex => {
                 for p in antigravity::conversation_files(home, id) {
                     add(p)?;
                 }
@@ -468,7 +471,7 @@ fn bundle_dir(paths: &Paths, m: &Manifest) -> Result<PathBuf> {
 // ------------------------------------------------------------------- jobs
 
 pub(super) async fn run(paths: &Paths, o: &mut Operation) -> Result<()> {
-    let provider = native::of(&o.session.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
+    let provider = native::of(&o.session.provider).context(ops::UNSUPPORTED)?;
     let _account = super::account_lock(paths, o, provider, &o.session.account.clone()).await?;
     match o.kind {
         Kind::Archive => archive(paths, provider, o),
@@ -531,7 +534,7 @@ fn archive(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
         "Moving the conversation's files into sessionsation-managed Archived Sessions.",
     )?;
     ensure_quiet(paths, provider, Some(&home), &ids)?;
-    if provider == ProviderId::Antigravity && !m.nothing_to_archive {
+    if ops::facts(provider).archive == ArchiveLayout::AgyIndex && !m.nothing_to_archive {
         detach_agy_rows(&home, &dir, &ids)?;
     }
     for e in &m.entries {
@@ -617,7 +620,7 @@ fn restore(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
             move_entry(&stored, target, &e.digest)?;
         }
     }
-    if provider == ProviderId::Antigravity && !m.nothing_to_archive {
+    if ops::facts(provider).archive == ArchiveLayout::AgyIndex && !m.nothing_to_archive {
         reattach_agy_rows(&home, &dir, &m.conversation_ids)?;
     }
     o.nothing_to_archive = m.nothing_to_archive;
@@ -658,7 +661,7 @@ fn restore_target(
     let mut parts: Vec<std::ffi::OsString> =
         rel.components().map(|c| c.as_os_str().to_owned()).collect();
     let unchanged = parts.clone();
-    if m.provider == ProviderId::Claude.as_str()
+    if ops::holds(&m.provider, |f| f.archive == ArchiveLayout::ClaudeProjects)
         && parts.len() >= 3
         && parts[0] == "projects"
         && let (Some(was), Some(now)) =
@@ -714,7 +717,7 @@ fn delete(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()> 
             not_open(&p)?;
             sources.push((p.clone(), p));
         }
-        if provider == ProviderId::Claude {
+        if ops::facts(provider).archive == ArchiveLayout::ClaudeProjects {
             let set: BTreeSet<String> = ids.iter().cloned().collect();
             for p in claude::dead_registry_entries(home, &set)? {
                 sources.push((p.clone(), p));
@@ -748,7 +751,7 @@ fn delete(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()> 
     )?;
     if let Some(home) = home
         .as_deref()
-        .filter(|_| provider == ProviderId::Antigravity)
+        .filter(|_| ops::facts(provider).archive == ArchiveLayout::AgyIndex)
     {
         let backup = staging.join("index-backup.db");
         antigravity::index::backup(home, &backup)?;
@@ -762,7 +765,10 @@ fn delete(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()> 
         let digest = tree_digest(current)?.1;
         move_entry(current, &staging.join("files").join(&st.staged), &digest)?;
     }
-    if let Some(home) = home.as_deref().filter(|_| provider == ProviderId::Claude) {
+    if let Some(home) = home
+        .as_deref()
+        .filter(|_| ops::facts(provider).archive == ArchiveLayout::ClaudeProjects)
+    {
         for (_, original) in &sources {
             remove_empty_project_dir(home, original, s.directory.as_deref());
         }

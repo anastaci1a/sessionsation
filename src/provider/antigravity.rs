@@ -36,6 +36,7 @@ use std::{
 };
 pub mod index;
 pub mod launch;
+pub mod ops;
 pub mod trust;
 
 /// Ambient variables that would switch agy's auth, billing, endpoint or model.

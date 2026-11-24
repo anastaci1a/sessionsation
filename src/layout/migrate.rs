@@ -242,7 +242,9 @@ fn legacy_homes(root: &Path) -> Vec<(ProviderId, String, PathBuf)> {
             .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
             .filter_map(|e| e.file_name().to_str().map(str::to_owned))
             .filter(|n| crate::paths::validate_name(n).is_ok())
-            .filter(|n| provider != ProviderId::Codex || !super::is_platform_dir(n))
+            .filter(|n| {
+                !crate::provider::ops::facts(provider).bare_name || !super::is_platform_dir(n)
+            })
             .collect();
         found.sort();
         for name in found {

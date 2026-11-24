@@ -20,6 +20,8 @@ and package history are in Git.
 
 ## Versions
 
+- **1.65.0** (package; contract unchanged) Provider dispatch has one owner, `provider::ops`;
+  `api capabilities`, state rows and refusal texts are byte-identical (no client change).
 - **1.64.0** One `api send` body for every provider (intents `deliver`, `when_idle`,
   `interrupt`; `ignored_options`; one `delivery` block), supervisor-owned delivery
   workers with one safe re-dispatch; `api events`, `api hooks [install]`, Claude

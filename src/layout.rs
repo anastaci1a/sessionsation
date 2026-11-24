@@ -225,9 +225,10 @@ pub fn target_home(root: &Path, provider: ProviderId, name: &str) -> PathBuf {
 }
 /// The version 1 location of an account home (`None` where it cannot exist).
 pub fn legacy_home(root: &Path, provider: ProviderId, name: &str) -> Option<PathBuf> {
+    let bare = crate::provider::ops::facts(provider).bare_name;
     match provider {
-        ProviderId::Codex if is_platform_dir(name) => None,
-        ProviderId::Codex => Some(root.join(ACCOUNTS).join(name)),
+        _ if bare && is_platform_dir(name) => None,
+        _ if bare => Some(root.join(ACCOUNTS).join(name)),
         p => LEGACY_HOME_PARENTS
             .iter()
             .find(|(q, _)| *q == p)

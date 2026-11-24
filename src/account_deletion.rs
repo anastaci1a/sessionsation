@@ -3,7 +3,10 @@ use crate::background::SpawnReaped as _;
 use crate::{
     accounts, catalog, daemon, external,
     paths::{Paths, atomic_write, lock_file, private_dir, validate_name},
-    provider::{ProviderId, native},
+    provider::{
+        ProviderId, native,
+        ops::{self, ArchiveLayout},
+    },
 };
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -208,29 +211,29 @@ pub async fn start(
             })
         })
         .context("ACCOUNT_NOT_FOUND")?;
-    let external_home = match provider {
-        ProviderId::Claude => account["config_home"].as_str().map(PathBuf::from),
-        ProviderId::Codex | ProviderId::Gemini | ProviderId::Antigravity => None,
+    let facts = ops::facts(provider);
+    let external_home = if facts.adopts_config_dir {
+        account["config_home"].as_str().map(PathBuf::from)
+    } else {
+        None
     };
-    let source_inode = match (provider, &external_home) {
-        (ProviderId::Codex, _) => {
-            let home = fs::symlink_metadata(account_home(paths, name)?)?;
-            ensure!(
-                home.is_dir() && !home.file_type().is_symlink(),
-                "UNSAFE_ACCOUNT_DATA"
-            );
-            Some(home.ino())
-        }
-        (ProviderId::Claude | ProviderId::Gemini | ProviderId::Antigravity, None) => {
-            let home = fs::symlink_metadata(native_managed_home(paths, provider, name)?)?;
-            ensure!(
-                home.is_dir() && !home.file_type().is_symlink(),
-                "UNSAFE_ACCOUNT_DATA"
-            );
-            Some(home.ino())
-        }
+    let source_inode = if facts.supervised {
+        let home = fs::symlink_metadata(account_home(paths, name)?)?;
+        ensure!(
+            home.is_dir() && !home.file_type().is_symlink(),
+            "UNSAFE_ACCOUNT_DATA"
+        );
+        Some(home.ino())
+    } else if external_home.is_none() {
+        let home = fs::symlink_metadata(native_managed_home(paths, provider, name)?)?;
+        ensure!(
+            home.is_dir() && !home.file_type().is_symlink(),
+            "UNSAFE_ACCOUNT_DATA"
+        );
+        Some(home.ino())
+    } else {
         // The adopted directory is never modified, so its identity is not a precondition.
-        (ProviderId::Claude | ProviderId::Gemini | ProviderId::Antigravity, Some(_)) => None,
+        None
     };
     let mut r = Record {
         id: id.into(),
@@ -401,10 +404,8 @@ async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
                 .join("home"),
         "INVALID_HISTORY_VAULT"
     );
-    let name = r
-        .account_id
-        .strip_prefix("codex:")
-        .context("UNSUPPORTED_PROVIDER_OPERATION")?
+    let name = ops::supervised_name(&r.account_id)
+        .context(ops::UNSUPPORTED)?
         .to_owned();
     let _account = accounts::operation_lock(paths, ProviderId::Codex, &name)?;
     let jobs = paths.root.join(crate::layout::HANDOFF_JOBS);
@@ -667,10 +668,10 @@ fn preserve_antigravity(home: &Path, vault: &Path) -> Result<()> {
     Ok(())
 }
 fn preserve_native(provider: ProviderId, home: &Path, vault: &Path) -> Result<()> {
-    match provider {
-        ProviderId::Gemini => preserve_gemini(home, vault),
-        ProviderId::Antigravity => preserve_antigravity(home, vault),
-        ProviderId::Claude | ProviderId::Codex => preserve_claude(home, vault),
+    match ops::facts(provider).archive {
+        ArchiveLayout::GeminiChats => preserve_gemini(home, vault),
+        ArchiveLayout::AgyIndex => preserve_antigravity(home, vault),
+        ArchiveLayout::ClaudeProjects | ArchiveLayout::Rollouts => preserve_claude(home, vault),
     }
 }
 /// Refuse while a verified live session, a provider process using this home
@@ -702,7 +703,7 @@ async fn perform_native(paths: &Paths, r: &mut Record, provider: ProviderId) -> 
     let name = r
         .account_id
         .strip_prefix(&format!("{provider}:"))
-        .context("UNSUPPORTED_PROVIDER_OPERATION")?
+        .context(ops::UNSUPPORTED)?
         .to_owned();
     let _account = accounts::operation_lock(paths, provider, &name)?;
     let finish = |paths: &Paths, name: &str, id: &str| {
@@ -866,8 +867,7 @@ pub fn preserved_homes(paths: &Paths) -> Result<Vec<(String, PathBuf)>> {
         .into_iter()
         .filter(|r| r.history_preserved && r.history_home.is_dir())
         .filter_map(|r| {
-            r.account_id
-                .strip_prefix("codex:")
+            ops::supervised_name(&r.account_id)
                 .map(|name| (name.to_owned(), r.history_home.clone()))
         })
         .collect())

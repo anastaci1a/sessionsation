@@ -16,7 +16,7 @@
 //! generation, and an older release ignores both files.
 use crate::{
     paths::{Paths, atomic_write, lock_file, private_dir},
-    provider::ProviderId,
+    provider::{ProviderId, ops::ModelGrammar},
 };
 use anyhow::{Result, ensure};
 use fs2::FileExt;
@@ -58,8 +58,8 @@ pub fn validate_claude_model(model: &str) -> Result<()> {
 
 /// Model and effort grammar for `provider`. Codex keeps the launch request rules.
 pub fn validate(provider: ProviderId, model: &str, effort: Option<&str>) -> Result<()> {
-    match provider {
-        ProviderId::Claude => {
+    match crate::provider::ops::facts(provider).model {
+        ModelGrammar::Claude => {
             validate_claude_model(model)?;
             if let Some(e) = effort {
                 ensure!(
@@ -68,7 +68,7 @@ pub fn validate(provider: ProviderId, model: &str, effort: Option<&str>) -> Resu
                 );
             }
         }
-        ProviderId::Codex => {
+        ModelGrammar::Codex => {
             crate::launch::validate_model(model)?;
             if let Some(e) = effort {
                 ensure!(
@@ -77,9 +77,11 @@ pub fn validate(provider: ProviderId, model: &str, effort: Option<&str>) -> Resu
                 );
             }
         }
-        _ => anyhow::bail!(
-            "UNSUPPORTED_PROVIDER_OPERATION: model selection supports codex and claude sessions"
-        ),
+        ModelGrammar::None => {
+            return Err(crate::provider::ops::unsupported(
+                "model selection supports codex and claude sessions",
+            ));
+        }
     }
     Ok(())
 }
@@ -349,7 +351,8 @@ pub fn annotate(paths: &Paths, rows: &mut [Value]) {
             .unwrap_or_default()
             .to_owned();
         let provider = row["provider"].as_str().unwrap_or_default();
-        let home = if provider == "claude" {
+        let facts = crate::provider::ops::facts_of(provider);
+        let home = if facts.is_some_and(|f| f.statusline_record) {
             let account = row["account"].as_str().unwrap_or_default().to_owned();
             homes
                 .entry(account.clone())
@@ -364,11 +367,10 @@ pub fn annotate(paths: &Paths, rows: &mut [Value]) {
         };
         // One read of the Claude hook record serves the model and the context meter.
         let hook = home.as_deref().and_then(|h| hook_record(h, &conversation));
-        row["model"] = match provider {
-            "claude" | "codex" => {
-                current_with(&all, &conversation, hook.as_ref()).map_or(Value::Null, |o| o.public())
-            }
-            _ => Value::Null,
+        row["model"] = if facts.is_some_and(|f| f.model != ModelGrammar::None) {
+            current_with(&all, &conversation, hook.as_ref()).map_or(Value::Null, |o| o.public())
+        } else {
+            Value::Null
         };
         // Contract 1.62.0 (SM3).
         crate::provider::session_meters::apply(row, hook.as_ref(), tasks.get(&conversation));

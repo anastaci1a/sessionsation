@@ -16,7 +16,10 @@ use crate::background::SpawnReaped as _;
 use crate::{
     catalog,
     paths::{Paths, atomic_write, lock_file, private_dir},
-    provider::{AccountRef, ProviderId, claude, native},
+    provider::{
+        AccountRef, ProviderId, claude, native,
+        ops::{self, Headless},
+    },
 };
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
@@ -291,10 +294,10 @@ fn shape(request: &Request) -> Result<u64> {
         !request.text.is_empty() && request.text.len() <= 16384,
         "INVALID_REQUEST"
     );
-    ensure!(
+    ops::require(
         request.recovery.as_ref().is_none_or(Value::is_null),
-        "UNSUPPORTED_PROVIDER_OPERATION: resume is headless for this provider; omit the Codex recovery intent"
-    );
+        "resume is headless for this provider; omit the Codex recovery intent",
+    )?;
     ensure!(
         request.steering.as_ref().is_none_or(Value::is_null),
         "STEERING_ONLY_VALID_WITH_STEER"
@@ -376,8 +379,7 @@ pub async fn send(paths: &Paths, request: Request) -> Result<Value> {
                 request.session_id.as_deref().unwrap_or_default(),
                 request.expected_generation.as_deref().unwrap_or_default(),
             )?;
-            let provider =
-                native::of(&session.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
+            let provider = native::of(&session.provider).context(ops::UNSUPPORTED)?;
             let account = usable_account(paths, provider, &session.account)?;
             let directory = resumable(paths, provider, &session, &account.home)?;
             native::prelaunch_gate(provider, &config, &account.home).await?;
@@ -402,7 +404,7 @@ pub async fn send(paths: &Paths, request: Request) -> Result<Value> {
                 })
                 .unwrap_or_else(|| provider.as_str().into());
             // The native id is chosen here and recorded before any execution.
-            let conversation = if provider == ProviderId::Antigravity {
+            let conversation = if ops::facts(provider).headless == Headless::AgyJson {
                 // agy cannot pre-assign an id: create the empty conversation now
                 // (no prompt is sent), then record it before any execution.
                 let (config, home, dir) = (
@@ -542,7 +544,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
 
 async fn prepare(paths: &Paths, r: &Record) -> Result<(PathBuf, fs::File)> {
     let account = usable_account(paths, r.provider, &r.account)?;
-    if r.provider == ProviderId::Claude {
+    if ops::facts(r.provider).shared_state {
         crate::shared_state::ensure_links(paths, &account.home)?;
     }
     let session = catalog::find(paths, &r.session_id)?;
@@ -565,7 +567,7 @@ async fn prepare(paths: &Paths, r: &Record) -> Result<(PathBuf, fs::File)> {
             );
             native::ensure_resumable(&session, &observation)?;
         }
-        Mode::New if r.provider == ProviderId::Antigravity => {
+        Mode::New if ops::facts(r.provider).headless == Headless::AgyJson => {
             // agy cannot pre-assign an id: admission created the (empty) conversation.
             ensure!(
                 native::find_transcript(r.provider, &account.home, &r.conversation_id).is_some(),
@@ -609,8 +611,8 @@ enum Outcome {
 /// Argument vector after the binary for one headless turn; the message is
 /// written to stdin (never argv: no option injection or process-list exposure).
 pub fn print_args(provider: ProviderId, mode: Mode, conversation: &str) -> Vec<String> {
-    let args: Vec<&str> = match (provider, mode) {
-        (ProviderId::Gemini, _) => {
+    let args: Vec<&str> = match (ops::facts(provider).headless, mode) {
+        (Headless::GeminiJson, _) => {
             // `-p` takes a prompt that is appended to stdin; the real message is
             // on stdin, so the prompt is empty. Tools needing approval are not
             // run unattended (never yolo).
@@ -652,16 +654,17 @@ async fn execute(
     let mut std_command = native::command(r.provider, config, home);
     // Contract 1.62.0 (SM7): a headless run works for the session it delivers to.
     crate::provider::set_session_env(&mut std_command, &r.session_id);
-    if r.provider == ProviderId::Gemini {
-        // Headless runs cannot answer the folder-trust prompt; the directory is
-        // the session's recorded one, chosen by the operator.
-        std_command.env("GEMINI_CLI_TRUST_WORKSPACE", "true");
+    let facts = ops::facts(r.provider);
+    // Headless runs cannot answer the folder-trust prompt (Gemini); the directory is
+    // the session's recorded one, chosen by the operator.
+    for (key, value) in facts.headless_env {
+        std_command.env(key, value);
     }
     std::os::unix::process::CommandExt::process_group(&mut std_command, 0);
     // The conversation file before the run: unchanged afterwards (with a sign-in
     // failure) proves the prompt was never recorded as sent.
     let before = transcript_stamp(r.provider, home, &r.conversation_id);
-    let agy = r.provider == ProviderId::Antigravity;
+    let agy = facts.headless == Headless::AgyJson;
     let mut command = tokio::process::Command::from(std_command);
     command
         .args(if agy {
@@ -673,7 +676,7 @@ async fn execute(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(
-            if matches!(r.provider, ProviderId::Gemini | ProviderId::Antigravity) {
+            if matches!(facts.headless, Headless::GeminiJson | Headless::AgyJson) {
                 Stdio::piped()
             } else {
                 Stdio::null()
@@ -739,7 +742,7 @@ async fn execute(
         return Outcome::Unknown("OUTPUT_TOO_LARGE".into());
     }
     let exit = status.ok().and_then(|s| s.code());
-    let auth = if r.provider == ProviderId::Gemini {
+    let auth = if ops::facts(r.provider).auth_modes {
         observe_gemini_auth(paths, &r.account, home, &bytes, &errors, exit)
     } else {
         None
@@ -1094,11 +1097,10 @@ fn parse_antigravity(bytes: &[u8], exit: Option<i32>) -> Option<Value> {
 /// The `--output-format json` result object (a single object, or the final
 /// `type:"result"` element of an event array).
 fn parse(provider: ProviderId, bytes: &[u8], exit: Option<i32>) -> Option<Value> {
-    if provider == ProviderId::Gemini {
-        return parse_gemini(bytes, exit);
-    }
-    if provider == ProviderId::Antigravity {
-        return parse_antigravity(bytes, exit);
+    match ops::facts(provider).headless {
+        Headless::GeminiJson => return parse_gemini(bytes, exit),
+        Headless::AgyJson => return parse_antigravity(bytes, exit),
+        Headless::ClaudePrint | Headless::None => {}
     }
     let v: Value = serde_json::from_slice(bytes).ok()?;
     let result = match v {
@@ -1111,11 +1113,11 @@ fn parse(provider: ProviderId, bytes: &[u8], exit: Option<i32>) -> Option<Value>
 
 /// Explicit refusal for modes a native provider cannot perform on a live session.
 pub fn unsupported(provider: ProviderId, mode: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "UNSUPPORTED_PROVIDER_OPERATION: {} sessions do not support {mode}: {}; use mode resume for a stopped session or mode new",
+    ops::unsupported(format_args!(
+        "{} sessions do not support {mode}: {}; use mode resume for a stopped session or mode new",
         native::title(provider),
         native::no_input_api(provider)
-    )
+    ))
 }
 
 /// Route one raw `api send` request: Claude and Gemini headless modes, or the existing

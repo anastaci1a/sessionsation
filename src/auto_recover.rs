@@ -478,7 +478,7 @@ fn status_of(s: &Session, seen: &Seen) -> Status {
 /// its running process is in, if any.
 async fn live_for_enable(paths: &Paths, s: &Session) -> Result<Option<String>> {
     if let Some(provider) = native::of(&s.provider) {
-        if provider == ProviderId::Claude {
+        if crate::provider::ops::facts(provider).hosted_sessions {
             ensure!(
                 !claude::hosted::live(paths, &s.conversation_id),
                 "AUTO_RECOVER_UNSUPPORTED: a Sessionsation-hosted (stream-json) session has no terminal to resume into"
@@ -516,7 +516,8 @@ async fn live_for_enable(paths: &Paths, s: &Session) -> Result<Option<String>> {
         ));
     }
     ensure!(
-        s.provider == "codex" && !matches!(s.account.as_str(), "external" | "unknown"),
+        crate::provider::ops::supervised(&s.provider)
+            && !matches!(s.account.as_str(), "external" | "unknown"),
         "AUTO_RECOVER_UNSUPPORTED: {} sessions have no resume path",
         s.provider
     );
@@ -540,7 +541,7 @@ pub fn capability_reason(value: &Value, already_enabled: bool) -> Option<&'stati
         return None;
     }
     let provider = value["provider"].as_str().unwrap_or_default();
-    if !matches!(provider, "codex" | "claude" | "gemini" | "antigravity") {
+    if crate::provider::ops::named(provider).is_none() {
         return Some("AUTO_RECOVER_UNSUPPORTED");
     }
     if !value["hosted"].is_null() {
@@ -556,7 +557,9 @@ pub fn capability_reason(value: &Value, already_enabled: bool) -> Option<&'stati
     if value["archived"] == true {
         return Some("AUTO_RECOVER_UNSUPPORTED: archived sessions are not started automatically");
     }
-    if provider == "codex" && matches!(value["account"].as_str(), Some("external" | "unknown")) {
+    if crate::provider::ops::supervised(provider)
+        && matches!(value["account"].as_str(), Some("external" | "unknown"))
+    {
         return Some("AUTO_RECOVER_UNSUPPORTED");
     }
     None
@@ -1186,7 +1189,9 @@ async fn deliver<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result
     let deadline =
         started + Duration::from_secs(seconds("SESSIONSATION_AUTO_RECOVER_PROMPT_SECONDS", 180));
     let first_generation = catalog::find(paths, &r.session_id)?.generation();
-    let claude = r.provider == "claude";
+    let claude = crate::provider::ops::holds(&r.provider, |f| {
+        f.live_steering == crate::provider::ops::LiveSteering::ClaudePeer
+    });
     // Prefer a native peer message: wait (bounded) for the registry entry and socket.
     let mut native = false;
     if claude {
@@ -1794,7 +1799,10 @@ fn classify(paths: &Paths, s: &Session, setting: &Setting, log: Option<&str>) ->
     if let Some(what) = log.and_then(|l| kernel_evidence(l, pid, setting.live_start.unwrap_or(0))) {
         return Exit::Crash(what);
     }
-    if native::of(&s.provider) == Some(ProviderId::Claude) {
+    if native::of(&s.provider).is_some_and(|p| {
+        crate::provider::ops::facts(p).transcript
+            == crate::provider::ops::TranscriptFormat::ClaudeJsonl
+    }) {
         let entry = native::account(paths, ProviderId::Claude, &s.account)
             .ok()
             .map(|a| a.home.join("sessions").join(format!("{pid}.json")));

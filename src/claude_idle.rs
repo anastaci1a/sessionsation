@@ -123,10 +123,12 @@ pub async fn start(
     notify_session: Option<String>,
 ) -> Result<Value> {
     let s = catalog::resolve(paths, session, expected_generation)?;
-    ensure!(
-        s.provider == ProviderId::Claude.as_str(),
-        "UNSUPPORTED_PROVIDER_OPERATION: native idle notices are Claude-only; Codex sessions use turn-notify"
-    );
+    crate::provider::ops::require(
+        crate::provider::ops::holds(&s.provider, |f| {
+            f.live_steering == crate::provider::ops::LiveSteering::ClaudePeer
+        }),
+        "native idle notices are Claude-only; Codex sessions use turn-notify",
+    )?;
     if let Some(target) = &notify_session {
         let t = catalog::find(paths, target).context("SESSION_NOT_FOUND: --notify-session")?;
         ensure!(
@@ -344,7 +346,7 @@ pub fn capability() -> Value {
         "transport":"claude_cross_session_notify_when_idle","expiry_seconds":native_peer::IDLE_NOTICE_EXPIRY_SECONDS,
         "events":"api turn-events (kind idle|exited, detail:{state,finished_at,status})",
         "journal":"operations/claude-idle-notify","replays":false,"model_requests":false,
-        "refusal_codes":["UNSUPPORTED_PROVIDER_OPERATION","SESSION_NOT_RUNNING","LIVE_STEERING_DISABLED","PEER_ENDPOINT_UNAVAILABLE","PEER_SOCKET_UNLINKED","STALE_TARGET"]})
+        "refusal_codes":[crate::provider::ops::UNSUPPORTED,"SESSION_NOT_RUNNING","LIVE_STEERING_DISABLED","PEER_ENDPOINT_UNAVAILABLE","PEER_SOCKET_UNLINKED","STALE_TARGET"]})
 }
 
 /// Event kind of a received notice: a notice reporting `state:"exited"` is the session's exit

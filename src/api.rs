@@ -4,7 +4,10 @@ use crate::background::SpawnReaped as _;
 use crate::{
     catalog, daemon, external,
     paths::Paths,
-    provider::{AccountRef, ProviderId, claude, native},
+    provider::{
+        AccountRef, ProviderId, claude, native,
+        ops::{self, Reader, StopMethod},
+    },
     store,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -675,7 +678,7 @@ pub(crate) fn native_selected(
     generation: &str,
 ) -> Result<(catalog::Session, claude::Observation)> {
     let s = catalog::resolve(paths, id, generation)?;
-    let provider = native::of(&s.provider).context("UNSUPPORTED_PROVIDER_OPERATION")?;
+    let provider = native::of(&s.provider).context(ops::UNSUPPORTED)?;
     let account = native::account(paths, provider, &s.account)?;
     let observation = native::observe(
         provider,
@@ -799,10 +802,10 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
             permission_mode,
         } => {
             let account = account_ref(paths, &account)?;
-            ensure!(
-                !hosted || account.provider == ProviderId::Claude,
-                "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
-            );
+            ops::require(
+                !hosted || ops::facts(account.provider).hosted_sessions,
+                ops::HOSTED_CLAUDE_ONLY,
+            )?;
             let name = account.name.as_str();
             crate::accounts::ensure_available(paths, account.provider, name)?;
             let status = daemon::call(paths, "status", json!({})).await?;
@@ -816,9 +819,10 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
                 "ACCOUNT_UNAVAILABLE"
             );
             // Codex keeps its historical bare-name argv; others are qualified.
-            let target = match account.provider {
-                ProviderId::Codex => name.to_owned(),
-                _ => account.id(),
+            let target = if ops::facts(account.provider).bare_name {
+                name.to_owned()
+            } else {
+                account.id()
             };
             argv.extend(["run".into(), "--account".into(), target]);
             hosted_flags(&mut argv, hosted, permission_mode);
@@ -836,10 +840,10 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
             crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
             cwd = Some(native::resume_directory(&s, &observation)?);
             if hosted {
-                ensure!(
-                    s.provider == ProviderId::Claude.as_str(),
-                    "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
-                );
+                ops::require(
+                    ops::holds(&s.provider, |f| f.hosted_sessions),
+                    ops::HOSTED_CLAUDE_ONLY,
+                )?;
                 argv.extend([
                     "run".into(),
                     "--account".into(),
@@ -863,10 +867,7 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
             hosted,
             ..
         } => {
-            ensure!(
-                !hosted,
-                "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
-            );
+            ops::require(!hosted, ops::HOSTED_CLAUDE_ONLY)?;
             let (_, source) = selected(paths, &session, &expected_generation).await?;
             ensure!(source.inactive, "SESSION_ALREADY_RUNNING");
             cwd = Some(source.cwd);
@@ -1104,10 +1105,11 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
     // supervisor now (it owns the app-server and decides whether a read is safe).
     let mut codex_reads = std::collections::HashMap::new();
     if !cached {
-        for a in selected
-            .iter()
-            .filter(|a| a.provider == ProviderId::Codex && a.enabled && a.deletion_id.is_none())
-        {
+        for a in selected.iter().filter(|a| {
+            ops::facts(a.provider).meter == Reader::Supervisor
+                && a.enabled
+                && a.deletion_id.is_none()
+        }) {
             let read = codex_meter_read(paths, &a.name).await;
             codex_reads.insert(a.name.clone(), read);
         }
@@ -1132,7 +1134,10 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
         let client = crate::reset_credit::claude::client(paths)?;
         let mut tasks = tokio::task::JoinSet::new();
         for a in &selected {
-            if a.provider != ProviderId::Claude || !a.enabled || a.deletion_id.is_some() {
+            if ops::facts(a.provider).meter != Reader::OAuth
+                || !a.enabled
+                || a.deletion_id.is_some()
+            {
                 continue;
             }
             let home = crate::provider::account_home(paths, a)?;
@@ -1163,7 +1168,7 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
         let (mut usage, fresh, usage_state) = daemon::account_usage(paths, a, &config, now);
         let mut meter =
             crate::provider::usage_meter::of(a.provider, &usage, now, config.stale_seconds);
-        if a.provider == ProviderId::Codex && meter["fresh"] == false {
+        if ops::facts(a.provider).meter == Reader::Supervisor && meter["fresh"] == false {
             let reason = codex_reads
                 .get(&a.name)
                 .and_then(|r| r["reason"].as_str().map(str::to_owned))
@@ -1181,9 +1186,9 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
             w
         };
         let id = format!("{}:{}", a.provider, a.name);
-        let read = if a.provider == ProviderId::Claude {
+        let read = if ops::facts(a.provider).meter == Reader::OAuth {
             reads.remove(&a.name).unwrap_or(Value::Null)
-        } else if a.provider == ProviderId::Codex
+        } else if ops::facts(a.provider).meter == Reader::Supervisor
             && codex_reads
                 .get(&a.name)
                 .is_some_and(|r| r["attempted"] == true || r["ok"] == false)
@@ -1250,7 +1255,10 @@ fn refresh_cached_accounts(paths: &Paths, value: &mut Value) {
         .map(|c| c.stale_seconds)
         .ok();
     for a in accounts {
-        if a["provider"] != "gemini" {
+        if !a["provider"]
+            .as_str()
+            .is_some_and(|p| ops::holds(p, |f| f.auth_modes))
+        {
             continue;
         }
         let Some(name) = a["name"].as_str().map(str::to_owned) else {
@@ -1272,7 +1280,7 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
     // One process-table scan serves every Codex row.
     let codex_instances = accounts
         .iter()
-        .any(|a| a["provider"].as_str().unwrap_or("codex") == "codex")
+        .any(|a| ops::holds(a["provider"].as_str().unwrap_or("codex"), |f| f.supervised))
         .then(|| external::host_instances(paths).ok())
         .flatten();
     accounts
@@ -1313,13 +1321,13 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             if let Some(id) = a["deletion_id"].as_str() {
                 a["deletion"] = json!(crate::account_deletion::status(paths, id)?);
             }
-            if provider == ProviderId::Gemini {
+            if ops::facts(provider).auth_modes {
                 project_gemini_auth_failure(paths, name, &mut a);
             } else {
                 a["auth_mode"] = Value::Null;
                 a["api_key_present"] = Value::Null;
             }
-            if provider == ProviderId::Claude {
+            if ops::facts(provider).bypass_warning {
                 if let Some(home) = a["config_home"]
                     .as_str()
                     .filter(|h| !h.is_empty())
@@ -1373,7 +1381,7 @@ fn project_rename_state(
             a["config_home"].as_str().filter(|h| !h.is_empty()),
         ));
     }
-    let running = if provider == ProviderId::Codex {
+    let running = if ops::facts(provider).supervised {
         codex_instances.map(|all| {
             all.iter()
                 .filter(|i| crate::layout::same_home(&i.home, home))
@@ -1416,10 +1424,10 @@ pub async fn gemini_auth(
     key: Option<crate::provider::gemini::auth_mode::ApiKey>,
 ) -> Result<Value> {
     use crate::provider::gemini::{self, auth_failure, auth_mode};
-    ensure!(
-        account.provider == ProviderId::Gemini,
-        "UNSUPPORTED_PROVIDER_OPERATION: authentication modes are a Gemini account setting"
-    );
+    ops::require(
+        ops::facts(account.provider).auth_modes,
+        "authentication modes are a Gemini account setting",
+    )?;
     let mode = mode.map(auth_mode::Mode::parse).transpose()?;
     ensure!(
         key.is_none() || mode == Some(auth_mode::Mode::ApiKey),
@@ -1557,13 +1565,10 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             let name = account.name.as_str();
             crate::accounts::ensure_available(paths, account.provider, name)?;
             if let (Some(short), Some(weekly)) = (short_used, weekly_used) {
-                ensure!(
-                    !matches!(
-                        account.provider,
-                        ProviderId::Gemini | ProviderId::Antigravity
-                    ),
-                    "UNSUPPORTED_PROVIDER_OPERATION: Gemini and Antigravity report no usage, so there is nothing to place limits on"
-                );
+                ops::require(
+                    ops::facts(account.provider).meter != Reader::None,
+                    "Gemini and Antigravity report no usage, so there is nothing to place limits on",
+                )?;
                 ensure!(
                     [short, weekly]
                         .iter()
@@ -1581,7 +1586,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 Ok(json!({"account_id":id,"limits":value["thresholds"],"saved":value["saved"]}))
             } else {
                 // Contract 1.62.1: a Codex reading older than the cache period is read now.
-                let codex_read = if account.provider == ProviderId::Codex {
+                let codex_read = if ops::facts(account.provider).meter == Reader::Supervisor {
                     Some(codex_meter_read(paths, name).await)
                 } else {
                     None
@@ -1604,7 +1609,8 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                     value["meter_read"] = read;
                 }
                 // Contract 1.60.0: Claude limit resets are read on demand (cached 60 s).
-                if account.provider == ProviderId::Claude && a["deletion_id"].is_null() {
+                if ops::facts(account.provider).meter == Reader::OAuth && a["deletion_id"].is_null()
+                {
                     let home = crate::provider::claude::home(
                         paths,
                         name,
@@ -1699,7 +1705,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             let account = AccountRef::parse(&id)?;
             crate::paths::validate_new_account_name(&account.name)?;
             ensure!(
-                config_dir.is_none() || account.provider == ProviderId::Claude,
+                config_dir.is_none() || ops::facts(account.provider).adopts_config_dir,
                 "INVALID_ARGUMENT: --config-dir is only supported for claude accounts"
             );
             crate::accounts::ensure_available(paths, account.provider, &account.name)?;
@@ -1764,16 +1770,19 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 .or(account)
                 .context("INVALID_ARGUMENT: pass codex:NAME or claude:NAME")?;
             let account = account_ref(paths, &id)?;
+            let credits = ops::facts(account.provider).reset_credits;
+            ops::require(
+                credits != Reader::None,
+                format_args!(
+                    "rate-limit reset credits are a Codex and Claude account feature; {} accounts have none",
+                    account.provider
+                ),
+            )?;
             ensure!(
-                matches!(account.provider, ProviderId::Codex | ProviderId::Claude),
-                "UNSUPPORTED_PROVIDER_OPERATION: rate-limit reset credits are a Codex and Claude account feature; {} accounts have none",
-                account.provider
-            );
-            ensure!(
-                kind.is_none() || account.provider == ProviderId::Claude,
+                kind.is_none() || credits == Reader::OAuth,
                 "INVALID_ARGUMENT: --kind is for Claude accounts"
             );
-            if account.provider == ProviderId::Claude {
+            if credits == Reader::OAuth {
                 let kind = kind
                     .as_deref()
                     .map(crate::reset_credit::claude::parse_kind)
@@ -1987,7 +1996,12 @@ pub fn capabilities() -> Value {
     "conversation_archive":{"version":1,"list":true,"archive":true,"restore":true,"delete":true,"compression":"gzip","storage":"sessionsation_data_root","account_wait":{"since_contract":"1.55.0","phase":"waiting_for_account","window_seconds":120},"wait":{"since_contract":"1.55.0","flag":"--wait","timeout_seconds":300,"errors":["OPERATION_FAILED","OPERATION_TIMEOUT","ACCOUNT_BUSY"]}},
     "placement":{"version":1,"command":"api placements","catalog_field":"placement","host_scoped":true,"last_known":true,"freshness_seconds":30},"space_move":{"version":1,"host":"herdr","existing_spaces":true,"preserves_process":true,"recovery":"read_only_reconciliation"},"checkpoints":{"version":1,"command":"api checkpoints","association":"turn_only","delivery_evidence":false,"page_size":50,"retained_events":256,"max_revisions":4096,"max_response_bytes":crate::messaging::checkpoints::MAX_RESPONSE_BYTES,"response_bytes_include":"json_envelope_and_newline","history_modes":["legacy","paginated"],"native_read_max_bytes":8388608,"legacy_turn_item_limit":8192},"session_names":{"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true},"session_details":true,"session_timing":true,"detach_stops_agent":false});
     for provider in value["providers"].as_array_mut().into_iter().flatten() {
-        provider["account_logout"] = json!(provider["id"] != "antigravity");
+        provider["account_logout"] = json!(
+            provider["id"]
+                .as_str()
+                .and_then(ops::facts_of)
+                .is_none_or(|f| f.lists_account_logout)
+        );
         provider["session_name_max"] = json!(crate::model::SESSION_NAME_MAX);
         provider["account_display_name_max"] = json!(crate::paths::ACCOUNT_DISPLAY_NAME_MAX);
     }
@@ -2024,7 +2038,7 @@ pub fn capabilities() -> Value {
     value["antigravity_lifecycle"] = json!({"since_revision":25,"stop":{"method":"sigterm_exact_process","verified_by":["pid","process_start","command_line","account_home","conversation"],"wait_seconds":crate::provider::antigravity::STOP_SECONDS,"sigkill":false,"flushes_state":true,"errors":["SESSION_NOT_RUNNING","SESSION_STATE_UNVERIFIED","AMBIGUOUS_SESSION","STOP_TIMEOUT","STOP_UNAVAILABLE","STOP_FAILED"]},
         "archive":{"files":["conversations/<id>.db","conversations/<id>.db-wal","conversations/<id>.db-shm","brain/<id>/","annotations/<id>.pbtxt","presence/<id>.lock"],"index_row":"conversation_summaries.db row saved then removed in one SQLite transaction after a backup","delete_also_removes":["jetbox_summaries_proto.pb entry"],"unchanged":["history.jsonl","implicit/"],"match":"exact_conversation_id","refused_while":"a verified agy process (interactive or headless) holds the conversation"}});
     // Contract 1.59.0: Claude stop.
-    value["claude_lifecycle"] = json!({"since_contract":"1.59.0","version":1,"stop":{"method":"sigterm_exact_process","verified_by":["registry_pid","process_start","account_home","conversation"],"signal_handle":"pidfd","wait_seconds":claude::stop::STOP_SECONDS,"sigkill":false,"busy_turn":"interrupted","result_field":"interrupted_turn","not_running":"already_stopped","refused":{"background":"UNSUPPORTED_PROVIDER_OPERATION","hosted":"HOSTED_SESSION","archived":"SESSION_ARCHIVED","unregistered":"SESSION_STATE_UNVERIFIED"},"errors":["SESSION_STATE_UNVERIFIED","AMBIGUOUS_SESSION","STOP_TIMEOUT","STOP_UNAVAILABLE","STOP_FAILED"],"retryable":["STOP_TIMEOUT"]},"restart":false});
+    value["claude_lifecycle"] = json!({"since_contract":"1.59.0","version":1,"stop":{"method":"sigterm_exact_process","verified_by":["registry_pid","process_start","account_home","conversation"],"signal_handle":"pidfd","wait_seconds":claude::stop::STOP_SECONDS,"sigkill":false,"busy_turn":"interrupted","result_field":"interrupted_turn","not_running":"already_stopped","refused":{"background":ops::UNSUPPORTED,"hosted":"HOSTED_SESSION","archived":"SESSION_ARCHIVED","unregistered":"SESSION_STATE_UNVERIFIED"},"errors":["SESSION_STATE_UNVERIFIED","AMBIGUOUS_SESSION","STOP_TIMEOUT","STOP_UNAVAILABLE","STOP_FAILED"],"retryable":["STOP_TIMEOUT"]},"restart":false});
     // Contract 1.61.0: `api stop --wait` for every provider.
     value["stop_wait"] = json!({"since_contract":"1.61.0","flag":"--wait","providers":{"codex":"polls the terminate job to its end","claude":"already synchronous","antigravity":"already synchronous"},"timeout_seconds":300,"timeout_env":"SESSIONSATION_OPERATION_WAIT_MS","errors":["OPERATION_FAILED","OPERATION_TIMEOUT"],"retryable":["OPERATION_TIMEOUT"],"disable_auto_start":"after the stop completed (with --wait)"});
     // Contract 1.62.0: provider parity SM7 (session env var), SM8 (usage meter), SM3 (session meters).
@@ -2107,7 +2121,7 @@ pub fn capabilities() -> Value {
     value["stop_closes_pane"] = json!(true);
     value["stop_keep_pane"] = json!(true);
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
-    value["launch_model"] = json!({"since_revision":38,"request_fields":["model","reasoning_effort"],"requests":["launch"],"providers":["codex"],"reasoning_efforts":crate::launch::REASONING_EFFORTS,"errors":["INVALID_MODEL","INVALID_REASONING_EFFORT","UNSUPPORTED_PROVIDER_OPERATION"],"model_not_checked_against_account":true});
+    value["launch_model"] = json!({"since_revision":38,"request_fields":["model","reasoning_effort"],"requests":["launch"],"providers":["codex"],"reasoning_efforts":crate::launch::REASONING_EFFORTS,"errors":["INVALID_MODEL","INVALID_REASONING_EFFORT",ops::UNSUPPORTED],"model_not_checked_against_account":true});
     value["turn_notify"] = crate::turn_notify::capability();
     value["claude_native_delivery"] = native_delivery_capability();
     value["claude_idle_notify"] = crate::claude_idle::capability();
@@ -2127,10 +2141,13 @@ pub fn capabilities() -> Value {
         "never_reached":{"kind":"endpoint_unavailable","state":"rejected","facts_retryable":true,"note":"the connection could not be made, so nothing was sent; a held release stays pending_local"},
         "uncertain":{"state":"delivery_unknown","kinds":["disconnected","timeout","native_rejected","malformed_response","native_frame_limit"],"facts_retryable":false},
         "session_health":{"row_field":"input_delivery.health","providers":["codex"],"shape":["last_outcome","last_attempt_at","last_success_at","consecutive_failures","last_native_error"],"outcomes":["accepted","not_delivered","uncertain"],"source":"messaging/input-health/<conversation>.json","provider_calls":0}});
-    if let Some(claude) = value["providers"]
-        .as_array_mut()
-        .and_then(|p| p.iter_mut().find(|p| p["id"] == "claude"))
-    {
+    if let Some(claude) = value["providers"].as_array_mut().and_then(|p| {
+        p.iter_mut().find(|p| {
+            p["id"]
+                .as_str()
+                .is_some_and(|id| ops::holds(id, |f| f.peer_input_delivery))
+        })
+    }) {
         for k in ["submit", "queue", "steer"] {
             claude[k] = json!(true);
         }
@@ -2286,7 +2303,8 @@ fn native_public(
     let resumable = availability == "stopped" && usable_directory && !account_deleted;
     // Claude account switch: a stopped session, or a running interactive one in a recorded pane
     // (admission rechecks accounts, hosting and conflicts).
-    let switch_account = provider == ProviderId::Claude
+    let facts = ops::facts(provider);
+    let switch_account = facts.native_account_switch
         && !account_deleted
         && (availability == "stopped"
             || (running
@@ -2298,29 +2316,7 @@ fn native_public(
         value["history_preserved"] = json!(true);
     }
     // Stop (Antigravity; Claude since 1.59.0): exactly while a verified process runs the conversation.
-    let stop_reason: Option<&'static str> = match provider {
-        ProviderId::Antigravity | ProviderId::Claude if !running => Some("SESSION_NOT_RUNNING"),
-        ProviderId::Antigravity if observed.is_some_and(|o| o.pid.is_some()) => None,
-        ProviderId::Antigravity => {
-            Some("SESSION_STATE_UNVERIFIED: no verified Antigravity process")
-        }
-        ProviderId::Claude => match observed {
-            Some(o)
-                if o.native_kind.as_deref().is_some_and(|k| k != "interactive")
-                    || o.job_id.is_some() =>
-            {
-                Some(claude::stop::BACKGROUND)
-            }
-            // Verified by the registry (not only by a launch's argv: no conversation yet).
-            Some(o)
-                if o.pid.is_some() && o.detail.as_deref() != Some(claude::NO_CONVERSATION_YET) =>
-            {
-                None
-            }
-            _ => Some(claude::stop::NOT_REGISTERED),
-        },
-        _ => caps.stop.reason,
-    };
+    let stop_reason = ops::ops(provider).native_stop_reason(running, observed, &caps);
     value["capabilities"] = json!({"rename":true,"native_rename":false,"resume":resumable,
         "focus":running && attached,"switch_account":switch_account,"restart":false,"stop":stop_reason.is_none(),"move_space":false,
         "change_directory":false,"move_project":false,"archive":false,"delete":false,
@@ -2330,7 +2326,7 @@ fn native_public(
     } else {
         (availability == "stopped" && !usable_directory).then_some("SAVED_DIRECTORY_UNAVAILABLE")
     };
-    let switch_reason = if provider == ProviderId::Claude {
+    let switch_reason = if facts.native_account_switch {
         (!switch_account).then_some(if account_deleted {
             "ACCOUNT_DELETED"
         } else if running {
@@ -2562,11 +2558,16 @@ fn overlay_codex_usage(value: &mut Value, status: Option<&Value>, now: i64, stal
     let Some(accounts) = value["accounts"].as_array_mut() else {
         return;
     };
-    for a in accounts.iter_mut().filter(|a| a["provider"] == "codex") {
-        let live = status.and_then(|s| s["accounts"].as_array()).and_then(|l| {
-            l.iter()
-                .find(|l| l["name"] == a["name"] && l["provider"] == "codex")
-        });
+    // The supervisor-polled meter (Codex) is the one frozen in a cached snapshot.
+    let polled = |v: &Value| {
+        v["provider"]
+            .as_str()
+            .is_some_and(|p| ops::holds(p, |f| f.meter == Reader::Supervisor))
+    };
+    for a in accounts.iter_mut().filter(|a| polled(a)) {
+        let live = status
+            .and_then(|s| s["accounts"].as_array())
+            .and_then(|l| l.iter().find(|l| l["name"] == a["name"] && polled(l)));
         if let Some(l) = live {
             for k in [
                 "usage",
@@ -2675,26 +2676,18 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                     .entry((provider, s.account.clone()))
                     .or_insert_with(|| native::deleted(paths, provider, &s.account).unwrap_or(false));
             let mut value = native_public(provider, s, observed.get(&id).map(|(o, _)| o), deleted);
-            if provider == ProviderId::Claude {
-                crate::messaging::claude_steer::apply_session_input(paths, &mut value, observed.get(&id).map(|(_, h)| h.as_path()));
-            } else if provider == ProviderId::Gemini {
-                crate::messaging::claude_steer::gemini::apply_session_input(&mut value, observed.get(&id).map(|(_, h)| h.as_path()), crate::messaging::claude_steer::terminal::enabled(paths));
-            } else if provider == ProviderId::Antigravity {
-                crate::messaging::claude_steer::antigravity::apply_session_input(&mut value, observed.get(&id).map(|(_, h)| h.as_path()), crate::messaging::claude_steer::terminal::enabled(paths));
-            }
+            ops::ops(provider).add_session_input(paths, &mut value, observed.get(&id).map(|(_, h)| h.as_path()));
             external::archiving::native::apply_session(paths, provider, &mut value, observed.get(&id).map(|(_, h)| h.as_path()), archives.get(&id));
             let running = value["availability"] == "running";
-            value["pending_questions"] = match provider {
-                ProviderId::Claude if running => {
+            let facts = ops::facts(provider);
+            value["pending_questions"] = if facts.detects_questions && running {
                     let conversation = value["conversation_id"].as_str().unwrap_or_default().to_owned();
                     crate::questions::to_values(crate::questions::claude_pending(paths, &id, &conversation, observed.get(&id).map(|(_, h)| h.as_path())))
-                }
-                _ => json!([]),
+            } else {
+                json!([])
             };
-            if provider == ProviderId::Gemini {
-                value["pending_questions_unsupported_reason"] = json!(crate::questions::NO_DETECTION_GEMINI);
-            } else if provider == ProviderId::Antigravity {
-                value["pending_questions_unsupported_reason"] = json!(crate::questions::NO_DETECTION_ANTIGRAVITY);
+            if let Some(reason) = facts.questions_unsupported {
+                value["pending_questions_unsupported_reason"] = json!(reason);
             }
             value["placement"] = placements["memberships"][id.as_str()].clone();
             if let Some((o, home)) = observed.get(&id) {
@@ -2706,7 +2699,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         }
         let source=items.iter().find(|i|source_matches(&s,i));
         let known=!matches!(s.account.as_str(),"external"|"unknown");
-        let resume_supported=s.provider=="codex";
+        let resume_supported=ops::holds(&s.provider, |f| f.supervised);
         let attached=s.attachment.is_some();
         let archive = archive_info(&s, source, &archives);
         let archived=archive["archived"]==true;
@@ -2843,10 +2836,7 @@ pub(crate) async fn selected(
 ) -> Result<(catalog::Session, external::Instance)> {
     let items = inventory(paths).await?;
     let session = catalog::resolve(paths, id, generation)?;
-    ensure!(
-        session.provider == "codex",
-        "UNSUPPORTED_PROVIDER_OPERATION"
-    );
+    ops::require_bare(ops::holds(&session.provider, |f| f.supervised))?;
     ensure!(
         items
             .iter()
@@ -2899,7 +2889,7 @@ pub(crate) fn fill_codex_reasons(value: &mut Value, c: &CodexReasonContext) {
             "SESSION_ARCHIVED"
         } else {
             match key {
-                "resume" if !c.resume_supported => "UNSUPPORTED_PROVIDER_OPERATION",
+                "resume" if !c.resume_supported => ops::UNSUPPORTED,
                 "resume" if c.running => "SESSION_ALREADY_RUNNING",
                 "resume" => "HISTORY_UNAVAILABLE",
                 "archive" | "delete" if c.running => "SESSION_RUNNING_STOP_FIRST",
@@ -3008,25 +2998,11 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
         let deleted = !observed.contains_key(id)
             && native::deleted(paths, provider, &session.account).unwrap_or(false);
         let mut value = native_public(provider, session, observed.get(id).map(|(o, _)| o), deleted);
-        if provider == ProviderId::Claude {
-            crate::messaging::claude_steer::apply_session_input(
-                paths,
-                &mut value,
-                observed.get(id).map(|(_, h)| h.as_path()),
-            );
-        } else if provider == ProviderId::Gemini {
-            crate::messaging::claude_steer::gemini::apply_session_input(
-                &mut value,
-                observed.get(id).map(|(_, h)| h.as_path()),
-                crate::messaging::claude_steer::terminal::enabled(paths),
-            );
-        } else if provider == ProviderId::Antigravity {
-            crate::messaging::claude_steer::antigravity::apply_session_input(
-                &mut value,
-                observed.get(id).map(|(_, h)| h.as_path()),
-                crate::messaging::claude_steer::terminal::enabled(paths),
-            );
-        }
+        ops::ops(provider).add_session_input(
+            paths,
+            &mut value,
+            observed.get(id).map(|(_, h)| h.as_path()),
+        );
         external::archiving::native::apply_session(
             paths,
             provider,
@@ -3044,7 +3020,7 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
     let reason = if session.attachment.is_some() && source.is_none() {
         Some("host_unavailable")
     } else {
-        resume_block_reason(session.provider == "codex", source)
+        resume_block_reason(ops::holds(&session.provider, |f| f.supervised), source)
     };
     let archive = archive_info(&session, source, &external::archiving::metadata(paths)?);
     let archived = archive["archived"] == true;
@@ -3239,20 +3215,10 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             ..
         } => {
             if let Ok(s) = catalog::resolve(paths, &session, &expected_generation)
-                && s.provider == ProviderId::Gemini.as_str()
+                && let Some(reason) =
+                    ops::facts_of(&s.provider).and_then(|f| f.herdr_attach_refusal)
             {
-                bail!(
-                    "UNSUPPORTED_PROVIDER_OPERATION: {}",
-                    crate::provider::gemini::NO_HERDR_ATTACH
-                );
-            }
-            if let Ok(s) = catalog::resolve(paths, &session, &expected_generation)
-                && s.provider == ProviderId::Antigravity.as_str()
-            {
-                bail!(
-                    "UNSUPPORTED_PROVIDER_OPERATION: {}",
-                    crate::provider::antigravity::NO_HERDR_ATTACH
-                );
+                return Err(ops::unsupported(reason));
             }
             claude::attach::add_to_herdr(
                 paths,
@@ -3712,7 +3678,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             to,
             accept_risks,
         } if catalog::resolve(paths, &session, &expected_generation)
-            .is_ok_and(|s| s.provider == "claude") =>
+            .is_ok_and(|s| ops::holds(&s.provider, |f| f.native_account_switch)) =>
         {
             crate::claude_switch::start(paths, &session, &expected_generation, &to, accept_risks)
                 .await?
@@ -3724,9 +3690,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             accept_risks,
         } => {
             let (_, source) = selected(paths, &session, &expected_generation).await?;
-            let target = to
-                .strip_prefix("codex:")
-                .context("ACCOUNT_PROVIDER_REQUIRED")?;
+            let target = ops::supervised_name(&to).context("ACCOUNT_PROVIDER_REQUIRED")?;
             // A stopped session is only re-homed (never started).
             ensure!(
                 !source.inactive
@@ -3814,8 +3778,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             expected_generation,
             keep_pane,
             ..
-        } if catalog::resolve(paths, &session, &expected_generation)
-            .is_ok_and(|s| s.provider == ProviderId::Antigravity.as_str()) =>
+        } if catalog::resolve(paths, &session, &expected_generation).is_ok_and(|s| {
+            ops::holds(&s.provider, |f| f.stop == StopMethod::AntigravityProcess)
+        }) =>
         {
             stop_antigravity(paths, &session, &expected_generation, keep_pane).await?
         }
@@ -3825,7 +3790,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             keep_pane,
             ..
         } if catalog::resolve(paths, &session, &expected_generation)
-            .is_ok_and(|s| s.provider == ProviderId::Claude.as_str()) =>
+            .is_ok_and(|s| ops::holds(&s.provider, |f| f.stop == StopMethod::ClaudeProcess)) =>
         {
             stop_claude(paths, &session, &expected_generation, keep_pane).await?
         }
@@ -4579,7 +4544,9 @@ fn already_stopped(paths: &Paths, s: &catalog::Session) -> Result<Value> {
 fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
     let id = catalog::list(paths)?
         .into_iter()
-        .find(|s| s.provider == "codex" && s.conversation_id == j.source.thread_id)
+        .find(|s| {
+            ops::holds(&s.provider, |f| f.supervised) && s.conversation_id == j.source.thread_id
+        })
         .map(|s| s.id);
     Ok(
         json!({"id":j.id,"source_session_id":id,"kind":j.kind,"phase":j.phase,"detail":j.detail,

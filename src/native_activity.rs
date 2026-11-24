@@ -8,6 +8,7 @@
 //! `<home>/sessions/<pid>.json` (`status` busy|idle|waiting, `statusUpdatedAt`).
 //! The newest evidence wins, because the registry is not rewritten on every
 //! transition. When neither signal is conclusive the state is `unknown`.
+use crate::provider::ops::TranscriptFormat;
 use crate::{
     live_activity::{self, TurnFacts},
     provider::{ProviderId, activity::parse_rfc3339, claude::Observation},
@@ -153,7 +154,7 @@ fn gemini_record(v: &Value) -> Option<Verdict> {
     let at_ms = v["timestamp"].as_str().and_then(parse_rfc3339);
     let tail = match v["type"].as_str()? {
         "user" => Tail::Working,
-        "gemini" => {
+        crate::provider::gemini::MODEL_RECORD_TYPE => {
             if v["toolCalls"].as_array().is_some_and(|c| !c.is_empty()) {
                 Tail::Working
             } else {
@@ -302,24 +303,24 @@ pub fn facts(
     now_ms: i64,
 ) -> Option<(TurnFacts, i64)> {
     let transcript = o.transcript.as_deref();
-    match provider {
-        ProviderId::Claude => {
+    match crate::provider::ops::facts(provider).transcript {
+        TranscriptFormat::ClaudeJsonl => {
             let verdict = transcript.and_then(|t| scan(t, claude_record));
             // A tool_use or prompt older than the unanswered window is still work for
             // Claude (tools may run for hours); only registry waiting upgrades it.
             combine(verdict, registry(home, o), now_ms, false)
         }
-        ProviderId::Gemini => {
+        TranscriptFormat::GeminiChat => {
             let v = transcript.and_then(|t| scan(t, gemini_record))?;
             combine(Some(v), None, now_ms, true)
         }
-        ProviderId::Antigravity => {
+        TranscriptFormat::AgyLog => {
             let v = transcript
                 .and_then(antigravity_log)
                 .and_then(|log| scan(&log, antigravity_record))?;
             combine(Some(v), None, now_ms, true)
         }
-        ProviderId::Codex => None,
+        TranscriptFormat::None => None,
     }
 }
 

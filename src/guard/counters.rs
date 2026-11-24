@@ -81,6 +81,7 @@ const PROVIDER_ENUM_DISPATCH: &str = concat!(
     r"|(Some\()?(\w+::)*ProviderId::(Codex|Claude|Gemini|Antigravity)\)?( *\| *(Some\()?(\w+::)*ProviderId::\w+\)?)* *(if [^=]*)?=>",
     r"|matches!\([^,]*, *(Some\()?(\w+::)*ProviderId::",
     r"|if let (Some\()?(\w+::)*ProviderId::",
+    r"|\((Some\()?(\w+::)*ProviderId::(Codex|Claude|Gemini|Antigravity)\)?, *[^)]*\) *(if [^=]*)?=>",
 );
 
 pub const COUNTERS: &[Counter] = &[
@@ -238,7 +239,12 @@ pub const COUNTERS: &[Counter] = &[
     // provider ops
     sites(
         "provider_string_compares",
-        r#"(==|!=) *"(codex|claude|gemini|antigravity)"|"(codex|claude|gemini|antigravity)" *(\| *"[a-z]+" *)*(if .*)?=>"#,
+        concat!(
+            r#"(==|!=) *"(codex|claude|gemini|antigravity)"|"(codex|claude|gemini|antigravity)" *(\| *"[a-z]+" *)*(if .*)?=>"#,
+            r#"|(==|!=) *Some\("(codex|claude|gemini|antigravity)"\)"#,
+            r#"|Some\("(codex|claude|gemini|antigravity)"\) *(\| *Some\("[a-z]+"\) *)*(if .*)?=>"#,
+            r#"|strip_prefix\("(codex|claude|gemini|antigravity):"\)"#,
+        ),
         &["src/provider/"],
         "provider-ops",
         75,

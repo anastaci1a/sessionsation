@@ -218,10 +218,7 @@ pub async fn observe_command(
 
 pub async fn observe_public(paths: &Paths, id: &str, generation: &str) -> anyhow::Result<Value> {
     let session = catalog::resolve(paths, id, generation)?;
-    anyhow::ensure!(
-        session.provider == "codex",
-        "UNSUPPORTED_PROVIDER_OPERATION"
-    );
+    crate::provider::ops::require_bare(crate::provider::ops::supervised(&session.provider))?;
     anyhow::ensure!(
         !matches!(session.account.as_str(), "external" | "unknown"),
         "ACCOUNT_UNAVAILABLE"

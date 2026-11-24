@@ -240,7 +240,7 @@ pub fn plan(
 pub async fn ensure_idle(paths: &Paths, plan: &Plan) -> Result<()> {
     let busy = |detail: String| anyhow::anyhow!("ACCOUNT_SESSIONS_RUNNING: {detail}");
     if plan.old_home.exists() {
-        if plan.provider == ProviderId::Codex {
+        if crate::provider::ops::facts(plan.provider).supervised {
             if let Ok(lease) = fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -323,7 +323,7 @@ fn rekey(state: &mut State, r: &Record) -> Result<()> {
     if account.display_name.as_deref() == Some(r.new_name.as_str()) {
         account.display_name = None;
     }
-    if r.provider == ProviderId::Codex {
+    if crate::provider::ops::facts(r.provider).supervised {
         for p in state.automatic_switching.values_mut() {
             for n in p.accounts.iter_mut().filter(|n| **n == r.old_name) {
                 *n = r.new_name.clone();
@@ -339,7 +339,7 @@ fn update_references(paths: &Paths, store: &mut Store, r: &Record) -> Result<()>
     // Stored owner and pane-binding homes follow the moved folder.
     crate::layout::rewrite_home_refs(&paths.root, &[(r.old_home.clone(), r.new_home.clone())])?;
     crate::catalog::reassign_account(paths, r.provider.as_str(), &r.old_name, &r.new_name)?;
-    if r.provider == ProviderId::Gemini {
+    if crate::provider::ops::facts(r.provider).auth_modes {
         crate::provider::gemini::auth_failure::rename(paths, &r.old_name, &r.new_name);
     }
     let (old_key, new_key) = (

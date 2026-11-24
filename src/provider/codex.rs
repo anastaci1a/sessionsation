@@ -1,6 +1,7 @@
 //! Codex provider surface. The behavior itself remains in the supervisor
 //! (`daemon`), discovery/launch (`external`) and lifecycle modules; this file
 //! names what Codex supports so dispatch stays explicit.
+pub mod ops;
 use super::{Capability, ProviderCapabilities, no, yes};
 use crate::paths::Paths;
 use anyhow::Result;
@@ -9,6 +10,10 @@ use std::path::PathBuf;
 /// Usage provenance reported alongside the unchanged Codex usage snapshot.
 pub const USAGE_SOURCE: &str = "codex-app-server-rate-limits";
 pub const USAGE_SEMANTICS: &str = "provider-reported used percentage of the 5-hour and weekly ChatGPT plan windows, polled by the account supervisor";
+/// The rate-limit bucket id the Codex app-server reports for the ChatGPT plan windows.
+pub const USAGE_BUCKET: &str = "codex";
+/// The Codex CLI's executable and process (`comm`) name.
+pub const PROCESS_NAME: &str = "codex";
 
 /// CODEX_HOME for an enrolled Codex account.
 pub fn home(paths: &Paths, name: &str) -> Result<PathBuf> {

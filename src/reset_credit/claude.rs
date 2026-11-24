@@ -522,8 +522,13 @@ async fn account_home(paths: &Paths, name: &str) -> Result<(Value, PathBuf)> {
     let row = status["accounts"]
         .as_array()
         .and_then(|rows| {
-            rows.iter()
-                .find(|a| a["provider"] == "claude" && a["name"] == name)
+            rows.iter().find(|a| {
+                a["provider"].as_str().is_some_and(|p| {
+                    crate::provider::ops::holds(p, |f| {
+                        f.reset_credits == crate::provider::ops::Reader::OAuth
+                    })
+                }) && a["name"] == name
+            })
         })
         .cloned()
         .context("ACCOUNT_NOT_FOUND")?;

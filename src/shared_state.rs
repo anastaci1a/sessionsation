@@ -90,7 +90,12 @@ pub fn managed_home(home: &Path) -> Option<(PathBuf, String)> {
     let parent = home.parent()?;
     let grand = parent.parent()?;
     let root = match parent.file_name()?.to_str()? {
-        "claude" if grand.file_name()? == crate::layout::ACCOUNTS => grand.parent()?,
+        // `accounts/<provider>/<name>` of the provider with shared state (Claude).
+        dir if crate::provider::ops::holds(dir, |f| f.shared_state)
+            && grand.file_name()? == crate::layout::ACCOUNTS =>
+        {
+            grand.parent()?
+        }
         "claude-accounts" => grand,
         _ => return None,
     };

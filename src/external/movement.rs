@@ -255,7 +255,10 @@ async fn prepare_destination(paths: &Paths, job: &mut Job) -> Result<Control> {
             .as_array()
             .and_then(|a| {
                 a.iter().find(|a| {
-                    a["name"] == job.target && a["provider"].as_str().unwrap_or("codex") == "codex"
+                    a["name"] == job.target
+                        && crate::provider::ops::supervised(
+                            a["provider"].as_str().unwrap_or("codex"),
+                        )
                 })
             })
             .context("destination account was removed")?;

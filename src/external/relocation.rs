@@ -209,7 +209,7 @@ pub async fn queue_public(
         status["accounts"]
             .as_array()
             .is_some_and(|accounts| accounts.iter().any(|a| a["name"] == account
-                && a["provider"].as_str().unwrap_or("codex") == "codex"
+                && crate::provider::ops::supervised(a["provider"].as_str().unwrap_or("codex"))
                 && a["enabled"] == true
                 && a["auth_required"] == false)),
         "ACCOUNT_UNAVAILABLE"
@@ -343,7 +343,7 @@ enum Service {
 fn cwd_only_service(args: &[String]) -> Option<Service> {
     let binary = Path::new(args.first()?).file_name()?.to_str()?;
     let args: Vec<_> = args.iter().skip(1).map(String::as_str).collect();
-    if binary == "codex" {
+    if binary == crate::provider::codex::PROCESS_NAME {
         if args == ["app-server", "daemon", "pid-update-loop"] {
             return Some(Service::PidUpdater);
         }

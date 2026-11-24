@@ -69,7 +69,7 @@ fn find_session(
         .or_else(|| chain_thread(start, &stat, &thread_of))?;
     sessions
         .iter()
-        .find(|s| s.provider == "codex" && s.conversation_id == thread)
+        .find(|s| crate::provider::ops::supervised(&s.provider) && s.conversation_id == thread)
 }
 
 /// `CODEX_THREAD_ID` of the first process walking up from `start` (inclusive) that has one.
@@ -258,14 +258,16 @@ fn session_mode(
     args_of: impl Fn(u32) -> Option<Vec<String>>,
     codex_perm: impl Fn(&catalog::Session) -> Option<(String, String)>,
 ) -> &'static str {
-    let bypass = match s.provider.as_str() {
-        "claude" => s
-            .attachment
+    let facts = crate::provider::ops::facts_of(&s.provider);
+    let bypass = if facts.is_some_and(|f| f.bypass_warning) {
+        s.attachment
             .as_ref()
             .and_then(|a| args_of(a.pid))
-            .is_some_and(|args| claude_args_bypass(&args)),
-        "codex" => codex_perm(s).is_some_and(|(a, sb)| a == "never" && sb == "danger-full-access"),
-        _ => false,
+            .is_some_and(|args| claude_args_bypass(&args))
+    } else if facts.is_some_and(|f| f.supervised) {
+        codex_perm(s).is_some_and(|(a, sb)| a == "never" && sb == "danger-full-access")
+    } else {
+        false
     };
     if bypass { "bypass" } else { "prompting" }
 }
@@ -656,7 +658,10 @@ mod codex_tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(Some(dir.path().join("state"))).unwrap();
         let ss = sessions(&paths);
-        let codex = ss.iter().find(|s| s.provider == "codex").unwrap();
+        let codex = ss
+            .iter()
+            .find(|s| crate::provider::ops::supervised(&s.provider))
+            .unwrap();
         let chain = |p: u32| if p == 50 { Some((40, 1)) } else { Some((1, 1)) };
         // Own env.
         let hit = find_session(&ss, 50, chain, Some("thread-1".into()), |_| None);

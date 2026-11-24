@@ -42,7 +42,7 @@ pub struct Role {
 
 /// sha256 (hex) of the bytes between the `guard-roles-begin` line and the
 /// `guard-roles-end` line of this file.
-pub const ROLES_DIGEST: &str = "4f8d41684e96e999400034c7ffc061c87880a757fe05d4861229a2f043c6125b";
+pub const ROLES_DIGEST: &str = "af871005c422da5d26552493bfdb50ce3d391f40cd46d6982891b9c5c8af61eb";
 
 // guard-roles-begin
 pub const ROLES: &[Role] = &[
@@ -308,6 +308,10 @@ pub const ROLES: &[Role] = &[
             r"(Some\()?(\w+::)*ProviderId::(Codex|Claude|Gemini|Antigravity)\)?( *\| *(Some\()?(\w+::)*ProviderId::\w+\)?)* *(if [^=]*)?=>",
             r"matches!\([^,]*, *(Some\()?(\w+::)*ProviderId::",
             r"if let (Some\()?(\w+::)*ProviderId::",
+            r"\((Some\()?(\w+::)*ProviderId::(Codex|Claude|Gemini|Antigravity)\)?, *[^)]*\) *(if [^=]*)?=>",
+            r#"(==|!=) *Some\("(codex|claude|gemini|antigravity)"\)"#,
+            r#"Some\("(codex|claude|gemini|antigravity)"\) *(\| *Some\("[a-z]+"\) *)*(if .*)?=>"#,
+            r#"strip_prefix\("(codex|claude|gemini|antigravity):"\)"#,
             r#""UNSUPPORTED_PROVIDER_OPERATION"#,
         ],
         permitted: &[],
@@ -318,7 +322,7 @@ pub const ROLES: &[Role] = &[
             "provider_ops_allow_markers",
         ],
         mech: Mech::Regex,
-        mode: Mode::Counted,
+        mode: Mode::Enforced,
         hint: "use provider::ops(..)",
     },
     Role {

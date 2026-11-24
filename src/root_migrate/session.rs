@@ -474,8 +474,8 @@ pub(crate) fn untracked_moves(projects: &Path, r: &SessionRec) -> Vec<Moved> {
 
 /// The file, memory, catalog and thread-location part of a rollback.
 fn undo_session(paths: &Paths, r: &mut SessionRec) -> Result<()> {
-    match native::of(&r.provider) {
-        Some(ProviderId::Claude) => {
+    match rekey_of(&r.provider) {
+        Some((_, Rekey::ClaudeProjects)) => {
             // Review 3 S7: conversation ids continued after the resume belong to
             // the session too (current catalog lineage), for the sweep and the
             // quiet check.
@@ -627,12 +627,12 @@ pub async fn migrate_session(paths: &Paths, o: &SessionOptions) -> Result<Value>
     if r.state == "verified" {
         return Ok(json!({"session":row(&r),"noop":true}));
     }
-    match native::of(&s.provider) {
-        Some(ProviderId::Gemini | ProviderId::Antigravity) => bail!(
+    match rekey_of(&s.provider) {
+        Some((_, Rekey::Unsupported)) => bail!(
             "ROOT_REKEY_UNSUPPORTED_PROVIDER: {} sessions are not re-keyed in 1.54; it stays on its old path",
             s.provider
         ),
-        Some(ProviderId::Claude) => {}
+        Some((_, Rekey::ClaudeProjects)) => {}
         _ => return migrate_codex(paths, &run, &alias, s, r, o).await,
     }
     if archived_ids(paths).contains(&s.id) {
@@ -1571,7 +1571,7 @@ pub async fn rollback_session(paths: &Paths, session: &str, dry_run: bool) -> Re
             || worker_gone(paths, &r),
         "SESSION_OPERATION_IN_PROGRESS: the re-key worker is still running"
     );
-    if r.provider == "claude" && r.state == "archived_rekey_at_restore" {
+    if project_keyed(&r.provider) && r.state == "archived_rekey_at_restore" {
         rollback_stopped(paths, &mut r)?;
         return Ok(json!({"session":row(&r)}));
     }
@@ -1579,7 +1579,7 @@ pub async fn rollback_session(paths: &Paths, session: &str, dry_run: bool) -> Re
     let running = home.as_ref().is_some_and(|h| {
         claude::observe(h, &s.conversation_id, s.attachment.as_ref()).availability == "running"
     });
-    if r.provider == "claude" && running {
+    if project_keyed(&r.provider) && running {
         // Item 5: a detached worker with lifecycle admission stops it, moves the
         // files back and resumes it on the old path (never this CLI process).
         let home = home.context("ACCOUNT_UNAVAILABLE")?;

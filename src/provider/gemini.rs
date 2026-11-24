@@ -30,6 +30,7 @@ use std::{
 pub mod auth_failure;
 pub mod auth_mode;
 pub mod launch;
+pub mod ops;
 pub mod steering;
 
 /// Ambient variables that would silently switch Gemini to API-key billing, a
@@ -52,6 +53,8 @@ pub const STRIPPED_ENV: &[&str] = &[
 ];
 pub const USAGE_SOURCE: &str = "gemini-cli-unsupported";
 pub const USAGE_SEMANTICS: &str = "Gemini CLI exposes quota only through its interactive /stats model command; no hook or file reports usage, so no window is ever reported and none is shown as 0%";
+/// The chat-record `type` of a model message in a Gemini CLI chat file.
+pub const MODEL_RECORD_TYPE: &str = "gemini";
 pub const USAGE_UNSUPPORTED: &str = "Gemini CLI exposes no usage or quota hook or file; quota is visible only in its /stats model command";
 pub const NATIVE_HOME_BOUND: &str = "native session is bound to its account home";
 /// Gemini CLI has no supported way to attach a terminal to a running process.

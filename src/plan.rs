@@ -19,16 +19,12 @@ pub struct PlanObservation {
 
 /// Human label for a raw value, only where the meaning is certain.
 pub fn name(provider: ProviderId, raw: &str) -> Option<&'static str> {
-    match (provider, raw.to_ascii_lowercase().as_str()) {
-        (ProviderId::Claude, "pro") => Some("Claude Pro"),
-        (ProviderId::Codex, "free") => Some("ChatGPT Free"),
-        (ProviderId::Codex, "plus") => Some("ChatGPT Plus"),
-        (ProviderId::Codex, "pro") => Some("ChatGPT Pro"),
-        (ProviderId::Codex, "team") => Some("ChatGPT Team"),
-        (ProviderId::Codex, "business") => Some("ChatGPT Business"),
-        (ProviderId::Codex, "enterprise") => Some("ChatGPT Enterprise"),
-        _ => None,
-    }
+    let raw = raw.to_ascii_lowercase();
+    crate::provider::ops::facts(provider)
+        .plan_names
+        .iter()
+        .find(|(key, _)| *key == raw)
+        .map(|(_, label)| *label)
 }
 
 /// The public `plan` object; null when nothing was observed.

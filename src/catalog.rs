@@ -750,7 +750,10 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
             let key = c
                 .sessions
                 .values()
-                .find(|s| s.provider == "codex" && s.conversation_id == i.thread_id)
+                .find(|s| {
+                    crate::provider::ops::supervised(&s.provider)
+                        && s.conversation_id == i.thread_id
+                })
                 .map(|s| s.id.clone());
             let id = key.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let attachment = (!i.inactive).then(|| Attachment {
@@ -823,7 +826,7 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
             // The same process now verifiably runs another conversation (native
             // thread switch in one terminal): release this entry to stopped so the
             // process is attached to exactly one catalog entry, never duplicated.
-            if s.provider == "codex"
+            if crate::provider::ops::supervised(&s.provider)
                 && let Some(a) = &s.attachment
                 && instances.iter().any(|i| {
                     !i.inactive
@@ -940,7 +943,8 @@ pub(crate) fn switch_account(
     transaction(paths, |c| {
         let s = live(c, id)?;
         ensure!(
-            s.provider == "claude" && s.conversation_id == conversation,
+            crate::provider::ops::holds(&s.provider, |f| f.native_account_switch)
+                && s.conversation_id == conversation,
             "STALE_TARGET"
         );
         if s.account == to {

@@ -142,7 +142,11 @@ pub async fn worker(paths: &Paths, id: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     let r = read(paths, id)?;
-    if r.terminal() || r.provider != "claude" {
+    if r.terminal()
+        || !crate::provider::ops::holds(&r.provider, |f| {
+            f.model == crate::provider::ops::ModelGrammar::Claude
+        })
+    {
         return Ok(());
     }
     if r.phase == "waiting" && crate::daemon::now() >= r.expires_at {

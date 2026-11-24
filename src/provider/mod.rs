@@ -12,10 +12,12 @@ pub mod claude;
 pub mod codex;
 pub mod compact;
 pub mod conversation;
+pub mod dispatch;
 pub mod events;
 pub mod gemini;
 pub mod hooks;
 pub mod native;
+pub mod ops;
 pub mod send;
 pub mod session_meters;
 pub mod stop_shape;
@@ -126,6 +128,16 @@ impl AccountRef {
     /// Accept only the given provider for an operation it alone implements.
     pub fn require(&self, provider: ProviderId) -> Result<&str> {
         if self.provider != provider {
+            bail!(
+                "UNSUPPORTED_PROVIDER_OPERATION: {} accounts do not support this operation",
+                self.provider
+            );
+        }
+        Ok(&self.name)
+    }
+    /// Accept only the supervised provider (Codex), with [`Self::require`]'s refusal.
+    pub fn require_supervised(&self) -> Result<&str> {
+        if !ops::facts(self.provider).supervised {
             bail!(
                 "UNSUPPORTED_PROVIDER_OPERATION: {} accounts do not support this operation",
                 self.provider

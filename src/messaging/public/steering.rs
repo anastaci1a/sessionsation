@@ -122,7 +122,7 @@ fn permitted(paths: &Paths, id: &str) -> Result<()> {
 /// Explicit, bounded read-only lookup. Ordinary polling does not reconstruct busy history.
 pub async fn target(paths: &Paths, id: &str, generation: &str) -> anyhow::Result<Value> {
     let s = crate::catalog::resolve(paths, id, generation)?;
-    anyhow::ensure!(s.provider == "codex", "UNSUPPORTED_PROVIDER_OPERATION");
+    crate::provider::ops::require_bare(crate::provider::ops::supervised(&s.provider))?;
     anyhow::ensure!(
         !matches!(s.account.as_str(), "external" | "unknown")
             && !crate::accounts::removed_session(paths, &s.provider, &s.account)?,

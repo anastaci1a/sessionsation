@@ -300,7 +300,7 @@ fn legacy_public(
 /// Never retargets an existing cursor: callers explicitly open a new stream.
 pub async fn target(paths: &Paths, id: &str, generation: &str) -> anyhow::Result<Value> {
     let s = crate::catalog::resolve(paths, id, generation)?;
-    anyhow::ensure!(s.provider == "codex", "UNSUPPORTED_PROVIDER_OPERATION");
+    crate::provider::ops::require_bare(crate::provider::ops::supervised(&s.provider))?;
     let a = readiness::recorded(paths, &s)?.ok_or(Fault("no_live_attachment"))?;
     let runtime = a.generation();
     let (latest, profile) = tokio::time::timeout(Duration::from_secs(5), async {
@@ -367,7 +367,7 @@ pub async fn read(paths: &Paths, r: Request) -> anyhow::Result<Value> {
         "INVALID_REQUEST"
     );
     let s = crate::catalog::resolve(paths, &r.session_id, &r.expected_generation)?;
-    anyhow::ensure!(s.provider == "codex", "UNSUPPORTED_PROVIDER_OPERATION");
+    crate::provider::ops::require_bare(crate::provider::ops::supervised(&s.provider))?;
     let a = readiness::recorded(paths, &s)?.ok_or(Fault("no_live_attachment"))?;
     anyhow::ensure!(
         a.generation() == r.expected_runtime_generation,

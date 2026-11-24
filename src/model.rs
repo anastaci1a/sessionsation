@@ -173,7 +173,7 @@ pub struct Account {
 /// every Codex-only subsystem keeps addressing accounts by bare name) and
 /// `<provider>:<name>` for every other provider.
 pub fn account_key(provider: crate::provider::ProviderId, name: &str) -> String {
-    if provider == crate::provider::ProviderId::Codex {
+    if crate::provider::ops::facts(provider).bare_name {
         name.to_owned()
     } else {
         format!("{provider}:{name}")

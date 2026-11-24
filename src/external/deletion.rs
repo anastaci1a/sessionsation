@@ -387,7 +387,7 @@ fn catalog_entries(paths: &Paths, ids: &BTreeSet<String>) -> Result<Vec<crate::c
     Ok(crate::catalog::list(paths)?
         .into_iter()
         .filter(|s| {
-            s.provider == "codex"
+            crate::provider::ops::supervised(&s.provider)
                 && (ids.contains(&s.conversation_id)
                     || s.previous_conversation_ids.iter().any(|p| ids.contains(p)))
         })

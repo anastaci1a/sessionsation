@@ -20,12 +20,7 @@ pub const ANTIGRAVITY_METHOD: &str =
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn method(provider: ProviderId) -> &'static str {
-    match provider {
-        ProviderId::Codex => CODEX_METHOD,
-        ProviderId::Claude => CLAUDE_METHOD,
-        ProviderId::Gemini => GEMINI_METHOD,
-        ProviderId::Antigravity => ANTIGRAVITY_METHOD,
-    }
+    crate::provider::ops::facts(provider).logout_method
 }
 
 fn in_use(detail: impl std::fmt::Display) -> anyhow::Error {
@@ -39,7 +34,7 @@ pub async fn ensure_idle(
     name: &str,
     home: &Path,
 ) -> Result<()> {
-    if provider == ProviderId::Codex {
+    if crate::provider::ops::facts(provider).supervised {
         if let Ok(lease) = std::fs::OpenOptions::new()
             .read(true)
             .write(true)

@@ -33,7 +33,12 @@ use crate::background::SpawnReaped as _;
 use crate::{
     catalog,
     paths::{Paths, atomic_write, lock_file, private_dir},
-    provider::{ProviderId, claude, claude::hosted, claude::native_peer},
+    provider::{
+        ProviderId, claude,
+        claude::hosted,
+        claude::native_peer,
+        ops::{self, TerminalInput},
+    },
 };
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
@@ -342,10 +347,10 @@ fn shape(r: &Request) -> Result<()> {
         !r.text.is_empty() && r.text.len() <= 16384,
         "INVALID_REQUEST"
     );
-    ensure!(
+    ops::require(
         r.recovery.as_ref().is_none_or(Value::is_null),
-        "UNSUPPORTED_PROVIDER_OPERATION: Claude sessions take no Codex recovery intent"
-    );
+        "Claude sessions take no Codex recovery intent",
+    )?;
     if let Some(s) = &r.steering {
         ensure!(
             s.version == 1,
@@ -427,12 +432,10 @@ pub async fn send_planned(
         "RECEIPT_CAPACITY_REACHED"
     );
     let session = catalog::resolve(paths, &request.session_id, &request.expected_generation)?;
-    let is_gemini = session.provider == ProviderId::Gemini.as_str();
-    let is_agy = session.provider == ProviderId::Antigravity.as_str();
-    ensure!(
-        is_gemini || is_agy || session.provider == ProviderId::Claude.as_str(),
-        "UNSUPPORTED_PROVIDER_OPERATION"
-    );
+    let input = ops::facts_of(&session.provider).map(|f| f.terminal_input);
+    let is_gemini = input == Some(TerminalInput::Gemini);
+    let is_agy = input == Some(TerminalInput::Agy);
+    ops::require_bare(is_gemini || is_agy || input == Some(TerminalInput::Claude))?;
     let account = super::headless::usable_account(
         paths,
         if is_gemini {

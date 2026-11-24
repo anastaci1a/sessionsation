@@ -15,7 +15,10 @@ use sessionsation::{
     daemon, external,
     model::State,
     paths::{Paths, atomic_write, private_dir},
-    provider::{self, AccountRef, ProviderId},
+    provider::{
+        self, AccountRef, ProviderId,
+        ops::{self, Enrollment},
+    },
     simulation::{self, Input},
     store,
 };
@@ -803,7 +806,7 @@ async fn run(cli: Cli) -> Result<()> {
                 } => {
                     let account = AccountRef::parse(&account)?;
                     anyhow::ensure!(
-                        account.provider == ProviderId::Claude,
+                        ops::facts(account.provider).shared_state,
                         "ACCOUNT_PROVIDER_REQUIRED: shared state applies to claude:<name> accounts"
                     );
                     if !dry_run {
@@ -1277,12 +1280,13 @@ async fn run(cli: Cli) -> Result<()> {
             let resolved = resolve_account(&paths, &name)?;
             let account = provider::native::account(&paths, resolved.provider, &resolved.name)?;
             let config = store::load_config(&paths)?;
-            if resolved.provider == ProviderId::Claude
-                && sessionsation::layout::same_home(
-                    &account.home,
-                    &provider::claude::default_home(&paths, &resolved.name)?,
-                )
-                && !provider::claude::peer::settings_file(&account.home).exists()
+            if matches!(
+                ops::facts(resolved.provider).enrollment,
+                Enrollment::ClaudeHome
+            ) && sessionsation::layout::same_home(
+                &account.home,
+                &provider::claude::default_home(&paths, &resolved.name)?,
+            ) && !provider::claude::peer::settings_file(&account.home).exists()
             {
                 // A brand-new managed home: the new-account defaults (skip, statusLine).
                 let _ = provider::claude::bypass::default_new(&account.home);
@@ -1291,7 +1295,7 @@ async fn run(cli: Cli) -> Result<()> {
                     &sessionsation::alias::logical_words(&config.claude_default_statusline_command),
                 );
             }
-            return exec_login(
+            return provider::dispatch::exec_login(
                 &paths,
                 &resolved.name,
                 &config,
@@ -1302,15 +1306,14 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Account {
             command:
                 AccountCommand::Add {
-                    platform:
-                        platform @ (ProviderId::Claude | ProviderId::Gemini | ProviderId::Antigravity),
+                    platform,
                     config_dir,
                     no_login,
                     name,
                 },
-        } => {
+        } if provider::native::is_native(platform) => {
             anyhow::ensure!(
-                config_dir.is_none() || platform == ProviderId::Claude,
+                config_dir.is_none() || ops::facts(platform).adopts_config_dir,
                 "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
             );
             daemon::ensure_started(&paths).await?;
@@ -1321,13 +1324,10 @@ async fn run(cli: Cli) -> Result<()> {
             }
             let value = daemon::call(&paths, "account/add", params).await?;
             let auth = match value["auth"]["problem"].as_str() {
-                None if platform == ProviderId::Gemini => {
-                    "logged in (Login with Google)".to_owned()
-                }
-                None if platform == ProviderId::Antigravity => {
-                    "logged in (Google OAuth)".to_owned()
-                }
-                None => "logged in (claude.ai subscription)".to_owned(),
+                None => ops::facts(platform)
+                    .logged_in
+                    .unwrap_or_default()
+                    .to_owned(),
                 Some("AUTH_REQUIRED") => {
                     format!("not logged in; run: sessionsation account login {platform}:{name}")
                 }
@@ -1359,7 +1359,13 @@ async fn run(cli: Cli) -> Result<()> {
                 );
                 let account = provider::native::account(&paths, platform, &name)?;
                 let config = store::load_config(&paths)?;
-                return exec_login(&paths, &name, &config, platform, &account.home);
+                return provider::dispatch::exec_login(
+                    &paths,
+                    &name,
+                    &config,
+                    platform,
+                    &account.home,
+                );
             }
         }
         Commands::Account {
@@ -1411,15 +1417,16 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Account { command } => {
             daemon::ensure_started(&paths).await?;
             let (method, name, config_dir) = match command {
+                // Native providers enroll through the arm above; the supervised one here.
                 AccountCommand::Add {
-                    platform: ProviderId::Codex,
+                    platform,
                     config_dir,
                     name,
                     ..
-                } => (
+                } if ops::facts(platform).supervised => (
                     "account/add",
                     AccountRef {
-                        provider: ProviderId::Codex,
+                        provider: platform,
                         name,
                     },
                     config_dir,
@@ -1758,10 +1765,10 @@ async fn run(cli: Cli) -> Result<()> {
                     "INVALID_ARGUMENT: --name names a new session started in this terminal (inline host, no --thread or --hosted)"
                 );
                 if hosted {
-                    anyhow::ensure!(
-                        account.provider == ProviderId::Claude,
-                        "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
-                    );
+                    ops::require(
+                        ops::facts(account.provider).hosted_sessions,
+                        ops::HOSTED_CLAUDE_ONLY,
+                    )?;
                     anyhow::ensure!(
                         matches!(host, Host::Inline)
                             && herdr_session.is_none()
@@ -1782,10 +1789,10 @@ async fn run(cli: Cli) -> Result<()> {
                     && thread.is_none()
                     && herdr_session.is_none()
                 {
-                    anyhow::ensure!(
-                        codex_options.is_empty() || account.provider == ProviderId::Codex,
-                        "UNSUPPORTED_PROVIDER_OPERATION: provider options after -- are Codex-only"
-                    );
+                    ops::require(
+                        codex_options.is_empty() || ops::facts(account.provider).cli_options,
+                        ops::CLI_OPTIONS_CODEX_ONLY,
+                    )?;
                     return sessionsation::inline::run_new(
                         &paths,
                         account.provider,
@@ -1800,10 +1807,7 @@ async fn run(cli: Cli) -> Result<()> {
                         herdr_session.is_none(),
                         "--herdr-session requires --host herdr"
                     );
-                    anyhow::ensure!(
-                        codex_options.is_empty(),
-                        "UNSUPPORTED_PROVIDER_OPERATION: provider options after -- are Codex-only"
-                    );
+                    ops::require(codex_options.is_empty(), ops::CLI_OPTIONS_CODEX_ONLY)?;
                     if let Some(thread) = thread {
                         let s = sessionsation::catalog::list(&paths)?
                             .into_iter()
@@ -1895,76 +1899,6 @@ async fn run(cli: Cli) -> Result<()> {
 }
 /// Resolve NAME or PROVIDER:NAME against enrolled accounts (names are global).
 /// An unknown bare name stays on the Codex path, whose launcher reports it.
-/// Exec the official interactive login for a native provider in this terminal.
-/// Returns only on failure to start it.
-fn exec_login(
-    paths: &Paths,
-    name: &str,
-    config: &Config,
-    provider: ProviderId,
-    home: &std::path::Path,
-) -> Result<()> {
-    use std::os::unix::process::CommandExt;
-    match provider {
-        ProviderId::Gemini => {
-            use provider::gemini::auth_mode;
-            anyhow::ensure!(
-                auth_mode::mode(home) != auth_mode::Mode::ApiKey,
-                "AUTH_MODE_API_KEY: gemini:{name} uses an API key, which needs no login; store a key with `sessionsation account auth gemini:{name} --mode api-key --key-stdin`, or switch to Google login with `--mode google` first"
-            );
-            let mut command = provider::gemini::login_command(config, home);
-            command.current_dir(provider::gemini::login_directory(home));
-            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                // Gemini continues into its chat after sign-in: supervise it and
-                // end the login as soon as the credentials exist.
-                let home = home.to_path_buf();
-                let before = provider::gemini::credentials_stamp(&home);
-                let (ok, output) = sessionsation::login::supervise_capture(command, {
-                    let home = home.clone();
-                    move || provider::gemini::login_completed(&home, before)
-                })?;
-                // Clear a recorded failure on success; record a recognizable one (for
-                // example Google rejecting the client) when the login did not complete.
-                if ok {
-                    provider::gemini::auth_failure::clear(paths, name);
-                    return Ok(());
-                }
-                let _ = provider::gemini::auth_failure::record(paths, name, &home, &output);
-                anyhow::bail!("Login did not complete: the CLI exited before sign-in finished");
-            }
-            Err(anyhow::Error::new(command.exec()).context("could not start gemini login"))
-        }
-        ProviderId::Antigravity => {
-            // agy shows "Select login method" (Google OAuth), prints the Google URL
-            // and reads the pasted code; the user completes it, nothing is automated.
-            let mut command = provider::antigravity::login_command(config, home);
-            command.current_dir(provider::antigravity::login_directory(home));
-            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                // agy continues into its chat after sign-in: supervise it and end
-                // the login as soon as the token exists.
-                let home = home.to_path_buf();
-                let before = provider::antigravity::credentials_stamp(&home);
-                let (ok, _) = sessionsation::login::supervise_capture(command, {
-                    let home = home.clone();
-                    move || provider::antigravity::login_completed(&home, before)
-                })?;
-                anyhow::ensure!(
-                    ok,
-                    "Login did not complete: the CLI exited before sign-in finished"
-                );
-                return Ok(());
-            }
-            Err(anyhow::Error::new(command.exec()).context("could not start agy login"))
-        }
-        ProviderId::Claude | ProviderId::Codex => {
-            let mut command = provider::claude::command(config, home);
-            command
-                .args(&provider::claude::login_argv(config)[1..])
-                .current_dir(home);
-            Err(anyhow::Error::new(command.exec()).context("could not start claude auth login"))
-        }
-    }
-}
 fn resolve_account(paths: &Paths, id: &str) -> Result<AccountRef> {
     let (wanted, name) = AccountRef::parse_lookup(id)?;
     let state = if paths.root.join(sessionsation::layout::REGISTRY_DB).exists() {

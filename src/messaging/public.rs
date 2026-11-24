@@ -281,7 +281,7 @@ pub(super) async fn send_planned(
         if let Ok(session) =
             crate::catalog::resolve(paths, &request.session_id, &request.expected_generation)
         {
-            if session.provider == "codex" {
+            if crate::provider::ops::supervised(&session.provider) {
                 delivery::await_ready(paths, &session.conversation_id).await;
             }
         }
@@ -300,7 +300,7 @@ pub(super) async fn send_planned(
             super::retention::ensure_not_retired(&ledger, &request.message_id)?;
             let s =
                 crate::catalog::resolve(paths, &request.session_id, &request.expected_generation)?;
-            anyhow::ensure!(s.provider == "codex", "UNSUPPORTED_PROVIDER_OPERATION");
+            crate::provider::ops::require_bare(crate::provider::ops::supervised(&s.provider))?;
             let a = attachment(paths, &s.conversation_id)?;
             anyhow::ensure!(s.attachment.as_ref().is_some_and(|runtime|
             runtime.pid == a.pid && runtime.process_start == a.start), "STALE_TARGET");

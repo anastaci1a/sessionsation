@@ -470,17 +470,13 @@ pub fn default_name(
     cwd: &Path,
     space: Option<&str>,
 ) -> Result<String> {
-    let label = match provider {
-        ProviderId::Codex => crate::external::default_new_name(cwd)?,
-        other => cwd
-            .file_name()
+    let label = if crate::provider::ops::facts(provider).supervised {
+        crate::external::default_new_name(cwd)?
+    } else {
+        cwd.file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or(match other {
-                ProviderId::Claude => "claude",
-                ProviderId::Gemini => "gemini",
-                _ => "antigravity",
-            })
-            .to_owned(),
+            .unwrap_or(provider.as_str())
+            .to_owned()
     };
     catalog::free_name(paths, space, &label)
 }
@@ -526,21 +522,9 @@ pub async fn run_new(
         }
     };
     label_tab(&name);
-    let result = match provider {
-        ProviderId::Codex => {
-            crate::external::run_account_new_named_options(paths, account, &id, &name, options)
-                .await
-        }
-        ProviderId::Claude => {
-            crate::provider::claude::launch::exec_new(paths, account, None, Some(&id)).await
-        }
-        ProviderId::Gemini => {
-            crate::provider::gemini::launch::exec_new(paths, account, None, Some(&id)).await
-        }
-        ProviderId::Antigravity => {
-            crate::provider::antigravity::launch::exec_new(paths, account, None, Some(&id)).await
-        }
-    };
+    let result =
+        crate::provider::dispatch::exec_new_inline(paths, provider, account, &id, &name, options)
+            .await;
     match result {
         Ok(()) => Ok(()),
         Err(error) => {

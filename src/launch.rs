@@ -3,7 +3,10 @@ use crate::background::SpawnReaped as _;
 use crate::{
     catalog, daemon,
     paths::{Paths, atomic_write, lock_file, private_dir},
-    provider::{AccountRef, ProviderId},
+    provider::{
+        AccountRef, ProviderId,
+        ops::{self, ModelGrammar},
+    },
 };
 use anyhow::{Context, Result, ensure};
 use clap::Subcommand;
@@ -180,10 +183,10 @@ fn shape(r: &Request) -> Result<()> {
     AccountRef::parse(&r.account_id)?;
     ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
     if let Some(h) = &r.hosted {
-        ensure!(
-            AccountRef::parse(&r.account_id)?.provider == ProviderId::Claude,
-            "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only"
-        );
+        ops::require(
+            ops::facts(AccountRef::parse(&r.account_id)?.provider).hosted_sessions,
+            ops::HOSTED_CLAUDE_ONLY,
+        )?;
         ensure!(
             h.permission_mode
                 .as_deref()
@@ -193,12 +196,16 @@ fn shape(r: &Request) -> Result<()> {
     }
     if r.model.is_some() || r.reasoning_effort.is_some() {
         // Contract 1.49.0: Claude (terminal) launches take an exact model id and effort too.
-        let provider = AccountRef::parse(&r.account_id)?.provider;
-        ensure!(
-            provider == ProviderId::Codex || (provider == ProviderId::Claude && r.hosted.is_none()),
-            "UNSUPPORTED_PROVIDER_OPERATION: model and reasoning_effort are for Codex and Claude terminal launches"
-        );
-        if provider == ProviderId::Claude {
+        let model = ops::facts(AccountRef::parse(&r.account_id)?.provider).model;
+        ops::require(
+            match model {
+                ModelGrammar::Codex => true,
+                ModelGrammar::Claude => r.hosted.is_none(),
+                ModelGrammar::None => false,
+            },
+            "model and reasoning_effort are for Codex and Claude terminal launches",
+        )?;
+        if model == ModelGrammar::Claude {
             if let Some(model) = &r.model {
                 crate::session_model::validate_claude_model(model)?;
             }
@@ -214,7 +221,7 @@ fn shape(r: &Request) -> Result<()> {
         validate_model(model)?;
     }
     if let Some(effort) = &r.reasoning_effort
-        && AccountRef::parse(&r.account_id)?.provider == ProviderId::Codex
+        && ops::facts(AccountRef::parse(&r.account_id)?.provider).model == ModelGrammar::Codex
     {
         ensure!(
             REASONING_EFFORTS.contains(&effort.as_str()),
@@ -913,7 +920,7 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
     };
     // Codex marks its first provider mutation (`provider_may_start`); other providers
     // do not, so any failure of theirs stays `uncertain` as before.
-    let marks_start = account.provider == ProviderId::Codex;
+    let marks_start = ops::facts(account.provider).supervised;
     let started = std::cell::Cell::new(!marks_start);
     let (result, started) = PROVIDER_MAY_START
         .scope(started, async {
@@ -933,54 +940,24 @@ async fn start_provider(
     receipt: &Receipt,
     account: AccountRef,
 ) -> Result<()> {
-    match account {
-        AccountRef {
-            provider: ProviderId::Codex,
-            name,
-        } => {
-            let options = model_options(
-                receipt.request.model.as_deref(),
-                receipt.request.reasoning_effort.as_deref(),
-            );
-            crate::external::run_account_new_named_options(
-                paths,
-                &name,
-                id,
-                &receipt.request.name,
-                &options,
-            )
-            .await
-        }
-        AccountRef {
-            provider: ProviderId::Claude,
-            name,
-        } if receipt.request.hosted.is_some() => {
-            crate::provider::claude::hosted::run_in_terminal(
-                paths,
-                &name,
-                None,
-                receipt
-                    .request
-                    .hosted
-                    .as_ref()
-                    .and_then(|h| h.permission_mode.clone()),
-                Some(id),
-            )
-            .await
-        }
-        AccountRef {
-            provider: ProviderId::Claude,
-            name,
-        } => crate::provider::claude::launch::exec_new(paths, &name, None, Some(id)).await,
-        AccountRef {
-            provider: ProviderId::Gemini,
-            name,
-        } => crate::provider::gemini::launch::exec_new(paths, &name, None, Some(id)).await,
-        AccountRef {
-            provider: ProviderId::Antigravity,
-            name,
-        } => crate::provider::antigravity::launch::exec_new(paths, &name, None, Some(id)).await,
-    }
+    let options = model_options(
+        receipt.request.model.as_deref(),
+        receipt.request.reasoning_effort.as_deref(),
+    );
+    crate::provider::dispatch::start_new(
+        paths,
+        account.provider,
+        &account.name,
+        id,
+        &receipt.request.name,
+        &options,
+        receipt
+            .request
+            .hosted
+            .as_ref()
+            .map(|h| h.permission_mode.clone()),
+    )
+    .await
 }
 pub fn attached(
     paths: &Paths,
@@ -1077,10 +1054,10 @@ pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
 /// Positive provider-specific evidence that the recorded process runs the session.
 pub(crate) fn launch_observed(paths: &Paths, s: &catalog::Session) -> bool {
     match ProviderId::parse(&s.provider) {
-        Ok(ProviderId::Codex) => crate::external::new_launch_observed(paths, s).unwrap_or(false),
-        Ok(ProviderId::Claude | ProviderId::Gemini | ProviderId::Antigravity) => {
-            crate::provider::native::launch_observed(s)
+        Ok(p) if ops::facts(p).supervised => {
+            crate::external::new_launch_observed(paths, s).unwrap_or(false)
         }
+        Ok(_) => crate::provider::native::launch_observed(s),
         Err(_) => false,
     }
 }

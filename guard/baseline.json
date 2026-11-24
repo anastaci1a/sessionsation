@@ -1,9 +1,9 @@
 {
-  "roles_digest": "4f8d41684e96e999400034c7ffc061c87880a757fe05d4861229a2f043c6125b",
-  "counters_digest": "29d63813fc22da7a7afd1cc2d7bbe106a162def9884a6f290a2085429a8116e0",
+  "roles_digest": "af871005c422da5d26552493bfdb50ce3d391f40cd46d6982891b9c5c8af61eb",
+  "counters_digest": "7a1362d75516f452c2487c88413b88f04b88f31062c4fa6857c4007feb8db7ff",
   "counters": {
     "alive_fns": { "value": 8 },
-    "api_rs_lines": { "value": 5503 },
+    "api_rs_lines": { "value": 5470 },
     "apply_session_input_fns": { "value": 3 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 3 },
@@ -17,11 +17,11 @@
     "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13278 },
+    "doc_bytes:docs/changelog.md": { "value": 13461 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
     "doc_bytes:docs/contract.md": { "value": 224144 },
     "doc_bytes:docs/operations.md": { "value": 22987 },
-    "doc_bytes_total": { "value": 300315 },
+    "doc_bytes_total": { "value": 300498 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -45,9 +45,9 @@
     "phase_records": { "value": 12 },
     "pidfd_sites": { "value": 6 },
     "proc_stat_readers": { "value": 2 },
-    "provider_enum_dispatch": { "value": 164 },
+    "provider_enum_dispatch": { "value": 0 },
     "provider_ops_allow_markers": { "value": 0 },
-    "provider_string_compares": { "value": 73 },
+    "provider_string_compares": { "value": 0 },
     "raw_sleeps": { "value": 105 },
     "receipts_sites": { "value": 2 },
     "records_allow_markers": { "value": 0 },
@@ -62,14 +62,14 @@
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 98941 },
+    "src_lines": { "value": 99861 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
     "tmux_raw": { "value": 5 },
     "typing_allow_markers": { "value": 0 },
     "typing_dup_fns": { "value": 20 },
-    "unsupported_literals": { "value": 57 },
+    "unsupported_literals": { "value": 0 },
     "waits_allow_markers": { "value": 0 },
     "worker_lock_sites": { "value": 21 },
     "ws_allow_markers": { "value": 0 },
@@ -711,9 +711,93 @@
       "reason": "D1 review: contract.md restorations",
       "considered": "n/a",
       "step": "D1"
+    },
+    {
+      "counter": "provider_enum_dispatch",
+      "by": -164,
+      "reason": "1.65.0 S1 (measured after rebase onto a65f12f): api.rs (S1a), then daemon.rs, launch, session_launch, session_model, model_change*, main, inline, logout and every remaining module (S1b) ask provider::ops (Facts, native_stop_reason, add_session_input, account_plan, account_usage, provider::dispatch) instead of matching or comparing ProviderId",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "provider_string_compares",
+      "by": -73,
+      "reason": "1.65.0 S1 (measured): stored provider names go through provider::ops::{supervised, holds, facts_of, named}; process, bucket and record names are constants (codex::PROCESS_NAME, codex::USAGE_BUCKET, gemini::MODEL_RECORD_TYPE)",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "unsupported_literals",
+      "by": -57,
+      "reason": "1.65.0 S1 (measured): refusals go through provider::ops::{UNSUPPORTED, unsupported, require, require_bare} with byte-identical texts (tests/provider_ops_golden.rs)",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": -31,
+      "reason": "1.65.0 S1 (measured): api.rs per-provider decisions moved into provider::ops",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 920,
+      "reason": "1.65.0 S1 (measured): provider::ops (Op, OP_KEYS, ProviderOps, Facts and their enums, refusal helpers), the four provider/<p>/ops.rs tables (account_plan and account_usage moved from daemon.rs), provider::dispatch (exec_new_inline, exec_login moved from main.rs)",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 183,
+      "reason": "1.65.0 S1: the 1.65.0 changelog line (provider dispatch owner, contract unchanged)",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 183,
+      "reason": "1.65.0 S1: the 1.65.0 changelog line",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "provider_enum_dispatch",
+      "by": 7,
+      "reason": "1.65.0 S1 review: the dispatch pattern also matches tuple arms ((ProviderId::X, ..) =>); it found the plan::name label table (7 arms in src/plan.rs)",
+      "considered": "the tightened pattern is a reviewed counters_digest change; initial stays pinned and the newly visible sites are ledgered here, then moved (next entry), so the rise is explicit",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "provider_enum_dispatch",
+      "by": -7,
+      "reason": "1.65.0 S1 review: plan::name reads Facts::plan_names",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "provider_string_compares",
+      "by": 5,
+      "reason": "1.65.0 S1 review: the string pattern also matches Some(\"<provider>\") compares and arms and strip_prefix(\"<provider>:\"); it found account_deletion.rs (2), api.rs (1) and claude_steer/gemini.rs (2)",
+      "considered": "the tightened pattern is a reviewed counters_digest change; initial stays pinned and the newly visible sites are ledgered here, then moved (next entry)",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "provider_string_compares",
+      "by": -5,
+      "reason": "1.65.0 S1 review: ops::supervised_name replaces strip_prefix(\"codex:\"); gemini typing asks ops::holds(terminal_input) and matches gemini::MODEL_RECORD_TYPE",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": -2,
+      "reason": "1.65.0 S1 review: ops::supervised_name in api switch",
+      "considered": "n/a",
+      "step": "1.65.0"
     }
   ],
   "enforced"
 
-: { "oauth": "S0" }
+: { "oauth": "S0", "provider-ops": "1.65.0" }
 }

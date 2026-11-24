@@ -152,7 +152,7 @@ pub fn migrate_account_keys(state: &mut Value) -> Vec<String> {
             .filter_map(|(key, record)| {
                 let provider = record.get("provider")?.as_str()?;
                 let name = record.get("name")?.as_str()?;
-                let want = if provider == "codex" {
+                let want = if crate::provider::ops::holds(provider, |f| f.bare_name) {
                     name.to_owned()
                 } else {
                     format!("{provider}:{name}")

@@ -212,7 +212,7 @@ pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
 fn account_ref(to: &str) -> Result<String> {
     let account = AccountRef::parse(to)?;
     ensure!(
-        account.provider == ProviderId::Claude,
+        crate::provider::ops::facts(account.provider).native_account_switch,
         "ACCOUNT_PROVIDER_REQUIRED: a Claude session switches only to another claude:<name> account"
     );
     Ok(account.name)
@@ -239,10 +239,9 @@ pub async fn start(
 ) -> Result<Value> {
     let target = account_ref(to)?;
     let s = catalog::resolve(paths, session, expected_generation)?;
-    ensure!(
-        s.provider == ProviderId::Claude.as_str(),
-        "UNSUPPORTED_PROVIDER_OPERATION"
-    );
+    crate::provider::ops::require_bare(crate::provider::ops::holds(&s.provider, |f| {
+        f.native_account_switch
+    }))?;
     ensure!(s.account != target, "SWITCH_SAME_ACCOUNT");
     let source = native::account(paths, ProviderId::Claude, &s.account)?;
     let dest = native::account(paths, ProviderId::Claude, &target)
@@ -269,7 +268,9 @@ pub async fn start(
                 .as_array()
                 .is_some_and(|aa| aa.iter().any(|a| {
                     a["name"] == name.as_str()
-                        && a["provider"] == "claude"
+                        && a["provider"].as_str().is_some_and(|p| {
+                            crate::provider::ops::holds(p, |f| f.native_account_switch)
+                        })
                         && a["enabled"] == true
                         && a["auth_required"] == false
                 })),

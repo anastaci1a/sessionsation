@@ -145,9 +145,7 @@ fn shape(r: &Request) -> Result<()> {
 /// Codex; Claude sessions resume through `api resume` or the launcher.
 fn codex_account(r: &Request) -> Result<String> {
     let account = crate::provider::AccountRef::parse(&r.account_id)?;
-    Ok(account
-        .require(crate::provider::ProviderId::Codex)?
-        .to_owned())
+    Ok(account.require_supervised()?.to_owned())
 }
 fn validate_saved_history(source: &external::Instance, confirmed: bool) -> Result<()> {
     ensure!(
@@ -194,7 +192,7 @@ async fn validate(
         state["accounts"]
             .as_array()
             .is_some_and(|aa| aa.iter().any(|a| a["name"] == target
-                && a["provider"].as_str().unwrap_or("codex") == "codex"
+                && crate::provider::ops::supervised(a["provider"].as_str().unwrap_or("codex"))
                 && a["enabled"] == true
                 && a["auth_required"] == false)),
         "ACCOUNT_UNAVAILABLE"

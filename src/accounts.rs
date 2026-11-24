@@ -236,8 +236,10 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
     let account = status["accounts"]
         .as_array()
         .and_then(|a| {
-            a.iter()
-                .find(|a| a["name"] == name && a["provider"].as_str().unwrap_or("codex") == "codex")
+            a.iter().find(|a| {
+                a["name"] == name
+                    && crate::provider::ops::supervised(a["provider"].as_str().unwrap_or("codex"))
+            })
         })
         .context("ACCOUNT_NOT_FOUND")?;
     let home = paths.account(name)?;
@@ -283,7 +285,7 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
         .collect::<std::collections::BTreeSet<_>>();
     let affected = crate::catalog::list(paths)?
         .into_iter()
-        .filter(|s| s.provider == "codex" && s.account == name)
+        .filter(|s| crate::provider::ops::supervised(&s.provider) && s.account == name)
         .map(|s| json!({"id":s.id,"name":s.name,"conversation_id":s.conversation_id}))
         .collect::<Vec<_>>();
     // Usage polling does not invalidate consent, but identity, enabled state,
@@ -306,9 +308,10 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
 /// Removal preview for either provider; Claude previews never scan beyond
 /// transcript metadata and verified live-session registry entries.
 pub async fn preview_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<Value> {
-    match provider {
-        ProviderId::Codex => preview(paths, name).await,
-        provider => native_preview(paths, provider, name).await,
+    if crate::provider::ops::facts(provider).supervised {
+        preview(paths, name).await
+    } else {
+        native_preview(paths, provider, name).await
     }
 }
 
@@ -335,7 +338,7 @@ pub(crate) fn native_activity(
         .into_iter()
         .map(|id| json!({"id":id,"phase":"headless_delivery"}))
         .chain(
-            if provider == ProviderId::Claude {
+            if crate::provider::ops::facts(provider).hosted_sessions {
                 crate::provider::claude::hosted::live_for_account(paths, name)
             } else {
                 Vec::new()

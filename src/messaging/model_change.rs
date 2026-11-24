@@ -20,7 +20,7 @@
 //! `--effort` the effort in force before the switch is re-applied.
 use super::*;
 use crate::background::SpawnReaped as _;
-use crate::provider::ProviderId;
+use crate::provider::ops::{self, ModelGrammar};
 use crate::session_model::{self, Observed};
 use anyhow::{Context, ensure};
 use futures_util::FutureExt;
@@ -93,12 +93,17 @@ pub(crate) struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal_layout: Option<Value>,
 }
+/// The session's model changes go through the app-server (Codex: thread settings, with new
+/// sends held), not typed into its terminal.
+fn via_app_server(provider: &str) -> bool {
+    ops::holds(provider, |f| f.model == ModelGrammar::Codex)
+}
 impl Record {
     pub fn terminal(&self) -> bool {
         TERMINAL.contains(&self.phase.as_str())
     }
     fn holds(&self, now: i64) -> bool {
-        self.provider == "codex"
+        via_app_server(&self.provider)
             && match self.phase.as_str() {
                 "waiting" => now < self.expires_at,
                 "applying" => true,
@@ -359,7 +364,7 @@ pub(crate) fn public(r: &Record) -> Value {
         "before":r.before.as_ref().map(Observed::public),"observed":r.observed.as_ref().map(Observed::public),
         "applied":r.applied.as_ref().map(Observed::public),
         "changed":r.before.as_ref().map(|b| json!({"model":!session_model::same_model(&b.model,&r.requested_model),"effort":b.effort != target})),
-        "hold":{"active":r.holds(crate::daemon::now()),"released":r.hold_released,"scope":if r.provider == "codex" {"new public submit and queue sends to this session"} else {"none (Claude terminal deliveries wait for the pane lock instead)"}},
+        "hold":{"active":r.holds(crate::daemon::now()),"released":r.hold_released,"scope":if via_app_server(&r.provider) {"new public submit and queue sends to this session"} else {"none (Claude terminal deliveries wait for the pane lock instead)"}},
         "steps":r.steps,"refusal_layout":r.refusal_layout,
         "attempts":r.attempts,"created_at":r.created_at,"updated_at":r.updated_at,"expires_at":r.expires_at,
         "started_at":r.started_at,"finished_at":r.finished_at,
@@ -381,16 +386,20 @@ pub struct Request<'a> {
 /// Admission. Nothing is journaled on a refusal; one pending change per session.
 pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
     let session = crate::catalog::resolve(paths, req.session, req.expected_generation)?;
-    let provider = match session.provider.as_str() {
-        "codex" => ProviderId::Codex,
-        "claude" => ProviderId::Claude,
-        other => anyhow::bail!(
-            "UNSUPPORTED_PROVIDER_OPERATION: {other} sessions cannot change model through Sessionsation"
-        ),
+    let provider = match ops::named(&session.provider) {
+        Some(o) if o.facts().model != ModelGrammar::None => o.id(),
+        _ => {
+            return Err(ops::unsupported(format_args!(
+                "{} sessions cannot change model through Sessionsation",
+                session.provider
+            )));
+        }
     };
-    if provider == ProviderId::Claude {
+    if ops::facts(provider).hosted_sessions {
         crate::provider::claude::hosted::ensure_not_hosted(paths, &session.conversation_id)
-            .map_err(|_| anyhow::anyhow!("UNSUPPORTED_PROVIDER_OPERATION: hosted sessions cannot change model through Sessionsation yet"))?;
+            .map_err(|_| {
+                ops::unsupported("hosted sessions cannot change model through Sessionsation yet")
+            })?;
     }
     session_model::validate(provider, req.model, req.effort)?;
     if let Some(id) = req.operation {
@@ -410,8 +419,8 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
         expires_at > now && expires_at <= now + MAX_EXPIRY_SECONDS,
         "INVALID_EXPIRY: expires_at must be within the next {MAX_EXPIRY_SECONDS} seconds"
     );
-    let (runtime, hook) = match provider {
-        ProviderId::Codex => {
+    let (runtime, hook) = match ops::facts(provider).model {
+        ModelGrammar::Codex => {
             let attached = attachment(paths, &session.conversation_id).map_err(|e| match e.0 {
                 "unavailable" => anyhow::anyhow!("SESSION_NOT_RUNNING"),
                 other => anyhow::anyhow!("{}", other.to_uppercase()),
@@ -496,7 +505,7 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
         started_at: None,
         finished_at: None,
         // Claude input is never held (terminal deliveries serialize on the pane lock).
-        hold_released: provider == ProviderId::Claude,
+        hold_released: ops::facts(provider).model != ModelGrammar::Codex,
         release_claimed_at: None,
         refusal_layout: None,
     };
@@ -577,7 +586,7 @@ pub async fn wait(paths: &Paths, id: &str, seconds: u64) -> anyhow::Result<Value
 
 async fn status_value(paths: &Paths, r: &Record) -> Value {
     let mut v = public(r);
-    v["held_messages"] = if r.provider == "codex" {
+    v["held_messages"] = if via_app_server(&r.provider) {
         match super::compaction::held_ids(paths, &r.conversation_id).await {
             Some(ids) => json!(ids),
             None => Value::Null,
@@ -710,7 +719,7 @@ pub async fn tick(paths: &Paths) {
         if r.phase == "waiting" && !due(&r.id, now) {
             continue;
         }
-        if r.provider == "codex" {
+        if via_app_server(&r.provider) {
             codex_advance(paths, r.clone()).await;
             if read(paths, &r.id).is_ok_and(|x| x.phase == "waiting") {
                 back_off(&r.id, now, CODEX_FIRST_BACKOFF_SECONDS);
@@ -1109,7 +1118,7 @@ pub fn capability() -> Value {
                     "requires":["herdr_terminal","terminal_input_enabled","statusline_record","empty_prompt"],"verified_from":"statusline_hook_payload",
                     "dialogs":["Switch model?","Change effort level?"],"never":["ctrl+c","ctrl+d","digit keys"],"esc":"only to close its own confirmation dialog when its No option cannot be chosen","dialog_left_open":"never (pane_left_in_dialog names the pane)","idle_checks":{"reads":2,"gap_ms":1500,"delivery_quiet_seconds":5},"backoff_seconds":{"claude":[4,30],"codex":[2,30]},"applying_unobserved_seconds":APPLY_UNOBSERVED_SECONDS,"resume_passes_recorded_model":true,
                     "side_effect":"Claude Code saves the model and effort as the account default for later starts without --model"}},
-            "unsupported":{"gemini":"UNSUPPORTED_PROVIDER_OPERATION","antigravity":"UNSUPPORTED_PROVIDER_OPERATION","claude_hosted":"UNSUPPORTED_PROVIDER_OPERATION"},
+            "unsupported":{"gemini":ops::UNSUPPORTED,"antigravity":ops::UNSUPPORTED,"claude_hosted":ops::UNSUPPORTED},
             "hold":{"codex":{"scope":"new public submit and queue sends","held_receipt":{"state":"pending_local","reason":"model_change_hold"},"released":"in arrival order when no compaction or model change of the session remains"},
                 "claude":"not held; terminal deliveries wait for the pane lock the worker holds while applying"},
             "ordering":"compactions and model changes of one session run in request order",

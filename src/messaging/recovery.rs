@@ -235,7 +235,7 @@ async fn validate_owner(paths: &Paths, account: &str) -> anyhow::Result<()> {
         status["accounts"]
             .as_array()
             .is_some_and(|aa| aa.iter().any(|a| a["name"] == account
-                && a["provider"].as_str().unwrap_or("codex") == "codex"
+                && crate::provider::ops::supervised(a["provider"].as_str().unwrap_or("codex"))
                 && a["enabled"] == true
                 && a["auth_required"] == false)),
         "RECOVERY_ACCOUNT_NOT_READY_ENABLE_OR_LOGIN_FIRST"
@@ -453,7 +453,7 @@ async fn validate(
         "RECOVERY_REQUEST_EXPIRED_NO_LAUNCH"
     );
     let s = crate::catalog::resolve(paths, &request.session_id, &request.expected_generation)?;
-    ensure!(s.provider == "codex", "UNSUPPORTED_PROVIDER_OPERATION");
+    crate::provider::ops::require_bare(crate::provider::ops::supervised(&s.provider))?;
     ensure!(
         !matches!(s.account.as_str(), "external" | "unknown"),
         "RECOVERY_ACCOUNT_POLICY_AMBIGUOUS"

@@ -296,7 +296,7 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         (s, Some(i))
     };
     ensure!(
-        session.provider == "codex" || native_target.is_some(),
+        crate::provider::ops::supervised(&session.provider) || native_target.is_some(),
         "PROVIDER_UNSUPPORTED"
     );
     let _admission = crate::lifecycle::admit(paths, &session.conversation_id, Some(&t.request_id))?;

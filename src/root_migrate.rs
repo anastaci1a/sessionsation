@@ -37,9 +37,22 @@ use crate::{
     catalog::{self, Session},
     layout::{self, RootAlias, State},
     paths::{Paths, atomic_write, lock_file, private_dir},
-    provider::{ProviderId, claude, native},
+    provider::{
+        ProviderId, claude, native,
+        ops::{self, Rekey},
+    },
 };
 use anyhow::{Context, Result, bail, ensure};
+
+/// A native session's provider and how it is re-keyed (`None` for Codex and unknown
+/// providers, as `native::of`).
+fn rekey_of(provider: &str) -> Option<(ProviderId, Rekey)> {
+    native::of(provider).map(|p| (p, ops::facts(p).rekey))
+}
+/// The provider keys its transcripts and memory by project directory (Claude).
+fn project_keyed(provider: &str) -> bool {
+    ops::holds(provider, |f| f.rekey == Rekey::ClaudeProjects)
+}
 use keys::{Found, MemoryResult, Moved, Retained};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -683,7 +696,7 @@ fn blocking_operations(paths: &Paths) -> Vec<Value> {
     // runtime directory follows the root spelling, so activation would orphan it.
     match catalog::list(paths) {
         Ok(list) => {
-            for s in list.iter().filter(|s| s.provider == "claude") {
+            for s in list.iter().filter(|s| project_keyed(&s.provider)) {
                 let mut ids = s.previous_conversation_ids.clone();
                 ids.push(s.conversation_id.clone());
                 for c in ids {
@@ -907,8 +920,8 @@ pub(crate) fn recognition(
     s: &Session,
     codex: &CodexView,
 ) -> std::result::Result<bool, String> {
-    match native::of(&s.provider) {
-        Some(ProviderId::Claude) => {
+    match rekey_of(&s.provider) {
+        Some((_, Rekey::ClaudeProjects)) => {
             let home = claude_home(paths, &s.account)
                 .ok_or_else(|| format!("account claude:{} unavailable", s.account))?;
             match claude::observe(&home, &s.conversation_id, s.attachment.as_ref()).availability {
@@ -921,7 +934,7 @@ pub(crate) fn recognition(
                 other => Err(format!("Claude state {other}")),
             }
         }
-        Some(p @ (ProviderId::Gemini | ProviderId::Antigravity)) => {
+        Some((p, Rekey::Unsupported)) => {
             let a = native::account(paths, p, &s.account).map_err(|e| format!("{e:#}"))?;
             native::live_sessions(p, &a.home)
                 .map(|l| l.iter().any(|l| l.session_id == s.conversation_id))
@@ -944,8 +957,8 @@ pub(crate) fn supervisor_recognition(
     s: &Session,
     codex: &CodexView,
 ) -> std::result::Result<bool, String> {
-    match native::of(&s.provider) {
-        Some(ProviderId::Claude) => {
+    match rekey_of(&s.provider) {
+        Some((_, Rekey::ClaudeProjects)) => {
             let home = claude_home(paths, &s.account)
                 .ok_or_else(|| format!("account claude:{} unavailable", s.account))?;
             let o = claude::observe(&home, &s.conversation_id, s.attachment.as_ref());
@@ -1109,8 +1122,8 @@ pub(crate) fn build_plan(paths: &Paths, alias: &Alias, codex: &CodexView) -> Res
     }
     let bases = read_bases(paths);
     for s in &list {
-        match native::of(&s.provider) {
-            Some(ProviderId::Claude) => {
+        match rekey_of(&s.provider) {
+            Some((_, Rekey::ClaudeProjects)) => {
                 let p = plan_claude(paths, alias, s, archived.contains(&s.id), codex)?;
                 if let (Some(km), Some(kt), Some(home)) = (&p.memory_key, &p.key_to, &p.home)
                     && km != kt
@@ -1254,7 +1267,7 @@ pub(crate) fn build_plan(paths: &Paths, alias: &Alias, codex: &CodexView) -> Res
     // Unowned transcripts and `.superseded-*` leftovers per old key.
     let store = list
         .iter()
-        .filter(|s| s.provider == "claude")
+        .filter(|s| project_keyed(&s.provider))
         .find_map(|s| claude_home(paths, &s.account))
         .map(|h| h.join("projects"));
     if let Some(projects) = store
@@ -1569,14 +1582,14 @@ fn plan_json(plan: &Plan, paths: &Paths) -> Value {
         "claude_json": plan.claude_json,
         "claude": {
             "keys": plan.keys.values().collect::<Vec<_>>(),
-            "sessions": plan.sessions.iter().filter(|p| p.provider == "claude").collect::<Vec<_>>(),
+            "sessions": plan.sessions.iter().filter(|p| project_keyed(&p.provider)).collect::<Vec<_>>(),
             "rekey": claude_rekey,
         },
-        "other_providers": plan.sessions.iter().filter(|p| p.provider != "claude").collect::<Vec<_>>(),
+        "other_providers": plan.sessions.iter().filter(|p| !project_keyed(&p.provider)).collect::<Vec<_>>(),
         "memory_conflicts": memory_conflicts,
         "collisions": collisions,
         "memory_split": memory_split,
-        "unmapped_sessions": plan.sessions.iter().filter(|p| p.provider == "claude" && p.to.is_none() && p.from.as_deref().is_some_and(|d| d.starts_with('/'))).map(|p| json!({"session":p.id,"directory":p.from})).collect::<Vec<_>>(),
+        "unmapped_sessions": plan.sessions.iter().filter(|p| project_keyed(&p.provider) && p.to.is_none() && p.from.as_deref().is_some_and(|d| d.starts_with('/'))).map(|p| json!({"session":p.id,"directory":p.from})).collect::<Vec<_>>(),
         "left_behind": left.iter().map(|p| json!({"session":p.id,"name":p.name,"space":p.space,"reason":p.reason})).collect::<Vec<_>>(),
         "codex": plan.codex,
         "existing_target_keys": existing_targets,
@@ -2531,7 +2544,7 @@ fn claude_step(paths: &Paths, run: &mut Run, alias: &Alias, plan: &Plan) -> Resu
     }
     run.memory_conflict_keys = conflicted.iter().cloned().collect();
     save_run(paths, run)?;
-    for p in plan.sessions.iter().filter(|p| p.provider == "claude") {
+    for p in plan.sessions.iter().filter(|p| project_keyed(&p.provider)) {
         let Ok(s) = catalog::find(paths, &p.id) else {
             continue;
         };
@@ -2614,10 +2627,11 @@ fn claude_step(paths: &Paths, run: &mut Run, alias: &Alias, plan: &Plan) -> Resu
 fn codex_step(paths: &Paths, run: &Run, plan: &Plan) -> Result<()> {
     // S1: a thread interrupted after its location was journaled (the plan of the
     // rerun no longer lists it: its cwd already maps) is finished from the journal.
-    for mut rec in sessions(paths)
-        .into_iter()
-        .filter(|r| r.provider == "codex" && r.state == "rekeying" && r.codex_location_written)
-    {
+    for mut rec in sessions(paths).into_iter().filter(|r| {
+        ops::holds(&r.provider, |f| f.rekey == Rekey::CodexRollouts)
+            && r.state == "rekeying"
+            && r.codex_location_written
+    }) {
         session::codex_rekey_stopped(paths, &mut rec)?;
         rec.state = "rekeyed".into();
         rec.phase = "complete".into();
@@ -2715,7 +2729,7 @@ fn verify(paths: &Paths, run: &Run) -> Vec<String> {
     }
     for rec in sessions(paths)
         .iter()
-        .filter(|r| r.state == "rekeyed" && r.provider == "claude")
+        .filter(|r| r.state == "rekeyed" && project_keyed(&r.provider))
     {
         for m in &rec.moved {
             let ok = if fs::symlink_metadata(&m.to).is_ok_and(|x| x.is_dir()) {
@@ -2765,7 +2779,7 @@ pub async fn status(paths: &Paths) -> Result<Value> {
         .sum();
     let memory_split: Vec<String> = {
         let mut by_key: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-        for r in recs.iter().filter(|r| r.provider == "claude") {
+        for r in recs.iter().filter(|r| project_keyed(&r.provider)) {
             if let Some(k) = &r.memory_key {
                 by_key.entry(k.clone()).or_default().push(r.state.as_str());
             }
@@ -3138,7 +3152,7 @@ pub fn finalize(paths: &Paths, dry_run: bool, accept_unresumed: bool) -> Result<
     let mut kept = vec![];
     let mut memory_removable = vec![];
     let mut keys_seen = std::collections::BTreeSet::new();
-    for r in recs.iter().filter(|r| r.provider == "claude") {
+    for r in recs.iter().filter(|r| project_keyed(&r.provider)) {
         let done = r.state == "verified" || (accept_unresumed && r.state == "rekeyed");
         let Some(home) = claude_home(paths, &r.account) else {
             continue;

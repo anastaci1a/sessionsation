@@ -18,7 +18,10 @@
 use crate::{
     launch,
     paths::{Paths, atomic_write, lock_file, private_dir},
-    provider::{AccountRef, ProviderId},
+    provider::{
+        AccountRef,
+        ops::{self, ModelGrammar},
+    },
     session_model::{self, Observed},
 };
 use anyhow::{Context, Result, ensure};
@@ -354,25 +357,26 @@ pub async fn launch(paths: &Paths, args: Args) -> Result<Value> {
         "INVALID_REQUEST_ID"
     );
     let account = AccountRef::parse(&args.account)?;
-    ensure!(
-        matches!(account.provider, ProviderId::Claude | ProviderId::Codex),
-        "UNSUPPORTED_PROVIDER_OPERATION: session launch supports codex and claude accounts"
-    );
+    let facts = ops::facts(account.provider);
+    ops::require(
+        facts.model != ModelGrammar::None,
+        "session launch supports codex and claude accounts",
+    )?;
     session_model::validate(account.provider, &args.model, args.effort.as_deref())?;
-    let delivery = match account.provider {
-        ProviderId::Claude if args.initial_prompt => {
-            ensure!(
-                !args.when_ready,
-                "INVALID_ARGUMENT: --when-ready and --brief-delivery initial-prompt exclude each other"
-            );
-            "initial_prompt"
-        }
-        ProviderId::Claude => "held",
-        _ => "first_turn",
+    let delivery = if facts.held_brief && args.initial_prompt {
+        ensure!(
+            !args.when_ready,
+            "INVALID_ARGUMENT: --when-ready and --brief-delivery initial-prompt exclude each other"
+        );
+        "initial_prompt"
+    } else if facts.held_brief {
+        "held"
+    } else {
+        "first_turn"
     };
     // Contract 1.61.0: Codex accepts `initial-prompt` and delivers it as its `first_turn`.
     let requested =
-        (account.provider == ProviderId::Codex && args.initial_prompt).then_some("initial_prompt");
+        (facts.model == ModelGrammar::Codex && args.initial_prompt).then_some("initial_prompt");
     let deadline = args.deadline.unwrap_or(DEFAULT_DEADLINE);
     ensure!(
         (MIN_DEADLINE..=MAX_DEADLINE).contains(&deadline),
@@ -715,7 +719,7 @@ async fn verify(paths: &Paths, r: &Record) {
     let Some(conversation) = r.conversation_id.clone() else {
         return;
     };
-    let observed = if r.provider == "claude" {
+    let observed = if ops::holds(&r.provider, |f| f.statusline_record) {
         // The first status-line record of the brand-new conversation proves the TUI mounted
         // (folder trust accepted) and carries the resolved model and effort.
         claude_home(paths, r)
@@ -893,7 +897,7 @@ async fn deliver(paths: &Paths, r: &Record) {
     };
     let mut send = json!({"api_version":1,"message_id":mid,"session_id":session.id,
         "expected_generation":session.generation(),"text":text,"expires_at":r.deadline_at,"origin":"operator"});
-    if r.provider == "claude" {
+    if ops::holds(&r.provider, |f| f.held_brief) {
         send["mode"] = json!("submit");
         send["delivery"] = json!("terminal_input");
     } else {
@@ -929,7 +933,7 @@ pub fn capability() -> Value {
         "brief":{"default":"held until the model (and requested effort) is verified",
             "claude":{"default":"held","opt_in":"initial_prompt","max_bytes":{"initial_prompt":CLAUDE_INITIAL_MAX,"held":CLAUDE_HELD_MAX}},
             "codex":{"delivery":"first_turn","accepts":["first_turn","initial_prompt"],"initial_prompt":"delivered as first_turn (record brief.delivery first_turn, brief.requested_delivery initial_prompt)","max_bytes":CODEX_MAX},
-            "gemini":{"launch":"UNSUPPORTED_PROVIDER_OPERATION"},"antigravity":{"launch":"UNSUPPORTED_PROVIDER_OPERATION"},
+            "gemini":{"launch":ops::UNSUPPORTED},"antigravity":{"launch":ops::UNSUPPORTED},
             "states":["pending","held","handed_to_provider","sending","delivered","not_sent","delivery_unknown"],
             "retries":MAX_BRIEF_ATTEMPTS,"retry_seconds":RETRY_SECONDS},
         "when_ready":"hold the brief until the model is verified (the default; explicit flag accepted)",
