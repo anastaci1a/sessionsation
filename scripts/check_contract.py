@@ -358,6 +358,11 @@ with tempfile.TemporaryDirectory() as directory:
             assert observe["providers"]["gemini"]["supported"] is False, observe
             stop = value["result"]["stop_result"]
             assert stop["since_contract"] == "1.63.0" and "source_session_id" in stop["keys"] and "session_id" in stop["keys"], stop
+            send_request = value["result"]["send_request"]
+            assert send_request["since_contract"] == "1.64.0" and send_request["intents"] == ["deliver", "when_idle", "interrupt"], send_request
+            assert send_request["unused_options"] == "ignored_options_not_refused" and send_request["automatic_replay"] is False, send_request
+            assert send_request["providers"]["codex"]["intents"]["deliver"] == {"mode": "submit", "if_busy": "queue"}, send_request
+            assert "if_busy" in send_request["providers"]["claude"]["ignored_options"], send_request
             reuse = value["result"]["pane_reuse"]
             assert reuse["since_contract"] == "1.52.0" and reuse["version"] == 1, reuse
             assert reuse["order"] == ["recorded_pane_if_idle_shell", "same_name_single_pane_idle_tab_in_space", "new_tab"], reuse

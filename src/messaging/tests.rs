@@ -1370,3 +1370,116 @@ async fn mid_request_eof_stays_uncertain_with_native_error_and_success_resets_he
     assert!(h["last_success_at"].is_i64());
     server.abort();
 }
+
+/// Contract 1.64.0 (SM1): the same live `api send` body the Claude and Antigravity tests
+/// send (`tests/support/parity_keys.rs`), routed by `api send`'s dispatcher.
+fn unified_body(session: &crate::catalog::Session, mode: &str) -> Vec<u8> {
+    json!({"api_version":1,"message_id":uuid::Uuid::new_v4().to_string(),"mode":mode,
+        "session_id":session.id,"expected_generation":session.generation(),"text":"unified",
+        "expires_at":crate::daemon::now()+600,"origin":"operator","delivery":"auto","if_busy":"queue","timeout_seconds":120})
+    .to_string()
+    .into_bytes()
+}
+async fn unified_target(
+    busy: bool,
+    lose_add: bool,
+) -> (tempfile::TempDir, Paths, Server, crate::catalog::Session) {
+    let (dir, paths, input, _) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    bind(&paths, &mut a);
+    let fake = server(&a.endpoint(), "0.163.0", busy, lose_add, true).await;
+    let instance:external::Instance=serde_json::from_value(json!({"pane":"%1","tmux_session":"fixture","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
+    let session = crate::catalog::reconcile(&paths, &[instance])
+        .unwrap()
+        .remove(0);
+    (dir, paths, fake, session)
+}
+fn assert_unified(v: &Value, requested: &str, used: &str, queued: bool) {
+    // The shared body carries `if_busy:"queue"`: what `deliver` means on Codex anyway, and
+    // ignored by the other intents (their busy handling is the intent itself).
+    let ignored = if requested == "deliver" {
+        json!(["timeout_seconds"])
+    } else {
+        json!(["timeout_seconds", "if_busy"])
+    };
+    let d = &v["delivery"];
+    assert_eq!(d["mode_requested"], requested, "{v}");
+    assert_eq!(d["mode_used"], used, "{v}");
+    assert_eq!(d["framing"], "native_queue", "{v}");
+    assert_eq!(d["queued"], queued, "{v}");
+    assert_eq!(d["held"], false, "{v}");
+    assert_eq!(v["ignored_options"], ignored, "{v}");
+    assert!(
+        v["ignored_reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Codex sessions do not use timeout_seconds"),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn unified_send_queues_for_a_busy_codex_target_and_ignores_worker_options() {
+    for intent in ["deliver", "when_idle", "interrupt"] {
+        let (_dir, paths, fake, session) = unified_target(true, false).await;
+        let body = unified_body(&session, intent);
+        let sent = headless::dispatch(&paths, &body).await.unwrap();
+        assert_eq!(sent["provider"], "codex");
+        assert_eq!(sent["state"], "native_accepted", "{intent}: {sent}");
+        assert_unified(&sent, intent, "queue", true);
+        // An interrupt found no steerable turn (the fake's last turn is completed): it was
+        // delivered like `deliver`, and the receipt says why.
+        assert_eq!(
+            sent["delivery"]["fallback_reason"].is_string(),
+            intent == "interrupt",
+            "{sent}"
+        );
+        let id: Value = serde_json::from_slice(&body).unwrap();
+        let receipt = receipt_public(&paths, id["message_id"].as_str().unwrap(), false)
+            .await
+            .unwrap();
+        for k in [
+            "mode_requested",
+            "intent",
+            "mode_used",
+            "framing",
+            "fallback_reason",
+        ] {
+            assert_eq!(
+                receipt["delivery"][k], sent["delivery"][k],
+                "{k}: {receipt}"
+            );
+        }
+        assert_eq!(receipt["ignored_options"], sent["ignored_options"]);
+        // Idempotent: the same body returns the same message, never a second native add.
+        let again = headless::dispatch(&paths, &body).await.unwrap();
+        assert_eq!(again["delivery"], sent["delivery"]);
+        let calls = fake.methods.lock().unwrap();
+        assert_eq!(
+            calls.iter().filter(|m| *m == "thread/queue/add").count(),
+            1,
+            "{intent}: {calls:?}"
+        );
+        assert!(!calls.iter().any(|m| m == "turn/steer" || m == "turn/start"));
+    }
+}
+
+#[tokio::test]
+async fn unified_send_never_replays_an_uncertain_codex_delivery() {
+    let (_dir, paths, fake, session) = unified_target(true, true).await;
+    let body = unified_body(&session, "deliver");
+    let first = headless::dispatch(&paths, &body).await.unwrap();
+    assert_eq!(first["state"], "delivery_unknown", "{first}");
+    assert_unified(&first, "deliver", "queue", false);
+    for _ in 0..2 {
+        let again = headless::dispatch(&paths, &body).await.unwrap();
+        assert_eq!(again["state"], "delivery_unknown", "{again}");
+        assert_eq!(again["delivery"], first["delivery"]);
+    }
+    let calls = fake.methods.lock().unwrap();
+    assert_eq!(
+        calls.iter().filter(|m| *m == "thread/queue/add").count(),
+        1,
+        "the uncertain add is never sent again: {calls:?}"
+    );
+}

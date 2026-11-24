@@ -993,3 +993,69 @@ async fn a_refused_screen_reports_its_layout() {
     assert!(!layout.to_string().contains("someone's unsent draft"));
     assert_eq!(f.tui()["input"], long, "the user's draft was not touched");
 }
+
+#[path = "support/parity_keys.rs"]
+mod parity_keys;
+
+/// Contract 1.64.0 (SM1): the one `api send` shape reaches a live Claude session as typed
+/// input. Codex-only options (`if_busy`, a recovery intent, a Codex turn target) are named in
+/// `ignored_options`, never refused; mid-turn, `deliver` is Claude's own `queued_command`
+/// and the receipt says `delivery.queued` until the running turn reaches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_send_types_into_claude_ignores_codex_options_and_queues_when_busy() {
+    let f = fixture().await;
+    let (_claude, id, reset) = live_pane(&f).await;
+    let s = f.session(&id);
+    let body = parity_keys::unified_send(&s, "deliver", "hello claude", daemon::now() + 600);
+    let sent = f.send_ok(&body);
+    parity_keys::assert_delivery(&sent, "deliver", "submit", "terminal_input", &["if_busy"]);
+    assert!(
+        sent["ignored_reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Claude sessions do not use if_busy"),
+        "{sent}"
+    );
+    let done = f.settled(body["message_id"].as_str().unwrap());
+    assert_eq!(done["state"], "completed_with_reply", "{done}");
+    assert_eq!(done["reply"]["text"], "terminal reply to: hello claude");
+    parity_keys::assert_delivery(&done, "deliver", "submit", "terminal_input", &["if_busy"]);
+    // Codex options that used to be refused for Claude.
+    reset(json!({}));
+    let mut body = parity_keys::unified_send(&s, "interrupt", "steer this", daemon::now() + 600);
+    body["recovery"] = json!({"version":1,"expected_stop_id":"stop-1"});
+    body["steering"] = json!({"version":1,"expected_turn_id":"turn-1","expected_runtime_generation":"a".repeat(64)});
+    let sent = f.send_ok(&body);
+    let ignored = [
+        "if_busy",
+        "recovery",
+        "steering.expected_turn_id",
+        "steering.expected_runtime_generation",
+    ];
+    parity_keys::assert_delivery(&sent, "interrupt", "steer", "terminal_input", &ignored);
+    let done = f.settled(body["message_id"].as_str().unwrap());
+    assert_eq!(done["state"], "completed_with_reply", "{done}");
+    parity_keys::assert_delivery(&done, "interrupt", "steer", "terminal_input", &ignored);
+    // Mid-turn: Claude queues the typed text until the running turn reaches it.
+    reset(json!({"status":"working","working_polls":100000,"hold_queued":true}));
+    let body = parity_keys::unified_send(&s, "deliver", "after this turn", daemon::now() + 600);
+    let id = body["message_id"].as_str().unwrap().to_owned();
+    let sent = f.send_ok(&body);
+    parity_keys::assert_delivery(&sent, "deliver", "submit", "terminal_input", &["if_busy"]);
+    let mut r = Value::Null;
+    wait_for("queued behind the turn", || {
+        r = f.api(&["receipt", &id]);
+        r["delivery"]["queued"] == true
+    });
+    assert_eq!(r["state"], "native_accepted", "{r}");
+    assert_eq!(r["correlation"]["record_type"], "queued_command", "{r}");
+    assert_eq!(r["delivery"]["held"], false);
+    std::fs::write(f.herdr.join("end-turn"), "").unwrap();
+    let done = f.settled(&id);
+    assert_eq!(done["state"], "completed_with_reply", "{done}");
+    assert_eq!(done["delivery"]["queued"], false, "{done}");
+    assert!(
+        read(&f.herdr.join("forbidden")).is_empty(),
+        "no forbidden key"
+    );
+}

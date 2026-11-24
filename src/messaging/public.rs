@@ -61,6 +61,9 @@ pub(super) struct Binding {
     origin_source: Option<String>,
     #[serde(default)]
     evidence_observed_at: Option<i64>,
+    /// The unified send mapping (contract 1.64.0); absent on older bindings and internal sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan: Option<crate::provider::send::Plan>,
     request: PublicRequest,
     native: Enqueue,
 }
@@ -137,7 +140,44 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         out["facts"]["native_error"] = value["native_error"].clone();
         out["facts"]["retryable"] = json!(value["state"] == "rejected");
     }
+    uniform(binding, &mut out);
     out
+}
+
+/// Contract 1.64.0: the uniform `delivery` block and `ignored_options` of a Codex receipt.
+/// A submit with `if_busy:"queue"` (and a released hold) goes through the native queue.
+pub(super) fn uniform(binding: &Binding, out: &mut Value) {
+    let r = &binding.request;
+    let steer = r.mode == PublicMode::Steer;
+    let via_queue = binding.released_hold
+        || r.mode == PublicMode::Queue
+        || (r.mode == PublicMode::Submit && r.if_busy.as_deref() == Some("queue"));
+    let mode_used = if steer {
+        "steer"
+    } else if via_queue {
+        "queue"
+    } else {
+        "submit"
+    };
+    let state = out["state"].as_str().unwrap_or_default();
+    let queued = !steer && state == "native_accepted";
+    let held = state == "pending_local"
+        && matches!(
+            out["reason"].as_str(),
+            Some("compaction_hold" | "model_change_hold")
+        );
+    let delivery = crate::provider::send::block(
+        binding.plan.as_ref(),
+        mode_used,
+        if steer {
+            "native_steer"
+        } else {
+            "native_queue"
+        },
+        queued,
+        held,
+    );
+    crate::provider::send::annotate(out, binding.plan.as_ref(), delivery);
 }
 
 /// `origin` must be `operator` or `agent`; a `delivery` other than `auto` names a Claude
@@ -185,6 +225,26 @@ pub(super) async fn send_released(paths: &Paths, id: &str) -> anyhow::Result<Val
 }
 
 pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Result<Value> {
+    send_planned(paths, request, None).await
+}
+
+/// [`send_public`] with the unified send mapping of `api send` (contract 1.64.0). An
+/// `interrupt` intent with no turn target steers the active turn the session reports, or,
+/// with no turn it can steer, is delivered like `deliver` (submit, queued natively when a
+/// turn started first), with the reason in `delivery.fallback_reason`.
+pub(super) async fn send_planned(
+    paths: &Paths,
+    mut request: PublicRequest,
+    mut plan: Option<crate::provider::send::Plan>,
+) -> anyhow::Result<Value> {
+    if let Some(p) = plan.as_mut()
+        && p.intent() == Some("interrupt")
+        && request.mode == PublicMode::Steer
+        && request.steering.is_none()
+        && request.api_version == crate::api::VERSION
+    {
+        resolve_interrupt(paths, &mut request, p).await?;
+    }
     anyhow::ensure!(
         request.api_version == crate::api::VERSION,
         "UNSUPPORTED_API_VERSION"
@@ -270,6 +330,7 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
                 origin: Some(origin),
                 origin_source: Some(origin_source.to_owned()),
                 evidence_observed_at: None,
+                plan: plan.clone(),
             };
             // Bind the logical request before any native mutation. A crash here is
             // provably unsent; later retries retain the exact original native target.
@@ -385,6 +446,58 @@ pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         delivery::settle(paths, &mut receipt, verdict).await?;
     }
     Ok(wrap(&binding, json!(receipt)))
+}
+
+/// Choose the native mode of a Codex `interrupt` (contract 1.64.0). A re-send of a known
+/// message id keeps the mode and target its first send bound, so it stays one request.
+/// Otherwise the active turn is read (no input is sent): a steerable turn is steered,
+/// anything else is delivered like `deliver`, and the submit path's own checks refuse
+/// what cannot be sent at all.
+async fn resolve_interrupt(
+    paths: &Paths,
+    request: &mut PublicRequest,
+    plan: &mut crate::provider::send::Plan,
+) -> anyhow::Result<()> {
+    let bound = {
+        let ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
+        initialize(&ledger)?;
+        uuid(&request.message_id)?;
+        get(&ledger, &request.message_id)?
+    };
+    if let Some(b) = bound {
+        request.mode = b.request.mode.clone();
+        request.steering = b.request.steering.clone();
+        request.if_busy = b.request.if_busy.clone();
+        return Ok(());
+    }
+    // A target that cannot be read is not steerable; the submit path reports why it cannot
+    // be sent either (an unknown session, a stale generation, no live process).
+    let target = steering::target(paths, &request.session_id, &request.expected_generation)
+        .await
+        .unwrap_or_else(|e| json!({"available":false,"reason":e.to_string()}));
+    match (
+        target["active_turn_id"].as_str(),
+        target["runtime_generation"].as_str(),
+    ) {
+        (Some(turn), Some(runtime)) if target["available"] == true => {
+            request.steering = Some(SteeringIntent {
+                version: 1,
+                expected_turn_id: turn.to_owned(),
+                expected_runtime_generation: runtime.to_owned(),
+            });
+        }
+        _ => {
+            request.mode = PublicMode::Submit;
+            request.if_busy = Some("queue".into());
+            plan.fallback_reason = Some(
+                target["reason"]
+                    .as_str()
+                    .unwrap_or("no_active_turn")
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn reconcile_recovered_stop(
@@ -620,6 +733,7 @@ mod tests {
             origin: None,
             origin_source: None,
             evidence_observed_at: None,
+            plan: None,
             request: PublicRequest {
                 origin: None,
                 delivery: None,
@@ -717,6 +831,7 @@ mod evidence_tests {
             origin: None,
             origin_source: None,
             evidence_observed_at: None,
+            plan: None,
             request: PublicRequest {
                 origin: None,
                 delivery: None,
@@ -1088,6 +1203,7 @@ pub(super) async fn deliver_recovered(
             origin: Some(origin),
             origin_source: Some(origin_source.to_owned()),
             evidence_observed_at: None,
+            plan: None,
         };
         ledger.db.execute(
             "INSERT INTO public_messages VALUES(?,?)",

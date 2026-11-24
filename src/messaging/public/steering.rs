@@ -346,7 +346,7 @@ fn project(b: &Binding, r: &Receipt, observation: Value) -> Value {
         None => "unknown",
     };
     let obs = observation["state"].as_str().unwrap_or("acceptance_only");
-    json!({"origin":b.origin.as_deref().unwrap_or("operator"),"origin_source":b.origin_source.as_deref().unwrap_or("default"),"message_id":b.request.message_id,"session_id":b.request.session_id,
+    let mut out = json!({"origin":b.origin.as_deref().unwrap_or("operator"),"origin_source":b.origin_source.as_deref().unwrap_or("default"),"message_id":b.request.message_id,"session_id":b.request.session_id,
         "accepted_generation":b.request.expected_generation,"accepted_runtime_generation":b.native.expected_generation,
         "provider":"codex","provider_conversation_id":b.native.session_id,"mode":"steer",
         "delivery_semantics":"deliberate_in_turn_steer","state":if state=="unknown" {"delivery_unknown"} else {state},
@@ -368,7 +368,9 @@ fn project(b: &Binding, r: &Receipt, observation: Value) -> Value {
         "observation":{"state":obs,"checked_at":now,
             "native_attempted_at":if matches!(obs,"observed"|"uncorrelated"|"unavailable") {Some(now)} else {None},
             "error_code":observation["code"],"freshness":if obs=="acceptance_only" {"unknown"} else {freshness},
-            "evidence_observed_at":b.evidence_observed_at}})
+            "evidence_observed_at":b.evidence_observed_at}});
+    super::uniform(b, &mut out);
+    out
 }
 
 #[cfg(test)]
@@ -536,6 +538,7 @@ mod tests {
                         origin: None,
                         origin_source: None,
                         evidence_observed_at: None,
+                        plan: None,
                         request: request.clone(),
                         native: Enqueue {
                             expected_generation: a.generation(),
@@ -957,6 +960,7 @@ mod tests {
             origin: None,
             origin_source: None,
             evidence_observed_at: None,
+            plan: None,
             request: request.clone(),
             native: Enqueue {
                 expected_generation: a.generation(),

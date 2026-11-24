@@ -76,3 +76,41 @@ pub fn assert_conversation_shape(observed: &Value) {
         assert_eq!(c[format!("{f}_reason")].is_string(), !known, "{f}: {c}");
     }
 }
+
+/// Contract 1.64.0 (SM1): the one live `api send` request every provider's tests send. It
+/// carries a Codex-only option (`if_busy`) and a terminal/peer worker option
+/// (`timeout_seconds`), so each provider ignores exactly one of them.
+pub fn unified_send(session: &Value, mode: &str, text: &str, expires_at: i64) -> Value {
+    serde_json::json!({"api_version":1,"message_id":uuid::Uuid::new_v4().to_string(),"mode":mode,
+        "session_id":session["id"],"expected_generation":session["generation"],"text":text,
+        "expires_at":expires_at,"origin":"operator","delivery":"auto","if_busy":"queue","timeout_seconds":120})
+}
+
+pub const DELIVERY_KEYS: [&str; 7] = [
+    "fallback_reason",
+    "framing",
+    "held",
+    "intent",
+    "mode_requested",
+    "mode_used",
+    "queued",
+];
+
+/// The uniform delivery block (and `ignored_options`) of a result or receipt.
+pub fn assert_delivery(v: &Value, requested: &str, used: &str, framing: &str, ignored: &[&str]) {
+    let d = &v["delivery"];
+    let mut keys: Vec<&str> = d
+        .as_object()
+        .unwrap_or_else(|| panic!("no delivery block: {v}"))
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, DELIVERY_KEYS, "{d}");
+    assert_eq!(d["mode_requested"], requested, "{v}");
+    assert_eq!(d["mode_used"], used, "{v}");
+    assert_eq!(d["framing"], framing, "{v}");
+    assert!(d["queued"].is_boolean() && d["held"].is_boolean(), "{d}");
+    assert_eq!(v["ignored_options"], serde_json::json!(ignored), "{v}");
+    assert_eq!(v["ignored_reason"].is_string(), !ignored.is_empty(), "{v}");
+}

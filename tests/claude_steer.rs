@@ -506,11 +506,14 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
         rd["reply"]["text"],
         "working on: delta\n\nfake reply to: delta"
     );
-    // Codex-style steering targets are rejected for Claude sessions.
+    // Since 1.64.0 a Codex-style steering target is ignored for Claude sessions, not refused:
+    // the (expired, so never sent) request fails only on its expiry.
     let mut codex = body("steer", &f.session(&id), "x");
     codex["steering"] =
         json!({"version":1,"expected_turn_id":"t","expected_runtime_generation":"a".repeat(64)});
-    assert!(f.send_err(&codex).contains("INVALID_REQUEST"));
+    codex["expires_at"] = json!(1);
+    let e = f.send_err(&codex);
+    assert!(e.contains("INVALID_EXPIRY"), "{e}");
 
     // Permission prompts stay pending until the operator answers.
     let p = body("submit", &f.session(&id), "needs-permission please");

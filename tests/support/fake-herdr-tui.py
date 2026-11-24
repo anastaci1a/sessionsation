@@ -25,6 +25,8 @@ State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
                       the way a full disk fails them); the original is kept as <id>.json.held
   break_screen_after_type   after the first typed text `pane read` fails
   break_at_chunk      the typed chunk (1-based) after which the two breaks above happen
+  hold_queued         mid-turn input is recorded as queued_command and answered only when the turn ends
+  ($FAKE_HERDR_DIR/end-turn: the next `agent list` ends the running turn)
 The HERDR agent status at each `send-text` goes to $FAKE_HERDR_DIR/typed-status.
 Every command is appended to $FAKE_HERDR_DIR/calls as a JSON argv; Esc,
 Ctrl+C, Ctrl+D and Ctrl+L are also logged to $FAKE_HERDR_DIR/forbidden.
@@ -185,6 +187,10 @@ def submit():
         state["queued"] = True
         append({"type": "attachment", "uuid": str(uuid.uuid4()), "timestamp": stamp(),
                 "attachment": {"type": "queued_command", "prompt": text, "origin": {"kind": "human"}}})
+        if state.get("hold_queued"):
+            # The running turn reaches it (and replies) only when it ends.
+            state.setdefault("pending_replies", []).append(text)
+            return
     else:
         append({"type": "user", "uuid": str(uuid.uuid4()), "timestamp": stamp(),
                 "message": {"role": "user", "content": text}})
@@ -222,12 +228,19 @@ def keys(names):
 
 cmd = " ".join(args[:2])
 if cmd == "agent list":
+    if os.path.exists(os.path.join(base, "end-turn")):
+        # The test ends the running turn (a file, so no read-modify-write race on tui.json).
+        os.remove(os.path.join(base, "end-turn"))
+        state["working_polls"] = 1
     status = state["status"]
     if state.get("working_polls"):
         state["working_polls"] -= 1
         if state["working_polls"] == 0:
             state["status"] = "idle"
             state.pop("queued", None)
+            for text in state.pop("pending_replies", []):
+                append({"type": "assistant", "timestamp": stamp(),
+                        "message": {"role": "assistant", "content": [{"type": "text", "text": "terminal reply to: " + text}]}})
         save()
     out({"result": {"agents": [{"agent": "claude", "agent_status": status, "pane_id": state["pane"]}],
                     "type": "agent_list"}})

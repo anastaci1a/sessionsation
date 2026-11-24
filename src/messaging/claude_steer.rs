@@ -200,6 +200,9 @@ pub struct Record {
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub evidence_at: Option<i64>,
+    /// The unified send mapping (contract 1.64.0); absent in older records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<crate::provider::send::Plan>,
 }
 
 fn dir(paths: &Paths) -> PathBuf {
@@ -374,6 +377,18 @@ pub async fn send(
     v: Value,
     from_component: Option<String>,
     env_component: Option<String>,
+) -> Result<Value> {
+    send_planned(paths, v, from_component, env_component, None).await
+}
+
+/// [`send`] with the unified send mapping of `api send` (contract 1.64.0), recorded with
+/// the request so its receipt reports `ignored_options` too.
+pub async fn send_planned(
+    paths: &Paths,
+    v: Value,
+    from_component: Option<String>,
+    env_component: Option<String>,
+    plan: Option<crate::provider::send::Plan>,
 ) -> Result<Value> {
     let request: Request = serde_json::from_value(v.clone()).map_err(|e| {
         if v["steering"].get("expected_turn_id").is_some() {
@@ -626,6 +641,7 @@ pub async fn send(
         started_at: None,
         finished_at: None,
         evidence_at: None,
+        plan,
         request,
     };
     // Journal before any write to a provider.
@@ -1664,7 +1680,57 @@ pub fn receipt_value(r: &Record) -> Value {
             antigravity::receipt_fields(r, &mut v);
         }
     }
+    uniform(r, &mut v);
     v
+}
+
+/// Contract 1.64.0: the uniform `delivery` block and `ignored_options` of a Claude,
+/// Antigravity or Gemini receipt. `queued`: the provider keeps the message in its own queue
+/// behind the running turn (a typed mid-turn `queued_command`, a hosted `queued` lifecycle
+/// event, agy's queue row); `held`: Claude Code reported the peer message held.
+fn uniform(r: &Record, v: &mut Value) {
+    let pending = !is_terminal(r) && r.state != "execution_started";
+    let t = r.terminal.as_ref();
+    let (framing, queued) = match r.kind.as_str() {
+        "peer" => (
+            "peer_message",
+            pending && r.state == "native_accepted" && !r.facts.input_recorded,
+        ),
+        "hosted" => (
+            "hosted_stream_json",
+            pending
+                && r.facts.lifecycle.iter().any(|s| s == "queued")
+                && !r.facts.lifecycle.iter().any(|s| s == "started"),
+        ),
+        _ if antigravity::is_antigravity(r) => {
+            let a = t.and_then(|t| t.antigravity.as_ref());
+            (
+                "terminal_input",
+                pending
+                    && r.facts.written
+                    && !r.facts.input_recorded
+                    && a.is_some_and(|a| {
+                        a.busy_at_submit == Some(true)
+                            && a.expected.as_deref() == Some("native_queue")
+                    }),
+            )
+        }
+        _ => (
+            "terminal_input",
+            pending
+                && r.state == "native_accepted"
+                && t.is_some_and(|t| t.input_record.as_deref() == Some("queued_command")),
+        ),
+    };
+    let held = r.state == "held"
+        || (pending
+            && r.facts
+                .peer_status
+                .last()
+                .is_some_and(|s| s["status"] == "held"));
+    let delivery =
+        crate::provider::send::block(r.plan.as_ref(), &r.request.mode, framing, queued, held);
+    crate::provider::send::annotate(v, r.plan.as_ref(), delivery);
 }
 
 pub async fn receipt(paths: &Paths, id: &str, cancelling: bool) -> Result<Value> {

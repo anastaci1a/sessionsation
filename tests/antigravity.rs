@@ -33,6 +33,9 @@ struct Fixture {
     paths: Paths,
     project: PathBuf,
     fake: PathBuf,
+    /// FAKE_HERDR_DIR of `support/fake-herdr-agy.py` (its `herdr` is in `<dir>/bin`), when
+    /// a test drives a live pane.
+    herdr: Option<PathBuf>,
     _daemon: Process,
 }
 impl Fixture {
@@ -48,6 +51,16 @@ impl Fixture {
             .env("GEMINI_API_KEY", "key-must-not-reach-agy")
             .env("XDG_RUNTIME_DIR", "/run/user/fixture")
             .stdin(Stdio::null());
+        if let Some(h) = &self.herdr {
+            c.env("FAKE_HERDR_DIR", h).env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    h.join("bin").display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            );
+        }
         c
     }
     fn run(&self, args: &[&str]) -> Output {
@@ -191,6 +204,7 @@ async fn fixture() -> Fixture {
         paths,
         project,
         fake,
+        herdr: None,
         _daemon: daemon,
     }
 }
@@ -267,8 +281,8 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
         false
     );
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 63);
-    assert_eq!(caps["contract_version"], "1.63.0");
+    assert_eq!(caps["contract_revision"], 64);
+    assert_eq!(caps["contract_version"], "1.64.0");
     let p = caps["providers"]
         .as_array()
         .unwrap()
@@ -442,12 +456,12 @@ async fn a_live_agy_process_holding_the_conversation_is_running_and_refuses_resu
 async fn api_version_reports_semver_and_negotiates_by_major() {
     let f = fixture().await;
     let v = f.api(&["version"]);
-    assert_eq!(v["contract_version"], "1.63.0");
-    assert_eq!(v["contract_revision"], 63);
+    assert_eq!(v["contract_version"], "1.64.0");
+    assert_eq!(v["contract_revision"], 64);
     for ok in ["1", "1.25", "1.26", "1.99.0"] {
         assert_eq!(
             f.api(&["--api-version", ok, "version"])["contract_version"],
-            "1.63.0"
+            "1.64.0"
         );
     }
     for bad in ["2", "2.0.0", "0.24"] {
@@ -975,4 +989,116 @@ async fn stop_result_keys_are_identical_per_provider_for_antigravity() {
     assert_eq!(again["already_stopped"], true);
     assert!(again["pid"].is_null(), "{again}");
     assert_eq!(again["source_account_id"], "antigravity:life");
+}
+
+/// Contract 1.64.0 (SM1): the one `api send` shape types into a live agy pane. Idle,
+/// `deliver` starts a user turn; mid-turn, `deliver` and `when_idle` press the key that
+/// queues and the receipt says `delivery.queued` until the turn reaches the message. The
+/// Codex-only `if_busy` is ignored and named, never refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_send_types_into_a_live_agy_pane_and_queues_behind_a_busy_turn() {
+    let (mut f, home) = logged_in().await;
+    let herdr = f._tmp.path().join("fake-herdr");
+    std::fs::create_dir_all(herdr.join("bin")).unwrap();
+    let script = herdr.join("bin/herdr");
+    std::fs::write(&script, include_str!("support/fake-herdr-agy.py")).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    f.herdr = Some(herdr.clone());
+    let id = uuid::Uuid::new_v4().to_string();
+    f.send_ok(&new_body(&id, "antigravity:life", &f.project, "start"));
+    let native = f.settled(&id)["provider_conversation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let log = home
+        .join(".gemini/antigravity-cli/brain")
+        .join(&native)
+        .join(".system_generated/logs/transcript.jsonl");
+    let child = Process(
+        Command::new(&f.fake)
+            .args(["--conversation", &native])
+            .env("HOME", &home)
+            .env("AGY_ACCOUNT_HOME", &home)
+            .env("HERDR_PANE_ID", "w1:p1")
+            .env("HERDR_SESSION", "fixture")
+            .env("HERDR_ENV", "1")
+            .current_dir(&f.project)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let tui = herdr.join("tui.json");
+    let set = |patch: Value| {
+        let mut v: Value = serde_json::from_str(&read(&tui)).unwrap_or(json!({}));
+        for (k, x) in patch.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        std::fs::write(&tui, v.to_string()).unwrap();
+    };
+    set(json!({"pane":"w1:p1","pid":child.0.id(),"transcript":log,"status":"idle"}));
+    let mut s = Value::Null;
+    wait_for("attached live agy session", || {
+        s = f.by_conversation(&native);
+        s["availability"] == "running" && s["attachment"]["host"] == "herdr"
+    });
+    let receipt_until = |id: &str, what: &str, done: &dyn Fn(&Value) -> bool| {
+        let mut last = Value::Null;
+        wait_for(what, || {
+            last = f.api(&["receipt", id]);
+            done(&last)
+        });
+        last
+    };
+    // Idle: a user turn.
+    let body = parity_keys::unified_send(&s, "deliver", "hello agy", now() + 600);
+    let sent = f.send_ok(&body);
+    parity_keys::assert_delivery(&sent, "deliver", "submit", "terminal_input", &["if_busy"]);
+    assert!(
+        sent["ignored_reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Antigravity sessions do not use if_busy"),
+        "{sent}"
+    );
+    let id = body["message_id"].as_str().unwrap();
+    let done = receipt_until(id, "idle delivery", &|r| {
+        r["execution"]["phase"] == "complete"
+    });
+    assert_eq!(done["state"], "completed_with_reply", "{done}");
+    assert_eq!(done["reply"]["text"], "agy reply to: hello agy");
+    parity_keys::assert_delivery(&done, "deliver", "submit", "terminal_input", &["if_busy"]);
+    assert_eq!(done["delivery"]["queued"], false);
+    // Busy: both intents wait in agy's own queue.
+    set(json!({"status":"working","working_polls":100000}));
+    let mut queued = vec![];
+    for (intent, mode) in [("deliver", "submit"), ("when_idle", "queue")] {
+        let body = parity_keys::unified_send(&s, intent, &format!("later {intent}"), now() + 600);
+        let sent = f.send_ok(&body);
+        parity_keys::assert_delivery(&sent, intent, mode, "terminal_input", &["if_busy"]);
+        let id = body["message_id"].as_str().unwrap().to_owned();
+        let r = receipt_until(&id, "queued in agy", &|r| {
+            r["delivery"]["queued"] == true && r["antigravity_input"]["screen_evidence"] == "queued"
+        });
+        assert_eq!(r["state"], "native_accepted", "{r}");
+        assert_eq!(r["antigravity_input"]["key"], "enter", "{r}");
+        assert_eq!(r["antigravity_input"]["screen_evidence"], "queued", "{r}");
+        assert_eq!(r["delivery"]["held"], false);
+        queued.push(id);
+    }
+    // The running turn ends: agy runs the queue.
+    std::fs::write(herdr.join("end-turn"), "").unwrap();
+    for id in &queued {
+        let r = receipt_until(id, "queued message ran", &|r| {
+            r["execution"]["phase"] == "complete"
+        });
+        assert_eq!(r["state"], "completed_with_reply", "{r}");
+        assert_eq!(r["antigravity_input"]["outcome"], "queued", "{r}");
+        assert_eq!(r["delivery"]["queued"], false, "{r}");
+    }
+    assert!(
+        !herdr.join("forbidden").exists(),
+        "no forbidden key was sent"
+    );
+    drop(child);
 }

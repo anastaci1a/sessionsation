@@ -18,9 +18,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 63;
+pub const CONTRACT_MINOR: u32 = 64;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.63.0";
+pub const CONTRACT_VERSION: &str = "1.64.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -2030,6 +2030,8 @@ pub fn capabilities() -> Value {
             "gemini":{"supported":false,"reason":crate::provider::conversation::GEMINI_UNSUPPORTED}},
         "launch_exit":{"code":"PROVIDER_EXITED","window_seconds":crate::launch::LAUNCH_EXIT_WINDOW_SECONDS,"window_env":"SESSIONSATION_LAUNCH_EXIT_WINDOW_SECONDS"},
         "typing_guard":{"checked":["before_first_key","before_enter"],"codes":["TERMINAL_PROVIDER_EXITED","TERMINAL_PANE_IS_SHELL"]}});
+    // Contract 1.64.0 (SM1): one live send request for every provider.
+    value["send_request"] = crate::provider::send::capability();
     // Revision 21: per-account Claude bypass-permissions warning.
     value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.27.0: default statusLine for new managed Claude homes.
@@ -4678,7 +4680,8 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.63.0");
+        assert_eq!(c["contract_version"], "1.64.0");
+        assert_eq!(c["send_request"]["since_contract"], "1.64.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
         assert_eq!(root["layout_version"], 3);

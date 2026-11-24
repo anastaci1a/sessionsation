@@ -3,7 +3,7 @@
   "counters_digest": "3aea17f14456bf1ca4f238860a07c41d1779a29212a2f750108b4b52244041c0",
   "counters": {
     "alive_fns": { "value": 8 },
-    "api_rs_lines": { "value": 5426 },
+    "api_rs_lines": { "value": 5429 },
     "apply_session_input_fns": { "value": 3 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 3 },
@@ -18,9 +18,9 @@
     "doc_bytes:docs/README.md": { "value": 711 },
     "doc_bytes:docs/architecture.md": { "value": 10016 },
     "doc_bytes:docs/cli.md": { "value": 112664 },
-    "doc_bytes:docs/contract.md": { "value": 330549 },
+    "doc_bytes:docs/contract.md": { "value": 336319 },
     "doc_bytes:docs/operations.md": { "value": 29501 },
-    "doc_bytes_total": { "value": 498320 },
+    "doc_bytes_total": { "value": 504090 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 185 },
     "env_scrub_sites": { "value": 51 },
@@ -35,7 +35,7 @@
     "identity_allow_markers": { "value": 0 },
     "json_parse_sites": { "value": 134 },
     "ledger_allow_markers": { "value": 0 },
-    "ledger_opens": { "value": 23 },
+    "ledger_opens": { "value": 24 },
     "locks_allow_markers": { "value": 0 },
     "now_sites": { "value": 26 },
     "oauth_allow_markers": { "value": 2 },
@@ -55,13 +55,13 @@
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
     "sha256_digests": { "value": 31 },
-    "since_contract_literals": { "value": 38 },
+    "since_contract_literals": { "value": 39 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
     "spawn_sites": { "value": 64 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 95735 },
+    "src_lines": { "value": 96301 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -410,7 +410,50 @@
       "reason": "1.63.0: provider::conversation (SM4 reader), provider::stop_shape, native observe, launch exit window, typing guard, empty archive and their unit tests",
       "considered": "n/a",
       "step": "1.63.0"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 3,
+      "reason": "1.64.0 (part A: send): capabilities.send_request (one line, built by provider::send::capability) and the contract-version test",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 5770,
+      "reason": "1.64.0 (part A: send): the unified send section (request, intent mapping, ignored options, delivery block), its Client upgrade note and the Messaging pointer",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 5770,
+      "reason": "1.64.0 (part A: send): contract.md entry above",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "ledger_opens",
+      "by": 1,
+      "reason": "1.64.0 (part A: send): a Codex interrupt intent reads its binding (public::resolve_interrupt) so a re-send of the same message id keeps the mode and turn target its first send bound",
+      "considered": "doing the lookup inside send_public's existing ledger section would hold the ledger lock while the steer target is read over the app-server socket (the 1.46.4 rule forbids native I/O under the ledger lock); passing the stored binding back from the dispatcher would need the same open one layer up",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "since_contract_literals",
+      "by": 1,
+      "reason": "1.64.0 (part A: send): capabilities.send_request (SM1), in provider::send::capability",
+      "considered": "adding the intents to an existing messaging capability (native_send_checks, claude_input_delivery) would describe one provider-neutral request inside a provider's block; contract.rs (the owner) does not exist yet",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 566,
+      "reason": "1.64.0 (part A: send): provider::send (intent mapping, ignored options, delivery block, capability), the dispatcher plan, Codex interrupt resolution, receipt delivery fields and their unit tests",
+      "considered": "n/a",
+      "step": "1.64.0"
     }
   ],
-  "enforced": { "oauth": "S0" }
+  "enforced"
+: { "oauth": "S0" }
 }

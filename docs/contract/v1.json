@@ -580,8 +580,12 @@
             "submit",
             "queue",
             "resume",
-            "steer"
-          ]
+            "steer",
+            "deliver",
+            "when_idle",
+            "interrupt"
+          ],
+          "description": "Since 1.64.0: deliver, when_idle and interrupt are provider-neutral intents, mapped per provider (capabilities.send_request); options a provider does not use are reported in ignored_options, not refused."
         },
         "text": {
           "type": "string",
@@ -692,6 +696,9 @@
     "Receipt": {
       "type": "object",
       "properties": {
+        "delivery": {"$ref": "#/$defs/SendDelivery"},
+        "ignored_options": {"type": "array", "items": {"type": "string"}, "description": "Since 1.64.0: request options the target provider does not use; accepted, not refused."},
+        "ignored_reason": {"type": ["string", "null"]},
         "message_id": {
           "type": "string",
           "format": "uuid"
@@ -1234,6 +1241,21 @@
           ]
         }
       }
+    },
+    "SendDelivery": {
+      "type": "object",
+      "description": "Since 1.64.0: the uniform delivery block of every live api send result and receipt (any provider).",
+      "required": ["mode_requested", "intent", "mode_used", "framing", "queued", "held", "fallback_reason"],
+      "properties": {
+        "mode_requested": {"type": "string"},
+        "intent": {"enum": ["deliver", "when_idle", "interrupt", null]},
+        "mode_used": {"enum": ["submit", "queue", "steer"]},
+        "framing": {"enum": ["native_queue", "native_steer", "peer_message", "terminal_input", "hosted_stream_json"]},
+        "queued": {"type": "boolean"},
+        "held": {"type": "boolean"},
+        "fallback_reason": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
     },
     "StopResult": {
       "type": "object",

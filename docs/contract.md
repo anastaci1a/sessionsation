@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.63.0`
+so revision N maps to contract `1.N.0` and the current contract is `1.64.0`
 (the 1.62.1 PATCH is described under [Idle Codex meters stay fresh](#idle-codex-meters-stay-fresh-1621) and the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -384,6 +384,9 @@ Revision 18: a Submit or Queue to a session that waits on an approval or user in
 is a definite refusal, `rejected` with reason `approval_or_user_input_required`,
 before any native write; a resend returns that refusal and never dispatches.
 Expiry is an unsent submission deadline, not cancellation of accepted native work.
+Since [1.64.0](#1640-part-a-send-one-send-request-for-every-provider) one live request shape serves every
+provider: the intents `deliver`, `when_idle` and `interrupt` are mapped per provider, and options a provider
+does not use are reported in `ignored_options`, not refused.
 
 ### HERDR-owned session names (revision 6)
 
@@ -1014,6 +1017,15 @@ Keep the sole supervisor and existing receipt databases; a client upgrade is not
 an owner handoff. Current installation selection and consumer pins stay unchanged
 until their separate compatibility review. New archive views require accepting
 `availability:archived`; keep default filtering for existing active-session clients.
+
+1.64.0 (SM1) turns refusals into success: a live `api send` option that the target's provider does not
+use (a recovery intent or a Codex turn target sent to Claude or Antigravity; `delivery:"peer_message"`
+sent to Codex or Antigravity; `timeout_seconds` sent to Codex; `steering.interrupt` sent to Codex or
+Antigravity) is now accepted, left out, and named in the result's `ignored_options` with `ignored_reason`. Before 1.64.0 these were
+`PROVIDER_DELIVERY_UNSUPPORTED`, `DELIVERY_UNAVAILABLE`, `UNSUPPORTED_PROVIDER_OPERATION` or
+`INVALID_REQUEST`. A client that relied on the refusal to detect a provider must read `ignored_options`
+(or `capabilities.send_request.providers`) instead. Unknown option values and a path a provider has but
+cannot use now (`TERMINAL_QUEUE_UNSUPPORTED`, `PEER_INTERRUPT_UNSUPPORTED`) are still refused.
 
 ## Public turn checkpoints (revision 7)
 
@@ -4363,3 +4375,69 @@ hidden like any archived session, and restore shows it again (also `nothing_to_a
 archive/restore/delete operation record now carries `nothing_to_archive` (false otherwise). Such a row
 (`availability:"stale"`) now has `capabilities.archive:true`. Files without the transcript still fail
 `HISTORY_NOT_FOUND`. A Codex session is listed only with a rollout, so it always has history.
+
+### 1.64.0 (part A: send): one send request for every provider
+
+MINOR (new mode values, new result and receipt fields, and a capability; options a provider does not
+use are now accepted and reported instead of refused, see [Client upgrade notes](#client-upgrade-notes);
+no error code is removed or renamed; receipt states and facts keep their meaning).
+
+**One request (SM1).** A live `api send` takes the same body for Codex, Claude, Antigravity and Gemini
+sessions, and the caller never branches on the provider:
+
+```json
+{"api_version":1,"message_id":"<uuid>","session_id":"<uuid>","expected_generation":"<hex>",
+ "mode":"deliver","text":"...","expires_at":1800000600,"origin":"agent","from_component":"guard"}
+```
+
+`message_id` is the idempotency key, as before: the same body again returns the same message, and an
+uncertain write is never sent again. `origin` and `from_component` (the sender) keep their meaning.
+`mode` is an intent, or one of the provider modes `submit`, `queue`, `steer` (unchanged). The intent is
+mapped inside Sessionsation:
+
+| Intent | Codex | Claude | Antigravity, Gemini |
+|---|---|---|---|
+| `deliver` | `submit` with `if_busy:"queue"`: idle starts a turn, busy waits in the native queue | `submit` (priority `next`): idle starts a turn, mid-turn the running turn reads it at its next tool boundary (typed `queued_command` or peer message) | `submit`: idle Enter starts a turn, busy Enter follows `queuedMessages` |
+| `when_idle` | `queue` (native queue) | `queue` (priority `later`, peer message) | `queue` (the key that queues) |
+| `interrupt` | `steer` of the active turn, its target read by Sessionsation (as `steer-target`); with no turn it can steer, delivered as `deliver` with `delivery.fallback_reason` | `steer` | `steer` (the key that sends immediately) |
+
+`interrupt` hands the text to the running turn as soon as the provider allows; it never cancels the
+turn (only `steering.interrupt:true` on a hosted Claude session does). A Codex `interrupt` that names
+its own `steering` target is sent with it. Per-session serialization, the peer-message protocol and the
+initial-prompt (`first_turn`) launch contract are unchanged; `resume` and `new` (headless and recovery
+sends) are not affected.
+
+**Options any provider accepts.** `delivery`, `await_reply`, `timeout_seconds`, `if_busy`, `recovery`
+and the `steering` keys may be sent to any provider. One the target's provider does not use is left out
+and listed:
+
+| Option | Used by | Ignored for |
+|---|---|---|
+| `if_busy` | Codex `submit` (with an intent, the intent sets it) | Claude, Antigravity, Gemini; Codex `when_idle` / `interrupt` |
+| `recovery` | Codex `resume` | Claude, Antigravity, Gemini |
+| `steering.expected_turn_id`, `steering.expected_runtime_generation` | Codex `steer` | Claude, Antigravity, Gemini |
+| `steering.interrupt` | hosted Claude | Codex, Antigravity, Gemini |
+| `timeout_seconds` | Claude, Antigravity, Gemini workers | Codex |
+| `await_reply` | Claude peer messages | Codex, Antigravity, Gemini (accepted as before, now also listed) |
+| `delivery` (`peer_message`, `native`, `hosted_stream_json`, `terminal_input`) | Claude; `terminal_input` also Antigravity and Gemini | every value but `auto` on Codex; `peer_message`, `native`, `hosted_stream_json` on Antigravity and Gemini |
+
+Every live result and receipt carries `ignored_options` (a list, empty when nothing was left out) and
+`ignored_reason` (one sentence naming each option and why, or null), and is otherwise unchanged.
+
+**One delivery block.** Every live result and receipt (any provider, also re-sends and older messages)
+has
+
+```json
+"delivery":{"mode_requested":"deliver","intent":"deliver","mode_used":"queue","framing":"native_queue",
+ "queued":true,"held":false,"fallback_reason":null}
+```
+
+`mode_used` is the provider mode that ran (`queue` for a Codex submit that went through the native
+queue), `framing` the path: `native_queue`, `native_steer`, `peer_message`, `terminal_input` or
+`hosted_stream_json`. `queued` is true while the provider keeps the message in its own queue behind a
+running turn (Codex `native_accepted`; Claude typed `queued_command` not yet read, a peer message not yet
+recorded, a hosted `queued` event; agy's queue row). `held` is true while it is kept back before the
+conversation (a Codex compaction or model-change hold, a Claude peer message reported `held`). Both
+become false once the turn takes the message. A message sent before 1.64.0 reports its own mode as
+`mode_requested`, `intent:null` and empty `ignored_options`. `capabilities.send_request` lists the
+intents, the per-provider mapping and the options each provider ignores.

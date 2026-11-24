@@ -1139,35 +1139,39 @@ pub async fn dispatch_as(
     // match). Only native Claude envelopes use it; Codex and headless sends validate and
     // ignore it.
     let component = take_component(&mut v)?;
-    let id = v["message_id"].as_str().unwrap_or_default();
     let headless =
         |v: Value| -> Result<Request> { serde_json::from_value(v).context("INVALID_REQUEST") };
     if v["mode"] == "new" {
         return send(paths, headless(v)?).await;
     }
-    if super::claude_steer::exists(paths, id) {
-        return super::claude_steer::send(paths, v, component, env_component).await;
+    let provider = v["session_id"]
+        .as_str()
+        .and_then(|sid| catalog_provider(paths, sid))
+        .and_then(|p| ProviderId::parse(&p).ok());
+    // Contract 1.64.0 (SM1): one live request shape; intents and per-provider options are
+    // mapped for the target's provider before its own sender sees the request.
+    let plan = crate::provider::send::plan(provider, &mut v);
+    let id = v["message_id"].as_str().unwrap_or_default().to_owned();
+    if super::claude_steer::exists(paths, &id) {
+        return super::claude_steer::send_planned(paths, v, component, env_component, plan).await;
     }
-    if exists(paths, id) {
+    if exists(paths, &id) {
         let request = headless(v).map_err(|_| anyhow::anyhow!("MESSAGE_ID_CONFLICT"))?;
         return send(paths, request).await;
     }
-    let native_target = v["session_id"]
-        .as_str()
-        .and_then(|sid| catalog_provider(paths, sid))
-        .and_then(|p| native::of(&p));
-    if native_target.is_some() {
+    if provider.and_then(|p| native::of(p.as_str())).is_some() {
         match v["mode"].as_str() {
             Some("resume") => return send(paths, headless(v)?).await,
             Some("submit" | "queue" | "steer") => {
-                return super::claude_steer::send(paths, v, component, env_component).await;
+                return super::claude_steer::send_planned(paths, v, component, env_component, plan)
+                    .await;
             }
             _ => bail!("INVALID_REQUEST"),
         }
     }
     let request: super::PublicRequest =
         serde_json::from_value(v).map_err(|e| anyhow::anyhow!("INVALID_REQUEST: {e}"))?;
-    super::send_public(paths, request).await
+    super::public::send_planned(paths, request, plan).await
 }
 /// Remove and validate the optional `from_component` field (contract 1.50.0); `null` is absent.
 pub fn take_component(v: &mut Value) -> Result<Option<String>> {

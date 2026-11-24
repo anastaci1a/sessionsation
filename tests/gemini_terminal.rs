@@ -418,7 +418,14 @@ async fn gemini_terminal_input_submits_queues_and_steers_as_the_user() {
     );
     let mut peer = body("submit", &s, "x");
     peer["delivery"] = json!("peer_message");
-    assert!(f.send_err(&peer).contains("DELIVERY_UNAVAILABLE"));
+    // Since 1.64.0 a Claude path is ignored for Gemini, not refused: the (expired, so never
+    // sent) request fails only on its expiry.
+    peer["expires_at"] = json!(1);
+    let e = f.send_err(&peer);
+    assert!(
+        e.contains("INVALID_EXPIRY") && !e.contains("DELIVERY_UNAVAILABLE"),
+        "{e}"
+    );
     assert!(f.writes().is_empty(), "admission refusals write nothing");
 
     // 1. Idle submit with a two-line draft: cleared, typed, submitted, draft back.

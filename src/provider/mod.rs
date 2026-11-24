@@ -13,6 +13,7 @@ pub mod codex;
 pub mod conversation;
 pub mod gemini;
 pub mod native;
+pub mod send;
 pub mod session_meters;
 pub mod stop_shape;
 pub mod usage_meter;
