@@ -408,7 +408,8 @@ and [architecture](architecture.md).
 
 Passive native readiness is available through `sessionsation api observe --session
 BACKEND-ID --expected-generation GENERATION`; see the authoritative
-[readiness and receipt contract](contract.md#passive-readiness). Aggregate state/watch
+[readiness and receipt contract](contract.md#passive-readiness). `--history [N]` adds the recent turns
+(contract 1.63.0, every provider). Aggregate state/watch
 remains attachment discovery, not proof of idle activity.
 
 Running Claude and Gemini rows carry `active_since` (Unix seconds; revision 17)

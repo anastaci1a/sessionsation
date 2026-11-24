@@ -17,7 +17,7 @@ The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
 `contract_version` (a string such as `"1.25.0"`) by `api version` and
 `api capabilities`. The integer `contract_revision` is retained for backward
 compatibility and always equals the MINOR part: revisions 1-29 were all additive,
-so revision N maps to contract `1.N.0` and the current contract is `1.62.1`
+so revision N maps to contract `1.N.0` and the current contract is `1.63.0`
 (the 1.62.1 PATCH is described under [Idle Codex meters stay fresh](#idle-codex-meters-stay-fresh-1621) and the 1.57.1 PATCH is described under [Cheap supervisor loop](#cheap-supervisor-loop-1571) and the 1.25.1 PATCH is described under [Codex 0.166.0 native profile](#codex-01660-native-profile-1251) and the 1.31.1 PATCH under [Deletion after a home move](#deletion-after-a-home-move-1311) and the 1.35.1 PATCH under [Observed inline operations are complete](#observed-inline-operations-are-complete-1351) and the 1.40.1 PATCH under [Stale stop gates and unsent receipts](#stale-stop-gates-and-unsent-receipts-1401) and the 1.47.1 PATCH under [Compaction follow-up observes real compaction turns](#compaction-follow-up-observes-real-compaction-turns-1471) and the 1.48.1 PATCH under [No steering while a compaction is pending](#no-steering-while-a-compaction-is-pending-1481) and the 1.49.1 PATCH under [Launches wait for account operations](#launches-wait-for-account-operations-1491)).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`), and the package version is independent.
@@ -192,6 +192,10 @@ selected session use:
 ```sh
 sessionsation api observe --session BACKEND-ID --expected-generation GENERATION
 ```
+
+Since [1.63.0](#provider-parity-observe-one-stop-shape-early-provider-exit-empty-archive-1630) it answers for every
+provider and adds a `conversation` block (last reply, last instruction, compaction time; `--history [N]` adds the recent
+turns); the readiness rules below are Codex's.
 
 This performs read-only native status/public-summary requests on the existing
 owner-managed socket. It never sends input, resumes/loads a thread, starts a worker
@@ -4282,3 +4286,80 @@ full `state` (and once when the supervisor starts), so with no full-state caller
 another process wrote a fresh one. Cached state is therefore at most about 20 s old while the supervisor runs
 (plus a build of well under a second), and `snapshot.fresh` (at most 30 s old, was 15) and `age_seconds` stay
 truthful: they describe the file, which is no fresher when the supervisor is down.
+
+### Provider parity: observe, one stop shape, early provider exit, empty archive (1.63.0)
+
+MINOR (additive: new fields and one flag; `api observe` now answers for Claude, Antigravity and Gemini
+sessions instead of refusing with `UNSUPPORTED_PROVIDER_OPERATION`; two new reason codes,
+`TERMINAL_PROVIDER_EXITED` and `TERMINAL_PANE_IS_SHELL`, and `PROVIDER_EXITED` (a hosted Claude reason) now also ends a launch; an archive of a session without history now completes
+instead of failing `HISTORY_NOT_FOUND`; no error code is removed or renamed). 1.62.x is described
+separately.
+
+**Observe for every provider (SM4).** `api observe --session ID --expected-generation G [--history [N]]`
+returns the `Readiness` keys for every provider plus a `conversation` block with one shape:
+
+```json
+{"supported":true,"reason":null,"source":"transcript","history_turns":10,
+ "last_reply":{"text":"done","at":1800000000,"truncated":false},"last_reply_source":"transcript","last_reply_reason":null,
+ "last_instruction":{"text":"fix it","at":1799999990,"truncated":false},"last_instruction_source":"transcript","last_instruction_reason":null,
+ "compacted_at":1799990000,"compacted_at_source":"transcript","compacted_at_reason":null,
+ "recent_turns":[{"instruction":{"text":"fix it","at":1799999990,"truncated":false},"reply":{"text":"done","at":1800000000,"truncated":false},"started_at":1799999990,"ended_at":1800000000}],
+ "recent_turns_source":"transcript","recent_turns_reason":null}
+```
+
+A known value has its `<field>_source` and a null reason; an unknown one is null with `<field>_reason`
+(`no_history_file`, `history_unreadable`, `not_recorded`, `not_compacted`, `history_not_requested`, or the
+provider reason), never a guess. `--history` alone means 10 turns, at most 50; without it
+`recent_turns` is null (`history_not_requested`). Texts are cut at 8192 bytes (`last_*`) and 2048 bytes
+(turn texts) on a character boundary, with `truncated:true`. Every read is a bounded tail (256 KiB,
+then 1 MiB, then 4 MiB) of one provider file; nothing is cached, no provider process is contacted.
+
+| Field | Codex (`rollout`) | Claude (`transcript`) | Antigravity (`transcript_log`) | Gemini |
+|---|---|---|---|---|
+| `last_instruction` | `event_msg` `user_message` | human `user` record (not meta, tool results or the compaction summary) | `USER_INPUT` from `USER_EXPLICIT` (text inside `<USER_REQUEST>`) | null |
+| `last_reply` | `event_msg` `agent_message` | text blocks of `assistant` records | `PLANNER_RESPONSE` | null |
+| `compacted_at` | `compacted` / `context_compacted` | `system` `compact_boundary` | null (agy records no compaction step) | null |
+| `recent_turns` | instruction to next instruction; `task_complete` / `turn_aborted` end it | same | same | null |
+
+Gemini is `conversation.supported:false` with `reason` "Gemini CLI no longer supports individual
+accounts (migrate to Antigravity)", every field null with that reason, and `state:"unknown"`,
+`reason:"provider_unsupported"`. Claude and Antigravity readiness comes from the native observation:
+`state` `idle`/`working`/`errored` while a verified process runs it (from the live activity facts),
+`disconnected` otherwise; `reason` is `native_input_via_send` while running (input is gated by
+`api send`, so every `actions.*` is unavailable with that reason), `no_live_process` or
+`session_archived`; `runtime_generation` is null and `delivery_semantics` is `api_send`. Codex keeps
+its native readiness unchanged. `api observations` (batch) stays Codex-only. `capabilities.observe_conversation`
+describes the block.
+
+**One stop result shape (P1).** Every `api stop` result (Codex terminate job, Claude and Antigravity
+SIGTERM, the idempotent `already_stopped` answer) has the same keys: `id`, `kind`, `session_id`,
+`source_session_id`, `provider`, `phase`, `detail`, `already_stopped`, `pid`, `process_start`, `signal`,
+`pane_closed`, `pane_close_reason`, `interrupted_turn`, `auto_start`, `provider_conversation_id`,
+`source_account_id`. A value the provider path did not report is null. `session_id` and
+`source_session_id` both name the catalog session for one minor version (1.55.0's `already_stopped`
+used `session_id`, the others `source_session_id`). `already_stopped` is now always present (false
+after a real stop); `auto_start` is null unless `--disable-auto-start` was given. Codex adds `pid` and
+`process_start` of the verified source process, `signal:"SIGTERM"` once the job is complete (null while
+queued) and `interrupted_turn:null` (the job waits for idle); its job keys stay. An already-stopped
+result has `interrupted_turn:false` and `pane_closed:false`. Gemini has no stop: the refusal is
+`UNSUPPORTED_PROVIDER_OPERATION` with `error.supported:false` and `error.reason` (the text above), also
+the row's `capability_reasons.stop`. `capabilities.stop_result` lists the keys.
+
+**A provider that exits right after launch.** A launch whose exact recorded provider process (pid and
+start time) exits before it is observed running, or within 15 s after
+(`SESSIONSATION_LAUNCH_EXIT_WINDOW_SECONDS`, `0` turns the watch off), ends `phase:"failed"` with
+`detail` `PROVIDER_EXITED: …`, not `running` or `uncertain`; the catalog entry stays, as a stopped
+session (seen live: Gemini's folder-trust "restarting" exited and left a bare shell). A
+`session launch` whose provider exited before the brief was sent ends `failed` / `provider_exited`.
+
+**Typing checks the pane.** Terminal input (Claude `terminal_input`, Gemini, Antigravity) re-checks right
+before the first key and right before Enter that the exact provider process still runs and that HERDR
+does not report a bare shell in front of the pane. Otherwise the request is `rejected` with
+`TERMINAL_PROVIDER_EXITED` or `TERMINAL_PANE_IS_SHELL` and nothing (more) is typed.
+
+**Archive of a session that never had a conversation.** A native session with no history file and no
+other files archives cleanly: the operation completes with `nothing_to_archive:true`, the entry is
+hidden like any archived session, and restore shows it again (also `nothing_to_archive:true`). Every
+archive/restore/delete operation record now carries `nothing_to_archive` (false otherwise). Such a row
+(`availability:"stale"`) now has `capabilities.archive:true`. Files without the transcript still fail
+`HISTORY_NOT_FOUND`. A Codex session is listed only with a rollout, so it always has history.

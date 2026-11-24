@@ -18,9 +18,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 62;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.62.1";
+pub const CONTRACT_MINOR: u32 = 63;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.63.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -2014,6 +2014,22 @@ pub fn capabilities() -> Value {
             "subagents_running":{"claude":null,"codex":null,"gemini":null,"antigravity":null},
             "background_tasks":{"claude":null,"codex":null,"gemini":null,"antigravity":null}},
         "unknown":"null with <field>_reason, never a guess","cached_state":true});
+    // Contract 1.63.0 (SM4, P1): observe and stop have one shape for every provider.
+    value["observe_conversation"] = json!({"since_contract":"1.63.0","command":"observe","field":"conversation",
+        "fields":crate::provider::conversation::FIELDS,"per_field":["<field>_source","<field>_reason"],
+        "history":{"flag":"--history","default":crate::provider::conversation::DEFAULT_TURNS,"max":crate::provider::conversation::MAX_TURNS},
+        "max_text_bytes":crate::provider::conversation::MAX_TEXT,"max_turn_text_bytes":crate::provider::conversation::MAX_TURN_TEXT,
+        "tail_bytes":crate::provider::conversation::TAILS,
+        "sources":{"codex":"rollout","claude":"transcript","antigravity":"transcript_log","gemini":null},
+        "providers":{"codex":{"supported":true},"claude":{"supported":true},"antigravity":{"supported":true},
+            "gemini":{"supported":false,"reason":crate::provider::conversation::GEMINI_UNSUPPORTED}},
+        "batch":"api observations stays Codex-only"});
+    value["stop_result"] = json!({"since_contract":"1.63.0","keys":crate::provider::stop_shape::KEYS,
+        "both_session_ids_until":"1.64.0","unknown":"null",
+        "providers":{"codex":{"supported":true},"claude":{"supported":true},"antigravity":{"supported":true},
+            "gemini":{"supported":false,"reason":crate::provider::conversation::GEMINI_UNSUPPORTED}},
+        "launch_exit":{"code":"PROVIDER_EXITED","window_seconds":crate::launch::LAUNCH_EXIT_WINDOW_SECONDS,"window_env":"SESSIONSATION_LAUNCH_EXIT_WINDOW_SECONDS"},
+        "typing_guard":{"checked":["before_first_key","before_enter"],"codes":["TERMINAL_PROVIDER_EXITED","TERMINAL_PANE_IS_SHELL"]}});
     // Revision 21: per-account Claude bypass-permissions warning.
     value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.27.0: default statusLine for new managed Claude homes.
@@ -4662,7 +4678,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.62.1");
+        assert_eq!(c["contract_version"], "1.63.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
         assert_eq!(root["layout_version"], 3);

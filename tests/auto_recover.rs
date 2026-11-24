@@ -387,7 +387,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.62.1");
+    assert_eq!(caps["contract_version"], "1.63.0");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
@@ -1314,7 +1314,8 @@ async fn claude_stop_with_disable_auto_start_disables_it_and_without_the_flag_ke
     assert_eq!(stopped["pane_closed"], true, "{stopped}");
     assert_eq!(stopped["pane_close_reason"], Value::Null);
     assert!(gone(pid));
-    assert!(stopped.get("auto_start").is_none(), "{stopped}");
+    // Contract 1.63.0: the shared stop key set always has auto_start; null without the flag.
+    assert!(stopped["auto_start"].is_null(), "{stopped}");
     assert_eq!(t.session(&id)["auto_start"]["mode"], "start");
     // With the flag on an already stopped session: idempotent, and disabled.
     let again = t.stop(&id, &["--disable-auto-start"]);

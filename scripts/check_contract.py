@@ -353,6 +353,11 @@ with tempfile.TemporaryDirectory() as directory:
             assert meter["providers"]["claude"]["requires_session"] is False and meter["providers"]["codex"]["requires_session"] is False, meter
             assert meter["providers"]["claude"]["background_renews_token"] is False, meter
             assert value["result"]["session_meters"]["fields"] == ["context_pct", "subagents_running", "background_tasks"]
+            observe = value["result"]["observe_conversation"]
+            assert observe["since_contract"] == "1.63.0" and observe["fields"] == ["last_reply", "last_instruction", "compacted_at", "recent_turns"], observe
+            assert observe["providers"]["gemini"]["supported"] is False, observe
+            stop = value["result"]["stop_result"]
+            assert stop["since_contract"] == "1.63.0" and "source_session_id" in stop["keys"] and "session_id" in stop["keys"], stop
             reuse = value["result"]["pane_reuse"]
             assert reuse["since_contract"] == "1.52.0" and reuse["version"] == 1, reuse
             assert reuse["order"] == ["recorded_pane_if_idle_shell", "same_name_single_pane_idle_tab_in_space", "new_tab"], reuse

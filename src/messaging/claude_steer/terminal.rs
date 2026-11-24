@@ -83,7 +83,7 @@ pub const REASONS: &[&str] = &[
     "TERMINAL_AGENT_UNKNOWN",
     "TERMINAL_AGENT_BLOCKED",
     "TERMINAL_PANE_IS_SHELL",
-    "PROVIDER_EXITED",
+    "TERMINAL_PROVIDER_EXITED",
     "TERMINAL_VIEW_NOT_MAIN",
     "TERMINAL_VIEW_UNDETERMINED",
     "TERMINAL_OVERLAY_UNIDENTIFIED",
@@ -587,7 +587,7 @@ impl Host {
     /// keys would run there. `Err` is the refusal code; nothing was typed.
     pub(crate) fn provider_in_front(&self, pid: u32, start: u64) -> Result<(), &'static str> {
         if crate::external::attachment_definitely_gone(pid, start) {
-            return Err("PROVIDER_EXITED");
+            return Err("TERMINAL_PROVIDER_EXITED");
         }
         let info = crate::terminal::call_at(
             &self.session,

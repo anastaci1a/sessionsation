@@ -3,7 +3,7 @@
   "counters_digest": "3aea17f14456bf1ca4f238860a07c41d1779a29212a2f750108b4b52244041c0",
   "counters": {
     "alive_fns": { "value": 8 },
-    "api_rs_lines": { "value": 5379 },
+    "api_rs_lines": { "value": 5426 },
     "apply_session_input_fns": { "value": 3 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 3 },
@@ -17,21 +17,21 @@
     "doc_bytes:agents/README.md": { "value": 9276 },
     "doc_bytes:docs/README.md": { "value": 711 },
     "doc_bytes:docs/architecture.md": { "value": 10016 },
-    "doc_bytes:docs/cli.md": { "value": 112591 },
-    "doc_bytes:docs/contract.md": { "value": 323877 },
+    "doc_bytes:docs/cli.md": { "value": 112664 },
+    "doc_bytes:docs/contract.md": { "value": 330549 },
     "doc_bytes:docs/operations.md": { "value": 29501 },
-    "doc_bytes_total": { "value": 491575 },
+    "doc_bytes_total": { "value": 498320 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "duration_literals": { "value": 184 },
+    "duration_literals": { "value": 185 },
     "env_scrub_sites": { "value": 51 },
-    "error_code_literals": { "value": 677 },
+    "error_code_literals": { "value": 680 },
     "file_cache_statics": { "value": 8 },
     "flock_sites": { "value": 83 },
     "fs2_imports": { "value": 30 },
     "fs_write_sites": { "value": 5 },
     "generation_allow_markers": { "value": 0 },
     "herdr_allow_markers": { "value": 0 },
-    "herdr_cli_callers": { "value": 41 },
+    "herdr_cli_callers": { "value": 42 },
     "identity_allow_markers": { "value": 0 },
     "json_parse_sites": { "value": 134 },
     "ledger_allow_markers": { "value": 0 },
@@ -47,7 +47,7 @@
     "provider_enum_dispatch": { "value": 164 },
     "provider_ops_allow_markers": { "value": 0 },
     "provider_string_compares": { "value": 75 },
-    "raw_sleeps": { "value": 100 },
+    "raw_sleeps": { "value": 101 },
     "receipts_sites": { "value": 2 },
     "records_allow_markers": { "value": 0 },
     "rename_sites": { "value": 26 },
@@ -55,13 +55,13 @@
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
     "sha256_digests": { "value": 31 },
-    "since_contract_literals": { "value": 36 },
+    "since_contract_literals": { "value": 38 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
     "spawn_sites": { "value": 64 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 94809 },
+    "src_lines": { "value": 95735 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -340,6 +340,76 @@
       "reason": "1.62.1: supervisor keeps the active state snapshot fresh (snapshot_monitor, refresh_snapshot_if_due)",
       "considered": "n/a",
       "step": "1.62.1"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 47,
+      "reason": "1.63.0: observe --history flag, Gemini stop refusal, stop result shaping in the stop paths, capabilities observe_conversation and stop_result",
+      "considered": "n/a",
+      "step": "1.63.0"
+    },
+    {
+      "counter": "doc_bytes:docs/cli.md",
+      "by": 73,
+      "reason": "1.63.0: one sentence pointing at observe --history",
+      "considered": "n/a",
+      "step": "1.63.0"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 6672,
+      "reason": "1.63.0: the observe conversation block, one stop shape, PROVIDER_EXITED launch and typing checks, empty-session archive",
+      "considered": "n/a",
+      "step": "1.63.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 6745,
+      "reason": "1.63.0: contract.md and cli.md entries above",
+      "considered": "n/a",
+      "step": "1.63.0"
+    },
+    {
+      "counter": "duration_literals",
+      "by": 1,
+      "reason": "1.63.0: the 250 ms poll of the launch exit window (launch::watch_launch_window), scaled by timing::scaled",
+      "considered": "timing.rs has no shared poll-cadence constant yet (S-step owner); a new constant there would be a new owner, which this step must not add",
+      "step": "1.63.0"
+    },
+    {
+      "counter": "error_code_literals",
+      "by": 3,
+      "reason": "1.63.0: the launch detail \"PROVIDER_EXITED: ...\" (launch failed: the exact provider process exited; the bare code already existed for hosted Claude), and the typing refusals TERMINAL_PROVIDER_EXITED (the exact provider process is gone) and TERMINAL_PANE_IS_SHELL (HERDR reports the pane's shell in front)",
+      "considered": "reusing TERMINAL_NOT_ATTACHED or PROVIDER_LAUNCH_FAILED hides why nothing was typed and which pane state the caller must fix; codes.rs (S9) does not exist yet to declare them in",
+      "step": "1.63.0"
+    },
+    {
+      "counter": "herdr_cli_callers",
+      "by": 1,
+      "reason": "1.63.0: terminal::Host::provider_in_front reads pane process-info before typing (one shared site for Claude, Gemini and Antigravity typing)",
+      "considered": "terminal::state_at is the same counted call and errors on an ambiguous foreground, which would refuse valid deliveries; the host owner (src/host/) does not exist yet",
+      "step": "1.63.0"
+    },
+    {
+      "counter": "raw_sleeps",
+      "by": 1,
+      "reason": "1.63.0: the launch exit window poll (launch::watch_launch_window), scaled by timing::scaled",
+      "considered": "a pidfd wait would need a new identity site (pidfd_sites) and the provider is not our child; polling the exact pid+start through external::attachment_definitely_gone reuses the identity owner",
+      "step": "1.63.0"
+    },
+    {
+      "counter": "since_contract_literals",
+      "by": 2,
+      "reason": "1.63.0: capabilities observe_conversation (SM4) and stop_result (P1)",
+      "considered": "one combined block would mix two unrelated contracts; contract.rs (the owner) does not exist yet",
+      "step": "1.63.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 926,
+      "reason": "1.63.0: provider::conversation (SM4 reader), provider::stop_shape, native observe, launch exit window, typing guard, empty archive and their unit tests",
+      "considered": "n/a",
+      "step": "1.63.0"
     }
   ],
   "enforced": { "oauth": "S0" }

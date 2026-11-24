@@ -1235,6 +1235,52 @@
         }
       }
     },
+    "StopResult": {
+      "type": "object",
+      "description": "Since 1.63.0: every api stop result (any provider; also already_stopped) carries these keys; unknown values are null. session_id and source_session_id both name the catalog session.",
+      "required": ["id", "kind", "session_id", "source_session_id", "provider", "phase", "detail", "already_stopped", "pid", "process_start", "signal", "pane_closed", "pane_close_reason", "interrupted_turn", "auto_start", "provider_conversation_id", "source_account_id"],
+      "properties": {
+        "session_id": {"type": "string"},
+        "source_session_id": {"type": ["string", "null"]},
+        "provider": {"enum": ["codex", "claude", "antigravity"]},
+        "phase": {"type": "string"},
+        "already_stopped": {"type": "boolean"},
+        "pid": {"type": ["integer", "null"]},
+        "process_start": {"type": ["integer", "null"]},
+        "signal": {"enum": ["SIGTERM", null]},
+        "pane_closed": {"type": ["boolean", "null"]},
+        "pane_close_reason": {"type": ["string", "null"]},
+        "interrupted_turn": {"type": ["boolean", "null"]},
+        "auto_start": {"type": ["object", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "ObserveText": {
+      "type": ["object", "null"],
+      "required": ["text", "at", "truncated"],
+      "properties": {"text": {"type": "string"}, "at": {"type": ["integer", "null"]}, "truncated": {"type": "boolean"}}
+    },
+    "ObserveConversation": {
+      "type": "object",
+      "description": "Since 1.63.0 (api observe): last reply, last instruction, compaction time and recent turns in one shape for every provider; each field has <field>_source (when known) and <field>_reason (when null).",
+      "required": ["supported", "reason", "source", "history_turns", "last_reply", "last_reply_source", "last_reply_reason", "last_instruction", "last_instruction_source", "last_instruction_reason", "compacted_at", "compacted_at_source", "compacted_at_reason", "recent_turns", "recent_turns_source", "recent_turns_reason"],
+      "properties": {
+        "supported": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]},
+        "source": {"enum": ["rollout", "transcript", "transcript_log", null]},
+        "history_turns": {"type": ["integer", "null"], "minimum": 1, "maximum": 50},
+        "last_reply": {"$ref": "#/$defs/ObserveText"},
+        "last_instruction": {"$ref": "#/$defs/ObserveText"},
+        "compacted_at": {"type": ["integer", "null"]},
+        "recent_turns": {
+          "type": ["array", "null"],
+          "items": {"type": "object", "required": ["instruction", "reply", "started_at", "ended_at"],
+            "properties": {"instruction": {"$ref": "#/$defs/ObserveText"}, "reply": {"$ref": "#/$defs/ObserveText"},
+              "started_at": {"type": ["integer", "null"]}, "ended_at": {"type": ["integer", "null"]}}}
+        }
+      },
+      "additionalProperties": false
+    },
     "LauncherPlan": {
       "type": "object",
       "required": [
@@ -2528,7 +2574,8 @@
         },
         "can_cancel": {
           "const": false
-        }
+        },
+        "nothing_to_archive": {"type": "boolean", "description": "Since 1.63.0: true when the session never had a conversation (no history file); archive only hid the entry, restore only showed it again."}
       },
       "additionalProperties": true
     },
@@ -5737,6 +5784,8 @@
               "TERMINAL_HOST_UNAVAILABLE",
               "TERMINAL_AGENT_UNKNOWN",
               "TERMINAL_AGENT_BLOCKED",
+              "TERMINAL_PANE_IS_SHELL",
+              "TERMINAL_PROVIDER_EXITED",
               "TERMINAL_VIEW_NOT_MAIN",
               "TERMINAL_VIEW_UNDETERMINED",
               "TERMINAL_OVERLAY_UNIDENTIFIED",
