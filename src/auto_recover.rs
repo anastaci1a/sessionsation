@@ -595,7 +595,7 @@ pub fn capability_start() -> Value {
         "default_prompt_crash":"Auto-start: this session's process crashed (<what was seen>) and sessionsation started it again at <UTC time>. Re-check your state and continue your work.",
         "revised_in":"1.44.0","explicit_stop":"marks_only","explicit_stop_disables":["archive","delete"],
         "triggers":{
-            "host_boot":{"detect":"/proc/sys/kernel/random/boot_id differs from the persisted boot id",
+            "host_boot":{"detect":format!("{} differs from the persisted boot id", crate::proc::identity::BOOT_ID_PATH),
                 "scope":"every session with a mode that is not running, including explicitly stopped ones",
                 "once_per_boot":true,"daemon_restart_starts_nothing":true},
             "array_start":{"detect":"the kernel mount id of /mnt/user (the shfs array mount) differs from the persisted one on the same boot",
@@ -1644,15 +1644,6 @@ async fn run<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) {
 
 // ------------------------------------------------------------- boot and crash
 
-/// The current host boot (`SESSIONSATION_BOOT_ID_FILE` overrides the path, for tests).
-fn boot_id() -> Option<String> {
-    let path = std::env::var("SESSIONSATION_BOOT_ID_FILE")
-        .unwrap_or_else(|_| "/proc/sys/kernel/random/boot_id".into());
-    fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-}
 /// The array start epoch: the kernel mount id of `/mnt/user` (the shfs union mount that only
 /// exists while the array is started). Every mount gets a new id, so a stop/start of the
 /// array on the same boot changes it, while a supervisor or daemon restart never does. It
@@ -1839,7 +1830,7 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
     migrate(paths)?;
     // Before the early return: the boot must be recorded even while no session has a mode,
     // or a session enabled later would look like it was due a boot start.
-    let boot = boot_id();
+    let boot = crate::proc::identity::boot_id();
     let array = array_id();
     let boot_changed = match &boot {
         Some(b) => detect_boot(paths, b)?,

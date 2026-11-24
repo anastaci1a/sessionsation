@@ -16,16 +16,7 @@ static BINDINGS: crate::file_cache::FileCache<HerdrBinding> = crate::file_cache:
 /// Bound processes (pid, start time) proven gone. A process identity never comes back: the
 /// pid can be reused only with another start time, so a gone binding is skipped without
 /// reading `/proc` again (there are hundreds of historical bindings for a handful of live ones).
-static GONE: std::sync::Mutex<std::collections::BTreeSet<(u32, u64)>> =
-    std::sync::Mutex::new(std::collections::BTreeSet::new());
-fn is_gone(pid: u32, start_time: u64) -> bool {
-    GONE.lock().is_ok_and(|g| g.contains(&(pid, start_time)))
-}
-fn remember_gone(pid: u32, start_time: u64) {
-    if let Ok(mut g) = GONE.lock() {
-        g.insert((pid, start_time));
-    }
-}
+static GONE: crate::proc::identity::GoneSet = crate::proc::identity::GoneSet::new();
 
 pub use crate::terminal::herdr_target;
 pub(super) use crate::terminal::retain;
@@ -194,7 +185,7 @@ fn instances_with_state(
                 Err(crate::file_cache::LoadError::Parse(e)) => return Err(e.into()),
             };
         let b = record.binding;
-        if is_gone(b.pid, b.start_time) {
+        if GONE.contains(b.pid, b.start_time) {
             continue;
         }
         // A dead or replaced bound process cannot own this pane. Reject it before
@@ -208,13 +199,13 @@ fn instances_with_state(
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
                 {
-                    remember_gone(b.pid, b.start_time);
+                    GONE.insert(b.pid, b.start_time);
                 }
                 continue;
             }
         };
         if bound.start_time != b.start_time || matches!(bound.state, 'Z' | 'X') {
-            remember_gone(b.pid, b.start_time);
+            GONE.insert(b.pid, b.start_time);
             continue;
         }
         // Read-only discovery never starts a server and never infers ownership
@@ -1013,9 +1004,9 @@ mod space_binding_tests {
             [live],
             "only the live process reaches the host check"
         );
-        assert!(is_gone(me, start + 1));
-        assert!(is_gone(nobody, 7));
-        assert!(!is_gone(me, start));
+        assert!(GONE.contains(me, start + 1));
+        assert!(GONE.contains(nobody, 7));
+        assert!(!GONE.contains(me, start));
         // Same answers from the cache, and a rewritten record is read again.
         let mut asked = vec![];
         instances_with_state(&p, |pane, _| {

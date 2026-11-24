@@ -620,7 +620,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             } else {
                                 last_poll.insert(name.clone(),now());
                                 if let Some(helper) = helpers.get(&name) {
-                                    if !helper.is_alive().await {helpers.remove(&name);}
+                                    if !helper.is_running().await {helpers.remove(&name);}
                                 }
                                 if !helpers.contains_key(&name) {
                                     match Rpc::spawn(&config.codex_binary,&paths.account(&name)?,&paths.root).await {
@@ -918,7 +918,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             }
                             let account_id = format!("codex:{name}");
                             let mut record = crate::reset_credit::admit(&paths,ProviderId::Codex,&account_id,credit_id.as_deref(),&request_id,&version)?;
-                            if let Some(helper) = helpers.get(&name) && !helper.is_alive().await { helpers.remove(&name); }
+                            if let Some(helper) = helpers.get(&name) && !helper.is_running().await { helpers.remove(&name); }
                             if !helpers.contains_key(&name) {
                                 // Adopts the account's shared app-server when it runs (Rpc::spawn).
                                 match Rpc::spawn(&config.codex_binary,&paths.account(&name)?,&paths.root).await {
@@ -1169,7 +1169,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                     if !reset_due && now() - last_poll.get(&a.name).copied().unwrap_or(0) < cadence as i64 {continue;}
                     last_poll.insert(a.name.clone(),now());
                     if let Some(helper) = helpers.get(&a.name) {
-                        if !helper.is_alive().await {helpers.remove(&a.name);}
+                        if !helper.is_running().await {helpers.remove(&a.name);}
                     }
                     if !helpers.contains_key(&a.name) {
                         match Rpc::spawn(&config.codex_binary,&paths.account(&a.name)?,&paths.root).await {

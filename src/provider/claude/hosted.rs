@@ -21,6 +21,7 @@
 //! answers them (`api hosted respond`); nothing is auto-approved.
 use super::{Enrolled, proc_start};
 use crate::background::SpawnReaped as _;
+use crate::proc::identity::alive;
 use crate::{
     catalog,
     paths::{Paths, atomic_write, lock_file, private_dir},
@@ -142,14 +143,6 @@ pub fn worker_alive(paths: &Paths, c: &str) -> bool {
         .ok()
         .is_some_and(|p| !crate::background::worker_stopped(&p).unwrap_or(false))
 }
-fn alive(pid: Option<u32>, start: Option<u64>) -> bool {
-    match (pid, start) {
-        (Some(pid), Some(start)) => {
-            proc_start(pid).is_some_and(|(state, s)| s == start && !matches!(state, 'Z' | 'X'))
-        }
-        _ => false,
-    }
-}
 fn terminal(state: &str) -> bool {
     matches!(state, "stopped" | "failed")
 }
@@ -173,7 +166,10 @@ pub fn reconcile(paths: &Paths, c: &str) -> Result<Option<Host>> {
         }
         h.pending_permissions.clear();
         h.busy = false;
-        if alive(h.child_pid, h.child_start) {
+        if h.child_pid
+            .zip(h.child_start)
+            .is_some_and(|(p, s)| alive(p, s))
+        {
             // No writer remains; the provider ends at end of input.
             h.state = "stopping".into();
             h.reason = Some("WORKER_LOST_PROVIDER_DRAINING".into());
@@ -241,7 +237,7 @@ pub fn public(paths: &Paths, h: &Host) -> Value {
         "delivery_semantics":SEMANTICS,"state":h.state,"reason":h.reason,"origin":h.origin,"directory":h.directory,
         "permission_mode":h.permission_mode,"effective_permission_mode":h.effective_permission_mode,
         "epoch":h.epoch,"busy":h.busy,"worker":{"pid":h.worker_pid,"alive":worker_alive(paths,&h.conversation_id)},
-        "provider_process":{"pid":h.child_pid,"alive":alive(h.child_pid,h.child_start)},
+        "provider_process":{"pid":h.child_pid,"alive":h.child_pid.zip(h.child_start).is_some_and(|(p, s)| alive(p, s))},
         "pending_permissions":h.pending_permissions,
         "viewer_argv":[exe,"--data-dir",root,"view",h.conversation_id],
         "take_over_argv":[exe,"--data-dir",root,"take-over",h.session_id],
@@ -1095,16 +1091,28 @@ pub async fn stop(paths: &Paths, c: &str, timeout: u64, interrupt: bool) -> Resu
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-    } else if let (Some(pid), true) = (h.child_pid, alive(h.child_pid, h.child_start)) {
+    } else if let (Some(pid), true) = (
+        h.child_pid,
+        h.child_pid
+            .zip(h.child_start)
+            .is_some_and(|(p, s)| alive(p, s)),
+    ) {
         // Orphaned provider without a writer: terminate its group.
         kill_group(pid, libc::SIGTERM);
         for _ in 0..50 {
-            if !alive(h.child_pid, h.child_start) {
+            if !h
+                .child_pid
+                .zip(h.child_start)
+                .is_some_and(|(p, s)| alive(p, s))
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        if alive(h.child_pid, h.child_start) {
+        if h.child_pid
+            .zip(h.child_start)
+            .is_some_and(|(p, s)| alive(p, s))
+        {
             kill_group(pid, libc::SIGKILL);
         }
     }

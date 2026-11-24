@@ -1803,10 +1803,13 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
         1
     );
 
-    // Outage: the process is killed. Its registry file and the catalog
-    // attachment are left behind (plus an unreadable leftover of another
-    // killed process); resume with the pre-outage generation still works.
-    let generation = b["generation"].as_str().unwrap().to_owned();
+    // Outage: the process is killed. Its registry file is left behind (plus an
+    // unreadable leftover of another killed process). The supervisor's snapshot
+    // refresh may notice the death at any moment and clear the dead attachment,
+    // which changes the generation, so the test resumes as a real caller does:
+    // wait until the session resolves as stopped, re-read its generation, and on
+    // STALE_TARGET re-resolve and retry once.
+    let pre_outage = b["generation"].as_str().unwrap().to_owned();
     kill(child);
     let mut dead = Command::new("sleep").arg("30").spawn().unwrap();
     let dead_pid = dead.id();
@@ -1816,14 +1819,47 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     std::fs::write(&leftover, b"{truncated").unwrap();
     std::fs::set_permissions(&leftover, std::fs::Permissions::from_mode(0o000)).unwrap();
     let id = b["id"].as_str().unwrap().to_owned();
-    let resumed = f
-        .command(&["resume", &id, "--expected-generation", &generation])
-        .current_dir("/")
-        .spawn()
-        .unwrap();
-    wait_for("resume after a killed process", || {
-        read(&home.join("fake-launch-resume")).contains(&format!("session={other}"))
+    wait_for("stopped after the kill", || {
+        by_conversation(&f, &other)["availability"] == "stopped"
     });
+    // The same entry, now stopped and resumable; the killed process's
+    // attachment no longer counts, and clearing it changed the generation.
+    let stopped = by_conversation(&f, &other);
+    assert_eq!(stopped["id"], id);
+    assert!(stopped["attachment"].is_null(), "{stopped}");
+    assert_eq!(stopped["capabilities"]["resume"], true);
+    assert_ne!(stopped["generation"], pre_outage.as_str());
+    let launched = || read(&home.join("fake-launch-resume")).contains(&format!("session={other}"));
+    let resume = |attempt: u32| {
+        let generation = by_conversation(&f, &other)["generation"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let errors = home.join(format!("resume-{attempt}.stderr"));
+        let child = f
+            .command(&["resume", &id, "--expected-generation", &generation])
+            .current_dir("/")
+            .stderr(std::fs::File::create(&errors).unwrap())
+            .spawn()
+            .unwrap();
+        (child, errors)
+    };
+    let (mut resumed, errors) = resume(1);
+    wait_for("resume after a killed process", || {
+        launched() || resumed.try_wait().unwrap().is_some()
+    });
+    if !launched() {
+        // Exited without launching: only a generation that moved on in between
+        // is retried, once, with a freshly resolved generation.
+        let stderr = read(&errors);
+        assert!(stderr.contains("STALE_TARGET"), "resume failed: {stderr}");
+        let (retry, errors) = resume(2);
+        resumed = retry;
+        wait_for("resume retried after STALE_TARGET", || {
+            launched() || resumed.try_wait().unwrap().is_some()
+        });
+        assert!(launched(), "resume retry failed: {}", read(&errors));
+    }
     wait_for("resumed live", || {
         by_conversation(&f, &other)["availability"] == "running"
     });

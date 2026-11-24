@@ -11,7 +11,6 @@ pub use scope::{
     set_space, space_taken,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,14 +53,13 @@ impl Session {
     /// that moves a live session) also increments `revision`, so it does change
     /// the generation, like every other mutation.
     pub fn generation(&self) -> String {
-        let digest = if self.space.is_none() {
-            Sha256::digest(serde_json::to_vec(self).expect("serializable session"))
+        if self.space.is_none() {
+            crate::generation::of(self).expect("serializable session")
         } else {
             let mut unscoped = self.clone();
             unscoped.space = None;
-            Sha256::digest(serde_json::to_vec(&unscoped).expect("serializable session"))
-        };
-        format!("{digest:x}")
+            crate::generation::of(&unscoped).expect("serializable session")
+        }
     }
     /// `<space>:<name>`; None for an unscoped entry or a Space label containing `:`.
     pub fn canonical(&self) -> Option<String> {

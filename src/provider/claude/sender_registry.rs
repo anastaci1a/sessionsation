@@ -15,6 +15,7 @@
 //! duplicate-identity warning), `kind` (no claim to be an interactive/bg session),
 //! `peerFeatures` (we handle no control frames from others), `status`, `jobId`, `tmux`.
 use super::proc_start;
+use crate::proc::identity::alive_recorded;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
@@ -30,9 +31,6 @@ fn ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
-}
-fn alive(pid: u32, start: &str) -> bool {
-    proc_start(pid).is_some_and(|(state, s)| !matches!(state, 'Z' | 'X') && s.to_string() == start)
 }
 fn owned(v: &Value) -> bool {
     v["entrypoint"] == ENTRYPOINT && v[MARKER_FIELD] == MARKER_VALUE
@@ -97,7 +95,7 @@ pub fn skip_reason(home: &Path, name: &str) -> Option<String> {
         let live = v["pid"]
             .as_u64()
             .zip(v["procStart"].as_str())
-            .is_some_and(|(p, s)| alive(p as u32, s));
+            .is_some_and(|(p, s)| alive_recorded(p as u32, s));
         if live {
             return Some("SENDER_NAME_COLLIDES_WITH_LIVE_SESSION".into());
         }
@@ -151,7 +149,7 @@ pub fn sweep(home: &Path) -> usize {
         let live = v["pid"]
             .as_u64()
             .zip(v["procStart"].as_str())
-            .is_some_and(|(p, s)| alive(p as u32, s));
+            .is_some_and(|(p, s)| alive_recorded(p as u32, s));
         if !live && fs::remove_file(e.path()).is_ok() {
             removed += 1;
         }

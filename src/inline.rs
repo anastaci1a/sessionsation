@@ -28,9 +28,6 @@ fn info() -> Result<Info> {
             .filter(|p| !p.is_empty()),
     })
 }
-fn alive(info: &Info) -> bool {
-    crate::external::process_start(info.pid).is_ok_and(|start| start == info.process_start)
-}
 fn host() -> launch::Host {
     launch::Host {
         session: "inline".into(),
@@ -315,7 +312,10 @@ fn next(
 ) -> Option<(&'static str, &'static str)> {
     // `complete` is the terminal success phase: the exact provider process was observed (or
     // has since ended). `running` is only read from receipts written by 1.33 - 1.35.0.
-    match (phase, alive(info)) {
+    match (
+        phase,
+        crate::proc::identity::same(info.pid, info.process_start),
+    ) {
         ("running", true) => Some(("complete", OBSERVED)),
         ("running", false) if daemon::now() - updated_at <= AGE_OUT => Some(("complete", ENDED)),
         ("complete", false) if detail != Some(ENDED) && daemon::now() - updated_at <= AGE_OUT => {

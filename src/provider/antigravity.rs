@@ -24,6 +24,7 @@ use crate::{
     catalog,
     config::{Config, LaunchPermissions},
     paths::{Paths, private_dir, validate_name},
+    proc::identity::{Pidfd, gone},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -598,9 +599,6 @@ pub struct Stopped {
 /// Seconds agy gets to exit after SIGTERM before the stop reports a timeout.
 pub const STOP_SECONDS: u64 = 20;
 
-fn exited(pid: u32, start: u64) -> bool {
-    proc_start(pid).is_none_or(|(state, s)| s != start || matches!(state, 'Z' | 'X'))
-}
 /// Gracefully stop the one verified interactive agy process that runs
 /// `conversation` in `home`: SIGTERM, delivered through a pidfd opened before
 /// the identity is re-verified (exact pid, start time, agy command line, home
@@ -621,14 +619,11 @@ pub fn stop(home: &Path, conversation: &str, wait: Duration) -> Result<Stopped> 
     };
     let (pid, start) = (target.pid, target.process_start);
     // A pidfd names this process object even if the pid number is reused.
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0) };
-    ensure!(
-        fd >= 0,
-        "STOP_UNAVAILABLE: could not open a stable handle on process {pid}"
-    );
-    let fd = fd as libc::c_int;
+    let Ok(fd) = Pidfd::open(pid) else {
+        bail!("STOP_UNAVAILABLE: could not open a stable handle on process {pid}");
+    };
     let verified = (|| {
-        if exited(pid, start) {
+        if gone(pid, start) {
             return false;
         }
         let Some(args) = arguments(pid) else {
@@ -641,28 +636,17 @@ pub fn stop(home: &Path, conversation: &str, wait: Duration) -> Result<Stopped> 
                 || conversation_argument(&args).as_deref() == Some(conversation))
     })();
     if !verified {
-        unsafe { libc::close(fd) };
         bail!(
             "SESSION_STATE_UNVERIFIED: the Antigravity process changed before it could be stopped; nothing was signalled"
         );
     }
-    let sent = unsafe {
-        libc::syscall(
-            libc::SYS_pidfd_send_signal,
-            fd,
-            libc::SIGTERM,
-            std::ptr::null::<libc::siginfo_t>(),
-            0,
-        )
-    };
-    unsafe { libc::close(fd) };
-    ensure!(
-        sent == 0,
-        "STOP_FAILED: could not signal process {pid}: {}",
-        std::io::Error::last_os_error()
-    );
+    let sent = fd.signal(libc::SIGTERM);
+    drop(fd);
+    if let Err(e) = sent {
+        bail!("STOP_FAILED: could not signal process {pid}: {e}");
+    }
     let deadline = std::time::Instant::now() + wait;
-    while !exited(pid, start) {
+    while !gone(pid, start) {
         ensure!(
             std::time::Instant::now() < deadline,
             "STOP_TIMEOUT: Antigravity process {pid} did not exit within {}s of SIGTERM; it was not killed",

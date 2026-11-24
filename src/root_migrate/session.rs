@@ -973,7 +973,7 @@ async fn stop_process(r: &SessionRec, home: &Path) -> Result<()> {
             .find(|l| r.conversation_ids.contains(&l.session_id))
         {
             None => ensure!(
-                crate::claude_switch::gone(pid, start),
+                crate::proc::identity::gone(pid, start),
                 "SESSION_STATE_UNVERIFIED: the process is no longer registered but still runs; nothing was signalled"
             ),
             Some(l) if l.pid == pid && l.process_start == start => {
@@ -982,7 +982,7 @@ async fn stop_process(r: &SessionRec, home: &Path) -> Result<()> {
                 }
                 crate::claude_switch::terminate(pid, start)?;
                 let deadline = Instant::now() + Duration::from_secs(30);
-                while !crate::claude_switch::gone(pid, start) {
+                while !crate::proc::identity::gone(pid, start) {
                     ensure!(
                         Instant::now() < deadline,
                         "STOP_TIMEOUT: Claude process {pid} did not exit within 30s of SIGTERM; it was not killed"
@@ -1054,7 +1054,7 @@ async fn resume(paths: &Paths, r: &mut SessionRec, cwd: &str) -> Result<()> {
     if current
         .attachment
         .as_ref()
-        .is_some_and(|a| crate::claude_switch::gone(a.pid, a.process_start))
+        .is_some_and(|a| crate::proc::identity::gone(a.pid, a.process_start))
     {
         current = catalog::invalidate(paths, &current.id, &current.generation())
             .or_else(|_| catalog::find(paths, &r.session_id))?;
@@ -1275,7 +1275,7 @@ async fn revert(paths: &Paths, r: &mut SessionRec, home: &Path, why: &str) -> Re
     {
         crate::claude_switch::terminate(a.pid, a.process_start)?;
         let deadline = Instant::now() + Duration::from_secs(30);
-        while !crate::claude_switch::gone(a.pid, a.process_start) {
+        while !crate::proc::identity::gone(a.pid, a.process_start) {
             ensure!(
                 Instant::now() < deadline,
                 "STOP_TIMEOUT: the new process did not exit"

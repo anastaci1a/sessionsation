@@ -871,14 +871,7 @@ fn active_since(l: &Live, attachment: Option<&catalog::Attachment>) -> Option<i6
     }
 }
 /// (state, starttime) from /proc/<pid>/stat field 22.
-pub fn proc_start(pid: u32) -> Option<(char, u64)> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let fields: Vec<_> = stat.rsplit_once(") ")?.1.split_whitespace().collect();
-    Some((
-        fields.first()?.chars().next()?,
-        fields.get(19)?.parse().ok()?,
-    ))
-}
+pub use crate::proc::identity::proc_start;
 pub(crate) fn environ(pid: u32) -> Option<Vec<(String, String)>> {
     let bytes = fs::read(format!("/proc/{pid}/environ")).ok()?;
     Some(

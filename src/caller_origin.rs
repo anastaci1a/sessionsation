@@ -319,9 +319,9 @@ fn thread_from_environ(raw: &[u8]) -> Option<String> {
 
 /// `(ppid, start ticks)` from /proc.
 fn proc_stat(pid: u32) -> Option<(u32, u64)> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let fields: Vec<&str> = stat.rsplit_once(") ")?.1.split_whitespace().collect();
-    Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+    crate::proc::identity::stat(pid)
+        .ok()
+        .map(|s| (s.parent, s.start_time))
 }
 
 #[cfg(test)]

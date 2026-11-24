@@ -10,7 +10,6 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{fs, os::unix::fs::MetadataExt, path::Path};
 
 fn marker_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<std::path::PathBuf> {
@@ -292,7 +291,7 @@ pub async fn preview(paths: &Paths, name: &str) -> Result<Value> {
     // affected sessions, ownership and changes to stored data do.
     let fingerprint = json!({"name":name,"enabled":account["enabled"],"auth_required":account["auth_required"],
         "stored":stored.iter().filter(|f| f["path"].as_str().is_some_and(|p| !p.starts_with("app-server-control/") && !p.starts_with("logs/") && p!=".switcher-lease")).collect::<Vec<_>>(),"active":active,"loaded":loaded,"operations":operations,"affected":affected});
-    let revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&fingerprint)?));
+    let revision = crate::generation::of(&fingerprint)?;
     Ok(
         json!({"account_id":format!("codex:{name}"),"removed":removed(paths,ProviderId::Codex,name)?,"revision":revision,
         "affected_sessions":affected,"active_sessions":active,"loaded_conversations":loaded,"pending_operations":operations,
@@ -380,7 +379,7 @@ async fn native_preview(paths: &Paths, provider: ProviderId, name: &str) -> Resu
         .collect::<Vec<_>>();
     let fingerprint = json!({"provider":provider,"name":name,"enabled":account["enabled"],"auth_required":account["auth_required"],
         "config_home":account["config_home"],"history":history,"active":active,"processes":processes,"operations":operations,"affected":affected});
-    let revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&fingerprint)?));
+    let revision = crate::generation::of(&fingerprint)?;
     Ok(
         json!({"account_id":format!("{provider}:{name}"),"removed":removed_for(paths,provider,name)?,"revision":revision,
         "affected_sessions":affected,"active_sessions":active,"loaded_conversations":[],"pending_operations":operations,

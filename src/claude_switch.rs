@@ -31,6 +31,7 @@ use crate::{
     daemon,
     external::archiving::native as files,
     paths::{Paths, atomic_write, lock_file, private_dir},
+    proc::identity::gone,
     provider::{AccountRef, ProviderId, claude, native},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -225,9 +226,6 @@ pub(crate) fn read_cmdline(pid: u32) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-pub(crate) fn gone(pid: u32, start: u64) -> bool {
-    claude::proc_start(pid).is_none_or(|(s, st)| st != start || matches!(s, 'Z' | 'X'))
 }
 
 pub async fn start(
@@ -522,37 +520,17 @@ async fn drive(paths: &Paths, r: &mut Record) -> Result<()> {
 // ------------------------------------------------------------------------ stop
 
 pub(crate) fn terminate(pid: u32, start: u64) -> Result<()> {
+    use crate::proc::identity::{SignalError, signal_exact};
     // A pidfd names this process object even if the pid number is reused.
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0) };
-    if fd < 0 {
-        let e = std::io::Error::last_os_error();
-        ensure!(
-            e.raw_os_error() == Some(libc::ESRCH),
-            "STOP_UNAVAILABLE: could not open a stable handle on process {pid}: {e}"
-        );
-        return Ok(());
+    match signal_exact(pid, start, libc::SIGTERM) {
+        Ok(_) => Ok(()),
+        Err(SignalError::Open(e)) => {
+            bail!("STOP_UNAVAILABLE: could not open a stable handle on process {pid}: {e}")
+        }
+        Err(SignalError::Send(error)) => {
+            bail!("STOP_FAILED: could not signal process {pid}: {error}")
+        }
     }
-    let fd = fd as libc::c_int;
-    if gone(pid, start) {
-        unsafe { libc::close(fd) };
-        return Ok(());
-    }
-    let sent = unsafe {
-        libc::syscall(
-            libc::SYS_pidfd_send_signal,
-            fd,
-            libc::SIGTERM,
-            std::ptr::null::<libc::siginfo_t>(),
-            0,
-        )
-    };
-    let error = std::io::Error::last_os_error();
-    unsafe { libc::close(fd) };
-    ensure!(
-        sent == 0 || error.raw_os_error() == Some(libc::ESRCH),
-        "STOP_FAILED: could not signal process {pid}: {error}"
-    );
-    Ok(())
 }
 
 async fn stop(paths: &Paths, r: &mut Record) -> Result<()> {

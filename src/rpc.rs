@@ -252,7 +252,8 @@ impl Rpc {
             None => None,
         }
     }
-    pub async fn is_alive(&self) -> bool {
+    /// The helper still serves: its owned child has not exited, or (attached) it answers an RPC.
+    pub async fn is_running(&self) -> bool {
         match &self.child {
             Some(child) => child
                 .lock()

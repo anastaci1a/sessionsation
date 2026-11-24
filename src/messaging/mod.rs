@@ -184,7 +184,7 @@ impl Attachment {
     }
     fn generation(&self) -> String {
         let endpoint = fs::metadata(self.endpoint()).ok();
-        let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap_or_default();
+        let boot = crate::proc::identity::boot_id_raw();
         let value = json!([
             self.id,
             self.home,
@@ -195,7 +195,7 @@ impl Attachment {
                 .as_ref()
                 .map(|m| (m.dev(), m.ino(), m.ctime(), m.ctime_nsec()))
         ]);
-        format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
+        crate::generation::of(&value).expect("serializable attachment")
     }
     async fn connect(&self) -> Result<Transport> {
         self.connect_with_profile(&mut None).await

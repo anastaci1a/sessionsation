@@ -1,12 +1,12 @@
 {
-  "roles_digest": "af871005c422da5d26552493bfdb50ce3d391f40cd46d6982891b9c5c8af61eb",
+  "roles_digest": "9d394ac1d0e3d857acccd4f61030e12e67ba4a8e1bc55e83a62093c604388c79",
   "counters_digest": "7a1362d75516f452c2487c88413b88f04b88f31062c4fa6857c4007feb8db7ff",
   "counters": {
-    "alive_fns": { "value": 8 },
+    "alive_fns": { "value": 0 },
     "api_rs_lines": { "value": 5486 },
     "apply_session_input_fns": { "value": 3 },
     "atomic_writes_allow_markers": { "value": 0 },
-    "boot_id_readers": { "value": 3 },
+    "boot_id_readers": { "value": 0 },
     "caches_allow_markers": { "value": 0 },
     "codes_allow_markers": { "value": 0 },
     "contract_allow_markers": { "value": 0 },
@@ -17,11 +17,11 @@
     "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13900 },
+    "doc_bytes:docs/changelog.md": { "value": 13944 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
     "doc_bytes:docs/contract.md": { "value": 227496 },
     "doc_bytes:docs/operations.md": { "value": 22987 },
-    "doc_bytes_total": { "value": 304289 },
+    "doc_bytes_total": { "value": 304333 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -43,8 +43,8 @@
     "oauth_sites": { "value": 2 },
     "operations_dir_sites": { "value": 43 },
     "phase_records": { "value": 12 },
-    "pidfd_sites": { "value": 6 },
-    "proc_stat_readers": { "value": 2 },
+    "pidfd_sites": { "value": 0 },
+    "proc_stat_readers": { "value": 0 },
     "provider_enum_dispatch": { "value": 0 },
     "provider_ops_allow_markers": { "value": 0 },
     "provider_string_compares": { "value": 0 },
@@ -55,14 +55,14 @@
     "save_fns": { "value": 28 },
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
-    "sha256_digests": { "value": 31 },
+    "sha256_digests": { "value": 25 },
     "since_contract_literals": { "value": 42 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 101205 },
+    "src_lines": { "value": 101307 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -844,9 +844,65 @@
       "reason": "S3 golden generation vectors recorded on main 9e1f72b: src/generation.rs (test-only module header) and its `mod generation;` line in lib.rs; the vectors live in src/generation/tests.rs",
       "considered": "n/a",
       "step": "1.66.0"
+    },
+    {
+      "counter": "proc_stat_readers",
+      "by": -2,
+      "reason": "S3: caller_origin::proc_stat and provider::claude::proc_start read /proc/<pid>/stat through proc::identity::stat (external::process_info, the uncounted third reader, is now an alias of it)",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "pidfd_sites",
+      "by": -6,
+      "reason": "S3: the three pidfd copies (claude_switch::terminate, external::stop_exact_process, antigravity::stop) open and signal through proc::identity::Pidfd; claude_switch::terminate (also the 1.59.0 Claude stop path) uses proc::identity::signal_exact; error codes and texts unchanged",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "alive_fns",
+      "by": -8,
+      "reason": "S3: claude_switch::gone, antigravity::exited, claude_idle::alive, provider::claude::hosted::alive, sender_registry::alive and inline::alive call proc::identity (gone, alive, alive_recorded, same) at their call sites; external::hosting's gone memo is proc::identity::GoneSet; rpc's is_alive is renamed is_running (it checks the helper's own child handle or an RPC answer, not a pid identity)",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "boot_id_readers",
+      "by": -3,
+      "reason": "S3: auto_recover::boot_id is proc::identity::boot_id (same SESSIONSATION_BOOT_ID_FILE override and trim), the messaging attachment generation reads proc::identity::boot_id_raw (untrimmed, as hashed before), and the auto-start capability text names proc::identity::BOOT_ID_PATH (same string)",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "sha256_digests",
+      "by": -6,
+      "reason": "S3: the generation hashers (catalog::Session::generation x2, account_rename::generation, the messaging attachment generation, the two account revisions in accounts.rs) call generation::of; the golden vectors prove the bytes unchanged. The other 25 digests (file digests, path and pane keys, request fingerprints) stay counted",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 102,
+      "reason": "S3: src/proc.rs (proc::identity: stat, alive/gone/same, GoneSet, Pidfd, signal_exact, boot_id) and generation::of, less the removed copies",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 44,
+      "reason": "1.66.0 entry: internal; no behaviour change (S3)",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 44,
+      "reason": "1.66.0 changelog entry (S3)",
+      "considered": "n/a",
+      "step": "1.66.0"
     }
   ],
   "enforced"
 
-: { "oauth": "S0", "provider-ops": "1.65.0" }
+: { "identity": "1.66.0", "oauth": "S0", "provider-ops": "1.65.0" }
 }

@@ -15,6 +15,7 @@ use crate::background::SpawnReaped as _;
 use crate::{
     catalog, daemon,
     paths::{Paths, atomic_write, lock_file, private_dir},
+    proc::identity::alive,
     provider::{
         ProviderId, claude,
         claude::native_peer::{self, Inbound},
@@ -212,11 +213,6 @@ pub async fn start(
     Ok(public(paths, &r))
 }
 
-fn alive(r: &Record) -> bool {
-    claude::proc_start(r.pid)
-        .is_some_and(|(state, start)| start == r.process_start && !matches!(state, 'Z' | 'X'))
-}
-
 /// Detached worker: subscribe, wait for the notice (or the process's end, or the
 /// 12-hour expiry), journal the event, optionally message another session.
 pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
@@ -229,7 +225,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     if r.phase != "admitted" {
         return Ok(());
     }
-    if !alive(&r) {
+    if !alive(r.pid, r.process_start) {
         return finish(paths, &mut r, "failed", Some("STALE_TARGET"));
     }
     let reply = native_peer::bind_reply(&r.socket, &paths.runtime.join("peer"))?;
@@ -294,7 +290,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
                 }
             }
             _ = tokio::time::sleep(step) => {
-                if !alive(&r) {
+                if !alive(r.pid, r.process_start) {
                     // A notice sent as the process exits may still be in flight.
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     while let Ok(v) = rx.try_recv() {

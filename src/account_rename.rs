@@ -29,7 +29,6 @@ use crate::{
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -124,11 +123,9 @@ pub fn generation(
     display_name: Option<&str>,
     config_home: Option<&str>,
 ) -> String {
-    let digest = Sha256::digest(
-        serde_json::to_vec(&json!([provider, name, display_name, config_home]))
-            .expect("serializable"),
-    );
-    format!("{digest:x}")[..16].to_owned()
+    crate::generation::of(&json!([provider, name, display_name, config_home]))
+        .expect("serializable")[..16]
+        .to_owned()
 }
 pub fn account_generation(a: &Account) -> String {
     generation(

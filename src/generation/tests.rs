@@ -173,3 +173,24 @@ fn golden_vectors_ignore_the_space() {
         assert_eq!(session(entry, Some("localica")).generation(), golden(name));
     }
 }
+
+/// The owner reproduces every recorded vector from the same inputs.
+#[test]
+fn the_owner_reproduces_the_golden_vectors() {
+    let of = |v: &Value| super::of(v).unwrap();
+    assert_eq!(of(&attachment_parts()), golden("attachment"));
+    assert_eq!(
+        of(&attachment_parts_without_endpoint()),
+        golden("attachment without endpoint")
+    );
+    assert_eq!(of(&codex_fingerprint()), golden("revision codex"));
+    assert_eq!(of(&generic_fingerprint()), golden("revision generic"));
+    assert_eq!(
+        super::of(&session(codex_entry(), None)).unwrap(),
+        golden("catalog codex")
+    );
+    assert_eq!(
+        &of(&json!(["codex", "work", null, null]))[..16],
+        golden("account codex:work")
+    );
+}

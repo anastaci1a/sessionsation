@@ -20,6 +20,7 @@ and package history are in Git.
 
 ## Versions
 
+- **1.66.0** Internal; no behaviour change.
 - **1.65.0** (meter cycles) Usage windows gain `cycle`, `cycle_started_at`,
   `cycle_reason` and `starts_on_first_use`; a redeem (own or elsewhere) starts a cycle in
   which a lower reading counts; usage never drops within one. Meters gain

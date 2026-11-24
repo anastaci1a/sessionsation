@@ -42,7 +42,7 @@ pub struct Role {
 
 /// sha256 (hex) of the bytes between the `guard-roles-begin` line and the
 /// `guard-roles-end` line of this file.
-pub const ROLES_DIGEST: &str = "af871005c422da5d26552493bfdb50ce3d391f40cd46d6982891b9c5c8af61eb";
+pub const ROLES_DIGEST: &str = "9d394ac1d0e3d857acccd4f61030e12e67ba4a8e1bc55e83a62093c604388c79";
 
 // guard-roles-begin
 pub const ROLES: &[Role] = &[
@@ -138,7 +138,7 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "identity",
-        owners: &[],
+        owners: &["src/proc.rs"],
         scope: None,
         forbidden: &[
             r"/proc/\{?[a-z_]*\}?/stat\b",
@@ -155,8 +155,8 @@ pub const ROLES: &[Role] = &[
             "identity_allow_markers",
         ],
         mech: Mech::Regex,
-        mode: Mode::Counted,
-        hint: "use proc::identity (ProcessId::read, alive, same, Pidfd, boot_id)",
+        mode: Mode::Enforced,
+        hint: "use proc::identity (stat, alive, gone, same, Pidfd, signal_exact, boot_id)",
     },
     Role {
         name: "herdr",
@@ -246,7 +246,7 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "generation",
-        owners: &[],
+        owners: &["src/generation.rs"],
         scope: None,
         forbidden: &["sha2::Digest::digest"],
         permitted: &[],
@@ -257,7 +257,7 @@ pub const ROLES: &[Role] = &[
         ],
         mech: Mech::Clippy,
         mode: Mode::Counted,
-        hint: "use generation::Generation::of / of_parts / check",
+        hint: "use generation::of",
     },
     Role {
         name: "ledger",

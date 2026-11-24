@@ -5,15 +5,15 @@ use crate::{
     config::LaunchPermissions,
     daemon,
     paths::{Paths, atomic_write, private_dir, validate_name},
+    proc::identity::{Pidfd, Stat as ProcessInfo, stat as process_info},
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     os::unix::{ffi::OsStrExt, fs::OpenOptionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -1321,9 +1321,7 @@ pub async fn run_account_new_named_options(
     .await
 }
 /// Start time of a process, for pid reuse checks.
-pub(crate) fn process_start(pid: u32) -> Result<u64> {
-    Ok(process_info(pid)?.start_time)
-}
+pub(crate) use crate::proc::identity::start_time as process_start;
 pub(crate) async fn run_account_resume_requested(
     paths: &Paths,
     account: &str,
@@ -2212,33 +2210,8 @@ fn pane_state(paths: &Paths, pane: &str) -> Result<(bool, u32)> {
     ensure!(parts.len() == 2, "invalid tmux pane state");
     Ok((parts[0] == "1", parts[1].parse()?))
 }
-#[derive(Clone, Copy)]
-struct ProcessInfo {
-    pid: u32,
-    parent: u32,
-    state: char,
-    start_time: u64,
-}
-fn process_info(pid: u32) -> Result<ProcessInfo> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
-    let fields: Vec<_> = stat
-        .rsplit_once(") ")
-        .context("invalid process stat")?
-        .1
-        .split_whitespace()
-        .collect();
-    ensure!(fields.len() > 19, "short process stat");
-    Ok(ProcessInfo {
-        pid,
-        state: fields[0].chars().next().context("missing process state")?,
-        parent: fields[1].parse()?,
-        start_time: fields[19].parse()?,
-    })
-}
 #[cfg(test)]
-pub(crate) fn process_start_time(pid: u32) -> Result<u64> {
-    Ok(process_info(pid)?.start_time)
-}
+pub(crate) use crate::proc::identity::start_time as process_start_time;
 pub(crate) fn attachment_definitely_gone(pid: u32, start: u64) -> bool {
     match process_info(pid) {
         Ok(info) => info.start_time != start || matches!(info.state, 'Z' | 'X'),
@@ -2292,28 +2265,12 @@ fn stop_exact_process(info: ProcessInfo) -> Result<()> {
         "process identity changed before stop"
     );
     // pidfd binds the signal to the verified process, even if its numeric PID is reused.
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, info.pid, 0) };
-    ensure!(
-        fd >= 0,
-        "cannot open process handle: {}",
-        std::io::Error::last_os_error()
-    );
-    let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    let fd = Pidfd::open(info.pid).map_err(|e| anyhow!("cannot open process handle: {e}"))?;
     ensure!(
         process_info(info.pid)?.start_time == info.start_time,
         "process identity changed before signal"
     );
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_pidfd_send_signal,
-            fd.as_raw_fd(),
-            libc::SIGTERM,
-            std::ptr::null::<libc::siginfo_t>(),
-            0,
-        )
-    };
-    if result < 0 {
-        let error = std::io::Error::last_os_error();
+    if let Err(error) = fd.signal(libc::SIGTERM) {
         ensure!(
             error.raw_os_error() == Some(libc::ESRCH),
             "cannot stop process: {error}"

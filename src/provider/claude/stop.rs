@@ -9,7 +9,7 @@
 //! reused pid is never signalled. SIGTERM only, then a bounded wait: a process
 //! that has not exited is reported (`STOP_TIMEOUT`), never killed.
 use super::{Live, live_sessions};
-use crate::claude_switch::{gone, terminate};
+use crate::{claude_switch::terminate, proc::identity::gone};
 use anyhow::{Result, bail, ensure};
 use std::{path::Path, time::Duration};
 
