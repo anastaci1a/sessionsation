@@ -12,6 +12,7 @@
 //! input API for a running interactive session. Records of both providers share
 //! `DATA_ROOT/messaging/claude-deliveries/` (the directory keeps its original name so
 //! existing receipts stay readable); each record names its provider.
+use super::Reads as _;
 use crate::background::SpawnReaped as _;
 use crate::{
     catalog,
@@ -336,9 +337,8 @@ pub(crate) fn ensure_unused_elsewhere(paths: &Paths, id: &str) -> Result<()> {
     );
     // Only an id check: wait briefly for a Codex observer instead of failing
     // a Claude/Gemini send with ADAPTER_BUSY.
-    let mut ledger = super::Ledger::open_waiting(paths, std::time::Duration::from_secs(3))
+    let mut ledger = super::ledger::open_write_blocking(paths, std::time::Duration::from_secs(3))
         .map_err(anyhow::Error::from)?;
-    super::public::initialize(&ledger).map_err(anyhow::Error::from)?;
     super::retention::ensure_not_retired(&ledger, id)?;
     super::retention::maybe_run(&mut ledger, crate::daemon::now());
     ensure!(

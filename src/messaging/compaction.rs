@@ -386,23 +386,10 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
 /// Held message ids of a conversation, in arrival order (best effort; `None` when the
 /// ledger is unavailable).
 pub(super) async fn held_ids(paths: &Paths, conversation: &str) -> Option<Vec<String>> {
-    let ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read))
+    let ledger = ledger::open_read(paths, wait_budget(paths, Wait::Read))
         .await
         .ok()?;
-    public::initialize(&ledger).ok()?;
-    let mut statement = ledger
-        .db
-        .prepare(
-            "SELECT r.id FROM receipts r JOIN public_messages p ON p.id=r.id \
-             WHERE json_extract(r.receipt,'$.state')='pending_local' \
-             AND json_extract(r.receipt,'$.reason') IN ('compaction_hold','compaction_release_retry','model_change_hold') \
-             AND json_extract(p.binding,'$.native.session_id')=? ORDER BY p.rowid",
-        )
-        .ok()?;
-    let rows = statement
-        .query_map([conversation], |row| row.get::<_, String>(0))
-        .ok()?;
-    Some(rows.flatten().collect())
+    ledger.held_ids(conversation).ok()
 }
 
 pub async fn status(
@@ -481,7 +468,7 @@ pub fn operations(paths: &Paths) -> anyhow::Result<Vec<Value>> {
 /// A transient failure left this message `pending_local` with some delivery error as its reason:
 /// mark it so the next release pass finds it again. The message's own expiry bounds the retries.
 async fn mark_retry(paths: &Paths, id: &str) {
-    let Ok(mut ledger) = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await else {
+    let Ok(mut ledger) = ledger::open_write(paths, wait_budget(paths, Wait::Read)).await else {
         return;
     };
     if let Ok(Some(mut receipt)) = ledger.get(id)

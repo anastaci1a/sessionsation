@@ -42,7 +42,7 @@ pub struct Role {
 
 /// sha256 (hex) of the bytes between the `guard-roles-begin` line and the
 /// `guard-roles-end` line of this file.
-pub const ROLES_DIGEST: &str = "9d394ac1d0e3d857acccd4f61030e12e67ba4a8e1bc55e83a62093c604388c79";
+pub const ROLES_DIGEST: &str = "c606308479800069ee3ff3b0ac43232f0889ebbc210ca81e5d1b75139ec1e273";
 
 // guard-roles-begin
 pub const ROLES: &[Role] = &[
@@ -261,13 +261,13 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "ledger",
-        owners: &["src/layout.rs"],
+        owners: &["src/messaging/ledger.rs", "src/layout.rs"],
         scope: None,
         forbidden: &[r"receipts\.db|adapter\.lock|RECEIPTS_DB"],
         permitted: &[],
         counters: &["ledger_opens", "receipts_sites", "ledger_allow_markers"],
         mech: Mech::Regex,
-        mode: Mode::Counted,
+        mode: Mode::Enforced,
         hint: "use messaging::ledger::open_read / open_write",
     },
     Role {

@@ -1701,19 +1701,24 @@ state, and incompatible owners.
 
 ### Admission and contention
 
-The messaging ledger has one exclusive `adapter.lock` (lease) across legacy and v1
-send/status/receipt/cancel operations. Codex `api send`, `api receipt`, `api cancel`,
-`steer-target`, recovery and the legacy `messaging` commands wait for the lease (up to
-20 s for sends, 10 s for reads) and for the per-session ownership lock (otherwise
-`OPERATION_BUSY`); `ADAPTER_BUSY` is returned only after that budget. The lease is not
-held across Codex app-server I/O (status read, `thread/queue/add`, steer, anchor read,
-reconciliation, reply observation, native cancel): the submission is journalled
-`unknown` (`steer_dispatch_intent`, `cancellation_uncertain`) under the lease before
-the I/O, so exactly one process delivers a message id, and the result is saved only
-if the receipt is unchanged, so a stale result or error never regresses a state
-recorded meanwhile. Claude, Gemini and Antigravity sends check the shared message-id
-namespace under this lock and wait up to three seconds. Do not remove locks, stop
-legacy observers or introduce another owner to bypass it.
+The messaging ledger has one `adapter.lock` (lease) across legacy and v1
+send/status/receipt/cancel operations. A read that changes nothing (`api receipt`,
+legacy `status`/`observe` or `modes` status of a settled, unknown (not found) or
+retired id, and every `events` page) holds it shared, so readers never wait for each
+other; a write holds it exclusively and excludes readers too. A read that must settle,
+observe or cancel then waits for the exclusive lease within the same budget. Codex
+`api send`, `api receipt`, `api cancel`, `steer-target`, recovery and the legacy
+`messaging` commands wait for the lease (up to 20 s for sends, 10 s for reads) and for
+the per-session ownership lock (otherwise `OPERATION_BUSY`); `ADAPTER_BUSY` is returned
+only after that budget. The lease is not held across Codex app-server I/O (status
+read, `thread/queue/add`, steer, anchor read, reconciliation, reply observation,
+native cancel): the submission is journalled `unknown` (`steer_dispatch_intent`,
+`cancellation_uncertain`) under the lease before the I/O, so exactly one process
+delivers a message id, and the result is saved only if the receipt is unchanged, so
+a stale result or error never regresses a state recorded meanwhile. Claude, Gemini
+and Antigravity sends check the shared message-id namespace under this lock and wait
+up to three seconds. Do not remove locks, stop legacy observers or introduce another
+owner to bypass it.
 
 `ADAPTER_BUSY` on `api send` precedes request binding, admission and native
 dispatch for that invocation; it does not negate an earlier admission of the same ID.

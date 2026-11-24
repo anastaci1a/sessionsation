@@ -277,12 +277,34 @@ pub(super) async fn result(
                 }
             }
         }
-        "completed_with_reply" | "failed" => json!({"state":"cached"}),
-        _ => json!({"state":"not_applicable"}),
+        state => static_observation(state).unwrap_or_else(|| json!({"state":"not_applicable"})),
     };
     let mut result = json!(receipt);
     result["observation"] = observation;
     Ok(result)
+}
+/// The observation of a receipt state that needs no provider read; `None` while the
+/// native outcome can still change.
+fn static_observation(state: &str) -> Option<Value> {
+    match state {
+        "unknown" | "native_accepted" | "execution_started" => None,
+        "completed_with_reply" | "failed" => Some(json!({"state":"cached"})),
+        _ => Some(json!({"state":"not_applicable"})),
+    }
+}
+/// What `expire` followed by `result` returns when they would neither write nor read
+/// the provider, from a shared reader; `None` when the writer path is needed (an
+/// expiring `pending_local`, or a state that is still observed natively).
+pub(super) fn settled(reader: &impl Reads, receipt: &Receipt, now: i64) -> Result<Option<Value>> {
+    let Some(observation) = static_observation(&receipt.state) else {
+        return Ok(None);
+    };
+    if receipt.state == "pending_local" && reader.expiry(&receipt.message_id)? <= now {
+        return Ok(None);
+    }
+    let mut result = json!(receipt);
+    result["observation"] = observation;
+    Ok(Some(result))
 }
 #[cfg(test)]
 mod tests;

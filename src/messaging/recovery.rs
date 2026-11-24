@@ -568,8 +568,7 @@ pub(super) async fn send(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         !request.text.is_empty() && request.text.len() <= 16384,
         "INVALID_REQUEST"
     );
-    let ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
-    public::initialize(&ledger)?;
+    let ledger = ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?;
     if exists(paths, &request.message_id) {
         let old = read(paths, &request.message_id)?;
         ensure!(old.request == request, "MESSAGE_ID_CONFLICT");
@@ -772,8 +771,7 @@ pub async fn reconcile_recovery(paths: &Paths, id: &str) -> anyhow::Result<Value
         confirmed,
         "RECOVERY_LAUNCH_UNCERTAIN_INSPECT_DESTINATION_DO_NOT_RETRY"
     );
-    let ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
-    public::initialize(&ledger)?;
+    let ledger = ledger::open_write(paths, wait_budget(paths, Wait::Read)).await?;
     let bound = public::get(&ledger, id)?.is_some();
     r.launch_confirmed = true;
     r.phase = if bound { "complete" } else { "failed" }.into();

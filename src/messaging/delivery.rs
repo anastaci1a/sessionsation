@@ -200,7 +200,7 @@ pub(super) async fn verify(paths: &Paths, receipt: &Receipt, t: &Timing) -> Verd
 
 /// Apply the verdict to the receipt of a send this call just accepted.
 pub(super) async fn settle(paths: &Paths, receipt: &mut Receipt, verdict: Verdict) -> Result<()> {
-    let mut ledger = Ledger::open_waiting(paths, Duration::from_secs(3))?;
+    let mut ledger = ledger::open_write_blocking(paths, Duration::from_secs(3))?;
     let current = ledger.get(&receipt.message_id)?;
     if current.as_ref() != Some(&*receipt) {
         // Cancelled or observed meanwhile: that record wins.

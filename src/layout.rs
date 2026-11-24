@@ -113,6 +113,10 @@ pub const ROOT_MIGRATIONS: &str = "operations/root-migrations";
 pub const PROJECT_RELOCATION_LOCK: &str = "operations/project-relocation.lock";
 
 pub const RECEIPTS_DB: &str = "messaging/receipts.db";
+/// The receipts ledger lock (`sync::LockKind::Adapter`): shared for reads, exclusive for writes.
+pub const ADAPTER_LOCK: &str = "messaging/adapter.lock";
+/// Ledger open timings, one JSON line per open (`messaging::ledger`); trimmed by retention.
+pub const LEDGER_STATS: &str = "messaging/ledger-stats.jsonl";
 pub const CLAUDE_STEER: &str = "messaging/claude-steer";
 pub const CLAUDE_DELIVERIES: &str = "messaging/claude-deliveries";
 pub const QUESTIONS: &str = "messaging/questions";

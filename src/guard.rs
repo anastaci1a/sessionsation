@@ -1454,6 +1454,160 @@ fn provider_ops_table_is_total() {
     fail_on(out);
 }
 
+/// `ledger_read_is_read_only`: in the ledger owner's text, `LedgerRead` must exist
+/// with private fields only, and neither an `impl` block for it nor the `read` query
+/// module it delegates to may run a write or hand out the connection.
+fn ledger_read_problems(rel: &str, text: &str) -> Vec<String> {
+    let code = strip_tests(text);
+    let sk = String::from_utf8(skeleton(&code)).expect("guard: blanking keeps UTF-8");
+    let line_of = |at: usize| code[..at].matches('\n').count() + 1;
+    // The `{ … }` body that follows a header match, as a byte range.
+    let body = |from: usize| -> Option<(usize, usize)> {
+        let open = from + sk[from..].find(['{', ';'])?;
+        if sk.as_bytes()[open] != b'{' {
+            return None;
+        }
+        let mut depth = 0;
+        for (k, c) in sk.bytes().enumerate().skip(open) {
+            match c {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((open, k + 1));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    };
+    let write = re(
+        r"(?i-u)\bexecute(_batch)?\s*\(|\btransaction|\bpragma_update|\b(insert|update|delete|create|drop|alter|replace|vacuum|attach)\b",
+    );
+    let scan = |what: &str, (from, to): (usize, usize), exposes: bool| {
+        let mut out = vec![];
+        for m in write.find_iter(&code[from..to]) {
+            out.push(format!(
+                "guard: LedgerRead has a write path at {rel}:{} ({what}: `{}`)",
+                line_of(from + m.start()),
+                m.as_str()
+            ));
+        }
+        if exposes {
+            for m in re(r"\bConnection\b").find_iter(&sk[from..to]) {
+                out.push(format!(
+                    "guard: LedgerRead hands out its connection at {rel}:{}",
+                    line_of(from + m.start())
+                ));
+            }
+        }
+        out
+    };
+    let mut out = vec![];
+    let structs: Vec<_> = re(r"(?m)^\s*(pub(\([^)]*\))?\s+)?struct\s+LedgerRead\b")
+        .find_iter(&sk)
+        .filter_map(|m| body(m.end()))
+        .collect();
+    let impls: Vec<_> = re(r"(?m)^\s*impl\b[^{;]*\bLedgerRead\b")
+        .find_iter(&sk)
+        .filter_map(|m| body(m.end()))
+        .collect();
+    let reads: Vec<_> = re(r"(?m)^\s*(pub(\([^)]*\))?\s+)?mod\s+read\s*\{")
+        .find_iter(&sk)
+        .filter_map(|m| body(m.end() - 1))
+        .collect();
+    if structs.len() != 1 || impls.is_empty() {
+        out.push(format!(
+            "guard: {rel} must define struct LedgerRead and impl blocks for it (found {} structs, {} impls)",
+            structs.len(),
+            impls.len()
+        ));
+    }
+    for &(from, to) in &structs {
+        for m in re(r"\bpub\b").find_iter(&sk[from..to]) {
+            out.push(format!(
+                "guard: LedgerRead has a public field at {rel}:{}",
+                line_of(from + m.start())
+            ));
+        }
+    }
+    for &range in &impls {
+        out.extend(scan("impl LedgerRead", range, true));
+    }
+    for &range in &reads {
+        out.extend(scan("mod read", range, false));
+    }
+    out
+}
+
+#[test]
+fn ledger_read_is_read_only() {
+    let rel = "src/messaging/ledger.rs";
+    let Ok(text) = std::fs::read_to_string(manifest_root().join(rel)) else {
+        panic!("guard: {rel} (the ledger owner, defining LedgerRead) does not exist");
+    };
+    assert!(
+        text.contains("mod read {"),
+        "guard: {rel} has no `mod read` query module"
+    );
+    fail_on(ledger_read_problems(rel, &text));
+}
+
+#[test]
+fn ledger_read_check_catches_writes() {
+    let ok = "pub(super) struct LedgerRead {\n    db: Connection,\n}\n\
+              mod read {\n    pub(super) fn get(db: &Connection) -> R { db.query_row(\"SELECT receipt FROM receipts\", [], |r| r.get(0)) }\n}\n\
+              impl Reads for LedgerRead {\n    fn get(&self) -> R { read::get(&self.db) }\n}\n\
+              #[cfg(test)]\nimpl LedgerRead {\n    fn t(&self) { self.db.execute(\"DELETE FROM x\", []); }\n}\n";
+    assert!(
+        ledger_read_problems("f.rs", ok).is_empty(),
+        "{:?}",
+        ledger_read_problems("f.rs", ok)
+    );
+    let cases = [
+        (
+            ok.replace(
+                "read::get(&self.db) }",
+                "read::get(&self.db) }\n    fn w(&self) { self.db.execute(\"x\", []); }",
+            ),
+            "write path at f.rs:9",
+        ),
+        (
+            ok.replace(
+                "SELECT receipt FROM receipts",
+                "UPDATE receipts SET receipt=1",
+            ),
+            "mod read: `UPDATE`",
+        ),
+        (
+            ok.replace("    db: Connection,", "    pub db: Connection,"),
+            "public field at f.rs:2",
+        ),
+        (
+            format!(
+                "{ok}impl std::ops::Deref for LedgerRead {{\n    type Target = Connection;\n}}\n"
+            ),
+            "hands out its connection",
+        ),
+        (
+            ok.replace("impl Reads for LedgerRead", "impl Reads for Ledger"),
+            "found 1 structs, 0 impls",
+        ),
+        (
+            ok.replace("struct LedgerRead", "struct Reader"),
+            "found 0 structs",
+        ),
+    ];
+    for (text, want) in cases {
+        let p = ledger_read_problems("f.rs", &text);
+        assert!(
+            p.iter().any(|m| m.contains(want)),
+            "want {want:?} in {p:?}\n{text}"
+        );
+    }
+}
+
 #[test]
 fn roles_have_one_owner() {
     let mut out = vec![];

@@ -88,9 +88,11 @@ non-steering v1 Submit/Queue.
 
 ### Rolling back a release
 
-Check the [changelog](changelog.md) for every version you roll back over. A release
-older than 1.54.0 refuses a layout version 3 root: run `root rollback` first. Before
-rolling back below 1.49.0, drain its operations, because older releases do not run
+Check the [changelog](changelog.md) for every version you roll back over. From 1.66.1
+`messaging/receipts.db` carries `PRAGMA user_version` 1, stamped when the supervisor
+starts; older releases ignore it. A release older than 1.54.0 refuses a layout
+version 3 root: run `root rollback` first.
+Before rolling back below 1.49.0, drain its operations, because older releases do not run
 them and a pending Codex change keeps holding input:
 
 1. `sessionsation api operations`, rows with `kind:"model_change"` and
@@ -127,8 +129,8 @@ DATA_ROOT/
                message-recoveries/, compactions/, model-changes/, session-launches/,
                claude-switches/, claude-idle-notify/, auto-recoveries/,
                shared-migrations/, root-migrations/, move-backups/
-  messaging/   receipts.db, checkpoints/, observations/, claude-steer/,
-               claude-deliveries/, questions/, input-health/
+  messaging/   receipts.db, ledger-stats.jsonl, checkpoints/, observations/,
+               claude-steer/, claude-deliveries/, questions/, input-health/
   cache/       state-snapshot-*.json, observations/, compatibility-report.json,
                claude-transcript-facts.json
   logs/        daemon.log, handoff.log
@@ -205,7 +207,7 @@ The supervisor runs one retention pass a few minutes after start and then hourly
 | Logs | `log_max_bytes` (8 MiB), `log_retention_days` (30) | A larger `logs/*.log` is copied to `.log.1` and truncated in place; an older `.log.1` is removed. |
 | Cache | `cache_retention_days` (14) | Untouched files under `cache/observations/` are removed (regenerated on demand). Snapshots and reports are kept. |
 | Operations history | `operation_retention_days` (90) | Journals in a final phase (launches `running`/`failed`; resumptions also `abandoned`; conversation operations, space moves and message recoveries `complete`/`failed`; handoff jobs also `cancelled`/`recovered`) are removed with their sidecars unless a lock is held. Unfinished or `uncertain` journals, `deletions/`, `account-deletions/`, lifecycle admission locks and move backups are kept. |
-| Receipts | `receipt_retention_days` (14), `receipt_unknown_horizon_days` (90) | [Receipt retention](contract.md#receipt-retention) runs in the same pass; retired ids keep tombstones. |
+| Receipts | `receipt_retention_days` (14), `receipt_unknown_horizon_days` (90) | [Receipt retention](contract.md#receipt-retention) runs in the same pass; retired ids keep tombstones. `messaging/ledger-stats.jsonl` (one JSON line per ledger open: lock wait, open, schema and hold milliseconds, caller) is cut to its last 1 MiB above 10 MiB. |
 
 `operations/root-migrations/` and `operations/account-reset-credits/` are never
 pruned.

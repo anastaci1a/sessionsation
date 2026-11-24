@@ -2029,6 +2029,7 @@ fn backup(paths: &Paths, run: &Run) -> Result<()> {
         fs::rename(&partial, &target)?;
     }
     // SQLite databases: consistent copies.
+    // guard-allow(ledger): the root backup copies the receipts file consistently (VACUUM INTO)
     for db in [layout::REGISTRY_DB, layout::RECEIPTS_DB] {
         let from = root.join(db);
         if !fs::symlink_metadata(&from).is_ok_and(|m| m.is_file()) {

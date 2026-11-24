@@ -419,6 +419,10 @@ pub async fn serve(paths: Paths) -> Result<()> {
     }
     // A crash between create and rename of an atomic write leaves a `.tmp*` file.
     crate::paths::sweep_stale_temps(&paths.root, crate::paths::STALE_TEMP_AGE);
+    // Receipts schema (contract 1.66.1): migrated here once, never on the read path.
+    if let Err(e) = crate::messaging::prepare_ledger(&paths) {
+        eprintln!("receipts ledger: schema not prepared at start ({e:#}); the first open migrates");
+    }
     // Must precede removing the stale socket and opening the database.
     let mut store = Store::open(&paths)?;
     let mut state = store.load()?;

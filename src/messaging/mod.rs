@@ -6,6 +6,7 @@ pub mod compaction;
 mod delivery;
 pub mod headless;
 pub mod input_health;
+mod ledger;
 pub mod model_change;
 mod modes;
 mod public;
@@ -26,6 +27,7 @@ use crate::{
 };
 use fs2::FileExt;
 pub use input_health::NativeError;
+use ledger::{Ledger, LedgerRead, Reads};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -362,13 +364,6 @@ fn capabilities() -> Value {
     json!({"protocol_version":VERSION,"schema":"urn:codex-switcher:messaging:1.2.1","experimental":true,"live_validated":false,"native_profiles":NATIVE_PROFILES,"operations":{"sessions":true,"resolve":true,"enqueue":true,"status":true,"observe":true,"events":true,"cancel":true},"native_queue":{"method":"thread/queue/add","delivery":"non_steering_idle_dispatch","deduplication":"adapter_only","expiry":"submission_deadline_only","cancel":"delete_true_under_native_dispatch_lock"},"events":{"scope":"adapter_lifecycle_and_terminal_replies","retained":1000,"page_size":100,"public_replies":"correlated_terminal_summary","execution_correlation":"public_client_id","native_replay":"unsupported"},"receipts":{"capacity":10000,"automatic_eviction":true,"eviction":"certain_terminal_after_retention_days_with_tombstone","retired_lookup":"receipt_retired","uncertain_submission":"never_replayed"},"reply_observation":{"mode":"poll_status_or_observe","native_method":"thread/turns/list","items_view":"summary","max_pages":20,"max_text_bytes":65536},"unsupported_reason":"native_push_subscription_and_token_streaming_not_supported"})
 }
 
-struct Ledger {
-    db: Connection,
-    paths: Paths,
-    _lock: Option<fs::File>,
-    /// True while the writer lease is released around provider I/O.
-    suspended: bool,
-}
 /// How long a public path waits for the root-wide ledger lease before it reports
 /// `adapter_busy`. Sends may wait longer than reads.
 #[derive(Clone, Copy)]
@@ -400,6 +395,11 @@ fn wait_budget(paths: &Paths, wait: Wait) -> std::time::Duration {
         })
     }
 }
+/// What is left of a wait budget started earlier (a shared read that falls back to a
+/// writer shares one budget).
+fn remaining(deadline: tokio::time::Instant) -> std::time::Duration {
+    deadline.saturating_duration_since(tokio::time::Instant::now())
+}
 /// Like `mutation_lock`, but waits (bounded, async) for a concurrent holder.
 async fn mutation_lock_waiting(
     paths: &Paths,
@@ -419,308 +419,24 @@ async fn mutation_lock_waiting(
 /// Unthrottled receipt-retention pass (part of the data-root retention sweep);
 /// returns the number of retired message ids.
 pub fn run_receipt_retention(paths: &Paths, now: i64) -> anyhow::Result<usize> {
-    let mut ledger = Ledger::open_waiting(paths, std::time::Duration::from_secs(5))?;
-    let policy = retention::Policy::load(paths);
-    Ok(retention::run(&mut ledger, now, policy)?)
+    let retired = (|| {
+        let mut ledger = ledger::open_write_blocking(paths, std::time::Duration::from_secs(5))?;
+        retention::run(&mut ledger, now, retention::Policy::load(paths))
+    })();
+    // However the pass ended (a busy ledger included): the stats file is bounded
+    // independently, best effort, and never a reason to fail the sweep.
+    let _ = ledger::trim_stats(paths);
+    Ok(retired?)
 }
-impl Ledger {
-    fn open(paths: &Paths) -> Result<Self> {
-        let dir = paths.root.join("messaging");
-        private_dir(&dir).map_err(|_| Fault("storage_error"))?;
-        let lock = lock_file(&dir.join("adapter.lock")).map_err(|_| Fault("storage_error"))?;
-        lock.try_lock_exclusive()
-            .map_err(|_| Fault("adapter_busy"))?;
-        let path = dir.join("receipts.db");
-        let file = lock_file(&path).map_err(|_| Fault("storage_error"))?;
-        if file.metadata()?.uid() != unsafe { libc::geteuid() } {
-            return Err(Fault("storage_error"));
-        }
-        let db = Connection::open(path)?;
-        db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS metadata(epoch TEXT NOT NULL); CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, hash TEXT NOT NULL, expiry INTEGER NOT NULL, receipt TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, receipt TEXT NOT NULL); CREATE TABLE IF NOT EXISTS mode_requests(id TEXT PRIMARY KEY, mode TEXT NOT NULL);")?;
-        if db.query_row("SELECT count(*) FROM metadata", [], |r| r.get::<_, i64>(0))? == 0 {
-            db.execute(
-                "INSERT INTO metadata VALUES (?)",
-                [uuid::Uuid::new_v4().to_string()],
-            )?;
-        }
-        Ok(Self {
-            db,
-            paths: paths.clone(),
-            _lock: Some(lock),
-            suspended: false,
-        })
-    }
-    /// Like `open`, but waits asynchronously up to `budget` for a concurrent holder.
-    async fn open_wait(paths: &Paths, budget: std::time::Duration) -> Result<Self> {
-        let deadline = tokio::time::Instant::now() + budget;
-        loop {
-            match Self::open(paths) {
-                Err(Fault("adapter_busy")) if tokio::time::Instant::now() < deadline => {
-                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                }
-                other => return other,
-            }
-        }
-    }
-    /// Run provider I/O without the root-wide lease. The lease is always taken
-    /// again (waiting up to `budget`) before returning, so the caller must treat
-    /// every ledger read made before the call as stale and re-verify it.
-    async fn during<T>(
-        &mut self,
-        budget: std::time::Duration,
-        io: impl std::future::Future<Output = T>,
-    ) -> Result<T> {
-        // Close the connection before releasing the lock.
-        self.db = Connection::open_in_memory()?;
-        self._lock = None;
-        self.suspended = true;
-        let out = io.await;
-        let paths = self.paths.clone();
-        *self = Self::open_wait(&paths, budget).await?;
-        Ok(out)
-    }
-    /// After `during`, tell whether another writer changed this receipt. When it
-    /// did, adopt the stored record and report `false`: our stale result must not
-    /// regress it.
-    fn amend(&mut self, receipt: &mut Receipt, edit: impl FnOnce(&mut Receipt)) -> Result<()> {
-        if self.unchanged(receipt)? {
-            edit(receipt);
-            self.save(receipt)?;
-        }
-        Ok(())
-    }
-    fn unchanged(&self, receipt: &mut Receipt) -> Result<bool> {
-        match self.get(&receipt.message_id)? {
-            Some(current) if current == *receipt => Ok(true),
-            Some(current) => {
-                *receipt = current;
-                Ok(false)
-            }
-            None => Ok(false),
-        }
-    }
-    /// Blocking `open` that waits up to `budget` for a concurrent holder; for sync
-    /// callers only (async paths use `open_wait`). Never bypasses the lock.
-    fn open_waiting(paths: &Paths, budget: std::time::Duration) -> Result<Self> {
-        let deadline = std::time::Instant::now() + budget;
-        loop {
-            match Self::open(paths) {
-                Err(Fault("adapter_busy")) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                }
-                other => return other,
-            }
-        }
-    }
-    fn get(&self, id: &str) -> Result<Option<Receipt>> {
-        if self.suspended {
-            return Err(Fault("adapter_busy"));
-        }
-        let text: Option<String> = self
-            .db
-            .query_row("SELECT receipt FROM receipts WHERE id=?", [id], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        text.map(|s| serde_json::from_str(&s).map_err(|_| Fault("storage_error")))
-            .transpose()
-    }
-    /// A receipt by id; a retired id is `receipt_retired`, never `not_found`.
-    fn lookup(&self, id: &str) -> Result<Receipt> {
-        match self.get(id)? {
-            Some(r) => Ok(r),
-            None if retention::retired(self, id)?.is_some() => Err(Fault("receipt_retired")),
-            None => Err(Fault("receipt_not_found")),
-        }
-    }
-    fn save(&mut self, receipt: &Receipt) -> Result<()> {
-        if self.suspended {
-            return Err(Fault("adapter_busy"));
-        }
-        let data = serde_json::to_string(receipt).map_err(|_| Fault("storage_error"))?;
-        let tx = self.db.transaction()?;
-        tx.execute(
-            "UPDATE receipts SET receipt=? WHERE id=?",
-            params![data, receipt.message_id],
-        )?;
-        tx.execute("INSERT INTO events(receipt) VALUES (?)", [data])?;
-        tx.execute(
-            "DELETE FROM events WHERE seq <= (SELECT coalesce(max(seq),0)-1000 FROM events)",
-            [],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-    fn accept(&mut self, input: &Enqueue, now: i64) -> Result<Receipt> {
-        self.accept_with_mode(input, now, None)
-    }
-    fn accept_with_mode(
-        &mut self,
-        input: &Enqueue,
-        now: i64,
-        mode_hash: Option<&str>,
-    ) -> Result<Receipt> {
-        self.accept_bound(input, now, mode_hash.map(|hash| (hash, "queue", None)))
-    }
-    fn accept_bound(
-        &mut self,
-        input: &Enqueue,
-        now: i64,
-        binding: Option<(&str, &str, Option<SubmitEvidence>)>,
-    ) -> Result<Receipt> {
-        // A public steering intent reserves its UUID even before receipt creation.
-        let has_public: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_messages')", [], |r|r.get(0))?;
-        if has_public {
-            let public_mode: Option<String> = self
-                .db
-                .query_row(
-                    "SELECT json_extract(binding,'$.request.mode') FROM public_messages WHERE id=?",
-                    [&input.message_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if public_mode.as_deref() == Some("steer")
-                && binding.as_ref().is_none_or(|b| b.1 != "public_steer")
-            {
-                return Err(Fault("message_id_conflict"));
-            }
-        }
-        let steer = binding.as_ref().is_some_and(|b| b.1 == "public_steer");
-        let mode_hash = binding.as_ref().map(|b| b.0);
-        uuid(&input.message_id)?;
-        uuid(&input.session_id)?;
-        if input.text.is_empty()
-            || input.text.len() > 16384
-            || input.expected_generation.len() != 64
-            || !input
-                .expected_generation
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return Err(Fault("invalid_request"));
-        }
-        let hash = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(input).map_err(|_| Fault("invalid_request"))?)
-        );
-        let hash = mode_hash.unwrap_or(&hash).to_owned();
-        if let Some(receipt) = self.get(&input.message_id)? {
-            let old: String = self.db.query_row(
-                "SELECT hash FROM receipts WHERE id=?",
-                [&input.message_id],
-                |r| r.get(0),
-            )?;
-            if old != hash {
-                return Err(Fault("message_id_conflict"));
-            }
-            return Ok(receipt);
-        }
-        if retention::retired(self, &input.message_id)?.is_some() {
-            return Err(Fault("receipt_retired"));
-        }
-        if input.expires_at <= now || input.expires_at > now + 86400 {
-            return Err(Fault("invalid_expiry"));
-        }
-        retention::maybe_run(self, now);
-        if self
-            .db
-            .query_row("SELECT count(*) FROM receipts", [], |r| r.get::<_, i64>(0))?
-            >= 10000
-        {
-            return Err(Fault("receipt_capacity"));
-        }
-        let receipt = Receipt {
-            recovery_start: None,
-            message_id: input.message_id.clone(),
-            session_id: input.session_id.clone(),
-            generation: input.expected_generation.clone(),
-            state: if mode_hash.is_some() && !steer {
-                "unknown"
-            } else {
-                "pending_local"
-            }
-            .into(),
-            native_queue_id: None,
-            reason: mode_hash
-                .filter(|_| !steer)
-                .map(|_| "dispatch_intent".into()),
-            correlation: None,
-            reply: None,
-            submit: binding.as_ref().and_then(|b| b.2.clone()),
-            steer: None,
-            native_error: None,
-        };
-        let data = serde_json::to_string(&receipt).map_err(|_| Fault("storage_error"))?;
-        let tx = self.db.transaction()?;
-        tx.execute(
-            "INSERT INTO receipts VALUES (?,?,?,?)",
-            params![input.message_id, hash, input.expires_at, data],
-        )?;
-        if let Some((_, mode, _)) = binding {
-            tx.execute(
-                "INSERT INTO mode_requests(id,mode) VALUES (?,?)",
-                params![input.message_id, mode],
-            )?;
-        }
-        tx.execute("INSERT INTO events(receipt) VALUES (?)", [data])?;
-        tx.execute(
-            "DELETE FROM events WHERE seq <= (SELECT coalesce(max(seq),0)-1000 FROM events)",
-            [],
-        )?;
-        tx.commit()?;
-        Ok(receipt)
-    }
-    fn expire(&mut self, receipt: &mut Receipt, now: i64) -> Result<()> {
-        let expiry: i64 = self.db.query_row(
-            "SELECT expiry FROM receipts WHERE id=?",
-            [&receipt.message_id],
-            |r| r.get(0),
-        )?;
-        if receipt.state == "pending_local" && expiry <= now {
-            receipt.state = "expired".into();
-            receipt.reason = None;
-            self.save(receipt)?;
-        }
-        Ok(())
-    }
-    fn events(&self, cursor: Option<&str>) -> Result<Value> {
-        let epoch: String = self
-            .db
-            .query_row("SELECT epoch FROM metadata", [], |r| r.get(0))?;
-        let (min, max): (i64, i64) = self.db.query_row(
-            "SELECT coalesce(min(seq),1),coalesce(max(seq),0) FROM events",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        let after = if let Some(cursor) = cursor {
-            let (given, seq) = cursor.split_once(':').ok_or(Fault("invalid_cursor"))?;
-            let seq: i64 = seq.parse().map_err(|_| Fault("invalid_cursor"))?;
-            if given != epoch || seq < min - 1 || seq > max {
-                return Err(Fault("cursor_gap"));
-            }
-            seq
-        } else {
-            min - 1
-        };
-        let mut statement = self
-            .db
-            .prepare("SELECT seq,receipt FROM events WHERE seq>? ORDER BY seq LIMIT 100")?;
-        let rows = statement.query_map([after], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?;
-        let mut events = Vec::new();
-        let mut last = after;
-        for row in rows {
-            let (seq, text) = row?;
-            last = seq;
-            let receipt: Receipt =
-                serde_json::from_str(&text).map_err(|_| Fault("storage_error"))?;
-            events.push(json!({"cursor":format!("{epoch}:{seq}"),"receipt":receipt}));
-        }
-        Ok(
-            json!({"events":events,"cursor":format!("{epoch}:{last}"),"has_more":last<max,"public_replies":"correlated_terminal_summary"}),
-        )
-    }
+/// Bring the receipts schema to the current version once, at supervisor start, so
+/// that after a cutover reads never have to migrate. A busy ledger is left to the
+/// first open.
+pub fn prepare_ledger(paths: &Paths) -> anyhow::Result<()> {
+    drop(ledger::open_write_blocking(
+        paths,
+        std::time::Duration::from_secs(2),
+    )?);
+    Ok(())
 }
 #[derive(Deserialize)]
 struct Queued {
@@ -1082,7 +798,7 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
             }
             let input: Enqueue =
                 serde_json::from_slice(&bytes).map_err(|_| Fault("invalid_request"))?;
-            let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
+            let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?;
             let mut receipt = ledger.accept(&input, crate::daemon::now())?;
             ledger.expire(&mut receipt, crate::daemon::now())?;
             if matches!(receipt.state.as_str(), "pending_local" | "unknown") {
@@ -1096,19 +812,22 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
         }
         Command::Status { message } | Command::Observe { message } => {
             uuid(&message)?;
-            let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
-            let mut receipt = ledger.lookup(&message)?;
-            if receipt.submit.is_some() {
-                return Err(Fault("mode_receipt_requires_modes_status"));
+            let deadline = tokio::time::Instant::now() + wait_budget(paths, Wait::Read);
+            {
+                // Shared first: a settled receipt needs no write and no provider read.
+                let reader = ledger::open_read(paths, remaining(deadline)).await?;
+                let receipt = reader.lookup(&message)?;
+                if receipt.submit.is_some() {
+                    return Err(Fault("mode_receipt_requires_modes_status"));
+                }
+                if let Some(settled) = observe::settled(&reader, &receipt, crate::daemon::now())? {
+                    return Ok(settled);
+                }
             }
-            ledger.expire(&mut receipt, crate::daemon::now())?;
-            if receipt.state == "unknown" {
-                let _ = deliver(paths, &mut ledger, &mut receipt, None).await;
-            }
-            observe::result(paths, &mut ledger, &mut receipt).await
+            status_write(paths, &message, remaining(deadline)).await
         }
         Command::Events { cursor } => {
-            let mut page = Ledger::open_wait(paths, wait_budget(paths, Wait::Read))
+            let mut page = ledger::open_read(paths, wait_budget(paths, Wait::Read))
                 .await?
                 .events(cursor.as_deref())?;
             page["events"]
@@ -1119,7 +838,7 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
         }
         Command::Cancel { message } => {
             uuid(&message)?;
-            let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
+            let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Read)).await?;
             let mut receipt = ledger.lookup(&message)?;
             if receipt.submit.is_some() {
                 return Err(Fault("mode_receipt_requires_modes_cancel"));
@@ -1128,6 +847,20 @@ async fn execute(paths: &Paths, command: Command) -> Result<Value> {
             Ok(json!(receipt))
         }
     }
+}
+/// The writer path of legacy `status`/`observe`: may expire, re-deliver an `unknown`
+/// receipt and observe it natively.
+async fn status_write(paths: &Paths, message: &str, budget: std::time::Duration) -> Result<Value> {
+    let mut ledger = ledger::open_write(paths, budget).await?;
+    let mut receipt = ledger.lookup(message)?;
+    if receipt.submit.is_some() {
+        return Err(Fault("mode_receipt_requires_modes_status"));
+    }
+    ledger.expire(&mut receipt, crate::daemon::now())?;
+    if receipt.state == "unknown" {
+        let _ = deliver(paths, &mut ledger, &mut receipt, None).await;
+    }
+    observe::result(paths, &mut ledger, &mut receipt).await
 }
 /// JSON-only errors deliberately omit arbitrary native messages and local paths.
 pub async fn run(paths: &Paths, command: Command) -> bool {

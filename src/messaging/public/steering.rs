@@ -531,7 +531,6 @@ mod tests {
                 }
                 if matches!(scenario, "restart_after_intent" | "restart_before_intent") {
                     let mut db = Ledger::open(&paths).unwrap();
-                    initialize(&db).unwrap();
                     let b = Binding {
                         cancelled: false,
                         released_hold: false,
@@ -969,7 +968,6 @@ mod tests {
         };
         {
             let db = Ledger::open(&paths).unwrap();
-            initialize(&db).unwrap();
             db.db
                 .execute(
                     "INSERT INTO public_messages VALUES (?,?)",
@@ -986,10 +984,9 @@ mod tests {
         });
         let run = |paths: Paths, binding: Arc<Binding>| {
             tokio::spawn(async move {
-                let mut db = Ledger::open_wait(&paths, Duration::from_secs(10))
+                let mut db = ledger::open_write(&paths, Duration::from_secs(10))
                     .await
                     .unwrap();
-                initialize(&db).unwrap();
                 let mut r = accept(&mut db, &binding).unwrap();
                 let outcome = deliver(&paths, &binding, &mut db, &mut r).await;
                 (r, outcome.map_err(|e| e.to_string()))

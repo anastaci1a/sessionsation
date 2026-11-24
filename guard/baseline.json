@@ -1,5 +1,5 @@
 {
-  "roles_digest": "9d394ac1d0e3d857acccd4f61030e12e67ba4a8e1bc55e83a62093c604388c79",
+  "roles_digest": "c606308479800069ee3ff3b0ac43232f0889ebbc210ca81e5d1b75139ec1e273",
   "counters_digest": "7a1362d75516f452c2487c88413b88f04b88f31062c4fa6857c4007feb8db7ff",
   "counters": {
     "alive_fns": { "value": 0 },
@@ -17,17 +17,17 @@
     "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13989 },
+    "doc_bytes:docs/changelog.md": { "value": 13985 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
-    "doc_bytes:docs/contract.md": { "value": 229880 },
-    "doc_bytes:docs/operations.md": { "value": 22987 },
-    "doc_bytes_total": { "value": 306762 },
+    "doc_bytes:docs/contract.md": { "value": 230244 },
+    "doc_bytes:docs/operations.md": { "value": 23295 },
+    "doc_bytes_total": { "value": 307430 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
     "error_code_literals": { "value": 683 },
     "file_cache_statics": { "value": 8 },
-    "flock_sites": { "value": 87 },
+    "flock_sites": { "value": 86 },
     "fs2_imports": { "value": 32 },
     "fs_write_sites": { "value": 5 },
     "generation_allow_markers": { "value": 0 },
@@ -35,8 +35,8 @@
     "herdr_cli_callers": { "value": 42 },
     "identity_allow_markers": { "value": 0 },
     "json_parse_sites": { "value": 136 },
-    "ledger_allow_markers": { "value": 0 },
-    "ledger_opens": { "value": 24 },
+    "ledger_allow_markers": { "value": 2 },
+    "ledger_opens": { "value": 0 },
     "locks_allow_markers": { "value": 0 },
     "now_sites": { "value": 26 },
     "oauth_allow_markers": { "value": 2 },
@@ -48,7 +48,7 @@
     "provider_enum_dispatch": { "value": 0 },
     "provider_ops_allow_markers": { "value": 0 },
     "provider_string_compares": { "value": 0 },
-    "raw_sleeps": { "value": 105 },
+    "raw_sleeps": { "value": 104 },
     "receipts_sites": { "value": 2 },
     "records_allow_markers": { "value": 0 },
     "rename_sites": { "value": 26 },
@@ -62,7 +62,7 @@
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 101795 },
+    "src_lines": { "value": 102713 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -949,9 +949,72 @@
       "reason": "1.66.0 lifecycle: launch::annotate_availability, launching rows, pending/launched_pane, the unknown-session stop and archive answers, pane close on already_stopped, ResumeLaunch fact per provider, native resume-launch admission and worker (phase resuming, owner hand-off to the typed resume), and their tests' helpers",
       "considered": "n/a",
       "step": "1.66.0"
+    },
+    {
+      "counter": "ledger_opens",
+      "by": -24,
+      "reason": "S2/S4: every receipts open goes through messaging::ledger (open_read, open_read_blocking, open_write, open_write_blocking); the public.rs recovery-dispatch wait loop now uses open_write",
+      "considered": "n/a",
+      "step": "1.66.1"
+    },
+    {
+      "counter": "flock_sites",
+      "by": -1,
+      "reason": "S2: the adapter.lock flock moved from messaging/mod.rs into sync::Lock (owner of locks)",
+      "considered": "n/a",
+      "step": "1.66.1"
+    },
+    {
+      "counter": "raw_sleeps",
+      "by": -1,
+      "reason": "S2: the 25 ms retry sleep of the public.rs recovery-dispatch wait loop is gone (it now uses ledger::open_write)",
+      "considered": "n/a",
+      "step": "1.66.1"
+    },
+    {
+      "counter": "ledger_allow_markers",
+      "by": 2,
+      "reason": "S2: ledger role Enforced; the two backup copies of receipts.db (root_migrate.rs and layout/migrate.rs, VACUUM INTO) carry guard-allow(ledger) markers, as the design names",
+      "considered": "routing the copies through messaging::ledger would tie offline backups to the ledger lock although they copy the file rather than open it as a ledger; receipts_sites keeps counting the two marked lines (Sites counters do not exempt markers, as oauth_sites)",
+      "step": "1.66.1"
+    },
+    {
+      "counter": "src_lines",
+      "by": 918,
+      "reason": "S2/S4: messaging/ledger.rs (Ledger moved from messaging/mod.rs, LedgerRead, Reads, SCHEMA_VERSION, shared/exclusive open without an own descriptor on the database, busy_timeout, init-once migration, ledger-stats.jsonl), sync.rs skeleton, shared-reader shortcuts and their writer paths, schema prepared at supervisor start, guard::ledger_read_is_read_only and the shortcut, hot-journal and v1-fixture tests",
+      "considered": "n/a",
+      "step": "1.66.1"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": -4,
+      "reason": "1.66.1 entry (shared receipt reads, schema stamped once); 1.51.0/1.50.0, 1.47.1/1.47.0, 1.46.5/1.46.4, 1.46.1/1.46.0 folded onto one line each to stay under the cap",
+      "considered": "n/a",
+      "step": "1.66.1"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 364,
+      "reason": "1.66.1: admission and contention describes shared readers and exclusive writers",
+      "considered": "n/a",
+      "step": "1.66.1"
+    },
+    {
+      "counter": "doc_bytes:docs/operations.md",
+      "by": 308,
+      "reason": "1.66.1: ledger-stats.jsonl in the data-root layout and its retention rule; receipts.db user_version (stamped at supervisor start) in rolling back",
+      "considered": "n/a",
+      "step": "1.66.1"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 668,
+      "reason": "1.66.1: docs/changelog.md, docs/contract.md and docs/operations.md as above",
+      "considered": "n/a",
+      "step": "1.66.1"
     }
   ],
   "enforced"
 
-: { "identity": "1.66.0", "oauth": "S0", "provider-ops": "1.65.0" }
+: { "identity": "1.66.0", "ledger": "1.66.1", "oauth": "S0", "provider-ops": "1.65.0" }
 }

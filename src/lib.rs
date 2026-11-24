@@ -40,6 +40,7 @@ pub mod session_model;
 pub mod shared_state;
 pub mod simulation;
 pub mod store;
+pub mod sync;
 pub mod timing;
 pub mod turn_notify;
 pub mod usage_history;

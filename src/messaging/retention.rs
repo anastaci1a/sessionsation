@@ -20,7 +20,7 @@
 //!   every retired id in `retired_messages`. A retired id is never accepted
 //!   again: send and receipt both return `RECEIPT_RETIRED` with the final state.
 //!   Tombstones are not counted against capacity and are not pruned.
-use super::{Fault, Ledger, Result};
+use super::{Fault, Ledger, Reads, Result, ledger::Tombstone};
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
 use std::{fs, path::Path};
@@ -67,28 +67,13 @@ pub(super) fn certain_terminal(state: &str) -> bool {
     )
 }
 
-pub(super) fn initialize(ledger: &Ledger) -> Result<()> {
-    ledger.db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS retired_messages(id TEXT PRIMARY KEY, state TEXT NOT NULL, reason TEXT, retired_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS retention_runs(store TEXT PRIMARY KEY, last_run INTEGER NOT NULL);",
-    )?;
-    Ok(())
-}
-
 /// The tombstone of a retired message id, if any.
-pub(super) fn retired(ledger: &Ledger, id: &str) -> Result<Option<(String, Option<String>, i64)>> {
-    initialize(ledger)?;
-    Ok(ledger
-        .db
-        .query_row(
-            "SELECT state,reason,retired_at FROM retired_messages WHERE id=?",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?)
+pub(super) fn retired(ledger: &impl Reads, id: &str) -> Result<Option<Tombstone>> {
+    ledger.retired(id)
 }
 
 /// `RECEIPT_RETIRED` refusal for a retired id (send or receipt).
-pub(super) fn ensure_not_retired(ledger: &Ledger, id: &str) -> anyhow::Result<()> {
+pub(super) fn ensure_not_retired(ledger: &impl Reads, id: &str) -> anyhow::Result<()> {
     if let Some((state, reason, at)) = retired(ledger, id)? {
         anyhow::bail!(
             "RECEIPT_RETIRED: message {id} was retired at {at} by receipt retention (final state {state}{}); its id is never accepted again",
@@ -102,7 +87,6 @@ pub(super) fn ensure_not_retired(ledger: &Ledger, id: &str) -> anyhow::Result<()
 /// send: retention is housekeeping and is retried on a later pass.
 pub(super) fn maybe_run(ledger: &mut Ledger, now: i64) {
     let due = (|| -> Result<bool> {
-        initialize(ledger)?;
         let last: Option<i64> = ledger
             .db
             .query_row(
@@ -122,8 +106,6 @@ pub(super) fn maybe_run(ledger: &mut Ledger, now: i64) {
 
 /// One unthrottled pass; returns the number of retired ids.
 pub(super) fn run(ledger: &mut Ledger, now: i64, policy: Policy) -> Result<usize> {
-    initialize(ledger)?;
-    super::public::initialize(ledger)?;
     let mut retired = codex(ledger, now, policy)?;
     let root = ledger.paths.root.clone();
     for store in [
@@ -370,7 +352,6 @@ mod tests {
     fn retires_only_old_certain_terminal_receipts_and_tombstones_them() {
         let (_dir, paths, input, now) = fixture();
         let mut db = Ledger::open(&paths).unwrap();
-        super::super::public::initialize(&db).unwrap();
         let old_done = admit(&mut db, &input, now, "completed_with_reply", 15);
         let young_done = admit(&mut db, &input, now, "failed", 13);
         let old_uncertain = admit(&mut db, &input, now, "unknown", 60);
@@ -429,7 +410,6 @@ mod tests {
         let mut db = Ledger::open(&paths).unwrap();
         db.db.execute_batch("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO receipts SELECT x,'hash',0,'{\"message_id\":\"m\",\"session_id\":\"s\",\"generation\":\"g\",\"state\":\"rejected\",\"native_queue_id\":null,\"reason\":null}' FROM n;").unwrap();
         // Throttled: a recent pass means no retirement yet.
-        initialize(&db).unwrap();
         db.db
             .execute("INSERT INTO retention_runs VALUES('all',?)", [now - 60])
             .unwrap();

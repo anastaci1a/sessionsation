@@ -20,6 +20,9 @@ and package history are in Git.
 
 ## Versions
 
+- **1.66.1** Receipt reads share the ledger lock and no longer wait for each other;
+  writes stay exclusive; the receipts schema is stamped once (`user_version`).
+  [Contention](contract.md#admission-and-contention).
 - **1.66.0** Admitted launches stay listed (`availability:"launching"`) and rows carry
   `availability_reason`; stop and archive of an unknown session complete with
   `not_found:true`; `already_stopped` closes the launch pane; `resume-launch` for
@@ -80,8 +83,7 @@ and package history are in Git.
   delivered native journal records retire as terminal.
   [Pane reuse](contract.md#choosing-a-space-and-a-pane), [retention](contract.md#receipt-retention).
 - **1.51.0** Outside-session senders shown by the bare component, prefixed only on a
-  collision. [Component names](contract.md#component-sender-names).
-- **1.50.0** `from_component` and `SESSIONSATION_SENDER_COMPONENT`
+  collision. **1.50.0** `from_component` and `SESSIONSATION_SENDER_COMPONENT`
   (`session_spaces.from_component`, `since_contract` 1.50.0).
   [Component names](contract.md#component-sender-names).
 - **1.49.1** Launches wait up to 120 s for account operations; pre-start refusals end
@@ -94,24 +96,23 @@ and package history are in Git.
   `session set-space`, `session resolve`; `session_spaces`, `since_contract` 1.48.0).
   [Names](contract.md#space-scoped-session-names).
 - **1.47.1** Compaction completion read from the full view of new turns; 180 s
-  no-progress bound. [Compaction](contract.md#compaction-at-the-next-idle-point).
-- **1.47.0** `api session compact --when-idle` for Codex with an input hold.
+  no-progress bound. **1.47.0** `api session compact --when-idle` for Codex with an
+  input hold.
   [Compaction](contract.md#compaction-at-the-next-idle-point).
 - **1.46.8** Auto Start `already_running` result. [Auto Start](contract.md#auto-start).
 - **1.46.7** `accounts[].plan`. [Plan](contract.md#limits-plan-and-usage).
 - **1.46.5** Codex steer and cancel wait for the ledger; `if_busy:"queue"` on submit.
-  [Contention](contract.md#admission-and-contention), [messaging](contract.md#messaging).
-- **1.46.4** Codex messaging waits for the ledger lease and releases it during
-  app-server I/O. [Contention](contract.md#admission-and-contention).
+  **1.46.4** Codex messaging waits for the ledger lease and releases it during
+  app-server I/O. [Contention](contract.md#admission-and-contention),
+  [messaging](contract.md#messaging).
 - **1.46.3** Codex callers detected by `CODEX_THREAD_ID`; every native frame carries the
   `cross-session-message` envelope; `native_sender_registration` is a no-op.
   [Peer messages](contract.md#native-peer-messages).
 - **1.46.2** Launch acknowledgement wait 120 s (`LAUNCH_RUN_NEVER_STARTED`); abandon an
   uncertain new launch.
   [Abandon](contract.md#launch-acknowledgement-and-abandoning-uncertain-operations).
-- **1.46.1** Statusline `refreshInterval`; `skills` no longer shared.
-  [Shared state](contract.md#shared-claude-state).
-- **1.46.0** `agents` and `commands` shared with merge on migration.
+- **1.46.1** Statusline `refreshInterval`; `skills` no longer shared. **1.46.0** `agents`
+  and `commands` shared with merge on migration.
   [Shared state](contract.md#shared-claude-state).
 - **1.45.2** Codex accepts Claude send options; Codex usage clock fixes.
   [Usage](contract.md#limits-plan-and-usage).

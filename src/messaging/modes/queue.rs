@@ -17,7 +17,7 @@ pub(in crate::messaging) fn sending_enabled(paths: &Paths) -> Result<bool> {
 }
 pub(super) fn sending(paths: &Paths, enable: bool, disable: bool) -> Result<Value> {
     // Same exclusive lock as all native enqueue calls: toggles cannot race dispatch.
-    let _ledger = Ledger::open_waiting(paths, wait_budget(paths, Wait::Send))?;
+    let _ledger = ledger::open_write_blocking(paths, wait_budget(paths, Wait::Send))?;
     let marker = paths.root.join("messaging/native-send.disabled");
     if disable && sending_enabled(paths)? {
         use std::os::unix::fs::OpenOptionsExt;
@@ -41,16 +41,9 @@ pub(super) fn sending(paths: &Paths, enable: bool, disable: bool) -> Result<Valu
         json!({"native_sending_enabled":sending_enabled(paths)?,"supported_modes":["queue","submit"],"submit_supported":"busy_only","does_not_cancel_native_queue":true}),
     )
 }
-fn mode_record(ledger: &Ledger, id: &str) -> Result<bool> {
-    Ok(ledger.db.query_row(
-        "SELECT count(*) FROM mode_requests WHERE id=? AND mode IN ('queue','submit')",
-        [id],
-        |r| r.get::<_, i64>(0),
-    )? == 1)
-}
-fn receipt(ledger: &Ledger, id: &str) -> Result<Receipt> {
+fn receipt(ledger: &impl Reads, id: &str) -> Result<Receipt> {
     uuid(id)?;
-    if !mode_record(ledger, id)? {
+    if !ledger.mode_record(id)? {
         return ledger.lookup(id).and(Err(Fault("receipt_not_found")));
     }
     ledger.lookup(id)
@@ -65,7 +58,7 @@ fn wrap(delivery: Value) -> Value {
 }
 pub(super) async fn request(paths: &Paths, r: Request) -> Result<Value> {
     r.validate()?;
-    let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
+    let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?;
     let hash = r.fingerprint()?;
     if let Some(old) = ledger.get(&r.request_id)? {
         let stored: String = ledger.db.query_row(
@@ -73,7 +66,7 @@ pub(super) async fn request(paths: &Paths, r: Request) -> Result<Value> {
             [&r.request_id],
             |r| r.get(0),
         )?;
-        if !mode_record(&ledger, &r.request_id)? || stored != hash {
+        if !ledger.mode_record(&r.request_id)? || stored != hash {
             return Err(Fault("idempotency_conflict"));
         }
         // A retry is a receipt lookup, never a retry of native submission.
@@ -142,7 +135,23 @@ pub(super) async fn request(paths: &Paths, r: Request) -> Result<Value> {
     Ok(wrap(json!(receipt)))
 }
 pub(super) async fn status(paths: &Paths, id: &str) -> Result<Value> {
-    let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
+    let deadline = tokio::time::Instant::now() + wait_budget(paths, Wait::Read);
+    {
+        // Shared first: a settled receipt needs no write and no provider read.
+        let reader = ledger::open_read(paths, remaining(deadline)).await?;
+        let receipt = receipt(&reader, id)?;
+        if receipt.submit.is_some() {
+            return Ok(wrap(json!(receipt)));
+        }
+        if let Some(settled) = observe::settled(&reader, &receipt, crate::daemon::now())? {
+            return Ok(wrap(settled));
+        }
+    }
+    status_write(paths, id, remaining(deadline)).await
+}
+/// The writer path of `modes` status (may expire, re-deliver and observe).
+async fn status_write(paths: &Paths, id: &str, budget: std::time::Duration) -> Result<Value> {
+    let mut ledger = ledger::open_write(paths, budget).await?;
     let mut receipt = receipt(&ledger, id)?;
     if receipt.submit.is_some() {
         return Ok(wrap(json!(receipt)));
@@ -156,14 +165,14 @@ pub(super) async fn status(paths: &Paths, id: &str) -> Result<Value> {
     ))
 }
 pub(super) fn events(paths: &Paths, cursor: Option<&str>) -> Result<Value> {
-    let ledger = Ledger::open_waiting(paths, wait_budget(paths, Wait::Read))?;
+    let ledger = ledger::open_read_blocking(paths, wait_budget(paths, Wait::Read))?;
     let mut page = ledger.events(cursor)?;
     let mut out = Vec::new();
     for event in page["events"].as_array().ok_or(Fault("storage_error"))? {
         let id = event["receipt"]["message_id"]
             .as_str()
             .ok_or(Fault("storage_error"))?;
-        if mode_record(&ledger, id)? {
+        if ledger.mode_record(id)? {
             out.push(json!({"cursor":event["cursor"],"receipt":wrap(event["receipt"].clone())}));
         }
     }
@@ -172,7 +181,7 @@ pub(super) fn events(paths: &Paths, cursor: Option<&str>) -> Result<Value> {
     Ok(page)
 }
 pub(super) async fn cancel_request(paths: &Paths, id: &str) -> Result<Value> {
-    let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
+    let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Read)).await?;
     let mut receipt = receipt(&ledger, id)?;
     if receipt.submit.is_some() {
         return Err(Fault(if receipt.state == "native_accepted" {
@@ -188,6 +197,46 @@ pub(super) async fn cancel_request(paths: &Paths, id: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `modes` status: the shared-reader shortcut answers what the writer path answers
+    /// and writes nothing; unsettled and expiring receipts take the writer path.
+    #[tokio::test]
+    async fn status_shortcut_matches_the_writer_path_or_declines() {
+        let mut answered = 0;
+        for state in crate::messaging::tests::SHORTCUT_STATES {
+            for expires in [false, true] {
+                let (_dir, paths, mut input, _) = super::super::super::tests::fixture();
+                let now = crate::daemon::now() - if expires { 3600 } else { 0 };
+                input.expires_at = now + 600;
+                let mut db = Ledger::open(&paths).unwrap();
+                let mut r = db.accept_with_mode(&input, now, Some("mode-hash")).unwrap();
+                r.state = state.into();
+                db.save(&r).unwrap();
+                drop(db);
+                let reader = ledger::open_read_blocking(&paths, std::time::Duration::ZERO).unwrap();
+                let stored = receipt(&reader, &input.message_id).unwrap();
+                let got = observe::settled(&reader, &stored, crate::daemon::now()).unwrap();
+                drop(reader);
+                let unsettled =
+                    matches!(state, "unknown" | "native_accepted" | "execution_started");
+                let expiring = state == "pending_local" && expires;
+                assert_eq!(
+                    got.is_none(),
+                    unsettled || expiring,
+                    "{state} {expires}: {got:?}"
+                );
+                if let Some(got) = got {
+                    let before = Ledger::open(&paths).unwrap().events(None).unwrap();
+                    let writer = status_write(&paths, &input.message_id, std::time::Duration::ZERO)
+                        .await
+                        .unwrap();
+                    assert_eq!(wrap(got), writer, "{state}");
+                    assert_eq!(Ledger::open(&paths).unwrap().events(None).unwrap(), before);
+                    answered += 1;
+                }
+            }
+        }
+        assert_eq!(answered, 2 * 7 - 1);
+    }
     #[tokio::test]
     async fn atomic_mode_intent_survives_restart_without_dispatch_and_legacy_cannot_reuse_it() {
         let (_dir, paths, input, now) = super::super::super::tests::fixture();
@@ -211,7 +260,7 @@ mod tests {
                 .accept_with_mode(&input, now, Some(&r.fingerprint().unwrap()))
                 .unwrap();
             assert_eq!(receipt.state, "unknown");
-            assert!(mode_record(&db, &r.request_id).unwrap());
+            assert!(db.mode_record(&r.request_id).unwrap());
             assert!(Ledger::open(&paths).is_err());
             receipt
         };

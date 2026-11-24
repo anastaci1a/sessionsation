@@ -385,6 +385,7 @@ fn backup(root: &Path, dir: &Path, record: Option<&Record>) -> Result<Value> {
         ensure!(status.success(), "BACKUP_FAILED: copying {name}");
     }
     let mut databases = vec![];
+    // guard-allow(ledger): the layout backup copies the receipts file consistently (VACUUM INTO)
     for db in ["registry.db", REGISTRY_DB, super::RECEIPTS_DB] {
         let from = root.join(db);
         if !real_file(&from) || is_tripwire(&from) {

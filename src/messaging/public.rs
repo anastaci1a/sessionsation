@@ -3,7 +3,6 @@
 //! requested Steer mode may address an exact active turn, with acceptance-only evidence.
 use super::*;
 use anyhow::Context;
-use rusqlite::OptionalExtension;
 mod steering;
 pub use steering::{Intent as SteeringIntent, target as steering_target};
 
@@ -75,24 +74,10 @@ impl Binding {
     }
 }
 
-pub(super) fn initialize(ledger: &Ledger) -> Result<()> {
-    ledger.db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS public_messages(id TEXT PRIMARY KEY, binding TEXT NOT NULL);",
-    )?;
-    Ok(())
-}
-
-pub(super) fn get(ledger: &Ledger, id: &str) -> Result<Option<Binding>> {
+pub(super) fn get(ledger: &impl Reads, id: &str) -> Result<Option<Binding>> {
     uuid(id)?;
-    let value: Option<String> = ledger
-        .db
-        .query_row(
-            "SELECT binding FROM public_messages WHERE id=?",
-            [id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    value
+    ledger
+        .binding(id)?
         .map(|s| serde_json::from_str(&s).map_err(|_| Fault("storage_error")))
         .transpose()
 }
@@ -209,8 +194,7 @@ fn check_codex_options(request: &PublicRequest) -> anyhow::Result<()> {
 /// Deliver a message a compaction held: marks its binding so it is sent with queue semantics
 /// (it may not be the first to start a turn), then runs the ordinary idempotent send.
 pub(super) async fn send_released(paths: &Paths, id: &str) -> anyhow::Result<Value> {
-    let ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
-    initialize(&ledger)?;
+    let ledger = ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?;
     let mut binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
     if !binding.released_hold {
         binding.released_hold = true;
@@ -277,7 +261,7 @@ pub(super) async fn send_planned(
     // moments ago can acknowledge input it is not yet reading.
     if !delivery::timing(paths).ready.is_zero() && request.mode != PublicMode::Steer {
         // A busy ledger refuses before any catalog or native work.
-        drop(Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?);
+        drop(ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?);
         if let Ok(session) =
             crate::catalog::resolve(paths, &request.session_id, &request.expected_generation)
         {
@@ -286,8 +270,7 @@ pub(super) async fn send_planned(
             }
         }
     }
-    let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
-    initialize(&ledger)?;
+    let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?;
     let binding =
         if let Some(b) = get(&ledger, &request.message_id)? {
             anyhow::ensure!(b.request == request, "MESSAGE_ID_CONFLICT");
@@ -459,8 +442,7 @@ async fn resolve_interrupt(
     plan: &mut crate::provider::send::Plan,
 ) -> anyhow::Result<()> {
     let bound = {
-        let ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Send)).await?;
-        initialize(&ledger)?;
+        let ledger = ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?;
         uuid(&request.message_id)?;
         get(&ledger, &request.message_id)?
     };
@@ -526,6 +508,59 @@ fn reconcile_recovered_stop(
     Ok(())
 }
 
+/// `receipt_public` from a shared reader when the answer needs no ledger write, no
+/// provider read and no recovery reconciliation: an unknown, retired, cancelled or
+/// undispatched id, or a settled queue or submit receipt. `None` sends the caller to
+/// the writer path, which re-reads everything.
+fn settled_receipt(
+    paths: &Paths,
+    reader: &LedgerRead,
+    id: &str,
+    cancelling: bool,
+) -> anyhow::Result<Option<Value>> {
+    let Some(binding) = get(reader, id)? else {
+        if super::recovery::exists(paths, id) {
+            anyhow::ensure!(
+                !cancelling,
+                "RECOVERY_CANCELLATION_REQUIRES_VERIFIED_WORKER_STOP"
+            );
+            return super::recovery::pending_receipt(paths, id).map(Some);
+        }
+        super::retention::ensure_not_retired(reader, id)?;
+        return Err(Fault("receipt_not_found").into());
+    };
+    if binding.cancelled {
+        return super::recovery::decorate(paths, id, wrap(&binding, json!({"state":"cancelled"})))
+            .map(Some);
+    }
+    let Some(receipt) = reader.get(id)? else {
+        if cancelling {
+            return Ok(None);
+        }
+        return super::recovery::decorate(
+            paths,
+            id,
+            wrap(
+                &binding,
+                json!({"state":"pending_local","reason":"not_dispatched"}),
+            ),
+        )
+        .map(Some);
+    };
+    // Steering, resume (stop reconciliation), cancellation and `pending_local`
+    // (which reading may settle) take the writer path.
+    if cancelling
+        || matches!(binding.request.mode, PublicMode::Steer | PublicMode::Resume)
+        || receipt.state == "pending_local"
+    {
+        return Ok(None);
+    }
+    let Some(value) = observe::settled(reader, &receipt, crate::daemon::now())? else {
+        return Ok(None);
+    };
+    super::recovery::decorate(paths, id, wrap(&binding, value)).map(Some)
+}
+
 pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow::Result<Value> {
     if super::claude_steer::exists(paths, id) {
         return super::claude_steer::receipt(paths, id, cancelling).await;
@@ -533,8 +568,25 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
     if super::headless::exists(paths, id) {
         return super::headless::receipt(paths, id, cancelling);
     }
-    let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
-    initialize(&ledger)?;
+    let deadline = tokio::time::Instant::now() + wait_budget(paths, Wait::Read);
+    {
+        let reader = ledger::open_read(paths, remaining(deadline)).await?;
+        if let Some(value) = settled_receipt(paths, &reader, id, cancelling)? {
+            return Ok(value);
+        }
+    }
+    receipt_write(paths, id, cancelling, remaining(deadline)).await
+}
+
+/// The writer path of `receipt_public`: everything under the exclusive lease, which may
+/// settle, cancel or observe (releasing the lease around provider I/O).
+async fn receipt_write(
+    paths: &Paths,
+    id: &str,
+    cancelling: bool,
+    budget: std::time::Duration,
+) -> anyhow::Result<Value> {
+    let mut ledger = ledger::open_write(paths, budget).await?;
     let Some(mut binding) = get(&ledger, id)? else {
         if super::recovery::exists(paths, id) {
             anyhow::ensure!(
@@ -603,7 +655,7 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
         let original = receipt.clone();
         drop(ledger);
         let observation = steering::snapshot(paths, &original).await;
-        let mut ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
+        let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Read)).await?;
         binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
         receipt = ledger.get(id)?.ok_or(Fault("receipt_not_found"))?;
         let status = if receipt != original {
@@ -638,7 +690,7 @@ pub async fn receipt_public(paths: &Paths, id: &str, cancelling: bool) -> anyhow
         let original = receipt.clone();
         drop(ledger);
         let observation = observe::snapshot(paths, &original).await;
-        ledger = Ledger::open_wait(paths, wait_budget(paths, Wait::Read)).await?;
+        ledger = ledger::open_write(paths, wait_budget(paths, Wait::Read)).await?;
         binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
         receipt = ledger.get(id)?.ok_or(Fault("receipt_not_found"))?;
         let status = if receipt != original || binding.cancelled {
@@ -924,7 +976,6 @@ mod evidence_tests {
     }
     fn save_binding(paths: &Paths, b: &Binding, r: &Receipt) {
         let mut ledger = Ledger::open(paths).unwrap();
-        initialize(&ledger).unwrap();
         ledger.save(r).unwrap();
         ledger
             .db
@@ -996,7 +1047,6 @@ mod evidence_tests {
     async fn legacy_lock_contention_refuses_public_send_before_admission() {
         let (_dir, paths, input, now) = fixture();
         let mut legacy = Ledger::open(&paths).unwrap();
-        initialize(&legacy).unwrap();
         let existing = legacy.accept(&input, now).unwrap();
         let events = legacy.events(None).unwrap();
         let mut refused = Vec::new();
@@ -1148,6 +1198,183 @@ mod evidence_tests {
         assert!(out["observation"]["error_code"].is_string());
         assert!(out["observation"]["evidence_observed_at"].is_null());
     }
+    fn event_count(paths: &Paths) -> usize {
+        Ledger::open(paths).unwrap().events(None).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .len()
+    }
+    /// Two receipt polls of a `native_accepted` receipt both fall back to the writer
+    /// path and observe natively: exactly one commits, and neither sends input.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_observing_receipts_commit_once_and_never_send() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (_dir, paths, mut input, now) = fixture();
+        let mut a = attachment_fixture(&paths, &input);
+        bind(&paths, &mut a);
+        input.expected_generation = a.generation();
+        let mut r = Ledger::open(&paths).unwrap().accept(&input, now).unwrap();
+        r.state = "native_accepted".into();
+        r.native_queue_id = Some("queue-1".into());
+        save_binding(&paths, &binding(input.clone()), &r);
+        crate::messaging::TEST_WAIT
+            .lock()
+            .unwrap()
+            .push((paths.root.clone(), std::time::Duration::from_secs(10)));
+        let sends = std::sync::Arc::new(AtomicUsize::new(0));
+        let reads = std::sync::Arc::new(AtomicUsize::new(0));
+        let (s, rd) = (sends.clone(), reads.clone());
+        let server = crate::messaging::tests::scripted_connections(
+            &a.endpoint(),
+            move |request| {
+                let method = request["method"].as_str().unwrap_or_default();
+                if method.starts_with("thread/queue") || method.starts_with("turn/") {
+                    s.fetch_add(1, Ordering::SeqCst);
+                    return Some(json!({"__error":true}));
+                }
+                if method == "thread/read" {
+                    return Some(
+                        json!({"thread":{"id":request["params"]["threadId"],"path":null}}),
+                    );
+                }
+                rd.fetch_add(1, Ordering::SeqCst);
+                Some(
+                    serde_json::from_str::<Value>(include_str!(
+                        "../../docs/messaging/v1.2.1/fixtures.json"
+                    ))
+                    .unwrap()["native_summary"]
+                        .clone(),
+                )
+            },
+            2,
+        )
+        .await;
+        let before = event_count(&paths);
+        let (x, y) = tokio::join!(
+            receipt_public(&paths, &input.message_id, false),
+            receipt_public(&paths, &input.message_id, false)
+        );
+        let (x, y) = (x.unwrap(), y.unwrap());
+        assert_eq!(event_count(&paths), before + 1, "{x}\n{y}");
+        assert_eq!(sends.load(Ordering::SeqCst), 0);
+        assert!(reads.load(Ordering::SeqCst) >= 1);
+        let stored = Ledger::open(&paths)
+            .unwrap()
+            .get(&input.message_id)
+            .unwrap()
+            .unwrap();
+        assert_ne!(stored.state, "native_accepted");
+        let observed = [&x, &y]
+            .iter()
+            .filter(|v| v["observation"]["state"] == "observed")
+            .count();
+        assert_eq!(observed, 1, "{x}\n{y}");
+        server.abort();
+    }
+
+    /// The shared-reader shortcut of `receipt_public` answers exactly what the writer
+    /// path answers, writes nothing, and declines every case that may write or read
+    /// the provider.
+    #[tokio::test]
+    async fn receipt_shortcut_matches_the_writer_path_or_declines() {
+        let modes = [
+            PublicMode::Submit,
+            PublicMode::Queue,
+            PublicMode::Resume,
+            PublicMode::Steer,
+        ];
+        let states = [
+            "pending_local",
+            "unknown",
+            "native_accepted",
+            "execution_started",
+            "completed_with_reply",
+            "completed_without_reply",
+            "failed",
+            "rejected",
+            "cancelled",
+            "expired",
+        ];
+        let short = |paths: &Paths, id: &str, cancelling: bool| {
+            let reader = ledger::open_read_blocking(paths, std::time::Duration::ZERO).unwrap();
+            settled_receipt(paths, &reader, id, cancelling)
+        };
+        let mut answered = 0;
+        for mode in &modes {
+            for state in states {
+                for cancelling in [false, true] {
+                    let (_dir, paths, input, now) = fixture();
+                    let mut r = Ledger::open(&paths).unwrap().accept(&input, now).unwrap();
+                    r.state = state.into();
+                    let mut b = binding(input.clone());
+                    b.request.mode = mode.clone();
+                    save_binding(&paths, &b, &r);
+                    let got = short(&paths, &input.message_id, cancelling).unwrap();
+                    let declines = cancelling
+                        || matches!(mode, PublicMode::Steer | PublicMode::Resume)
+                        || matches!(
+                            state,
+                            "pending_local" | "unknown" | "native_accepted" | "execution_started"
+                        );
+                    assert_eq!(
+                        got.is_none(),
+                        declines,
+                        "{mode:?} {state} {cancelling}: {got:?}"
+                    );
+                    if let Some(got) = got {
+                        let before = event_count(&paths);
+                        let writer = receipt_write(
+                            &paths,
+                            &input.message_id,
+                            false,
+                            std::time::Duration::ZERO,
+                        )
+                        .await
+                        .unwrap();
+                        assert_eq!(got, writer, "{mode:?} {state}");
+                        assert_eq!(event_count(&paths), before, "{mode:?} {state}");
+                        answered += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(answered, 2 * 6);
+        // Ids without a receipt row: unknown, cancelled binding, undispatched binding.
+        let (_dir, paths, input, _) = fixture();
+        drop(Ledger::open(&paths).unwrap());
+        let unknown = uuid::Uuid::new_v4().to_string();
+        let s = short(&paths, &unknown, false).unwrap_err().to_string();
+        let w = receipt_write(&paths, &unknown, false, std::time::Duration::ZERO)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            (s.as_str(), w.as_str()),
+            ("receipt_not_found", "receipt_not_found")
+        );
+        for cancelled in [false, true] {
+            let mut b = binding(input.clone());
+            b.request.message_id = uuid::Uuid::new_v4().to_string();
+            b.cancelled = cancelled;
+            let id = b.request.message_id.clone();
+            Ledger::open(&paths)
+                .unwrap()
+                .db
+                .execute(
+                    "INSERT INTO public_messages VALUES(?,?)",
+                    params![id, serde_json::to_string(&b).unwrap()],
+                )
+                .unwrap();
+            let got = short(&paths, &id, false).unwrap().unwrap();
+            let writer = receipt_write(&paths, &id, false, std::time::Duration::ZERO)
+                .await
+                .unwrap();
+            assert_eq!(got, writer, "cancelled={cancelled}");
+            if !cancelled {
+                assert!(short(&paths, &id, true).unwrap().is_none());
+            }
+        }
+    }
 }
 
 /// Bind the original logical admission to the one positively verified new runtime.
@@ -1168,17 +1395,7 @@ pub(super) async fn deliver_recovered(
     // Receipt readers share this lock. Wait before binding or dispatching instead
     // of treating a concurrent observer as a failed recovery. This retries only
     // local lock acquisition, never a native write or the launch itself.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut ledger = loop {
-        match Ledger::open(paths) {
-            Ok(ledger) => break ledger,
-            Err(Fault("adapter_busy")) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    };
-    initialize(&ledger)?;
+    let mut ledger = ledger::open_write(paths, std::time::Duration::from_secs(10)).await?;
     let binding = if let Some(b) = get(&ledger, &request.message_id)? {
         anyhow::ensure!(b.request == request, "MESSAGE_ID_CONFLICT");
         b

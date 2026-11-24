@@ -1104,12 +1104,12 @@ async fn open_wait_outlasts_a_brief_holder_then_reports_busy() {
         drop(holder);
     });
     let started = std::time::Instant::now();
-    let waited = Ledger::open_wait(&paths, std::time::Duration::from_secs(5))
+    let waited = ledger::open_write(&paths, std::time::Duration::from_secs(5))
         .await
         .unwrap();
     assert!(started.elapsed() >= std::time::Duration::from_millis(100));
     // Budget exhausted: only then adapter_busy.
-    let busy = Ledger::open_wait(&paths, std::time::Duration::from_millis(80)).await;
+    let busy = ledger::open_write(&paths, std::time::Duration::from_millis(80)).await;
     assert_eq!(busy.err().unwrap().0, "adapter_busy");
     drop(waited);
     release.join().unwrap();
@@ -1172,7 +1172,7 @@ async fn slow_delivery_releases_lease_and_one_id_is_delivered_once() {
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     // A receipt read while the add is outstanding is not blocked and sees the journal.
     let started = std::time::Instant::now();
-    let mut reader = Ledger::open_wait(&paths, std::time::Duration::from_secs(5))
+    let mut reader = ledger::open_write(&paths, std::time::Duration::from_secs(5))
         .await
         .unwrap();
     assert!(started.elapsed() < std::time::Duration::from_millis(300));
@@ -1183,7 +1183,7 @@ async fn slow_delivery_releases_lease_and_one_id_is_delivered_once() {
     let second = {
         let (paths, input) = (paths.clone(), input.clone());
         tokio::spawn(async move {
-            let mut db = Ledger::open_wait(&paths, std::time::Duration::from_secs(10))
+            let mut db = ledger::open_write(&paths, std::time::Duration::from_secs(10))
                 .await
                 .unwrap();
             let mut receipt = db.accept(&input, now).unwrap();
@@ -1508,4 +1508,58 @@ fn attachment_generation_is_the_golden_formula() {
     assert_eq!(a.generation(), formula(None));
     fs::write(a.endpoint(), b"").unwrap();
     assert_eq!(a.generation(), formula(fs::metadata(a.endpoint()).ok()));
+}
+
+pub(super) const SHORTCUT_STATES: [&str; 10] = [
+    "pending_local",
+    "unknown",
+    "native_accepted",
+    "execution_started",
+    "completed_with_reply",
+    "completed_without_reply",
+    "failed",
+    "rejected",
+    "cancelled",
+    "expired",
+];
+
+/// Legacy `status`: the shared-reader shortcut answers what the writer path answers
+/// and writes nothing; unsettled and expiring receipts take the writer path.
+#[tokio::test]
+async fn status_shortcut_matches_the_writer_path_or_declines() {
+    let mut answered = 0;
+    for state in SHORTCUT_STATES {
+        for expires in [false, true] {
+            let (_dir, paths, mut input, _) = fixture();
+            let now = crate::daemon::now() - if expires { 3600 } else { 0 };
+            input.expires_at = now + 600;
+            let mut db = Ledger::open(&paths).unwrap();
+            let mut r = db.accept(&input, now).unwrap();
+            r.state = state.into();
+            db.save(&r).unwrap();
+            drop(db);
+            let reader = ledger::open_read_blocking(&paths, std::time::Duration::ZERO).unwrap();
+            let receipt = reader.lookup(&input.message_id).unwrap();
+            // An `expires` row is past its expiry by the real clock.
+            let got = observe::settled(&reader, &receipt, crate::daemon::now()).unwrap();
+            drop(reader);
+            let unsettled = matches!(state, "unknown" | "native_accepted" | "execution_started");
+            let expiring = state == "pending_local" && expires;
+            assert_eq!(
+                got.is_none(),
+                unsettled || expiring,
+                "{state} {expires}: {got:?}"
+            );
+            if let Some(got) = got {
+                let before = Ledger::open(&paths).unwrap().events(None).unwrap();
+                let writer = status_write(&paths, &input.message_id, std::time::Duration::ZERO)
+                    .await
+                    .unwrap();
+                assert_eq!(got, writer, "{state}");
+                assert_eq!(Ledger::open(&paths).unwrap().events(None).unwrap(), before);
+                answered += 1;
+            }
+        }
+    }
+    assert_eq!(answered, 2 * 7 - 1);
 }

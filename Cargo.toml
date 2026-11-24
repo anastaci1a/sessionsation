@@ -37,3 +37,5 @@ opt-level = 2
 # Test-only: the source guard (src/guard.rs). Never part of the release graph.
 [dev-dependencies]
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
+# The receipts ledger tests count the SQL each connection runs (messaging::ledger::trace).
+rusqlite = { version = "0.38", features = ["bundled", "trace"] }
