@@ -20,6 +20,8 @@ and package history are in Git.
 
 ## Versions
 
+- **1.66.3** The supervisor no longer waits for `codex --version` (0.5 s at most) to
+  serve. [Operations](operations.md#safe-service-maintenance).
 - **1.66.2** `resume-launch` starts a Claude session without a transcript again under its
   id (`resumed_from:"no_history"`); such a session archives with `nothing_to_archive`;
   stop of an archived session is `already_stopped` with `archived:true`; a stop waits up

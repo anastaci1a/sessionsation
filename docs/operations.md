@@ -76,7 +76,9 @@ Do not rename a live root, overwrite a selected executable, remove locks, rewind
 generations, replay uncertain requests, or infer safety from a timeout. At startup
 the daemon removes leftover `.tmp` files (exactly `.tmp` plus six characters, regular
 files owned by the daemon user, unmodified for an hour) from its own state
-directories; account homes and archives are never swept.
+directories; account homes and archives are never swept. It serves its control socket
+after at most half a second of the `codex --version` probe (up to 10 s), which goes on
+in the background.
 
 All readers sharing a root must understand its terminal namespaces and lifecycle
 reservations, including `space-moves/` and `message-recoveries/`, before enabling

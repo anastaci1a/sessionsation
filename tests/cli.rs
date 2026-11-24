@@ -303,6 +303,84 @@ fn public_account_creation_limit_and_invalid_limits_have_no_owner_side_effects()
         assert!(!tmp.path().join(sessionsation::layout::REGISTRY_DB).exists());
     }
 }
+/// Contract 1.66.3: the supervisor serves before the Codex version probe answers. A
+/// `codex --version` that hangs (cold binary, stuck wrapper) once held the cutover's
+/// control socket for 9.8 s; its 10 s give-up is real time, never compressed.
+#[test]
+fn supervisor_serves_while_the_codex_version_probe_hangs() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("root");
+    let codex = tmp.path().join("slow-codex");
+    let marker = tmp.path().join("probed");
+    std::fs::write(
+        &codex,
+        format!("#!/bin/sh\n: > '{}'\nexec sleep 30\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let paths = sessionsation::paths::Paths::new(Some(root.clone())).unwrap();
+    let c = sessionsation::config::Config {
+        codex_binary: codex.display().to_string(),
+        ..Default::default()
+    };
+    sessionsation::store::save_config(&paths, &c).unwrap();
+    let started = std::time::Instant::now();
+    let mut server = Process(
+        Command::new(binary())
+            .arg("--data-dir")
+            .arg(&root)
+            .args(["daemon", "serve"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let status = || {
+        let out = Command::new(binary())
+            .arg("--data-dir")
+            .arg(&root)
+            .args(["status", "--json"])
+            .output()
+            .unwrap();
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    let v = loop {
+        let v = status();
+        if v["daemon"]["running"] == true {
+            break v;
+        }
+        assert!(server.0.try_wait().unwrap().is_none(), "supervisor exited");
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "supervisor did not serve while `codex --version` hung"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let ready = started.elapsed();
+    assert!(marker.exists(), "the version probe never ran");
+    assert!(
+        ready < Duration::from_secs(3),
+        "supervisor took {ready:?} to serve"
+    );
+    assert_eq!(v["codex_version"], "unavailable");
+    let stopped = Command::new(binary())
+        .arg("--data-dir")
+        .arg(&root)
+        .args(["daemon", "stop"])
+        .output()
+        .unwrap();
+    assert!(stopped.status.success());
+    let asked = std::time::Instant::now();
+    while server.0.try_wait().unwrap().is_none() {
+        assert!(
+            asked.elapsed() < Duration::from_secs(2),
+            "supervisor did not exit within 2 s of the stop acknowledgement"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 #[test]
 fn daemon_configuration_singleton_and_status_contract() {
     let tmp = tempfile::tempdir().unwrap();

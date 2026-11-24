@@ -17,13 +17,13 @@
     "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13852 },
+    "doc_bytes:docs/changelog.md": { "value": 14000 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
     "doc_bytes:docs/contract.md": { "value": 230998 },
-    "doc_bytes:docs/operations.md": { "value": 23295 },
-    "doc_bytes_total": { "value": 308051 },
+    "doc_bytes:docs/operations.md": { "value": 23430 },
+    "doc_bytes_total": { "value": 308334 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "duration_literals": { "value": 189 },
+    "duration_literals": { "value": 190 },
     "env_scrub_sites": { "value": 51 },
     "error_code_literals": { "value": 683 },
     "file_cache_statics": { "value": 8 },
@@ -62,7 +62,7 @@
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 102876 },
+    "src_lines": { "value": 102901 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -1061,6 +1061,41 @@
       "reason": "1.66.2 lifecycle edges: restart_without_history fact, ensure_fresh_start and the --session-id start in exec_resume, inline::fresh_start_owned, resumed_from on resume receipts, the Claude no-transcript archive rule, close_pane_after_stop, resume::resumed_pane, the archived stop answer",
       "considered": "n/a",
       "step": "1.66.2"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 148,
+      "reason": "1.66.3 entry: the supervisor serves without waiting for codex --version",
+      "considered": "n/a",
+      "step": "1.66.3"
+    },
+    {
+      "counter": "doc_bytes:docs/operations.md",
+      "by": 135,
+      "reason": "1.66.3: startup serves the control socket after at most 0.5 s of the codex --version probe",
+      "considered": "n/a",
+      "step": "1.66.3"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 283,
+      "reason": "1.66.3 changelog and operations notes on the startup version probe",
+      "considered": "n/a",
+      "step": "1.66.3"
+    },
+    {
+      "counter": "duration_literals",
+      "by": 1,
+      "reason": "1.66.3: the 500 ms grace the supervisor gives the codex --version probe before it serves (scaled in tests)",
+      "considered": "Serving with no grace makes status say unavailable for the first few milliseconds after every start, and reusing an existing constant would tie this grace to an unrelated wait; one named literal at the single site is clearer",
+      "step": "1.66.3"
+    },
+    {
+      "counter": "src_lines",
+      "by": 25,
+      "reason": "1.66.3: background codex --version probe in daemon::serve (spawn, bounded grace, select! arm, abort) and kill_on_drop on the probe child",
+      "considered": "n/a",
+      "step": "1.66.3"
     }
   ],
   "enforced"

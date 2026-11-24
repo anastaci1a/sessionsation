@@ -38,7 +38,11 @@ impl Report {
 pub async fn version(binary: &str) -> Result<String> {
     let output = tokio::time::timeout(
         Duration::from_secs(10),
-        Command::new(binary).arg("--version").output(),
+        // A probe that gives up (or a supervisor that stops) kills the child.
+        Command::new(binary)
+            .arg("--version")
+            .kill_on_drop(true)
+            .output(),
     )
     .await??;
     anyhow::ensure!(output.status.success(), "Codex version command failed");

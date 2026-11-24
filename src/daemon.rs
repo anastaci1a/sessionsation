@@ -467,9 +467,16 @@ pub async fn serve(paths: Paths) -> Result<()> {
             eprintln!("codex daemon release not pinned for {name}: {e:#}");
         }
     }
-    let version = compatibility::version(&config.codex_binary)
-        .await
-        .unwrap_or_else(|_| "unavailable".into());
+    // Contract 1.66.3: the Codex version (status and reset-credit messages only) is
+    // probed beside startup, never before the socket serves: a slow `codex --version`
+    // held the 1.66.2 cutover's socket for 9.8 s. Up to half a second is awaited
+    // below; after that status says "unavailable" until the probe answers.
+    let codex_binary = config.codex_binary.clone();
+    let mut version_probe = tokio::spawn(async move {
+        compatibility::version(&codex_binary)
+            .await
+            .unwrap_or_else(|_| "unavailable".into())
+    });
     let socket = paths.control();
     if socket.exists() {
         std::fs::remove_file(&socket)?;
@@ -555,9 +562,22 @@ pub async fn serve(paths: Paths) -> Result<()> {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let (mut version, mut probing) = match tokio::time::timeout(
+        crate::timing::scaled(Duration::from_millis(500)),
+        &mut version_probe,
+    )
+    .await
+    {
+        Ok(probed) => (probed.unwrap_or_else(|_| "unavailable".into()), false),
+        Err(_) => ("unavailable".to_owned(), true),
+    };
     let mut stopping = false;
     loop {
         tokio::select! {
+            probed = &mut version_probe, if probing => {
+                probing = false;
+                version = probed.unwrap_or_else(|_| "unavailable".into());
+            }
             _ = tokio::signal::ctrl_c() => break,
             _ = sigterm.recv() => break,
             Some(request) = requests.recv() => {
@@ -1187,6 +1207,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
             }
         }
     }
+    version_probe.abort();
     automatic_task.abort();
     auto_recover_task.abort();
     compaction_task.abort();
