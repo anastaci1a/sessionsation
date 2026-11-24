@@ -26,7 +26,8 @@ use std::path::{Path, PathBuf};
 
 pub const PROGRAM: &str = "cedar_ember";
 pub const STATUS_PATH: &str = "/api/oauth/usage?cedar_ember=1&skip_spend=1";
-/// A status read is reused for this long (the endpoint is not polled).
+/// A status read is reused for this long. Since 1.65.0 the supervisor's meter read (every
+/// [`crate::provider::claude::meter::REFRESH_SECONDS`]) is this request too.
 pub const CACHE_SECONDS: i64 = 60;
 pub const API_LABEL: &str = "claude api reset_rate_limits (cedar_ember)";
 /// Every outcome of a Claude claim. `cooldown` is Claude-only (nothing spent; claim later).
@@ -233,16 +234,203 @@ pub fn cached(home: &Path) -> Option<(i64, Option<ResetCredits>)> {
     let credits = serde_json::from_value(v["reset_credits"].clone()).ok()?;
     Some((at, credits))
 }
-/// The `usage.reset_credits` value of a Claude account row (null until a status read).
-pub fn usage_field(home: &Path) -> Value {
-    cached(home)
-        .and_then(|(_, c)| c)
-        .map_or(Value::Null, |c| json!(c))
+/// The `usage.reset_credits` value of a Claude account row (null until a status read). Since
+/// 1.65.0 it carries `fresh` and `age_seconds` like the meter (fresh: younger than the
+/// Claude meter's staleness limit).
+pub fn usage_field(home: &Path, now: i64) -> Value {
+    cached(home).and_then(|(_, c)| c).map_or(Value::Null, |c| {
+        crate::reset_credit::with_age(json!(c), now, crate::provider::claude::USAGE_STALE_SECONDS)
+    })
+}
+/// The meter windows a reset of this grant clears. `clears` names limit windows
+/// (`five_hour`, `seven_day`, `seven_day_overage_included`, ...); a `fable` grant gives back
+/// weekly usage (`gives_back_weekly`) and a `full` or `weekly` one resets the week. Nothing
+/// known: both windows, so a reset is never mistaken for a stale reading.
+pub fn cleared_windows(clears: &[String], kind: Option<&str>) -> Vec<&'static str> {
+    let mut out = vec![];
+    let five = clears.iter().any(|c| c == "five_hour") || matches!(kind, Some("session" | "full"));
+    let week = clears.iter().any(|c| c.starts_with("seven_day"))
+        || matches!(kind, Some("weekly" | "fable" | "full"));
+    if five {
+        out.push("five_hour");
+    }
+    if week {
+        out.push("seven_day");
+    }
+    if out.is_empty() {
+        out = vec!["five_hour", "seven_day"];
+    }
+    out
+}
+/// The windows a grant of the stored status clears (both when the grant is unknown).
+fn grant_windows(
+    credits: Option<&ResetCredits>,
+    grant: &str,
+    cleared: &[String],
+) -> Vec<&'static str> {
+    let row = credits
+        .and_then(|c| c.credits.as_deref())
+        .and_then(|rows| rows.iter().find(|r| r.id == grant));
+    let mut clears: Vec<String> = row.and_then(|r| r.clears.clone()).unwrap_or_default();
+    clears.extend(cleared.iter().cloned());
+    cleared_windows(&clears, row.and_then(|r| r.kind.as_deref()))
+}
+/// What one usage answer did: its windows (an error is a failed meter read) and its
+/// `cedar_ember` status (an error is a malformed block; the windows are still recorded).
+pub struct Absorbed {
+    pub windows: Result<bool>,
+    pub credits: Result<Option<ResetCredits>>,
+}
+/// One `/api/oauth/usage?cedar_ember=1` answer (contract 1.65.0: the status read and every
+/// meter read are the same request), all under the recorder's lock (`usage.lock`), so two
+/// reads never compare against the same stored status. `at` is when the request was sent. In
+/// order: the grants that [`fallen`] finds are resets made elsewhere (Claude Code's
+/// `/limit-reset`), so the windows they clear start a new cycle; then the answer's windows
+/// are recorded as an OAuth reading (accepted in that new cycle even when lower); then the
+/// status is stored. An answer sent before this account's own last claim was answered
+/// ([`claimed`]) is older than the stored status: nothing is inferred or stored from it.
+pub fn absorb(home: &Path, body: &Value, at: i64, own: Option<&str>) -> Absorbed {
+    let lock = match crate::provider::claude::recorder_lock(home) {
+        Ok(l) => l,
+        Err(e) => {
+            return Absorbed {
+                windows: Err(anyhow::anyhow!("USAGE_READ_FAILED: {e:#}")),
+                credits: Err(e),
+            };
+        }
+    };
+    let credits = parse_status(body, at);
+    let stale = claimed_at(home).is_some_and(|t| at < t);
+    if !stale && let Ok(Some(now)) = &credits {
+        let listed = body[PROGRAM]["grants"].is_array();
+        let windows = fallen(cached(home), now, listed, at, own);
+        if !windows.is_empty() {
+            // Best effort: a marking that fails leaves the old cycle, never the read.
+            let _ = crate::provider::claude::start_cycles_locked(
+                &lock,
+                home,
+                &windows,
+                at,
+                crate::provider::usage_cycle::EXTERNAL_REDEEM,
+            );
+        }
+    }
+    // Contract 1.62.0: the same answer carries the usage windows (an OAuth reading).
+    let windows = crate::provider::claude::meter::record_answer_locked(&lock, home, body, at);
+    let credits = credits.and_then(|c| {
+        if !stale {
+            store(home, at, &c)?;
+        }
+        Ok(c)
+    });
+    Absorbed { windows, credits }
+}
+/// The meter windows a reset made elsewhere cleared: a grant of the stored status (not
+/// `own`) that had uses left and had not ended, and now has fewer, or is gone from a listed
+/// `grants` array (a grant without `resets_left` is skipped as malformed, so it is gone too).
+/// Nothing is inferred without a stored status, or for a window shorter than that status's
+/// age: its natural reset has passed since, and the next reading starts a new cycle anyway.
+fn fallen(
+    before: Option<(i64, Option<ResetCredits>)>,
+    now: &ResetCredits,
+    listed: bool,
+    at: i64,
+    own: Option<&str>,
+) -> Vec<&'static str> {
+    let Some((then, Some(before))) = before else {
+        return vec![];
+    };
+    let rows = now.credits.as_deref().unwrap_or_default();
+    let mut out: Vec<&'static str> = vec![];
+    for o in before.credits.as_deref().unwrap_or_default() {
+        let Some(had) = o.resets_left.filter(|n| *n > 0) else {
+            continue;
+        };
+        if own == Some(o.id.as_str()) || o.expires_at.is_some_and(|e| e <= at) {
+            continue;
+        }
+        let fell = match rows.iter().find(|g| g.id == o.id) {
+            Some(g) => g.resets_left.is_none_or(|n| n < had),
+            None => listed,
+        };
+        if !fell {
+            continue;
+        }
+        for w in grant_windows(Some(&before), &o.id, &[]) {
+            let length = crate::provider::usage_cycle::WINDOWS
+                .iter()
+                .find(|(k, _)| *k == w)
+                .map_or(0, |(_, d)| *d);
+            if at - then <= length && !out.contains(&w) {
+                out.push(w);
+            }
+        }
+    }
+    out
+}
+/// This account's own claim of `grant` was answered `reset` at `at` (contract 1.65.0): under
+/// the recorder's lock, the windows it clears start a new cycle and the stored status counts
+/// the claim (`resets_left` from the answer, else one less, and `claimed_at`), so no read of
+/// another process reports this grant as a reset made elsewhere, and a read sent before the
+/// answer is not stored over it. Returns the windows whose cycle started.
+pub fn claimed(
+    home: &Path,
+    grant: &str,
+    left_after: Option<u64>,
+    at: i64,
+    cleared: &[String],
+) -> Result<Vec<String>> {
+    let lock = crate::provider::claude::recorder_lock(home)?;
+    let stored = cached(home);
+    let windows = grant_windows(
+        stored.as_ref().and_then(|(_, s)| s.as_ref()),
+        grant,
+        cleared,
+    );
+    let started = crate::provider::claude::start_cycles_locked(
+        &lock,
+        home,
+        &windows,
+        at,
+        crate::provider::usage_cycle::REDEEM,
+    )?;
+    let (then, mut credits) = stored.unwrap_or((at, None));
+    if let Some(s) = credits.as_mut()
+        && let Some(row) = s
+            .credits
+            .as_mut()
+            .and_then(|rows| rows.iter_mut().find(|r| r.id == grant))
+    {
+        row.resets_left = left_after.or(row.resets_left.map(|n| n.saturating_sub(1)));
+        if row.resets_left == Some(0) && row.paused != Some(true) {
+            row.status = Some("used".into());
+        }
+        s.available = s
+            .credits
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| r.paused != Some(true))
+            .map(|r| r.resets_left.unwrap_or(0))
+            .sum();
+    }
+    atomic_write(
+        &cache_file(home),
+        &serde_json::to_vec(&json!({"observed_at":then,"reset_credits":credits,"claimed_at":at}))?,
+    )?;
+    Ok(started)
+}
+/// When this account's own last claim was answered (see [`claimed`]).
+fn claimed_at(home: &Path) -> Option<i64> {
+    let v: Value = serde_json::from_slice(&std::fs::read(cache_file(home)).ok()?).ok()?;
+    v["claimed_at"].as_i64()
 }
 fn store(home: &Path, at: i64, credits: &Option<ResetCredits>) -> Result<()> {
     atomic_write(
         &cache_file(home),
-        &serde_json::to_vec(&json!({"observed_at":at,"reset_credits":credits}))?,
+        &serde_json::to_vec(
+            &json!({"observed_at":at,"reset_credits":credits,"claimed_at":claimed_at(home)}),
+        )?,
     )
 }
 
@@ -256,6 +444,17 @@ pub async fn read(
     account: &str,
     force: bool,
 ) -> Result<Option<ResetCredits>> {
+    read_after(client, home, account, force, None).await
+}
+/// [`read`]; `own` is a grant this process just claimed, whose falling count is not an
+/// external reset.
+async fn read_after(
+    client: &Client,
+    home: &Path,
+    account: &str,
+    force: bool,
+    own: Option<&str>,
+) -> Result<Option<ResetCredits>> {
     let now = crate::daemon::now();
     if !force
         && let Some((at, credits)) = cached(home)
@@ -263,6 +462,8 @@ pub async fn read(
     {
         return Ok(credits);
     }
+    // Contract 1.65.0: a reading is as old as its request.
+    let sent_at = crate::daemon::now();
     let response = match oauth::authed(client, home, account, "GET", STATUS_PATH, None).await? {
         Ok(r) => r,
         Err(e) => bail!("RESET_CREDITS_READ_FAILED: the Claude usage endpoint gave {e}; retry"),
@@ -274,13 +475,7 @@ pub async fn read(
     );
     let body: Value = serde_json::from_str(&response.body)
         .context("RESET_CREDITS_UNREADABLE: the usage answer is not JSON")?;
-    let at = crate::daemon::now();
-    let credits = parse_status(&body, at)?;
-    // Contract 1.62.0: the same answer carries the usage windows; record them as an OAuth
-    // reading (best effort: the reset credits are what this read is for).
-    let _ = crate::provider::claude::meter::record_answer(home, &body, at);
-    store(home, at, &credits)?;
-    Ok(credits)
+    absorb(home, &body, sent_at, own).credits
 }
 
 /// The grant a claim without `--credit-id` uses: usable now, not paused, not ended, of
@@ -381,7 +576,7 @@ pub async fn redeem(c: Claim<'_>) -> Result<Value> {
                     return Ok(
                         json!({"account_id":account,"request_id":c.request_id,"outcome":"noCredit",
                         "sent":false,"detail":format!("no {} grant is usable now; nothing was sent", c.kind.unwrap_or("reset")),
-                        "rate_limits_after":after,"attempts":0,"operation":Value::Null}),
+                        "rate_limits_after":after,"attempts":0,"cycles_started":[],"operation":Value::Null}),
                     );
                 }
             }
@@ -493,11 +688,25 @@ pub async fn redeem(c: Claim<'_>) -> Result<Value> {
         Some(outcome),
         &format!("the Claude API answered {result}"),
     )?;
+    // Contract 1.65.0: the windows this grant clears start a new reset cycle now, so the
+    // lower reading that follows is accepted (within a cycle usage never goes down).
+    let mut cycles_started: Vec<String> = vec![];
+    if outcome == "reset" {
+        cycles_started = claimed(
+            c.home,
+            &grant,
+            answer["resets_left"].as_u64(),
+            crate::daemon::now(),
+            &strings(&answer["cleared"]),
+        )
+        .unwrap_or_default();
+    }
     // The rate limits after a claim are a fresh read.
     let mut after = Value::Null;
     let mut read_error = Value::Null;
     if matches!(outcome, "reset" | "alreadyRedeemed") {
-        match read(c.client, c.home, &account, true).await {
+        let own = (outcome == "reset").then_some(grant.as_str());
+        match read_after(c.client, c.home, &account, true, own).await {
             Ok(_) => {
                 after = crate::provider::claude::project_usage(c.home, crate::daemon::now()).0;
             }
@@ -508,6 +717,7 @@ pub async fn redeem(c: Claim<'_>) -> Result<Value> {
     Ok(
         json!({"account_id":account,"request_id":c.request_id,"outcome":outcome,"credit_id":grant,
         "rate_limits_after":after,"rate_limits_after_error":read_error,"attempts":record.attempts,
+        "cycles_started":cycles_started,
         "claude":{"result":result,"reason":reason,"resets_left":answer["resets_left"].as_u64(),
             "cleared":strings(&answer["cleared"]),"weekly_resets_at":times("weekly_resets_at"),
             "cooldown_until":times("cooldown_until")},
@@ -570,7 +780,7 @@ pub async fn limits_read(paths: &Paths, name: &str, home: &Path) -> (Value, Valu
         read(&client, home, &account, false).await
     };
     match read.await {
-        Ok(c) => (c.map_or(Value::Null, |c| json!(c)), json!({"ok":true})),
+        Ok(_) => (usage_field(home, crate::daemon::now()), json!({"ok":true})),
         Err(e) => {
             let text = format!("{e}");
             let code = text.split(':').next().unwrap_or_default();
@@ -581,7 +791,7 @@ pub async fn limits_read(paths: &Paths, name: &str, home: &Path) -> (Value, Valu
                     "RESET_CREDITS_READ_FAILED"
                 };
             (
-                usage_field(home),
+                usage_field(home, crate::daemon::now()),
                 json!({"ok":false,"code":code,"message":text,"retryable":code == "AUTH_STALE" || code == "RESET_CREDITS_READ_FAILED"}),
             )
         }

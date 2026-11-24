@@ -21,9 +21,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 64;
+pub const CONTRACT_MINOR: u32 = 65;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.64.0";
+pub const CONTRACT_VERSION: &str = "1.65.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -2053,10 +2053,22 @@ pub fn capabilities() -> Value {
         "windows":["five_hour","seven_day"],
         "providers":{"codex":{"supported":true,"requires_session":false,"source":["app_server"]},
             // guard-allow(oauth): capability text names the usage path; the read goes through provider::claude::oauth
-            "claude":{"supported":true,"requires_session":false,"source":["statusline","oauth"],"oauth_read":"GET /api/oauth/usage","cache_seconds":claude::meter::CACHE_SECONDS,"background_refresh_seconds":claude::meter::REFRESH_SECONDS,"background_renews_token":false},
+            "claude":{"supported":true,"requires_session":false,"source":["statusline","oauth"],"oauth_read":"GET /api/oauth/usage?cedar_ember=1&skip_spend=1","cache_seconds":claude::meter::CACHE_SECONDS,"background_refresh_seconds":claude::meter::REFRESH_SECONDS,"background_renews_token":false},
             "gemini":{"supported":false,"reason":crate::provider::usage_meter::GEMINI_REASON},
             "antigravity":{"supported":false,"reason":crate::provider::usage_meter::ANTIGRAVITY_REASON}},
-        "never_lowers_within_reset_cycle":true,"same_cycle_seconds":claude::SAME_CYCLE_SECONDS,"credentials_returned":false});
+        "never_lowers_within_reset_cycle":true,"same_cycle_seconds":claude::SAME_CYCLE_SECONDS,"credentials_returned":false,
+        // Contract 1.65.0: every window names its reset cycle; a redeem starts a new one.
+        "cycles":{"since_contract":"1.65.0","window_keys":["cycle","cycle_started_at","cycle_reason"],
+            "reasons":crate::provider::usage_cycle::REASONS,"also_on":["usage.short","usage.weekly"],
+            "rule":"within one cycle used_percent never goes down; a redeem starts a new cycle (even with the same resets_at) that the next OAuth reading closes even when lower, a statusline reading only when not lower; readings older than the cycle or the recorded one are kept out",
+            "confirm_lower_seconds":crate::provider::usage_cycle::CONFIRM_SECONDS,
+            "redeem_detected_by":{"claude":["reset_credit_outcome_reset","resets_left_fell","grant_gone","provider_lowered_confirmed"],"codex":["reset_credit_outcome_reset","available_fell","provider_lowered"]}},
+        "reset_credits":{"field":"usage.reset_credits","keys":["fresh","age_seconds"],"refreshed_with_meter":true},
+        // Contract 1.65.0: windows that start on first use, and why a window is null or old.
+        "starts_on_first_use":{"field":"windows.*.starts_on_first_use","claude":["five_hour","seven_day"],"codex":[],
+            "claude_rule":"the usage answer names the window with resets_at null and utilization 0 or null: the window has not started; shown as used_percent 0, resets_at null, cycle_reason natural",
+            "codex_rule":"every window of account/rateLimits/read carries resetsAt (a reading without one is refused), so a Codex window never starts on first use"},
+        "window_reasons":{"field":"usage.meter.window_reasons","non_null_when":["window null","window past its resets_at"]}});
     value["session_meters"] = json!({"since_contract":"1.62.0","fields":crate::provider::session_meters::FIELDS,
         "per_field":["<field>_source","<field>_observed_at","<field>_reason"],"extra":["context_tokens","context_window_size"],
         "sources":{"context_pct":{"claude":"statusline","codex":"rollout","gemini":null,"antigravity":null},
@@ -2132,7 +2144,11 @@ pub fn capabilities() -> Value {
         "sources":{"claude":"auth_status","codex":"usage_snapshot"},"persisted":{"claude":"account registry (last auth status observation)","codex":"account registry usage snapshot"},
         "names":{"claude":{"pro":"Claude Pro"},"codex":{"free":"ChatGPT Free","plus":"ChatGPT Plus","pro":"ChatGPT Pro","team":"ChatGPT Team","business":"ChatGPT Business","enterprise":"ChatGPT Enterprise"},"unknown_raw":"name null, raw kept"},
         "gemini":null,"antigravity":null,"cached_state":true,"credentials_read":false});
-    value["usage_read"] = json!({"since_contract":"1.42.0","command":"usage","args":["--account","--cached"],"providers":["codex","claude","gemini","antigravity"],"all_providers_since_contract":"1.62.0","fields":["observed_at","age_seconds","short.observed_at","weekly.observed_at"],"windows_carried_until_own_reset":true});
+    value["usage_read"] = json!({"since_contract":"1.42.0","command":"usage","args":["--account","--cached"],"providers":["codex","claude","gemini","antigravity"],"all_providers_since_contract":"1.62.0","fields":["observed_at","age_seconds","short.observed_at","weekly.observed_at"],"windows_carried_until_own_reset":true,
+        // Contract 1.65.0: after the reset, until a provider read shows the new cycle.
+        "windows_after_own_reset":{"fresh":false,"reason":"window reset at <resets_at>; awaiting a post-reset read",
+            "read_triggered":"once per recorded reset, at the supervisor's next tick (at most 60 s), with the meter's token rules",
+            "then":"the provider read's new future resets_at, or 0% with resets_at null and starts_on_first_use:true for a window that has not started"}});
     value["live_activity"] = json!({"since_revision":37,"version":1,"field":"sessions[].live_activity","providers":["codex","claude","gemini","antigravity"],"claude_gemini_antigravity_since_contract":"1.42.0","states":["working","idle","turn_ended","blocked","error","unknown"],"native_sources":{"claude":["native_registry","transcript_tail"],"gemini":["transcript_tail"],"antigravity":["transcript_tail"]},"error_text":"provider turn-error text, bounded to 300 characters, only with state error","cached_state":true,"source":"app_server_thread_status_else_rollout_tail"});
     value["pending_operations"] = json!({"since_revision":37,"field":"sessions[].pending_operations","kinds":["stop","pause","switch","restart"],"stop_wait_expiry_seconds":external::TERMINATE_WAIT_SECONDS});
     value["native_send_checks"] = json!({"since_revision":37,"version":1,"commands":["send"],"modes":["submit","queue"],"providers":["codex"],"readiness_wait_seconds":20,"consumption_wait_seconds":8,"unconsumed_input":"removed_and_failed:input_not_consumed","unproven_input":"delivery_unknown:consumption_unverified","failed_turn_accepts_input":true});
@@ -4721,7 +4737,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.64.0");
+        assert_eq!(c["contract_version"], "1.65.0");
         assert_eq!(c["send_request"]["since_contract"], "1.64.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");

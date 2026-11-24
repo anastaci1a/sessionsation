@@ -1500,9 +1500,8 @@ impl UsageSource {
     }
 }
 /// Two readings of one window whose `resets_at` differ by at most this much are the same
-/// reset cycle: the statusline gets whole seconds from a response header, the OAuth read an
-/// ISO 8601 time. A new cycle starts hours later (a 5-hour or 7-day window), never minutes.
-pub const SAME_CYCLE_SECONDS: i64 = 300;
+/// reset cycle (see [`super::usage_cycle::SAME_CYCLE_SECONDS`]).
+pub const SAME_CYCLE_SECONDS: i64 = super::usage_cycle::SAME_CYCLE_SECONDS;
 /// Persist only rate-limit fields from one statusline payload. Returns false
 /// when the payload carries no rate-limit information (nothing observed).
 pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
@@ -1519,11 +1518,165 @@ pub fn record_statusline(home: &Path, input: &Value, now: i64) -> Result<bool> {
     )?;
     Ok(true)
 }
+/// The per-window cycle state (contract 1.65.0), next to `usage.json`. Only this release
+/// writes it: a statusline recorder of an older release that a long-running Claude session
+/// still runs rewrites `usage.json` without the cycle rule, and this file keeps the rule.
+pub fn cycles_file(home: &Path) -> PathBuf {
+    home.join(".sessionsation/usage-cycles.json")
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Recorded {
+    Missing,
+    Unreadable,
+    Present,
+}
+/// `usage.json` (the record) and the window slots it implies, merged with the stored cycle
+/// state: a window that differs from the stored one was written by an older recorder and is
+/// one more reading, under the same rule. Returns (state, record, slots, stored slots).
+fn load_recorded(
+    home: &Path,
+    now: i64,
+) -> (
+    Recorded,
+    Value,
+    Vec<super::usage_cycle::Slot>,
+    Option<Vec<super::usage_cycle::Slot>>,
+) {
+    use super::usage_cycle::{Cycle, Reading, Slot, WINDOWS};
+    let (state, record) = match fs::read(usage_file(home)) {
+        Ok(b) => match serde_json::from_slice::<Value>(&b) {
+            Ok(v) if v.is_object() => (Recorded::Present, v),
+            _ => (Recorded::Unreadable, Value::Null),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Recorded::Missing, Value::Null),
+        Err(_) => (Recorded::Unreadable, Value::Null),
+    };
+    let stored: Option<Vec<Slot>> = fs::read(cycles_file(home))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .filter(Value::is_object)
+        .map(|v| {
+            WINDOWS
+                .iter()
+                .map(|(k, _)| serde_json::from_value(v[*k].clone()).unwrap_or_default())
+                .collect()
+        });
+    let top = record["observed_at"].as_i64();
+    let slots = WINDOWS
+        .iter()
+        .enumerate()
+        .map(|(i, (key, duration))| {
+            let raw = &record[*key];
+            let legacy = statusline_window(raw);
+            let at = raw["observed_at"].as_i64().or(top);
+            // Records before 1.62.0 have no per-window source: they came from the statusline.
+            let source = raw["source"]
+                .as_str()
+                .unwrap_or(UsageSource::Statusline.as_str());
+            match stored.as_ref().map(|s| s[i].clone()) {
+                Some(mut slot) => {
+                    let same = slot.window["used_percentage"].as_f64()
+                        == legacy["used_percentage"].as_f64()
+                        && slot.window["resets_at"].as_i64() == legacy["resets_at"].as_i64()
+                        && slot.window["observed_at"].as_i64() == at;
+                    if !same
+                        && !legacy.is_null()
+                        && let Some(at) = at
+                    {
+                        slot.apply(
+                            &Reading {
+                                window: &legacy,
+                                at,
+                                source,
+                                replayable: source == UsageSource::Statusline.as_str(),
+                                first_use: false,
+                            },
+                            now,
+                            *duration,
+                        );
+                    }
+                    slot
+                }
+                None => {
+                    let window = if legacy.is_null() {
+                        Value::Null
+                    } else {
+                        json!({"used_percentage":legacy["used_percentage"],"resets_at":legacy["resets_at"],
+                            "observed_at":at,"source":source})
+                    };
+                    // A 1.65.0 record without its cycle file still names its cycles.
+                    let cycle = match (
+                        raw["cycle"].as_str(),
+                        raw["cycle_started_at"].as_i64(),
+                        legacy["resets_at"].as_i64(),
+                    ) {
+                        (Some(id), Some(started_at), Some(resets_at)) => Some(Cycle {
+                            id: id.into(),
+                            started_at,
+                            reason: raw["cycle_reason"]
+                                .as_str()
+                                .unwrap_or(super::usage_cycle::NATURAL)
+                                .into(),
+                            resets_at,
+                            open: false,
+                            prior_percent: None,
+                            pending_lower: None,
+                        }),
+                        _ => None,
+                    };
+                    let mut slot = Slot { window, cycle };
+                    slot.ensure_cycle(*duration);
+                    slot
+                }
+            }
+        })
+        .collect();
+    (state, record, slots, stored)
+}
+/// Write the cycle state, then `usage.json` (windows with their cycles; the rest of `record`).
+/// [`load_recorded`] reads in the other order (`usage.json`, then the cycle state), so a
+/// reader without the lock sees either both files of one write or an older `usage.json` with
+/// newer cycle state; the older window is then a reading older than the recorded one and is
+/// kept out. It never sees a newer `usage.json` with older cycle state.
+fn write_recorded(
+    home: &Path,
+    now: i64,
+    mut record: Value,
+    slots: &[super::usage_cycle::Slot],
+) -> Result<()> {
+    for ((key, _), slot) in super::usage_cycle::WINDOWS.iter().zip(slots) {
+        record[*key] = slot.public();
+    }
+    sweep_stale_tmp(&home.join(".sessionsation"), now);
+    write_cycles(home, slots)?;
+    atomic_write(&usage_file(home), &serde_json::to_vec(&record)?)?;
+    Ok(())
+}
+fn write_cycles(home: &Path, slots: &[super::usage_cycle::Slot]) -> Result<()> {
+    let mut cycles = json!({});
+    for ((key, _), slot) in super::usage_cycle::WINDOWS.iter().zip(slots) {
+        cycles[*key] = serde_json::to_value(slot)?;
+    }
+    atomic_write(&cycles_file(home), &serde_json::to_vec(&cycles)?)
+}
+/// One read-modify-write of the recorder files (and of the stored reset-credit status that
+/// decides about redeems) at a time: the statusline hook, an OAuth read and a redeem may run at
+/// once. Held while alive; the `*_locked` functions take it as proof.
+pub struct RecorderLock(#[allow(dead_code)] std::fs::File);
+pub fn recorder_lock(home: &Path) -> Result<RecorderLock> {
+    let dir = home.join(".sessionsation");
+    private_dir(&dir)?;
+    let lock = crate::paths::lock_file(&dir.join("usage.lock"))?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+    Ok(RecorderLock(lock))
+}
 /// The one owner of `usage.json` for both sources (statusline and OAuth read, contract
 /// 1.62.0): `limits` holds `five_hour` / `seven_day` as `{used_percentage, resets_at}` (Unix
 /// seconds). The fresher reading wins, but within one reset cycle usage never goes down
 /// (the 1.56.0 rule, now across sources): a lower reading of the same cycle is a stale
-/// replay and keeps the stored window, its `observed_at` and its `source`. `session` is the
+/// replay and keeps the stored window, its `observed_at` and its `source`. Since 1.65.0 the
+/// cycle is a marker of its own ([`super::usage_cycle`]): a redeem starts a new one
+/// ([`start_cycles`]) whose next reading is accepted even when lower. `session` is the
 /// statusline payload's (`version`, `session_id`); an OAuth read keeps the recorded ones.
 /// Returns whether the file was rewritten.
 pub fn record_windows(
@@ -1533,68 +1686,52 @@ pub fn record_windows(
     source: UsageSource,
     session: Option<(Option<&str>, Option<&str>)>,
 ) -> Result<bool> {
-    let dir = home.join(".sessionsation");
-    private_dir(&dir)?;
-    // The statusline hook and an OAuth read may run at once: one read-modify-write at a time.
-    let lock = crate::paths::lock_file(&dir.join("usage.lock"))?;
-    fs2::FileExt::lock_exclusive(&lock)?;
+    let lock = recorder_lock(home)?;
+    record_windows_locked(&lock, home, limits, now, source, session)
+}
+/// [`record_windows`] under a held [`recorder_lock`].
+pub fn record_windows_locked(
+    _lock: &RecorderLock,
+    home: &Path,
+    limits: &Value,
+    now: i64,
+    source: UsageSource,
+    session: Option<(Option<&str>, Option<&str>)>,
+) -> Result<bool> {
+    use super::usage_cycle::{Reading, WINDOWS};
     // Claude Code drops a window after its reset until the next API response, so a
     // payload can lack one. Carry the recorded window forward until its own
     // resets_at; every window keeps the time it was last observed.
-    let previous: Value = fs::read(usage_file(home))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or(Value::Null);
-    let window = |key: &str| {
-        let mut fresh = statusline_window(&limits[key]);
-        let old = statusline_window(&previous[key]);
-        let old_at = previous[key]["observed_at"]
-            .as_i64()
-            .or_else(|| previous["observed_at"].as_i64());
-        // Records before 1.62.0 have no per-window source: they came from the statusline.
-        let old_source = previous[key]["source"]
-            .as_str()
-            .unwrap_or(UsageSource::Statusline.as_str());
-        let kept = || {
-            json!({"used_percentage":old["used_percentage"],"resets_at":old["resets_at"],
-                "observed_at":old_at,"source":old_source})
-        };
-        // A replayed window that has already reset carries no current usage: treat it
-        // as absent (the recorded window is carried forward below).
-        if fresh["resets_at"].as_i64().is_some_and(|r| r <= now) {
-            fresh = Value::Null;
-        }
-        if !fresh.is_null() {
-            // An idle session re-renders its statusline with the limits of its LAST API
-            // response, and an OAuth read can be older than a statusline that just ran.
-            // Within one reset cycle usage only grows, so a lower reading is stale: keep
-            // the stored window and its observed_at. An earlier cycle is kept out too. A
-            // later cycle replaces; an equal or higher value refreshes observed_at.
-            if let (Some(o), Some(f)) = (old["resets_at"].as_i64(), fresh["resets_at"].as_i64()) {
-                let same_cycle = (f - o).abs() <= SAME_CYCLE_SECONDS;
-                let older_cycle = f < o - SAME_CYCLE_SECONDS;
-                if older_cycle
-                    || same_cycle
-                        && old["used_percentage"].as_f64() > fresh["used_percentage"].as_f64()
-                {
-                    return kept();
-                }
-            }
-            return json!({"used_percentage":fresh["used_percentage"],"resets_at":fresh["resets_at"],
-                "observed_at":now,"source":source.as_str()});
-        }
-        match old["resets_at"].as_i64() {
-            Some(resets) if resets > now => kept(),
-            _ => Value::Null,
-        }
-    };
-    let (five_hour, seven_day) = (window("five_hour"), window("seven_day"));
+    let (state, previous, mut slots, stored) = load_recorded(home, now);
+    for ((key, duration), slot) in WINDOWS.iter().zip(slots.iter_mut()) {
+        let fresh = statusline_window(&limits[*key]);
+        // An OAuth answer that names the window with no reset time and no usage: it has not
+        // started (it starts on first use).
+        let first_use = source == UsageSource::OAuth && limits[*key]["starts_on_first_use"] == true;
+        slot.apply(
+            &Reading {
+                window: &fresh,
+                at: now,
+                source: source.as_str(),
+                replayable: source == UsageSource::Statusline,
+                first_use,
+            },
+            now,
+            *duration,
+        );
+    }
+    let public: Vec<Value> = slots.iter().map(|s| s.public()).collect();
     // Nothing changed (every window was a stale replay or carried forward unchanged):
     // do not rewrite, so `observed_at` keeps meaning "last time usage was learned".
-    if previous["source"] == USAGE_SOURCE
-        && previous["five_hour"] == five_hour
-        && previous["seven_day"] == seven_day
+    if state == Recorded::Present
+        && previous["source"] == USAGE_SOURCE
+        && previous["five_hour"] == public[0]
+        && previous["seven_day"] == public[1]
     {
+        // Only the cycle state moved (a lower OAuth reading waits for confirmation).
+        if stored.as_ref() != Some(&slots) {
+            write_cycles(home, &slots)?;
+        }
         return Ok(false);
     }
     let (version, session_id) = match session {
@@ -1609,12 +1746,44 @@ pub fn record_windows(
         "observed_at": now,
         "claude_version": version,
         "session_id": session_id,
-        "five_hour": five_hour,
-        "seven_day": seven_day,
     });
-    sweep_stale_tmp(&dir, now);
-    atomic_write(&usage_file(home), &serde_json::to_vec(&record)?)?;
+    write_recorded(home, now, record, &slots)?;
     Ok(true)
+}
+/// Start a new reset cycle (contract 1.65.0) for each of `windows` (`five_hour`, `seven_day`)
+/// at `at`, because a redeem reset it (`reason` `redeem` or `external_redeem`). The recorded
+/// value stays until the next reading, which is accepted even when lower. Returns the windows
+/// whose cycle started (a window never recorded has nothing to mark).
+pub fn start_cycles(home: &Path, windows: &[&str], at: i64, reason: &str) -> Result<Vec<String>> {
+    let lock = recorder_lock(home)?;
+    start_cycles_locked(&lock, home, windows, at, reason)
+}
+/// [`start_cycles`] under a held [`recorder_lock`].
+pub fn start_cycles_locked(
+    _lock: &RecorderLock,
+    home: &Path,
+    windows: &[&str],
+    at: i64,
+    reason: &str,
+) -> Result<Vec<String>> {
+    let now = crate::daemon::now();
+    let (state, previous, mut slots, _) = load_recorded(home, now);
+    let mut started = vec![];
+    for ((key, duration), slot) in super::usage_cycle::WINDOWS.iter().zip(slots.iter_mut()) {
+        if windows.contains(key) && slot.start(at, reason, *duration) {
+            started.push((*key).to_owned());
+        }
+    }
+    if !started.is_empty() {
+        if state == Recorded::Present {
+            write_recorded(home, now, previous, &slots)?;
+        } else {
+            // No record to stamp (only the cycle file knew the window): the next reading
+            // writes usage.json.
+            write_cycles(home, &slots)?;
+        }
+    }
+    Ok(started)
 }
 /// Remove leaked `.tmp*` files (killed recorder runs, full disks) older than ten
 /// minutes from the recorder directory. Best effort; never touches other names.
@@ -1687,41 +1856,66 @@ fn chained_command(home: &Path) -> Option<String> {
     (!command.is_empty() && !command.contains(HOOK_MARKER)).then(|| command.to_owned())
 }
 
+/// The reset times the recorder knows (contract 1.65.0): each window's `resets_at`, or, for a
+/// window dropped after its reset, its cycle's. A window that starts on first use has none.
+/// The supervisor reads an account once after each of these passes.
+pub fn recorded_resets(home: &Path, now: i64) -> Vec<i64> {
+    let (_, _, slots, _) = load_recorded(home, now);
+    slots
+        .iter()
+        .filter(|s| !s.first_use())
+        .filter_map(|s| {
+            s.window["resets_at"].as_i64().or_else(|| {
+                s.window
+                    .is_null()
+                    .then(|| s.cycle.as_ref().map(|c| c.resets_at))?
+            })
+        })
+        .collect()
+}
 /// Project recorded statusline usage into the shared account usage shape.
 /// Missing windows stay null (never 0%). Returns (usage, fresh, state).
 pub fn project_usage(home: &Path, now: i64) -> (Value, bool, &'static str) {
     let base = |state: &'static str| {
         json!({"short":null,"weekly":null,"observed_at":null,"exhausted":false,
             "source":USAGE_SOURCE,"semantics":USAGE_SEMANTICS,"state":state,
-            // Contract 1.60.0: the last limit-reset status read (null before one).
-            "reset_credits":crate::reset_credit::claude::usage_field(home)})
+            // Contract 1.60.0: the last limit-reset status read (null before one); since
+            // 1.65.0 with `fresh` and `age_seconds`.
+            "reset_credits":crate::reset_credit::claude::usage_field(home, now)})
     };
-    let bytes = match fs::read(usage_file(home)) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return (base("missing"), false, "missing");
-        }
-        Err(_) => return (base("error"), false, "error"),
-    };
-    let Ok(record) = serde_json::from_slice::<Value>(&bytes) else {
-        return (base("error"), false, "error");
-    };
+    let (recorded, record, slots, _) = load_recorded(home, now);
+    match recorded {
+        Recorded::Missing => return (base("missing"), false, "missing"),
+        Recorded::Unreadable => return (base("error"), false, "error"),
+        Recorded::Present => {}
+    }
     let Some(observed) = record["observed_at"].as_i64().filter(|t| *t > 0) else {
         return (base("error"), false, "error");
     };
-    let window = |key: &str, minutes: u64| {
-        let w = statusline_window(&record[key]);
-        if w.is_null() {
-            Value::Null
+    let window = |slot: &super::usage_cycle::Slot, minutes: u64| {
+        // Contract 1.65.0: a window that has not started is 0% with no reset time.
+        let first = slot.first_use();
+        let w = if first {
+            json!({"used_percentage":0.0,"resets_at":null})
         } else {
-            json!({"duration_minutes":minutes,"used_percent":w["used_percentage"],"resets_at":w["resets_at"],
-                "observed_at":record[key]["observed_at"].as_i64().unwrap_or(observed),
-                // Contract 1.62.0: where this window was learned (`statusline` or `oauth`).
-                "source":record[key]["source"].as_str().unwrap_or(UsageSource::Statusline.as_str())})
+            statusline_window(&slot.window)
+        };
+        if w.is_null() {
+            return Value::Null;
         }
+        let mut v = json!({"duration_minutes":minutes,"used_percent":w["used_percentage"],"resets_at":w["resets_at"],
+            "observed_at":slot.window["observed_at"].as_i64().unwrap_or(observed),
+            // Contract 1.62.0: where this window was learned (`statusline` or `oauth`).
+            "source":slot.window["source"].as_str().unwrap_or(UsageSource::Statusline.as_str()),
+            "starts_on_first_use":first});
+        // Contract 1.65.0: the window's reset cycle.
+        if let Some(c) = &slot.cycle {
+            c.stamp(&mut v);
+        }
+        v
     };
-    let short = window("five_hour", 300);
-    let weekly = window("seven_day", 10080);
+    let short = window(&slots[0], 300);
+    let weekly = window(&slots[1], 10080);
     let present: Vec<&Value> = [&short, &weekly]
         .into_iter()
         .filter(|w| !w.is_null())
@@ -1729,9 +1923,9 @@ pub fn project_usage(home: &Path, now: i64) -> (Value, bool, &'static str) {
     let state = if observed > now + 60 {
         "error"
     } else if now - observed > USAGE_STALE_SECONDS
-        || present
-            .iter()
-            .any(|w| w["resets_at"].as_i64().is_none_or(|r| r <= now))
+        || present.iter().any(|w| {
+            w["starts_on_first_use"] != true && w["resets_at"].as_i64().is_none_or(|r| r <= now)
+        })
     {
         "stale"
     } else if present.is_empty() {
@@ -1742,8 +1936,29 @@ pub fn project_usage(home: &Path, now: i64) -> (Value, bool, &'static str) {
         "fresh"
     };
     let mut usage = base(state);
+    // Contract 1.65.0: why a window is null or past its reset (the meter's `window_reasons`).
+    let mut reasons = json!({});
+    for ((key, _), (slot, w)) in super::usage_cycle::WINDOWS
+        .iter()
+        .zip(slots.iter().zip([&short, &weekly]))
+    {
+        let reset = w["resets_at"].as_i64().filter(|r| *r <= now).or_else(|| {
+            w.is_null()
+                .then(|| slot.cycle.as_ref().map(|c| c.resets_at))
+                .flatten()
+                .filter(|r| *r <= now)
+        });
+        reasons[*key] = match (reset, w.is_null()) {
+            (Some(r), _) => json!(super::usage_meter::reset_reason(r)),
+            (None, true) => json!(
+                "no current reading of this window: no session reported it and no usage read returned it"
+            ),
+            (None, false) => Value::Null,
+        };
+    }
     usage["short"] = short;
     usage["weekly"] = weekly;
+    usage["window_reasons"] = reasons;
     usage["observed_at"] = json!(observed);
     usage["claude_version"] = record["claude_version"].clone();
     (usage, state == "fresh", state)

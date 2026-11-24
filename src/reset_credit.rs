@@ -212,6 +212,16 @@ pub fn parse_summary(summary: &Value, at: i64) -> Option<ResetCredits> {
     })
 }
 
+/// A `usage.reset_credits` value with `fresh` and `age_seconds` (contract 1.65.0), like the
+/// meter: fresh while the read is younger than `stale_seconds`. Null stays null.
+pub fn with_age(mut credits: Value, now: i64, stale_seconds: i64) -> Value {
+    if let Some(at) = credits["observed_at"].as_i64() {
+        credits["age_seconds"] = json!((now - at).max(0));
+        credits["fresh"] = json!(at > 0 && now >= at && now - at < stale_seconds);
+    }
+    credits
+}
+
 /// The error for a consume request that did not produce an outcome. The record is
 /// already finished; the message names the codex version and how to retry.
 pub fn failure(error: &anyhow::Error, version: &str, request_id: &str) -> (&'static str, String) {
@@ -244,7 +254,9 @@ pub fn failure(error: &anyhow::Error, version: &str, request_id: &str) -> (&'sta
 pub fn capability() -> Value {
     json!({"since_contract":"1.53.0","providers":["codex","claude"],"method":METHOD,
         "command":"api account reset-credit PROVIDER:NAME [--credit-id ID] [--request-id UUID] [--kind 5-hour|weekly|fable|full]",
-        "claude":{"since_contract":"1.60.0","status":{"method":"GET","url":format!("{}{}",crate::provider::claude::oauth::API_BASE,claude::STATUS_PATH),"block":"cedar_ember","cache_seconds":claude::CACHE_SECONDS,"polled":false},
+        "claude":{"since_contract":"1.60.0","status":{"method":"GET","url":format!("{}{}",crate::provider::claude::oauth::API_BASE,claude::STATUS_PATH),"block":"cedar_ember","cache_seconds":claude::CACHE_SECONDS,"polled":true,
+                // Contract 1.65.0: refreshed with the meter (every meter read is this request).
+                "refreshed_with_meter_seconds":crate::provider::claude::meter::REFRESH_SECONDS},
             "claim":{"method":"POST","path":"/api/organizations/<organizationUuid>/reset_rate_limits","body":["program","grant_id","request_id"],"program":claude::PROGRAM,"request_id":"request_id"},
             "outcomes":claude::OUTCOMES,"kinds":["5-hour","weekly","fable","full"],"credit_id":"grant id ^[a-z0-9_-]{1,40}$",
             "grant_selection":"--credit-id, else a usable grant of --kind, else next_grant_id, else the first usable grant","no_usable_grant":{"outcome":"noCredit","sent":false},
@@ -255,10 +267,10 @@ pub fn capability() -> Value {
         "idempotent_by":"request_id","idempotency_key":"request_id",
         "request_id_generated_when_omitted":true,"journaled_before_request":true,
         "journal":crate::layout::ACCOUNT_RESET_CREDITS,"auto_retry":false,"retry":"same_request_id_only",
-        "outcomes":OUTCOMES,"result_fields":["account_id","request_id","outcome","rate_limits_after","attempts","operation"],"claude_result_fields":["credit_id","claude","rate_limits_after_error","sent"],
+        "outcomes":OUTCOMES,"result_fields":["account_id","request_id","outcome","rate_limits_after","attempts","operation"],"claude_result_fields":["credit_id","claude","rate_limits_after_error","sent","cycles_started"],
         "rate_limits_refreshed_after":["reset","alreadyRedeemed"],
         "lock":"account_operation_lock","reversible":false,
-        "usage_field":{"field":"usage.reset_credits","shape":{"available":"integer","observed_at":"unix_seconds","credits":"array|null"},"absent":null},
+        "usage_field":{"field":"usage.reset_credits","shape":{"available":"integer","observed_at":"unix_seconds","credits":"array|null","fresh":"boolean","age_seconds":"integer"},"absent":null},
         "errors":[crate::provider::ops::UNSUPPORTED,"INVALID_REQUEST_ID","REQUEST_ID_CONFLICT","ACCOUNT_BUSY","AUTH_REQUIRED","AUTH_STALE","RESET_CREDIT_FAILED","RESET_CREDIT_OUTCOME_UNKNOWN"]})
 }
 

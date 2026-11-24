@@ -357,6 +357,13 @@ with tempfile.TemporaryDirectory() as directory:
             assert meter["since_contract"] == "1.62.0" and meter["never_lowers_within_reset_cycle"] is True, meter
             assert meter["providers"]["claude"]["requires_session"] is False and meter["providers"]["codex"]["requires_session"] is False, meter
             assert meter["providers"]["claude"]["background_renews_token"] is False, meter
+            # 1.65.0: reset cycles on every window; reset credits refreshed with the meter.
+            assert meter["cycles"]["since_contract"] == "1.65.0" and meter["cycles"]["window_keys"] == ["cycle", "cycle_started_at", "cycle_reason"], meter
+            assert meter["cycles"]["reasons"] == ["natural", "redeem", "external_redeem", "provider_lowered"], meter
+            assert meter["reset_credits"]["keys"] == ["fresh", "age_seconds"] and meter["reset_credits"]["refreshed_with_meter"] is True, meter
+            assert reset["claude"]["status"]["polled"] is True, reset
+            assert meter["starts_on_first_use"]["claude"] == ["five_hour", "seven_day"] and meter["starts_on_first_use"]["codex"] == [], meter
+            assert value["result"]["usage_read"]["windows_after_own_reset"]["fresh"] is False, value["result"]["usage_read"]
             assert value["result"]["session_meters"]["fields"] == ["context_pct", "subagents_running", "background_tasks"]
             observe = value["result"]["observe_conversation"]
             assert observe["since_contract"] == "1.63.0" and observe["fields"] == ["last_reply", "last_instruction", "compacted_at", "recent_turns"], observe

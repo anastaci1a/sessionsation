@@ -945,7 +945,11 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             if matches!(outcome.as_str(),"reset"|"alreadyRedeemed") {
                                 // Update the cached usage now, so usage, list and state show the reset.
                                 if let Ok(usage) = rpc.request("account/rateLimits/read",json!({})).await.and_then(|v| parse_usage(&v,now())) {
-                                    if let Some(a) = state.accounts.get_mut(&key) { a.observe(usage); refreshed = true; }
+                                    if let Some(a) = state.accounts.get_mut(&key) {
+                                        // Contract 1.65.0: a reset starts a new cycle of every window.
+                                        if outcome == "reset" { a.observe_redeemed(usage) } else { a.observe(usage) }
+                                        refreshed = true;
+                                    }
                                     last_poll.insert(name.clone(),now());
                                 }
                             }
@@ -1371,8 +1375,13 @@ mod tests {
         let (usage, _, _) = account_usage(&paths, &a, &Config::default(), 5);
         assert_eq!(
             usage["reset_credits"],
-            json!({"available":4,"observed_at":3,"credits":null})
+            json!({"available":4,"observed_at":3,"credits":null,"fresh":true,"age_seconds":2})
         );
+        // Contract 1.65.0: the age is the meter's rule (Codex `stale_seconds`).
+        let stale = Config::default().stale_seconds as i64;
+        let (usage, _, _) = account_usage(&paths, &a, &Config::default(), 3 + stale);
+        assert_eq!(usage["reset_credits"]["fresh"], false);
+        assert_eq!(usage["reset_credits"]["age_seconds"], stale);
         // Older stored usage without the field still loads.
         let old: Usage = serde_json::from_value(
             json!({"short":null,"weekly":null,"observed_at":1,"exhausted":false}),

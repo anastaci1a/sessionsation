@@ -21,6 +21,7 @@ pub mod ops;
 pub mod send;
 pub mod session_meters;
 pub mod stop_shape;
+pub mod usage_cycle;
 pub mod usage_meter;
 
 use crate::{

@@ -59,10 +59,21 @@ while IFS= read -r line; do
       reset=$(($(date +%s) + 18000))
       weekly=$(($(date +%s) + 604800))
       short=23; long=42; credits=''
+      # A natural reset of the 5-hour window (contract 1.65.0): a later resetsAt.
+      if [ -f "$CODEX_HOME/fake-reset-shift" ]; then reset=$((reset + $(cat "$CODEX_HOME/fake-reset-shift"))); fi
+      # An absolute 5-hour resetsAt (it can be in the past: a provider that has not rolled yet).
+      if [ -f "$CODEX_HOME/fake-short-resets-at" ]; then reset=$(cat "$CODEX_HOME/fake-short-resets-at"); fi
       if [ -f "$CODEX_HOME/fake-reset-done" ]; then short=0; long=0; fi
       if [ -f "$CODEX_HOME/fake-short" ]; then short=$(cat "$CODEX_HOME/fake-short"); fi
       if [ -f "$CODEX_HOME/fake-reset-available" ]; then
-        credits=$(printf ',"rateLimitResetCredits":{"availableCount":%s,"credits":null}' "$(cat "$CODEX_HOME/fake-reset-available")")
+        n=$(cat "$CODEX_HOME/fake-reset-available"); list=null
+        # With fake-reset-listed, one credit row per available credit (contract 1.65.0).
+        if [ -f "$CODEX_HOME/fake-reset-listed" ]; then
+          list=''; i=1
+          while [ "$i" -le "$n" ]; do list="$list${list:+,}{\"id\":\"c$i\",\"status\":\"available\",\"expiresAt\":null}"; i=$((i + 1)); done
+          list="[$list]"
+        fi
+        credits=$(printf ',"rateLimitResetCredits":{"availableCount":%s,"credits":%s}' "$n" "$list")
       fi
       printf '{"id":%s,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":%s,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":%s,"windowDurationMins":10080,"resetsAt":%s}}%s}}\n' "$id" "$short" "$reset" "$long" "$weekly" "$credits" ;;
   esac

@@ -3,7 +3,7 @@
   "counters_digest": "7a1362d75516f452c2487c88413b88f04b88f31062c4fa6857c4007feb8db7ff",
   "counters": {
     "alive_fns": { "value": 8 },
-    "api_rs_lines": { "value": 5470 },
+    "api_rs_lines": { "value": 5486 },
     "apply_session_input_fns": { "value": 3 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 3 },
@@ -17,11 +17,11 @@
     "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13461 },
+    "doc_bytes:docs/changelog.md": { "value": 13900 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
-    "doc_bytes:docs/contract.md": { "value": 224144 },
+    "doc_bytes:docs/contract.md": { "value": 227496 },
     "doc_bytes:docs/operations.md": { "value": 22987 },
-    "doc_bytes_total": { "value": 300498 },
+    "doc_bytes_total": { "value": 304289 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -56,13 +56,13 @@
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
     "sha256_digests": { "value": 31 },
-    "since_contract_literals": { "value": 41 },
+    "since_contract_literals": { "value": 42 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 99861 },
+    "src_lines": { "value": 101198 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -793,6 +793,48 @@
       "counter": "api_rs_lines",
       "by": -2,
       "reason": "1.65.0 S1 review: ops::supervised_name in api switch",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 16,
+      "reason": "1.65.0 meter cycles: capability usage_meter.cycles, reset_credits, starts_on_first_use and window_reasons, usage_read.windows_after_own_reset, the cedar status URL of the meter read",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 439,
+      "reason": "1.65.0 meter cycles: the entry, merged with S1's 1.65.0 line",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 3352,
+      "reason": "1.65.0 meter cycles: reset cycles, redeem detection, self-heal, the post-reset rule and starts_on_first_use in the usage meter section; reset-credit freshness",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 3791,
+      "reason": "1.65.0 meter cycles: docs/contract.md and docs/changelog.md as above",
+      "considered": "n/a",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "since_contract_literals",
+      "by": 1,
+      "reason": "1.65.0 meter cycles: capability usage_meter.cycles",
+      "considered": "the cycle, first-use, reason and reset-credit keys live inside the existing usage_meter and usage_read blocks, and only usage_meter.cycles carries a literal; a top-level block would need its own literal too; contract.rs (the owner) does not exist yet",
+      "step": "1.65.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 1337,
+      "reason": "1.65.0 meter cycles: provider::usage_cycle (cycle marker, the per-window rule, confirmed lowering, first-use windows, Codex cycles) with unit tests, the Claude recorder's cycle state and older-recorder merge, absorb under usage.lock with external redeem detection and the own claim, the reset-triggered meter read, meter window reasons, and their unit tests",
       "considered": "n/a",
       "step": "1.65.0"
     }

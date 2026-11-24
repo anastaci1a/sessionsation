@@ -15,7 +15,7 @@ the [changelog](changelog.md). Each section here describes current behaviour.
 ## Contract versioning (semver)
 
 The client contract has a semantic version `MAJOR.MINOR.PATCH`, reported as
-`contract_version` (for example `"1.64.0"`) by `api version` and `api capabilities`.
+`contract_version` (for example `"1.65.0"`) by `api version` and `api capabilities`.
 The integer `contract_revision` always equals MINOR (revision N is contract `1.N.0`).
 A build that predates `contract_version` is read as `1.<contract_revision>.0`.
 `api_version` stays the integer MAJOR (`1`); the package version is independent.
@@ -2454,7 +2454,8 @@ contacts a provider) carry `usage.meter`:
 ```json
 {"supported":true,"requires_session":false,"source":"oauth","fresh":true,"observed_at":1800000000,
  "age_seconds":12,"windows":{"five_hour":{"used_percent":31.0,"resets_at":1800003600,
- "observed_at":1800000000,"source":"oauth"},"seven_day":null},"reason":null}
+ "observed_at":1800000000,"source":"oauth","cycle":"1800003600:1799985600:natural",
+ "cycle_started_at":1799985600,"cycle_reason":"natural"},"seven_day":null},"reason":null}
 ```
 
 - Codex `app_server`: the supervisor's `account/rateLimits/read` of every enabled
@@ -2465,21 +2466,57 @@ contacts a provider) carry `usage.meter`:
   the reading is older than 60 s and a read is safe
   (`SESSIONSATION_CODEX_METER_CACHE_SECONDS`).
 - Claude: `statusline` (a running session's status-line payload, below) and `oauth`
-  (the account's `GET https://api.anthropic.com/api/oauth/usage`, `{utilization,
+  (the account's `GET https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1`, `{utilization,
   resets_at}` per window, clamped to 100) share one owner (`usage.lock`) and
   `usage.json`. `api usage` and `api account limits` read a meter older than 60 s, at
   most once per 60 s per account; the supervisor reads idle accounts older than 600 s
-  once a minute at most (`SESSIONSATION_CLAUDE_METER_SECONDS`, 0 off) with the stored
+  once a minute at most, and those whose reset credits are older
+  (`SESSIONSATION_CLAUDE_METER_SECONDS`, 0 off), with the stored
   token only, so a background read never rotates a refresh token (`AUTH_STALE` in
   `<home>/.sessionsation/usage-read.json`).
 - Gemini and Antigravity: `supported:false` with `reason`.
-- Within one reset cycle a window never goes down, whichever source reported it (two
-  readings whose `resets_at` differ by at most 300 s are one cycle,
-  `same_cycle_seconds`); a different `resets_at` replaces. `fresh`: some window is
-  present, none is past its reset and the newest reading is younger than the
-  provider's limit (Codex `stale_seconds`, Claude 1800 s). A meter that is not fresh
-  always has a `reason`. A missing window is null, never 0%. `usage.observed_at` is
-  null without a real observation.
+- Reset cycles (`usage_meter.cycles`): every window here and in `usage.short` /
+  `usage.weekly` has `cycle` (opaque id), `cycle_started_at` and `cycle_reason`, which
+  change on any reset: `natural` (a `resets_at` more than 300 s later,
+  `same_cycle_seconds`; started at `resets_at` minus the window length), `redeem` (this
+  account's `reset-credit` answered `reset` for a credit that clears the window),
+  `external_redeem` (a grant's `resets_left`, or Codex `available` net of expired
+  credits, fell between two reads) or Codex `provider_lowered` (less usage within one
+  `resets_at`). Within one cycle `used_percent` never goes down, whichever source
+  reported it: a lower Claude reading is a stale replay and is kept out, also when an
+  older release's statusline recorder (still run by a long-lived session) rewrote
+  `usage.json` (`usage-cycles.json` keeps the rule). A redeem starts a new cycle even
+  with the same `resets_at`, held open on the old value: the next OAuth answer closes
+  it even when lower; a statusline reading closes it only when not lower. A reading
+  taken (an OAuth read: sent) before the cycle started, or before the recorded one, is
+  kept out. After a reset, a statusline reading within 0.5 of the pre-reset value is
+  kept out while the cycle is open or below that value (an idle session's replay),
+  until an OAuth answer shows usage back at it. A lower OAuth answer in a closed cycle
+  is accepted (`cycle_reason` `provider_lowered`) once a second one at least 60 s later
+  reports the same or less, so a missed reset heals within two meter reads and one
+  stale answer never lowers the meter. A redeem elsewhere is also a grant that had uses
+  left and now is gone from `grants` or lost `resets_left`; nothing is inferred without
+  a stored status, for a window shorter than that status's age, or for the grant this
+  account just claimed (the claim updates the stored status under `usage.lock`; a read
+  sent before the claim's answer is not stored). Codex infers a redeem only from a
+  listed credit set. A cleared window the answer then
+  reports without a time is null. Claude windows a grant clears: `five_hour`;
+  `seven_day` for any `seven_day*` entry or a `fable`, `weekly` or `full` grant; both
+  for an unknown grant. The Claude `reset-credit` result adds `cycles_started`.
+- After a window's own reset (`usage_read.windows_after_own_reset`): until a provider
+  read after the reset shows the new cycle, the meter is `fresh:false` with
+  `window reset at <resets_at>; awaiting a post-reset read`; a past `resets_at` is never
+  fresh. The supervisor reads a Claude account once at its next tick (at most 60 s) after
+  each recorded reset passes, with the stored token only; Codex polls once after a reset.
+  The read shows the new future `resets_at`, or, for a window that has not started
+  (Claude: the answer names it with `resets_at` null and no usage), `used_percent` 0,
+  `resets_at` null, `starts_on_first_use:true` (every window has the key),
+  `cycle_reason` `natural` (`usage_meter.starts_on_first_use`; Codex windows always carry
+  `resetsAt`). `meter.window_reasons` says why each window is null or past its reset.
+- `fresh`: some window is present, none is past its reset and the newest reading is
+  younger than the provider's limit (Codex `stale_seconds`, Claude 1800 s). A meter that
+  is not fresh always has a `reason`. A missing window is null, never 0%.
+  `usage.observed_at` is null without a real observation.
 - The row's `read` (`api usage`) or `meter_read` (`api account limits`) is
   `{attempted, ok, code|reason, message, attempted_at, retryable}` or null when no
   read was needed; codes `AUTH_REQUIRED`, `AUTH_STALE`, `USAGE_READ_FAILED`. A failed
@@ -2534,7 +2571,10 @@ contacts a provider) carry `usage.meter`:
   `eligible`, `ineligible_reason`, `at_limit`, `next_grant_id`, `cooldown_until`,
   `weekly_resets_at`). `api account limits claude:NAME` reads it when older than 60 s
   (`reset_credits_read`); `account list` and `state` show the stored read
-  (`<home>/.sessionsation/reset-credits.json`) and never call the API.
+  (`<home>/.sessionsation/reset-credits.json`) and never call the API. Every Claude meter
+  read is this same request, so the supervisor refreshes it with the meter (also while a
+  session keeps the meter fresh). Both providers add `fresh` and `age_seconds` (the
+  meter's staleness limit).
 - **Codex** sends `account/rateLimitResetCredit/consume` `{creditId, idempotencyKey}`
   through the supervisor's worker or the shared app-server (Codex 0.165.0 and later).
 - **Claude** posts `{program:"cedar_ember", grant_id, request_id}` to

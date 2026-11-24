@@ -9,12 +9,17 @@
 //! ([`super::record_windows`]): the fresher reading wins, but within one reset cycle a
 //! window never goes down, whichever source reported it.
 //!
+//! Since 1.65.0 every read asks for the `cedar_ember` status too
+//! ([`crate::reset_credit::claude::STATUS_PATH`]), so `usage.reset_credits` stays as current as
+//! the meter, and a grant whose `resets_left` fell is a reset made elsewhere: the windows it
+//! clears start a new reset cycle ([`crate::provider::usage_cycle`]).
+//!
 //! - On demand (`api usage`, `api account limits`): at most one read per account per
 //!   [`CACHE_SECONDS`] (a failed attempt counts); the token is renewed only as
 //!   [`super::oauth::access_token`] allows (expiring within 5 minutes, or after a 401).
-//! - Supervisor ([`monitor`]): every minute, an enabled Claude account whose meter is older
-//!   than [`REFRESH_SECONDS`] is read with the stored token only; a token due for renewal
-//!   is left alone (the next on-demand read or Claude Code renews it).
+//! - Supervisor ([`monitor`]): every minute, an enabled Claude account whose meter or reset
+//!   credits are older than [`REFRESH_SECONDS`] is read with the stored token only; a token
+//!   due for renewal is left alone (the next on-demand read or Claude Code renews it).
 use super::{
     UsageSource,
     oauth::{self, Client, SendError},
@@ -28,6 +33,9 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+/// Every meter read (contract 1.65.0): Claude Code's usage answer with its `cedar_ember` status,
+/// so one request refreshes the windows and the reset credits.
+pub const READ_PATH: &str = crate::reset_credit::claude::STATUS_PATH;
 /// An on-demand read is reused (not repeated) for this long.
 pub const CACHE_SECONDS: i64 = 60;
 /// The supervisor reads a meter older than this (seconds); [`REFRESH_ENV`] overrides it and
@@ -71,12 +79,25 @@ fn window(v: &Value) -> Value {
     match (used, resets) {
         // Claude Code shows at most 100% (`hve`); an over-limit answer is "at the limit".
         (Some(u), Some(r)) => json!({"used_percentage":u.clamp(0., 100.),"resets_at":r}),
+        // Contract 1.65.0: a window the answer names with no reset time and no usage has not
+        // started; it starts on first use (Claude's 5-hour window after its reset, while idle).
+        (u, None) if v.is_object() && u.is_none_or(|u| u == 0.0) => {
+            json!({"starts_on_first_use":true})
+        }
         _ => Value::Null,
     }
 }
-/// `five_hour` / `seven_day` of a usage answer in the recorder's shape.
+/// `five_hour` / `seven_day` of a usage answer in the recorder's shape. A window the answer does
+/// not name is left out; one it names with no current value is null (contract 1.65.0: right
+/// after a redeem that clears it, the window is dropped).
 pub fn windows(body: &Value) -> Value {
-    json!({"five_hour":window(&body["five_hour"]),"seven_day":window(&body["seven_day"])})
+    let mut out = json!({});
+    for key in ["five_hour", "seven_day"] {
+        if body.get(key).is_some() {
+            out[key] = window(&body[key]);
+        }
+    }
+    out
 }
 /// Record the windows of one usage answer as an OAuth reading. Ok(false): the answer names
 /// neither window (nothing observed) or nothing changed.
@@ -89,6 +110,22 @@ pub fn record_answer(home: &Path, body: &Value, now: i64) -> Result<bool> {
         return Ok(false);
     }
     record_windows(home, &windows(body), now, UsageSource::OAuth, None)
+}
+/// [`record_answer`] under a held [`super::recorder_lock`].
+pub fn record_answer_locked(
+    lock: &super::RecorderLock,
+    home: &Path,
+    body: &Value,
+    now: i64,
+) -> Result<bool> {
+    ensure!(
+        body.is_object(),
+        "USAGE_READ_FAILED: the usage answer is not a JSON object"
+    );
+    if body.get("five_hour").is_none() && body.get("seven_day").is_none() {
+        return Ok(false);
+    }
+    super::record_windows_locked(lock, home, &windows(body), now, UsageSource::OAuth, None)
 }
 
 fn code_of(text: &str) -> &str {
@@ -137,15 +174,15 @@ pub async fn read(client: &Client, home: &Path, account: &str, force: bool, rene
 }
 
 async fn send(client: &Client, home: &Path, account: &str, renew: Renew) -> Result<()> {
+    // Contract 1.65.0: a reading is as old as its request.
+    let sent_at = crate::daemon::now();
     let sent = match renew {
-        Renew::Allowed => {
-            oauth::authed(client, home, account, "GET", oauth::USAGE_PATH, None).await?
-        }
+        Renew::Allowed => oauth::authed(client, home, account, "GET", READ_PATH, None).await?,
         Renew::Never => {
             let token = oauth::current_token(home).with_context(|| {
                 format!("AUTH_STALE: the stored Claude token of {account} is due for renewal; an on-demand read (api usage) or a running session renews it")
             })?;
-            let sent = oauth::api(client, &token, "GET", oauth::USAGE_PATH, None).await;
+            let sent = oauth::api(client, &token, "GET", READ_PATH, None).await;
             if matches!(&sent, Ok(r) if r.status == 401) {
                 return Err(oauth::stale(
                     account,
@@ -168,7 +205,22 @@ async fn send(client: &Client, home: &Path, account: &str, renew: Renew) -> Resu
     );
     let body: Value = serde_json::from_str(&response.body)
         .context("USAGE_READ_FAILED: the usage answer is not JSON")?;
-    record_answer(home, &body, crate::daemon::now())?;
+    ensure!(
+        body.is_object(),
+        "USAGE_READ_FAILED: the usage answer is not a JSON object"
+    );
+    // Contract 1.65.0: the same answer refreshes the reset credits (`usage.reset_credits`) and
+    // sees resets made elsewhere; a malformed `cedar_ember` block never fails the meter, a
+    // window that could not be recorded does.
+    crate::reset_credit::claude::absorb(home, &body, sent_at, None)
+        .windows
+        .map_err(|e| {
+            if format!("{e:#}").starts_with("USAGE_READ_FAILED") {
+                e
+            } else {
+                e.context("USAGE_READ_FAILED: the usage reading could not be recorded; retry")
+            }
+        })?;
     Ok(())
 }
 
@@ -214,15 +266,24 @@ async fn tick(paths: &Paths, every: i64) -> Result<()> {
             continue;
         };
         let now = crate::daemon::now();
-        if newest_observation(&home, now).is_some_and(|t| now - t < every) {
-            continue;
-        }
-        // A failing account is retried once per period, not every minute.
-        if last_attempt(&home)
-            .and_then(|l| l["attempted_at"].as_i64())
-            .is_some_and(|at| (0..every).contains(&(now - at)))
-        {
-            continue;
+        // Contract 1.65.0: the reset credits are refreshed with the meter, so an account whose
+        // meter a running session keeps fresh is still read when its status is old.
+        let credits_young = crate::reset_credit::claude::cached(&home)
+            .is_some_and(|(at, _)| (0..every).contains(&(now - at)));
+        let attempted = last_attempt(&home).and_then(|l| l["attempted_at"].as_i64());
+        // Contract 1.65.0: a recorded window reset that passed after the last attempt is read
+        // at once (one read per reset), so the new cycle is shown within the fresh bound.
+        let reset_due = super::recorded_resets(&home, now)
+            .into_iter()
+            .any(|r| r <= now && attempted.is_none_or(|at| at < r));
+        if !reset_due {
+            if credits_young && newest_observation(&home, now).is_some_and(|t| now - t < every) {
+                continue;
+            }
+            // A failing account is retried once per period, not every minute.
+            if attempted.is_some_and(|at| (0..every).contains(&(now - at))) {
+                continue;
+            }
         }
         read(
             &client,
@@ -317,5 +378,65 @@ mod tests {
         assert_eq!(w["seven_day"]["used_percentage"], 100.0);
         assert!(!record_answer(home, &json!({"extra_usage":null}), now).unwrap());
         assert!(record_answer(home, &json!([]), now).is_err());
+    }
+
+    /// Contract 1.65.0: a reset no read saw heals. One lower OAuth answer in a closed cycle can
+    /// be stale and is kept out; a second one at least CONFIRM_SECONDS later with the same or
+    /// less is accepted as a `provider_lowered` cycle.
+    #[test]
+    fn a_confirmed_lower_oauth_reading_heals_a_missed_reset_and_a_single_one_does_not() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        let now = 1_800_000_000;
+        let r7 = now + 86_400 * 5;
+        let iso = iso_z;
+        let body = |week: f64| json!({"seven_day":{"utilization":week,"resets_at":iso(r7)}});
+        let replay = |w: f64| {
+            json!({"session_id":"s","version":"2.1.314","rate_limits":{
+                "seven_day":{"used_percentage":w,"resets_at":r7}}})
+        };
+        super::super::record_statusline(home, &replay(20.0), now).unwrap();
+        let week = |at: i64| super::super::project_usage(home, at).0["weekly"].clone();
+        let natural = week(now)["cycle"].clone();
+        // A single lower answer: kept out (usage.json is not rewritten).
+        let before = std::fs::read(super::super::usage_file(home)).unwrap();
+        assert!(!record_answer(home, &body(10.0), now + 10).unwrap());
+        assert_eq!(
+            std::fs::read(super::super::usage_file(home)).unwrap(),
+            before
+        );
+        assert_eq!(week(now + 11)["used_percent"], 20.0);
+        // Too soon is no confirmation.
+        record_answer(home, &body(10.0), now + 30).unwrap();
+        assert_eq!(week(now + 31)["used_percent"], 20.0);
+        // Confirmed: accepted, a new cycle.
+        assert!(record_answer(home, &body(10.0), now + 10 + CONFIRM).unwrap());
+        let w = week(now + 11 + CONFIRM);
+        assert_eq!(w["used_percent"], 10.0);
+        assert_eq!(w["cycle_reason"], "provider_lowered");
+        assert_ne!(w["cycle"], natural);
+        // The stale value replayed by an idle session stays out afterwards.
+        super::super::record_statusline(home, &replay(20.0), now + 200).unwrap();
+        assert_eq!(week(now + 201)["used_percent"], 10.0);
+    }
+    const CONFIRM: i64 = crate::provider::usage_cycle::CONFIRM_SECONDS;
+    /// RFC 3339 (`Z`) of Unix seconds (Howard Hinnant's civil date).
+    fn iso_z(t: i64) -> String {
+        let (days, secs) = (t.div_euclid(86_400), t.rem_euclid(86_400));
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+            secs / 3600,
+            secs % 3600 / 60,
+            secs % 60
+        )
     }
 }

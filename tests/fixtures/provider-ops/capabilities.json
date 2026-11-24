@@ -90,7 +90,8 @@
         "block": "cedar_ember",
         "cache_seconds": 60,
         "method": "GET",
-        "polled": false,
+        "polled": true,
+        "refreshed_with_meter_seconds": 600,
         "url": "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1"
       }
     },
@@ -98,7 +99,8 @@
       "credit_id",
       "claude",
       "rate_limits_after_error",
-      "sent"
+      "sent",
+      "cycles_started"
     ],
     "command": "api account reset-credit PROVIDER:NAME [--credit-id ID] [--request-id UUID] [--kind 5-hour|weekly|fable|full]",
     "errors": [
@@ -146,8 +148,10 @@
       "absent": null,
       "field": "usage.reset_credits",
       "shape": {
+        "age_seconds": "integer",
         "available": "integer",
         "credits": "array|null",
+        "fresh": "boolean",
         "observed_at": "unix_seconds"
       }
     }
@@ -2872,6 +2876,38 @@
     ],
     "command": "usage",
     "credentials_returned": false,
+    "cycles": {
+      "also_on": [
+        "usage.short",
+        "usage.weekly"
+      ],
+      "confirm_lower_seconds": 60,
+      "reasons": [
+        "natural",
+        "redeem",
+        "external_redeem",
+        "provider_lowered"
+      ],
+      "redeem_detected_by": {
+        "claude": [
+          "reset_credit_outcome_reset",
+          "resets_left_fell",
+          "grant_gone",
+          "provider_lowered_confirmed"
+        ],
+        "codex": [
+          "reset_credit_outcome_reset",
+          "available_fell",
+          "provider_lowered"
+        ]
+      },
+      "rule": "within one cycle used_percent never goes down; a redeem starts a new cycle (even with the same resets_at) that the next OAuth reading closes even when lower, a statusline reading only when not lower; readings older than the cycle or the recorded one are kept out",
+      "window_keys": [
+        "cycle",
+        "cycle_started_at",
+        "cycle_reason"
+      ]
+    },
     "field": "accounts[].usage.meter",
     "keys": [
       "supported",
@@ -2893,7 +2929,7 @@
         "background_refresh_seconds": 600,
         "background_renews_token": false,
         "cache_seconds": 60,
-        "oauth_read": "GET /api/oauth/usage",
+        "oauth_read": "GET /api/oauth/usage?cedar_ember=1&skip_spend=1",
         "requires_session": false,
         "source": [
           "statusline",
@@ -2913,7 +2949,32 @@
         "supported": false
       }
     },
+    "reset_credits": {
+      "field": "usage.reset_credits",
+      "keys": [
+        "fresh",
+        "age_seconds"
+      ],
+      "refreshed_with_meter": true
+    },
     "same_cycle_seconds": 300,
+    "starts_on_first_use": {
+      "claude": [
+        "five_hour",
+        "seven_day"
+      ],
+      "claude_rule": "the usage answer names the window with resets_at null and utilization 0 or null: the window has not started; shown as used_percent 0, resets_at null, cycle_reason natural",
+      "codex": [],
+      "codex_rule": "every window of account/rateLimits/read carries resetsAt (a reading without one is refused), so a Codex window never starts on first use",
+      "field": "windows.*.starts_on_first_use"
+    },
+    "window_reasons": {
+      "field": "usage.meter.window_reasons",
+      "non_null_when": [
+        "window null",
+        "window past its resets_at"
+      ]
+    },
     "windows": [
       "five_hour",
       "seven_day"
@@ -2937,6 +2998,12 @@
       "gemini",
       "antigravity"
     ],
+    "windows_after_own_reset": {
+      "fresh": false,
+      "read_triggered": "once per recorded reset, at the supervisor's next tick (at most 60 s), with the meter's token rules",
+      "reason": "window reset at <resets_at>; awaiting a post-reset read",
+      "then": "the provider read's new future resets_at, or 0% with resets_at null and starts_on_first_use:true for a window that has not started"
+    },
     "windows_carried_until_own_reset": true
   }
 }

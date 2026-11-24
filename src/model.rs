@@ -167,6 +167,9 @@ pub struct Account {
     /// Last observed Claude subscription plan (non-secret; contract 1.46.7). Codex derives its plan from `usage`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<crate::plan::PlanObservation>,
+    /// Codex: the reset cycle of each usage window (`five_hour`, `seven_day`; contract 1.65.0).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub usage_cycles: BTreeMap<String, crate::provider::usage_cycle::Cycle>,
 }
 /// The registry key of an account. Names are unique per provider only, so the
 /// key is the bare name for Codex (the original, unambiguous enrollment kind;
@@ -293,6 +296,7 @@ impl Account {
             display_name: None,
             order: None,
             plan: None,
+            usage_cycles: BTreeMap::new(),
             deletion_id: None,
             switch_thresholds: crate::automatic::Thresholds::default(),
             name,
@@ -308,11 +312,72 @@ impl Account {
         }
     }
     pub fn observe(&mut self, usage: Usage) {
+        self.observe_after(usage, false);
+    }
+    /// [`Self::observe`] the reading taken right after this account's own reset-credit claim
+    /// answered `reset`: every window starts a new reset cycle (contract 1.65.0).
+    pub fn observe_redeemed(&mut self, usage: Usage) {
+        self.observe_after(usage, true);
+    }
+    fn observe_after(&mut self, usage: Usage, redeemed: bool) {
+        use crate::provider::usage_cycle::{self, EXTERNAL_REDEEM, REDEEM};
         // An older reading is dropped, unless the stored one claims a time ahead of the clock
         // (clock stepped back): that value is untrustworthy and must not block fresh polls.
         let ahead = self.usage.observed_at > crate::daemon::now().saturating_add(2);
         if usage.observed_at < self.usage.observed_at && !ahead {
             return;
+        }
+        // A reset credit spent elsewhere (another Codex client): fewer available than before,
+        // beyond the ones that expired since.
+        // Without the earlier credit list an expiry cannot be told apart: nothing is inferred.
+        let external = match (&self.usage.reset_credits, &usage.reset_credits) {
+            (Some(before), Some(after)) if before.credits.is_some() => {
+                let expired = before
+                    .credits
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|c| c.expires_at.is_some_and(|e| e <= usage.observed_at))
+                    .count() as u64;
+                after.available + expired < before.available
+            }
+            _ => false,
+        };
+        let reason = if redeemed {
+            Some(REDEEM)
+        } else {
+            external.then_some(EXTERNAL_REDEEM)
+        };
+        for (key, old, new, duration) in [
+            (
+                "five_hour",
+                &self.usage.short,
+                &usage.short,
+                usage_cycle::WINDOWS[0].1,
+            ),
+            (
+                "seven_day",
+                &self.usage.weekly,
+                &usage.weekly,
+                usage_cycle::WINDOWS[1].1,
+            ),
+        ] {
+            let cycle = usage_cycle::codex(
+                self.usage_cycles.get(key),
+                old.as_ref().map(|w| (w.used_percent, w.resets_at)),
+                new.as_ref().map(|w| (w.used_percent, w.resets_at)),
+                duration,
+                usage.observed_at,
+                reason,
+            );
+            match cycle {
+                Some(c) => {
+                    self.usage_cycles.insert(key.into(), c);
+                }
+                None => {
+                    self.usage_cycles.remove(key);
+                }
+            }
         }
         fn delta(old: &Option<Window>, new: &Option<Window>) -> f64 {
             match (old, new) {

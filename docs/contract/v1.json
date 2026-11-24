@@ -106,18 +106,31 @@
     },
     "UsageWindowMeter": {
       "type": ["object", "null"],
-      "required": ["used_percent", "resets_at", "observed_at", "source"],
+      "required": ["used_percent", "resets_at", "observed_at", "source", "starts_on_first_use", "cycle", "cycle_started_at", "cycle_reason"],
       "properties": {
         "used_percent": {"type": "number", "minimum": 0, "maximum": 100},
-        "resets_at": {"type": "integer"},
+        "resets_at": {"type": ["integer", "null"], "description": "Null only with starts_on_first_use (since 1.65.0)."},
         "observed_at": {"type": ["integer", "null"]},
-        "source": {"enum": ["statusline", "oauth", "app_server"]}
+        "source": {"enum": ["statusline", "oauth", "app_server"]},
+        "starts_on_first_use": {"type": "boolean", "description": "Since 1.65.0: the window has not started (used_percent 0, resets_at null); it starts on first use."},
+        "cycle": {"type": "string", "minLength": 1, "description": "Since 1.65.0: opaque id of the window's reset cycle; it changes on any reset (a new resets_at, a redeem). Within one cycle used_percent never goes down."},
+        "cycle_started_at": {"type": "integer", "description": "Since 1.65.0: unix seconds the cycle started (natural: resets_at minus the window length; a redeem: when it was claimed or seen)."},
+        "cycle_reason": {"enum": ["natural", "redeem", "external_redeem", "provider_lowered"], "description": "Since 1.65.0: why the cycle started; provider_lowered is Codex only."}
+      }
+    },
+    "ResetCreditsAge": {
+      "type": ["object", "null"],
+      "description": "Since 1.65.0: usage.reset_credits carries fresh and age_seconds like the meter (null before any read).",
+      "properties": {
+        "observed_at": {"type": "integer"},
+        "fresh": {"type": "boolean"},
+        "age_seconds": {"type": "integer", "minimum": 0}
       }
     },
     "UsageMeter": {
       "type": "object",
       "description": "Since 1.62.0: one account usage meter shape for every provider (accounts[].usage.meter, api usage rows).",
-      "required": ["supported", "requires_session", "source", "fresh", "observed_at", "age_seconds", "windows", "reason"],
+      "required": ["supported", "requires_session", "source", "fresh", "observed_at", "age_seconds", "windows", "window_reasons", "reason"],
       "properties": {
         "supported": {"type": "boolean"},
         "requires_session": {"type": ["boolean", "null"]},
@@ -129,6 +142,12 @@
           "type": "object",
           "required": ["five_hour", "seven_day"],
           "properties": {"five_hour": {"$ref": "#/$defs/UsageWindowMeter"}, "seven_day": {"$ref": "#/$defs/UsageWindowMeter"}}
+        },
+        "window_reasons": {
+          "type": "object",
+          "description": "Since 1.65.0: why each window is null or past its resets_at; null when it is current.",
+          "required": ["five_hour", "seven_day"],
+          "properties": {"five_hour": {"type": ["string", "null"]}, "seven_day": {"type": ["string", "null"]}}
         },
         "reason": {"type": ["string", "null"]}
       }
@@ -395,7 +414,7 @@
         },
         "usage": {
           "type": "object",
-          "properties": {"meter": {"$ref": "#/$defs/UsageMeter"}}
+          "properties": {"meter": {"$ref": "#/$defs/UsageMeter"}, "reset_credits": {"$ref": "#/$defs/ResetCreditsAge"}}
         },
         "usage_fresh": {
           "type": "boolean"

@@ -286,10 +286,11 @@ async fn idle_codex_and_claude_accounts_have_one_meter_shape_without_a_session()
     assert_eq!(claude["short"]["used_percent"], 31.0, "legacy keys agree");
     assert_eq!(claude["state"], "fresh");
     assert_eq!(f.calls(), 1);
-    // Exactly Claude Code's plain read, with the bearer only on curl's stdin.
+    // Claude Code's usage read with its cedar_ember status, the bearer only on curl's stdin.
     assert_eq!(
         fs::read_to_string(f.fake.join("urls")).unwrap().trim(),
-        "https://api.anthropic.com/api/oauth/usage"
+        "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
+        "contract 1.65.0: one read refreshes the meter and the reset credits"
     );
     for line in fs::read_to_string(f.fake.join("argv")).unwrap().lines() {
         assert_eq!(line, "-q -K -");

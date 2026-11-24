@@ -159,7 +159,7 @@ async fn a_status_read_is_cached_and_a_bad_answer_is_reported() {
         .unwrap()
         .unwrap();
     assert_eq!(c.available, 3);
-    assert_eq!(usage_field(&f.home)["available"], 3);
+    assert_eq!(usage_field(&f.home, crate::daemon::now())["available"], 3);
     read(&f.client, &f.home, "claude:a", false).await.unwrap();
     assert_eq!(f.calls("usage"), 1, "reused within {CACHE_SECONDS} s");
     f.answer("usage", 200, "<html>");
@@ -176,7 +176,7 @@ async fn a_status_read_is_cached_and_a_bad_answer_is_reported() {
         "{e}"
     );
     assert_eq!(
-        usage_field(&f.home)["available"],
+        usage_field(&f.home, crate::daemon::now())["available"],
         3,
         "a failed read keeps the last value"
     );
@@ -372,4 +372,43 @@ async fn no_usable_grant_sends_nothing() {
 
 fn fs_remove(p: &Path) {
     std::fs::remove_file(p).unwrap();
+}
+
+/// Contract 1.65.0: a monitor read racing this account's own redeem. Every step runs under the
+/// recorder's lock; the claim counts itself in the stored status, so the other read neither
+/// reports the claimed grant as a reset made elsewhere nor stores a status older than it, and
+/// its windows only count when its request was sent after the claim was answered.
+#[test]
+fn a_concurrent_read_during_a_redeem_is_not_an_external_redeem() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path();
+    let t0 = 1_800_000_000;
+    let r7 = "2027-01-20T08:00:00Z";
+    let r7s = parse_time(r7).unwrap();
+    let body = |left: u64, week: f64| {
+        json!({"seven_day":{"utilization":week,"resets_at":r7},
+            "cedar_ember":{"eligible":true,"grants":[
+                {"id":"launch-fable","resets_left":left,"clears":["seven_day_overage_included"],
+                 "gives_back_weekly":true,"usable_now":left > 0}]}})
+    };
+    let week = |at: i64| crate::provider::claude::project_usage(home, at).0["weekly"].clone();
+    assert!(absorb(home, &body(1, 20.0), t0, None).credits.is_ok());
+    assert_eq!(week(t0)["used_percent"], 20.0);
+    // The claim is answered at t0 + 10.
+    let started = claimed(home, "launch-fable", Some(0), t0 + 10, &[]).unwrap();
+    assert_eq!(started, vec!["seven_day".to_owned()]);
+    assert_eq!(cached(home).unwrap().1.unwrap().available, 0);
+    let redeemed = week(t0 + 10)["cycle"].clone();
+    // A monitor read sent before the answer (t0 + 5) arrives after it: nothing stored, its
+    // higher pre-claim windows do not close the cycle.
+    let stale = absorb(home, &body(1, 20.0), t0 + 5, None);
+    assert!(stale.credits.is_ok());
+    assert_eq!(cached(home).unwrap().1.unwrap().available, 0, "not stored");
+    // A monitor read sent after the answer sees the lower count: not an external redeem.
+    absorb(home, &body(0, 10.0), t0 + 20, None).windows.unwrap();
+    let w = week(t0 + 21);
+    assert_eq!(w["used_percent"], 10.0);
+    assert_eq!(w["cycle"], redeemed);
+    assert_eq!(w["cycle_reason"], "redeem");
+    assert_eq!(w["resets_at"], r7s);
 }

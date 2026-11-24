@@ -20,8 +20,14 @@ and package history are in Git.
 
 ## Versions
 
-- **1.65.0** (package; contract unchanged) Provider dispatch has one owner, `provider::ops`;
-  `api capabilities`, state rows and refusal texts are byte-identical (no client change).
+- **1.65.0** (meter cycles) Usage windows gain `cycle`, `cycle_started_at`,
+  `cycle_reason` and `starts_on_first_use`; a redeem (own or elsewhere) starts a cycle in
+  which a lower reading counts; usage never drops within one. Meters gain
+  `window_reasons`; a window past its reset is stale until a triggered read. Claude meter
+  reads carry `cedar_ember`; `reset_credits` gains `fresh`, `age_seconds`; Claude
+  `reset-credit` adds `cycles_started`. [Usage](contract.md#limits-plan-and-usage).
+  Also a refactor: provider dispatch has one owner, `provider::ops` (capabilities, rows and
+  refusal texts unchanged by it).
 - **1.64.0** One `api send` body for every provider (intents `deliver`, `when_idle`,
   `interrupt`; `ignored_options`; one `delivery` block), supervisor-owned delivery
   workers with one safe re-dispatch; `api events`, `api hooks [install]`, Claude

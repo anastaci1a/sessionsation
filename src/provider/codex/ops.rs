@@ -99,6 +99,20 @@ impl ProviderOps for Ops {
             usage["observed_at"] = Value::Null;
         }
         usage["source"] = json!(super::USAGE_SOURCE);
+        // Contract 1.65.0: each window's reset cycle, and the age of the reset credits.
+        let windows = crate::provider::usage_cycle::WINDOWS;
+        for (field, (key, duration)) in ["short", "weekly"].into_iter().zip(windows) {
+            match a.usage_cycles.get(key) {
+                Some(c) => c.stamp(&mut usage[field]),
+                // A reading stored before 1.65.0: its natural cycle.
+                None => crate::provider::usage_cycle::fill(&mut usage[field], duration),
+            }
+        }
+        usage["reset_credits"] = crate::reset_credit::with_age(
+            usage["reset_credits"].take(),
+            at,
+            config.stale_seconds as i64,
+        );
         usage["semantics"] = json!(super::USAGE_SEMANTICS);
         let state = if fresh {
             "fresh"
