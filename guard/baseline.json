@@ -3,7 +3,7 @@
   "counters_digest": "3aea17f14456bf1ca4f238860a07c41d1779a29212a2f750108b4b52244041c0",
   "counters": {
     "alive_fns": { "value": 8 },
-    "api_rs_lines": { "value": 5429 },
+    "api_rs_lines": { "value": 5503 },
     "apply_session_input_fns": { "value": 3 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 3 },
@@ -17,23 +17,23 @@
     "doc_bytes:agents/README.md": { "value": 9276 },
     "doc_bytes:docs/README.md": { "value": 711 },
     "doc_bytes:docs/architecture.md": { "value": 10016 },
-    "doc_bytes:docs/cli.md": { "value": 112664 },
-    "doc_bytes:docs/contract.md": { "value": 338180 },
+    "doc_bytes:docs/cli.md": { "value": 113092 },
+    "doc_bytes:docs/contract.md": { "value": 344658 },
     "doc_bytes:docs/operations.md": { "value": 29501 },
-    "doc_bytes_total": { "value": 505951 },
+    "doc_bytes_total": { "value": 512857 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "duration_literals": { "value": 187 },
+    "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
-    "error_code_literals": { "value": 680 },
+    "error_code_literals": { "value": 681 },
     "file_cache_statics": { "value": 8 },
-    "flock_sites": { "value": 83 },
-    "fs2_imports": { "value": 30 },
+    "flock_sites": { "value": 87 },
+    "fs2_imports": { "value": 32 },
     "fs_write_sites": { "value": 5 },
     "generation_allow_markers": { "value": 0 },
     "herdr_allow_markers": { "value": 0 },
     "herdr_cli_callers": { "value": 42 },
     "identity_allow_markers": { "value": 0 },
-    "json_parse_sites": { "value": 134 },
+    "json_parse_sites": { "value": 136 },
     "ledger_allow_markers": { "value": 0 },
     "ledger_opens": { "value": 24 },
     "locks_allow_markers": { "value": 0 },
@@ -46,8 +46,8 @@
     "proc_stat_readers": { "value": 2 },
     "provider_enum_dispatch": { "value": 164 },
     "provider_ops_allow_markers": { "value": 0 },
-    "provider_string_compares": { "value": 75 },
-    "raw_sleeps": { "value": 102 },
+    "provider_string_compares": { "value": 73 },
+    "raw_sleeps": { "value": 105 },
     "receipts_sites": { "value": 2 },
     "records_allow_markers": { "value": 0 },
     "rename_sites": { "value": 26 },
@@ -55,13 +55,13 @@
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
     "sha256_digests": { "value": 31 },
-    "since_contract_literals": { "value": 39 },
+    "since_contract_literals": { "value": 41 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 96496 },
+    "src_lines": { "value": 98941 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -499,6 +499,97 @@
       "counter": "src_lines",
       "by": 195,
       "reason": "1.64.0 (part A: send): supervisor-owned delivery workers (message/worker, local setsid fallback, worker log), the one re-dispatch of an admitted orphan and the sweep",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 74,
+      "reason": "1.64.0 part B: api events and api hooks [install] commands, the turn facts handed to the event observer from full state rows, capabilities session_events and hooks",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "doc_bytes:docs/cli.md",
+      "by": 428,
+      "reason": "1.64.0 part B: two usage lines (api events, api hooks install) and the compact section now naming Claude",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 6478,
+      "reason": "1.64.0 part B: the section 1.64.0 (part B: events, compact): event shape and sources, hook installation, subagents from events, compact for every provider; the hook command names the stable <pkg>/current path and fails silently",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 6906,
+      "reason": "1.64.0 part B: contract.md and cli.md entries above",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "duration_literals",
+      "by": 1,
+      "reason": "1.64.0 part B: the 500 ms poll of api events --wait (provider::events::read), scaled like api turn-events",
+      "considered": "the Claude compaction reuses set-model's SETTLE, TYPED_WAIT and IDLE_GAP (now pub(crate)) instead of new constants; timing.rs has no shared poll cadence yet (S9 owner)",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "error_code_literals",
+      "by": 1,
+      "reason": "1.64.0 part B: two env names, SESSIONSATION_CLAUDE_HOOKS (=0 skips the launch-time hook install) and SESSIONSATION_EVENTS_SECONDS (ingest interval, 0 disables), while the compaction refusal COMPACT_UNSUPPORTED is gone (UNSUPPORTED_PROVIDER_OPERATION via stop_shape::Unsupported)",
+      "considered": "the refusal code comes from provider::compact::UNSUPPORTED_CODE and stop_shape::Unsupported, not new literals; codes.rs (S9) does not exist yet",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "flock_sites",
+      "by": 4,
+      "reason": "1.64.0 part B: the event journal lock (provider::events::with_state), the hook-file lock taken by the hook writer (claude::hooks::append) and by ingest before emptying a consumed file, and the Claude compaction's pane lock (the same terminal-<pane>.lock set-model and deliveries take)",
+      "considered": "sync::Lock (S5) does not exist yet; each is one short critical section on paths::lock_file, never held across an await",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "fs2_imports",
+      "by": 2,
+      "reason": "1.64.0 part B: FileExt for the event journal lock and the hook writer lock",
+      "considered": "the lock owner sync.rs (S5) does not exist yet",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "json_parse_sites",
+      "by": 2,
+      "reason": "1.64.0 part B: the event journal state file and its lines (provider::events::load, read_all)",
+      "considered": "FileCache would cache a file rewritten on every ingest; one small read per call",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "provider_string_compares",
+      "by": -2,
+      "reason": "1.64.0 part B: compaction no longer compares session.provider with \"codex\"/\"claude\"; it asks provider::compact::method",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "raw_sleeps",
+      "by": 3,
+      "reason": "1.64.0 part B: the api events --wait poll and the event ingest loop (provider::events, the same shape as turn_notify), and one pause helper for the Claude compaction's settle and idle-gap waits, all through timing::scaled",
+      "considered": "the four compaction waits share one local pause(); timing::poll_until (S9) does not exist yet",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "since_contract_literals",
+      "by": 2,
+      "reason": "1.64.0 part B: capabilities session_events (SM5) and hooks (SM5 installation)",
+      "considered": "one block would mix the event journal with hook installation; contract.rs (the owner) does not exist yet",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 2445,
+      "reason": "1.64.0 part B: provider::events (journal, Claude hook ingest, supervisor turn observer), provider::hooks and claude::hooks (install, health, the hook writer), provider::compact, the Claude terminal compaction and their unit and integration tests; claude::hooks::stable and the silent-failure hook command",
       "considered": "n/a",
       "step": "1.64.0"
     }
