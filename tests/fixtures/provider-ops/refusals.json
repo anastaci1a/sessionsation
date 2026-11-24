@@ -1,0 +1,417 @@
+{
+  "antigravity": {
+    "attachment": {
+      "error": {
+        "code": "SESSION_NOT_ATTACHED",
+        "message": "SESSION_NOT_ATTACHED: This session has no live terminal. Refresh the session list; Focus never starts an agent.",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "auth_mode": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: authentication modes are a Gemini account setting",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "bypass_warning": {
+      "error": {
+        "code": "REQUEST_FAILED",
+        "message": "REQUEST_FAILED: UNSUPPORTED_PROVIDER_OPERATION: the bypass warning setting is Claude Code's skipDangerousModePermissionPrompt",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "idle_notify": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: native idle notices are Claude-only; Codex sessions use turn-notify",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "launcher_new_hosted": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "launcher_resume_hosted": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "live_steering": {
+      "error": {
+        "code": "REQUEST_FAILED",
+        "message": "REQUEST_FAILED: UNSUPPORTED_PROVIDER_OPERATION: live steering uses Claude Code peer messaging or Gemini CLI model steering",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "managed_home": {
+      "error": {
+        "code": "REQUEST_FAILED",
+        "message": "REQUEST_FAILED: UNSUPPORTED_PROVIDER_OPERATION: antigravity accounts do not support managed-home",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "observe": {
+      "ok": true
+    },
+    "relocate_dry_run": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "reset_credit": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: rate-limit reset credits are a Codex and Claude account feature; antigravity accounts have none",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "restart": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "steer_target": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "stop": {
+      "ok": true
+    },
+    "turn_notify": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: turn notifications are Codex-only",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "turn_target": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    }
+  },
+  "claude": {
+    "attachment": {
+      "error": {
+        "code": "SESSION_NOT_ATTACHED",
+        "message": "SESSION_NOT_ATTACHED: This session has no live terminal. Refresh the session list; Focus never starts an agent.",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "auth_mode": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: authentication modes are a Gemini account setting",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "bypass_warning": {
+      "ok": true
+    },
+    "idle_notify": {
+      "error": {
+        "code": "SESSION_NOT_RUNNING",
+        "message": "SESSION_NOT_RUNNING: an idle notice needs a live interactive Claude session",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "launcher_new_hosted": {
+      "ok": true
+    },
+    "launcher_resume_hosted": {
+      "ok": true
+    },
+    "observe": {
+      "ok": true
+    },
+    "relocate_dry_run": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "restart": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "steer_target": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "stop": {
+      "ok": true
+    },
+    "turn_notify": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: turn notifications are Codex-only",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "turn_target": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    }
+  },
+  "codex": {
+    "auth_mode": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: authentication modes are a Gemini account setting",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "bypass_warning": {
+      "error": {
+        "code": "REQUEST_FAILED",
+        "message": "REQUEST_FAILED: UNSUPPORTED_PROVIDER_OPERATION: the bypass warning setting is Claude Code's skipDangerousModePermissionPrompt",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "idle_notify": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: native idle notices are Claude-only; Codex sessions use turn-notify",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "launcher_new_hosted": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "launcher_resume_hosted": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "live_steering": {
+      "error": {
+        "code": "REQUEST_FAILED",
+        "message": "REQUEST_FAILED: UNSUPPORTED_PROVIDER_OPERATION: live steering uses Claude Code peer messaging or Gemini CLI model steering",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "managed_home": {
+      "error": {
+        "code": "REQUEST_FAILED",
+        "message": "REQUEST_FAILED: UNSUPPORTED_PROVIDER_OPERATION: codex accounts do not support managed-home",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "observe": {
+      "ok": true
+    }
+  },
+  "gemini": {
+    "attachment": {
+      "error": {
+        "code": "SESSION_NOT_ATTACHED",
+        "message": "SESSION_NOT_ATTACHED: This session has no live terminal. Refresh the session list; Focus never starts an agent.",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "bypass_warning": {
+      "error": {
+        "code": "REQUEST_FAILED",
+        "message": "REQUEST_FAILED: UNSUPPORTED_PROVIDER_OPERATION: the bypass warning setting is Claude Code's skipDangerousModePermissionPrompt",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "idle_notify": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: native idle notices are Claude-only; Codex sessions use turn-notify",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "launcher_new_hosted": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "launcher_resume_hosted": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "managed_home": {
+      "error": {
+        "code": "REQUEST_FAILED",
+        "message": "REQUEST_FAILED: UNSUPPORTED_PROVIDER_OPERATION: gemini accounts do not support managed-home",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "observe": {
+      "ok": true
+    },
+    "relocate_dry_run": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "reset_credit": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: rate-limit reset credits are a Codex and Claude account feature; gemini accounts have none",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "restart": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "steer_target": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "stop": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: Gemini CLI no longer supports individual accounts (migrate to Antigravity)",
+        "native": null,
+        "reason": "Gemini CLI no longer supports individual accounts (migrate to Antigravity)",
+        "retryable": false,
+        "supported": false
+      },
+      "ok": false
+    },
+    "turn_notify": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION: turn notifications are Codex-only",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    },
+    "turn_target": {
+      "error": {
+        "code": "UNSUPPORTED_PROVIDER_OPERATION",
+        "message": "UNSUPPORTED_PROVIDER_OPERATION",
+        "native": null,
+        "retryable": false
+      },
+      "ok": false
+    }
+  }
+}
