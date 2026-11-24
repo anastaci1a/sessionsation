@@ -154,7 +154,8 @@ pub fn capability() -> Value {
         "session_keys":["session_id","provider","provider_conversation_id","process_started_at","last_event_at","ended","subagents_running"],
         "providers":{
             "claude":{"supported":true,"method":"settings_hooks","events":super::claude::hooks::EVENTS.map(|(e, _)| e),
-                "entry":{"type":"command","async":true,"timeout":super::claude::hooks::TIMEOUT_SECONDS,"command_marker":super::claude::hooks::MARKER},
+                "entry":{"type":"command","async":true,"timeout":super::claude::hooks::TIMEOUT_SECONDS,"command_marker":super::claude::hooks::MARKER,
+                    "executable":"<pkg>/current/sessionsation when the running binary is the release it points at, else the running path","missing_binary":"2>/dev/null || true: exits 0 silently"},
                 "installed_at":["every Claude launch (best effort; SESSIONSATION_CLAUDE_HOOKS=0 skips)","api hooks install"],
                 "user_hooks":"kept unchanged; only entries whose command carries the marker are Sessionsation's",
                 "idempotent":"an installed file is not rewritten (already_installed:true)",

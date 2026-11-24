@@ -36,19 +36,43 @@ pub const EVENTS: [(&str, Option<&str>); 10] = [
     ("Notification", Some("idle_prompt")),
 ];
 
-/// The installed executable: never `/proc/self/exe`, and without the `(deleted)` suffix the
-/// kernel adds after the installation was replaced.
+/// The executable the hooks name: never `/proc/self/exe`, without the `(deleted)` suffix the
+/// kernel adds after the installation was replaced, and mapped to the package's stable
+/// `current` path ([`stable`]) so a release swap or a pruned release never breaks them.
 pub fn executable() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let text = exe.to_string_lossy();
-    Ok(match text.strip_suffix(" (deleted)") {
+    let exe = match text.strip_suffix(" (deleted)") {
         Some(path) => PathBuf::from(path),
         None => exe,
-    })
+    };
+    Ok(stable(&exe))
 }
+/// `<pkg>/releases/<x>/<bin>` becomes `<pkg>/current/<bin>` when that exists and is the same
+/// file; anything else stays as it is.
+pub fn stable(exe: &Path) -> PathBuf {
+    let mapped = (|| {
+        let name = exe.file_name()?;
+        let release_dir = exe.parent()?;
+        let releases = release_dir.parent()?;
+        if releases.file_name()? != "releases" {
+            return None;
+        }
+        let current = releases.parent()?.join("current").join(name);
+        let same = crate::alias::same_path(
+            &crate::alias::canonical(&current).ok()?,
+            &crate::alias::canonical(exe).ok()?,
+        );
+        same.then_some(current)
+    })();
+    mapped.unwrap_or_else(|| exe.to_path_buf())
+}
+/// The hook command. A missing binary (a removed installation) fails silently and at once:
+/// the shell's error goes to /dev/null and `|| true` makes the hook exit 0, so Claude shows
+/// nothing in the session.
 pub fn command(executable: &Path) -> String {
     format!(
-        "{} {MARKER}",
+        "{} {MARKER} 2>/dev/null || true",
         crate::terminal::shell_quote(&executable.to_string_lossy())
     )
 }
@@ -279,6 +303,59 @@ mod tests {
         assert_eq!(v["hooks"]["Stop"][1]["hooks"][0]["command"], moved);
         assert!(!install(d.path(), &moved).unwrap());
         assert_eq!(status(d.path(), &moved).unwrap().user_hooks, 2);
+    }
+
+    #[test]
+    fn a_release_path_maps_to_current_and_an_old_release_entry_is_rewritten_once() {
+        let d = tempfile::tempdir().unwrap();
+        let pkg = d.path().join("pkg");
+        let release = pkg.join("releases/abc123");
+        fs::create_dir_all(&release).unwrap();
+        let exe = release.join("sessionsation");
+        fs::write(&exe, "bin").unwrap();
+        // No current yet: the path stays.
+        assert_eq!(stable(&exe), exe);
+        std::os::unix::fs::symlink("releases/abc123", pkg.join("current")).unwrap();
+        assert_eq!(stable(&exe), pkg.join("current/sessionsation"));
+        // current points at another release: not the same file, the path stays.
+        let other = pkg.join("releases/def456/sessionsation");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, "bin2").unwrap();
+        assert_eq!(stable(&other), other);
+        // Outside a package layout nothing changes.
+        assert_eq!(
+            stable(Path::new("/usr/bin/sessionsation")),
+            Path::new("/usr/bin/sessionsation")
+        );
+        // Entries naming the release are stale and become the stable path; a later install
+        // from any release that current points at changes nothing.
+        let home = d.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        assert!(install(&home, &command(&exe)).unwrap());
+        let stable_cmd = command(&stable(&exe));
+        assert_eq!(
+            status(&home, &stable_cmd).unwrap().stale.len(),
+            EVENTS.len()
+        );
+        assert!(install(&home, &stable_cmd).unwrap());
+        let v: Value = serde_json::from_slice(&fs::read(settings_file(&home)).unwrap()).unwrap();
+        assert_eq!(v["hooks"]["Stop"].as_array().unwrap().len(), 1);
+        assert_eq!(v["hooks"]["Stop"][0]["hooks"][0]["command"], stable_cmd);
+        assert!(stable_cmd.contains("/current/sessionsation"));
+        assert!(!install(&home, &command(&stable(&exe))).unwrap());
+    }
+
+    #[test]
+    fn a_missing_binary_fails_silently_with_exit_zero() {
+        let cmd = command(Path::new("/nonexistent/dir/sessionsation"));
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&cmd)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{cmd}");
+        assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
     }
 
     #[test]

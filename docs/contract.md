@@ -4492,7 +4492,10 @@ The first look at a running process records it without an event. `api turn-event
 async command hook per needed event (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`, `StopFailure`,
 `SubagentStart`, `SubagentStop`, `PostToolUse` matcher `Bash`, `PostCompact`, `Notification` matcher
 `idle_prompt`) into the account's `settings.json` as its own entry
-`{"hooks":[{"type":"command","command":"<sessionsation> provider-hook claude-event","async":true,"timeout":10}]}`.
+`{"hooks":[{"type":"command","command":"<sessionsation> provider-hook claude-event 2>/dev/null || true","async":true,"timeout":10}]}`.
+The path is the package's stable `<pkg>/current/sessionsation` when the running binary is the release it
+points at (otherwise the running path), so a release swap or a pruned release leaves the entry valid; a missing
+binary makes the hook exit 0 silently. An older entry naming a release path is stale and rewritten once.
 An entry is Sessionsation's only when its command contains `provider-hook claude-event`; user hooks and every
 other key are kept. An installed file is not rewritten (`changed:false`, `already_installed:true`); an entry
 with another executable path is replaced in place. A symlinked or invalid settings file is refused

@@ -3919,7 +3919,10 @@ async fn hooks_install_idempotently_keep_user_hooks_and_events_come_out_in_one_s
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(ours.ends_with("provider-hook claude-event"), "{ours}");
+    assert!(
+        ours.contains("provider-hook claude-event") && ours.ends_with("|| true"),
+        "{ours}"
+    );
     assert_eq!(second["user_hooks"], 1);
 
     // The installed command records content-free lines; the hook prints nothing.
