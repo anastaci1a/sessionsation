@@ -18,10 +18,10 @@
     "doc_bytes:docs/README.md": { "value": 711 },
     "doc_bytes:docs/architecture.md": { "value": 10016 },
     "doc_bytes:docs/changelog.md": { "value": 13278 },
-    "doc_bytes:docs/cli.md": { "value": 113092 },
+    "doc_bytes:docs/cli.md": { "value": 19046 },
     "doc_bytes:docs/contract.md": { "value": 222202 },
     "doc_bytes:docs/operations.md": { "value": 29501 },
-    "doc_bytes_total": { "value": 403679 },
+    "doc_bytes_total": { "value": 309633 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -612,6 +612,20 @@
       "counter": "doc_bytes_total",
       "by": -109178,
       "reason": "D1: contract.md rewrite and the new changelog.md",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes:docs/cli.md",
+      "by": -94046,
+      "reason": "D1: cli.md reduced to usage (commands, flags, short examples) linking into contract.md; every semantic explanation now lives only in the contract",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": -94046,
+      "reason": "D1: cli.md reduced to usage",
       "considered": "n/a",
       "step": "D1"
     }
