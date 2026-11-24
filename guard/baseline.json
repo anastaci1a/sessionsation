@@ -1,6 +1,6 @@
 {
   "roles_digest": "4f8d41684e96e999400034c7ffc061c87880a757fe05d4861229a2f043c6125b",
-  "counters_digest": "3aea17f14456bf1ca4f238860a07c41d1779a29212a2f750108b4b52244041c0",
+  "counters_digest": "29d63813fc22da7a7afd1cc2d7bbe106a162def9884a6f290a2085429a8116e0",
   "counters": {
     "alive_fns": { "value": 8 },
     "api_rs_lines": { "value": 5503 },
@@ -14,14 +14,14 @@
     "daemon_methods": { "value": 25 },
     "doc_bytes:AGENTS.md": { "value": 103 },
     "doc_bytes:README.md": { "value": 2441 },
-    "doc_bytes:agents/README.md": { "value": 9291 },
+    "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
     "doc_bytes:docs/changelog.md": { "value": 13278 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
     "doc_bytes:docs/contract.md": { "value": 222202 },
     "doc_bytes:docs/operations.md": { "value": 22987 },
-    "doc_bytes_total": { "value": 297792 },
+    "doc_bytes_total": { "value": 298373 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -74,6 +74,19 @@
     "worker_lock_sites": { "value": 21 },
     "ws_allow_markers": { "value": 0 },
     "ws_connects": { "value": 3 }
+  },
+  "caps": {
+    "doc_bytes:AGENTS.md": { "value": 110 },
+    "doc_bytes:README.md": { "value": 2600 },
+    "doc_bytes:agents/README.md": { "value": 10400 },
+    "doc_bytes:docs/README.md": { "value": 940 },
+    "doc_bytes:docs/architecture.md": { "value": 8000 },
+    "doc_bytes:docs/changelog.md": { "value": 14000 },
+    "doc_bytes:docs/cli.md": { "value": 20000 },
+    "doc_bytes:docs/contract.md": { "value": 233400 },
+    "doc_bytes:docs/operations.md": { "value": 24200 },
+    "doc_bytes_total": { "value": 313300 },
+    "doc_duplicate_paragraphs": { "value": 0 }
   },
   "ledger": [
     {
@@ -668,6 +681,20 @@
       "counter": "doc_bytes_total",
       "by": -11841,
       "reason": "D1: README, agents/README, docs/README, architecture and operations consolidated",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes:agents/README.md",
+      "by": 581,
+      "reason": "D1: paragraph on the Enforced documentation caps (cap: ledger entries) in the guard section",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 581,
+      "reason": "D1: agents/README.md caps paragraph",
       "considered": "n/a",
       "step": "D1"
     }

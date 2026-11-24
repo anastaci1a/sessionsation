@@ -578,3 +578,28 @@ pub const DOC_INITIAL: &[(&str, usize)] = &[
     ("docs/contract.md", 314589),
     ("docs/operations.md", 29184),
 ];
+
+/// Prefix of a ledger entry that moves a hard cap: `cap:<counter>`.
+pub const CAP: &str = "cap:";
+
+/// Enforced hard caps of the documentation counters (step D1, operator directive
+/// 2026-11-23): the guard fails when a measured value exceeds its cap. These are
+/// the D1 sizes plus about 5% headroom; the total cap is the D1 total plus 5%,
+/// 39% below the 512857 bytes measured before D1. A cap is never edited here: it
+/// moves only by a `cap:<counter>` ledger entry with a reason and a real
+/// `considered` (what was cut instead), and `guard/baseline.json` "caps" must
+/// equal `initial + Σ by`. A doc file absent here has cap 0, so a new file needs a
+/// cap entry as well as its `doc_bytes:` entry.
+pub const CAP_INITIAL: &[(&str, usize)] = &[
+    ("doc_bytes:AGENTS.md", 110),
+    ("doc_bytes:README.md", 2600),
+    ("doc_bytes:agents/README.md", 10400),
+    ("doc_bytes:docs/README.md", 940),
+    ("doc_bytes:docs/architecture.md", 8000),
+    ("doc_bytes:docs/changelog.md", 14000),
+    ("doc_bytes:docs/cli.md", 20000),
+    ("doc_bytes:docs/contract.md", 233400),
+    ("doc_bytes:docs/operations.md", 24200),
+    ("doc_bytes_total", 313300),
+    ("doc_duplicate_paragraphs", 0),
+];

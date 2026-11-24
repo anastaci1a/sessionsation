@@ -7,6 +7,8 @@
 //! `guard/baseline.json`, whose signed ledger must balance against the pinned
 //! `initial` values. Roles in [`roles::ROLES`] that are `Enforced` reject any
 //! site outside their owners without an adjacent `// guard-allow(<role>): <why>`.
+//! The documentation counters also have Enforced hard caps
+//! ([`counters::CAP_INITIAL`] plus `cap:` ledger entries).
 //! Method-call roles are enforced by clippy `disallowed-methods` (`clippy.toml`)
 //! once they flip to `Enforced`.
 //!
@@ -16,7 +18,7 @@
 mod counters;
 mod roles;
 
-use counters::{COUNTERS, Counter, DOC_BYTES, DOC_INITIAL, Kind};
+use counters::{CAP, CAP_INITIAL, COUNTERS, Counter, DOC_BYTES, DOC_INITIAL, Kind};
 use regex::Regex;
 use roles::{Mech, Mode, ROLES, ROLES_DIGEST, Role};
 use serde::Deserialize;
@@ -546,6 +548,55 @@ fn initial_of(name: &str) -> Option<usize> {
     COUNTERS.iter().find(|c| c.name == name).map(|c| c.initial)
 }
 
+/// Counters under an Enforced hard cap: every documentation counter.
+fn capped(name: &str) -> bool {
+    name.starts_with(DOC_BYTES)
+        || COUNTERS.iter().any(|c| {
+            c.name == name && matches!(c.kind, Kind::DocBytesTotal | Kind::DocDuplicateParagraphs)
+        })
+}
+
+/// Pinned cap of `name` (`CAP_INITIAL`; 0 for a doc file not listed there).
+fn cap_initial_of(name: &str) -> Option<usize> {
+    if let Some((_, v)) = CAP_INITIAL.iter().find(|(n, _)| *n == name) {
+        return Some(*v);
+    }
+    name.starts_with(DOC_BYTES).then_some(0)
+}
+
+/// `doc_caps_hold` failures: a capped counter above its cap, or without one.
+fn cap_violations(actual: &BTreeMap<String, Measured>, base: &Baseline) -> Vec<String> {
+    let mut out = vec![];
+    for (name, m) in actual.iter().filter(|(n, _)| capped(n)) {
+        let Some(cap) = base.caps.get(name) else {
+            out.push(format!(
+                "guard: counter {name} is {} and has no cap (Enforced)\n\
+                 add guard/baseline.json \"caps\" {{\"{name}\": {{\"value\": N}}}} and a ledger entry \
+                 {{counter: \"{CAP}{name}\", by: +N, reason, considered, step}}",
+                m.value
+            ));
+            continue;
+        };
+        if m.value as i64 > cap.value {
+            let mut msg = format!(
+                "guard: counter {name} is {}, above its cap {} (Enforced)",
+                m.value, cap.value
+            );
+            for s in &m.sites {
+                msg.push_str(&format!("\n  {s}"));
+            }
+            msg.push_str(&format!(
+                "\ncut the text, or raise the cap: a ledger entry {{counter: \"{CAP}{name}\", by: {:+}, \
+                 reason, considered (what was cut instead), step}} and \"caps\" value = {}",
+                m.value as i64 - cap.value,
+                m.value
+            ));
+            out.push(msg);
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------- docs
 
 #[derive(Debug)]
@@ -736,6 +787,8 @@ struct Baseline {
     /// sha256 (hex) of the whole of src/guard/counters.rs.
     counters_digest: String,
     counters: BTreeMap<String, BaselineCounter>,
+    /// Enforced hard caps (`counters::CAP_INITIAL` + the `cap:` ledger entries).
+    caps: BTreeMap<String, BaselineCounter>,
     ledger: Vec<Entry>,
     enforced: BTreeMap<String, String>,
 }
@@ -825,8 +878,15 @@ fn ledger_problems(base: &Baseline) -> Vec<String> {
     let mut out = vec![];
     for (i, e) in base.ledger.iter().enumerate() {
         let at = format!("guard: ledger entry {i} ({})", e.counter);
-        if !base.counters.contains_key(&e.counter) {
-            out.push(format!("{at} names a counter missing from \"counters\""));
+        let cap = e.counter.strip_prefix(CAP);
+        match cap {
+            Some(name) if !base.caps.contains_key(name) => {
+                out.push(format!("{at} names a cap missing from \"caps\""));
+            }
+            None if !base.counters.contains_key(&e.counter) => {
+                out.push(format!("{at} names a counter missing from \"counters\""));
+            }
+            _ => {}
         }
         if e.by == 0 {
             out.push(format!("{at} has by: 0"));
@@ -838,10 +898,44 @@ fn ledger_problems(base: &Baseline) -> Vec<String> {
             out.push(format!("{at} has no step"));
         }
         let considered = e.considered.trim();
-        if e.by > 0 && !size_counter(&e.counter) && (considered.is_empty() || considered == "n/a") {
+        let unconsidered = considered.is_empty() || considered == "n/a";
+        if e.by > 0 && cap.is_some() && unconsidered {
+            out.push(format!(
+                "{at} raises the cap (by: {:+}) without \"considered\" (what was cut instead)",
+                e.by
+            ));
+        } else if e.by > 0 && cap.is_none() && !size_counter(&e.counter) && unconsidered {
             out.push(format!(
                 "{at} raises the counter (by: {:+}) without \"considered\" (what was tried instead)",
                 e.by
+            ));
+        }
+    }
+    for (name, c) in &base.caps {
+        let Some(initial) = cap_initial_of(name) else {
+            out.push(format!(
+                "guard: cap {name} has no pinned initial in src/guard/counters.rs CAP_INITIAL"
+            ));
+            continue;
+        };
+        let key = format!("{CAP}{name}");
+        let sum: i64 = base
+            .ledger
+            .iter()
+            .filter(|e| e.counter == key)
+            .map(|e| e.by)
+            .sum();
+        if c.value != initial as i64 + sum {
+            out.push(format!(
+                "guard: cap {name} value {} != initial {initial} + ledger {sum}",
+                c.value
+            ));
+        }
+    }
+    for name in base.counters.keys().filter(|n| capped(n)) {
+        if !base.caps.contains_key(name) {
+            out.push(format!(
+                "guard: counter {name} has no cap in guard/baseline.json \"caps\""
             ));
         }
     }
@@ -1142,6 +1236,91 @@ fn ledger_balances() {
     fail_on(ledger_problems(&baseline()));
 }
 
+/// Enforced: documentation sizes and duplicates stay within their hard caps.
+#[test]
+fn doc_caps_hold() {
+    fail_on(cap_violations(&measure_all(sources(), docs()), &baseline()));
+}
+
+#[test]
+fn doc_caps_are_enforced() {
+    let base = baseline();
+    let cap = base.caps["doc_bytes:docs/cli.md"].value;
+    let fake = |name: &str, value: i64| {
+        let mut m = measure_all(&[], &[]);
+        m.insert(
+            name.to_owned(),
+            Measured {
+                value: value as usize,
+                sites: vec![],
+            },
+        );
+        m
+    };
+    // At the cap passes; one byte above fails with the ready-to-paste entry.
+    assert!(cap_violations(&fake("doc_bytes:docs/cli.md", cap), &base).is_empty());
+    let v = cap_violations(&fake("doc_bytes:docs/cli.md", cap + 1), &base);
+    assert_eq!(v.len(), 1, "{v:#?}");
+    assert!(v[0].starts_with(&format!(
+        "guard: counter doc_bytes:docs/cli.md is {}, above its cap {cap} (Enforced)",
+        cap + 1
+    )));
+    assert!(v[0].contains("{counter: \"cap:doc_bytes:docs/cli.md\", by: +1,"));
+    // A duplicated paragraph exceeds the zero cap.
+    assert_eq!(
+        cap_violations(&fake("doc_duplicate_paragraphs", 1), &base).len(),
+        1
+    );
+    // A new doc file has no cap (and a pinned cap of 0).
+    let v = cap_violations(&fake("doc_bytes:docs/new.md", 10), &base);
+    assert!(v[0].starts_with("guard: counter doc_bytes:docs/new.md is 10 and has no cap"));
+    assert_eq!(cap_initial_of("doc_bytes:docs/new.md"), Some(0));
+    assert_eq!(cap_initial_of("src_lines"), None);
+    // Raising a cap needs a balancing ledger entry with a real "considered".
+    let mut base = baseline();
+    base.caps.get_mut("doc_bytes:docs/cli.md").unwrap().value += 100;
+    let p = ledger_problems(&base);
+    assert!(
+        p.iter()
+            .any(|m| m.starts_with("guard: cap doc_bytes:docs/cli.md value")),
+        "{p:#?}"
+    );
+    base.ledger.push(Entry {
+        counter: "cap:doc_bytes:docs/cli.md".into(),
+        by: 100,
+        reason: "x".into(),
+        considered: "n/a".into(),
+        step: "S9".into(),
+    });
+    let p = ledger_problems(&base);
+    assert_eq!(p.len(), 1, "{p:#?}");
+    assert!(p[0].contains("raises the cap (by: +100) without \"considered\""));
+    base.ledger.last_mut().unwrap().considered = "cut the duplicated example".into();
+    assert!(ledger_problems(&base).is_empty());
+    // A cap entry for an unknown cap and a capped counter without a cap.
+    base.ledger.push(Entry {
+        counter: "cap:doc_bytes:docs/none.md".into(),
+        by: -1,
+        reason: "x".into(),
+        considered: String::new(),
+        step: "S9".into(),
+    });
+    base.caps.remove("doc_bytes:AGENTS.md");
+    let p = ledger_problems(&base);
+    assert!(
+        p.iter()
+            .any(|m| m.contains("names a cap missing from \"caps\"")),
+        "{p:#?}"
+    );
+    assert!(
+        p.contains(
+            &"guard: counter doc_bytes:AGENTS.md has no cap in guard/baseline.json \"caps\""
+                .to_owned()
+        ),
+        "{p:#?}"
+    );
+}
+
 const ROLES_RS: &str = include_str!("guard/roles.rs");
 const COUNTERS_RS: &str = include_str!("guard/counters.rs");
 
@@ -1350,6 +1529,13 @@ fn measure() {
         println!("dup [{}] {}", files.join(", "), first_chars(p, 60));
     }
     if let Ok(base) = load_baseline(&manifest_root()) {
+        for (name, cap) in &base.caps {
+            let now = actual.get(name).map_or(0, |m| m.value);
+            println!("cap {name} {} (measured {now})", cap.value);
+        }
+        for v in cap_violations(&actual, &base) {
+            println!("\n{v}");
+        }
         let (entries, values) = drift(&actual, &base);
         if !entries.is_empty() {
             println!("\n// guard/baseline.json \"counters\": set these values");

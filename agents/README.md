@@ -104,6 +104,14 @@ when they flip to `Enforced`; a justified site then carries
 (`GUARD_SITES=<counter>` lists that counter's sites) and ready-to-paste baseline
 values and ledger entries for any counter that drifted.
 
+The documentation counters also have **Enforced hard caps**: `doc_caps_hold` fails
+when a `doc_bytes:<path>`, `doc_bytes_total` or `doc_duplicate_paragraphs` value
+exceeds its cap in `guard/baseline.json` "caps" (duplicates are capped at 0). Caps
+start at `CAP_INITIAL` in `src/guard/counters.rs` and move only by a ledger entry
+`{counter: "cap:<counter>", by, reason, considered, step}`, balanced like counters;
+raising one needs a real `considered` (what was cut instead). A new doc file needs a
+cap entry as well as its size entry. Prefer cutting superseded text over a raise.
+
 Known limits, to settle in the step that first flips a clippy role: an item-level
 `#[allow(clippy::disallowed_methods)]` is not tied to the regex counter sites it
 covers, so an Enforced clippy role still needs its counters' sites marked or at 0;
