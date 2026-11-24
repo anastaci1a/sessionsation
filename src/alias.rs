@@ -177,6 +177,50 @@ pub fn starts_with(path: &Path, prefix: &Path) -> bool {
     path.starts_with(prefix) || logical(path).starts_with(logical(prefix))
 }
 
+/// The share spelling and its disk spelling (Unraid FUSE share vs the array disk).
+pub const SHARE_SPELLING: (&str, &str) = ("/mnt/user", "/mnt/disk1");
+/// A search-path list (`PATH`) with each `<share>/<rest>` entry rewritten to `<disk>/<rest>`
+/// when that directory exists and is the same directory (same device and inode), so a tool is
+/// never resolved through the slow FUSE share. Order is kept; later duplicates are dropped.
+/// Entries that are not under `share`, or whose disk spelling is missing or different, stay.
+pub fn normalize_search_path(
+    list: &std::ffi::OsStr,
+    share: &Path,
+    disk: &Path,
+) -> std::ffi::OsString {
+    use std::os::unix::fs::MetadataExt;
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for entry in std::env::split_paths(list) {
+        let mapped = entry
+            .strip_prefix(share)
+            .ok()
+            .map(|rest| disk.join(rest))
+            .filter(
+                |candidate| match (std::fs::metadata(&entry), std::fs::metadata(candidate)) {
+                    (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+                    _ => false,
+                },
+            )
+            .unwrap_or(entry);
+        if !seen.contains(&mapped) {
+            seen.push(mapped);
+        }
+    }
+    std::env::join_paths(seen).unwrap_or_else(|_| list.to_owned())
+}
+/// Normalize this process's own `PATH` ([`normalize_search_path`] with [`SHARE_SPELLING`]).
+/// Call before any thread starts: children (providers, workers) inherit it.
+pub fn normalize_process_path() {
+    if let Some(list) = std::env::var_os("PATH") {
+        let (share, disk) = SHARE_SPELLING;
+        let fixed = normalize_search_path(&list, Path::new(share), Path::new(disk));
+        if fixed != list {
+            // SAFETY: called first thing in `main`, before the runtime or any thread exists.
+            unsafe { std::env::set_var("PATH", fixed) };
+        }
+    }
+}
+
 #[cfg(test)]
 mod gate;
 #[cfg(test)]
@@ -274,5 +318,52 @@ mod tests {
         );
         uninstall(&[entry]);
         assert_eq!(logical(&x), x);
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::fs;
+
+    #[test]
+    fn a_share_path_entry_becomes_the_disk_entry_in_order_without_duplicates() {
+        let t = tempfile::tempdir().unwrap();
+        let disk = t.path().join("disk1");
+        let share = t.path().join("user");
+        for d in ["live/packages/a/bin", "live/packages/b/bin", "other/bin"] {
+            fs::create_dir_all(disk.join(d)).unwrap();
+        }
+        // The share is the same directory tree (a symlink stands in for the FUSE view).
+        std::os::unix::fs::symlink(&disk, &share).unwrap();
+        // A second tree under the share that is NOT the disk one.
+        let lone = t.path().join("lone");
+        fs::create_dir_all(lone.join("x/bin")).unwrap();
+        let join = |parts: Vec<PathBuf>| std::env::join_paths(parts).unwrap();
+        let list = join(vec![
+            "/usr/local/bin".into(),
+            share.join("live/packages/a/bin"),
+            disk.join("live/packages/a/bin"), // duplicate after rewriting
+            share.join("live/packages/b/bin"),
+            share.join("missing/bin"), // no disk twin: stays
+            "/usr/bin".into(),
+            "/usr/local/bin".into(), // plain duplicate
+            share.join("live/packages/b/bin"),
+        ]);
+        let got = normalize_search_path(&list, &share, &disk);
+        let want = join(vec![
+            "/usr/local/bin".into(),
+            disk.join("live/packages/a/bin"),
+            disk.join("live/packages/b/bin"),
+            share.join("missing/bin"),
+            "/usr/bin".into(),
+        ]);
+        assert_eq!(got, want);
+        // Different directories with the same relative path are not rewritten.
+        let other_share = t.path().join("share2");
+        fs::create_dir_all(other_share.join("other/bin")).unwrap();
+        let list: OsString = join(vec![other_share.join("other/bin")]);
+        assert_eq!(normalize_search_path(&list, &other_share, &disk), list);
     }
 }

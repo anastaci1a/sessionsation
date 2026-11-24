@@ -25,6 +25,9 @@ and package history are in Git.
 - **1.67.0 (fixes)** Launched providers and pane commands name the stable `current/`
   executable path; a Codex `systemError` thread fails `compaction_not_observed` after
   30 s, not 180 s.
+- **1.67.0 (fixes)** Launches name the stable `current/` executable; `/mnt/user` `PATH`
+  entries map to `/mnt/disk1` at start; a Codex `systemError` thread fails
+  `compaction_not_observed` after 30 s, not 180 s.
 - **1.66.3** The supervisor no longer waits for `codex --version` (0.5 s at most) to
   serve. [Operations](operations.md#safe-service-maintenance).
 - **1.66.2** `resume-launch` starts a Claude session without a transcript again under its

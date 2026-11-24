@@ -706,8 +706,14 @@ enum ConfigCommand {
     Set { key: String, value: String },
 }
 
+fn main() {
+    // Before the runtime starts a thread: no provider, worker or pane command we start resolves
+    // tools through the FUSE share (contract 1.67.0).
+    sessionsation::alias::normalize_process_path();
+    run_main();
+}
 #[tokio::main]
-async fn main() {
+async fn run_main() {
     unsafe {
         libc::umask(0o077);
     }
