@@ -1483,3 +1483,29 @@ async fn unified_send_never_replays_an_uncertain_codex_delivery() {
         "the uncertain add is never sent again: {calls:?}"
     );
 }
+/// Golden generation (design S3): the attachment generation is sha256 of the compact JSON of
+/// `[id, home, pid, start, raw boot_id, endpoint (dev, ino, ctime, ctime_nsec) | null]`, the
+/// formula `generation::tests` pins with fixed parts.
+#[test]
+fn attachment_generation_is_the_golden_formula() {
+    use std::os::unix::fs::MetadataExt;
+    let (_dir, paths, input, _) = fixture();
+    let a = attachment_fixture(&paths, &input);
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap_or_default();
+    let formula = |endpoint: Option<fs::Metadata>| {
+        let parts = json!([
+            a.id,
+            a.home,
+            a.pid,
+            a.start,
+            boot,
+            endpoint
+                .as_ref()
+                .map(|m| (m.dev(), m.ino(), m.ctime(), m.ctime_nsec()))
+        ]);
+        format!("{:x}", Sha256::digest(parts.to_string().as_bytes()))
+    };
+    assert_eq!(a.generation(), formula(None));
+    fs::write(a.endpoint(), b"").unwrap();
+    assert_eq!(a.generation(), formula(fs::metadata(a.endpoint()).ok()));
+}

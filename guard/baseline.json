@@ -62,7 +62,7 @@
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 101198 },
+    "src_lines": { "value": 101205 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -837,6 +837,13 @@
       "reason": "1.65.0 meter cycles: provider::usage_cycle (cycle marker, the per-window rule, confirmed lowering, first-use windows, Codex cycles) with unit tests, the Claude recorder's cycle state and older-recorder merge, absorb under usage.lock with external redeem detection and the own claim, the reset-triggered meter read, meter window reasons, and their unit tests",
       "considered": "n/a",
       "step": "1.65.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 7,
+      "reason": "S3 golden generation vectors recorded on main 9e1f72b: src/generation.rs (test-only module header) and its `mod generation;` line in lib.rs; the vectors live in src/generation/tests.rs",
+      "considered": "n/a",
+      "step": "1.66.0"
     }
   ],
   "enforced"
