@@ -49,6 +49,7 @@ pub const FACTS: Facts = Facts {
     transcript: TranscriptFormat::AgyLog,
     terminal_input: TerminalInput::Agy,
     resume_launch: crate::provider::ops::ResumeLaunch::Native,
+    restart_without_history: false,
     plan_names: &[],
 };
 impl ProviderOps for Ops {

@@ -20,6 +20,11 @@ and package history are in Git.
 
 ## Versions
 
+- **1.66.2** `resume-launch` starts a Claude session without a transcript again under its
+  id (`resumed_from:"no_history"`); such a session archives with `nothing_to_archive`;
+  stop of an archived session is `already_stopped` with `archived:true`; a stop waits up
+  to 3 s for the pane's idle shell before `PANE_BUSY`.
+  [Resume](contract.md#saved-session-popup-resume), [stop](contract.md#stop-and-restart).
 - **1.66.1** Receipt reads share the ledger lock and no longer wait for each other;
   writes stay exclusive; the receipts schema is stamped once (`user_version`).
   [Contention](contract.md#admission-and-contention).
@@ -178,20 +183,15 @@ and package history are in Git.
   [terminal input](contract.md#terminal-input).
 - **Revision 16** Claude hosted sessions and live peer messages.
   [Delivery](contract.md#claude-input-delivery).
-- **Revision 15** Steer reply correlation. [Steer replies](contract.md#steer-reply-correlation).
-- **Revision 14** Account log out, cached state, account order.
-  [Accounts](contract.md#accounts), [cached state](contract.md#cached-state).
-- **Revision 13** Gemini provider. [Gemini](contract.md#gemini-cli).
+- **Revisions 13-15** Gemini provider; account log out, cached state, account order;
+  steer reply correlation.
 - **Revision 12** Session identity, continuations, Add to HERDR.
   [Identity](contract.md#session-identity-and-continuations).
 - **Revision 11** Claude removal/deletion, login plans, headless delivery, display names.
   [Headless](contract.md#headless-delivery).
 - **Revision 10** Claude provider and the per-operation capability table.
   [Claude](contract.md#claude-code).
-- **Revision 9** Batch placement observations. [Placement](contract.md#batch-placement-observations).
-- **Revision 8** `api turn-target`. [Turn binding](contract.md#passive-current-turn-binding).
-- **Revision 7** Public turn checkpoints. [Checkpoints](contract.md#public-turn-checkpoints).
-- **Revision 6** HERDR-owned session names. [Names](contract.md#herdr-owned-session-names).
-- **Revision 5** Deliberate in-turn steering. [Steering](contract.md#deliberate-in-turn-steering).
+- **Revisions 5-9** In-turn steering, HERDR-owned names, public turn checkpoints,
+  `api turn-target`, batch placement observations.
 - **Revisions 3-4** Explicit Resume-and-submit and exact-item idle start.
   [Recovery](contract.md#explicit-resume-and-submit).

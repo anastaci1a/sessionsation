@@ -1364,7 +1364,8 @@
         "pane_closed": {"type": ["boolean", "null"]},
         "pane_close_reason": {"type": ["string", "null"]},
         "interrupted_turn": {"type": ["boolean", "null"]},
-        "auto_start": {"type": ["object", "null"]}
+        "auto_start": {"type": ["object", "null"]},
+        "archived": {"const": true, "description": "Since 1.66.2: on the already_stopped answer for an archived session (any generation). Omitted otherwise."}
       },
       "additionalProperties": true
     },
@@ -2327,6 +2328,7 @@
           ]
         },
         "already_running": {"type": "boolean", "description": "Since 1.66.0: the session was already running; nothing was started (phase running). Omitted when false."},
+        "resumed_from": {"enum": ["no_history"], "description": "Since 1.66.2: the session had no transcript and was started again under the same conversation id. Omitted otherwise."},
         "detail": {
           "type": [
             "string",

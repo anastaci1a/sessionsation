@@ -50,6 +50,25 @@ pub fn ensure_resumable(session: &catalog::Session, observation: &Observation) -
     );
     Ok(())
 }
+/// Contract 1.66.2: a session with no transcript (stopped before its first turn) may be
+/// started again under its conversation id: nothing holds it and its recorded process is gone.
+pub fn ensure_fresh_start(session: &catalog::Session, observation: &Observation) -> Result<()> {
+    ensure!(
+        session.provider == ProviderId::Claude.as_str(),
+        "UNSUPPORTED_PROVIDER_OPERATION"
+    );
+    ensure!(
+        observation.availability == "stale" && observation.transcript.is_none(),
+        "SESSION_STATE_UNVERIFIED: the Claude session has history or a process; it is resumed, not started again"
+    );
+    ensure!(
+        session.attachment.as_ref().is_none_or(|a| {
+            crate::external::attachment_definitely_gone(a.pid, a.process_start)
+        }),
+        "SESSION_ALREADY_RUNNING: already running; focus it"
+    );
+    Ok(())
+}
 /// The directory a stopped session resumes in: catalog record, then transcript.
 pub fn resume_directory(session: &catalog::Session, observation: &Observation) -> Result<String> {
     let directory = session
@@ -150,7 +169,14 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
         &session.conversation_id,
         session.attachment.as_ref(),
     );
-    ensure_resumable(&session, &observation)?;
+    // Contract 1.66.2: only the `api resume-launch` that typed this command, and that
+    // admitted the session as having no history, starts it again under the same id.
+    let fresh = crate::inline::fresh_start_owned(paths, &session.id);
+    if fresh {
+        ensure_fresh_start(&session, &observation)?;
+    } else {
+        ensure_resumable(&session, &observation)?;
+    }
     let directory = resume_directory(&session, &observation)?;
     claude::prelaunch_gate(&config, &account.home).await?;
     let attachment = crate::external::current_attachment(paths)?;
@@ -165,13 +191,24 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
         ),
         &account.home,
     );
-    let mut argv = claude::resume_argv(
-        &config,
-        &current.conversation_id,
-        &current.name,
-        &settings,
-        mode,
-    );
+    let mut argv = if fresh {
+        claude::new_argv_with(
+            &config,
+            &current.conversation_id,
+            &current.name,
+            &settings,
+            mode,
+            &claude::StartOptions::default(),
+        )
+    } else {
+        claude::resume_argv(
+            &config,
+            &current.conversation_id,
+            &current.name,
+            &settings,
+            mode,
+        )
+    };
     // Contract 1.49.0: the last recorded model and effort, never the account default.
     argv.extend(claude::resume_model_args(
         crate::session_model::current(paths, &current.conversation_id, Some(&account.home))

@@ -72,7 +72,7 @@ pub(super) async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
         let pane = job.source.pane.clone();
         let p = paths.clone();
         let (closed, reason) =
-            tokio::task::spawn_blocking(move || hosting::close_pane(&p, &pane)).await?;
+            tokio::task::spawn_blocking(move || hosting::close_pane_after_stop(&p, &pane)).await?;
         job.pane_closed = Some(closed);
         job.pane_close_reason = reason;
         save_job(paths, job)?;

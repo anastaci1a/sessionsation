@@ -51,6 +51,7 @@ pub const FACTS: Facts = Facts {
     resume_launch: crate::provider::ops::ResumeLaunch::Refused(
         crate::provider::conversation::GEMINI_UNSUPPORTED,
     ),
+    restart_without_history: false,
     plan_names: &[],
 };
 impl ProviderOps for Ops {

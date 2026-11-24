@@ -704,7 +704,11 @@ Codex moves accounts. A session that already runs is `phase:"running"` with
 `already_running:true`, nothing opened or typed (validate: `valid:true,
 already_running:true`). Gemini is refused with `UNSUPPORTED_PROVIDER_OPERATION`,
 `error.supported:false` and the reason that Gemini CLI no longer supports individual
-accounts. Suspend is `api stop --wait`, resume is `api resume-launch start`.
+accounts. Suspend is `api stop --wait`, resume is `api resume-launch start`. A Claude
+session with no transcript (stopped before its first turn) is started again under the
+same conversation id on its account and directory, with `resumed_from:"no_history"` in
+the validate answer and the receipt and a detail saying so; `api resume` and the
+launcher still refuse it with `SESSION_STALE`.
 
 `api resume` (Codex and native) starts the provider in the session's saved
 directory, refusing with `SAVED_DIRECTORY_UNAVAILABLE` when it is not an absolute
@@ -1051,8 +1055,9 @@ Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
 - A session with no running process (not archived; for Codex, a session whose source
   discovery reports `SESSION_UNAVAILABLE`) returns `already_stopped:true`,
   `phase:"complete"`, `interrupted_turn:false`; the generation is still checked, and
-  the pane Sessionsation's launch of the session ran in (else a recorded pane whose
-  process is gone) is closed as below. Archived: `SESSION_ARCHIVED`.
+  the pane of the session's newest resume-launch or of its launch (else a recorded pane
+  whose process is gone) is closed as below. An archived session gives the same answer
+  with `archived:true` whatever generation the caller holds (the archive changed it).
 - **Unknown session** (`capabilities.session_lifecycle.unknown_session`): stop or
   archive of an id (or name) that names no catalog session and no merged id is one
   terminal answer, so a retire always finishes: `ok` with `phase:"complete"`,
@@ -1067,8 +1072,9 @@ Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
 - **Pane close** (`stop_closes_pane`, `stop_keep_pane`, `stop_pane_close`): after the
   exact agent process is gone (and, for Codex, the history is back in the resume list)
   the recorded HERDR pane is closed with `herdr pane close`, but only if it still
-  exists and only its idle shell runs there (`pane process-info`). `--keep-pane` keeps
-  it. `pane_close_reason` is null when closed, else `KEEP_PANE`, `NO_PANE`,
+  exists and only its idle shell runs there (`pane process-info`); a busy pane is
+  re-checked for up to 3 s (`session_lifecycle.pane_settle_seconds`) while the stopped
+  provider's wrapper or shutdown children leave it. `--keep-pane` keeps it. `pane_close_reason` is null when closed, else `KEEP_PANE`, `NO_PANE`,
   `PANE_BUSY`, `PANE_MISSING`, `PANE_STATE_UNVERIFIED`, `PANE_CLOSE_FAILED`,
   `PANE_CLOSE_UNSUPPORTED` (tmux attachments are never closed) or
   `PANE_TARGET_INVALID`. A pane that cannot be closed does not fail the stop. Restart,
@@ -2301,8 +2307,10 @@ files under `DATA_ROOT/operations/deletions/native-OPERATION-ID/` with a `plan.j
 removes the catalog entry and aliases (in `catalog.json` and `identity.json`), then
 the staging directory; an interrupted delete leaves both for review. A session with no
 history file and no other files archives and restores cleanly with
-`nothing_to_archive:true` (such a `stale` row has `capabilities.archive:true`); files
-without the transcript still fail `HISTORY_NOT_FOUND`. Credentials are never read.
+`nothing_to_archive:true` (such a `stale` row has `capabilities.archive:true`). For
+Claude the transcript decides: a session stopped before its first turn archives with
+`nothing_to_archive:true` and its side files (`session-env`) move with it; for other
+providers files without the transcript still fail `HISTORY_NOT_FOUND`. Credentials are never read.
 
 Row reasons (`capability_reasons.archive|delete`) and refusals: `SESSION_RUNNING` (a
 verified registry entry or process, interactive or headless, holds a lineage

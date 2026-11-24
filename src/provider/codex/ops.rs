@@ -46,6 +46,7 @@ pub const FACTS: Facts = Facts {
     transcript: TranscriptFormat::None,
     terminal_input: TerminalInput::None,
     resume_launch: crate::provider::ops::ResumeLaunch::Transfer,
+    restart_without_history: false,
     plan_names: &[
         ("free", "ChatGPT Free"),
         ("plus", "ChatGPT Plus"),

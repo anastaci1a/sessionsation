@@ -83,7 +83,13 @@ pub struct Receipt {
     /// (`phase:"running"`). Omitted when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub already_running: bool,
+    /// Contract 1.66.2: `no_history` when the session had no transcript (stopped before its
+    /// first turn) and was started again under the same conversation id. Omitted otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_from: Option<String>,
 }
+/// `resumed_from` of a session started again because it had no history (contract 1.66.2).
+pub const NO_HISTORY: &str = "no_history";
 pub(crate) fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id).context("INVALID_REQUEST_ID")?;
     Ok(paths
@@ -120,6 +126,22 @@ pub(crate) fn change(
     edit(&mut r)?;
     save(paths, &mut r)?;
     Ok(r)
+}
+/// Contract 1.66.2: the HERDR pane (`herdr/<server>/<pane>`) of the newest resume-launch
+/// that started session `id` (not an inline resume, not an `already_running` answer).
+pub(crate) fn resumed_pane(paths: &Paths, id: &str) -> Option<String> {
+    records(paths)
+        .ok()?
+        .into_iter()
+        .find(|r| {
+            r.request.session_id == id
+                && r.inline.is_none()
+                && !r.already_running
+                && r.phase == "running"
+        })
+        .and_then(|r| {
+            crate::terminal::herdr_target(&r.request.host.session, r.pane_id.as_deref()?).ok()
+        })
 }
 pub(crate) fn records(paths: &Paths) -> Result<Vec<Receipt>> {
     let dir = paths.root.join(crate::layout::RESUMPTIONS);
@@ -190,6 +212,7 @@ fn already_running(r: Request, s: &catalog::Session, directory: PathBuf) -> Rece
         inline: None,
         pane_reused: false,
         already_running: true,
+        resumed_from: None,
     }
 }
 /// The session already runs: its entry and directory (the generation is checked). `None`
@@ -217,11 +240,12 @@ async fn running(
 }
 /// Admission checks of a provider that resumes natively (Claude, Antigravity): the same
 /// account, its saved directory, an idle stopped conversation. Returns the entry, the
-/// directory and the destination Space label.
+/// directory, the destination Space label and whether the session has no history and is
+/// started again under its conversation id (contract 1.66.2, `resumed_from:"no_history"`).
 async fn validate_native(
     paths: &Paths,
     r: &Request,
-) -> Result<(catalog::Session, PathBuf, Option<String>)> {
+) -> Result<(catalog::Session, PathBuf, Option<String>, bool)> {
     shape(r)?;
     let (s, o) = api::native_selected(paths, &r.session_id, &r.expected_generation)?;
     crate::lifecycle::ensure_available(paths, &s.conversation_id, Some(&r.request_id))?;
@@ -233,7 +257,12 @@ async fn validate_native(
             s.provider
         ),
     )?;
-    crate::provider::native::ensure_resumable(&s, &o)?;
+    let fresh = crate::provider::native::without_history(&s, &o);
+    if fresh {
+        crate::provider::native::ensure_fresh_start(&s, &o)?;
+    } else {
+        crate::provider::native::ensure_resumable(&s, &o)?;
+    }
     crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
     let directory = PathBuf::from(crate::provider::native::resume_directory(&s, &o)?);
     if let Some(d) = &r.directory {
@@ -246,7 +275,7 @@ async fn validate_native(
         )?;
     }
     let label = destination(r, &s.id, paths).await?;
-    Ok((s, directory, label))
+    Ok((s, directory, label, fresh))
 }
 fn validate_saved_history(source: &external::Instance, confirmed: bool) -> Result<()> {
     ensure!(
@@ -357,13 +386,14 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         if running(paths, &r, native).await?.is_some() {
             return Ok(json!({"valid":true,"already_running":true,"request_id":r.request_id}));
         }
-        let saved: PathBuf = if native {
-            validate_native(paths, &r).await?.1
+        let (saved, fresh): (PathBuf, bool) = if native {
+            let (_, directory, _, fresh) = validate_native(paths, &r).await?;
+            (directory, fresh)
         } else {
-            validate(paths, &r).await?.1.cwd.into()
+            (validate(paths, &r).await?.1.cwd.into(), false)
         };
         return Ok(
-            json!({"valid":true,"directory":r.directory.as_ref().map(|d|d.path.clone()).unwrap_or(saved),"request_id":r.request_id}),
+            json!({"valid":true,"directory":r.directory.as_ref().map(|d|d.path.clone()).unwrap_or(saved),"request_id":r.request_id,"resumed_from":fresh.then_some(NO_HISTORY)}),
         );
     }
     let _lock = lock(paths)?;
@@ -391,12 +421,12 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     let _admission =
         crate::lifecycle::admit(paths, &selected.conversation_id, Some(&r.request_id))?;
     crate::lifecycle::ensure_no_handoff(paths, &selected.conversation_id, Some(&r.request_id))?;
-    let (s, saved): (_, PathBuf) = if native {
-        let (s, directory, _) = validate_native(paths, &r).await?;
-        (s, directory)
+    let (s, saved, fresh): (_, PathBuf, bool) = if native {
+        let (s, directory, _, fresh) = validate_native(paths, &r).await?;
+        (s, directory, fresh)
     } else {
         let (s, source, _) = validate(paths, &r).await?;
-        (s, source.cwd.into())
+        (s, source.cwd.into(), false)
     };
     let mut receipt = Receipt {
         version: 1,
@@ -424,6 +454,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         inline: None,
         pane_reused: false,
         already_running: false,
+        resumed_from: fresh.then(|| NO_HISTORY.to_owned()),
     };
     save(paths, &mut receipt)?;
     let child = crate::background::detach(&mut std::process::Command::new(
@@ -525,9 +556,13 @@ async fn prepare_native(paths: &Paths, receipt: &Receipt) -> Result<()> {
             x.generation = generation;
         }
         x.phase = if running { "running" } else { "uncertain" }.into();
-        x.detail = (!running).then(|| {
-            "The resume command was typed but the provider process was not confirmed; inspect the pane, do not retry automatically".into()
-        });
+        x.detail = if !running {
+            Some("The resume command was typed but the provider process was not confirmed; inspect the pane, do not retry automatically".into())
+        } else if x.resumed_from.as_deref() == Some(NO_HISTORY) {
+            Some("The session had no conversation history; a fresh conversation was started under the same conversation id.".into())
+        } else {
+            None
+        };
         Ok(())
     })?;
     Ok(())

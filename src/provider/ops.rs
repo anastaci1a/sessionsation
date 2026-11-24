@@ -261,6 +261,9 @@ pub struct Facts {
     pub terminal_input: TerminalInput,
     /// How `api resume-launch` starts a stopped session (contract 1.66.0).
     pub resume_launch: ResumeLaunch,
+    /// `api resume-launch` of a session that has no transcript (stopped before its first
+    /// turn) starts the provider again under the same conversation id (1.66.2, Claude).
+    pub restart_without_history: bool,
     /// Human plan labels for raw plan values (lowercase), only where the meaning is certain.
     pub plan_names: &'static [(&'static str, &'static str)],
 }

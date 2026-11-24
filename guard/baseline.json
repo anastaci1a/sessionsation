@@ -3,7 +3,7 @@
   "counters_digest": "7a1362d75516f452c2487c88413b88f04b88f31062c4fa6857c4007feb8db7ff",
   "counters": {
     "alive_fns": { "value": 0 },
-    "api_rs_lines": { "value": 5624 },
+    "api_rs_lines": { "value": 5658 },
     "apply_session_input_fns": { "value": 3 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 0 },
@@ -17,13 +17,13 @@
     "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13985 },
+    "doc_bytes:docs/changelog.md": { "value": 13852 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
-    "doc_bytes:docs/contract.md": { "value": 230244 },
+    "doc_bytes:docs/contract.md": { "value": 230998 },
     "doc_bytes:docs/operations.md": { "value": 23295 },
-    "doc_bytes_total": { "value": 307430 },
+    "doc_bytes_total": { "value": 308051 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "duration_literals": { "value": 188 },
+    "duration_literals": { "value": 189 },
     "env_scrub_sites": { "value": 51 },
     "error_code_literals": { "value": 683 },
     "file_cache_statics": { "value": 8 },
@@ -48,7 +48,7 @@
     "provider_enum_dispatch": { "value": 0 },
     "provider_ops_allow_markers": { "value": 0 },
     "provider_string_compares": { "value": 0 },
-    "raw_sleeps": { "value": 104 },
+    "raw_sleeps": { "value": 105 },
     "receipts_sites": { "value": 2 },
     "records_allow_markers": { "value": 0 },
     "rename_sites": { "value": 26 },
@@ -62,7 +62,7 @@
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 102713 },
+    "src_lines": { "value": 102876 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -1012,6 +1012,55 @@
       "reason": "1.66.1: docs/changelog.md, docs/contract.md and docs/operations.md as above",
       "considered": "n/a",
       "step": "1.66.1"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 34,
+      "reason": "1.66.2 lifecycle edges: stop of an archived session answers already_stopped with archived:true (any generation), the resume pane in already_stopped, the no-history fresh start in resume_current and resume_launch_native, capability additions",
+      "considered": "n/a",
+      "step": "1.66.2"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": -133,
+      "reason": "1.66.2 entry; revisions 5-9 and 13-15 folded into two lines to keep 1.66.1 and 1.66.2 under the cap",
+      "considered": "n/a",
+      "step": "1.66.2"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 754,
+      "reason": "1.66.2: no-history resume-launch (saved-session resume), archived stop and the pane settle wait (stop), the Claude no-transcript archive rule (archives)",
+      "considered": "n/a",
+      "step": "1.66.2"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 621,
+      "reason": "1.66.2: docs/contract.md and docs/changelog.md as above",
+      "considered": "n/a",
+      "step": "1.66.2"
+    },
+    {
+      "counter": "duration_literals",
+      "by": 1,
+      "reason": "1.66.2: the 100 ms re-check interval of close_pane_after_stop",
+      "considered": "the bound goes through timing::budget and the interval through timing::scaled; timing.rs has no poll helper yet (the Deadline/poll_until the waits role names), so the loop carries its own interval",
+      "step": "1.66.2"
+    },
+    {
+      "counter": "raw_sleeps",
+      "by": 1,
+      "reason": "1.66.2: close_pane_after_stop re-checks a busy pane for up to 3 s after a verified stop",
+      "considered": "the loop runs on spawn_blocking like close_pane; timing.rs offers no poll_until yet, and the sleep is scaled (timing::scaled) so tests do not sit through it",
+      "step": "1.66.2"
+    },
+    {
+      "counter": "src_lines",
+      "by": 163,
+      "reason": "1.66.2 lifecycle edges: restart_without_history fact, ensure_fresh_start and the --session-id start in exec_resume, inline::fresh_start_owned, resumed_from on resume receipts, the Claude no-transcript archive rule, close_pane_after_stop, resume::resumed_pane, the archived stop answer",
+      "considered": "n/a",
+      "step": "1.66.2"
     }
   ],
   "enforced"

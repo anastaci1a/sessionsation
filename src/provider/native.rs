@@ -237,6 +237,17 @@ pub fn ensure_resumable(session: &catalog::Session, observation: &Observation) -
     }
 }
 pub use claude::launch::resume_directory;
+/// Contract 1.66.2: the session has no transcript (it was stopped before its first turn) and
+/// its provider can start it again under the same conversation id.
+pub fn without_history(session: &catalog::Session, observation: &Observation) -> bool {
+    crate::provider::ops::holds(&session.provider, |f| f.restart_without_history)
+        && observation.availability == "stale"
+        && observation.transcript.is_none()
+}
+/// The preconditions of starting a session without history again (see [`without_history`]).
+pub fn ensure_fresh_start(session: &catalog::Session, observation: &Observation) -> Result<()> {
+    claude::launch::ensure_fresh_start(session, observation)
+}
 pub async fn exec_new(
     paths: &Paths,
     provider: ProviderId,

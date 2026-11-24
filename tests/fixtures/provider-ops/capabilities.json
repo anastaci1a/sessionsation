@@ -435,6 +435,7 @@
   "claude_lifecycle": {
     "restart": false,
     "stop": {
+      "archived": "already_stopped with archived:true",
       "busy_turn": "interrupted",
       "errors": [
         "SESSION_STATE_UNVERIFIED",
@@ -446,7 +447,6 @@
       "method": "sigterm_exact_process",
       "not_running": "already_stopped",
       "refused": {
-        "archived": "SESSION_ARCHIVED",
         "background": "UNSUPPORTED_PROVIDER_OPERATION",
         "hosted": "HOSTED_SESSION",
         "unregistered": "SESSION_STATE_UNVERIFIED"
@@ -2359,6 +2359,7 @@
     "turn_events": "api turn-events stays the Codex turn-notify journal"
   },
   "session_lifecycle": {
+    "archived_stop": "already_stopped:true, archived:true (any generation)",
     "launch_listing": {
       "availability": "launching",
       "field": "availability_reason",
@@ -2368,10 +2369,18 @@
         "PROVIDER_EXITED"
       ]
     },
+    "pane_settle_seconds": 3,
     "resume_launch": {
       "account_change": [
         "codex"
       ],
+      "no_history": {
+        "field": "resumed_from",
+        "providers": [
+          "claude"
+        ],
+        "value": "no_history"
+      },
       "providers": [
         "codex",
         "claude",

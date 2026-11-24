@@ -134,6 +134,27 @@ pub fn close_pane(paths: &Paths, pane: &str) -> (bool, Option<String>) {
         Err(_) => (false, Some("PANE_STATE_UNVERIFIED".into())),
     }
 }
+/// Seconds a stop waits for the pane to return to its idle shell before reporting `PANE_BUSY`.
+pub const PANE_SETTLE_SECONDS: u64 = 3;
+/// Contract 1.66.2: [`close_pane`] right after a verified stop. The stopped provider's
+/// wrapper or shutdown children (a resume wrapper, an async SessionEnd hook) can still be
+/// the pane's foreground for a moment, so a busy pane is re-checked for up to
+/// [`PANE_SETTLE_SECONDS`]. Nothing is signalled; the close rules are unchanged.
+pub fn close_pane_after_stop(paths: &Paths, pane: &str) -> (bool, Option<String>) {
+    let deadline =
+        std::time::Instant::now() + crate::timing::budget(Duration::from_secs(PANE_SETTLE_SECONDS));
+    loop {
+        let result = close_pane(paths, pane);
+        let busy = result
+            .1
+            .as_deref()
+            .is_some_and(|r| r.starts_with("PANE_BUSY"));
+        if !busy || std::time::Instant::now() >= deadline {
+            return result;
+        }
+        std::thread::sleep(crate::timing::scaled(Duration::from_millis(100)));
+    }
+}
 pub(super) fn relaunch(paths: &Paths, pane: &str, cwd: &str, command: &str) -> Result<()> {
     if let Some(socket) = socket_for(paths, pane)? {
         crate::terminal::relaunch_at(pane, cwd, command, Some(&socket))

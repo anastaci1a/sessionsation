@@ -3566,11 +3566,6 @@ fn stop(f: &Fixture, s: &Value) -> Value {
     let args = stop_args(s);
     f.api(&args.iter().map(String::as_str).collect::<Vec<_>>())
 }
-fn stop_error(f: &Fixture, s: &Value) -> String {
-    let args = stop_args(s);
-    f.api_error(&args.iter().map(String::as_str).collect::<Vec<_>>())
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_of_a_stopped_claude_session_is_already_stopped() {
     let f = fixture().await;
@@ -3689,7 +3684,7 @@ async fn stop_never_signals_a_pid_whose_process_start_does_not_match() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_refuses_an_archived_claude_session() {
+async fn stop_of_an_archived_claude_session_answers_already_stopped() {
     let f = fixture().await;
     let home = claude_account(&f);
     let id = uuid::Uuid::new_v4().to_string();
@@ -3701,8 +3696,10 @@ async fn stop_refuses_an_archived_claude_session() {
         .find(|x| x["id"] == s["id"])
         .unwrap();
     assert_eq!(archived["archived"], true, "{archived}");
-    let refused = stop_error(&f, &archived);
-    assert!(refused.contains("SESSION_ARCHIVED"), "{refused}");
+    // Contract 1.66.2: was SESSION_ARCHIVED.
+    let done = stop(&f, &archived);
+    assert_eq!(done["already_stopped"], true, "{done}");
+    assert_eq!(done["archived"], true, "{done}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4463,4 +4460,229 @@ async fn resume_launch_resumes_claude_like_codex_and_a_running_session_is_alread
         json!(["codex", "claude", "antigravity"])
     );
     h.kill_panes();
+}
+
+// ------------------------------------------------------------ contract 1.66.2 edges
+
+/// A session Sessionsation launched into pane w1:p2 whose Claude process ended before the
+/// first turn: a catalog entry and Claude's `session-env` directory, but no transcript.
+fn unprompted(f: &Fixture, home: &Path) -> (String, String) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let conversation = uuid::Uuid::new_v4().to_string();
+    launch_receipt(f, &id, "claude:personal", "running", Some(&conversation));
+    let name = format!("unprompted-{}", &id[..8]);
+    sessionsation::catalog::reserve_name(&f.paths, None, &name, &id).unwrap();
+    sessionsation::catalog::complete_reserved(
+        &f.paths,
+        &id,
+        None,
+        &name,
+        sessionsation::provider::ProviderId::Claude,
+        "personal",
+        &conversation,
+        f.project.to_str(),
+        None,
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.join("session-env").join(&conversation)).unwrap();
+    (id, conversation)
+}
+fn resume_request(h: &FakeHerdr, s: &Value, name: &str) -> Value {
+    json!({"version":1,"request_id":uuid::Uuid::new_v4().to_string(),"session_id":s["id"],
+        "expected_generation":s["generation"],"account_id":"claude:personal","name":name,
+        "host":{"session":"fixture","socket":h.socket},"space":{"kind":"existing","id":"w1"}})
+}
+fn resume_until_settled(f: &Fixture, h: &FakeHerdr, body: &Value) -> Value {
+    h.ok(f, &["resume-launch", "start"], Some(body));
+    let id = body["request_id"].as_str().unwrap();
+    let mut receipt = Value::Null;
+    wait_for("resume-launch settled", || {
+        receipt = h.ok(f, &["resume-launch", "status", "--request-id", id], None);
+        matches!(
+            receipt["phase"].as_str(),
+            Some("running" | "failed" | "uncertain")
+        )
+    });
+    receipt
+}
+fn archive_wait(f: &Fixture, h: &FakeHerdr, s: &Value) -> Value {
+    let id = s["id"].as_str().unwrap();
+    h.ok(
+        f,
+        &[
+            "archive",
+            "--session",
+            id,
+            "--expected-generation",
+            s["generation"].as_str().unwrap(),
+            "--request-id",
+            &uuid::Uuid::new_v4().to_string(),
+            "--confirm",
+            id,
+            "--wait",
+        ],
+        None,
+    )
+}
+
+/// Contract 1.66.2: a session stopped before its first turn has no transcript to resume;
+/// `resume-launch` starts Claude again under the same conversation id on its own account
+/// and directory, and says so (`resumed_from:"no_history"`). Before: `SESSION_STALE`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_launch_starts_a_session_without_history_again_under_its_id() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let h = FakeHerdr::new(&f);
+    let (id, conversation) = unprompted(&f, &home);
+    let s = f.session(&id);
+    assert_eq!(s["availability"], "stale", "{s}");
+    // Every other resume still refuses a session without history: only resume-launch starts
+    // it again, and only through its own receipt.
+    let (ok, refused) = h.run(
+        &f,
+        &[
+            "resume",
+            "--session",
+            &id,
+            "--expected-generation",
+            s["generation"].as_str().unwrap(),
+            "--herdr-session",
+            "fixture",
+        ],
+        None,
+    );
+    assert!(!ok, "{refused}");
+    assert_eq!(refused["error"]["code"], "SESSION_STALE", "{refused}");
+    let body = resume_request(&h, &s, "again");
+    let valid = h.ok(&f, &["resume-launch", "validate"], Some(&body));
+    assert_eq!(valid["resumed_from"], "no_history", "{valid}");
+    let receipt = resume_until_settled(&f, &h, &body);
+    assert_eq!(
+        receipt["phase"],
+        "running",
+        "{receipt}; pane: {}",
+        read(&h.state.join("run-w1:p2.err"))
+    );
+    assert_eq!(receipt["resumed_from"], "no_history", "{receipt}");
+    assert!(
+        receipt["detail"]
+            .as_str()
+            .unwrap()
+            .contains("fresh conversation"),
+        "{receipt}"
+    );
+    let started = read(&home.join("fake-launch-new"));
+    assert!(
+        started.contains(&format!("session={conversation}")),
+        "{started}"
+    );
+    assert!(
+        started.contains(&format!("cwd={}", f.project.display())),
+        "{started}"
+    );
+    let live = f.session(&id);
+    assert_eq!(live["availability"], "running", "{live}");
+    assert_eq!(live["conversation_id"], conversation.as_str());
+    assert_eq!(live["account_id"], "claude:personal");
+    h.kill_panes();
+}
+
+/// Contract 1.66.2: archive of a Claude session without a transcript completes with
+/// `nothing_to_archive:true` even though Claude left side files; they move with it.
+/// Before: `HISTORY_NOT_FOUND`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_without_history_archives_with_nothing_to_archive() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let h = FakeHerdr::new(&f);
+    let (id, conversation) = unprompted(&f, &home);
+    let done = archive_wait(&f, &h, &f.session(&id));
+    assert_eq!(done["phase"], "complete", "{done}");
+    assert_eq!(done["nothing_to_archive"], true, "{done}");
+    assert!(!home.join("session-env").join(&conversation).exists());
+    assert!(!f.claude_sessions().iter().any(|s| s["id"] == id.as_str()));
+}
+
+/// Contract 1.66.2: a stop right after a resume-launch closes the resume pane even while the
+/// stopped provider's wrapper is still the pane's foreground for a moment. Before: PANE_BUSY.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_after_resume_launch_closes_the_resume_pane() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let h = FakeHerdr::new(&f);
+    let conversation = uuid::Uuid::new_v4().to_string();
+    transcript(&home, &f.project, &conversation);
+    let s = by_conversation(&f, &conversation);
+    let receipt = resume_until_settled(&f, &h, &resume_request(&h, &s, "resumed"));
+    assert_eq!(receipt["phase"], "running", "{receipt}");
+    assert_eq!(receipt["pane_id"], "w1:p2");
+    let live = by_conversation(&f, &conversation);
+    assert_eq!(live["availability"], "running", "{live}");
+    // The wrapper lingers in the pane for 400 ms after the provider exits.
+    let busy = h.state.join("busy-w1:p2");
+    std::fs::write(&busy, "").unwrap();
+    let lingering = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(400));
+        std::fs::remove_file(busy).unwrap();
+    });
+    let args = stop_args(&live);
+    let done = h.ok(
+        &f,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        None,
+    );
+    lingering.join().unwrap();
+    assert_eq!(done["phase"], "complete", "{done}");
+    assert_eq!(done["pane_closed"], true, "{done}");
+    assert!(done["pane_close_reason"].is_null(), "{done}");
+    assert!(h.calls().contains("pane close w1:p2"), "{}", h.calls());
+    h.kill_panes();
+}
+
+/// Contract 1.66.2: stop of an archived session is ok, `already_stopped:true` with
+/// `archived:true`, with the generation from before the archive (before: `STALE_TARGET`) and
+/// with the current one (before: `SESSION_ARCHIVED`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_of_an_archived_session_is_already_stopped() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let h = FakeHerdr::new(&f);
+    let conversation = uuid::Uuid::new_v4().to_string();
+    transcript(&home, &f.project, &conversation);
+    let before = by_conversation(&f, &conversation);
+    let id = before["id"].as_str().unwrap().to_owned();
+    let done = archive_wait(&f, &h, &before);
+    assert_eq!(done["phase"], "complete", "{done}");
+    let all = f.api(&["state", "--archive-filter", "all"]);
+    let current = all["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id.as_str())
+        .unwrap()
+        .clone();
+    assert_ne!(current["generation"], before["generation"]);
+    for generation in [&before["generation"], &current["generation"]] {
+        let stopped = h.ok(
+            &f,
+            &[
+                "stop",
+                "--session",
+                &id,
+                "--expected-generation",
+                generation.as_str().unwrap(),
+            ],
+            None,
+        );
+        for key in sessionsation::provider::stop_shape::KEYS {
+            assert!(
+                stopped.get(key).is_some(),
+                "stop result lacks {key}: {stopped}"
+            );
+        }
+        assert_eq!(stopped["already_stopped"], true, "{stopped}");
+        assert_eq!(stopped["archived"], true, "{stopped}");
+        assert_eq!(stopped["phase"], "complete");
+        assert_eq!(stopped["session_id"], id.as_str());
+    }
 }

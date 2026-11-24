@@ -497,9 +497,12 @@ fn archive(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
     ensure_quiet(paths, provider, Some(&home), &ids)?;
     let files = collect(provider, &home, &ids)?;
     // Contract 1.63.0: a session that never had a conversation has nothing to move; it is
-    // archived (hidden) all the same. Files without the transcript stay refused.
+    // archived (hidden) all the same. Files without the transcript stay refused, except
+    // for Claude (1.66.2): a session stopped before its first turn has side files
+    // (`session-env`) but no transcript; those are moved and restored like any entry.
     let transcript = native::find_transcript(provider, &home, &s.conversation_id).is_some();
-    let nothing = !transcript && files.is_empty();
+    let side_files_only = ops::facts(provider).archive == ArchiveLayout::ClaudeProjects;
+    let nothing = !transcript && (files.is_empty() || side_files_only);
     ensure!(transcript || nothing, "HISTORY_NOT_FOUND");
     let mut m = Manifest {
         version: 1,

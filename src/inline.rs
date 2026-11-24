@@ -36,6 +36,19 @@ fn host() -> launch::Host {
 }
 /// The environment variable naming the `api resume-launch` request that typed a resume.
 pub const RESUME_OWNER_ENV: &str = "SESSIONSATION_RESUME_OWNER";
+/// Contract 1.66.2: this typed resume belongs to an `api resume-launch` (phase `resuming`)
+/// that admitted `session` as having no history, so it starts the provider again under the
+/// same conversation id instead of resuming.
+pub(crate) fn fresh_start_owned(paths: &Paths, session: &str) -> bool {
+    std::env::var(RESUME_OWNER_ENV)
+        .ok()
+        .and_then(|owner| resume::read(paths, &owner).ok())
+        .is_some_and(|r| {
+            r.phase == "resuming"
+                && r.request.session_id == session
+                && r.resumed_from.as_deref() == Some(resume::NO_HISTORY)
+        })
+}
 fn terminal(phase: &str) -> bool {
     matches!(
         phase,
@@ -219,6 +232,7 @@ pub fn begin_resume(
             detail: None,
             pane_reused: false,
             already_running: false,
+            resumed_from: None,
             workspace_id: None,
             tab_id: None,
             pane_id: info.pane_id.clone(),
@@ -582,6 +596,7 @@ mod tests {
             detail: detail.map(str::to_owned),
             pane_reused: false,
             already_running: false,
+            resumed_from: None,
             workspace_id: None,
             tab_id: None,
             pane_id: None,

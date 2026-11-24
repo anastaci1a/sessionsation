@@ -46,6 +46,7 @@ pub const FACTS: Facts = Facts {
     transcript: TranscriptFormat::ClaudeJsonl,
     terminal_input: TerminalInput::Claude,
     resume_launch: crate::provider::ops::ResumeLaunch::Native,
+    restart_without_history: true,
     plan_names: &[("pro", "Claude Pro")],
 };
 impl ProviderOps for Ops {
