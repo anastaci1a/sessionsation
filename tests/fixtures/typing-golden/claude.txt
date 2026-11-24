@@ -251,7 +251,7 @@
 ["--session","fixture","pane","read","w1:p1","--source","visible","--format","ansi"] => o39
 ["--session","fixture","agent","list"] => o1
 ["--session","fixture","pane","process-info","--pane","w1:p1"] => o37
-=> {"antigravity_input":null,"correlation":null,"draft":{"chars":11,"left_chars":null,"left_in_input":null,"present":true,"restore_error":null,"restored":null},"escaped_prefix":false,"gemini_input":null,"reason":"TERMINAL_PANE_IS_SHELL","state":"rejected","steps":["clear","type","submit"],"view_switched":null,"written":false}
+=> {"antigravity_input":null,"correlation":null,"draft":{"chars":11,"left_chars":null,"left_in_input":"unknown","present":true,"restore_error":"withdraw_unverified_draft_kept_in_journal","restored":false},"escaped_prefix":false,"gemini_input":null,"reason":"TERMINAL_PANE_IS_SHELL","state":"rejected","steps":["clear","type","submit"],"view_switched":null,"written":false}
 ## queue refused
 => refused TERMINAL_QUEUE_UNSUPPORTED
 ## orphan withdrawn by the cleanup worker

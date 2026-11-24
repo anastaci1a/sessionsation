@@ -714,8 +714,26 @@ async fn typed_input<P: ScreenProfile>(
     })?;
     // The screen read above came well after the last typed key, so Gemini's
     // 30 ms fast-return rule (Enter right after typing is a newline) is past.
-    if let Err(code) = host.provider_in_front(t.pid, t.process_start) {
-        return reject(paths, id, code);
+    // Contract 1.67.0 (fix): a refusal here comes after typing, so the typed text is
+    // withdrawn and the draft put back like every other post-typing refusal. When the
+    // provider is gone (its shell is in front), keys would run in the shell instead:
+    // nothing is sent and the draft stays in the journal.
+    match host.provider_in_front(t.pid, t.process_start) {
+        Ok(()) => {}
+        Err(code @ ("TERMINAL_PANE_IS_SHELL" | "TERMINAL_PROVIDER_EXITED")) => {
+            if !draft.is_empty() {
+                unverified::<P>(
+                    paths,
+                    id,
+                    "withdraw_unverified_draft_kept_in_journal",
+                    &Err(code),
+                    draft,
+                    text,
+                )?;
+            }
+            return reject(paths, id, code);
+        }
+        Err(code) => return withdraw::<P>(paths, id, host, text, draft, code).await,
     }
     let sent = host.keys(&[key.key]);
     match P::DRAFT {

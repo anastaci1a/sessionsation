@@ -17,11 +17,11 @@
     "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13994 },
+    "doc_bytes:docs/changelog.md": { "value": 13998 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
     "doc_bytes:docs/contract.md": { "value": 230998 },
     "doc_bytes:docs/operations.md": { "value": 23430 },
-    "doc_bytes_total": { "value": 308328 },
+    "doc_bytes_total": { "value": 308332 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -62,7 +62,7 @@
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 102792 },
+    "src_lines": { "value": 102810 },
     "stale_target_literals": { "value": 62 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -1165,6 +1165,27 @@
       "by": 1,
       "reason": "S8: Claude's apply_session_input (claude_steer.rs) stays, the design's one remaining apply_session_input_fns site: it picks hosted, terminal or peer input, which the typed-only typing::apply_session_input does not",
       "considered": "Folding Claude's row into typing::apply_session_input would move the hosted and peer paths into the typing owner; the design keeps it (apply_session_input_fns target 1)",
+      "step": "1.67.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 18,
+      "reason": "1.67.0 fix: a refusal of the provider check before Enter withdraws the typed text and restores the draft; with the shell in front the draft stays in the journal",
+      "considered": "n/a",
+      "step": "1.67.0"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 4,
+      "reason": "1.67.0 fix line; the 1.65.0 internal dispatch note (an internal refactor, history in Git) dropped to stay within the cap",
+      "considered": "n/a",
+      "step": "1.67.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 4,
+      "reason": "1.67.0 changelog fix line",
+      "considered": "n/a",
       "step": "1.67.0"
     }
   ],

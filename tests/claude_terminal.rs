@@ -1235,6 +1235,78 @@ async fn a_dispatching_orphan_is_not_dispatched_again() {
     );
 }
 
+/// Contract 1.67.0 (fix): the last provider check before Enter comes after typing. When it
+/// fails, the typed text is withdrawn and the draft put back, as for every other refusal after
+/// typing. With the provider's shell in front, nothing more is typed into the pane (the keys
+/// would run in the shell) and the draft stays in the private journal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_provider_check_before_enter_withdraws_the_typed_text() {
+    let f = fixture().await;
+    let (_claude, id, reset) = live_pane(&f).await;
+    let enters = |f: &Fixture| {
+        f.writes()
+            .into_iter()
+            .flatten()
+            .filter(|x| x == "enter")
+            .count()
+    };
+    let journal_draft = |m: &str| {
+        let j: Value = serde_json::from_str(&read(
+            &f.paths
+                .root
+                .join(sessionsation::layout::CLAUDE_STEER)
+                .join(format!("{m}.json")),
+        ))
+        .unwrap();
+        j["terminal"]["draft"].clone()
+    };
+    // HERDR cannot answer the process check after typing: withdrawn, the draft back.
+    reset(json!({"input":"my draft","on_type":{"process_info_broken":true}}));
+    let b = body("steer", &f.session(&id), "never submitted.");
+    f.send_ok(&b);
+    let r = f.settled(b["message_id"].as_str().unwrap());
+    assert_eq!(r["state"], "rejected", "{r}");
+    assert_eq!(r["reason"], "TERMINAL_HOST_UNAVAILABLE");
+    assert_eq!(r["facts"]["written"], false);
+    assert_eq!(r["terminal_input"]["draft"]["restored"], true, "{r}");
+    assert!(
+        r["terminal_input"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s == "withdraw"),
+        "{r}"
+    );
+    assert_eq!(
+        f.tui()["input"],
+        "my draft",
+        "the typed text is gone, the draft back"
+    );
+    assert_eq!(enters(&f), 0);
+    // The provider's shell is in front after typing: no withdraw keys into the shell.
+    reset(json!({"input":"shell draft","on_type":{"shell_foreground":true}}));
+    let b = body("steer", &f.session(&id), "typed then a shell.");
+    let m = b["message_id"].as_str().unwrap().to_owned();
+    f.send_ok(&b);
+    let r = f.settled(&m);
+    assert_eq!(r["state"], "rejected", "{r}");
+    assert_eq!(r["reason"], "TERMINAL_PANE_IS_SHELL");
+    let d = &r["terminal_input"]["draft"];
+    assert_eq!(d["restored"], false, "{r}");
+    assert_eq!(
+        d["restore_error"],
+        "withdraw_unverified_draft_kept_in_journal"
+    );
+    assert_eq!(d["left_in_input"], "unknown");
+    assert_eq!(journal_draft(&m), "shell draft");
+    let last = f.writes().last().cloned().unwrap();
+    assert!(
+        last.iter().any(|x| x == "send-text"),
+        "nothing was sent after the typed text: {last:?}"
+    );
+    assert_eq!(enters(&f), 0);
+}
+
 #[path = "support/typing_golden.rs"]
 mod typing_golden;
 

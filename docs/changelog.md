@@ -20,7 +20,8 @@ and package history are in Git.
 
 ## Versions
 
-- **1.67.0** (internal: typing engine) No client change.
+- **1.67.0** (internal: typing engine) Fix: a refused check before Enter withdraws the
+  typed text and restores the draft.
 - **1.66.3** The supervisor no longer waits for `codex --version` (0.5 s at most) to
   serve. [Operations](operations.md#safe-service-maintenance).
 - **1.66.2** `resume-launch` starts a Claude session without a transcript again under its
@@ -44,7 +45,6 @@ and package history are in Git.
   `window_reasons`; a window past its reset is stale until a triggered read. Claude meter
   reads carry `cedar_ember`; `reset_credits` gains `fresh`, `age_seconds`; Claude
   `reset-credit` adds `cycles_started`. [Usage](contract.md#limits-plan-and-usage).
-  Also internal: one provider dispatch owner, `provider::ops`.
 - **1.64.0** One `api send` body for every provider (intents `deliver`, `when_idle`,
   `interrupt`; `ignored_options`; one `delivery` block), supervisor-owned delivery
   workers with one safe re-dispatch; `api events`, `api hooks [install]`, Claude

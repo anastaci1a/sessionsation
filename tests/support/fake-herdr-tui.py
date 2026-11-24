@@ -20,6 +20,7 @@ State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
   garble_once         drop the last character of the next typed chunk
   fail_text_at, no_clear, keep_on_enter, on_type   golden fault options (see the
                       send-text and send-keys handlers)
+  process_info_broken `pane process-info` fails
   wrap, window        soft-wrap the box at `wrap` columns and show only its last `window` rows
   fail_enter          `send-keys enter` fails and submits nothing
   break_journal       directory of Sessionsation's request records; after the first typed text each
@@ -298,6 +299,8 @@ if cmd == "agent list":
     out({"result": {"agents": [{"agent": "claude", "agent_status": status, "pane_id": state["pane"]}],
                     "type": "agent_list"}})
 elif cmd == "pane process-info":
+    if state.get("process_info_broken"):
+        fail("process_info_failed")
     front = {"pid": 1, "name": "bash"} if state.get("shell_foreground") else {"pid": state["pid"], "name": "claude"}
     out({"result": {"process_info": {"shell_pid": 1, "foreground_processes": [front]}}})
 elif cmd == "pane read":
