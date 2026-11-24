@@ -215,7 +215,8 @@ registry `sessions/<pid>.json` `sessionId` (PID and start time verified); Codex 
 thread of its single open rollout (tmux TUIs), else its `resume <thread>` argv; Gemini
 a process whose command line names the id (`gemini_process_source:
 "cmdline_session_id_argument"`); Antigravity the open `presence/UUID.lock` or the
-`--conversation` argument. When a process switches conversation in its terminal, the
+`--conversation` argument (`antigravity_process_source:
+"open_presence_lock_or_conversation_argument"`). When a process switches conversation in its terminal, the
 existing entry of the new conversation takes over the attachment (name, account,
 history kept) and the entry it left is released to `stopped`. A Codex TUI connected
 to an app-server (`--remote`) and a Gemini `/resume` do not expose a switch, so it is
@@ -597,7 +598,10 @@ does not adopt legacy switcher jobs. `source_session_id` is the stable backend I
 or null if the source was removed from the catalog; `provider_conversation_id` is
 separate. New launch, resume and account-deletion records expose immutable
 `created_at` admission time; legacy records omit it when unknown (never substitute
-`updated_at`). Public recovery rejects jobs outside this contract.
+`updated_at`). Public recovery rejects jobs outside this contract. Codex switch,
+restart, relocate, resume and launcher resume, and Auto Start, refuse with
+`SESSION_UNAVAILABLE` when discovery finds no history source for the session (homes
+are compared by resolved path, so a legacy compatibility link does not cause it).
 
 Account deletion records have `kind:"account_delete"`, `account_id`, `id`, `phase`,
 `detail`, `updated_at`, `history_home`, `history_preserved` and `can_cancel:false`;
@@ -610,7 +614,9 @@ they have no source session. Terminal phases are `complete` and `failed`. See
 for Claude). A terminal client executes the exact argv without a shell, applying cwd
 only when non-null. The backend revalidates the session when the resume plan
 executes. Do not reconstruct provider launch commands or handle credentials in a
-client. Plain-shell launch sets the recursion bypass.
+client. Plain-shell launch and every command typed into a pane set
+`SESSIONSATION_LAUNCHER_BYPASS=1`, which Sessionsation never reads: it tells a
+shell-profile launcher not to start another session.
 
 ## New-session launch
 
@@ -968,7 +974,9 @@ fields `model` and `reasoning_effort`.
   launch-to-delivered-brief (`ready_timeout`; a send in flight then is
   `delivery_unknown`, never `not_sent`); no launch receipt 120 s after admission is
   `launch_failed`. Brief limits: Claude held 8192 bytes and the terminal-input rules,
-  initial prompt 32768 bytes and not starting with `/ ! #`, Codex 16384 bytes.
+  initial prompt 32768 bytes and not starting with `/ ! #`, Codex 16384 bytes (a brief
+  file over 65536 bytes, an initial prompt or Codex brief over its limit is
+  `INPUT_TOO_LARGE`; the held Claude brief `TERMINAL_TEXT_TOO_LONG`).
   `--wait N` (default 0, max 1800) ends without `complete` as `MODEL_NOT_CONFIRMED`,
   `PROMPT_NOT_DELIVERED`, `PROVIDER_LAUNCH_FAILED` or `LAUNCH_ACK_UNCERTAIN` with
   `error.operation`; without it `ok:true` is only the admission. The same
@@ -1003,7 +1011,8 @@ Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
   Code's registry names as the holder of the conversation (exact pid, /proc start time,
   config home), re-read under the conversation lock and signalled through a pidfd
   whose start time is checked after opening (otherwise `SESSION_STATE_UNVERIFIED`,
-  nothing signalled). SIGTERM only, then up to 10 s. A turn in progress is interrupted
+  nothing signalled). SIGTERM only, then up to 10 s
+  (`claude_lifecycle.stop.wait_seconds`). A turn in progress is interrupted
   (`interrupted_turn:true`; its unfinished reply is not saved); the transcript stays
   resumable. Background (`bg`) sessions and pre-started spares are
   `UNSUPPORTED_PROVIDER_OPERATION` (they belong to Claude's daemon); hosted sessions
@@ -1017,7 +1026,8 @@ Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
   text.
 - **Gemini** has no stop: `UNSUPPORTED_PROVIDER_OPERATION` with `error.supported:false`
   and `error.reason`, also the row's `capability_reasons.stop`.
-- A session with no running process (not archived) returns `already_stopped:true`,
+- A session with no running process (not archived; for Codex, a session whose source
+  discovery reports `SESSION_UNAVAILABLE`) returns `already_stopped:true`,
   `phase:"complete"`, `interrupted_turn:false`, `pane_closed:false`; the generation is
   still checked. Archived: `SESSION_ARCHIVED`.
 - Errors: `STOP_TIMEOUT` (not exited in time; never killed, SIGKILL is never sent;
@@ -1164,7 +1174,9 @@ the control only when present; it carries `default_prompt`, `default_prompt_cras
   - A supervisor or daemon restart on the same boot starts nothing, and the first
     pass after an upgrade only records the boot and array ids.
 - **Explicit stop** keeps the mode and only marks the stop
-  (`last_result` `skipped_explicit_stop` / `EXPLICIT_STOP`), so the next boot starts
+  (`last_result` `skipped_explicit_stop` / `EXPLICIT_STOP`; the exit skips are
+  `skipped_clean_exit` / `CLEAN_EXIT` and `exit_unclassified` / `EXIT_UNCLASSIFIED`, a
+  failed start `failed` / `RECOVERY_FAILED`), so the next boot starts
   the session; `api stop --disable-auto-start` also sets it to `disabled`. Archive
   and delete set `disabled` (`ARCHIVED_OR_DELETED`). `switch` and `restart` only
   suppress it until the session is observed live again.
@@ -1326,7 +1338,8 @@ capacity, leaves a live idle session that accepts input (`actions.resume` stays
 available too).
 
 Native send checks (Codex submit/queue; capability `native_send_checks`): acceptance
-is not consumption. (1) Before the send, up to 20 s are spent (without holding the
+is not consumption; `SESSIONSATION_NATIVE_SEND_CHECKS=off` turns (1) and (3) off
+(test fixtures only). (1) Before the send, up to 20 s are spent (without holding the
 ledger) waiting for input readiness: a process older than 4 s whose thread answers
 native reads with a settled turn state; busy, blocked and interrupted states end the
 wait at once. (2) A late or lost add acknowledgement is reconciled against the native
@@ -1993,7 +2006,8 @@ event.
 | Provider | Source | Kinds |
 |---|---|---|
 | Claude | `hook`: Claude Code hooks (below), ingested every 2 s by the supervisor (`SESSIONSATION_EVENTS_SECONDS`, 0 disables) and on every `api events` / full `api state` | all but `background_task_finished` |
-| Codex | `supervisor`: each full state observation of a running session's turn facts (a turn end is identified by its rollout timestamp) | `turn_started`, `turn_completed`; `compacted` (`source:"operation"`) when a Sessionsation compaction completes |
+| Codex | `supervisor`: each full state observation of a running session's turn facts (a turn end is identified by its rollout timestamp; `task_complete` is `completed` or
+`failed`, `turn_aborted` `interrupted`) | `turn_started`, `turn_completed`; `compacted` (`source:"operation"`) when a Sessionsation compaction completes |
 | Antigravity | `supervisor`: the agy step log, as transitions between observations (a very short turn can be missed) | `turn_started`, `turn_completed` |
 | Gemini | none (`supported:false`) | |
 
@@ -2193,7 +2207,8 @@ session ID, and admit a durable background job (`kind` `archive_session`,
 `complete` confirms it, and the terminal phases are `complete` and `failed`. Jobs are
 not cancellable and never replayed; the same request/target/generation returns the
 original job, a reused ID with different input is rejected. The worker waits up to
-120 s for the exclusive account lock (backoff 50 ms to 1 s; phase
+120 s (`SESSIONSATION_ACCOUNT_WAIT_MS` shortens it in tests) for the exclusive
+account lock (backoff 50 ms to 1 s; phase
 `waiting_for_account`; then `ACCOUNT_BUSY: an account operation held the lock for
 120s`). `--wait` polls until `complete` (`ok:true` with the operation) or `failed`
 (`OPERATION_FAILED`, `error.operation`, retryable when the detail starts with
@@ -2537,7 +2552,12 @@ contacts a provider) carry `usage.meter`:
 ## Providers
 
 `capabilities.providers[]` reports `codex`, `claude`, `gemini` and `antigravity`
-(`implemented:true`, flat booleans, `operations` with `{supported, reason}`). The
+(`implemented:true`, `operations` with `{supported, reason}`, and flat booleans and
+fields such as `adopt_config_dir`, `account_switch` (with `operations.account_switch`),
+`account_removal`, `account_deletion`, `account_rename`, `account_refresh`,
+`account_limits`, `account_logout`, `usage`, `usage_state` and `usage_source`, for
+example `codex-app-server-rate-limits`, `claude-code-statusline`,
+`gemini-cli-unsupported`, `antigravity-cli-unsupported`). The
 `operations` table is the source of truth; this section lists provider-specific
 behaviour. There is no cross-provider conversation conversion. Every provider child
 is built by one environment function per provider that sets the account home, removes
@@ -2698,8 +2718,9 @@ session reports `availability:"running"`, `resume:false`, `stop`/`restart` reaso
 
 Request (`ClaudeSteerRequest`): the ordinary `api send` fields with
 `mode:"submit"|"queue"|"steer"`, optional `timeout_seconds` (reply wait, default 600,
-max 3600), `delivery` (`auto` default, `hosted_stream_json`, `terminal_input`,
-`peer_message` or `native`), `origin` (`operator`|`agent`), `await_reply` (boolean,
+max 3600), `delivery` (`claude_input_delivery.delivery_request`: field `delivery`,
+values `auto` (default), `hosted_stream_json`, `terminal_input`, `peer_message`; `native`
+is also accepted), `origin` (`operator`|`agent`), `await_reply` (boolean,
 default false) and, for steer, `"steering":{"version":1,"interrupt":bool}`.
 Priorities: submit `next`, queue `later`, steer `next`. There is no idle preflight:
 the provider orders inputs. Claude Code folds a `next` input into a running turn at
@@ -2714,7 +2735,7 @@ interrupt_option:"steering.interrupt",interrupted_inputs_state:"interrupted"}`; 
 `["hosted_stream_json","terminal_input","peer_message"]`). A running hosted worker
 always wins. Otherwise, with `delivery:"auto"`, a `submit` or `steer` from an `agent`
 origin (or `delivery:"native"`) tries the native peer message first, waiting up to
-5 s for the endpoint, and types into the HERDR pane only when nothing native was
+5 s (`SESSIONSATION_NATIVE_WAIT_SECONDS`) for the endpoint, and types into the HERDR pane only when nothing native was
 possible: no verified registry entry, `peerProtocol` other than 1, inbound messages
 not accepted, `PEER_SOCKET_UNLINKED` or `PEER_SOCKET_UNREACHABLE` (receipt
 `native_fallback:{from:"peer_message",to:"terminal_input",reason,stage}`, `stage`
@@ -2850,7 +2871,11 @@ sender whose latest `turn_context` records approval `never` with sandbox
 `danger-full-access`, is `bypass`; everything else is `prompting`. A mismatch with the
 receiver makes Claude hold the message for approval; that is intended. Inside the
 body every `<cross-session-message` and `</cross-session-message` gets a zero-width
-space after the `<`. The config key `native_sender_registration` is a no-op.
+space after the `<`. The config key `native_sender_registration` is a no-op: no sender
+registry entry is written, and receipts written while it worked may still carry
+`sender_registration` with `SENDER_NAME_COLLIDES_WITH_LIVE_SESSION`,
+`SENDER_REGISTRY_UNAVAILABLE`, `SENDER_PID_FILE_FOREIGN` or `SENDER_NAME_INVALID`. The
+supervisor still sweeps such entries (both ownership markers, dead pid) every 60 s.
 
 Status frames: `delivered` → `native_accepted`, `held` → `held` (a bypass-permission
 receiver), `denied`/`refused`/`dropped` → `refused` (`PEER_MESSAGE_DENIED|REFUSED|DROPPED`),

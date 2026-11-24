@@ -19,9 +19,9 @@
     "doc_bytes:docs/architecture.md": { "value": 7553 },
     "doc_bytes:docs/changelog.md": { "value": 13278 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
-    "doc_bytes:docs/contract.md": { "value": 222202 },
+    "doc_bytes:docs/contract.md": { "value": 224144 },
     "doc_bytes:docs/operations.md": { "value": 22987 },
-    "doc_bytes_total": { "value": 298373 },
+    "doc_bytes_total": { "value": 300315 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -695,6 +695,20 @@
       "counter": "doc_bytes_total",
       "by": 581,
       "reason": "D1: agents/README.md caps paragraph",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 1942,
+      "reason": "D1 review: restored INPUT_TOO_LARGE, RECOVERY_FAILED, CLEAN_EXIT, EXIT_UNCLASSIFIED, SESSION_UNAVAILABLE and the SENDER_* codes, the provider capability keys, claude_lifecycle.stop.wait_seconds, delivery_request and four environment variables",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 1942,
+      "reason": "D1 review: contract.md restorations",
       "considered": "n/a",
       "step": "D1"
     }
