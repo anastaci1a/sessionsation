@@ -207,14 +207,16 @@
           "type": "string"
         },
         "conversation_id": {
-          "type": "string"
+          "type": ["string", "null"],
+          "description": "Null only on a launching row (since 1.66.0)."
         },
         "revision": {
           "type": "integer",
           "minimum": 1
         },
         "generation": {
-          "type": "string",
+          "type": ["string", "null"],
+          "description": "Null only on a launching row (since 1.66.0).",
           "pattern": "^[a-f0-9]{64}$"
         },
         "attachment": {
@@ -235,9 +237,11 @@
             "archived",
             "stopped",
             "stale",
-            "unknown"
+            "unknown",
+            "launching"
           ]
         },
+        "availability_reason": {"type": ["string", "null"], "description": "Since 1.66.0: LAUNCHING: <phase>, NO_CONVERSATION_YET, PROVIDER_EXITED or null."},
         "capabilities": {
           "type": "object",
           "properties": {
@@ -2174,7 +2178,7 @@
         },
         "account_id": {
           "type": "string",
-          "pattern": "^codex:[A-Za-z0-9_-]+$"
+          "pattern": "^(codex|claude|antigravity|gemini):[A-Za-z0-9_-]+$"
         },
         "name": {
           "type": "string",
@@ -2318,9 +2322,11 @@
             "running",
             "failed",
             "recovered",
-            "uncertain"
+            "uncertain",
+            "resuming"
           ]
         },
+        "already_running": {"type": "boolean", "description": "Since 1.66.0: the session was already running; nothing was started (phase running). Omitted when false."},
         "detail": {
           "type": [
             "string",

@@ -3,7 +3,7 @@
   "counters_digest": "7a1362d75516f452c2487c88413b88f04b88f31062c4fa6857c4007feb8db7ff",
   "counters": {
     "alive_fns": { "value": 0 },
-    "api_rs_lines": { "value": 5486 },
+    "api_rs_lines": { "value": 5624 },
     "apply_session_input_fns": { "value": 3 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 0 },
@@ -17,15 +17,15 @@
     "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13944 },
+    "doc_bytes:docs/changelog.md": { "value": 13989 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
-    "doc_bytes:docs/contract.md": { "value": 227496 },
+    "doc_bytes:docs/contract.md": { "value": 229880 },
     "doc_bytes:docs/operations.md": { "value": 22987 },
-    "doc_bytes_total": { "value": 304333 },
+    "doc_bytes_total": { "value": 306762 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
-    "error_code_literals": { "value": 681 },
+    "error_code_literals": { "value": 683 },
     "file_cache_statics": { "value": 8 },
     "flock_sites": { "value": 87 },
     "fs2_imports": { "value": 32 },
@@ -56,13 +56,13 @@
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
     "sha256_digests": { "value": 25 },
-    "since_contract_literals": { "value": 42 },
+    "since_contract_literals": { "value": 43 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 101307 },
+    "src_lines": { "value": 101795 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -898,6 +898,55 @@
       "counter": "doc_bytes_total",
       "by": 44,
       "reason": "1.66.0 changelog entry (S3)",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 138,
+      "reason": "1.66.0 lifecycle: state rows get availability reasons and launching rows, stop/archive of an unknown session (one terminal answer) and pane close on already_stopped, resume_launch_native, capability session_lifecycle",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 45,
+      "reason": "1.66.0 lifecycle entry (with the S3 internal note); the performance-only 1.57.x, 1.46.6 and 1.45.1 entries were folded or cut to stay under the cap",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 2384,
+      "reason": "1.66.0 lifecycle: launching rows and availability_reason (identity and snapshots), the unknown-session answer and launch-pane close (stop), uniform resume-launch (saved-session resume)",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 2429,
+      "reason": "1.66.0 lifecycle: docs/contract.md and docs/changelog.md as above",
+      "considered": "n/a",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "error_code_literals",
+      "by": 2,
+      "reason": "1.66.0 lifecycle: the new retryable refusal SESSION_LAUNCHING (one constant), the unknown-session test against the catalog's SESSION_NOT_FOUND, the archive confirmation for an unknown session, and the SESSIONSATION_RESUME_OWNER variable name the pattern also matches",
+      "considered": "the availability_reason codes and the capability reasons derive from existing constants (PROVIDER_EXITED, NO_CONVERSATION_YET, SESSION_LAUNCHING) instead of new literals, and validate_native relies on ensure_resumable for SESSION_ALREADY_RUNNING; the archive confirmation cannot reuse archiving::start, which resolves the session first",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "since_contract_literals",
+      "by": 1,
+      "reason": "1.66.0 lifecycle: capability session_lifecycle",
+      "considered": "resume_launch, unknown_session and launch_listing share one block with one literal instead of three top-level blocks; contract.rs (the owner) does not exist yet",
+      "step": "1.66.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 488,
+      "reason": "1.66.0 lifecycle: launch::annotate_availability, launching rows, pending/launched_pane, the unknown-session stop and archive answers, pane close on already_stopped, ResumeLaunch fact per provider, native resume-launch admission and worker (phase resuming, owner hand-off to the typed resume), and their tests' helpers",
       "considered": "n/a",
       "step": "1.66.0"
     }

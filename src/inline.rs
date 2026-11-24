@@ -34,6 +34,8 @@ fn host() -> launch::Host {
         socket: "/".into(),
     }
 }
+/// The environment variable naming the `api resume-launch` request that typed a resume.
+pub const RESUME_OWNER_ENV: &str = "SESSIONSATION_RESUME_OWNER";
 fn terminal(phase: &str) -> bool {
     matches!(
         phase,
@@ -169,10 +171,16 @@ pub fn begin_resume(
     let info = info()?;
     settle_resumptions(paths);
     let _lock = resume::lock(paths)?;
+    // Contract 1.66.0: the `api resume-launch` receipt that typed this command (phase
+    // `resuming`) is this resume, not another one in progress.
+    let owner = std::env::var(RESUME_OWNER_ENV).ok();
+    let parent = |prior: &resume::Receipt| {
+        owner.as_deref() == Some(prior.request.request_id.as_str()) && prior.phase == "resuming"
+    };
     ensure!(
-        !resume::records(paths)?
-            .iter()
-            .any(|prior| prior.request.session_id == s.id && !terminal(&prior.phase)),
+        !resume::records(paths)?.iter().any(|prior| {
+            prior.request.session_id == s.id && !terminal(&prior.phase) && !parent(prior)
+        }),
         "RESUME_IN_PROGRESS"
     );
     {
@@ -210,6 +218,7 @@ pub fn begin_resume(
             phase: "starting_provider".into(),
             detail: None,
             pane_reused: false,
+            already_running: false,
             workspace_id: None,
             tab_id: None,
             pane_id: info.pane_id.clone(),
@@ -572,6 +581,7 @@ mod tests {
             phase: phase.into(),
             detail: detail.map(str::to_owned),
             pane_reused: false,
+            already_running: false,
             workspace_id: None,
             tab_id: None,
             pane_id: None,

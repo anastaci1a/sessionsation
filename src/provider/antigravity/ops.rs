@@ -48,6 +48,7 @@ pub const FACTS: Facts = Facts {
     archive: ArchiveLayout::AgyIndex,
     transcript: TranscriptFormat::AgyLog,
     terminal_input: TerminalInput::Agy,
+    resume_launch: crate::provider::ops::ResumeLaunch::Native,
     plan_names: &[],
 };
 impl ProviderOps for Ops {

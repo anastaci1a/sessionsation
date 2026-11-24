@@ -21,9 +21,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 65;
+pub const CONTRACT_MINOR: u32 = 66;
 pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.65.0";
+pub const CONTRACT_VERSION: &str = "1.66.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -2132,6 +2132,29 @@ pub fn capabilities() -> Value {
     value["session_model"] = crate::messaging::model_change::capability();
     value["stop_closes_pane"] = json!(true);
     value["stop_keep_pane"] = json!(true);
+    // Contract 1.66.0: one resume-launch for every provider that can resume, the stable
+    // answer for a session Sessionsation does not know, and launches that stay listed.
+    let resumable: Vec<&str> = ProviderId::ALL
+        .into_iter()
+        .filter(|p| !matches!(ops::facts(*p).resume_launch, ops::ResumeLaunch::Refused(_)))
+        .map(ProviderId::as_str)
+        .collect();
+    let refused: serde_json::Map<String, Value> = ProviderId::ALL
+        .into_iter()
+        .filter_map(|p| match ops::facts(p).resume_launch {
+            ops::ResumeLaunch::Refused(reason) => Some((p.as_str().to_owned(), json!(reason))),
+            _ => None,
+        })
+        .collect();
+    let resume_launch = json!({"providers":resumable,"unsupported":refused,
+        "running":"phase running with already_running:true; nothing is started","account_change":ProviderId::ALL.into_iter().filter(|p| ops::facts(*p).resume_launch == ops::ResumeLaunch::Transfer).map(ProviderId::as_str).collect::<Vec<_>>()});
+    let unknown_session = json!({"commands":["stop","archive"],
+        "result":{"phase":"complete","not_found":true,"stop":"already_stopped:true","archive":"nothing_to_archive:true"},
+        "launching":crate::launch::SESSION_LAUNCHING.split(':').next(),"pane":"the pane of Sessionsation's own launch of that id is closed as after a stop"});
+    let launching = json!({"availability":"launching","field":"availability_reason",
+        "reasons":crate::launch::availability_reasons()});
+    value["session_lifecycle"] = json!({"since_contract":"1.66.0","resume_launch":resume_launch,
+        "unknown_session":unknown_session,"launch_listing":launching});
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
     value["launch_model"] = json!({"since_revision":38,"request_fields":["model","reasoning_effort"],"requests":["launch"],"providers":["codex"],"reasoning_efforts":crate::launch::REASONING_EFFORTS,"errors":["INVALID_MODEL","INVALID_REASONING_EFFORT",ops::UNSUPPORTED],"model_not_checked_against_account":true});
     value["turn_notify"] = crate::turn_notify::capability();
@@ -2835,6 +2858,12 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         session["capabilities"]["auto_start"] = json!(reason.is_none());
         session["capability_reasons"]["auto_start"] = json!(reason);
     }
+    // Contract 1.66.0: availability reasons, and admitted launches not in the catalog yet.
+    crate::launch::annotate_availability(
+        paths,
+        &mut sessions,
+        !matches!(filter, ArchiveFilter::Archived),
+    );
     let observed_at = daemon::now();
     let value = json!({"observed_at":observed_at,"account_source":source,
         "accounts":accounts,"sessions":sessions,"hosts":placements["hosts"],
@@ -3211,7 +3240,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             expected_generation,
             disable_auto_start: true,
             ..
-        } => Some(catalog::resolve(paths, session, expected_generation)?),
+        } if !unknown_session(paths, session) => {
+            Some(catalog::resolve(paths, session, expected_generation)?)
+        }
         _ => None,
     };
     let mut result = match command {
@@ -3463,6 +3494,9 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         Command::Version => version_for(paths)?,
         Command::DiskSpace => crate::disk_space::report(paths),
         Command::Archives => external::archiving::list(paths)?,
+        Command::Archive { target } if unknown_session(paths, &target.session) => {
+            archive_unknown(paths, &target).await?
+        }
         Command::Archive { target } => {
             queue_and_wait(paths, external::archiving::Kind::Archive, target).await?
         }
@@ -3777,6 +3811,10 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 .await?,
             )?
         }
+        // Contract 1.66.0: a session Sessionsation does not know ends a retire, never blocks it.
+        Command::Stop {
+            session, keep_pane, ..
+        } if unknown_session(paths, &session) => stop_unknown(paths, &session, keep_pane).await?,
         // Contract 1.63.0: Gemini CLI cannot run sessions for individual accounts any more.
         Command::Stop {
             session,
@@ -3827,7 +3865,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 Err(e) => return Err(e),
             };
             match found {
-                Err(s) => already_stopped(paths, &s)?,
+                Err(s) => already_stopped(paths, &s, keep_pane).await?,
                 Ok((s, source)) => {
                     let (pid, start) = (source.pid, source.start_time);
                     let queued = operation(
@@ -3893,6 +3931,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     new_space: new_space.as_deref(),
                     create_space,
                     name: name.as_deref(),
+                    owner: None,
                 },
                 &directory,
             )
@@ -3931,6 +3970,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     new_space: new_space.as_deref(),
                     create_space,
                     name: name.as_deref(),
+                    owner: None,
                 },
                 &directory,
             )
@@ -4205,6 +4245,8 @@ struct ResumeTarget<'a> {
     new_space: Option<&'a str>,
     create_space: bool,
     name: Option<&'a str>,
+    /// The `api resume-launch` request typing the resume (contract 1.66.0).
+    owner: Option<&'a str>,
 }
 /// The resolved destination: an existing Space id or a Space to create, and the
 /// label the session will live in.
@@ -4309,6 +4351,7 @@ fn resume_placement<'a>(
         new_space,
         label: Some(s.name.as_str()).filter(|n| !n.trim().is_empty()),
         strict: true,
+        owner: None,
     }
 }
 /// `api resume` into HERDR: resolve the destination, apply the name (unique in
@@ -4348,16 +4391,53 @@ async fn resume_into(
         account,
         Some(&s.conversation_id),
         (&s.id, &s.generation()),
-        resume_placement(
-            destination.space.as_deref(),
-            destination.new_space.as_deref(),
-            &s,
-        ),
+        external::hosting::Placement {
+            owner: target.owner,
+            ..resume_placement(
+                destination.space.as_deref(),
+                destination.new_space.as_deref(),
+                &s,
+            )
+        },
     )
     .await?;
     // The pane is confirmed running: recording the Space is best effort.
     catalog::record_space_best_effort(paths, &s.id, &destination.label, "launch");
     Ok(result)
+}
+/// Contract 1.66.0: `api resume-launch` of a provider that resumes natively runs the
+/// `api resume --herdr-session` path with the request's server, Space and name.
+pub(crate) async fn resume_launch_native(
+    paths: &Paths,
+    r: &crate::resume::Request,
+) -> Result<Value> {
+    let (s, observation) = native_selected(paths, &r.session_id, &r.expected_generation)?;
+    native::ensure_resumable(&s, &observation)?;
+    crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
+    let directory = native::resume_directory(&s, &observation)?;
+    let account = format!("{}:{}", s.provider, s.account);
+    let (space, new_space) = match &r.space {
+        crate::launch::Space::Existing { id } => (Some(id.as_str()), None),
+        crate::launch::Space::New { label } => (None, Some(label.as_str())),
+    };
+    let target = ResumeTarget {
+        space,
+        new_space,
+        create_space: false,
+        name: Some(&r.name),
+        owner: Some(&r.request_id),
+    };
+    let generation = r.expected_generation.clone();
+    resume_into(
+        paths,
+        s,
+        &generation,
+        &r.host.session,
+        &account,
+        target,
+        &directory,
+    )
+    .await
 }
 /// Apply a resume's `--name`, unique only in the destination Space (not the old
 /// one); the Space itself is recorded after a verified start.
@@ -4414,7 +4494,7 @@ async fn stop_antigravity(
 ) -> Result<Value> {
     let (s, observation) = native_selected(paths, id, generation)?;
     if observation.availability != "running" {
-        return already_stopped(paths, &s);
+        return already_stopped(paths, &s, keep_pane).await;
     }
     let account = native::account(paths, ProviderId::Antigravity, &s.account)?;
     let _lock = crate::external::conversation_lock(paths, &s.conversation_id)?;
@@ -4483,7 +4563,7 @@ async fn stop_claude(paths: &Paths, id: &str, generation: &str, keep_pane: bool)
     let (s, observation) = native_selected(paths, id, generation)?;
     match observation.availability {
         "running" => {}
-        "stopped" | "stale" => return already_stopped(paths, &s),
+        "stopped" | "stale" => return already_stopped(paths, &s, keep_pane).await,
         _ => bail!(
             "SESSION_STATE_UNVERIFIED: the Claude session state could not be observed; nothing was signalled"
         ),
@@ -4508,7 +4588,7 @@ async fn stop_claude(paths: &Paths, id: &str, generation: &str, keep_pane: bool)
         Ok(stopped) => stopped,
         // It exited between the observation and the stop: nothing left to stop.
         Err(e) if e.to_string().starts_with("SESSION_NOT_RUNNING") => {
-            return already_stopped(paths, &s);
+            return already_stopped(paths, &s, keep_pane).await;
         }
         Err(e) => return Err(e),
     };
@@ -4545,16 +4625,73 @@ async fn queue_and_wait(
 }
 
 /// Idempotent stop (contract 1.55.0): the session exists, is not archived and has no
-/// running process, so there is nothing to stop.
-fn already_stopped(paths: &Paths, s: &catalog::Session) -> Result<Value> {
+/// running process, so there is nothing to stop. Contract 1.66.0: the pane Sessionsation
+/// launched it in (or its recorded pane) is closed like after a verified stop, under the
+/// same rules (`--keep-pane`, only an idle shell).
+async fn already_stopped(paths: &Paths, s: &catalog::Session, keep_pane: bool) -> Result<Value> {
     ensure!(
         !external::archiving::is_archived(paths, &s.id)?,
         "SESSION_ARCHIVED"
     );
+    let pane = crate::launch::launched_pane(paths, &s.id).or_else(|| {
+        s.attachment
+            .as_ref()
+            .filter(|a| external::attachment_definitely_gone(a.pid, a.process_start))
+            .map(|a| a.target.clone())
+    });
+    let (pane_closed, pane_close_reason) = close_stopped_pane(paths, keep_pane, pane).await?;
     Ok(crate::provider::stop_shape::shape(
-        json!({"session_id":s.id,"already_stopped":true,"phase":"complete"}),
+        json!({"session_id":s.id,"already_stopped":true,"phase":"complete",
+            "pane_closed":pane_closed,"pane_close_reason":pane_close_reason}),
         s,
     ))
+}
+
+/// Contract 1.66.0: the target names no catalog session and no merged id.
+fn unknown_session(paths: &Paths, target: &str) -> bool {
+    catalog::find(paths, target).is_err_and(|e| e.to_string().starts_with("SESSION_NOT_FOUND"))
+}
+/// The detail of the answer for a session Sessionsation does not know.
+const NOT_FOUND_DETAIL: &str = "Sessionsation knows no session with this id; nothing of it runs here and nothing was stopped or archived.";
+/// Contract 1.66.0: stop of a session Sessionsation does not know is the idempotent
+/// `already_stopped` answer with `not_found:true` (nothing of it runs here); the pane its own
+/// launch of that id ran in is closed as after a stop. An unsettled launch is
+/// `SESSION_LAUNCHING` (retryable) instead.
+async fn stop_unknown(paths: &Paths, id: &str, keep_pane: bool) -> Result<Value> {
+    ensure!(
+        crate::launch::pending(paths, id).is_none(),
+        "{}",
+        crate::launch::SESSION_LAUNCHING
+    );
+    let pane = crate::launch::launched_pane(paths, id);
+    let (pane_closed, pane_close_reason) = close_stopped_pane(paths, keep_pane, pane).await?;
+    let mut v = json!({"kind":"terminate","session_id":id,"source_session_id":id,"phase":"complete",
+        "detail":NOT_FOUND_DETAIL,"already_stopped":true,"not_found":true,"interrupted_turn":false,
+        "pane_closed":pane_closed,"pane_close_reason":pane_close_reason});
+    for k in crate::provider::stop_shape::KEYS {
+        if v.get(k).is_none() {
+            v[k] = Value::Null;
+        }
+    }
+    Ok(v)
+}
+/// Contract 1.66.0: archive of a session Sessionsation does not know: complete, with
+/// `not_found:true` and `nothing_to_archive:true`; the confirmation is still required. The
+/// pane its own launch of that id ran in is closed as after a stop.
+async fn archive_unknown(paths: &Paths, t: &external::archiving::Target) -> Result<Value> {
+    ensure!(t.confirm == t.session, "CONFIRMATION_REQUIRED");
+    ensure!(
+        crate::launch::pending(paths, &t.session).is_none(),
+        "{}",
+        crate::launch::SESSION_LAUNCHING
+    );
+    let pane = crate::launch::launched_pane(paths, &t.session);
+    let (pane_closed, pane_close_reason) = close_stopped_pane(paths, false, pane).await?;
+    Ok(
+        json!({"id":t.request_id,"kind":"archive","session_id":t.session,"phase":"complete",
+        "detail":NOT_FOUND_DETAIL,"not_found":true,"nothing_to_archive":true,"can_cancel":false,
+        "can_recover":false,"can_respond":false,"pane_closed":pane_closed,"pane_close_reason":pane_close_reason}),
+    )
 }
 
 fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
@@ -4737,7 +4874,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.65.0");
+        assert_eq!(c["contract_version"], "1.66.0");
         assert_eq!(c["send_request"]["since_contract"], "1.64.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");
@@ -4809,6 +4946,7 @@ mod prefill_tests {
             new_space,
             create_space,
             name,
+            owner: None,
         };
         let dest = |target: ResumeTarget<'_>, stored| resume_destination(list, &target, stored);
         let existing = |id: &str, label: &str| Destination {

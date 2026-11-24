@@ -364,6 +364,10 @@ with tempfile.TemporaryDirectory() as directory:
             assert reset["claude"]["status"]["polled"] is True, reset
             assert meter["starts_on_first_use"]["claude"] == ["five_hour", "seven_day"] and meter["starts_on_first_use"]["codex"] == [], meter
             assert value["result"]["usage_read"]["windows_after_own_reset"]["fresh"] is False, value["result"]["usage_read"]
+            # 1.66.0: launches stay listed, one answer for unknown sessions, uniform resume-launch.
+            lifecycle = value["result"]["session_lifecycle"]
+            assert lifecycle["since_contract"] == "1.66.0" and lifecycle["resume_launch"]["providers"] == ["codex", "claude", "antigravity"], lifecycle
+            assert "gemini" in lifecycle["resume_launch"]["unsupported"] and lifecycle["unknown_session"]["result"]["not_found"] is True, lifecycle
             assert value["result"]["session_meters"]["fields"] == ["context_pct", "subagents_running", "background_tasks"]
             observe = value["result"]["observe_conversation"]
             assert observe["since_contract"] == "1.63.0" and observe["fields"] == ["last_reply", "last_instruction", "compacted_at", "recent_turns"], observe

@@ -259,8 +259,22 @@ pub struct Facts {
     pub transcript: TranscriptFormat,
     /// How `api send` types into a running session's terminal.
     pub terminal_input: TerminalInput,
+    /// How `api resume-launch` starts a stopped session (contract 1.66.0).
+    pub resume_launch: ResumeLaunch,
     /// Human plan labels for raw plan values (lowercase), only where the meaning is certain.
     pub plan_names: &'static [(&'static str, &'static str)],
+}
+
+/// How `api resume-launch` starts a stopped session in a HERDR pane (contract 1.66.0). Every
+/// supported provider has the same request, receipt and `already_running` answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeLaunch {
+    /// The HERDR transfer worker, also to another account (Codex).
+    Transfer,
+    /// The provider's own resume of the saved conversation on its account (`api resume`).
+    Native,
+    /// Refused with this reason.
+    Refused(&'static str),
 }
 
 /// How `account/add` creates the account.

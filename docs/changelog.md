@@ -20,7 +20,13 @@ and package history are in Git.
 
 ## Versions
 
-- **1.66.0** Internal; no behaviour change.
+- **1.66.0** Admitted launches stay listed (`availability:"launching"`) and rows carry
+  `availability_reason`; stop and archive of an unknown session complete with
+  `not_found:true`; `already_stopped` closes the launch pane; `resume-launch` for
+  Claude and Antigravity, `already_running` for every provider (Gemini refused).
+  [State](contract.md#identity-and-snapshots), [stop](contract.md#stop-and-restart),
+  [resume](contract.md#saved-session-popup-resume). Also internal: identity and generation
+  owners.
 - **1.65.0** (meter cycles) Usage windows gain `cycle`, `cycle_started_at`,
   `cycle_reason` and `starts_on_first_use`; a redeem (own or elsewhere) starts a cycle in
   which a lower reading counts; usage never drops within one. Meters gain
@@ -58,10 +64,7 @@ and package history are in Git.
 - **1.58.0** Claude `set-model` admission waits for the first hook record
   (`hook_not_recorded`); Codex `facts.native_error` and `input_delivery.health`.
   [Model](contract.md#session-model-and-one-pass-launch), [receipts](contract.md#receipt-evidence).
-- **1.57.1** Supervisor loop serves parsed journals and the catalog from memory while
-  files are unchanged (performance only).
-- **1.57.0** Full `state` reads each journal once and caches per-transcript facts
-  (performance only). [Cached state](contract.md#cached-state).
+- **1.57.0**, **1.57.1** Performance only.
 - **1.56.0** `session resolve` fills cached facts; statusline replays never lower
   usage; detached workers are reaped. [Observe](contract.md#observe-for-every-provider),
   [Claude usage](contract.md#claude-usage-and-statusline).
@@ -96,8 +99,6 @@ and package history are in Git.
   [Compaction](contract.md#compaction-at-the-next-idle-point).
 - **1.46.8** Auto Start `already_running` result. [Auto Start](contract.md#auto-start).
 - **1.46.7** `accounts[].plan`. [Plan](contract.md#limits-plan-and-usage).
-- **1.46.6** Launch status/validate no longer rescan state; lifecycle calls refresh only
-  the active snapshot.
 - **1.46.5** Codex steer and cancel wait for the ledger; `if_busy:"queue"` on submit.
   [Contention](contract.md#admission-and-contention), [messaging](contract.md#messaging).
 - **1.46.4** Codex messaging waits for the ledger lease and releases it during
@@ -114,7 +115,6 @@ and package history are in Git.
   [Shared state](contract.md#shared-claude-state).
 - **1.45.2** Codex accepts Claude send options; Codex usage clock fixes.
   [Usage](contract.md#limits-plan-and-usage).
-- **1.45.1** Lifecycle job workers refresh the cached snapshots when they finish.
 - **1.45.0** Auto Start prompt delivery read back from its receipt, native first for
   Claude, array-start trigger; Space names resolved by label; `api version.commit`;
   opt-in `await_reply`. [Auto Start](contract.md#auto-start),

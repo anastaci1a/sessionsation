@@ -517,23 +517,8 @@ async fn validate(paths: &Paths, r: &Request, label: Option<&str>) -> Result<()>
 pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     if matches!(command, Command::List) {
         let mut records = Vec::new();
-        let dir = paths.root.join(crate::layout::LAUNCHES);
-        if dir.is_dir() {
-            for entry in crate::paths::journal_paths(&dir)? {
-                if !entry.is_file() {
-                    continue;
-                }
-                let Some(id) = entry
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(str::to_owned)
-                else {
-                    continue;
-                };
-                if uuid::Uuid::parse_str(&id).is_ok() {
-                    records.push(reconcile_status(paths, &id)?);
-                }
-            }
+        for id in receipt_ids(paths)? {
+            records.push(reconcile_status(paths, &id)?);
         }
         records.sort_by_key(|r| std::cmp::Reverse(r.updated_at));
         return Ok(json!(records));
@@ -1060,6 +1045,161 @@ pub(crate) fn launch_observed(paths: &Paths, s: &catalog::Session) -> bool {
         Ok(_) => crate::provider::native::launch_observed(s),
         Err(_) => false,
     }
+}
+
+// ------------------------------------------------- admitted sessions (contract 1.66.0)
+
+/// Launch phases in which the session may still start: the catalog has no entry for it yet
+/// (or, `uncertain`, whether a provider started is unknown).
+const PENDING: [&str; 6] = [
+    "admitted",
+    "preparing",
+    "creating_terminal",
+    "dispatching",
+    "starting_provider",
+    "uncertain",
+];
+/// `availability_reason` of a launching row; the launch phase follows the colon.
+pub const LAUNCHING: &str = "LAUNCHING";
+/// The code part of an error text (`CODE: detail`).
+fn code(text: &'static str) -> &'static str {
+    text.split(':').next().unwrap_or(text)
+}
+/// The `availability_reason` codes: launching, running without a conversation, and a
+/// launched session whose provider process is no longer running.
+pub(crate) fn availability_reasons() -> [&'static str; 3] {
+    [
+        LAUNCHING,
+        code(crate::provider::claude::NO_CONVERSATION_YET),
+        code(PROVIDER_EXITED),
+    ]
+}
+/// The refusal for an operation on a session whose launch has not settled (retryable).
+pub const SESSION_LAUNCHING: &str = "SESSION_LAUNCHING: the launch of this session has not finished; retry after api launch status shows running or failed";
+
+/// The request ids of the retained launch receipts, in journal order.
+fn receipt_ids(paths: &Paths) -> Result<Vec<String>> {
+    let dir = paths.root.join(crate::layout::LAUNCHES);
+    if !dir.is_dir() {
+        return Ok(vec![]);
+    }
+    Ok(crate::paths::journal_paths(&dir)?
+        .into_iter()
+        .filter(|entry| entry.is_file())
+        .filter_map(|entry| Some(entry.file_stem()?.to_str()?.to_owned()))
+        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        .collect())
+}
+/// Every readable launch receipt (unreadable ones are skipped; this is a projection).
+fn receipts(paths: &Paths) -> Vec<Receipt> {
+    receipt_ids(paths)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|id| status(paths, id).ok())
+        .collect()
+}
+/// The catalog session id a receipt admitted (the request id, also before attach).
+fn admitted_id(r: &Receipt) -> &str {
+    r.session_id.as_deref().unwrap_or(&r.request.request_id)
+}
+/// A launch of `id` that has not settled and has no catalog entry yet, if any.
+pub(crate) fn pending(paths: &Paths, id: &str) -> Option<Receipt> {
+    let r = status(paths, id).ok()?;
+    (PENDING.contains(&r.phase.as_str()) && catalog::find(paths, id).is_err()).then_some(r)
+}
+/// The HERDR pane Sessionsation's own launch of session `id` ran in (`herdr/<server>/<pane>`).
+pub(crate) fn launched_pane(paths: &Paths, id: &str) -> Option<String> {
+    let r = status(paths, id).ok()?;
+    if r.inline.is_some() || admitted_id(&r) != id {
+        return None;
+    }
+    crate::terminal::herdr_target(&r.request.host.session, r.pane_id.as_deref()?).ok()
+}
+
+/// Contract 1.66.0: a session admitted by a launch never disappears from `state`. Every row
+/// gets `availability_reason` (`NO_CONVERSATION_YET`, `PROVIDER_EXITED`, `LAUNCHING: <phase>`
+/// or null), and with `include_launching` a launch with no catalog entry yet is listed as
+/// `availability:"launching"` until it settles.
+pub(crate) fn annotate_availability(paths: &Paths, rows: &mut Vec<Value>, include_launching: bool) {
+    let all = receipts(paths);
+    let launched: std::collections::BTreeSet<&str> = all
+        .iter()
+        .filter(|r| r.inline.is_none() && r.pane_id.is_some())
+        .map(admitted_id)
+        .collect();
+    for row in rows.iter_mut() {
+        let id = row["id"].as_str().unwrap_or_default();
+        let no_conversation = row["discovery_warnings"].as_array().is_some_and(|w| {
+            w.iter().any(|w| {
+                w.as_str().is_some_and(|w| {
+                    w.starts_with(code(crate::provider::claude::NO_CONVERSATION_YET))
+                })
+            })
+        });
+        let reason = match row["availability"].as_str().unwrap_or_default() {
+            "running" if no_conversation => {
+                Some(code(crate::provider::claude::NO_CONVERSATION_YET))
+            }
+            "stopped" | "stale" | "saved" | "unavailable" if launched.contains(id) => {
+                Some(code(PROVIDER_EXITED))
+            }
+            _ => None,
+        };
+        row["availability_reason"] = json!(reason);
+    }
+    if !include_launching {
+        return;
+    }
+    for r in all.iter().filter(|r| PENDING.contains(&r.phase.as_str())) {
+        let id = admitted_id(r);
+        if rows.iter().any(|row| row["id"] == id) || catalog::find(paths, id).is_ok() {
+            continue;
+        }
+        rows.push(launching_row(r));
+    }
+}
+/// The `state` row of a launch that has no catalog entry yet. Nothing can be done to it but
+/// wait: every capability is false with `SESSION_LAUNCHING`.
+fn launching_row(r: &Receipt) -> Value {
+    let account = AccountRef::parse(&r.request.account_id).ok();
+    let provider = account.as_ref().map(|a| a.provider.as_str());
+    let account = account.as_ref().map(|a| a.name.clone());
+    let canonical = r
+        .space_label
+        .as_deref()
+        .filter(|s| !s.contains(':'))
+        .map(|s| format!("{s}:{}", r.request.name));
+    let keys = [
+        "rename",
+        "move_space",
+        "resume",
+        "change_directory",
+        "move_project",
+        "switch_account",
+        "restart",
+        "stop",
+        "archive",
+        "delete",
+        "add_to_herdr",
+        "auto_recover",
+        "auto_start",
+    ];
+    let capabilities: serde_json::Map<String, Value> =
+        keys.iter().map(|k| ((*k).into(), json!(false))).collect();
+    let reasons: serde_json::Map<String, Value> = keys
+        .iter()
+        .map(|k| ((*k).into(), json!(code(SESSION_LAUNCHING))))
+        .collect();
+    let host = |pane: &str| crate::terminal::herdr_target(&r.request.host.session, pane).ok();
+    json!({"id":r.request.request_id,"name":r.request.name,"space":r.space_label,"canonical":canonical,
+        "provider":provider,"account":account,"account_id":r.request.account_id,
+        "conversation_id":r.conversation_id,"revision":1,"generation":null,"attachment":null,
+        "availability":"launching","availability_reason":format!("{LAUNCHING}: {}",r.phase),
+        "archived":false,"directory":r.request.directory.path,"model":null,
+        "pending_questions":[],"pending_operations":[],"discovery_warnings":[],
+        "launch":{"request_id":r.request.request_id,"phase":r.phase,"detail":r.detail,
+            "pane":r.pane_id.as_deref().and_then(host),"created_at":r.created_at,"updated_at":r.updated_at},
+        "capabilities":capabilities,"capability_reasons":reasons})
 }
 
 /// The terminal a start or resume runs in: a new tab (or new Space's shell), or an idle

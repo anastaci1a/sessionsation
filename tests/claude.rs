@@ -1287,7 +1287,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 65);
+    assert_eq!(caps["contract_revision"], 66);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1918,7 +1918,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 65);
+    assert_eq!(caps["contract_revision"], 66);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2791,7 +2791,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 65);
+    assert_eq!(caps["contract_revision"], 66);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()
@@ -4054,4 +4054,413 @@ async fn hooks_install_idempotently_keep_user_hooks_and_events_come_out_in_one_s
     let caps = f.api(&["capabilities"]);
     assert_eq!(caps["session_events"]["since_contract"], "1.64.0");
     assert_eq!(caps["hooks"]["providers"]["gemini"]["supported"], false);
+}
+
+// ---------------------------------------------------------- contract 1.66.0 lifecycle
+
+/// A fake HERDR (`support/fake-herdr.sh`) for commands of this fixture: its `PATH`, state
+/// directory and a listening host socket (resume-launch checks the socket type).
+struct FakeHerdr {
+    path: String,
+    state: PathBuf,
+    socket: PathBuf,
+    _listener: std::os::unix::net::UnixListener,
+}
+impl FakeHerdr {
+    fn new(f: &Fixture) -> Self {
+        let tmp = f.paths.root.parent().unwrap().to_path_buf();
+        let bin = tmp.join("fake-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let herdr = bin.join("herdr");
+        std::fs::write(&herdr, include_str!("support/fake-herdr.sh")).unwrap();
+        std::fs::set_permissions(&herdr, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = tmp.join("host.sock");
+        Self {
+            path: format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            state: tmp.join("herdr-state"),
+            _listener: std::os::unix::net::UnixListener::bind(&socket).unwrap(),
+            socket,
+        }
+    }
+    fn run(&self, f: &Fixture, args: &[&str], body: Option<&Value>) -> (bool, Value) {
+        use std::io::Write;
+        let mut all = vec!["api"];
+        all.extend_from_slice(args);
+        let mut child = f
+            .command(&all)
+            .env("PATH", &self.path)
+            .env("FAKE_HERDR_DIR", &self.state)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        if let Some(body) = body {
+            stdin.write_all(body.to_string().as_bytes()).unwrap();
+        }
+        drop(stdin);
+        let out = child.wait_with_output().unwrap();
+        let text = if out.stdout.is_empty() {
+            &out.stderr
+        } else {
+            &out.stdout
+        };
+        let v: Value = serde_json::from_slice(text)
+            .unwrap_or_else(|e| panic!("{args:?}: {e}: {}", String::from_utf8_lossy(text)));
+        (out.status.success(), v)
+    }
+    fn ok(&self, f: &Fixture, args: &[&str], body: Option<&Value>) -> Value {
+        let (ok, v) = self.run(f, args, body);
+        assert!(ok, "{args:?}: {v}");
+        v["result"].clone()
+    }
+    fn calls(&self) -> String {
+        read(&self.state.join("calls"))
+    }
+    /// Kill the provider processes the fake started in its panes (recorded pids only).
+    fn kill_panes(&self) {
+        for entry in std::fs::read_dir(&self.state)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("pid-")
+                && let Ok(pid) = read(&entry.path()).trim().parse::<i32>()
+            {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+}
+
+/// A launch receipt of `account` in `phase` for request `id`, run in HERDR pane `w1:p2` of
+/// the server `fixture`, as `api launch start` and its worker leave it.
+fn launch_receipt(f: &Fixture, id: &str, account: &str, phase: &str, attached: Option<&str>) {
+    let fixtures: Value =
+        serde_json::from_str(include_str!("../docs/contract/fixtures.json")).unwrap();
+    let mut r = fixtures["launch_receipt"].clone();
+    r["request"]["request_id"] = json!(id);
+    r["request"]["account_id"] = json!(account);
+    r["request"]["name"] = json!("guard-worker");
+    r["request"]["directory"]["path"] = json!(f.project);
+    r["phase"] = json!(phase);
+    r["workspace_id"] = json!("w1");
+    r["tab_id"] = json!("w1:t2");
+    r["pane_id"] = json!("w1:p2");
+    if let Some(conversation) = attached {
+        r["session_id"] = json!(id);
+        r["conversation_id"] = json!(conversation);
+    }
+    r["created_at"] = json!(daemon::now());
+    r["updated_at"] = json!(daemon::now());
+    let dir = f.paths.root.join(sessionsation::layout::LAUNCHES);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{id}.json")), r.to_string()).unwrap();
+}
+
+/// Reproduction of the 11-24 vanish: a session launched into a HERDR pane whose Claude process
+/// then exited on its own (SessionEnd `prompt_input_exit`, no stop). Before 1.66.0 its row
+/// gave no reason, `stop` answered `already_stopped` but left the pane as a bare shell, and
+/// once the guard had renamed (and archived) it, its retire by the earlier name answered
+/// `SESSION_NOT_FOUND`, so the retire could never finish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launched_session_whose_provider_exited_is_listed_its_pane_closed_and_its_retire_ends() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let h = FakeHerdr::new(&f);
+    let id = uuid::Uuid::new_v4().to_string();
+    let conversation = uuid::Uuid::new_v4().to_string();
+    launch_receipt(&f, &id, "claude:personal", "running", Some(&conversation));
+    sessionsation::catalog::reserve_name(&f.paths, None, "guard-worker", &id).unwrap();
+    sessionsation::catalog::complete_reserved(
+        &f.paths,
+        &id,
+        None,
+        "guard-worker",
+        sessionsation::provider::ProviderId::Claude,
+        "personal",
+        &conversation,
+        f.project.to_str(),
+        None,
+    )
+    .unwrap();
+    // The conversation was written, then the process ended: the pane holds its shell.
+    transcript(&home, &f.project, &conversation);
+    let s = f.session(&id);
+    assert_eq!(s["availability"], "stopped", "{s}");
+    assert_eq!(s["availability_reason"], "PROVIDER_EXITED", "{s}");
+
+    // Stop: nothing runs, and the pane Sessionsation launched it in is closed.
+    let args = stop_args(&s);
+    let done = h.ok(
+        &f,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        None,
+    );
+    assert_eq!(done["already_stopped"], true, "{done}");
+    assert_eq!(done["pane_closed"], true, "{done}");
+    assert!(done["pane_close_reason"].is_null(), "{done}");
+    assert!(h.calls().contains("pane close w1:p2"), "{}", h.calls());
+
+    // The guard renames the old session to free its name; a retire by the earlier name
+    // then names nothing Sessionsation knows: one stable terminal answer for stop and archive.
+    let renamed = f.api(&[
+        "rename",
+        "--session",
+        &id,
+        "--expected-generation",
+        f.session(&id)["generation"].as_str().unwrap(),
+        "--name",
+        "guard-worker-old",
+    ]);
+    assert_eq!(renamed["name"], "guard-worker-old");
+    let gone = h.ok(
+        &f,
+        &[
+            "stop",
+            "--session",
+            "guard-worker",
+            "--expected-generation",
+            "x",
+        ],
+        None,
+    );
+    assert_eq!(gone["not_found"], true, "{gone}");
+    assert_eq!(gone["already_stopped"], true, "{gone}");
+    assert_eq!(gone["phase"], "complete", "{gone}");
+    let archived = h.ok(
+        &f,
+        &[
+            "archive",
+            "--session",
+            "guard-worker",
+            "--expected-generation",
+            "x",
+            "--request-id",
+            &uuid::Uuid::new_v4().to_string(),
+            "--confirm",
+            "guard-worker",
+        ],
+        None,
+    );
+    assert_eq!(archived["not_found"], true, "{archived}");
+    assert_eq!(archived["phase"], "complete", "{archived}");
+    assert_eq!(archived["nothing_to_archive"], true, "{archived}");
+}
+
+/// A launch admitted but not attached yet (no catalog entry) is listed as `launching`, stop and
+/// archive of it are `SESSION_LAUNCHING` (retryable); once it failed with no session, stop and
+/// archive of its id are the stable `not_found` answer and its pane is closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launch_stays_listed_until_it_settles_and_unknown_sessions_get_one_terminal_answer() {
+    let f = fixture().await;
+    claude_account(&f);
+    let h = FakeHerdr::new(&f);
+    let id = uuid::Uuid::new_v4().to_string();
+    launch_receipt(&f, &id, "claude:personal", "dispatching", None);
+    let row = f.api(&["state"])["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("the admitted launch {id} is not listed"));
+    assert_eq!(row["availability"], "launching", "{row}");
+    assert_eq!(
+        row["availability_reason"], "LAUNCHING: dispatching",
+        "{row}"
+    );
+    assert_eq!(row["provider"], "claude");
+    assert_eq!(row["account_id"], "claude:personal");
+    assert_eq!(row["name"], "guard-worker");
+    assert_eq!(row["launch"]["pane"], "herdr/fixture/w1:p2", "{row}");
+    assert_eq!(row["capabilities"]["stop"], false);
+    assert_eq!(row["capability_reasons"]["stop"], "SESSION_LAUNCHING");
+    let (ok, refused) = h.run(
+        &f,
+        &["stop", "--session", &id, "--expected-generation", "x"],
+        None,
+    );
+    assert!(!ok, "{refused}");
+    assert_eq!(refused["error"]["code"], "SESSION_LAUNCHING", "{refused}");
+    assert!(!h.calls().contains("pane close"), "{}", h.calls());
+
+    // The launch failed before any session existed: its id is unknown, the pane is closed.
+    launch_receipt(&f, &id, "claude:personal", "failed", None);
+    assert!(
+        !f.api(&["state"])["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == id.as_str())
+    );
+    let stopped = h.ok(
+        &f,
+        &["stop", "--session", &id, "--expected-generation", "x"],
+        None,
+    );
+    for key in sessionsation::provider::stop_shape::KEYS {
+        assert!(
+            stopped.get(key).is_some(),
+            "stop result lacks {key}: {stopped}"
+        );
+    }
+    assert_eq!(stopped["not_found"], true, "{stopped}");
+    assert_eq!(stopped["already_stopped"], true);
+    assert_eq!(stopped["session_id"], id.as_str());
+    assert_eq!(stopped["pane_closed"], true, "{stopped}");
+    assert!(h.calls().contains("pane close w1:p2"));
+    // Idempotent, and an id that was never launched: the same answer, no pane.
+    let again = h.ok(
+        &f,
+        &["stop", "--session", &id, "--expected-generation", "x"],
+        None,
+    );
+    assert_eq!(again["not_found"], true);
+    assert_eq!(again["pane_closed"], false);
+    assert_eq!(again["pane_close_reason"], "PANE_MISSING", "{again}");
+    let never = uuid::Uuid::new_v4().to_string();
+    let none = h.ok(
+        &f,
+        &["stop", "--session", &never, "--expected-generation", "x"],
+        None,
+    );
+    assert_eq!(none["not_found"], true);
+    assert_eq!(none["pane_close_reason"], "NO_PANE", "{none}");
+    let archive = |confirm: &str| {
+        h.run(
+            &f,
+            &[
+                "archive",
+                "--session",
+                &never,
+                "--expected-generation",
+                "x",
+                "--request-id",
+                &uuid::Uuid::new_v4().to_string(),
+                "--confirm",
+                confirm,
+            ],
+            None,
+        )
+    };
+    let (ok, refused) = archive("other");
+    assert!(!ok, "{refused}");
+    assert_eq!(refused["error"]["code"], "CONFIRMATION_REQUIRED");
+    let (ok, archived) = archive(&never);
+    assert!(ok, "{archived}");
+    assert_eq!(archived["result"]["not_found"], true, "{archived}");
+    assert_eq!(archived["result"]["kind"], "archive");
+    let caps = f.api(&["capabilities"]);
+    assert_eq!(caps["session_lifecycle"]["since_contract"], "1.66.0");
+}
+
+/// Contract 1.66.0: `api resume-launch` resumes a stopped Claude session with the same
+/// request and receipt as Codex (here into pane w1:p2 of the fake HERDR), a resume of a
+/// running session is `already_running` and starts nothing, and Gemini is refused with why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_launch_resumes_claude_like_codex_and_a_running_session_is_already_running() {
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let h = FakeHerdr::new(&f);
+    let conversation = uuid::Uuid::new_v4().to_string();
+    transcript(&home, &f.project, &conversation);
+    let s = by_conversation(&f, &conversation);
+    assert_eq!(s["availability"], "stopped");
+    let request = |s: &Value, name: &str| {
+        json!({"version":1,"request_id":uuid::Uuid::new_v4().to_string(),"session_id":s["id"],
+            "expected_generation":s["generation"],"account_id":"claude:personal","name":name,
+            "host":{"session":"fixture","socket":h.socket},"space":{"kind":"existing","id":"w1"}})
+    };
+    let body = request(&s, "resumed");
+    let valid = h.ok(&f, &["resume-launch", "validate"], Some(&body));
+    assert_eq!(valid["valid"], true, "{valid}");
+    assert_eq!(valid["directory"], json!(f.project));
+    let started = h.ok(&f, &["resume-launch", "start"], Some(&body));
+    assert_eq!(
+        started["request"]["request_id"], body["request_id"],
+        "{started}"
+    );
+    assert_eq!(started["conversation_id"], conversation.as_str());
+    let request_id = body["request_id"].as_str().unwrap();
+    let mut receipt = Value::Null;
+    wait_for("resume-launch running", || {
+        receipt = h.ok(
+            &f,
+            &["resume-launch", "status", "--request-id", request_id],
+            None,
+        );
+        matches!(
+            receipt["phase"].as_str(),
+            Some("running" | "failed" | "uncertain")
+        )
+    });
+    assert_eq!(
+        receipt["phase"],
+        "running",
+        "{receipt}; pane: {}",
+        read(&h.state.join("run-w1:p2.err"))
+    );
+    assert_eq!(receipt["pane_id"], "w1:p2", "{receipt}");
+    assert!(receipt.get("already_running").is_none(), "{receipt}");
+    let resume = read(&home.join("fake-launch-resume"));
+    assert!(
+        resume.contains(&format!("session={conversation}")),
+        "{resume}"
+    );
+    let live = f.session(s["id"].as_str().unwrap());
+    assert_eq!(live["availability"], "running", "{live}");
+    assert_eq!(live["name"], "resumed");
+    // The same request again is the same receipt.
+    let again = h.ok(&f, &["resume-launch", "start"], Some(&body));
+    assert_eq!(again["phase"], "running");
+    assert_eq!(again["request"], started["request"]);
+
+    // Resume of the running session: already_running, nothing typed or opened.
+    let tabs = h.calls().matches("tab create").count();
+    let runs = h.calls().matches("pane run").count();
+    let running = request(&live, "resumed");
+    let v = h.ok(&f, &["resume-launch", "validate"], Some(&running));
+    assert_eq!(v["already_running"], true, "{v}");
+    let answer = h.ok(&f, &["resume-launch", "start"], Some(&running));
+    assert_eq!(answer["phase"], "running", "{answer}");
+    assert_eq!(answer["already_running"], true, "{answer}");
+    assert_eq!(answer["request"]["session_id"], live["id"]);
+    let status = h.ok(
+        &f,
+        &[
+            "resume-launch",
+            "status",
+            "--request-id",
+            running["request_id"].as_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(status["already_running"], true, "{status}");
+    assert_eq!(h.calls().matches("tab create").count(), tabs);
+    assert_eq!(h.calls().matches("pane run").count(), runs);
+
+    // Gemini: refused with the reason.
+    let mut gemini = request(&live, "g");
+    gemini["account_id"] = json!("gemini:g");
+    let (ok, refused) = h.run(&f, &["resume-launch", "start"], Some(&gemini));
+    assert!(!ok, "{refused}");
+    assert_eq!(refused["error"]["code"], "UNSUPPORTED_PROVIDER_OPERATION");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Gemini CLI no longer supports individual accounts"),
+        "{refused}"
+    );
+    let caps = f.api(&["capabilities"]);
+    assert_eq!(
+        caps["session_lifecycle"]["resume_launch"]["providers"],
+        json!(["codex", "claude", "antigravity"])
+    );
+    h.kill_panes();
 }

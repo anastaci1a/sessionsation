@@ -2358,6 +2358,45 @@
     },
     "turn_events": "api turn-events stays the Codex turn-notify journal"
   },
+  "session_lifecycle": {
+    "launch_listing": {
+      "availability": "launching",
+      "field": "availability_reason",
+      "reasons": [
+        "LAUNCHING",
+        "NO_CONVERSATION_YET",
+        "PROVIDER_EXITED"
+      ]
+    },
+    "resume_launch": {
+      "account_change": [
+        "codex"
+      ],
+      "providers": [
+        "codex",
+        "claude",
+        "antigravity"
+      ],
+      "running": "phase running with already_running:true; nothing is started",
+      "unsupported": {
+        "gemini": "Gemini CLI no longer supports individual accounts (migrate to Antigravity)"
+      }
+    },
+    "unknown_session": {
+      "commands": [
+        "stop",
+        "archive"
+      ],
+      "launching": "SESSION_LAUNCHING",
+      "pane": "the pane of Sessionsation's own launch of that id is closed as after a stop",
+      "result": {
+        "archive": "nothing_to_archive:true",
+        "not_found": true,
+        "phase": "complete",
+        "stop": "already_stopped:true"
+      }
+    }
+  },
   "session_meters": {
     "cached_state": true,
     "extra": [

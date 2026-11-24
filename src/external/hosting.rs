@@ -335,6 +335,9 @@ pub struct Placement<'a> {
     /// Resume callers: an unconfirmed launch, or a command that visibly exits
     /// again, is an error rather than `ok`.
     pub strict: bool,
+    /// Contract 1.66.0: the `api resume-launch` request that types this command; the typed
+    /// resume does not count that receipt as a resume in progress.
+    pub owner: Option<&'a str>,
 }
 
 /// Outcome of one launch poll tick for a pane that was handed a command.
@@ -555,9 +558,13 @@ async fn launch_inner(
     // The launcher bypass is the new tab's own environment; set here too so a
     // reused shell runs the command exactly as a new tab would.
     let command = format!(
-        "cd -- {} && env -u TMUX -u TMUX_PANE SESSIONSATION_LAUNCHER_BYPASS=1 SESSIONSATION_HERDR_SESSION={} {}",
+        "cd -- {} && env -u TMUX -u TMUX_PANE SESSIONSATION_LAUNCHER_BYPASS=1 SESSIONSATION_HERDR_SESSION={} {}{}",
         shell_quote(&cwd.to_string_lossy()),
         shell_quote(session),
+        placement
+            .owner
+            .map(|o| format!("{}={} ", crate::inline::RESUME_OWNER_ENV, shell_quote(o)))
+            .unwrap_or_default(),
         args.iter()
             .map(|s| shell_quote(s))
             .collect::<Vec<_>>()

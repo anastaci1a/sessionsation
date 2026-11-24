@@ -136,6 +136,16 @@ Native sessions (Claude, Gemini, Antigravity) add `native_status`, `native_name`
 registered or written a transcript (for example on its trust prompt) reports
 `availability:"running"` with the discovery warning `NO_CONVERSATION_YET`.
 
+A session admitted by `api launch start` never leaves `state` before its process
+verifiably ends (`capabilities.session_lifecycle.launch_listing`). Until the launch has a
+catalog entry (phases `admitted` to `starting_provider`, or `uncertain`) the Active and
+All views list a row with the request id as `id`, `availability:"launching"`,
+`generation` and usually `conversation_id` null, a `launch` block (`request_id`,
+`phase`, `detail`, `pane`, `created_at`, `updated_at`) and every capability false with
+`SESSION_LAUNCHING`. Every row has `availability_reason`: `LAUNCHING: <phase>`,
+`NO_CONVERSATION_YET` (running, no conversation yet), `PROVIDER_EXITED` (a session
+Sessionsation launched into a pane whose process is no longer running) or null.
+
 Session snapshots optionally expose `activity`, `last_accessed`, `active_since`,
 `conversation_created_at` (the native recorded timestamp, never inferred from
 mtime) and `history_file_bytes` (observed history bytes, excluding shared account
@@ -684,6 +694,18 @@ later Stop; read the catalog for current liveness. A lost acknowledgement ends
 `uncertain` with `RESUME_ACK_UNCERTAIN`, keeps the session reserved
 (`RESUME_IN_PROGRESS`) and can be released with `api abandon-operation`.
 
+The same request, receipt and answers apply to Codex, Claude and Antigravity
+(`capabilities.session_lifecycle.resume_launch`). Claude and Antigravity resume on the
+session's own account (`account_id` must match) in its saved directory (a different
+`directory` is `UNSUPPORTED_PROVIDER_OPERATION`); the worker types `sessionsation
+resume` into the destination pane as `api resume --herdr-session` does, with phases
+`admitted`, `preparing`, `resuming`, then `running`, `failed` or `uncertain`. Only
+Codex moves accounts. A session that already runs is `phase:"running"` with
+`already_running:true`, nothing opened or typed (validate: `valid:true,
+already_running:true`). Gemini is refused with `UNSUPPORTED_PROVIDER_OPERATION`,
+`error.supported:false` and the reason that Gemini CLI no longer supports individual
+accounts. Suspend is `api stop --wait`, resume is `api resume-launch start`.
+
 `api resume` (Codex and native) starts the provider in the session's saved
 directory, refusing with `SAVED_DIRECTORY_UNAVAILABLE` when it is not an absolute
 existing directory. No observed running session within the poll fails with
@@ -1028,8 +1050,17 @@ Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
   and `error.reason`, also the row's `capability_reasons.stop`.
 - A session with no running process (not archived; for Codex, a session whose source
   discovery reports `SESSION_UNAVAILABLE`) returns `already_stopped:true`,
-  `phase:"complete"`, `interrupted_turn:false`, `pane_closed:false`; the generation is
-  still checked. Archived: `SESSION_ARCHIVED`.
+  `phase:"complete"`, `interrupted_turn:false`; the generation is still checked, and
+  the pane Sessionsation's launch of the session ran in (else a recorded pane whose
+  process is gone) is closed as below. Archived: `SESSION_ARCHIVED`.
+- **Unknown session** (`capabilities.session_lifecycle.unknown_session`): stop or
+  archive of an id (or name) that names no catalog session and no merged id is one
+  terminal answer, so a retire always finishes: `ok` with `phase:"complete"`,
+  `not_found:true`, `session_id` the target; stop adds `already_stopped:true` and the
+  shared stop keys, archive `kind:"archive"`, `nothing_to_archive:true` (`--confirm`
+  must still equal `--session`). The generation cannot be checked. A pane
+  Sessionsation's own launch of that id ran in is closed as below. A launch of that id
+  that has not settled is `SESSION_LAUNCHING` (retryable) instead.
 - Errors: `STOP_TIMEOUT` (not exited in time; never killed, SIGKILL is never sent;
   retryable), `SESSION_STATE_UNVERIFIED`, `AMBIGUOUS_SESSION`, `STOP_UNAVAILABLE`,
   `STOP_FAILED`, `SESSION_NOT_RUNNING`.

@@ -288,3 +288,77 @@ async fn codex_observe_reports_the_last_reply_instruction_compaction_and_turns()
     assert_eq!(turns[0]["reply"]["text"], "first answer");
     assert_eq!(turns[0]["ended_at"], 1_767_225_603);
 }
+
+/// Contract 1.66.0: `api resume-launch` of a running Codex session is the same
+/// `already_running` receipt as for Claude: `phase:"running"`, nothing opened or typed, and
+/// the same request again is the same receipt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_resume_launch_of_a_running_session_is_already_running() {
+    use std::process::Stdio;
+    let f = Fixture::new().await;
+    f.live(ID, false);
+    let until = Instant::now() + Duration::from_secs(20);
+    let s = loop {
+        let s = session(&f);
+        if s["availability"] == "running" {
+            break s;
+        }
+        assert!(Instant::now() < until, "{s}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let herdr = f.tmp.path().join("herdr");
+    fs::write(&herdr, include_str!("../support/fake-herdr.sh")).unwrap();
+    fs::set_permissions(&herdr, fs::Permissions::from_mode(0o700)).unwrap();
+    let state = f.tmp.path().join("herdr-state");
+    let socket = f.tmp.path().join("host.sock");
+    let _host = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let body = json!({"version":1,"request_id":uuid::Uuid::new_v4().to_string(),"session_id":s["id"],
+        "expected_generation":s["generation"],"account_id":"codex:personal","name":"again",
+        "host":{"session":"fixture","socket":socket},"space":{"kind":"existing","id":"w1"}});
+    let start = || {
+        let mut child = Command::new(binary())
+            .env("TMUX", format!("{},1,0", f.socket))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    f.tmp.path().display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .env("FAKE_HERDR_DIR", &state)
+            .arg("--data-dir")
+            .arg(&f.paths.root)
+            .args(["api", "resume-launch", "start"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(body.to_string().as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
+    };
+    let answer = start();
+    assert_eq!(answer["phase"], "running", "{answer}");
+    assert_eq!(answer["already_running"], true, "{answer}");
+    assert_eq!(answer["conversation_id"], ID);
+    assert_eq!(answer["request"]["session_id"], s["id"]);
+    assert_eq!(start()["request"], answer["request"]);
+    let calls = fs::read_to_string(state.join("calls")).unwrap_or_default();
+    assert!(
+        !calls.contains("tab create") && !calls.contains("pane run"),
+        "{calls}"
+    );
+    assert_eq!(session(&f)["availability"], "running");
+}

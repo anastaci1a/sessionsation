@@ -48,6 +48,9 @@ pub const FACTS: Facts = Facts {
     archive: ArchiveLayout::GeminiChats,
     transcript: TranscriptFormat::GeminiChat,
     terminal_input: TerminalInput::Gemini,
+    resume_launch: crate::provider::ops::ResumeLaunch::Refused(
+        crate::provider::conversation::GEMINI_UNSUPPORTED,
+    ),
     plan_names: &[],
 };
 impl ProviderOps for Ops {

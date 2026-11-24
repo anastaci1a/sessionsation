@@ -45,6 +45,7 @@ pub const FACTS: Facts = Facts {
     archive: ArchiveLayout::Rollouts,
     transcript: TranscriptFormat::None,
     terminal_input: TerminalInput::None,
+    resume_launch: crate::provider::ops::ResumeLaunch::Transfer,
     plan_names: &[
         ("free", "ChatGPT Free"),
         ("plus", "ChatGPT Plus"),

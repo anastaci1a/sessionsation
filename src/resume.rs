@@ -1,9 +1,11 @@
-//! Durable saved-session intent. Reuses the account launcher and transfer worker.
+//! Durable saved-session intent. Codex reuses the account launcher and transfer worker;
+//! Claude and Antigravity resume natively in a HERDR pane (contract 1.66.0).
 use crate::background::SpawnReaped as _;
 use crate::{
     api, catalog, daemon, external,
     launch::{self, Host, Space},
     paths::{Paths, atomic_write, lock_file, private_dir},
+    provider::ops::{self, ResumeLaunch},
 };
 use anyhow::{Context, Result, ensure};
 use clap::Subcommand;
@@ -77,6 +79,10 @@ pub struct Receipt {
     /// pane or a same-named tab) instead of a new tab; `detail` says which. Omitted when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pane_reused: bool,
+    /// Contract 1.66.0: the session was already running when admitted; nothing was started
+    /// (`phase:"running"`). Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already_running: bool,
 }
 pub(crate) fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id).context("INVALID_REQUEST_ID")?;
@@ -133,7 +139,7 @@ fn shape(r: &Request) -> Result<()> {
     uuid::Uuid::parse_str(&r.request_id).context("INVALID_REQUEST_ID")?;
     uuid::Uuid::parse_str(&r.session_id).context("INVALID_SESSION_ID")?;
     catalog::parse_name(&r.name)?;
-    codex_account(r)?;
+    kind(r)?;
     crate::paths::validate_name(&r.host.session)?;
     ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
     if let Some(d) = &r.directory {
@@ -141,11 +147,106 @@ fn shape(r: &Request) -> Result<()> {
     }
     Ok(())
 }
-/// Saved-session resume-launch (HERDR transfer worker) is verified only for
-/// Codex; Claude sessions resume through `api resume` or the launcher.
+/// The Codex account a transfer resume-launch runs on (the HERDR transfer worker).
 fn codex_account(r: &Request) -> Result<String> {
     let account = crate::provider::AccountRef::parse(&r.account_id)?;
     Ok(account.require_supervised()?.to_owned())
+}
+/// How this request's provider resumes (contract 1.66.0): the Codex transfer worker or the
+/// provider's own resume; a provider without one (Gemini) is refused with its reason.
+fn kind(r: &Request) -> Result<ResumeLaunch> {
+    let account = crate::provider::AccountRef::parse(&r.account_id)?;
+    match ops::facts(account.provider).resume_launch {
+        ResumeLaunch::Refused(reason) => {
+            Err(crate::provider::stop_shape::Unsupported(reason).into())
+        }
+        kind => Ok(kind),
+    }
+}
+/// Detail of the answer for a session that already runs (contract 1.66.0).
+pub const ALREADY_RUNNING: &str =
+    "The session is already running; nothing was started (already_running).";
+/// The receipt for a session that already runs: `phase:"running"`, `already_running:true`.
+fn already_running(r: Request, s: &catalog::Session, directory: PathBuf) -> Receipt {
+    Receipt {
+        version: 1,
+        directory: directory.clone(),
+        saved_directory: Some(directory),
+        created_directories: vec![],
+        request: r,
+        previous_name: s.name.clone(),
+        conversation_id: s.conversation_id.clone(),
+        generation: s.generation(),
+        phase: "running".into(),
+        detail: Some(ALREADY_RUNNING.into()),
+        workspace_id: None,
+        tab_id: None,
+        pane_id: None,
+        operation_id: None,
+        abandoned_from: None,
+        abandoned_at: None,
+        created_at: Some(daemon::now()),
+        updated_at: daemon::now(),
+        inline: None,
+        pane_reused: false,
+        already_running: true,
+    }
+}
+/// The session already runs: its entry and directory (the generation is checked). `None`
+/// when it does not run or cannot be observed (admission then reports why).
+async fn running(
+    paths: &Paths,
+    r: &Request,
+    native: bool,
+) -> Result<Option<(catalog::Session, PathBuf)>> {
+    if native {
+        let (s, o) = api::native_selected(paths, &r.session_id, &r.expected_generation)?;
+        let directory = s
+            .directory
+            .clone()
+            .or(o.directory.clone())
+            .unwrap_or_default();
+        return Ok((o.availability == "running").then(|| (s, directory.into())));
+    }
+    catalog::resolve(paths, &r.session_id, &r.expected_generation)?;
+    Ok(api::selected(paths, &r.session_id, &r.expected_generation)
+        .await
+        .ok()
+        .filter(|(_, source)| !source.inactive)
+        .map(|(s, source)| (s, source.cwd.into())))
+}
+/// Admission checks of a provider that resumes natively (Claude, Antigravity): the same
+/// account, its saved directory, an idle stopped conversation. Returns the entry, the
+/// directory and the destination Space label.
+async fn validate_native(
+    paths: &Paths,
+    r: &Request,
+) -> Result<(catalog::Session, PathBuf, Option<String>)> {
+    shape(r)?;
+    let (s, o) = api::native_selected(paths, &r.session_id, &r.expected_generation)?;
+    crate::lifecycle::ensure_available(paths, &s.conversation_id, Some(&r.request_id))?;
+    let own = format!("{}:{}", s.provider, s.account);
+    ops::require(
+        r.account_id == own,
+        format!(
+            "resume-launch resumes a {} session on its own account ({own})",
+            s.provider
+        ),
+    )?;
+    crate::provider::native::ensure_resumable(&s, &o)?;
+    crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
+    let directory = PathBuf::from(crate::provider::native::resume_directory(&s, &o)?);
+    if let Some(d) = &r.directory {
+        ops::require(
+            crate::alias::same_path(&d.path, &directory),
+            format!(
+                "resume-launch keeps the saved directory of a {} session",
+                s.provider
+            ),
+        )?;
+    }
+    let label = destination(r, &s.id, paths).await?;
+    Ok((s, directory, label))
 }
 fn validate_saved_history(source: &external::Instance, confirmed: bool) -> Result<()> {
     ensure!(
@@ -197,6 +298,12 @@ async fn validate(
                 && a["auth_required"] == false)),
         "ACCOUNT_UNAVAILABLE"
     );
+    let label = destination(r, &s.id, paths).await?;
+    Ok((s, source, label))
+}
+/// The destination Space exists (or a new one's label is free) and the name is free there;
+/// returns the destination Space label.
+async fn destination(r: &Request, session: &str, paths: &Paths) -> Result<Option<String>> {
     let spaces = launch::host_call(&r.host, &["workspace", "list"]).await?;
     let spaces = spaces["workspaces"].as_array().context("HOST_PROTOCOL")?;
     match &r.space {
@@ -215,11 +322,11 @@ async fn validate(
     // Unique in the destination Space (contract 1.48.0).
     let label = launch::space_label(spaces, &r.space);
     ensure!(
-        !catalog::space_taken(paths, label.as_deref(), &r.name, &s.id)?,
+        !catalog::space_taken(paths, label.as_deref(), &r.name, session)?,
         "SESSION_NAME_EXISTS: \"{}\" is already used in this Space",
         r.name
     );
-    Ok((s, source, label))
+    Ok(label)
 }
 pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     match command {
@@ -244,10 +351,19 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     let label = launch::resolve_space(&r.host, &mut r.space).await?;
     let known = label.is_some();
     launch::bare_request_name(&mut r.name, label.as_deref(), known)?;
+    // Contract 1.66.0: one request, receipt and `already_running` answer for every provider.
+    let native = kind(&r)? == ResumeLaunch::Native;
     if matches!(command, Command::Validate) {
-        let (_, source, _) = validate(paths, &r).await?;
+        if running(paths, &r, native).await?.is_some() {
+            return Ok(json!({"valid":true,"already_running":true,"request_id":r.request_id}));
+        }
+        let saved: PathBuf = if native {
+            validate_native(paths, &r).await?.1
+        } else {
+            validate(paths, &r).await?.1.cwd.into()
+        };
         return Ok(
-            json!({"valid":true,"directory":r.directory.as_ref().map(|d|d.path.clone()).unwrap_or_else(||source.cwd.into()),"request_id":r.request_id}),
+            json!({"valid":true,"directory":r.directory.as_ref().map(|d|d.path.clone()).unwrap_or(saved),"request_id":r.request_id}),
         );
     }
     let _lock = lock(paths)?;
@@ -267,18 +383,29 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         "RESUME_IN_PROGRESS"
     );
     let selected = catalog::resolve(paths, &r.session_id, &r.expected_generation)?;
+    if let Some((s, directory)) = running(paths, &r, native).await? {
+        let mut receipt = already_running(r, &s, directory);
+        save(paths, &mut receipt)?;
+        return Ok(json!(receipt));
+    }
     let _admission =
         crate::lifecycle::admit(paths, &selected.conversation_id, Some(&r.request_id))?;
     crate::lifecycle::ensure_no_handoff(paths, &selected.conversation_id, Some(&r.request_id))?;
-    let (s, source, _) = validate(paths, &r).await?;
+    let (s, saved): (_, PathBuf) = if native {
+        let (s, directory, _) = validate_native(paths, &r).await?;
+        (s, directory)
+    } else {
+        let (s, source, _) = validate(paths, &r).await?;
+        (s, source.cwd.into())
+    };
     let mut receipt = Receipt {
         version: 1,
         directory: r
             .directory
             .as_ref()
             .map(|d| d.path.clone())
-            .unwrap_or_else(|| source.cwd.clone().into()),
-        saved_directory: Some(source.cwd.into()),
+            .unwrap_or_else(|| saved.clone()),
+        saved_directory: Some(saved),
         created_directories: vec![],
         request: r,
         previous_name: s.name.clone(),
@@ -296,6 +423,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         updated_at: daemon::now(),
         inline: None,
         pane_reused: false,
+        already_running: false,
     };
     save(paths, &mut receipt)?;
     let child = crate::background::detach(&mut std::process::Command::new(
@@ -324,7 +452,11 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         r.phase = "preparing".into();
         Ok(())
     })?;
-    if let Err(e) = prepare(paths, &r).await {
+    let prepared = match kind(&r.request) {
+        Ok(ResumeLaunch::Native) => prepare_native(paths, &r).await,
+        _ => prepare(paths, &r).await,
+    };
+    if let Err(e) = prepared {
         change(paths, id, |r| {
             r.phase = if r.phase == "preparing" {
                 "failed"
@@ -363,6 +495,42 @@ fn validate_resume_history(source: &external::Instance, r: &Request) -> Result<(
         };
     }
     validate_saved_history(&history, r.confirm_unfinished)
+}
+/// Contract 1.66.0: a provider that resumes natively (Claude, Antigravity) runs the same path
+/// as `api resume --herdr-session`: a pane in the destination Space (an idle reused one or a
+/// new tab) runs `sessionsation resume`, confirmed by the exact process. Rechecked before
+/// typing. Phase `resuming` (as Auto Start and the account switch) does not block that typed
+/// resume; a failure before it is `failed`, after it `uncertain` (never replayed).
+async fn prepare_native(paths: &Paths, receipt: &Receipt) -> Result<()> {
+    let r = &receipt.request;
+    if let Some(mode) = r.permissions {
+        crate::config::override_launch_permissions(mode);
+    }
+    validate_native(paths, r).await?;
+    change(paths, &r.request_id, |r| {
+        r.phase = "resuming".into();
+        Ok(())
+    })?;
+    let result = api::resume_launch_native(paths, r).await?;
+    let running = result["state"] == "running";
+    let pane = result["target"]
+        .as_str()
+        .and_then(|t| crate::terminal::target(t).ok())
+        .map(|(_, pane)| pane.to_owned());
+    let generation = catalog::find(paths, &r.session_id).map(|s| s.generation());
+    change(paths, &r.request_id, |x| {
+        x.pane_id = pane;
+        x.pane_reused = result["pane_reused"] == true;
+        if let Ok(generation) = generation {
+            x.generation = generation;
+        }
+        x.phase = if running { "running" } else { "uncertain" }.into();
+        x.detail = (!running).then(|| {
+            "The resume command was typed but the provider process was not confirmed; inspect the pane, do not retry automatically".into()
+        });
+        Ok(())
+    })?;
+    Ok(())
 }
 async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     let r = &receipt.request;
@@ -965,7 +1133,10 @@ mod tests {
         value["directory"] = json!({"path":"/different","create":[],"confirmed_existing":true});
         assert!(shape(&serde_json::from_value(value.clone()).unwrap()).is_ok());
         value.as_object_mut().unwrap().remove("directory");
+        // Contract 1.66.0: Claude resumes natively; Gemini is refused.
         value["account_id"] = json!("claude:fixture");
+        assert!(shape(&serde_json::from_value(value.clone()).unwrap()).is_ok());
+        value["account_id"] = json!("gemini:fixture");
         assert!(shape(&serde_json::from_value(value).unwrap()).is_err());
     }
 }

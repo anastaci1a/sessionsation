@@ -27,10 +27,12 @@ pub(crate) fn interrupted_launch(phase: &str) -> Option<(&'static str, &'static 
             "failed",
             "Worker exited before terminal handoff. No agent was started; any created local directories are retained.",
         )),
-        "creating_terminal" | "renaming" | "dispatching" | "starting_provider" => Some((
-            "uncertain",
-            "Worker exited during terminal handoff. Inspect the original request and destination; do not retry automatically.",
-        )),
+        "creating_terminal" | "renaming" | "dispatching" | "starting_provider" | "resuming" => {
+            Some((
+                "uncertain",
+                "Worker exited during terminal handoff. Inspect the original request and destination; do not retry automatically.",
+            ))
+        }
         _ => None,
     }
 }
