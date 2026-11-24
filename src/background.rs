@@ -36,15 +36,40 @@ pub(crate) fn interrupted_launch(phase: &str) -> Option<(&'static str, &'static 
 }
 
 pub(crate) fn detach(command: &mut Command) -> &mut Command {
+    scrub(
+        command
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+}
+/// Workers never inherit Codex credentials.
+fn scrub(command: &mut Command) -> &mut Command {
     command
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .env_remove("CODEX_HOME")
         .env_remove("OPENAI_API_KEY")
         .env_remove("CODEX_API_KEY")
         .env_remove("CODEX_ACCESS_TOKEN")
+}
+
+/// Like [`detach`], but the worker also leaves the caller's session (`setsid`: a new session
+/// and process group), so the end of the caller's session, process group or terminal does
+/// not take it down (contract 1.64.0). `stderr` is the worker's own bounded log.
+pub(crate) fn detach_session(command: &mut Command, stderr: Stdio) -> &mut Command {
+    // SAFETY: setsid is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    scrub(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr),
+    )
 }
 
 /// Spawn a worker whose exit status nobody consumes, without leaving a zombie.

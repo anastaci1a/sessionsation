@@ -575,6 +575,8 @@ pub async fn serve(paths: Paths) -> Result<()> {
     // Contract 1.49.0: model changes and one-pass launches.
     let model_task = tokio::spawn(crate::messaging::model_change::monitor(paths.clone()));
     let turn_notify_task = tokio::spawn(crate::turn_notify::monitor(paths.clone()));
+    // Contract 1.64.0: one re-dispatch of an unsent request whose worker died.
+    let message_worker_task = tokio::spawn(crate::messaging::claude_steer::monitor(paths.clone()));
     // Contract 1.62.0 (SM8): idle Claude meters are read in the background.
     let meter_task = tokio::spawn(crate::provider::claude::meter::monitor(paths.clone()));
     // Contract 1.62.1: `state --cached` stays fresh with no caller of full `state`.
@@ -1125,6 +1127,8 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             helpers.insert(name.into(),rpc);
                             Ok(json!({"socket":home.join("app-server-control/app-server-control.sock")}))
                         }
+                        // Contract 1.64.0: delivery workers run as the supervisor's children.
+                        "message/worker" => crate::messaging::claude_steer::supervised_start(&paths,params),
                         "session/run" | "session/import" | "session/pause" | "session/resume" => {
                             compatibility::require_native_handoff()?; unreachable!()
                         }
@@ -1231,6 +1235,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     compaction_task.abort();
     model_task.abort();
     turn_notify_task.abort();
+    message_worker_task.abort();
     meter_task.abort();
     snapshot_task.abort();
     history_task.abort();

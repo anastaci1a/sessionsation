@@ -325,6 +325,7 @@ fn files(ledger: &mut Ledger, dir: &Path, now: i64, policy: Policy) -> Result<us
         // Tombstone first: an interrupted pass leaves the id blocked either way.
         fs::remove_file(&path).map_err(|_| Fault("local_io_error"))?;
         let _ = fs::remove_file(path.with_extension("worker.lock"));
+        let _ = fs::remove_file(path.with_extension("worker.log"));
         retired += 1;
     }
     Ok(retired)

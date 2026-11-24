@@ -26,6 +26,8 @@ State lives in $FAKE_HERDR_DIR/tui.json (written by the test):
   break_screen_after_type   after the first typed text `pane read` fails
   break_at_chunk      the typed chunk (1-based) after which the two breaks above happen
   hold_queued         mid-turn input is recorded as queued_command and answered only when the turn ends
+  ($FAKE_HERDR_DIR/hold-read: `pane read` waits while it exists; hold-send-text: `pane send-text`
+   waits while it exists, then fails without typing)
   ($FAKE_HERDR_DIR/end-turn: the next `agent list` ends the running turn)
 The HERDR agent status at each `send-text` goes to $FAKE_HERDR_DIR/typed-status.
 Every command is appended to $FAKE_HERDR_DIR/calls as a JSON argv; Esc,
@@ -38,6 +40,7 @@ import json
 import os
 import re
 import sys
+import time
 import uuid
 
 base = os.environ["FAKE_HERDR_DIR"]
@@ -227,6 +230,19 @@ def keys(names):
 
 
 cmd = " ".join(args[:2])
+
+
+def hold(name):
+    """Block while $FAKE_HERDR_DIR/<name> exists (at most 60 s); True when it held."""
+    path = os.path.join(base, name)
+    held = os.path.exists(path)
+    for _ in range(1200):
+        if not os.path.exists(path):
+            break
+        time.sleep(0.05)
+    return held
+
+
 if cmd == "agent list":
     if os.path.exists(os.path.join(base, "end-turn")):
         # The test ends the running turn (a file, so no read-modify-write race on tui.json).
@@ -248,12 +264,15 @@ elif cmd == "pane process-info":
     front = {"pid": 1, "name": "bash"} if state.get("shell_foreground") else {"pid": state["pid"], "name": "claude"}
     out({"result": {"process_info": {"shell_pid": 1, "foreground_processes": [front]}}})
 elif cmd == "pane read":
+    hold("hold-read")
     if args[2] != state["pane"]:
         fail("pane_not_found")
     if state.get("screen_broken"):
         fail("pane_read_failed")
     sys.stdout.write("\r\n".join(render()))
 elif cmd == "pane send-text":
+    if hold("hold-send-text"):
+        fail("pane_write_failed")
     if args[2] != state["pane"]:
         fail("pane_not_found")
     with open(os.path.join(base, "typed-status"), "a") as f:

@@ -11,18 +11,18 @@
     "codes_allow_markers": { "value": 0 },
     "contract_allow_markers": { "value": 0 },
     "control_allow_markers": { "value": 0 },
-    "daemon_methods": { "value": 24 },
+    "daemon_methods": { "value": 25 },
     "doc_bytes:AGENTS.md": { "value": 103 },
     "doc_bytes:README.md": { "value": 5500 },
     "doc_bytes:agents/README.md": { "value": 9276 },
     "doc_bytes:docs/README.md": { "value": 711 },
     "doc_bytes:docs/architecture.md": { "value": 10016 },
     "doc_bytes:docs/cli.md": { "value": 112664 },
-    "doc_bytes:docs/contract.md": { "value": 336319 },
+    "doc_bytes:docs/contract.md": { "value": 338180 },
     "doc_bytes:docs/operations.md": { "value": 29501 },
-    "doc_bytes_total": { "value": 504090 },
+    "doc_bytes_total": { "value": 505951 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "duration_literals": { "value": 185 },
+    "duration_literals": { "value": 187 },
     "env_scrub_sites": { "value": 51 },
     "error_code_literals": { "value": 680 },
     "file_cache_statics": { "value": 8 },
@@ -47,7 +47,7 @@
     "provider_enum_dispatch": { "value": 164 },
     "provider_ops_allow_markers": { "value": 0 },
     "provider_string_compares": { "value": 75 },
-    "raw_sleeps": { "value": 101 },
+    "raw_sleeps": { "value": 102 },
     "receipts_sites": { "value": 2 },
     "records_allow_markers": { "value": 0 },
     "rename_sites": { "value": 26 },
@@ -58,10 +58,10 @@
     "since_contract_literals": { "value": 39 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
-    "spawn_sites": { "value": 64 },
+    "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 96301 },
+    "src_lines": { "value": 96496 },
     "stale_target_literals": { "value": 68 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -452,8 +452,58 @@
       "reason": "1.64.0 (part A: send): provider::send (intent mapping, ignored options, delivery block, capability), the dispatcher plan, Codex interrupt resolution, receipt delivery fields and their unit tests",
       "considered": "n/a",
       "step": "1.64.0"
+    },
+    {
+      "counter": "daemon_methods",
+      "by": 1,
+      "reason": "1.64.0 (part A: send): message/worker, the supervisor starts a Claude, Antigravity or Gemini delivery worker as its own child (incident 11-24 00:59Z: a worker died with its retired sender)",
+      "considered": "a worker started by the sender in a new session (setsid) alone still dies with a sandbox or PID namespace teardown; the existing account/* and session/* methods are account or Codex handoff operations, and overloading one would hide a new control action behind an unrelated name",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 1861,
+      "reason": "1.64.0 (part A: send): delivery worker ownership, safe re-dispatch of an admitted request, the worker log, and the no-replay rule in Messaging",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 1861,
+      "reason": "1.64.0 (part A: send): contract.md entry above",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "duration_literals",
+      "by": 2,
+      "reason": "1.64.0 (part A: send): the 5 s bound on the message/worker control call (claude_steer::start_worker) and the 25 h record window of the re-dispatch sweep (claude_steer::monitor)",
+      "considered": "daemon::call's own 70 s budget is far too long for a sender that must fall back to a local start; timing.rs has no shared control-call or record-age constant yet (S-step owner)",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "raw_sleeps",
+      "by": 1,
+      "reason": "1.64.0 (part A: send): the 5 s cadence of the supervisor's re-dispatch sweep (claude_steer::monitor), scaled by timing::secs",
+      "considered": "folding the sweep into the supervisor's 1 s interval tick would read the journal directory every second inside the request loop; the loop has the same shape as the sibling monitors (turn_notify::monitor)",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "spawn_sites",
+      "by": -2,
+      "reason": "1.64.0 (part A: send): the three worker spawns of claude_steer (send, peer fallback, orphan cleanup) are one site, claude_steer::spawn_local",
+      "considered": "n/a",
+      "step": "1.64.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 195,
+      "reason": "1.64.0 (part A: send): supervisor-owned delivery workers (message/worker, local setsid fallback, worker log), the one re-dispatch of an admitted orphan and the sweep",
+      "considered": "n/a",
+      "step": "1.64.0"
     }
   ],
   "enforced"
+
 : { "oauth": "S0" }
 }

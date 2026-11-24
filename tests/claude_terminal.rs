@@ -47,7 +47,14 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 async fn fixture() -> Fixture {
+    fixture_with(false).await
+}
+/// `daemon_herdr`: the supervisor also runs with the fake HERDR on its PATH (it starts the
+/// delivery workers it re-dispatches with its own environment).
+async fn fixture_with(daemon_herdr: bool) -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
+    let herdr = tmp.path().join("herdr-state");
+    std::fs::create_dir(&herdr).unwrap();
     let bin = tmp.path().join("fake-bin");
     std::fs::create_dir_all(&bin).unwrap();
     let install = |path: PathBuf, body: &str| {
@@ -77,6 +84,20 @@ async fn fixture() -> Fixture {
     sessionsation::store::save_config(&paths, &config).unwrap();
     let d = Process(
         Command::new(binary())
+            .envs(
+                daemon_herdr
+                    .then(|| {
+                        [
+                            ("FAKE_HERDR_DIR".to_owned(), herdr.display().to_string()),
+                            (
+                                "PATH".to_owned(),
+                                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                            ),
+                        ]
+                    })
+                    .into_iter()
+                    .flatten(),
+            )
             .arg("--data-dir")
             .arg(&paths.root)
             .args(["daemon", "serve"])
@@ -97,8 +118,6 @@ async fn fixture() -> Fixture {
     let project = tmp.path().join("project");
     std::fs::create_dir(&project).unwrap();
     let project = std::fs::canonicalize(project).unwrap();
-    let herdr = tmp.path().join("herdr-state");
-    std::fs::create_dir(&herdr).unwrap();
     Fixture {
         tmp,
         paths,
@@ -1057,5 +1076,161 @@ async fn unified_send_types_into_claude_ignores_codex_options_and_queues_when_bu
     assert!(
         read(&f.herdr.join("forbidden")).is_empty(),
         "no forbidden key"
+    );
+}
+
+/// The exact delivery worker process of `message` (its full argument list), if one runs.
+fn worker_pid(f: &Fixture, message: &str) -> Option<u32> {
+    let root = f.paths.root.to_str().unwrap();
+    std::fs::read_dir("/proc").ok()?.flatten().find_map(|e| {
+        let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+        let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let args: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
+        let tail: [&[u8]; 4] = [
+            b"--data-dir",
+            root.as_bytes(),
+            b"claude-terminal-worker",
+            message.as_bytes(),
+        ];
+        (args.len() >= 5 && args[1..5] == tail && !zombie(pid)).then_some(pid)
+    })
+}
+fn stat_fields(pid: u32) -> Option<Vec<String>> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    Some(
+        stat.rsplit_once(") ")?
+            .1
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+fn zombie(pid: u32) -> bool {
+    stat_fields(pid).is_none_or(|s| s[0] == "Z" || s[0] == "X")
+}
+/// SIGKILL every process of session `sid` (exact session id, read from /proc), and its
+/// process group.
+fn kill_session(sid: i32) {
+    unsafe {
+        libc::kill(-sid, libc::SIGKILL);
+    }
+    for e in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        if stat_fields(pid)
+            .is_some_and(|s| s.get(3).and_then(|x| x.parse::<i32>().ok()) == Some(sid))
+        {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+/// Contract 1.64.0: the delivery worker belongs to the supervisor. The sender runs in its
+/// own session and that whole session is killed right after the send (as when a retired
+/// agent's environment is torn down); the message is still delivered, by its first worker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_send_is_delivered_after_the_senders_session_is_killed() {
+    use std::os::unix::process::CommandExt;
+    let f = fixture_with(true).await;
+    let (_claude, id, _reset) = live_pane(&f).await;
+    let s = f.session(&id);
+    std::fs::write(f.herdr.join("hold-read"), "").unwrap();
+    let b = body("submit", &s, "survives the sender");
+    let message = b["message_id"].as_str().unwrap().to_owned();
+    let mut sender = f.command(&["api", "send"]);
+    sender
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        sender.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = sender.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b.to_string().as_bytes())
+        .unwrap();
+    let sid = child.id() as i32;
+    wait_for("delivery worker", || worker_pid(&f, &message).is_some());
+    kill_session(sid);
+    let _ = child.wait();
+    std::fs::remove_file(f.herdr.join("hold-read")).unwrap();
+    let done = f.settled(&message);
+    assert_eq!(done["state"], "completed_with_reply", "{done}");
+    assert_eq!(done["execution"]["redispatches"], 0, "{done}");
+}
+
+/// Contract 1.64.0: a request whose worker died while it was still `admitted` (nothing
+/// written or typed) is dispatched again, once, and delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admitted_orphan_is_dispatched_again_once_and_delivered() {
+    let f = fixture_with(true).await;
+    let (_claude, id, _reset) = live_pane(&f).await;
+    let s = f.session(&id);
+    std::fs::write(f.herdr.join("hold-read"), "").unwrap();
+    let b = body("submit", &s, "second worker");
+    let message = b["message_id"].as_str().unwrap().to_owned();
+    let sent = f.send_ok(&b);
+    assert_eq!(sent["execution"]["phase"], "admitted", "{sent}");
+    let mut pid = None;
+    wait_for("delivery worker", || {
+        pid = worker_pid(&f, &message);
+        pid.is_some()
+    });
+    unsafe {
+        libc::kill(pid.unwrap() as i32, libc::SIGKILL);
+    }
+    wait_for("worker gone", || worker_pid(&f, &message).is_none());
+    std::fs::remove_file(f.herdr.join("hold-read")).unwrap();
+    let done = f.settled(&message);
+    assert_eq!(done["state"], "completed_with_reply", "{done}");
+    assert_eq!(done["execution"]["redispatches"], 1, "{done}");
+    assert_eq!(
+        done["execution"]["redispatched_at"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// Contract 1.64.0: a worker that died after it started typing (`dispatching`) is never
+/// replaced by a second delivery: the request is withdrawn and ends unsent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dispatching_orphan_is_not_dispatched_again() {
+    let f = fixture_with(true).await;
+    let (_claude, id, _reset) = live_pane(&f).await;
+    let s = f.session(&id);
+    std::fs::write(f.herdr.join("hold-send-text"), "").unwrap();
+    let b = body("submit", &s, "typed once at most");
+    let message = b["message_id"].as_str().unwrap().to_owned();
+    f.send_ok(&b);
+    let mut pid = None;
+    wait_for("worker typing", || {
+        pid = worker_pid(&f, &message);
+        pid.is_some()
+            && read(&f.herdr.join("calls")).contains("send-text")
+            && f.api(&["receipt", &message])["execution"]["phase"] == "dispatching"
+    });
+    unsafe {
+        libc::kill(pid.unwrap() as i32, libc::SIGKILL);
+    }
+    wait_for("worker gone", || worker_pid(&f, &message).is_none());
+    std::fs::remove_file(f.herdr.join("hold-send-text")).unwrap();
+    let done = f.settled(&message);
+    assert_eq!(done["state"], "rejected", "{done}");
+    assert_eq!(done["facts"]["written"], false, "{done}");
+    assert_eq!(done["execution"]["redispatches"], 0, "{done}");
+    assert!(
+        !f.writes().iter().any(|w| w.iter().any(|k| k == "enter")),
+        "never submitted"
     );
 }

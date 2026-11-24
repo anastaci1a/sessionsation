@@ -377,7 +377,9 @@ establishes `completed_with_reply`.
 A repeated identical ID/request returns or reconciles the original receipt. Changed
 payload, mode, target, generation or expiry gives `MESSAGE_ID_CONFLICT`. Requests
 remain bound to the original conversation/runtime even after rename or transfer.
-An uncertain write is journaled before socket I/O and is never resent. Receipt and
+An uncertain write is journaled before socket I/O and is never resent. A request that is
+still `admitted` with nothing written or typed is not uncertain: since 1.64.0 the supervisor dispatches it
+once more when its worker died (see [worker ownership](#1640-part-a-send-one-send-request-for-every-provider)). Receipt and
 idempotency storage is bounded at 10,000 and never silently evicts replay protection
 (retired ids keep a tombstone; see [receipt retention](#receipt-retention-revision-18)).
 Revision 18: a Submit or Queue to a session that waits on an approval or user input
@@ -4441,3 +4443,21 @@ conversation (a Codex compaction or model-change hold, a Claude peer message rep
 become false once the turn takes the message. A message sent before 1.64.0 reports its own mode as
 `mode_requested`, `intent:null` and empty `ignored_options`. `capabilities.send_request` lists the
 intents, the per-provider mapping and the options each provider ignores.
+
+**Delivery workers belong to the supervisor.** A Claude peer or terminal send and an Antigravity or
+Gemini terminal send are journaled by the sending CLI, which then asks the supervisor (control method
+`message/worker`) to start the delivery worker as the supervisor's own child, with the sender's
+environment, outside the sender's process tree. The sender may exit right after `api send` returns (or
+its session, sandbox or PID namespace may end) without taking the delivery down; before 1.64.0 the worker
+was the sender's descendant and could die with it, leaving the request `admitted` until it was rejected
+`WORKER_EXITED_BEFORE_DELIVERY`. Without a reachable supervisor the CLI starts the worker itself in a new
+session (`setsid`). A worker's stderr goes to `<message_id>.worker.log` next to its journal record
+(started afresh above 64 KiB, one line per start), retired with the record by receipt retention.
+
+**Safe re-dispatch.** A request whose worker is gone while it is still `admitted`, with nothing written,
+no terminal step journaled and no dispatch time, provably never reached the provider, so it is not an
+uncertain send. More than 10 s after its last change the supervisor (every 5 s, and any receipt read)
+dispatches it once more; the receipt's `execution.redispatches` counts this (at most 1) and
+`execution.redispatched_at` lists when. Only if that worker dies the same way does the request end
+`rejected` / `WORKER_EXITED_BEFORE_DELIVERY`. Nothing at or past `dispatching`, written or typed is ever
+dispatched again: those keep their existing outcomes (withdrawn and `rejected`, or `delivery_unknown`).

@@ -203,6 +203,10 @@ pub struct Record {
     /// The unified send mapping (contract 1.64.0); absent in older records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<crate::provider::send::Plan>,
+    /// When the supervisor dispatched this provably unsent request again after its worker
+    /// died (contract 1.64.0; at most once).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redispatched_at: Vec<i64>,
 }
 
 fn dir(paths: &Paths) -> PathBuf {
@@ -641,6 +645,7 @@ pub async fn send_planned(
         started_at: None,
         finished_at: None,
         evidence_at: None,
+        redispatched_at: vec![],
         plan,
         request,
     };
@@ -660,23 +665,7 @@ pub async fn send_planned(
             abandon_unsent(paths, &id, "HOST_UNREACHABLE_NOT_SENT")?;
         }
     } else {
-        let spawned = crate::background::detach(&mut std::process::Command::new(
-            crate::self_executable::path()?,
-        ))
-        .arg("--data-dir")
-        .arg(&paths.root)
-        .arg(if is_gemini {
-            "gemini-terminal-worker"
-        } else if is_agy {
-            "antigravity-terminal-worker"
-        } else if kind == "terminal" {
-            "claude-terminal-worker"
-        } else {
-            "claude-peer-worker"
-        })
-        .arg(&id)
-        .spawn_reaped();
-        if spawned.is_err() {
+        if !start_worker(paths, worker_for(&record), &id).await {
             abandon_unsent(paths, &id, "WORKER_COULD_NOT_START_NO_PROVIDER_ACTION")?;
         }
         for _ in 0..40 {
@@ -1016,7 +1005,7 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
                 .to_owned();
             if fall_back_to_terminal(paths, id, &reason, "delivery")? {
                 drop(lock);
-                return spawn_terminal_worker(paths, id);
+                return hand_to_terminal(paths, id).await;
             }
             return abandon_unsent(paths, id, &reason);
         }
@@ -1082,7 +1071,7 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
             if fall_back_to_terminal(paths, id, "PEER_SOCKET_UNREACHABLE", "delivery")? {
                 drop(reply);
                 drop(lock);
-                return spawn_terminal_worker(paths, id);
+                return hand_to_terminal(paths, id).await;
             }
             return change(paths, id, |r| {
                 finish(r, "rejected", Some("PEER_SOCKET_UNREACHABLE"));
@@ -1233,31 +1222,187 @@ fn fall_back_to_terminal(paths: &Paths, id: &str, reason: &str, stage: &str) -> 
     })
 }
 /// Start a detached worker subcommand for a record; whether it could be started.
-fn spawn_worker(paths: &Paths, subcommand: &str, id: &str) -> bool {
+/// The delivery worker subcommands (`api send` journal records).
+pub const WORKERS: [&str; 4] = [
+    "claude-peer-worker",
+    "claude-terminal-worker",
+    "gemini-terminal-worker",
+    "antigravity-terminal-worker",
+];
+/// The supervisor control method that starts a delivery worker as its own child.
+pub const WORKER_METHOD: &str = "message/worker";
+/// A worker log larger than this is started afresh (workers write only their errors).
+const WORKER_LOG_MAX: u64 = 64 * 1024;
+/// Re-dispatches of a provably unsent request whose worker died (contract 1.64.0).
+const MAX_REDISPATCH: usize = 1;
+
+fn worker_for(r: &Record) -> &'static str {
+    if gemini::is_gemini(r) {
+        "gemini-terminal-worker"
+    } else if antigravity::is_antigravity(r) {
+        "antigravity-terminal-worker"
+    } else if r.kind == "terminal" {
+        "claude-terminal-worker"
+    } else {
+        "claude-peer-worker"
+    }
+}
+fn worker_log(paths: &Paths, id: &str) -> Result<PathBuf> {
+    Ok(file(paths, id)?.with_extension("worker.log"))
+}
+/// The worker's stderr: `<id>.worker.log` next to its record (retired with it), started
+/// afresh when larger than [`WORKER_LOG_MAX`], with one line naming each start.
+fn open_worker_log(paths: &Paths, id: &str, worker: &str) -> Result<fs::File> {
+    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
+    let path = worker_log(paths, id)?;
+    let fresh = fs::metadata(&path).is_ok_and(|m| m.len() > WORKER_LOG_MAX);
+    let mut options = fs::OpenOptions::new();
+    options.create(true).mode(0o600);
+    if fresh {
+        options.write(true).truncate(true);
+    } else {
+        options.append(true);
+    }
+    let mut f = options.open(&path)?;
+    writeln!(
+        f,
+        "{} start {worker} pid {}",
+        crate::daemon::now(),
+        std::process::id()
+    )?;
+    Ok(f)
+}
+
+/// Start `worker` for `id` from this process, in a new session (`setsid`), with stderr to
+/// its log. `env` replaces the environment (a sender's, forwarded by the supervisor).
+fn spawn_local(
+    paths: &Paths,
+    worker: &str,
+    id: &str,
+    env: Option<&serde_json::Map<String, Value>>,
+) -> bool {
     let Ok(exe) = crate::self_executable::path() else {
         return false;
     };
-    crate::background::detach(&mut std::process::Command::new(exe))
+    let stderr = open_worker_log(paths, id, worker)
+        .map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from);
+    let mut command = std::process::Command::new(exe);
+    if let Some(env) = env {
+        command.env_clear();
+        for (k, v) in env {
+            if let Some(v) = v.as_str() {
+                command.env(k, v);
+            }
+        }
+    }
+    crate::background::detach_session(&mut command, stderr)
         .arg("--data-dir")
         .arg(&paths.root)
-        .arg(subcommand)
+        .arg(worker)
         .arg(id)
         .spawn_reaped()
         .is_ok()
 }
-fn spawn_terminal_worker(paths: &Paths, id: &str) -> Result<()> {
-    let spawned = crate::background::detach(&mut std::process::Command::new(
-        crate::self_executable::path()?,
-    ))
-    .arg("--data-dir")
-    .arg(&paths.root)
-    .arg("claude-terminal-worker")
-    .arg(id)
-    .spawn_reaped();
-    if spawned.is_err() {
+
+/// Contract 1.64.0: a delivery worker belongs to the supervisor, not to the sender. The
+/// request is journaled first; the supervisor then starts the worker as its own child,
+/// with the sender's environment, outside the sender's process tree, so the sender may
+/// exit (or its session, sandbox or namespace end) at once. Without a reachable
+/// supervisor the worker starts here, in a new session. A worker that starts twice (a lost
+/// answer) is harmless: the worker lock and the `admitted` phase let only one deliver.
+pub(crate) async fn start_worker(paths: &Paths, worker: &str, id: &str) -> bool {
+    let env: serde_json::Map<String, Value> = std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, json!(v.into_string().ok()?))))
+        .collect();
+    let asked = tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::daemon::call(
+            paths,
+            WORKER_METHOD,
+            json!({"worker":worker,"message_id":id,"env":env}),
+        ),
+    )
+    .await;
+    if matches!(&asked, Ok(Ok(v)) if v["started"] == true) {
+        return true;
+    }
+    spawn_local(paths, worker, id, None)
+}
+
+/// [`start_worker`], or (in the supervisor) a direct child.
+async fn start_from(paths: &Paths, worker: &str, id: &str, supervisor: bool) -> bool {
+    if supervisor {
+        spawn_local(paths, worker, id, None)
+    } else {
+        start_worker(paths, worker, id).await
+    }
+}
+/// A peer send that fell back to typing (nothing was sent natively) continues in a typing worker.
+async fn hand_to_terminal(paths: &Paths, id: &str) -> Result<()> {
+    if !start_worker(paths, "claude-terminal-worker", id).await {
         abandon_unsent(paths, id, "WORKER_COULD_NOT_START_NO_PROVIDER_ACTION")?;
     }
     Ok(())
+}
+
+/// The supervisor side of [`start_worker`] (`message/worker`).
+pub fn supervised_start(paths: &Paths, params: &Value) -> Result<Value> {
+    let worker = params["worker"]
+        .as_str()
+        .and_then(|w| WORKERS.iter().find(|x| **x == w))
+        .context("INVALID_REQUEST: unknown delivery worker")?;
+    let id = params["message_id"].as_str().context("INVALID_REQUEST")?;
+    ensure!(exists(paths, id), "INVALID_REQUEST: no such message");
+    Ok(json!({"started":spawn_local(paths, worker, id, params["env"].as_object())}))
+}
+
+/// A request is safe to dispatch again when nothing of it reached the provider: still
+/// `admitted`, nothing written, no terminal step journaled (keys are journaled before they
+/// are sent), not dispatched, and not yet re-dispatched [`MAX_REDISPATCH`] times.
+fn redispatchable(r: &Record) -> bool {
+    !is_terminal(r)
+        && r.kind != "hosted"
+        && r.phase == "admitted"
+        && !r.facts.written
+        && r.dispatched_at.is_none()
+        && r.terminal
+            .as_ref()
+            .is_none_or(|t| t.steps.is_empty() && t.submitted_at_ms.is_none())
+        && r.redispatched_at.len() < MAX_REDISPATCH
+}
+
+/// Supervisor sweep (contract 1.64.0): every request that is still `admitted` and whose
+/// worker is gone gets its one re-dispatch here, even when nobody reads its receipt. Only
+/// records changed within the last 25 hours are read (a request expires within 24).
+pub async fn monitor(paths: Paths) {
+    loop {
+        tokio::time::sleep(crate::timing::secs(5)).await;
+        let horizon = std::time::SystemTime::now() - Duration::from_secs(25 * 3600);
+        let Ok(entries) = fs::read_dir(dir(&paths)) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            let Some(id) = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".json"))
+                .filter(|n| uuid::Uuid::parse_str(n).is_ok())
+            else {
+                continue;
+            };
+            let recent = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t >= horizon);
+            if recent
+                && read(&paths, id).is_ok_and(|r| redispatchable(&r))
+                && let Err(error) = reconcile(&paths, id, true).await
+            {
+                eprintln!("message worker sweep {id}: {error:#}");
+            }
+        }
+    }
 }
 
 /// Recheck the target before sending: same verified process and endpoint, the
@@ -1475,7 +1620,8 @@ fn peer_observe(paths: &Paths, id: &str) -> Result<()> {
 // ------------------------------------------------------------------ receipt
 
 /// Projection of a stale record (worker gone) to an honest state, persisted.
-fn reconcile(paths: &Paths, id: &str) -> Result<Record> {
+/// `supervisor`: called by the supervisor itself, which starts workers as its own children.
+async fn reconcile(paths: &Paths, id: &str, supervisor: bool) -> Result<Record> {
     let r = read(paths, id)?;
     if is_terminal(&r) {
         return Ok(r);
@@ -1521,8 +1667,25 @@ fn reconcile(paths: &Paths, id: &str) -> Result<Record> {
                 // The worker died after clearing or typing: a cleanup worker withdraws the
                 // text and restores the draft, and ends the request `rejected`.
                 terminal::step(paths, id, "orphan_cleanup", |_| {})?;
-                if !spawn_worker(paths, "claude-terminal-worker", id) {
+                if !start_from(paths, "claude-terminal-worker", id, supervisor).await {
                     terminal::unsent_left_in_input(paths, id)?;
+                }
+            } else if stopped
+                && age > ADMITTED_GRACE_SECONDS
+                && change(paths, id, |r| {
+                    // Claimed under the records lock: one re-dispatch, whoever reconciles.
+                    let claim = redispatchable(r);
+                    if claim {
+                        r.redispatched_at.push(crate::daemon::now());
+                    }
+                    Ok(claim)
+                })?
+            {
+                // Contract 1.64.0: nothing of it reached the provider (still admitted, nothing
+                // written or typed), so dispatching it again is not a replay.
+                let worker = worker_for(&read(paths, id)?);
+                if !start_from(paths, worker, id, supervisor).await {
+                    abandon_unsent(paths, id, "WORKER_EXITED_BEFORE_DELIVERY")?;
                 }
             } else if stopped && age > ADMITTED_GRACE_SECONDS {
                 terminal::unsent_left_in_input(paths, id)?;
@@ -1626,7 +1789,8 @@ pub fn receipt_value(r: &Record) -> Value {
             "idle_notice":r.facts.idle_notice.is_some()},
         "correlation":correlation,"reply":reply,
         "execution":{"phase":r.phase,"created_at":r.created_at,"dispatched_at":r.dispatched_at,"started_at":r.started_at,
-            "finished_at":r.finished_at,"host_epoch":r.host_epoch,"automatic_replay":false},
+            "finished_at":r.finished_at,"host_epoch":r.host_epoch,"automatic_replay":false,
+            "redispatches":r.redispatched_at.len(),"redispatched_at":r.redispatched_at},
         "observation":{"state":observation_state,"checked_at":crate::daemon::now(),"evidence_observed_at":r.evidence_at,
             "error_code":r.observation_error}});
     if peer {
@@ -1748,7 +1912,7 @@ pub async fn receipt(paths: &Paths, id: &str, cancelling: bool) -> Result<Value>
             );
         }
     }
-    let r = reconcile(paths, id)?;
+    let r = reconcile(paths, id, false).await?;
     Ok(receipt_value(&r))
 }
 
