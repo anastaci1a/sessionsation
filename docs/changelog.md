@@ -26,9 +26,9 @@ and package history are in Git.
   executable path; a Codex `systemError` thread fails `compaction_not_observed` after
   30 s, not 180 s.
 - **1.67.0 (fixes)** Launches name the stable `current/` executable; `/mnt/user` `PATH`
-  entries map to `/mnt/disk1` at start; a Codex `systemError` thread fails
-  `compaction_not_observed` after 30 s, not 180 s.
-- **1.66.3** The supervisor no longer waits for `codex --version` (0.5 s at most) to
+  entries map to `/mnt/disk1`; a Codex `systemError` compaction fails after 30 s, not
+  180 s; meter windows gain `fresh`, `age_seconds`, the meter `all_windows_fresh`.
+- **1.66.3** The supervisor no longer waits for `codex --version` to
   serve. [Operations](operations.md#safe-service-maintenance).
 - **1.66.2** `resume-launch` starts a Claude session without a transcript again under its
   id (`resumed_from:"no_history"`); such a session archives with `nothing_to_archive`;
@@ -41,7 +41,7 @@ and package history are in Git.
 - **1.66.0** Admitted launches stay listed (`availability:"launching"`) and rows carry
   `availability_reason`; stop and archive of an unknown session complete with
   `not_found:true`; `resume-launch` for
-  Claude and Antigravity, `already_running` for every provider.
+  Claude and Antigravity.
   [State](contract.md#identity-and-snapshots), [stop](contract.md#stop-and-restart),
   [resume](contract.md#saved-session-popup-resume).
 - **1.65.0** (meter cycles) Usage windows gain `cycle`, `cycle_started_at`,

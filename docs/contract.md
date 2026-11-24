@@ -2518,6 +2518,12 @@ contacts a provider) carry `usage.meter`:
   (`SESSIONSATION_CLAUDE_METER_SECONDS`, 0 off), with the stored
   token only, so a background read never rotates a refresh token (`AUTH_STALE` in
   `<home>/.sessionsation/usage-read.json`).
+- Per-window freshness (`usage_meter.window_fields`, 1.67.0): `meter.fresh` and
+  `age_seconds` describe the newest reading. Every present window also has its own `fresh`
+  and `age_seconds` from its own `observed_at`, against the same bound, and a window past
+  its own reset is not fresh (`window_reasons`); `meter.all_windows_fresh` is true when
+  every present window is fresh. Claude's `seven_day` (OAuth) can lag the statusline
+  `five_hour` by minutes. A null window stays null.
 - Gemini and Antigravity: `supported:false` with `reason`.
 - Reset cycles (`usage_meter.cycles`): every window here and in `usage.short` /
   `usage.weekly` has `cycle` (opaque id), `cycle_started_at` and `cycle_reason`, which

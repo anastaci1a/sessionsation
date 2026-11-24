@@ -20,7 +20,10 @@
 //! - Gemini and Antigravity: `supported:false` with the reason; nothing is invented.
 //!
 //! A missing window is `null`, never 0%. `fresh`: some window is present, none is past its
-//! reset, and the newest reading is younger than the provider's staleness limit.
+//! reset, and the newest reading is younger than the provider's staleness limit. Each present
+//! window also has its own `fresh` and `age_seconds` (its own `observed_at` against the same
+//! limit; past its reset is never fresh); `all_windows_fresh` is true when every present
+//! window is fresh.
 use crate::provider::{ProviderId, claude, usage_cycle};
 use serde_json::{Value, json};
 
@@ -29,7 +32,7 @@ pub const ANTIGRAVITY_REASON: &str =
     "the Antigravity CLI reports no subscription usage windows to read";
 
 fn unsupported(reason: &str) -> Value {
-    json!({"supported":false,"requires_session":Value::Null,"source":Value::Null,"fresh":false,
+    json!({"supported":false,"requires_session":Value::Null,"source":Value::Null,"fresh":false,"all_windows_fresh":false,
         "observed_at":Value::Null,"age_seconds":Value::Null,
         "windows":{"five_hour":Value::Null,"seven_day":Value::Null},
         "window_reasons":{"five_hour":reason,"seven_day":reason},"reason":reason})
@@ -64,6 +67,11 @@ pub fn of(provider: ProviderId, usage: &Value, now: i64, stale_seconds: u64) -> 
             // Contract 1.65.0: the reset cycle (see provider::usage_cycle).
             "cycle":w["cycle"],"cycle_started_at":w["cycle_started_at"],"cycle_reason":w["cycle_reason"]});
         usage_cycle::fill(&mut m, duration_seconds);
+        // Contract 1.67.0: the window's own freshness, from its own observed_at and reset.
+        let seen = m["observed_at"].as_i64().map(|t| t.min(now));
+        let past = resets.is_some_and(|r| r <= now) && !first;
+        m["age_seconds"] = json!(seen.map(|t| (now - t).max(0)));
+        m["fresh"] = json!(!past && seen.is_some_and(|t| now - t < limit));
         m
     };
     let (five, seven) = (
@@ -105,6 +113,8 @@ pub fn of(provider: ProviderId, usage: &Value, now: i64, stale_seconds: u64) -> 
     });
     let fresh =
         !present.is_empty() && past.is_none() && observed_at.is_some_and(|t| now - t < limit);
+    // Contract 1.67.0: every present window is itself fresh (a null window is not counted).
+    let all_windows_fresh = !present.is_empty() && present.iter().all(|w| w["fresh"] == true);
     let reason = if present.is_empty() {
         json!("no usage window has been read yet")
     } else if let Some(r) = past {
@@ -120,7 +130,7 @@ pub fn of(provider: ProviderId, usage: &Value, now: i64, stale_seconds: u64) -> 
     };
     json!({"supported":true,"requires_session":false,
         "source":newest.map_or(if top.is_some() {json!(default_source)} else {Value::Null}, |(_, s)| s),
-        "fresh":fresh,"observed_at":observed_at,
+        "fresh":fresh,"all_windows_fresh":all_windows_fresh,"observed_at":observed_at,
         "age_seconds":observed_at.map(|t| (now - t).max(0)),
         "windows":{"five_hour":five,"seven_day":seven},
         "window_reasons":window_reasons,
@@ -196,5 +206,68 @@ mod tests {
             false
         );
         assert_eq!(of(ProviderId::Codex, &codex, now + 50, 30)["fresh"], false);
+    }
+
+    #[test]
+    fn each_window_has_its_own_freshness_and_age_from_its_own_observed_at() {
+        // Fake clock: Claude's five_hour is from the statusline just now, seven_day from an
+        // OAuth read 256 s earlier (the live lag): same bound, different ages.
+        let now = 1_000_000;
+        let usage = json!({"short":{"used_percent":31.0,"resets_at":now+100,"observed_at":now-3,"source":"statusline"},
+            "weekly":{"used_percent":56.5,"resets_at":now+1000,"observed_at":now-256,"source":"oauth"},
+            "observed_at":now-3});
+        let m = of(ProviderId::Claude, &usage, now, 300);
+        let (five, seven) = (&m["windows"]["five_hour"], &m["windows"]["seven_day"]);
+        assert_eq!(
+            (five["age_seconds"].as_i64(), seven["age_seconds"].as_i64()),
+            (Some(3), Some(256))
+        );
+        assert_eq!(
+            (five["fresh"].as_bool(), seven["fresh"].as_bool()),
+            (Some(true), Some(true))
+        );
+        assert_eq!(
+            (m["fresh"].as_bool(), m["all_windows_fresh"].as_bool()),
+            (Some(true), Some(true))
+        );
+        assert_eq!(m["age_seconds"], 3, "meter.fresh stays the newest reading");
+        // The weekly read ages past the bound while the statusline keeps the meter fresh.
+        let later = now + claude::USAGE_STALE_SECONDS;
+        let usage = json!({"short":{"used_percent":31.0,"resets_at":later+100,"observed_at":later-3,"source":"statusline"},
+            "weekly":{"used_percent":56.5,"resets_at":later+1000,"observed_at":now-256,"source":"oauth"},
+            "observed_at":later-3});
+        let m = of(ProviderId::Claude, &usage, later, 300);
+        assert_eq!(m["windows"]["five_hour"]["fresh"], true);
+        assert_eq!(m["windows"]["seven_day"]["fresh"], false);
+        assert_eq!(
+            m["windows"]["seven_day"]["age_seconds"],
+            claude::USAGE_STALE_SECONDS + 256
+        );
+        assert_eq!(
+            (m["fresh"].as_bool(), m["all_windows_fresh"].as_bool()),
+            (Some(true), Some(false))
+        );
+        // A window past its own reset is not fresh and says why; the other one is unaffected.
+        let usage = json!({"short":{"used_percent":31.0,"resets_at":now-1,"observed_at":now-3,"source":"statusline"},
+            "weekly":{"used_percent":56.5,"resets_at":now+1000,"observed_at":now-4,"source":"oauth"},
+            "observed_at":now-3});
+        let m = of(ProviderId::Claude, &usage, now, 300);
+        assert_eq!(m["windows"]["five_hour"]["fresh"], false);
+        assert_eq!(m["windows"]["seven_day"]["fresh"], true);
+        assert_eq!(m["window_reasons"]["five_hour"], reset_reason(now - 1));
+        assert_eq!(m["all_windows_fresh"], false);
+        // Unsupported and absent windows are never fresh.
+        assert_eq!(
+            of(ProviderId::Gemini, &json!({}), now, 300)["all_windows_fresh"],
+            false
+        );
+        let none = of(
+            ProviderId::Claude,
+            &json!({"short":null,"weekly":null}),
+            now,
+            300,
+        );
+        assert_eq!(none["all_windows_fresh"], false);
+        assert!(none["windows"]["five_hour"].is_null());
     }
 }

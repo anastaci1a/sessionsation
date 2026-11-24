@@ -2962,6 +2962,7 @@
       "requires_session",
       "source",
       "fresh",
+      "all_windows_fresh",
       "observed_at",
       "age_seconds",
       "windows",
@@ -3015,6 +3016,17 @@
       "codex": [],
       "codex_rule": "every window of account/rateLimits/read carries resetsAt (a reading without one is refused), so a Codex window never starts on first use",
       "field": "windows.*.starts_on_first_use"
+    },
+    "window_fields": {
+      "meter": [
+        "all_windows_fresh"
+      ],
+      "meter_fresh": "the newest reading",
+      "per_window": [
+        "fresh",
+        "age_seconds"
+      ],
+      "rule": "fresh and age_seconds come from the window's own observed_at (same bound as meter.fresh; past its own reset is never fresh); all_windows_fresh is true when every present window is fresh; a null window stays null with its window_reasons entry"
     },
     "window_reasons": {
       "field": "usage.meter.window_reasons",

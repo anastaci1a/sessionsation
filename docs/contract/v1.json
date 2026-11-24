@@ -106,11 +106,13 @@
     },
     "UsageWindowMeter": {
       "type": ["object", "null"],
-      "required": ["used_percent", "resets_at", "observed_at", "source", "starts_on_first_use", "cycle", "cycle_started_at", "cycle_reason"],
+      "required": ["used_percent", "resets_at", "observed_at", "fresh", "age_seconds", "source", "starts_on_first_use", "cycle", "cycle_started_at", "cycle_reason"],
       "properties": {
         "used_percent": {"type": "number", "minimum": 0, "maximum": 100},
         "resets_at": {"type": ["integer", "null"], "description": "Null only with starts_on_first_use (since 1.65.0)."},
         "observed_at": {"type": ["integer", "null"]},
+        "fresh": {"type": "boolean", "description": "Since 1.67.0: this window's own reading is younger than the freshness bound and the window is not past its reset."},
+        "age_seconds": {"type": ["integer", "null"], "minimum": 0, "description": "Since 1.67.0: seconds since this window's own observed_at."},
         "source": {"enum": ["statusline", "oauth", "app_server"]},
         "starts_on_first_use": {"type": "boolean", "description": "Since 1.65.0: the window has not started (used_percent 0, resets_at null); it starts on first use."},
         "cycle": {"type": "string", "minLength": 1, "description": "Since 1.65.0: opaque id of the window's reset cycle; it changes on any reset (a new resets_at, a redeem). Within one cycle used_percent never goes down."},
@@ -130,12 +132,13 @@
     "UsageMeter": {
       "type": "object",
       "description": "Since 1.62.0: one account usage meter shape for every provider (accounts[].usage.meter, api usage rows).",
-      "required": ["supported", "requires_session", "source", "fresh", "observed_at", "age_seconds", "windows", "window_reasons", "reason"],
+      "required": ["supported", "requires_session", "source", "fresh", "all_windows_fresh", "observed_at", "age_seconds", "windows", "window_reasons", "reason"],
       "properties": {
         "supported": {"type": "boolean"},
         "requires_session": {"type": ["boolean", "null"]},
         "source": {"enum": ["statusline", "oauth", "app_server", null]},
-        "fresh": {"type": "boolean"},
+        "fresh": {"type": "boolean", "description": "The newest reading is fresh (see all_windows_fresh for every window)."},
+        "all_windows_fresh": {"type": "boolean", "description": "Since 1.67.0: every present window is itself fresh."},
         "observed_at": {"type": ["integer", "null"]},
         "age_seconds": {"type": ["integer", "null"]},
         "windows": {

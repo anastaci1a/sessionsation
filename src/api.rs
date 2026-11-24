@@ -2057,8 +2057,11 @@ pub fn capabilities() -> Value {
         "codex":"the thread's tool shells (shell_environment_policy.set on thread/start and thread/resume) and the TUI",
         "inherited":"scrubbed: a child never carries its caller's id"});
     value["usage_meter"] = json!({"since_contract":"1.62.0","field":"accounts[].usage.meter","command":"usage","args":["--account","--cached"],
-        "keys":["supported","requires_session","source","fresh","observed_at","age_seconds","windows","reason"],
+        "keys":["supported","requires_session","source","fresh","all_windows_fresh","observed_at","age_seconds","windows","reason"],
         "windows":["five_hour","seven_day"],
+        // Contract 1.67.0: each present window has its own freshness; meter.fresh is the newest reading's.
+        "window_fields":{"since_contract":"1.67.0","per_window":["fresh","age_seconds"],"meter":["all_windows_fresh"],
+            "rule":"fresh and age_seconds come from the window's own observed_at (same bound as meter.fresh; past its own reset is never fresh); all_windows_fresh is true when every present window is fresh; a null window stays null with its window_reasons entry","meter_fresh":"the newest reading"},
         "providers":{"codex":{"supported":true,"requires_session":false,"source":["app_server"]},
             // guard-allow(oauth): capability text names the usage path; the read goes through provider::claude::oauth
             "claude":{"supported":true,"requires_session":false,"source":["statusline","oauth"],"oauth_read":"GET /api/oauth/usage?cedar_ember=1&skip_spend=1","cache_seconds":claude::meter::CACHE_SECONDS,"background_refresh_seconds":claude::meter::REFRESH_SECONDS,"background_renews_token":false},
