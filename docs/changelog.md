@@ -22,6 +22,9 @@ and package history are in Git.
 
 - **1.67.0** (internal: typing engine) Fix: a refused check before Enter withdraws the
   typed text and restores the draft.
+- **1.67.0 (fixes)** Launched providers and pane commands name the stable `current/`
+  executable path; a Codex `systemError` thread fails `compaction_not_observed` after
+  30 s, not 180 s.
 - **1.66.3** The supervisor no longer waits for `codex --version` (0.5 s at most) to
   serve. [Operations](operations.md#safe-service-maintenance).
 - **1.66.2** `resume-launch` starts a Claude session without a transcript again under its
@@ -34,13 +37,12 @@ and package history are in Git.
   [Contention](contract.md#admission-and-contention).
 - **1.66.0** Admitted launches stay listed (`availability:"launching"`) and rows carry
   `availability_reason`; stop and archive of an unknown session complete with
-  `not_found:true`; `already_stopped` closes the launch pane; `resume-launch` for
-  Claude and Antigravity, `already_running` for every provider (Gemini refused).
+  `not_found:true`; `resume-launch` for
+  Claude and Antigravity, `already_running` for every provider.
   [State](contract.md#identity-and-snapshots), [stop](contract.md#stop-and-restart),
-  [resume](contract.md#saved-session-popup-resume). Also internal: identity and generation
-  owners.
+  [resume](contract.md#saved-session-popup-resume).
 - **1.65.0** (meter cycles) Usage windows gain `cycle`, `cycle_started_at`,
-  `cycle_reason` and `starts_on_first_use`; a redeem (own or elsewhere) starts a cycle in
+  `cycle_reason` and `starts_on_first_use`; a redeem starts a cycle in
   which a lower reading counts; usage never drops within one. Meters gain
   `window_reasons`; a window past its reset is stale until a triggered read. Claude meter
   reads carry `cedar_ember`; `reset_credits` gains `fresh`, `age_seconds`; Claude

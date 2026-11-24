@@ -796,7 +796,9 @@ fn hosted_flags(argv: &mut Vec<String>, hosted: bool, permission_mode: Option<St
 
 async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
     let mut argv = vec![
-        std::env::current_exe()?.to_string_lossy().into_owned(),
+        crate::provider::claude::hooks::executable()?
+            .to_string_lossy()
+            .into_owned(),
         "--data-dir".into(),
         paths.root.to_string_lossy().into_owned(),
     ];
@@ -1530,7 +1532,7 @@ pub fn login_plan(paths: &Paths, account: &AccountRef) -> Result<Value> {
     Ok(
         json!({"account_id":account.id(),"provider":account.provider,"login":{
         "action":"exec","interactive":true,"credentials_in_client":false,
-        "argv":[std::env::current_exe()?.to_string_lossy(),"--data-dir",paths.root.to_string_lossy(),"account","login",account.id()]}}),
+        "argv":[crate::provider::claude::hooks::executable()?.to_string_lossy(),"--data-dir",paths.root.to_string_lossy(),"account","login",account.id()]}}),
     )
 }
 

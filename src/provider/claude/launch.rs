@@ -129,7 +129,7 @@ pub async fn exec_new(
     let mode = config.effective_launch_permissions();
     let settings = claude::native_peer::with_inbound_accept(
         &claude::launch_settings(
-            &std::env::current_exe()?,
+            &crate::provider::claude::hooks::executable()?,
             mode,
             config.claude_statusline_refresh_seconds,
         ),
@@ -185,7 +185,7 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
     let mode = config.effective_launch_permissions();
     let settings = claude::native_peer::with_inbound_accept(
         &claude::launch_settings(
-            &std::env::current_exe()?,
+            &crate::provider::claude::hooks::executable()?,
             mode,
             config.claude_statusline_refresh_seconds,
         ),

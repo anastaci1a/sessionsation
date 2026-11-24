@@ -1980,7 +1980,7 @@ fn simulate(path: &std::path::Path) -> Result<()> {
 }
 fn install_systemd(paths: &Paths) -> Result<()> {
     let home = std::env::var_os("HOME").context("HOME missing")?;
-    let executable = std::env::current_exe()?;
+    let executable = sessionsation::provider::claude::hooks::executable()?;
     // systemd does not use shell quoting; quote specifiers and backslashes explicitly.
     let quote = |path: &std::path::Path| -> Result<String> {
         let s = path.to_str().context("systemd paths must be UTF-8")?;

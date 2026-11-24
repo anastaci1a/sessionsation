@@ -549,7 +549,7 @@ async fn launch_inner(
     if reused.is_none() {
         key = ready(key).await?;
     }
-    let exe = std::env::current_exe()?;
+    let exe = crate::provider::claude::hooks::executable()?;
     let mut args = vec![
         exe.to_string_lossy().into_owned(),
         "--data-dir".into(),

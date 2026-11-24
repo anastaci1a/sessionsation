@@ -266,7 +266,7 @@ pub async fn add_to_herdr(paths: &Paths, r: Request<'_>) -> Result<Value> {
         "cd -- {} && exec env -u TMUX -u TMUX_PANE SESSIONSATION_HERDR_SESSION={} {} --data-dir {} claude-attach {} --expected-generation {}",
         q(dir),
         q(r.herdr_session),
-        q(&std::env::current_exe()?.to_string_lossy()),
+        q(&crate::provider::claude::hooks::executable()?.to_string_lossy()),
         q(&paths.root.to_string_lossy()),
         q(&session.id),
         q(&session.generation()),

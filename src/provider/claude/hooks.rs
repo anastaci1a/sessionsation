@@ -394,4 +394,54 @@ mod tests {
             serde_json::from_slice(&fs::read(settings_file(fresh.path())).unwrap()).unwrap();
         assert_eq!(v.as_object().unwrap().len(), 1);
     }
+
+    #[test]
+    fn launched_provider_arguments_and_pane_commands_name_the_stable_path() {
+        let d = tempfile::tempdir().unwrap();
+        let pkg = d.path().join("pkg");
+        let release = pkg.join("releases/abc123");
+        fs::create_dir_all(&release).unwrap();
+        let exe = release.join("sessionsation");
+        fs::write(&exe, "bin").unwrap();
+        std::os::unix::fs::symlink("releases/abc123", pkg.join("current")).unwrap();
+        // The statusline recorder in `--settings` is the stable path, never the release dir.
+        let settings = crate::provider::claude::launch_settings(
+            &stable(&exe),
+            crate::config::LaunchPermissions::Default,
+            0,
+        );
+        assert!(
+            settings.contains("/pkg/current/sessionsation"),
+            "{settings}"
+        );
+        assert!(!settings.contains("releases"), "{settings}");
+        // Every site that bakes the running executable into a launched provider's arguments, a
+        // pane command or a service definition goes through `executable()` (-> `stable`).
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for file in [
+            "provider/claude/launch.rs",
+            "provider/claude/attach.rs",
+            "resume.rs",
+            "launch.rs",
+            "messaging/recovery/launching.rs",
+            "external/hosting.rs",
+            "claude_switch.rs",
+            "auto_recover.rs",
+            "main.rs",
+        ] {
+            let text = fs::read_to_string(root.join(file)).unwrap();
+            let bare = text
+                .lines()
+                .filter(|l| {
+                    l.contains("env::current_exe()")
+                        && !l.contains("alias::canonical")
+                        && !l.contains("Command::new")
+                })
+                .count();
+            assert_eq!(
+                bare, 0,
+                "{file} bakes a release path; use hooks::executable()"
+            );
+        }
+    }
 }

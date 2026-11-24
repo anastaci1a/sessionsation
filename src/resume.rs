@@ -698,7 +698,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
             "cd -- {} && SESSIONSATION_HERDR_SESSION={} SESSIONSATION_LAUNCHER_BYPASS=1 {} --data-dir {} resume-run {}",
             q(receipt.directory.to_str().context("INVALID_DIRECTORY")?),
             q(&r.host.session),
-            q(std::env::current_exe()?
+            q(crate::provider::claude::hooks::executable()?
                 .to_str()
                 .context("INVALID_EXECUTABLE")?),
             q(paths.root.to_str().context("INVALID_DATA_ROOT")?),

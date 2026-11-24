@@ -301,18 +301,25 @@ struct ThreadStatus {
     kind: String,
 }
 async fn activity(control: &mut Transport, id: &str) -> Result<&'static str> {
+    let (label, _) = activity_and_kind(control, id).await?;
+    Ok(label)
+}
+/// [`activity`] with the native status kind it came from (`systemError` reads as `active`).
+async fn activity_and_kind(control: &mut Transport, id: &str) -> Result<(&'static str, String)> {
     let result: ThreadRead = control
         .request("thread/read", json!({"threadId":id,"includeTurns":false}))
         .await?;
     if result.thread.id != id {
         return Err(Fault("malformed_response"));
     }
-    match result.thread.status.kind.as_str() {
-        "idle" => Ok("idle"),
-        "active" => Ok("busy"),
-        "notLoaded" => Err(Fault("unavailable")),
-        _ => Ok("active"),
-    }
+    let kind = result.thread.status.kind;
+    let label = match kind.as_str() {
+        "idle" => "idle",
+        "active" => "busy",
+        "notLoaded" => return Err(Fault("unavailable")),
+        _ => "active",
+    };
+    Ok((label, kind))
 }
 fn labels(
     paths: &Paths,

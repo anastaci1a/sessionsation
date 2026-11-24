@@ -694,7 +694,7 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
         pane = ready(fresh.pane.clone()).await?;
     }
     let quote = crate::terminal::shell_quote;
-    let exe = std::env::current_exe()?;
+    let exe = crate::provider::claude::hooks::executable()?;
     let command = format!(
         "cd -- {} && SESSIONSATION_HERDR_SESSION={} SESSIONSATION_LAUNCHER_BYPASS=1 {} --data-dir {} launch-run {}",
         quote(r.directory.path.to_str().unwrap()),

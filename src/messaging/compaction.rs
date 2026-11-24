@@ -881,9 +881,16 @@ async fn observe(
     baseline: &[String],
 ) -> std::result::Result<Observation, (&'static str, Fault)> {
     let mut control = attached.connect().await.map_err(|e| ("connect", e))?;
-    let activity = activity(&mut control, conversation)
+    let (activity, kind) = activity_and_kind(&mut control, conversation)
         .await
         .map_err(|e| ("thread_read", e))?;
+    // `systemError` (a failed turn, a usage limit) runs nothing: it is quiescent like idle, not the
+    // busy thread the log used to call "active".
+    let activity = if kind == "systemError" {
+        "errored"
+    } else {
+        activity
+    };
     let turns = recent_turns(&mut control, conversation)
         .await
         .map_err(|e| ("turns_list", e))?;
@@ -1009,8 +1016,16 @@ async fn follow(paths: &Paths, r: Record) {
         }
         // Idle again and no compaction turn after the window: report it, release the hold. A start
         // that was sent is never sent again (a slow app-server could compact twice).
-        None if observed.activity == "idle" && now - since > OBSERVE_GRACE_SECONDS => {
-            note(&id, "idle_without_compaction_turn", "failing", now, since);
+        None if matches!(observed.activity, "idle" | "errored")
+            && now - since > OBSERVE_GRACE_SECONDS =>
+        {
+            note(
+                &id,
+                "idle_without_compaction_turn",
+                &format!("thread {}, failing", observed.activity),
+                now,
+                since,
+            );
             finish(
                 paths,
                 &id,
@@ -1019,7 +1034,9 @@ async fn follow(paths: &Paths, r: Record) {
                 "compaction_not_observed",
             );
         }
-        None if observed.activity == "idle" || observed.compacting => progressed(&id, now),
+        None if matches!(observed.activity, "idle" | "errored") || observed.compacting => {
+            progressed(&id, now)
+        }
         // Not idle and no new turn that could be the compaction (for example background work
         // keeps the thread active, or another status): bounded, never silent.
         None => {

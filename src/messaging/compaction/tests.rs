@@ -19,6 +19,8 @@ struct Fake {
     add_busy: bool,
     /// Thread reads fail (the connection drops): a transient provider error.
     fail_reads: bool,
+    /// The thread reads `systemError` (no turn running; a failed turn, a usage limit).
+    system_error: bool,
     /// The summary view also omits user and agent messages.
     hide_summary_items: bool,
     turns: Vec<Value>,
@@ -75,7 +77,7 @@ async fn world() -> World {
             match method.as_str() {
                 "thread/read" if s.fail_reads => None,
                 "thread/read" => Some(
-                    json!({"thread":{"id":id,"status":{"type":if s.busy {"active"} else {"idle"}}}}),
+                    json!({"thread":{"id":id,"status":{"type":if s.system_error {"systemError"} else if s.busy {"active"} else {"idle"}}}}),
                 ),
                 "thread/turns/list" => {
                     // Real app-server 0.163-0.166 shape (checked against 0.166.0 on a copy of the
@@ -1234,4 +1236,28 @@ fn cached_records_list_like_fresh_reads_and_follow_the_files() {
             .contains("UNREADABLE_OPERATION_RECORD")
     );
     crate::file_cache::trust_fresh_stamps(false);
+}
+
+#[tokio::test]
+async fn a_system_error_thread_without_a_compaction_turn_fails_after_the_grace_not_180_seconds() {
+    // Incident 2026-11-21 03:36Z: three Codex threads read `systemError` after the start (no
+    // turn running); the log called it "thread active" and held input for 180 s.
+    let w = world().await;
+    w.fake.lock().unwrap().drop_start = true;
+    let id = w.compact()["id"].as_str().unwrap().to_owned();
+    tick(&w.paths).await;
+    assert_eq!(w.phase(&id), "starting");
+    {
+        let mut fake = w.fake.lock().unwrap();
+        fake.drop_start = false;
+        fake.system_error = true;
+    }
+    backdate(&w, &id, 3 * OBSERVE_GRACE_SECONDS);
+    tick(&w.paths).await;
+    let r = w.record(&id);
+    assert_eq!(
+        (r.phase.as_str(), r.reason.as_deref()),
+        ("failed", Some("compaction_not_observed"))
+    );
+    assert_eq!(w.fake.lock().unwrap().count("thread/compact/start"), 1);
 }

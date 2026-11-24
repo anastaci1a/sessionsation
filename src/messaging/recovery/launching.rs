@@ -29,7 +29,7 @@ async fn execute(paths: &Paths, r: &mut Record) -> anyhow::Result<()> {
         let command = format!(
             "cd -- {} && SESSIONSATION_LAUNCHER_BYPASS=1 {} --data-dir {} message-recovery-run {}",
             q(p.directory.to_str().context("RECOVERY_INVALID_DIRECTORY")?),
-            q(std::env::current_exe()?
+            q(crate::provider::claude::hooks::executable()?
                 .to_str()
                 .context("RECOVERY_INVALID_EXECUTABLE")?),
             q(paths.root.to_str().context("RECOVERY_INVALID_DATA_ROOT")?),

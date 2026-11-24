@@ -1397,7 +1397,9 @@ fn pane_command(paths: &Paths, r: &Record, generation: &str) -> Result<String> {
     use crate::terminal::shell_quote;
     let hs = &r.herdr_session;
     let mut args = vec![
-        std::env::current_exe()?.to_string_lossy().into_owned(),
+        crate::provider::claude::hooks::executable()?
+            .to_string_lossy()
+            .into_owned(),
         "--data-dir".into(),
         paths.root.to_string_lossy().into_owned(),
     ];
