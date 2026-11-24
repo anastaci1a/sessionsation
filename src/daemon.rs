@@ -579,6 +579,8 @@ pub async fn serve(paths: Paths) -> Result<()> {
     let message_worker_task = tokio::spawn(crate::messaging::claude_steer::monitor(paths.clone()));
     // Contract 1.62.0 (SM8): idle Claude meters are read in the background.
     let meter_task = tokio::spawn(crate::provider::claude::meter::monitor(paths.clone()));
+    // Contract 1.64.0 (SM5): Claude hook lines move into the session event journal.
+    let events_task = tokio::spawn(crate::provider::events::monitor(paths.clone()));
     // Contract 1.62.1: `state --cached` stays fresh with no caller of full `state`.
     let snapshot_task = tokio::spawn(crate::api::snapshot_monitor(paths.clone()));
     let (history_tx, mut history_rx) = mpsc::channel(1);
@@ -1237,6 +1239,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     turn_notify_task.abort();
     message_worker_task.abort();
     meter_task.abort();
+    events_task.abort();
     snapshot_task.abort();
     history_task.abort();
     accept_task.abort();

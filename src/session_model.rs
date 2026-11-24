@@ -340,6 +340,8 @@ fn current_with(all: &Sidecar, conversation: &str, hook: Option<&HookRecord>) ->
 /// without model reporting get null.
 pub fn annotate(paths: &Paths, rows: &mut [Value]) {
     let all = load(paths);
+    // Contract 1.64.0 (SM3): running subagents from the Claude hook events.
+    let tasks = crate::provider::events::tasks(paths);
     let mut homes: BTreeMap<String, Option<PathBuf>> = BTreeMap::new();
     for row in rows.iter_mut() {
         let conversation = row["conversation_id"]
@@ -369,7 +371,7 @@ pub fn annotate(paths: &Paths, rows: &mut [Value]) {
             _ => Value::Null,
         };
         // Contract 1.62.0 (SM3).
-        crate::provider::session_meters::apply(row, hook.as_ref());
+        crate::provider::session_meters::apply(row, hook.as_ref(), tasks.get(&conversation));
     }
 }
 

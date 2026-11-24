@@ -542,33 +542,162 @@ async fn a_restarted_session_fails_the_operation_and_releases_input() {
 #[tokio::test]
 async fn sessions_of_other_providers_are_refused_with_a_clear_code() {
     let w = world().await;
-    // Re-label the catalog entry as a Claude session.
     let file = w
         .paths
         .root
         .join(crate::layout::SESSION_CATALOG)
         .join("catalog.json");
-    let mut v: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-    v["sessions"][&w.session.id]["provider"] = json!("claude");
-    fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
-    let generation = crate::catalog::find(&w.paths, &w.session.id)
-        .unwrap()
-        .generation();
-    let error = request(
-        &w.paths,
-        Request {
-            session: &w.session.id,
-            expected_generation: &generation,
-            expires_at: None,
-            operation: None,
-        },
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(error.starts_with("COMPACT_UNSUPPORTED"), "{error}");
-    assert!(error.contains("compact themselves"), "{error}");
+    let relabel = |provider: &str| {
+        let mut v: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        v["sessions"][&w.session.id]["provider"] = json!(provider);
+        fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
+        crate::catalog::find(&w.paths, &w.session.id)
+            .unwrap()
+            .generation()
+    };
+    let attempt = |generation: &str| {
+        request(
+            &w.paths,
+            Request {
+                session: &w.session.id,
+                expected_generation: generation,
+                expires_at: None,
+                operation: None,
+            },
+        )
+        .unwrap_err()
+    };
+    // Contract 1.64.0: one refusal shape, supported:false with the reason.
+    for (provider, reason) in [
+        ("gemini", crate::provider::conversation::GEMINI_UNSUPPORTED),
+        (
+            "antigravity",
+            crate::provider::compact::ANTIGRAVITY_UNSUPPORTED,
+        ),
+    ] {
+        let error = attempt(&relabel(provider));
+        let text = error.to_string();
+        assert!(text.starts_with("UNSUPPORTED_PROVIDER_OPERATION"), "{text}");
+        let u = error
+            .downcast_ref::<crate::provider::stop_shape::Unsupported>()
+            .expect("the envelope gets supported:false and the reason");
+        assert_eq!(u.0, reason);
+    }
+    // Claude is supported (a terminal session); this fixture has no such account.
+    let text = attempt(&relabel("claude")).to_string();
+    assert!(
+        !text.contains("UNSUPPORTED") && !text.contains("COMPACT_UNSUPPORTED"),
+        "{text}"
+    );
     assert!(list(&w.paths).unwrap().is_empty());
     assert!(!hold_active(&w.paths, &w.conversation));
+}
+
+fn keys(v: &Value) -> Vec<String> {
+    let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+    k.sort();
+    k
+}
+/// A rollout of the world's thread in its Codex home, with these extra lines.
+fn rollout(w: &World, lines: &[Value]) {
+    let home = w.paths.root.join("fake-home");
+    let dir = home.join("sessions/2026/11/23");
+    fs::create_dir_all(&dir).unwrap();
+    let mut text = json!({"timestamp":"2026-11-23T10:00:00Z","type":"session_meta","payload":{"id":w.conversation}}).to_string();
+    text.push('\n');
+    for l in lines {
+        text.push_str(&l.to_string());
+        text.push('\n');
+    }
+    fs::write(
+        dir.join(format!(
+            "rollout-2026-11-23T10-00-00-{}.jsonl",
+            w.conversation
+        )),
+        text,
+    )
+    .unwrap();
+}
+fn msg(kind: &str, at: &str) -> Value {
+    json!({"timestamp":at,"type":"event_msg","payload":{"type":kind,"message":"text"}})
+}
+
+#[tokio::test]
+async fn the_codex_result_has_the_one_compact_shape() {
+    let w = world().await;
+    let v = w.compact();
+    assert_eq!(v["provider"], "codex");
+    assert_eq!(v["supported"], true);
+    assert_eq!(v["method"], "app_server");
+    assert_eq!(v["native_method"], "thread/compact/start");
+    assert_eq!(v["already_compacted"], false);
+    assert_eq!(v["nothing_to_compact"], false);
+    assert_eq!(v["phase"], "waiting");
+    assert_eq!(v["hold"]["active"], true);
+    // The Claude record (a terminal compaction) has the same keys.
+    let mut claude = w.record(v["id"].as_str().unwrap());
+    claude.provider = "claude".into();
+    let c = public(&claude);
+    assert_eq!(
+        keys(&c),
+        keys(&public(&w.record(v["id"].as_str().unwrap())))
+    );
+    assert_eq!(
+        (c["method"].as_str(), c["hold"]["active"].as_bool()),
+        (Some("terminal"), Some(false))
+    );
+}
+
+#[tokio::test]
+async fn nothing_or_nothing_new_to_compact_completes_at_once_without_a_start() {
+    let w = world().await;
+    // A thread with no turn yet.
+    rollout(&w, &[]);
+    let v = w.compact();
+    assert_eq!(
+        (v["phase"].as_str(), v["nothing_to_compact"].as_bool()),
+        (Some("complete"), Some(true))
+    );
+    assert_eq!(v["already_compacted"], false);
+    assert_eq!(v["hold"]["active"], false);
+    assert!(!hold_active(&w.paths, &w.conversation));
+    // Compacted after its last turn: nothing new.
+    rollout(
+        &w,
+        &[
+            msg("user_message", "2026-11-23T10:01:00Z"),
+            msg("agent_message", "2026-11-23T10:02:00Z"),
+            json!({"timestamp":"2026-11-23T10:03:00Z","type":"compacted","payload":{}}),
+        ],
+    );
+    let again = w.compact();
+    assert_eq!(
+        (
+            again["phase"].as_str(),
+            again["already_compacted"].as_bool()
+        ),
+        (Some("complete"), Some(true))
+    );
+    assert_eq!(keys(&again), keys(&v));
+    tick(&w.paths).await;
+    assert_eq!(w.fake.lock().unwrap().count("thread/compact/start"), 0);
+    // A new turn after the compaction: compacted for real.
+    rollout(
+        &w,
+        &[
+            json!({"timestamp":"2026-11-23T10:03:00Z","type":"compacted","payload":{}}),
+            msg("user_message", "2026-11-23T10:04:00Z"),
+        ],
+    );
+    let real = w.compact();
+    assert_eq!(real["phase"], "waiting");
+    assert_eq!(
+        (
+            real["already_compacted"].as_bool(),
+            real["nothing_to_compact"].as_bool()
+        ),
+        (Some(false), Some(false))
+    );
 }
 
 /// Start, complete and leave the operation just before its release.

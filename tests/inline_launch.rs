@@ -359,7 +359,7 @@ async fn capabilities_advertise_named_journaled_inline_launches() {
     assert_eq!(caps["session_compact"]["command"], "session compact");
     assert_eq!(
         caps["session_compact"]["provider"],
-        serde_json::json!(["codex"])
+        serde_json::json!(["codex", "claude"])
     );
     assert_eq!(caps["contract_revision"], 64);
     let c = &caps["inline_launch"];

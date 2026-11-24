@@ -3401,8 +3401,8 @@ and for an hour after they finish):
 - **Restarts.** The operation is bound to the native runtime generation at request time. If the session process
   was replaced before the start, it fails `generation_changed` and releases the hold. A pending operation does
   not block `stop`, `restart` or `switch`.
-- **Refusals.** `COMPACT_UNSUPPORTED` for Claude (Claude agents compact themselves with `/compact`), Gemini and
-  Antigravity sessions; `STALE_TARGET` or the usual session errors for a bad generation; `SESSION_NOT_RUNNING`
+- **Refusals.** Since [1.64.0](#1640-part-b-events-compact) Claude terminal sessions are compacted too and Gemini and
+  Antigravity refuse with `UNSUPPORTED_PROVIDER_OPERATION` (`error.supported:false`, `error.reason`; was `COMPACT_UNSUPPORTED`); `STALE_TARGET` or the usual session errors for a bad generation; `SESSION_NOT_RUNNING`
   when the Codex session has no live app-server attachment; `INVALID_EXPIRY`; `INVALID_OPERATION_ID`;
   `OPERATION_ID_CONFLICT` (the id belongs to another session); `OPERATION_NOT_FOUND`.
 - **Journal and capability.** Records are `operations/compactions/ID.json` (retained like other finished
@@ -4250,8 +4250,8 @@ keys for every provider: `context_pct`, `subagents_running` and `background_task
 | Field | Codex | Claude | Gemini | Antigravity |
 |---|---|---|---|---|
 | `context_pct` | `rollout`: the newest `token_count` event of a running conversation (`last_token_usage.total_tokens` of `model_context_window`, the raw share; Codex's footer subtracts a 12,000-token baseline first), read by a full `api state`; cached rows keep it with its time | `statusline`: Claude Code's `context_window.used_percentage`, recorded per conversation by the status-line hook; read on every row, so `state --cached` is current | null (the share is footer screen state; it will be `screen` once the shared typing engine reads it) | null (not reported) |
-| `subagents_running` | null (app-server only, per loaded thread) | null (hook events only: `SubagentStart`/`SubagentStop`) | null | null |
-| `background_tasks` | null (app-server only: background terminals per loaded thread) | null (hook events only) | null | null |
+| `subagents_running` | null (app-server only, per loaded thread) | `hook_events` since 1.64.0 (`SubagentStart`/`SubagentStop`; null before) | null | null |
+| `background_tasks` | null (app-server only: background terminals per loaded thread) | null (no hook reports a finish) | null | null |
 
 `capabilities.session_meters` lists the fields and sources.
 
@@ -4461,3 +4461,68 @@ dispatches it once more; the receipt's `execution.redispatches` counts this (at 
 `execution.redispatched_at` lists when. Only if that worker dies the same way does the request end
 `rejected` / `WORKER_EXITED_BEFORE_DELIVERY`. Nothing at or past `dispatching`, written or typed is ever
 dispatched again: those keep their existing outcomes (withdrawn and `rejected`, or `delivery_unknown`).
+
+### 1.64.0 (part B: events, compact)
+
+MINOR (additive: commands `api events`, `api hooks [install]`; capabilities `session_events` and `hooks`;
+`session compact` result keys; Claude `subagents_running` values. One refusal changes code: compacting a
+Gemini or Antigravity session was `COMPACT_UNSUPPORTED` and is now `UNSUPPORTED_PROVIDER_OPERATION` with
+`error.supported:false` and `error.reason`; compacting a Claude session is no longer refused).
+
+**Session events in one shape (SM5).** `api events [--after SEQ] [--wait SECONDS] [--session ID] [--kind KIND]
+[--limit N]` returns `{events, cursor, gap, oldest_seq, latest_seq, more, waited}`. Every event is
+`{seq, session_id, provider, kind, at, source, provider_conversation_id, detail}`; `kind` is one of
+`turn_started`, `turn_completed` (`detail.status` `completed`/`interrupted`/`failed`), `subagent_started` /
+`subagent_stopped` (`detail.agent_id`, `agent_type`), `background_task_started` (`detail.task_id`),
+`background_task_finished`, `compacted`, `idle`, `session_started`, `session_ended`. No event carries prompt,
+reply or tool text. Pass `cursor` as the next `--after`; `--wait` (at most 300) blocks for the first new one;
+`more:true` means `--limit` (default 500, at most 2000) cut the page. The journal (`registry/events.jsonl`)
+keeps the newest events (trimmed to 5000 past 10000); `gap:true` says events after `--after` were dropped.
+
+| Provider | Source | Kinds |
+|---|---|---|
+| Claude | `hook`: Claude Code hooks Sessionsation installs (below), ingested every 2 s by the supervisor and on every `api events` / full `api state` | all but `background_task_finished` (Claude has no hook for it) |
+| Codex | `supervisor`: each full state observation of a running session's turn facts; a turn end is identified by its rollout timestamp, so a short turn is still reported once | `turn_started`, `turn_completed`; `compacted` (`source:"operation"`) when a Sessionsation compaction completes |
+| Antigravity | `supervisor`: the agy step log, as transitions between observations (a very short turn can be missed) | `turn_started`, `turn_completed` |
+| Gemini | none (`supported:false`, the Gemini reason) | |
+
+The first look at a running process records it without an event. `api turn-events` is unchanged.
+
+**Hook installation and health (SM5).** Every Claude launch (and `api hooks install [--account ID]`) puts one
+async command hook per needed event (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`, `StopFailure`,
+`SubagentStart`, `SubagentStop`, `PostToolUse` matcher `Bash`, `PostCompact`, `Notification` matcher
+`idle_prompt`) into the account's `settings.json` as its own entry
+`{"hooks":[{"type":"command","command":"<sessionsation> provider-hook claude-event","async":true,"timeout":10}]}`.
+An entry is Sessionsation's only when its command contains `provider-hook claude-event`; user hooks and every
+other key are kept. An installed file is not rewritten (`changed:false`, `already_installed:true`); an entry
+with another executable path is replaced in place. A symlinked or invalid settings file is refused
+(`SETTINGS_IS_SYMLINK`, `SETTINGS_INVALID`) and reported, never edited; a launch never fails for it, and
+`SESSIONSATION_CLAUDE_HOOKS=0` skips the launch-time install. The hook appends a content-free line to
+`<home>/.sessionsation/hook-events.jsonl`, prints nothing and always exits 0. Hooks apply to Claude processes
+started after the install. Codex and Antigravity need no hook (`method:"supervisor"`): Codex has one `notify`
+slot, which belongs to the user, and its hooks need per-hook trust, so Sessionsation writes neither. `api hooks`
+returns one row per account (`account_id, provider, supported, method, required, events, installed,
+missing_events, stale_events, user_hooks, last_event_at, reason`, plus `changed` and `already_installed` for
+`install`) and one per Claude conversation the hooks reported (`session_id, provider_conversation_id,
+process_started_at, last_event_at, ended, subagents_running`).
+
+**Subagents from the events (SM3).** A running Claude row's `subagents_running` is the number of subagents
+started and not stopped in this process (`source:"hook_events"`, `observed_at` the newest hook event), counted
+only when its `SessionStart` (startup or resume) is at or after the row's `active_since`; otherwise null with
+the reason (for example a session started before the hooks were installed). `background_tasks` stays null for
+Claude: its start is an event, but Claude reports no finish. Codex, Gemini and Antigravity are unchanged.
+
+**Compact for every provider (SM6).** `api session compact --session ID --expected-generation G --when-idle`
+now also compacts a Claude terminal session: at the next idle point with an empty prompt (twice, 1.5 s apart,
+no terminal delivery in flight) it types `/compact` into the verified HERDR pane, reads it back (with or without
+Claude's command menu, whose highlighted entry must be `/compact`), presses Enter once, and completes when Claude
+reports the compaction (`PostCompact` hook event or a transcript `compact_boundary` at or after the start). A
+draft is never cleared (`draft_present`, it waits); a typed command Enter did not run is removed with
+backspaces and the operation fails `compaction_not_started`; a submitted one is never retyped (an idle pane
+with no compaction after 2 minutes fails `compaction_not_observed`). Claude compactions hold no input. Every
+result has `supported:true`, `method` (`app_server` | `terminal`), `native_method`, `already_compacted` and
+`nothing_to_compact`. When the provider's history file shows no instruction or reply yet, the operation
+completes at once with `nothing_to_compact:true`; when its newest compaction is newer than the last instruction
+and reply, with `already_compacted:true`; nothing is started either way. Gemini and Antigravity refuse with
+`UNSUPPORTED_PROVIDER_OPERATION` (`error.supported:false`, `error.reason`). `capabilities.session_compact`
+lists the providers and methods.

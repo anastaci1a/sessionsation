@@ -247,7 +247,7 @@ for name, value in fixtures.items():
         validate(value, "Receipt")
 with tempfile.TemporaryDirectory() as directory:
     command = [str(Path(os.environ.get("CARGO_TARGET_DIR", root / "target")) / "debug/sessionsation"), "--data-dir", directory, "api"]
-    for args in [["version"], ["capabilities"], ["placements"], ["state"], ["state", "--archive-filter", "all"], ["archives"]]:
+    for args in [["version"], ["capabilities"], ["placements"], ["state"], ["state", "--archive-filter", "all"], ["archives"], ["events"], ["events", "--after", "0", "--kind", "turn_completed"], ["hooks"]]:
         value = json.loads(subprocess.check_output(command + args, text=True))
         validate(value)
         if args[0] == "state":
@@ -255,6 +255,11 @@ with tempfile.TemporaryDirectory() as directory:
             assert all(isinstance(s["pending_questions"], list) for s in value["result"]["sessions"])
         if args == ["placements"]:
             validate(value["result"], "Placements")
+        if args[0] == "events":
+            validate(value["result"], "SessionEvents")
+            assert value["result"]["gap"] is False and value["result"]["cursor"] == 0, value
+        if args == ["hooks"]:
+            validate(value["result"], "HookHealth")
         if args == ["capabilities"]:
             assert value["result"]["contract_revision"] >= 23
             assert value["result"]["contract_version"].startswith("1." + str(value["result"]["contract_revision"]) + ".")
@@ -363,6 +368,17 @@ with tempfile.TemporaryDirectory() as directory:
             assert send_request["unused_options"] == "ignored_options_not_refused" and send_request["automatic_replay"] is False, send_request
             assert send_request["providers"]["codex"]["intents"]["deliver"] == {"mode": "submit", "if_busy": "queue"}, send_request
             assert "if_busy" in send_request["providers"]["claude"]["ignored_options"], send_request
+            # 1.64.0 (SM5, SM6): session events, hook installation, compact for every provider.
+            events = value["result"]["session_events"]
+            assert events["since_contract"] == "1.64.0" and events["keys"] == ["seq", "session_id", "provider", "kind", "at", "source", "provider_conversation_id", "detail"], events
+            assert events["providers"]["gemini"]["supported"] is False and events["sources"]["claude"] == "hook", events
+            hooks = value["result"]["hooks"]
+            assert hooks["since_contract"] == "1.64.0" and hooks["providers"]["codex"]["installs"] is False, hooks
+            assert hooks["providers"]["claude"]["entry"]["async"] is True, hooks
+            compact = value["result"]["session_compact"]
+            assert compact["providers"]["claude"]["method"] == "terminal" and compact["providers"]["codex"]["method"] == "app_server", compact
+            assert compact["providers"]["gemini"]["supported"] is False and compact["providers"]["antigravity"]["reason"], compact
+            assert value["result"]["session_meters"]["sources"]["subagents_running"]["claude"] == "hook_events"
             reuse = value["result"]["pane_reuse"]
             assert reuse["since_contract"] == "1.52.0" and reuse["version"] == 1, reuse
             assert reuse["order"] == ["recorded_pane_if_idle_shell", "same_name_single_pane_idle_tab_in_space", "new_tab"], reuse

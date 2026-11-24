@@ -341,12 +341,10 @@ pub fn apply(
     value: &mut Value,
     observed: Option<&Observation>,
     now: i64,
-) {
+) -> Option<TurnFacts> {
     value["activity"] = Value::Null;
     value["live_activity"] = Value::Null;
-    let Some(o) = observed.filter(|o| o.availability == "running") else {
-        return;
-    };
+    let o = observed.filter(|o| o.availability == "running")?;
     match facts(provider, home, o, now * 1000) {
         Some((mut f, at_ms)) => {
             // Pending questions of the session itself mean it waits on the user.
@@ -359,10 +357,12 @@ pub fn apply(
             }
             value["activity"] = json!(activity_label(&f));
             value["live_activity"] = live_activity::public(Some(&f), at_ms / 1000);
+            Some(f)
         }
         None => {
             value["activity"] = json!("unknown");
             value["live_activity"] = live_activity::public(Some(&TurnFacts::default()), now);
+            None
         }
     }
 }

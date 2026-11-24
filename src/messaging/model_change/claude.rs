@@ -21,12 +21,12 @@ use crate::session_model::HookRecord;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const SETTLE: Duration = Duration::from_millis(150);
+pub(crate) const SETTLE: Duration = Duration::from_millis(150);
 /// How long a submitted command may take to show its result in the hook record.
 const CONFIRM_WAIT: Duration = Duration::from_secs(20);
 /// An empty prompt with no hook change this long after Enter: Claude refused or substituted.
 const REFUSED_AFTER: Duration = Duration::from_secs(8);
-const TYPED_WAIT: Duration = Duration::from_secs(3);
+pub(crate) const TYPED_WAIT: Duration = Duration::from_secs(3);
 
 pub(crate) fn runtime_key(t: &term::Terminal) -> String {
     format!("{}:{}:{}", t.pid, t.process_start, t.target)
@@ -120,7 +120,7 @@ pub(crate) trait Pane {
     fn keys(&self, keys: &[&str]) -> anyhow::Result<()>;
     fn text(&self, s: &str) -> anyhow::Result<()>;
 }
-struct Herdr(Host);
+pub(crate) struct Herdr(pub(crate) Host);
 impl Pane for Herdr {
     fn agent_status(&self) -> anyhow::Result<Option<String>> {
         self.0.agent_status()
@@ -288,9 +288,9 @@ fn refuse(paths: &Paths, id: &str, reason: &str, rows: &[Vec<Cell>]) {
 }
 
 /// Seconds after a terminal delivery touched the pane before a model change may type.
-const DELIVERY_QUIET_SECONDS: i64 = 5;
+pub(crate) const DELIVERY_QUIET_SECONDS: i64 = 5;
 /// Two idle observations at least this far apart.
-const IDLE_GAP: Duration = Duration::from_millis(1500);
+pub(crate) const IDLE_GAP: Duration = Duration::from_millis(1500);
 
 /// Idle twice, at least `IDLE_GAP` apart, with no terminal delivery in flight or just done:
 /// closes the race with a delivery that has just pressed Enter.
@@ -318,7 +318,7 @@ async fn ready_twice(
 }
 
 /// Idle with an empty main prompt.
-fn gates(pane: &dyn Pane) -> std::result::Result<(), &'static str> {
+pub(crate) fn gates(pane: &dyn Pane) -> std::result::Result<(), &'static str> {
     match pane.agent_status() {
         Ok(Some(s)) if s == "idle" || s == "done" => {}
         Ok(Some(s)) if s == "working" => return Err("turn_active"),

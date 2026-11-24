@@ -12,11 +12,20 @@
 //! The start needs no ledger at all; releasing held input waits for the ledger (`open_wait`)
 //! only to read ids and never holds it across provider I/O (each delivery is an ordinary
 //! `send_public` of the original request, which is idempotent per message id).
+//!
+//! Contract 1.64.0 (SM6): the same request compacts a Claude terminal session (`/compact` typed
+//! at the next idle point, [`claude`]); Antigravity and Gemini refuse with
+//! `UNSUPPORTED_PROVIDER_OPERATION` (`supported:false`, `reason`). A conversation with nothing
+//! (new) to compact completes at once with `nothing_to_compact` / `already_compacted`. Every
+//! result has the same keys.
 use super::*;
+use crate::provider::compact::Method;
 use anyhow::{Context, ensure};
 use futures_util::FutureExt;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+
+pub(crate) mod claude;
 
 /// Waiting attempts the app-server may refuse before the operation fails.
 const MAX_ATTEMPTS: u32 = 3;
@@ -70,10 +79,21 @@ struct Record {
     hold_released: bool,
     #[serde(default)]
     release_claimed_at: Option<i64>,
+    /// `codex` (every record before 1.64.0) or `claude` (contract 1.64.0).
+    #[serde(default = "codex")]
+    provider: String,
+    #[serde(default)]
+    account: Option<String>,
+}
+fn codex() -> String {
+    "codex".into()
 }
 impl Record {
     fn terminal(&self) -> bool {
         TERMINAL.contains(&self.phase.as_str())
+    }
+    fn method(&self) -> Method {
+        crate::provider::compact::method_of(&self.provider)
     }
 }
 
@@ -174,6 +194,7 @@ pub fn hold_active(paths: &Paths, conversation: &str) -> bool {
     list(paths).is_ok_and(|all| {
         all.iter().any(|r| {
             r.conversation_id == conversation
+                && r.method().holds_input()
                 && match r.phase.as_str() {
                     "waiting" => now < r.expires_at,
                     "starting" | "running" => true,
@@ -223,6 +244,18 @@ fn explain(reason: &str) -> &'static str {
         "expired" => "The expiry passed before the session was idle.",
         "cancelled" => "Cancelled before it started.",
         "completed" => "The compaction turn completed.",
+        "nothing_to_compact" => {
+            "The conversation has no instruction or reply yet; nothing was started."
+        }
+        "already_compacted" => "Nothing happened since the last compaction; nothing was started.",
+        "draft_present" => "The prompt holds a draft; the compaction waits until it is empty.",
+        "terminal_delivery_active" => {
+            "A terminal delivery is in progress; retried at the next check."
+        }
+        "compacted" => "Claude reported the compaction.",
+        "start_interrupted" => {
+            "The pass typing /compact stopped before it could confirm; not retyped."
+        }
         _ => "",
     }
 }
@@ -232,11 +265,18 @@ fn public(r: &Record) -> Value {
         "starting" | "running" => "in progress; cannot be cancelled once started",
         _ => "none",
     };
-    json!({"id":r.id,"kind":"compaction","provider":"codex","when":"idle",
+    let method = r.method();
+    let holds = method.holds_input();
+    json!({"id":r.id,"kind":"compaction","provider":r.provider,"when":"idle",
+        // Contract 1.64.0: one shape for every provider.
+        "supported":true,"method":method.name(),"native_method":method.native(),
+        "already_compacted":r.reason.as_deref() == Some("already_compacted"),
+        "nothing_to_compact":r.reason.as_deref() == Some("nothing_to_compact"),
         "session_id":r.session_id,"source_session_id":r.session_id,"accepted_generation":r.accepted_generation,
         "provider_conversation_id":r.conversation_id,"phase":r.phase,"terminal":r.terminal(),
         "reason":r.reason,"detail":r.reason.as_deref().map(explain).filter(|s| !s.is_empty()),
-        "hold":{"active":!r.terminal(),"released":r.hold_released,"scope":"new native input for this session"},
+        "hold":{"active":holds && !r.terminal(),"released":r.hold_released,
+            "scope":if holds {json!("new native input for this session")} else {Value::Null}},
         "created_at":r.created_at,"updated_at":r.updated_at,"expires_at":r.expires_at,
         "started_at":r.started_at,"finished_at":r.finished_at,"attempts":r.attempts,
         "compaction_turn_id":r.compaction_turn_id,
@@ -255,16 +295,11 @@ pub struct Request<'a> {
 /// again returns the pending one (`existing: true`) and never creates a second.
 pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
     let session = crate::catalog::resolve(paths, req.session, req.expected_generation)?;
-    ensure!(
-        session.provider == "codex",
-        "COMPACT_UNSUPPORTED: {} sessions cannot be compacted through Sessionsation{}",
-        session.provider,
-        if session.provider == "claude" {
-            " (Claude agents compact themselves with /compact)"
-        } else {
-            ""
-        }
-    );
+    let provider = crate::provider::ProviderId::parse(&session.provider)?;
+    let method = crate::provider::compact::method(provider);
+    if let Method::Unsupported(reason) = method {
+        return Err(crate::provider::stop_shape::Unsupported(reason).into());
+    }
     if let Some(id) = req.operation {
         uuid::Uuid::parse_str(id).context("INVALID_OPERATION_ID")?;
     }
@@ -274,17 +309,22 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
         expires_at > now && expires_at <= now + MAX_EXPIRY_SECONDS,
         "INVALID_EXPIRY: expires_at must be within the next {MAX_EXPIRY_SECONDS} seconds"
     );
-    let attached = attachment(paths, &session.conversation_id).map_err(|e| match e.0 {
-        "unavailable" => anyhow::anyhow!("SESSION_NOT_RUNNING"),
-        other => anyhow::anyhow!("{}", other.to_uppercase()),
-    })?;
-    ensure!(
-        session
-            .attachment
-            .as_ref()
-            .is_some_and(|a| a.pid == attached.pid && a.process_start == attached.start),
-        "STALE_TARGET"
-    );
+    let (runtime_generation, home) = if method == Method::Terminal {
+        claude::admit(paths, &session)?
+    } else {
+        let attached = attachment(paths, &session.conversation_id).map_err(|e| match e.0 {
+            "unavailable" => anyhow::anyhow!("SESSION_NOT_RUNNING"),
+            other => anyhow::anyhow!("{}", other.to_uppercase()),
+        })?;
+        ensure!(
+            session
+                .attachment
+                .as_ref()
+                .is_some_and(|a| a.pid == attached.pid && a.process_start == attached.start),
+            "STALE_TARGET"
+        );
+        (attached.generation(), attached.home.clone())
+    };
     let _lock = lock(paths)?;
     let all = list(paths)?;
     if let Some(id) = req.operation
@@ -306,6 +346,8 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
         v["existing"] = json!(true);
         return Ok(v);
     }
+    // Contract 1.64.0: nothing (new) to compact completes at once; the session is not touched.
+    let already = crate::provider::compact::already(provider, &home, &session.conversation_id);
     let r = Record {
         schema_version: 1,
         id: req
@@ -314,19 +356,26 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
         session_id: session.id.clone(),
         accepted_generation: req.expected_generation.to_owned(),
         conversation_id: session.conversation_id.clone(),
-        runtime_generation: attached.generation(),
-        phase: "waiting".into(),
-        reason: None,
+        runtime_generation,
+        phase: if already.is_some() {
+            "complete"
+        } else {
+            "waiting"
+        }
+        .into(),
+        reason: already.map(|a| a.reason().to_owned()),
         created_at: now,
         updated_at: now,
         expires_at,
         started_at: None,
-        finished_at: None,
+        finished_at: already.map(|_| now),
         attempts: 0,
         baseline: vec![],
         compaction_turn_id: None,
-        hold_released: false,
+        hold_released: already.is_some() || !method.holds_input(),
         release_claimed_at: None,
+        provider: session.provider.clone(),
+        account: Some(session.account.clone()),
     };
     save(paths, &r)?;
     let mut v = public(&r);
@@ -611,11 +660,18 @@ pub async fn tick(paths: &Paths) {
             .collect::<Vec<_>>(),
     );
     for r in all.iter().filter(|r| !r.terminal()) {
-        advance(paths, &r.id).await;
+        if r.method() == Method::Terminal {
+            claude::advance(paths, &r.id).await;
+        } else {
+            advance(paths, &r.id).await;
+        }
     }
     let now = crate::daemon::now();
     let Ok(all) = list(paths) else { return };
-    for r in all.iter().filter(|r| r.terminal()) {
+    for r in all
+        .iter()
+        .filter(|r| r.terminal() && r.method().holds_input())
+    {
         if !r.hold_released {
             release(paths, &r.id).await;
         } else if r
@@ -911,7 +967,7 @@ async fn follow(paths: &Paths, r: Record) {
             let turn_id = turn.id.clone();
             match turn.status.as_str() {
                 "completed" => {
-                    let _ = update(paths, &id, |r| {
+                    let done = update(paths, &id, |r| {
                         if !matches!(r.phase.as_str(), "starting" | "running") {
                             return false;
                         }
@@ -922,6 +978,17 @@ async fn follow(paths: &Paths, r: Record) {
                         r.finished_at = Some(now);
                         true
                     });
+                    // Contract 1.64.0: the compaction is a session event too.
+                    if let Ok(Some(r)) = done {
+                        let _ = crate::provider::events::record(
+                            paths,
+                            crate::provider::ProviderId::Codex,
+                            &r.session_id,
+                            &r.conversation_id,
+                            "compacted",
+                            json!({"operation_id":r.id,"trigger":"sessionsation"}),
+                        );
+                    }
                 }
                 "failed" | "interrupted" => {
                     let reason = if turn.status == "failed" {
@@ -1030,9 +1097,21 @@ pub async fn monitor(paths: Paths) {
 
 /// `api capabilities.session_compact`.
 pub fn capability() -> Value {
-    json!({"since_contract":"1.47.0","command":"session compact","provider":["codex"],
-        "unsupported":{"claude":"COMPACT_UNSUPPORTED","gemini":"COMPACT_UNSUPPORTED","antigravity":"COMPACT_UNSUPPORTED"},
-        "when":["idle"],"native_method":"thread/compact/start","types_into_terminal":false,
+    json!({"since_contract":"1.47.0","command":"session compact","provider":["codex","claude"],
+        // Contract 1.64.0 (SM6): one request and result shape for every provider.
+        "unsupported":{"gemini":crate::provider::compact::UNSUPPORTED_CODE,"antigravity":crate::provider::compact::UNSUPPORTED_CODE},
+        "providers":{"codex":{"supported":true,"method":"app_server","native_method":"thread/compact/start","holds_input":true},
+            "claude":{"supported":true,"method":"terminal","native_method":claude::COMMAND,"holds_input":false,
+                "requires":["herdr_terminal","terminal_input_enabled","idle","empty_prompt"],
+                "completed_by":["PostCompact hook event","transcript compact_boundary"],
+                "hosted":"refused: a hosted session has no terminal pane (TERMINAL_* code)"},
+            "antigravity":{"supported":false,"reason":crate::provider::compact::ANTIGRAVITY_UNSUPPORTED},
+            "gemini":{"supported":false,"reason":crate::provider::conversation::GEMINI_UNSUPPORTED}},
+        "result_keys_since_1_64":["supported","method","native_method","already_compacted","nothing_to_compact"],
+        "already":{"nothing_to_compact":"the history file has no instruction or reply yet","already_compacted":"the newest compaction is newer than the last instruction and reply",
+            "phase":"complete","started":false},
+        "unsupported_error":{"code":crate::provider::compact::UNSUPPORTED_CODE,"supported":false,"reason":"error.reason"},
+        "when":["idle"],"native_method":"thread/compact/start","types_into_terminal":"claude only",
         "pending_per_session":1,"idempotent":"existing pending operation returned with existing:true",
         "default_expiry_seconds":DEFAULT_EXPIRY_SECONDS,"max_expiry_seconds":MAX_EXPIRY_SECONDS,
         "phases":["waiting","starting","running","complete","failed","cancelled","expired"],

@@ -3860,3 +3860,159 @@ async fn stop_result_keys_are_identical_per_provider_for_claude() {
     assert_eq!(again["kind"], "terminate");
     assert_eq!(again["provider_conversation_id"], conversation.as_str());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hooks_install_idempotently_keep_user_hooks_and_events_come_out_in_one_shape() {
+    let f = fixture().await;
+    assert!(
+        f.run(&["account", "add", "--platform", "claude", "personal"])
+            .status
+            .success()
+    );
+    let home = f.home("personal");
+    let settings = home.join("settings.json");
+    std::fs::write(
+        &settings,
+        json!({"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"notify-send done"}]}]}})
+            .to_string(),
+    )
+    .unwrap();
+    let row = |v: &Value| {
+        v["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["account_id"] == "claude:personal")
+            .unwrap()
+            .clone()
+    };
+    let before = row(&f.api(&["hooks"]));
+    assert_eq!(before["installed"], false);
+    assert_eq!(before["missing_events"].as_array().unwrap().len(), 10);
+    assert_eq!(before["user_hooks"], 1);
+    let first = row(&f.api(&["hooks", "install", "--account", "claude:personal"]));
+    assert_eq!(
+        (first["changed"].as_bool(), first["installed"].as_bool()),
+        (Some(true), Some(true))
+    );
+    let bytes = std::fs::read(&settings).unwrap();
+    let second = row(&f.api(&["hooks", "install"]));
+    assert_eq!(
+        (
+            second["changed"].as_bool(),
+            second["already_installed"].as_bool()
+        ),
+        (Some(false), Some(true))
+    );
+    assert_eq!(
+        std::fs::read(&settings).unwrap(),
+        bytes,
+        "an installed file is not rewritten"
+    );
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["model"], "opus");
+    assert_eq!(
+        v["hooks"]["Stop"][0]["hooks"][0]["command"],
+        "notify-send done"
+    );
+    let ours = v["hooks"]["Stop"][1]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(ours.ends_with("provider-hook claude-event"), "{ours}");
+    assert_eq!(second["user_hooks"], 1);
+
+    // The installed command records content-free lines; the hook prints nothing.
+    let conversation = uuid::Uuid::new_v4().to_string();
+    let hook = |payload: Value| {
+        let mut child = Command::new(binary())
+            .args(["provider-hook", "claude-event"])
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.to_string().as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success() && out.stdout.is_empty());
+    };
+    hook(json!({"hook_event_name":"SessionStart","session_id":conversation,"source":"startup"}));
+    hook(
+        json!({"hook_event_name":"UserPromptSubmit","session_id":conversation,"prompt":"private prompt"}),
+    );
+    hook(
+        json!({"hook_event_name":"SubagentStart","session_id":conversation,"agent_id":"a1","agent_type":"Explore"}),
+    );
+    hook(json!({"hook_event_name":"PostCompact","session_id":conversation,"trigger":"manual"}));
+    let all = f.api(&["events", "--after", "0"]);
+    let events: Vec<&Value> = all["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["provider_conversation_id"] == conversation.as_str())
+        .collect();
+    let kinds: Vec<&str> = events.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "session_started",
+            "turn_started",
+            "subagent_started",
+            "compacted"
+        ]
+    );
+    for e in &events {
+        let mut keys: Vec<&String> = e.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "at",
+                "detail",
+                "kind",
+                "provider",
+                "provider_conversation_id",
+                "seq",
+                "session_id",
+                "source"
+            ]
+        );
+        assert_eq!(
+            (e["provider"].as_str(), e["source"].as_str()),
+            (Some("claude"), Some("hook"))
+        );
+    }
+    assert!(!all.to_string().contains("private prompt"));
+    assert_eq!(all["gap"], false);
+    let cursor = all["cursor"].as_u64().unwrap();
+    let after = f.api(&["events", "--after", &cursor.to_string()]);
+    assert!(after["events"].as_array().unwrap().is_empty());
+    assert_eq!(after["cursor"].as_u64(), Some(cursor));
+    let only = f.api(&["events", "--kind", "subagent_started"]);
+    assert!(
+        only["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["kind"] == "subagent_started")
+    );
+    // Per-session hook health.
+    let health = f.api(&["hooks"]);
+    let s = health["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["provider_conversation_id"] == conversation.as_str())
+        .unwrap();
+    assert_eq!(s["subagents_running"], 1);
+    assert!(row(&health)["last_event_at"].is_i64());
+    let caps = f.api(&["capabilities"]);
+    assert_eq!(caps["session_events"]["since_contract"], "1.64.0");
+    assert_eq!(caps["hooks"]["providers"]["gemini"]["supported"], false);
+}

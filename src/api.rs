@@ -296,6 +296,31 @@ pub enum Command {
         #[arg(long, default_value_t = 0)]
         wait: u64,
     },
+    /// Session events of every provider in one shape after a cursor (1.64.0); --wait blocks for
+    /// the next one, `gap` says when events after the cursor were already dropped.
+    Events {
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+        /// Only this session (id).
+        #[arg(long)]
+        session: Option<String>,
+        /// Only this kind (turn_started, turn_completed, subagent_started, ...).
+        #[arg(long)]
+        kind: Option<String>,
+        /// At most this many events (default 500, at most 2000).
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Hook health per account and session (1.64.0); `hooks install` installs or repairs them.
+    Hooks {
+        #[command(subcommand)]
+        action: Option<HooksAction>,
+        /// Only this account, e.g. claude:main.
+        #[arg(long)]
+        account: Option<String>,
+    },
     /// Preview or request a generation-checked directory change or project-folder move.
     Relocate {
         #[arg(long)]
@@ -422,6 +447,15 @@ pub enum Command {
 }
 
 #[derive(Subcommand)]
+pub enum HooksAction {
+    /// Install the hooks Sessionsation needs (idempotent; user hooks are kept).
+    Install {
+        /// Only this account, e.g. claude:main (default: every account).
+        #[arg(long)]
+        account: Option<String>,
+    },
+}
+#[derive(Subcommand)]
 pub enum SessionAction {
     /// Open a running session that has no HERDR terminal in a new tab of an
     /// existing Space (Claude background sessions via `claude attach`).
@@ -480,7 +514,8 @@ pub enum SessionAction {
     /// the identity record holds but the catalog lost, then reconcile. Idempotent;
     /// never deletes, recreates or renames an entry.
     RepairIdentity,
-    /// Codex: queue a compaction that starts at the next idle point, before any held input (1.47.0).
+    /// Queue a compaction for the next idle point: Codex over its app-server, before any held input
+    /// (1.47.0); Claude by typing /compact into its terminal (1.64.0).
     Compact {
         #[arg(long)]
         session: String,
@@ -2011,8 +2046,10 @@ pub fn capabilities() -> Value {
     value["session_meters"] = json!({"since_contract":"1.62.0","fields":crate::provider::session_meters::FIELDS,
         "per_field":["<field>_source","<field>_observed_at","<field>_reason"],"extra":["context_tokens","context_window_size"],
         "sources":{"context_pct":{"claude":"statusline","codex":"rollout","gemini":null,"antigravity":null},
-            "subagents_running":{"claude":null,"codex":null,"gemini":null,"antigravity":null},
+            "subagents_running":{"claude":"hook_events","codex":null,"gemini":null,"antigravity":null},
             "background_tasks":{"claude":null,"codex":null,"gemini":null,"antigravity":null}},
+        // Contract 1.64.0: Claude subagents counted from SubagentStart/SubagentStop hook events.
+        "subagents_running_since_contract":"1.64.0",
         "unknown":"null with <field>_reason, never a guess","cached_state":true});
     // Contract 1.63.0 (SM4, P1): observe and stop have one shape for every provider.
     value["observe_conversation"] = json!({"since_contract":"1.63.0","command":"observe","field":"conversation",
@@ -2024,6 +2061,9 @@ pub fn capabilities() -> Value {
         "providers":{"codex":{"supported":true},"claude":{"supported":true},"antigravity":{"supported":true},
             "gemini":{"supported":false,"reason":crate::provider::conversation::GEMINI_UNSUPPORTED}},
         "batch":"api observations stays Codex-only"});
+    // Contract 1.64.0 (SM5, SM6): session events and hook installation for every provider.
+    value["session_events"] = crate::provider::events::capability();
+    value["hooks"] = crate::provider::hooks::capability();
     value["stop_result"] = json!({"since_contract":"1.63.0","keys":crate::provider::stop_shape::KEYS,
         "both_session_ids_until":"1.64.0","unknown":"null",
         "providers":{"codex":{"supported":true},"claude":{"supported":true},"antigravity":{"supported":true},
@@ -2625,6 +2665,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
     let placements = catalog::placement::project(paths, &catalog_sessions)?;
     let archives = external::archiving::metadata(paths)?;
     let mut deleted_accounts = std::collections::HashMap::new();
+    // Contract 1.64.0 (SM5): running sessions' turn facts, for the supervisor-observed events.
+    let mut turns: Vec<crate::provider::events::Turns> = vec![];
     let mut sessions=catalog_sessions.into_iter().filter(|s|archives.get(&s.id).is_none_or(|a|a["state"]!="deleted")).map(|s| {
         if let Some(provider) = native::of(&s.provider) {
             let id = s.id.clone();
@@ -2656,7 +2698,9 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
             }
             value["placement"] = placements["memberships"][id.as_str()].clone();
             if let Some((o, home)) = observed.get(&id) {
-                crate::native_activity::apply(provider, home, &mut value, Some(o), now);
+                if let Some(facts) = crate::native_activity::apply(provider, home, &mut value, Some(o), now) {
+                    turns.push(crate::provider::events::Turns { session_id: id.clone(), provider, conversation_id: value["conversation_id"].as_str().unwrap_or_default().to_owned(), runtime: value["pid"].as_i64(), facts });
+                }
             }
             return value;
         }
@@ -2681,6 +2725,9 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["history_file_bytes"]=facts["history_file_bytes"].clone();
         value["activity"]=source.map(|s|json!(s.activity)).unwrap_or(Value::Null);
         value["live_activity"]=source.filter(|s|!s.inactive).map_or(Value::Null,|s|crate::live_activity::public(Some(&s.turn_facts.clone().unwrap_or_default()),now));
+        if let Some(s) = source.filter(|s| !s.inactive) && let Some(facts) = s.turn_facts.clone() {
+            turns.push(crate::provider::events::Turns { session_id: value["id"].as_str().unwrap_or_default().to_owned(), provider: crate::provider::ProviderId::Codex, conversation_id: value["conversation_id"].as_str().unwrap_or_default().to_owned(), runtime: Some(i64::from(s.pid)), facts });
+        }
         // Contract 1.62.0 (SM3): the context share from a running rollout's newest token count.
         crate::provider::session_meters::apply_codex(&mut value, source.map(|s| s.rollout.as_path()), source.is_some_and(|s| !s.inactive));
         value["pending_questions"]=match source.filter(|i|!i.inactive && !archived) {
@@ -2702,6 +2749,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["input_delivery"] = json!({"health":crate::messaging::input_health::public(paths,value["conversation_id"].as_str().unwrap_or_default())});
         value
     }).filter(|s|match filter { ArchiveFilter::All=>true, ArchiveFilter::Archived=>s["archived"]==true, ArchiveFilter::Active=>s["archived"]!=true }).collect::<Vec<_>>();
+    let _ = crate::provider::events::observe_turns(paths, &turns);
+    let _ = crate::provider::events::ingest(paths);
     let jobs = external::jobs(paths).unwrap_or_default();
     // One pass over the operation journals answers every session (contract 1.57.0).
     let pending_index = (!sessions.is_empty()).then(|| crate::lifecycle::PendingIndex::scan(paths));
@@ -3596,6 +3645,31 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         Command::TurnEvents { after, wait } => {
             crate::turn_notify::events(paths, after, wait).await?
         }
+        Command::Events {
+            after,
+            wait,
+            session,
+            kind,
+            limit,
+        } => {
+            crate::provider::events::read(
+                paths,
+                crate::provider::events::Query {
+                    after,
+                    wait,
+                    session: session.as_deref(),
+                    kind: kind.as_deref(),
+                    limit,
+                },
+            )
+            .await?
+        }
+        Command::Hooks { action, account } => match action {
+            Some(HooksAction::Install { account: one }) => {
+                crate::provider::hooks::report(paths, one.or(account).as_deref(), true)?
+            }
+            None => crate::provider::hooks::report(paths, account.as_deref(), false)?,
+        },
         Command::AutoStart {
             session,
             expected_generation,

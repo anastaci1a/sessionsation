@@ -567,6 +567,8 @@ enum ProviderHookCommand {
         #[arg(long)]
         record_only: bool,
     },
+    /// Record one Claude Code hook event (content-free fields only) for `api events`.
+    ClaudeEvent,
 }
 #[derive(Subcommand)]
 enum AccountCommand {
@@ -744,6 +746,12 @@ async fn run(cli: Cli) -> Result<()> {
     } = &cli.command
     {
         std::process::exit(provider::claude::statusline_hook(*record_only));
+    }
+    if let Commands::ProviderHook {
+        command: ProviderHookCommand::ClaudeEvent,
+    } = &cli.command
+    {
+        std::process::exit(provider::claude::hooks::event_hook());
     }
     // Only setup may create a data root; everything else fails closed.
     let any_layout = matches!(

@@ -170,7 +170,7 @@
         "context_pct_reason": {"type": ["string", "null"]},
         "context_tokens": {"type": ["integer", "null"]},
         "context_window_size": {"type": ["integer", "null"]},
-        "subagents_running": {"type": ["integer", "null"], "minimum": 0, "description": "Since 1.62.0: running subagents; null with subagents_running_reason when the provider reports none readable."},
+        "subagents_running": {"type": ["integer", "null"], "minimum": 0, "description": "Since 1.62.0: running subagents; null with subagents_running_reason when the provider reports none readable. Since 1.64.0 Claude counts them from its SubagentStart/SubagentStop hook events (source hook_events)."},
         "subagents_running_source": {"type": ["string", "null"]},
         "subagents_running_observed_at": {"type": ["integer", "null"]},
         "subagents_running_reason": {"type": ["string", "null"]},
@@ -1254,6 +1254,74 @@
         "queued": {"type": "boolean"},
         "held": {"type": "boolean"},
         "fallback_reason": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "SessionEvent": {
+      "type": "object",
+      "description": "Since 1.64.0 (api events): one session event in the same shape for every provider; detail never carries prompt, reply or tool text.",
+      "required": ["seq", "session_id", "provider", "kind", "at", "source", "provider_conversation_id", "detail"],
+      "properties": {
+        "seq": {"type": "integer", "minimum": 1},
+        "session_id": {"type": ["string", "null"]},
+        "provider": {"enum": ["codex", "claude", "gemini", "antigravity"]},
+        "kind": {"type": "string", "description": "turn_started, turn_completed, subagent_started, subagent_stopped, background_task_started, background_task_finished, compacted, idle, session_started, session_ended; unknown kinds may be added."},
+        "at": {"type": "integer"},
+        "source": {"enum": ["hook", "supervisor", "operation"]},
+        "provider_conversation_id": {"type": ["string", "null"]},
+        "detail": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "SessionEvents": {
+      "type": "object",
+      "description": "Since 1.64.0: api events result. cursor is the next --after; gap is true when events after --after were already dropped.",
+      "required": ["events", "cursor", "gap", "oldest_seq", "latest_seq", "more", "waited"],
+      "properties": {
+        "events": {"type": "array", "items": {"$ref": "#/$defs/SessionEvent"}},
+        "cursor": {"type": "integer", "minimum": 0},
+        "gap": {"type": "boolean"},
+        "oldest_seq": {"type": ["integer", "null"]},
+        "latest_seq": {"type": "integer", "minimum": 0},
+        "more": {"type": "boolean"},
+        "waited": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "HookHealth": {
+      "type": "object",
+      "description": "Since 1.64.0: api hooks / api hooks install result, one row per account and one per Claude conversation the hooks reported.",
+      "required": ["accounts", "sessions", "installed"],
+      "properties": {
+        "accounts": {"type": "array", "items": {
+          "type": "object",
+          "required": ["account_id", "provider", "supported", "method", "required", "events", "installed", "missing_events", "stale_events", "user_hooks", "last_event_at", "reason"],
+          "properties": {
+            "provider": {"enum": ["codex", "claude", "gemini", "antigravity"]},
+            "supported": {"type": "boolean"},
+            "method": {"enum": ["settings_hooks", "supervisor", null]},
+            "installed": {"type": "boolean"},
+            "changed": {"type": "boolean"},
+            "already_installed": {"type": "boolean"}
+          },
+          "additionalProperties": true}},
+        "sessions": {"type": "array", "items": {"type": "object", "required": ["session_id", "provider", "provider_conversation_id", "process_started_at", "last_event_at", "ended", "subagents_running"]}},
+        "installed": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "CompactionOperation": {
+      "type": "object",
+      "description": "api session compact / compact-status result. Since 1.64.0 one shape for every supported provider (codex: app_server, claude: terminal); nothing_to_compact and already_compacted complete at once.",
+      "required": ["id", "kind", "provider", "supported", "method", "native_method", "already_compacted", "nothing_to_compact", "session_id", "phase", "terminal", "reason", "hold"],
+      "properties": {
+        "kind": {"const": "compaction"},
+        "provider": {"enum": ["codex", "claude"]},
+        "supported": {"const": true},
+        "method": {"enum": ["app_server", "terminal"]},
+        "already_compacted": {"type": "boolean"},
+        "nothing_to_compact": {"type": "boolean"},
+        "phase": {"enum": ["waiting", "starting", "running", "complete", "failed", "cancelled", "expired"]}
       },
       "additionalProperties": true
     },

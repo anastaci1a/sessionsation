@@ -300,7 +300,7 @@ pub(crate) fn columns(row: &[Cell]) -> usize {
         .map(|c| if c.ch.is_ascii() { 1 } else { 2 })
         .sum()
 }
-fn is_rule(row: &[Cell]) -> bool {
+pub(crate) fn is_rule(row: &[Cell]) -> bool {
     matches!(row.first().map(|c| c.ch), Some('─' | '╭' | '╰'))
         && (row.iter().filter(|c| c.ch == '─').count() * 2 > row.len() || labelled_rule(row))
 }
@@ -320,7 +320,7 @@ fn labelled_rule(row: &[Cell]) -> bool {
 fn agent_pill(row: &[Cell]) -> bool {
     row.iter().any(|c| c.style.bg && c.ch != '─')
 }
-fn indent_of(line: &str) -> (usize, &str) {
+pub(crate) fn indent_of(line: &str) -> (usize, &str) {
     let rest = line.trim_start_matches([' ', '\u{a0}']);
     (line.chars().count() - rest.chars().count(), rest)
 }
@@ -328,7 +328,7 @@ fn indent_of(line: &str) -> (usize, &str) {
 /// Code 2.1.312): the selected entry is `  ❯ /model …`, the others `    /mobile …`
 /// or `    * agent …`. Other rows there (a spinner tip `  ⎿  …`, a
 /// right-aligned hint) are not menus.
-fn menu_row(line: &str) -> bool {
+pub(crate) fn menu_row(line: &str) -> bool {
     let (indent, rest) = indent_of(line);
     (indent == 2 && rest.starts_with('❯'))
         || (indent == 4 && rest.starts_with(['/', '*', '+', '@', '#', '!']))

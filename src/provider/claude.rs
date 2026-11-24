@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 pub mod attach;
 pub mod bypass;
 mod facts;
+pub mod hooks;
 pub mod hosted;
 pub mod launch;
 pub mod meter;
@@ -455,7 +456,10 @@ pub async fn auth_status(config: &Config, home: &Path) -> Result<AuthStatus> {
     AuthStatus::parse(&output.stdout)
 }
 pub async fn prelaunch_gate(config: &Config, home: &Path) -> Result<()> {
-    auth_status(config, home).await?.gate()
+    auth_status(config, home).await?.gate()?;
+    // Contract 1.64.0 (SM5): every Claude launch installs or repairs Sessionsation's hooks.
+    hooks::ensure(home);
+    Ok(())
 }
 
 /// Settings merged at launch: route the statusline through the usage recorder,

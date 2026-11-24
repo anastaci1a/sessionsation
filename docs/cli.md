@@ -391,6 +391,8 @@ sessionsation api state --watch --interval 2
 sessionsation api launcher new --account codex:example
 sessionsation api turn-notify --session ID --expected-generation G --enable [--notify-session ID2]
 sessionsation api turn-events --after 0 --wait 60       # block until a notifying session ends a turn
+sessionsation api events --after 0 --wait 60           # every provider's session events in one shape (1.64.0)
+sessionsation api hooks install                        # install or repair the hooks Claude events need (1.64.0)
 sessionsation api operations
 ```
 
@@ -637,7 +639,7 @@ read-only (answer them there); hosted Claude sessions can be answered. Gemini
 repeat the same command to read its receipt. Semantics and errors are in the
 [contract](contract.md#pending-questions-revision-23).
 
-## Compact a Codex agent at the next idle point
+## Compact an agent at the next idle point
 
 ```sh
 sessionsation api session compact --session SESSION-ID --expected-generation GENERATION --when-idle [--expires-at UNIX] [--operation UUID]
@@ -649,8 +651,10 @@ Typing `/compact` into a Codex TUI is refused while a task runs. This queues the
 through the app-server protocol (`thread/compact/start`) at the next true idle point: no active turn and an empty
 native queue. Until it completes, fails, expires or is cancelled, new `submit`/`queue` messages to that session
 stay local (`pending_local`, reason `compaction_hold`) and are then delivered in order, after the compaction. One
-compaction may be pending per session; asking again returns it. Codex only: Claude sessions refuse with
-`COMPACT_UNSUPPORTED` (they compact themselves). The supervisor must be running. Details, phases and refusal codes
+compaction may be pending per session; asking again returns it. Since 1.64.0 a Claude terminal session is
+compacted by typing `/compact` at its next idle point with an empty prompt; Gemini and Antigravity refuse with
+`UNSUPPORTED_PROVIDER_OPERATION`, and a conversation with nothing new to compact completes at once
+(`nothing_to_compact` / `already_compacted`). The supervisor must be running. Details, phases and refusal codes
 are in the [contract](contract.md#codex-compaction-at-the-next-idle-point-1470).
 
 ## Session model: one-pass launch and set-model (contract 1.49.0)
