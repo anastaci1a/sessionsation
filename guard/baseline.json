@@ -13,15 +13,15 @@
     "control_allow_markers": { "value": 0 },
     "daemon_methods": { "value": 25 },
     "doc_bytes:AGENTS.md": { "value": 103 },
-    "doc_bytes:README.md": { "value": 5500 },
-    "doc_bytes:agents/README.md": { "value": 9276 },
-    "doc_bytes:docs/README.md": { "value": 711 },
-    "doc_bytes:docs/architecture.md": { "value": 10016 },
+    "doc_bytes:README.md": { "value": 2441 },
+    "doc_bytes:agents/README.md": { "value": 9291 },
+    "doc_bytes:docs/README.md": { "value": 891 },
+    "doc_bytes:docs/architecture.md": { "value": 7553 },
     "doc_bytes:docs/changelog.md": { "value": 13278 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
     "doc_bytes:docs/contract.md": { "value": 222202 },
-    "doc_bytes:docs/operations.md": { "value": 29501 },
-    "doc_bytes_total": { "value": 309633 },
+    "doc_bytes:docs/operations.md": { "value": 22987 },
+    "doc_bytes_total": { "value": 297792 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -626,6 +626,48 @@
       "counter": "doc_bytes_total",
       "by": -94046,
       "reason": "D1: cli.md reduced to usage",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes:README.md",
+      "by": -3059,
+      "reason": "D1: README keeps purpose, install and quick start; provider feature lists point at api capabilities and the contract, check details and the release procedure moved to agents/README.md",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes:agents/README.md",
+      "by": 15,
+      "reason": "D1: one-owner-per-topic table, release procedure moved here from README, duplicated check text and a stale scan note removed",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes:docs/README.md",
+      "by": 180,
+      "reason": "D1: index names each topic's owner and the new changelog",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes:docs/architecture.md",
+      "by": -2463,
+      "reason": "D1: architecture only; contract-version narratives and contract duplicates removed, module map updated",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes:docs/operations.md",
+      "by": -6514,
+      "reason": "D1: operator procedures and verification only; contract duplicates and the inline-journal section removed, layout tree updated, release rollback procedure generalised",
+      "considered": "n/a",
+      "step": "D1"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": -11841,
+      "reason": "D1: README, agents/README, docs/README, architecture and operations consolidated",
       "considered": "n/a",
       "step": "D1"
     }

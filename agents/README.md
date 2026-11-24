@@ -25,38 +25,36 @@ rustup show
 scripts/check.sh
 ```
 
-The script runs formatting, Clippy with warnings denied, locked Rust tests, local
-Markdown links and schema/CLI-envelope checks. It resolves the checkout itself,
-defaults to `target-review/`, and runs independent test cases in parallel (one per
-core, at most 12; each test uses its own temporary root, sockets and fake peers).
-Override `CARGO_TARGET_DIR` with an absolute path or `RUST_TEST_THREADS` explicitly.
-When `cargo-nextest` is installed (the check image has it) the tests run under it,
-with every test in its own process and all test binaries in parallel; set
-`SESSIONSATION_NO_NEXTEST=1` for plain `cargo test`, which behaves the same.
+`scripts/check.sh` runs formatting, Clippy with warnings denied, locked Rust tests,
+local Markdown links (`scripts/check_docs.py`) and schema/CLI-envelope checks
+(`scripts/check_contract.py`). It resolves the checkout itself, defaults to
+`target-review/`, and runs tests in parallel (one per core, at most 12; each test uses
+its own temporary root, sockets and fake peers), under `cargo-nextest` when installed
+(`SESSIONSATION_NO_NEXTEST=1` for plain `cargo test`). Override `CARGO_TARGET_DIR`
+with an absolute path or `RUST_TEST_THREADS` explicitly. Check scripts default
+`TOKIO_WORKER_THREADS` to 2 for owned subprocesses; production binaries are unchanged.
 
-**Iterate fast, check once.** Builders do not run the full script after every edit.
-Iterate with `scripts/check.sh --quick` (fmt, Clippy on lib and bins, lib and bin
-unit tests) and with targeted tests, e.g. `scripts/check.sh --quick native_send` or
-`cargo test --test claude_terminal terminal_input`, then run the full
-`scripts/check.sh` once before committing. `--quick` does not run the documentation-link or
-contract-schema checks; after docs or contract edits run `python3 scripts/check_docs.py`
-and `python3 scripts/check_contract.py` (or the full script).
+**Iterate fast, check once.** Iterate with `scripts/check.sh --quick [NAME]` (fmt,
+Clippy on lib and bins, lib and bin unit tests, plus tests matching NAME) or targeted
+tests such as `cargo test --test claude_terminal terminal_input`, then run the full
+`scripts/check.sh` once before committing. `--quick` skips the docs and contract
+checks: after docs edits run `python3 scripts/check_docs.py`, after contract/schema
+edits `CARGO_TARGET_DIR="$PWD/target-review" python3 scripts/check_contract.py`
+(after building the debug CLI there), and for doc size changes `cargo test --lib
+guard`.
 
 The suite compresses real-time waits with `SESSIONSATION_TEST_TIME_SCALE` (default 10
 in `scripts/check.sh` and the nextest profile; `1` is real time). It is **test-only**:
 unset in production, every wait keeps its documented value. It divides supervisor
-tick intervals, native-send readiness/consumption windows and terminal settle
-delays (see `src/timing.rs`; give-up budgets are never compressed below one second).
-When adding a production wait that tests would otherwise sit through, route it
-through `timing::scaled`, `timing::secs` or `timing::budget`, and use condition polls
-rather than fixed sleeps in tests.
-The fixtures fsync many small files; on a slow or network-backed disk point
-`TMPDIR` at a tmpfs mounted with exec (the Docker wrapper below does this).
-The initial run downloads locked public Cargo dependencies. For later offline
-runs use `CARGO_NET_OFFLINE=true scripts/check.sh` after `cargo fetch --locked`.
-Do not overwrite an executable selected by another consumer.
+tick intervals, native-send windows and terminal settle delays (`src/timing.rs`;
+give-up budgets are never compressed below one second). Route a new production wait
+that tests would otherwise sit through via `timing::scaled`, `timing::secs` or
+`timing::budget`, and use condition polls rather than fixed sleeps in tests. On a
+slow disk point `TMPDIR` at a tmpfs mounted with exec. For offline runs use
+`CARGO_NET_OFFLINE=true scripts/check.sh` after `cargo fetch --locked`. Do not
+overwrite an executable selected by another consumer.
 
-Alternatively, with Docker and no local Rust/Python installation:
+With Docker and no local Rust/Python:
 
 ```sh
 docker build -f scripts/Dockerfile.check -t sessionsation-public-check:local scripts
@@ -64,27 +62,20 @@ scripts/docker-check.sh                          # full check in the image
 scripts/docker-check.sh scripts/check.sh --quick # fast pass
 ```
 
-`scripts/docker-check.sh [command...]` does the same with a persistent build tree
-(`CHECK_TARGET`), an optional registry cache (`CHECK_REGISTRY`) and `/tmp` on tmpfs.
-The image also carries a pinned `cargo-nextest` release.
+`scripts/docker-check.sh [command...]` uses a persistent build tree (`CHECK_TARGET`),
+an optional registry cache (`CHECK_REGISTRY`) and `/tmp` on tmpfs; the image carries
+a pinned `cargo-nextest`. It builds from a public Rust image and needs network access
+only on the first run. No account homes, provider binary, live sockets, SSH agent or
+credentials are mounted. Docker creates build files as its container user. The
+default suite skips opt-in installed-binary fixtures; see
+[operations](../docs/operations.md#optional-isolated-herdr-verification).
 
-This builds from a public Rust image and installs declared Debian dependencies.
-It needs network access for image/packages/crates on the first run, not a host
-Cargo cache or a custom image from another project. No account homes, provider
-binary, live sockets, SSH agent or credentials are mounted. Docker creates build
-files as its container user; use a dedicated checkout or adjust ownership afterward.
-The default suite skips opt-in installed-binary fixtures; optional HERDR
-checks and their limits are in [operations](../docs/operations.md).
-
-Rust changes need meaningful safety-boundary regressions and the full script.
-A fixture starting another lifecycle action must wait for the previous worker’s
-lock release after a terminal phase, including cancellation; a journaled phase
-alone does not prove that the worker has exited.
-For docs-only edits, run `python3 scripts/check_docs.py`; contract/schema edits
-also need `CARGO_TARGET_DIR="$PWD/target-review" python3 scripts/check_contract.py`
-after building the debug CLI in that target directory.
-Setup/check-script changes need clean-environment execution. Test examples against
-actual help/envelopes. Keep fixtures synthetic; do not copy an operator's root.
+Rust changes need meaningful safety-boundary regressions and the full script. A
+fixture starting another lifecycle action must wait for the previous worker's lock
+release after a terminal phase, including cancellation; a journaled phase alone does
+not prove that the worker has exited. Setup/check-script changes need
+clean-environment execution. Test examples against actual help/envelopes. Keep
+fixtures synthetic; do not copy an operator's root.
 
 ## Owned roles and the guard
 
@@ -121,30 +112,45 @@ covers, so an Enforced clippy role still needs its counters' sites marked or at 
 (`use ProviderId::*`) or values bound earlier (`let c = ProviderId::Codex; p == c`)
 are not matched, and counters count lines, not matches.
 
-## Documentation and release preparation
+## Documentation
 
-README owns purpose, requirements and short setup. docs/ owns behavior, architecture,
-CLI/contract and operations, indexed by docs/README.md. Contributor workflow belongs
-here. Update the authoritative section, remove superseded text and duplicate facts,
-and split files only for distinct reader needs. No session logs or deployment
-inventories in public documentation. Keep machine paths, receipt databases and
-rollback copies outside Git.
+One owner per topic; never repeat a paragraph in another file (the guard counts
+duplicates):
 
-This repository is public. Before each release, review tracked files AND reachable
-Git history. A bounded
-credential-pattern scan in this pass found no credential-like matches, but that
-is not a security certification. History still contains private deployment paths,
-endpoint/account/session metadata and old operational records. Removing current
-files does not remove their earlier blobs. No history rewrite or visibility change
-is authorized by routine cleanup; the owner must decide separately.
+| Topic | Owner |
+| --- | --- |
+| Purpose, requirements, install, quick start | README.md |
+| Command usage, flags, short examples | docs/cli.md |
+| Behaviour, fields, error codes, capabilities (current only) | docs/contract.md |
+| What changed per contract version | docs/changelog.md |
+| Internal structure | docs/architecture.md |
+| Verification scope, operator procedures | docs/operations.md |
+| Contributor workflow, checks, guard, release | agents/README.md |
 
-The inherited `src/messaging/modes.rs` origin constant and matching legacy fixtures
-still encode an operator deployment endpoint. Changing that compatibility contract
-would affect existing consumers, so it remains a known public exposure and portability limitation,
-not a documentation substitution. New consumers use public API v1. Retain the
-MIT [upstream attribution](../NOTICE); review all new dependencies/assets and do not
-infer permission for unlicensed source.
+Update the owning section and link to it from elsewhere; remove superseded text
+instead of adding "since" narratives (the changelog carries history). Split files only
+for distinct reader needs. No session logs or deployment inventories in public
+documentation. Keep machine paths, receipt databases and rollback copies outside Git.
 
-Check scripts also default TOKIO_WORKER_THREADS to 2 for owned subprocesses,
-preventing large host CPU counts from creating oversized test runtimes. Override
-it explicitly when investigating concurrency; production binaries are unchanged.
+## Release procedure
+
+1. From a clean checkout of the commit being released (never a `git archive` copy),
+   use a **fresh, empty target dir** every time:
+   `SESSIONSATION_COMMIT=$(git rev-parse HEAD) CARGO_TARGET_DIR=$(mktemp -d) cargo build --release --locked`.
+2. Run `scripts/check.sh` on that commit.
+3. Install to `releases/<sha>` and check the embedded commit: `api version` must print
+   `"commit":"<sha>"`.
+4. Switch the `current` link, then run `scripts/smoke-installed.sh <installed binary>
+   <sha>`. A failure means: switch the link back to the previous release immediately.
+   `--help` is not a check: it never loads the real state.
+
+This repository is public. Before each release, review tracked files and reachable
+Git history. History still contains private deployment paths, endpoint/account/
+session metadata and old operational records; removing current files does not
+remove their earlier blobs. No history rewrite or visibility change is authorized by
+routine cleanup; the owner decides separately. The inherited
+`src/messaging/modes.rs` origin constant and matching legacy fixtures still encode an
+operator deployment endpoint; changing that compatibility contract would affect
+existing consumers, so it remains a known exposure. New consumers use public API v1.
+Retain the MIT [upstream attribution](../NOTICE); review all new dependencies/assets
+and do not infer permission for unlicensed source.

@@ -1,144 +1,116 @@
 # Architecture
 
-## Backend contract
+## Backend
 
-One stable session catalog and one provider-qualified account list.
-Backend session IDs are independent of provider conversation IDs and runtime
-attachments. Runtime generations reject stale mutations. Renames preserve backend
-identity; live HERDR labels come from the host, with a retained catalog cache for
-unavailable/stopped sessions.
+One stable session catalog and one provider-qualified account list. Backend session
+IDs are independent of provider conversation IDs and runtime attachments; runtime
+generations reject stale mutations. [The contract](contract.md) owns client-facing
+behaviour. The durable session catalog is an atomic JSON store under
+`registry/session-catalog/` (with `identity.json` and `spaces.json` sidecars that
+heal a catalog rewritten by an older release); it never repurposes provider
+conversation IDs or pane IDs. Account snapshots project the Codex owner's registry
+into one provider-qualified list. Local removal markers keep recoverable membership
+without modifying the original enrollment or adding a credential writer.
 
-[The versioned CLI contract](contract.md) owns client-facing behavior. The durable
-session catalog is a separate atomic JSON store; it does not repurpose provider
-conversation IDs or pane IDs. Account snapshots project the existing Codex owner's
-registry into one provider-qualified list. Local removal markers retain recoverable
-membership without modifying the original enrollment or adding a credential writer.
-Actual local account deletion uses a durable CLI worker and the existing owner
-for reservation and final deregistration. Account/queue/lease locks exclude new
-launches and transfers; active processes or loaded conversations block deletion.
-After confirmation, private history storage retains rollouts, native databases
-and page fingerprints outside the credential home. Later explicit-account resume
-uses the existing transfer worker and verifies preserved history, without creating
-a credential owner in that storage.
+Long-running work runs in durable, detached workers (own process group) that journal
+each phase under `operations/` before doing it, hold operation locks and recheck
+generations; a requester that exits only detaches. Nothing is replayed automatically:
+an outcome that cannot be proven is `uncertain` and settled by explicit recover or
+abandon. Operation discovery reads journals through both their JSON entries and
+stable worker-lock/log entries, because some file systems can briefly omit a JSON
+entry while it is atomically replaced; lifecycle reservations and operation lists
+share this helper. The supervisor (`daemon serve`) is the sole account and credential
+writer per root; it polls usage, refreshes the cached state snapshot, runs Auto
+Start, compaction and model-change releases, event ingest, retention and the
+re-dispatch of provably unsent deliveries, and starts delivery workers as its own
+children. Its periodic passes serve unchanged journals and the catalog from memory
+keyed by file identity.
 
-Conversation archives use sessionsation-managed gzip bundles and verified native
-history proofs outside account homes. Durable workers retain operation locks and
-stale-generation checks; Restore installs a credential-free saved-history home.
-Native removal occurs only after the archive export verifies. Permanent session
-deletion uses the existing native deletion path and purges only conversation data.
-Claude and Gemini archives have no native server, so the same workers move the
-exact-id files of the entry's lineage between the account home and managed storage.
-The digest manifest is written first. Delete stages the files under `deletions/`
-before it removes the catalog entry and its aliases
-([CLI](cli.md#claude-and-gemini-archive-and-delete-revision-17)).
+Account deletion uses a durable CLI worker and the existing owner for reservation and
+final deregistration; account/queue/lease locks exclude new launches and transfers,
+and active processes or loaded conversations block deletion. Preserved history
+storage keeps rollouts, native databases and page fingerprints outside the
+credential home; a later explicit-account resume uses the transfer worker without
+creating a credential owner there. Conversation archives use managed gzip bundles
+(Codex) or moved exact-id native files (Claude, Gemini, Antigravity) with verified
+digests outside account homes; native removal happens only after the export
+verifies.
 
-Operation discovery reads journals through both their JSON entries and existing,
-stable worker-lock/log entries. Some filesystems can omit a JSON directory entry
-while its contents are atomically replaced; the stable entry supplies the path
-for a direct read. Lifecycle reservations and operation lists share this discovery
-helper, so a transient directory omission does not erase an admitted operation.
-No journal migration or replacement supervisor is required.
+## Terminal hosts
 
 Provider adapters own enrollment, capabilities, usage, conversation history and
-delivery receipts. Terminal hosts own attachment and process placement. HERDR and
-tmux must launch the same account-specific Codex command. Viewer detachment must
-never imply stopping an agent. HERDR bindings retain the agent’s own socket locator;
-legacy live bindings read that locator from the bound PID after checking its start
-identity. Discovery and relaunch therefore do not borrow the observer’s HERDR
-environment. Explicit sockets are sent without HERDR’s `--session` flag, which
-otherwise overrides them using the caller’s XDG directory in version 0.9.5.
-A pending launch/resume receipt supplies the locator before its pane has a process
-binding. A partial host observation retains a still-live attachment and its
-generation. Only positive exit/PID-reuse evidence clears it; no runtime mutation
-is enabled until its host and process are positively observed again.
+delivery receipts; terminal hosts own attachment and process placement. HERDR and tmux
+launch the same account-specific command, and viewer detachment never implies
+stopping an agent. HERDR bindings keep the agent's own socket locator; legacy live
+bindings read it from the bound PID after checking its start identity, so discovery
+and relaunch never borrow the observer's HERDR environment. Explicit sockets are sent
+without HERDR's `--session` flag, which would otherwise override them with the
+caller's XDG directory (HERDR 0.9.5). A pending launch/resume receipt supplies the
+locator before its pane has a process binding. A partial host observation keeps a
+still-live attachment and its generation; only positive exit/PID-reuse evidence
+clears it, and no runtime mutation is enabled until host and process are observed
+again.
 
-HERDR Space placement is a presentation operation under the existing lifecycle
-and messaging locks. After validation and durable admission, a detached worker owns
-the move through receipt finalization; UI/CLI requester exit does not terminate it.
-The worker revalidates the saved target before dispatch and never replays a
-previous dispatch intent. Durable `space-moves/` intent records retain original process,
-terminal and socket identity. Completed provenance updates canonical pane bindings
-and catalog attachment revisions without changing provider-runtime generation or
-historical receipts. New launch/resume requests delimit placement provenance, so
-reused pane IDs cannot apply an earlier terminal’s moves. Read-only messaging
-inventory includes both managed tmux and HERDR bindings, retaining deletion/owner
-gates; a newly created HERDR conversation needs no prior transfer to be observed. Lost replies require read-only host reconciliation; no
-competing supervisor, credential writer or automatic host replay is introduced.
-
-## Reuse
-
-The MIT-licensed backend and regression fixtures are imported from
-`anastaci1a/codex-switcher`; [NOTICE](../NOTICE) records the pinned source revision
-and [LICENSE](../LICENSE) retains attribution. Its UI is excluded. Keep one
-supervisor and credential writer per account home.
-
-## Separate UI
-
-`sessionsation-ui` is a separate repository consuming the public versioned backend
-contract. It provides a HERDR popup for account/usage management, selected-session actions
-and new/resume launchers; its older shell tools are separate compatibility entrypoints. Account,
-credential and lifecycle logic stays in sessionsation. Verify the backend first.
-Cross-provider conversation conversion is outside this version.
+HERDR Space placement is a presentation operation under the lifecycle and messaging
+locks. A detached worker owns the move through receipt finalization and revalidates
+the saved target before dispatch; durable `space-moves/` records keep the original
+process, terminal and socket identity. Completed provenance updates canonical pane
+bindings and catalog attachment revisions without changing the provider-runtime
+generation or historical receipts, and new launch/resume requests delimit placement
+provenance so reused pane IDs cannot apply an earlier terminal's moves. Read-only
+messaging inventory includes managed tmux and HERDR bindings with their deletion and
+owner gates.
 
 ## Providers
 
-`src/provider/` is the provider boundary: `ProviderId` (`codex`, `claude`, `gemini`, `antigravity`),
-provider-qualified `AccountRef` parsing, and an explicit `ProviderCapabilities`
-table (supported flag plus reason per operation). Codex behavior remains in the
-supervisor, discovery and lifecycle modules; Claude enrollment, environment,
-authentication probe, launch/resume plans, discovery, live identity and usage live
-in `provider/claude.rs`. Callers dispatch on `ProviderId`, never on strings.
-`provider/native.rs` dispatches the shared native-session model (account home,
-chat/transcript discovery, live identity, launch, headless delivery) between Claude,
-Gemini and Antigravity; Gemini enrollment, environment, file-based auth, discovery from chat
-headers and `projects.json`, /proc-based live identity and launches live in
-`provider/gemini.rs`, and the Antigravity equivalents (conversation index, folder
-trust, launch) in `provider/antigravity.rs` and `provider/antigravity/`.
-`provider/activity.rs` and `native_activity.rs` derive the per-session
-`live_activity` (native registry or transcript tail; contract 1.42.0).
+`src/provider/` is the provider boundary: `ProviderId` (`codex`, `claude`, `gemini`,
+`antigravity`), provider-qualified `AccountRef` parsing and an explicit
+`ProviderCapabilities` table (supported flag plus reason per operation). Callers
+dispatch on `ProviderId`, never on strings; owned roles and their guard counters are
+described in [contributor guidance](../agents/README.md#owned-roles-and-the-guard).
+
+- Codex behaviour lives in the supervisor, discovery and lifecycle modules, talking to
+  each account's app-server over its control socket.
+- `provider/claude.rs` owns Claude enrollment, environment, the authentication probe,
+  launch/resume plans, discovery, live identity and usage; `provider/claude/hosted.rs`
+  the hosted (stream-json) worker, which holds `worker.lock`, owns the provider's stdin
+  and serves a private control socket, so a supervisor restart re-adopts it;
+  `provider/claude/peer.rs` and `native_peer.rs` the cross-session messaging endpoint
+  and wire format; `messaging/claude_steer.rs` admission, the durable records in
+  `messaging/claude-steer/`, the per-message workers and the receipts of every native
+  live path; `claude_idle.rs` native agent delivery and idle notices.
+- `provider/native.rs` dispatches the shared native-session model (account home,
+  transcript discovery, live identity, launch, headless delivery) between Claude,
+  Gemini and Antigravity; `provider/gemini.rs` and `provider/antigravity.rs` (with
+  their directories) hold the provider specifics.
+- `provider/activity.rs` and `native_activity.rs` derive `live_activity`;
+  `provider/send.rs`, `stop_shape.rs`, `compact.rs`, `events.rs`, `hooks.rs`,
+  `usage_meter.rs`, `session_meters.rs` and `conversation.rs` give one shape across
+  providers for send, stop, compaction, events, hooks, usage and observe.
 
 Account records carry `provider` and, for adopted Claude homes, `config_home`.
-Registries written before providers could enroll only Codex, so the named
-migration `store::migrate_legacy_codex_provider` sets missing providers to Codex
-once and records one `account.provider_migrated_legacy_codex` event per account;
-it never infers a provider from a name. Account names are unique per provider; the registry key is the bare name for Codex and `<provider>:<name>` for the other providers (migrated once, event `account.key_migrated_per_provider`).
+Registries written before providers existed get Codex once through
+`store::migrate_legacy_codex_provider` (event `account.provider_migrated_legacy_codex`);
+a provider is never inferred from a name. Account names are unique per provider: the
+registry key is the bare name for Codex and `<provider>:<name>` otherwise (event
+`account.key_migrated_per_provider`).
 
-Claude sessions are bound to their account config home. An account switch (contract 1.34.0)
-moves a conversation's files between homes and resumes it; no history conversion or credential
-sharing exists. Per-session Auto Start (disabled, start, start_prompt; contract 1.43.0, host-boot and crash semantics 1.44.0, auto-recover since 1.35.0) is supervisor-driven: the setting lives in
-`registry/auto-recover.json`, each recovery is a journaled operation, and nothing is replayed. The supervisor only probes
-`claude auth status`; usage is projected from the statusline recorder. See
-[Claude Code accounts and sessions](cli.md#claude-code-accounts-and-sessions),
-checked against Claude's [CLI reference](https://code.claude.com/docs/en/cli-reference),
+Claude, Gemini and Antigravity sessions are bound to their account home; an account
+switch moves a conversation's exact files between homes (or nothing, with shared
+Claude state under `<root>/shared/claude/`) and resumes it. There is no history
+conversion or credential sharing. Gemini has no auth status, live registry, rename or
+usage interface, so authentication is file presence, liveness is /proc command line
+plus start time and labels are Sessionsation-only; it is verified against fakes only
+(see `tests/gemini.rs`). Claude behaviour was checked against Claude's
+[CLI reference](https://code.claude.com/docs/en/cli-reference),
 [authentication guidance](https://code.claude.com/docs/en/authentication) and
 [environment variables](https://code.claude.com/docs/en/env-vars).
 
-Claude input delivery (revision 16) has two paths, chosen per session.
-`provider/claude/hosted.rs` owns hosted sessions: one detached worker per
-conversation holds `worker.lock`, owns the stdin of `claude -p` in stream-json
-mode, answers permission prompts only from the operator, appends a normalized
-`events.jsonl` for the viewer and serves a private control socket under the
-runtime directory. The worker, not the supervisor, supervises the provider, so a
-supervisor restart re-adopts it; a lost worker is reconciled to stopped and its
-in-flight deliveries to uncertain. `provider/claude/peer.rs` reads a live
-session's messaging endpoint from its registry entry and edits only the
-`crossSessionInbound` opt-in. `messaging/claude_steer.rs` owns admission, the
-durable records in `DATA_ROOT/messaging/claude-steer/`, the per-message peer worker and
-listener socket, transcript anchoring and the receipts of both paths.
+## Reuse and separate UI
 
-Shared Claude conversation state (contract 1.39.0, `shared_state/`) is opt-in: `sessionsation
-shared enable` creates one store under `<root>/shared/claude/` and each managed Claude
-account home links its `projects`, `file-history`, `todos` and `session-env` to it, so
-an account switch between linked accounts copies nothing. Migration is journaled and
-resumable; credentials, settings and live-session registries stay per account. Native
-Claude delivery (contract 1.40.0; `claude_idle.rs`) sends agent-origin messages through Claude
-Code's cross-session messaging and types into the pane only when nothing native is
-possible. Before mutating operations (archive, delete, switch, launch, resume, move, migrate) the `disk_space.rs` guard
-refuses with `INSUFFICIENT_DISK_SPACE` (contract 1.41.0).
-
-Gemini sessions are likewise bound to their `GEMINI_CLI_HOME`. Gemini has no auth
-status, live registry, rename or usage interface, so authentication is file
-presence, liveness is /proc command line plus start time, labels are
-Sessionsation-only and usage is reported as unsupported. See
-[Gemini CLI accounts and sessions](cli.md#gemini-cli-accounts-and-sessions).
-Login and headless delivery are verified only with fakes until a real login exists.
+The MIT-licensed backend and regression fixtures are imported from
+`anastaci1a/codex-switcher`; [NOTICE](../NOTICE) records the pinned source revision
+and [LICENSE](../LICENSE) keeps attribution. Its UI is excluded. `sessionsation-ui`
+is a separate repository consuming the public versioned contract: a HERDR popup for
+account/usage management, session actions and new/resume launchers. Account,
+credential and lifecycle logic stays in sessionsation.
