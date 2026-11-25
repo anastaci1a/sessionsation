@@ -40,7 +40,6 @@ pub mod shared_state;
 pub mod store;
 pub mod sync;
 pub mod timing;
-pub mod turn_notify;
 pub mod usage_history;
 
 mod terminal;
@@ -55,10 +54,8 @@ pub mod resume;
 pub mod retention;
 
 pub mod account_deletion;
-pub mod account_rename;
 pub mod alias;
 pub mod auto_recover;
-pub mod claude_idle;
 pub mod claude_switch;
 pub mod inline;
 pub mod reset_credit;

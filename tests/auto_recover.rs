@@ -387,7 +387,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.68.3");
+    assert_eq!(caps["contract_version"], "1.69.0");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
@@ -396,7 +396,7 @@ async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
     assert_eq!(caps["auto_recover"]["enable_requires"], "none");
     assert_eq!(caps["auto_start"]["enable_requires"], "none");
     assert_eq!(caps["auto_start"]["explicit_stop"], "marks_only");
-    let (id, native) = t.stopped_session("a");
+    let (id, _) = t.stopped_session("a");
     let stopped = t.session(&id);
     assert_eq!(stopped["capabilities"]["auto_recover"], true);
     assert_eq!(stopped["capabilities"]["auto_start"], true);
@@ -429,26 +429,6 @@ async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
         "--enable",
     ]);
     assert!(stale.contains("STALE_TARGET"), "{stale}");
-    // A hosted (stream-json) session is unsupported with its own code.
-    let host = t
-        .paths
-        .root
-        .join(sessionsation::layout::CLAUDE_HOSTED)
-        .join(&native);
-    std::fs::create_dir_all(&host).unwrap();
-    let now = daemon::now();
-    std::fs::write(
-        host.join("host.json"),
-        json!({"schema_version":1,"conversation_id":native,"session_id":native,"account":"a",
-            "directory":t.project,"origin":"resume","permission_mode":"account",
-            "effective_permission_mode":null,"epoch":1,"state":"starting","reason":null,
-            "worker_pid":null,"worker_start":null,"child_pid":null,"child_start":null,"busy":false,
-            "pending_permissions":[],"created_at":now,"updated_at":now,"started_at":null,"stopped_at":null})
-        .to_string(),
-    )
-    .unwrap();
-    let hosted = t.enable(&id, &[]).unwrap_err();
-    assert!(hosted.contains("AUTO_RECOVER_UNSUPPORTED"), "{hosted}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

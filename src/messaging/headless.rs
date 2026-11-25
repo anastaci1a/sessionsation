@@ -195,7 +195,6 @@ pub fn active_for_account(
 }
 /// Refuse interactive resume while a headless delivery may run this conversation.
 pub fn ensure_idle(paths: &Paths, conversation: &str) -> Result<()> {
-    crate::provider::claude::hosted::ensure_not_hosted(paths, conversation)?;
     for r in all(paths)? {
         ensure!(
             r.conversation_id != conversation || !active(paths, &r)?,

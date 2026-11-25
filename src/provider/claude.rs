@@ -18,7 +18,6 @@ pub mod attach;
 pub mod bypass;
 mod facts;
 pub mod hooks;
-pub mod hosted;
 pub mod launch;
 pub mod meter;
 pub mod native_peer;
@@ -1233,10 +1232,8 @@ fn process_runs_session(a: &catalog::Attachment, conversation_id: &str) -> bool 
         .split(|b| *b == 0)
         .map(|a| String::from_utf8_lossy(a).into_owned())
         .collect();
-    // `view <conversation>` is the viewer of a Sessionsation-hosted session.
-    args.windows(2).any(|w| {
-        matches!(w[0].as_str(), "--session-id" | "--resume" | "view") && w[1] == conversation_id
-    })
+    args.windows(2)
+        .any(|w| matches!(w[0].as_str(), "--session-id" | "--resume") && w[1] == conversation_id)
 }
 
 // ----------------------------------------------------------------- accounts

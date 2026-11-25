@@ -2211,8 +2211,6 @@ fn pane_state(paths: &Paths, pane: &str) -> Result<(bool, u32)> {
     ensure!(parts.len() == 2, "invalid tmux pane state");
     Ok((parts[0] == "1", parts[1].parse()?))
 }
-#[cfg(test)]
-pub(crate) use crate::proc::identity::start_time as process_start_time;
 pub(crate) fn attachment_definitely_gone(pid: u32, start: u64) -> bool {
     match process_info(pid) {
         Ok(info) => info.start_time != start || matches!(info.state, 'Z' | 'X'),

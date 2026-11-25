@@ -134,22 +134,8 @@ fn home_of(paths: &Paths, provider: ProviderId, account: &str) -> Result<PathBuf
 }
 
 /// Why this conversation may not be archived, restored or deleted now: a live
-/// provider process names it, or a Sessionsation-hosted worker owns it.
-fn activity(
-    paths: &Paths,
-    provider: ProviderId,
-    home: Option<&Path>,
-    ids: &[String],
-) -> Result<Option<String>> {
-    if ops::facts(provider).hosted_sessions {
-        for id in ids {
-            if claude::hosted::live(paths, id) {
-                return Ok(Some(format!(
-                    "SESSION_HOSTED: a Sessionsation-hosted worker runs conversation {id}; stop it first"
-                )));
-            }
-        }
-    }
+/// provider process names it.
+fn activity(provider: ProviderId, home: Option<&Path>, ids: &[String]) -> Result<Option<String>> {
     if let Some(home) = home {
         let live = native::live_sessions(provider, home).map_err(|e| {
             anyhow::anyhow!("SESSION_STATE_UNKNOWN: live process probe failed: {e}")
@@ -175,13 +161,8 @@ fn activity(
     }
     Ok(None)
 }
-fn ensure_quiet(
-    paths: &Paths,
-    provider: ProviderId,
-    home: Option<&Path>,
-    ids: &[String],
-) -> Result<()> {
-    if let Some(reason) = activity(paths, provider, home, ids)? {
+fn ensure_quiet(provider: ProviderId, home: Option<&Path>, ids: &[String]) -> Result<()> {
+    if let Some(reason) = activity(provider, home, ids)? {
         bail!(reason);
     }
     Ok(())
@@ -189,7 +170,6 @@ fn ensure_quiet(
 
 /// Sessions-row capability projection (state and details).
 pub fn apply_session(
-    paths: &Paths,
     provider: ProviderId,
     value: &mut Value,
     home: Option<&Path>,
@@ -252,7 +232,7 @@ pub fn apply_session(
         let r = "SESSION_STATE_UNKNOWN: the live process probe failed";
         (Some(r.into()), Some(r.into()))
     } else {
-        match activity(paths, provider, None, &ids[..ids.len().saturating_sub(1)]) {
+        match activity(provider, None, &ids[..ids.len().saturating_sub(1)]) {
             Ok(Some(r)) => (Some(r.clone()), Some(r)),
             Err(e) => (Some(e.to_string()), Some(e.to_string())),
             Ok(None) => (None, None),
@@ -280,7 +260,7 @@ pub(super) fn admit(paths: &Paths, kind: Kind, s: &Session) -> Result<()> {
         Err(_) if archived && kind == Kind::Delete => None,
         Err(e) => return Err(e),
     };
-    ensure_quiet(paths, provider, home.as_deref(), &conversations(s))
+    ensure_quiet(provider, home.as_deref(), &conversations(s))
 }
 
 // ------------------------------------------------------------ file handling
@@ -490,7 +470,7 @@ fn archive(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
         "checking_history",
         "Checking that no process or hosted worker runs this conversation.",
     )?;
-    ensure_quiet(paths, provider, Some(&home), &ids)?;
+    ensure_quiet(provider, Some(&home), &ids)?;
     let files = collect(provider, &home, &ids)?;
     // Contract 1.63.0: a session that never had a conversation has nothing to move; it is
     // archived (hidden) all the same. Files without the transcript stay refused, except
@@ -532,7 +512,7 @@ fn archive(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
         "moving_history",
         "Moving the conversation's files into sessionsation-managed Archived Sessions.",
     )?;
-    ensure_quiet(paths, provider, Some(&home), &ids)?;
+    ensure_quiet(provider, Some(&home), &ids)?;
     if ops::facts(provider).archive == ArchiveLayout::AgyIndex && !m.nothing_to_archive {
         detach_agy_rows(&home, &dir, &ids)?;
     }
@@ -575,7 +555,7 @@ fn restore(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()>
         "checking_history",
         "Checking original locations and that no process runs this conversation.",
     )?;
-    ensure_quiet(paths, provider, Some(&home), &m.conversation_ids)?;
+    ensure_quiet(provider, Some(&home), &m.conversation_ids)?;
     let dir = bundle_dir(paths, &m)?;
     // Contract 1.54.0: re-key at restore. The manifest is read through the root
     // alias, and a Claude entry under the project key of the archived directory
@@ -699,7 +679,7 @@ fn delete(paths: &Paths, provider: ProviderId, o: &mut Operation) -> Result<()> 
         "checking_history",
         "Checking that no process or hosted worker runs this conversation.",
     )?;
-    ensure_quiet(paths, provider, home.as_deref(), &ids)?;
+    ensure_quiet(provider, home.as_deref(), &ids)?;
     // (current location, original path) of every file of this entry.
     let mut sources: Vec<(PathBuf, PathBuf)> = vec![];
     if let Some(m) = prior.as_ref().filter(|_| archived) {

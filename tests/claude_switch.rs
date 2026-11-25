@@ -331,7 +331,7 @@ async fn advertised_capability_and_a_stopped_session_switches_with_memory_left_b
         .unwrap();
     assert_eq!(claude["account_switch"], true);
     assert_eq!(claude["operations"]["account_switch"]["supported"], true);
-    assert_eq!(caps["contract_version"], "1.68.3");
+    assert_eq!(caps["contract_version"], "1.69.0");
 
     let (id, native) = t.f.stopped_session("a");
     populate(&t.f.home("a"), &t.f.project, &native);
@@ -435,34 +435,6 @@ async fn advertised_capability_and_a_stopped_session_switches_with_memory_left_b
     assert_eq!(back["phase"], "complete", "{back}");
     assert_eq!(t.session(&id)["account_id"], "claude:a");
     assert_eq!(read(&memory), "account memory");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn hosted_sessions_are_refused_with_a_clear_code() {
-    let t = Setup::new().await;
-    let (id, native) = t.f.stopped_session("a");
-    // A hosted (stream-json) host record that is still starting counts as a live writer.
-    let host =
-        t.f.paths
-            .root
-            .join(sessionsation::layout::CLAUDE_HOSTED)
-            .join(&native);
-    std::fs::create_dir_all(&host).unwrap();
-    let now = daemon::now();
-    std::fs::write(
-        host.join("host.json"),
-        json!({"schema_version":1,"conversation_id":native,"session_id":native,"account":"a",
-            "directory":t.f.project,"origin":"resume","permission_mode":"account",
-            "effective_permission_mode":null,"epoch":1,"state":"starting","reason":null,
-            "worker_pid":null,"worker_start":null,"child_pid":null,"child_start":null,"busy":false,
-            "pending_permissions":[],"created_at":now,"updated_at":now,"started_at":null,"stopped_at":null})
-        .to_string(),
-    )
-    .unwrap();
-    let error = t.switch(&id, "claude:b", &[]).unwrap_err();
-    assert!(error.contains("SESSION_HOSTED"), "{error}");
-    assert!(t.switches().is_empty());
-    assert_eq!(t.session(&id)["account_id"], "claude:a");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -405,33 +405,6 @@
     },
     "version": 1
   },
-  "claude_idle_notify": {
-    "args": [
-      "--session",
-      "--expected-generation",
-      "--notify-session"
-    ],
-    "command": "idle-notify",
-    "events": "api turn-events (kind idle|exited, detail:{state,finished_at,status})",
-    "expiry_seconds": 43200,
-    "journal": "operations/claude-idle-notify",
-    "model_requests": false,
-    "providers": [
-      "claude"
-    ],
-    "refusal_codes": [
-      "UNSUPPORTED_PROVIDER_OPERATION",
-      "SESSION_NOT_RUNNING",
-      "LIVE_STEERING_DISABLED",
-      "PEER_ENDPOINT_UNAVAILABLE",
-      "PEER_SOCKET_UNLINKED",
-      "STALE_TARGET"
-    ],
-    "replays": false,
-    "requires": "live interactive session with inbound peer messages accepted",
-    "transport": "claude_cross_session_notify_when_idle",
-    "version": 1
-  },
   "claude_lifecycle": {
     "restart": false,
     "stop": {
@@ -479,7 +452,6 @@
       "receipt_field": "native_fallback",
       "to": "terminal_input"
     },
-    "idle_notice": "claude_idle_notify",
     "launch": {
       "kept_when_account_sets": [
         "hold",
@@ -1911,7 +1883,7 @@
           "claude_ask_user_question",
           "claude_hosted_ask_user_question"
         ],
-        "reason": "PROVIDER_TERMINAL_ONLY: Claude Code answers AskUserQuestion only in its own terminal; a Sessionsation-hosted session can be answered"
+        "reason": "PROVIDER_TERMINAL_ONLY: Claude Code answers AskUserQuestion only in its own terminal"
       },
       "codex": {
         "answer": true,
@@ -2310,8 +2282,7 @@
       "claude": "hook",
       "codex": "supervisor",
       "gemini": null
-    },
-    "turn_events": "api turn-events stays the Codex turn-notify journal"
+    }
   },
   "session_lifecycle": {
     "archived_stop": "already_stopped:true, archived:true (any generation)",
@@ -2837,49 +2808,6 @@
     ],
     "timeout_env": "SESSIONSATION_OPERATION_WAIT_MS",
     "timeout_seconds": 300
-  },
-  "turn_notify": {
-    "args": [
-      "--session",
-      "--expected-generation",
-      "--enable",
-      "--disable",
-      "--notify-session"
-    ],
-    "changes_session_generation": false,
-    "command": "turn-notify",
-    "default": "disabled",
-    "delivery": [
-      "event_journal",
-      "queued_message_to_notify_session"
-    ],
-    "event_kinds": [
-      "turn_ended",
-      "error"
-    ],
-    "events_args": [
-      "--after",
-      "--wait"
-    ],
-    "events_command": "turn-events",
-    "first_observation": "baseline_only",
-    "max_events": 500,
-    "max_wait_seconds": 300,
-    "message_mode": "queue",
-    "message_replays": false,
-    "poll_seconds": 5,
-    "providers": [
-      "codex"
-    ],
-    "refusal_codes": [
-      "UNSUPPORTED_PROVIDER_OPERATION",
-      "STALE_TARGET",
-      "INVALID_ARGUMENT",
-      "SESSION_NOT_FOUND"
-    ],
-    "setting_storage": "registry/turn-notify.json",
-    "state_field": "turn_notify",
-    "version": 1
   },
   "usage_meter": {
     "args": [

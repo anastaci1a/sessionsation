@@ -20,16 +20,19 @@ and package history are in Git.
 
 ## Versions
 
+- **1.69.0** Removed: hosted Claude (`api hosted`, `--hosted`, `view`, `take-over`), `api turn-notify`,
+  `turn-events`, `idle-notify` (use `api events`), `api account rename-backend` and their capability keys
+  and the row `backend_rename`. Check `operations/account-renames` before the cutover
+  (`scripts/preflight-account-renames.sh`).
 - **1.68.3** Fresh OAuth usage outranks stale statusline.
 - **1.68.2** `api stop --interrupt`. [Stop](contract.md#stop-and-restart).
 - **1.68.1** A launch whose starter was killed before its worker ran is dispatched once
   more; a running recorded `worker` or a status probe never fails a launch; detached
   workers log stderr. [Launch](contract.md#new-session-launch).
-- **1.68.0** Removed `root status|migrate|rollback|finalize` (capability `root_alias`),
-  `layout migrate|rollback`, `shared migrate`, `account auth`, `doctor`, `simulate` and the hidden
-  `message`, `ready`, `session`, `import`, `pause`, `thresholds`, `auto-switch`, `auto-start`,
-  `account show|history` commands; the daemon answers `automatic/*`, `auto-start/*`,
-  `session/run|import|pause|resume` with unknown control method. `api auto-recover` and the
+- **1.68.0** Removed `root *` (capability `root_alias`), `layout migrate|rollback`, `shared migrate`,
+  `account auth|show|history`, `doctor`, `simulate` and the hidden `message`, `ready`, `session`,
+  `import`, `pause`, `thresholds`, `auto-switch`, `auto-start` commands; the daemon answers
+  `automatic/*`, `auto-start/*`, `session/run|import|pause|resume` with unknown control method. `api auto-recover` and the
   external-job verbs (`move`, `restart`, `terminate`, ...) stay. Gemini CLI is dropped
   (`providers[gemini]` unsupported; accounts stay deletable). A dropped config key
   (`gemini_binary`, `native_sender_registration`) is ignored, not refused; `active_poll_seconds`
@@ -94,8 +97,7 @@ and package history are in Git.
 - **1.55.0** Archive workers wait for the account lock; `--wait` on archive, restore,
   delete; idempotent `api stop` (`already_stopped`).
   [Archives](contract.md#conversation-archives), [stop](contract.md#stop-and-restart).
-- **1.54.0** Root alias and re-key (`root status|migrate|rollback|finalize`, layout
-  version 3; capability `root_alias`, `since_contract` 1.54.0).
+- **1.54.0** Root alias and re-key (layout version 3).
   [Root alias](contract.md#root-alias).
 - **1.53.0** Codex rate-limit reset credits (`api account reset-credit`,
   `usage.reset_credits`). [Reset credits](contract.md#reset-credits).
@@ -103,8 +105,7 @@ and package history are in Git.
   delivered native journal records retire as terminal.
   [Pane reuse](contract.md#choosing-a-space-and-a-pane), [retention](contract.md#receipt-retention).
 - **1.51.0** Outside-session senders shown by the bare component, prefixed only on a
-  collision. **1.50.0** `from_component` and `SESSIONSATION_SENDER_COMPONENT`
-  (`session_spaces.from_component`, `since_contract` 1.50.0).
+  collision. **1.50.0** `from_component` and `SESSIONSATION_SENDER_COMPONENT`.
   [Component names](contract.md#component-sender-names).
 - **1.49.1** Launches wait up to 120 s for account operations; pre-start refusals end
   `failed`.
@@ -112,7 +113,7 @@ and package history are in Git.
   Claude launch models.
 - **1.48.1** No steering while a compaction is pending (`target_compacting`).
 - **1.48.0** Space-scoped session names (`space`, `canonical`, `--create-space`,
-  `session set-space`, `session resolve`; `session_spaces`, `since_contract` 1.48.0).
+  `session set-space`, `session resolve`).
 - **1.47.1** Compaction completion read from the full view of new turns; 180 s
   no-progress bound. **1.47.0** `api session compact --when-idle` for Codex with an
   input hold.
@@ -121,7 +122,7 @@ and package history are in Git.
   **1.46.4** Codex messaging waits for the ledger lease and releases it during
   app-server I/O.
 - **1.46.3** Codex callers detected by `CODEX_THREAD_ID`; every native frame carries the
-  `cross-session-message` envelope; `native_sender_registration` is a no-op.
+  `cross-session-message` envelope.
 - **1.46.2** Launch acknowledgement wait 120 s (`LAUNCH_RUN_NEVER_STARTED`); abandon an
   uncertain new launch.
 - **1.46.1** Statusline `refreshInterval`; `skills` no longer shared. **1.46.0** `agents`
@@ -144,12 +145,11 @@ and package history are in Git.
   [disk space](contract.md#disk-space-guard).
 - **1.40.1** Cancelled stops release their gate; unsent `pending_local` receipts settle.
   [Stop](contract.md#stop-and-restart).
-- **1.40.0** Native peer delivery as the agent path, `origin`, `api idle-notify`.
+- **1.40.0** Native peer delivery as the agent path, `origin`.
   [Peer messages](contract.md#native-peer-messages).
 - **1.39.0** Shared Claude conversation state (`shared` commands).
   [Shared state](contract.md#shared-claude-state).
-- **1.38.0** Codex launch `model`/`reasoning_effort`; `api turn-notify` and
-  `api turn-events`. [Notifications](contract.md#turn-end-notifications).
+- **1.38.0** Codex launch `model`/`reasoning_effort`.
 - **1.37.0** `live_activity`, `pending_operations`, failed turns accept input, stop
   expiry, native send checks. [Messaging](contract.md#messaging).
 - **1.36.0** `api stop` closes the HERDR pane (`--keep-pane`).
@@ -164,7 +164,7 @@ and package history are in Git.
 - **1.32.0** Named, journaled inline `run`/`resume`. [Inline](contract.md#inline-run-and-resume).
 - **1.31.1** Deletion after a home move scans each home once. **1.31.0** Resolved-path
   home comparisons; `resume --confirm-unfinished`. [Layout](contract.md#layout-and-retention).
-- **1.30.0** Per-provider account names, `rename-backend`.
+- **1.30.0** Per-provider account names.
   [Names](contract.md#names).
 - **1.29.0** Data-root layout version 2 and retention.
   [Layout](contract.md#layout-and-retention).
@@ -178,7 +178,6 @@ and package history are in Git.
 - **Revision 24** Antigravity provider. [Antigravity](contract.md#antigravity-cli).
 - **Revision 23** Pending questions and `api answer`. [Questions](contract.md#pending-questions).
 - **Revision 22** Claude bypass-permissions warning.
-- **Revision 21** Gemini authentication modes.
 - **Revision 20** `--new-space LABEL`; Claude folder pre-trust.
   [Spaces](contract.md#choosing-a-space-and-a-pane), [trust](contract.md#folder-pre-trust).
 - **Revision 19** Launch permissions. [Permissions](contract.md#launch-permissions).
@@ -188,7 +187,7 @@ and package history are in Git.
 - **Revision 17** Claude and Gemini archive/restore/delete; terminal input; native
   `active_since`; `PEER_SOCKET_UNLINKED`. [Archives](contract.md#conversation-archives),
   [terminal input](contract.md#terminal-input).
-- **Revision 16** Claude hosted sessions and live peer messages.
+- **Revision 16** Claude live peer messages.
   [Delivery](contract.md#claude-input-delivery).
 - **Revisions 13-15** Gemini provider; account log out, cached state, order; steer replies.
 - **Revision 12** Session identity, continuations, Add to HERDR.

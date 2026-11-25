@@ -1,4 +1,4 @@
-//! Per-provider account names, display/folder names and the backend rename
+//! Per-provider account names and display/folder names
 //! (contract 1.30.0). Disposable data root and fake providers only.
 #![allow(
     clippy::disallowed_methods,
@@ -70,12 +70,6 @@ impl Fixture {
             .iter()
             .find(|a| a["id"] == id)
             .cloned()
-    }
-    fn generation(&self, id: &str) -> String {
-        self.row(id).unwrap()["generation"]
-            .as_str()
-            .unwrap()
-            .to_owned()
     }
     fn home(&self, platform: &str, name: &str) -> PathBuf {
         self.paths.root.join("accounts").join(platform).join(name)
@@ -201,8 +195,10 @@ async fn rows_expose_display_folder_mismatch_and_running_sessions() {
     assert_eq!(row["folder_name"], "main");
     assert_eq!(row["name_mismatch"], false);
     assert_eq!(row["running_sessions"], 0);
-    assert_eq!(row["backend_rename"]["available"], true);
-    assert_eq!(row["backend_rename"]["update_backend"], false);
+    assert!(
+        row.get("backend_rename").is_none(),
+        "the backend rename is gone"
+    );
     // Rename only: display name changes, folder and id do not.
     let renamed = f.api(&[
         "account",
@@ -218,8 +214,6 @@ async fn rows_expose_display_folder_mismatch_and_running_sessions() {
     assert_eq!(row["display_name"], "Studio");
     assert_eq!(row["folder_name"], "main");
     assert_eq!(row["name_mismatch"], true);
-    assert_eq!(row["backend_rename"]["update_backend"], true);
-    assert_eq!(row["backend_rename"]["update_backend_target"], "Studio");
     assert!(f.home("claude", "main").is_dir());
     // A stale generation is refused.
     let e = f.api_error(&[
@@ -232,202 +226,6 @@ async fn rows_expose_display_folder_mismatch_and_running_sessions() {
         "0000",
     ]);
     assert!(e.contains("STALE_TARGET"), "{e}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn backend_rename_moves_folder_and_id_and_update_backend_matches_the_display_name() {
-    let f = fixture().await;
-    f.api(&["account", "add", "claude:work"]);
-    f.api(&["account", "add", "antigravity:work"]);
-    f.api(&["account", "add", "claude:taken"]);
-    std::fs::write(f.home("claude", "work").join("history-marker"), b"kept").unwrap();
-    let generation = f.generation("claude:work");
-    // Collision with the same provider; the stale generation; unchanged name.
-    let e = f.api_error(&[
-        "account",
-        "rename-backend",
-        "claude:work",
-        "taken",
-        "--expected-generation",
-        &generation,
-    ]);
-    assert!(e.contains("ACCOUNT_NAME_EXISTS"), "{e}");
-    let e = f.api_error(&[
-        "account",
-        "rename-backend",
-        "claude:work",
-        "fresh",
-        "--expected-generation",
-        "bad",
-    ]);
-    assert!(e.contains("STALE_TARGET"), "{e}");
-    let e = f.api_error(&[
-        "account",
-        "rename-backend",
-        "claude:work",
-        "work",
-        "--expected-generation",
-        &generation,
-    ]);
-    assert!(e.contains("ACCOUNT_NAME_UNCHANGED"), "{e}");
-    // Rename & update backend.
-    let done = f.api(&[
-        "account",
-        "rename-backend",
-        "claude:work",
-        "fresh",
-        "--expected-generation",
-        &generation,
-    ]);
-    assert_eq!(done["account_id"], "claude:fresh");
-    assert_eq!(done["previous_account_id"], "claude:work");
-    assert_eq!(done["folder_name"], "fresh");
-    assert_eq!(done["name_mismatch"], false);
-    assert_eq!(done["operation"]["phase"], "complete");
-    assert!(f.row("claude:work").is_none());
-    assert_eq!(
-        f.row("claude:fresh").unwrap()["home"],
-        json!(f.home("claude", "fresh"))
-    );
-    assert_eq!(
-        std::fs::read(f.home("claude", "fresh").join("history-marker")).unwrap(),
-        b"kept"
-    );
-    assert!(!f.home("claude", "work").exists());
-    // The Gemini account with the old name is untouched.
-    assert!(f.row("antigravity:work").is_some() && f.home("antigravity", "work").is_dir());
-    // Allowed now: the freed name is free for claude again, and gemini keeps its own.
-    f.api(&["account", "add", "claude:work"]);
-    // Operation journal listed, terminal.
-    let ops = f.api(&["operations"]);
-    let op = ops
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|o| o["kind"] == "account_rename")
-        .unwrap()
-        .clone();
-    assert_eq!(op["phase"], "complete");
-    assert_eq!(op["replays"], false);
-    // Update backend: display name differs, no new name given.
-    f.api(&[
-        "account",
-        "rename",
-        "claude:fresh",
-        "--display-name",
-        "Final",
-    ]);
-    let row = f.row("claude:fresh").unwrap();
-    assert_eq!(row["backend_rename"]["update_backend"], true);
-    let g = row["generation"].as_str().unwrap().to_owned();
-    let done = f.api(&[
-        "account",
-        "rename-backend",
-        "claude:fresh",
-        "--expected-generation",
-        &g,
-    ]);
-    assert_eq!(done["account_id"], "claude:Final");
-    assert!(done["display_name"].is_null());
-    assert!(f.home("claude", "Final").is_dir());
-    let row = f.row("claude:Final").unwrap();
-    assert_eq!(row["name_mismatch"], false);
-    assert_eq!(row["folder_name"], "Final");
-    // Nothing to match: a clean account without a display name needs a new name.
-    let g = row["generation"].as_str().unwrap().to_owned();
-    let e = f.api_error(&[
-        "account",
-        "rename-backend",
-        "claude:Final",
-        "--expected-generation",
-        &g,
-    ]);
-    assert!(e.contains("INVALID_ARGUMENT"), "{e}");
-    // Recovering a finished operation changes nothing.
-    let again = f.api(&["recover", op["id"].as_str().unwrap()]);
-    assert_eq!(again["operation"]["phase"], "complete");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_home_at_a_deferred_legacy_path_moves_to_the_layout_2_path() {
-    let f = fixture().await;
-    f.api(&["account", "add", "antigravity:old"]);
-    // Model a home the layout migration deferred: it sits at the legacy path.
-    std::fs::create_dir_all(f.paths.root.join("antigravity-accounts")).unwrap();
-    std::fs::rename(
-        f.home("antigravity", "old"),
-        f.paths.root.join("antigravity-accounts/old"),
-    )
-    .unwrap();
-    let thread = "55555555-5555-4555-8555-555555555555";
-    let conversations = f.paths.root.join(sessionsation::layout::CONVERSATIONS);
-    std::fs::create_dir_all(&conversations).unwrap();
-    let record = conversations.join(format!("{thread}.json"));
-    let legacy_home = f.paths.root.join("antigravity-accounts/old");
-    std::fs::write(
-        &record,
-        serde_json::to_vec(&json!({"owner":legacy_home})).unwrap(),
-    )
-    .unwrap();
-    let row = f.row("antigravity:old").unwrap();
-    assert_eq!(row["home_deferred"], true);
-    let g = row["generation"].as_str().unwrap().to_owned();
-    let done = f.api(&[
-        "account",
-        "rename-backend",
-        "antigravity:old",
-        "new",
-        "--expected-generation",
-        &g,
-    ]);
-    assert_eq!(done["account_id"], "antigravity:new");
-    assert!(f.home("antigravity", "new").is_dir());
-    assert!(!f.paths.root.join("antigravity-accounts/old").exists());
-    assert_eq!(f.row("antigravity:new").unwrap()["home_deferred"], false);
-    // The conversation owner followed the renamed home.
-    let owner: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
-    assert_eq!(owner["owner"], json!(f.home("antigravity", "new")));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn codex_and_claude_share_a_name_and_a_codex_backend_rename_moves_its_home() {
-    let f = fixture().await;
-    f.api(&["account", "add", "codex:work"]);
-    f.api(&["account", "add", "claude:work"]);
-    assert!(f.row("codex:work").is_some() && f.row("claude:work").is_some());
-    // The Codex registry key stays the bare name; the other provider is qualified.
-    let state = sessionsation::store::load_state_snapshot(&f.paths).unwrap();
-    assert!(state.accounts.contains_key("work") && state.accounts.contains_key("claude:work"));
-    // Wait until the supervisor's own poll of the Codex account is not in flight.
-    let mut last = String::new();
-    for _ in 0..50 {
-        let g = f.generation("codex:work");
-        let out = f.run(&[
-            "api",
-            "account",
-            "rename-backend",
-            "codex:work",
-            "main",
-            "--expected-generation",
-            &g,
-        ]);
-        if out.status.success() {
-            let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-            assert_eq!(v["result"]["account_id"], "codex:main");
-            last.clear();
-            break;
-        }
-        last = String::from_utf8_lossy(&out.stderr).into_owned();
-        assert!(last.contains("ACCOUNT_POLL_IN_PROGRESS"), "{last}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(last.is_empty(), "{last}");
-    assert!(f.home("codex", "main").is_dir() && !f.home("codex", "work").exists());
-    assert!(f.row("codex:work").is_none() && f.row("claude:work").is_some());
-    let state = sessionsation::store::load_state_snapshot(&f.paths).unwrap();
-    assert!(state.accounts.contains_key("main") && !state.accounts.contains_key("work"));
-    assert!(state.accounts.contains_key("claude:work"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -465,82 +263,4 @@ async fn display_names_collide_within_one_provider_only() {
         ]);
         assert!(e.contains("ACCOUNT_DISPLAY_NAME_EXISTS"), "{e}");
     }
-    // Backend rename into another account's display name of the same provider collides too.
-    let g = f.generation("claude:other");
-    let e = f.api_error(&[
-        "account",
-        "rename-backend",
-        "claude:other",
-        "Office",
-        "--expected-generation",
-        &g,
-    ]);
-    assert!(e.contains("ACCOUNT_NAME_EXISTS"), "{e}");
-}
-
-/// A catalog session of `account` attached to this test process (an exact pid and start
-/// time), standing in for a running provider.
-fn run_session(f: &Fixture, account: &str) {
-    let me = std::process::id();
-    let stat = std::fs::read_to_string(format!("/proc/{me}/stat")).unwrap();
-    let start: u64 = stat
-        .rsplit_once(')')
-        .unwrap()
-        .1
-        .split_whitespace()
-        .nth(19)
-        .unwrap()
-        .parse()
-        .unwrap();
-    sessionsation::catalog::record_provider_launch(
-        &f.paths,
-        sessionsation::provider::ProviderId::Claude,
-        account,
-        &uuid::Uuid::new_v4().to_string(),
-        "running",
-        None,
-        Some(sessionsation::catalog::Attachment {
-            host: "tmux".into(),
-            target: "%1".into(),
-            pid: me,
-            process_start: start,
-        }),
-    )
-    .unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn backend_rename_is_blocked_by_a_running_session_but_rename_only_is_not() {
-    let f = fixture().await;
-    f.api(&["account", "add", "claude:busy"]);
-    run_session(&f, "busy");
-    let generation = f.generation("claude:busy");
-    let e = f.api_error(&[
-        "account",
-        "rename-backend",
-        "claude:busy",
-        "quiet",
-        "--expected-generation",
-        &generation,
-    ]);
-    assert!(e.contains("ACCOUNT_SESSIONS_RUNNING"), "{e}");
-    assert!(f.home("claude", "busy").is_dir() && !f.home("claude", "quiet").exists());
-    assert!(f.row("claude:busy").is_some());
-    // Rename only stays available while the session runs.
-    let r = f.api(&[
-        "account",
-        "rename",
-        "claude:busy",
-        "--display-name",
-        "Shown",
-    ]);
-    assert_eq!(r["display_name"], "Shown");
-    // Nothing was journaled for the refused attempt.
-    assert!(
-        f.api(&["operations"])
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|o| o["kind"] != "account_rename")
-    );
 }

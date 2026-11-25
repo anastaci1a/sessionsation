@@ -61,9 +61,6 @@ pub const PROVIDER_STATE: &str = "registry/provider-state";
 pub const AUTO_RECOVER: &str = "registry/auto-recover.json";
 pub const AUTO_RECOVER_LOCK: &str = "registry/auto-recover.lock";
 pub const AUTO_RECOVER_TICK_LOCK: &str = "registry/auto-recover-tick.lock";
-/// Per-session turn-end notification settings and event journal (contract 1.38.0).
-pub const TURN_NOTIFY: &str = "registry/turn-notify.json";
-pub const TURN_NOTIFY_LOCK: &str = "registry/turn-notify.lock";
 /// Session events in one shape for every provider (contract 1.64.0): the bounded journal,
 /// its cursor/tracker state and their lock.
 pub const EVENTS: &str = "registry/events.jsonl";
@@ -245,12 +242,6 @@ pub fn account_home(root: &Path, provider: ProviderId, name: &str) -> PathBuf {
     target
 }
 
-/// Create (0700) the parents of a new managed home for `provider`.
-pub fn ensure_home_parent(root: &Path, provider: ProviderId) -> Result<()> {
-    private_dir(&root.join(ACCOUNTS))?;
-    private_dir(&root.join(ACCOUNTS).join(provider.as_str()))
-}
-
 /// Codex account homes: `accounts/codex/<name>` plus deferred legacy homes
 /// (`accounts/<name>`, real directories only). Sorted by name, unique.
 pub fn codex_homes(root: &Path) -> Vec<(String, PathBuf)> {
@@ -306,46 +297,6 @@ fn resolve_physical(path: &Path) -> PathBuf {
             _ => return path.to_path_buf(),
         }
     }
-}
-
-/// Rewrite stored absolute home paths after homes moved (`from` to `to`).
-/// Only exact home matches change: `conversations/*.json` `owner`,
-/// `managed-panes/*.json` `home` and `herdr-panes/*.json` `binding.home`.
-/// Journals and receipts are never rewritten. Idempotent; returns the number
-/// of records changed.
-pub fn rewrite_home_refs(root: &Path, moves: &[(PathBuf, PathBuf)]) -> Result<usize> {
-    let mut changed = 0;
-    for (dir, field) in [
-        (CONVERSATIONS, "/owner"),
-        (MANAGED_PANES, "/home"),
-        (HERDR_PANES, "/binding/home"),
-    ] {
-        let Ok(entries) = fs::read_dir(root.join(dir)) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_none_or(|e| e != "json")
-                || !entry.file_type().is_ok_and(|t| t.is_file())
-            {
-                continue;
-            }
-            let Ok(bytes) = fs::read(&path) else { continue };
-            let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-                continue;
-            };
-            let target = value
-                .pointer(field)
-                .and_then(|v| v.as_str())
-                .and_then(|s| moves.iter().find(|(from, _)| from.as_os_str() == s));
-            if let Some((_, to)) = target {
-                *value.pointer_mut(field).expect("checked") = serde_json::json!(to);
-                crate::paths::atomic_write(&path, &serde_json::to_vec(&value)?)?;
-                changed += 1;
-            }
-        }
-    }
-    Ok(changed)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

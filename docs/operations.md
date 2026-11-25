@@ -88,6 +88,10 @@ new client cannot repair another process's discovery. Preserve old receipt domai
 and modes. Legacy busy Submit/Steer and messaging Resume are not mapped to
 non-steering v1 Submit/Queue.
 
+1.69.0 removed `account rename-backend`. This is a pre-cutover check, not a start gate: before switching to it run
+`scripts/preflight-account-renames.sh DATA_DIR` (or `smoke-installed.sh` with `SESSIONSATION_DATA_DIR`) and resolve every
+listed record with the running release (`api recover`, `api abandon-operation`).
+
 ### Rolling back a release
 
 Check the [changelog](changelog.md) for every version you roll back over. From 1.66.1

@@ -187,8 +187,6 @@ pub enum StopMethod {
 /// provider ids. Every provider's table names every field.
 #[derive(Debug)]
 pub struct Facts {
-    /// Hosted (Claude `-p` stream) sessions exist for this provider.
-    pub hosted_sessions: bool,
     /// The provider predates providers (Codex): its accounts are keyed, homed (legacy
     /// layout `accounts/<name>`) and named in the launcher argv by their bare name; other
     /// providers use the qualified `<provider>:<name>`.
@@ -384,9 +382,6 @@ pub fn holds(provider: &str, f: impl FnOnce(&'static Facts) -> bool) -> bool {
 pub(super) fn table_stop_reason(caps: &ProviderCapabilities) -> Option<&'static str> {
     caps.stop.reason
 }
-/// The detail of the hosted-session refusal.
-pub const HOSTED_CLAUDE_ONLY: &str = "hosted sessions are Claude-only";
-
 /// The model and effort grammar a provider accepts (launch, `session launch`, set-model).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelGrammar {

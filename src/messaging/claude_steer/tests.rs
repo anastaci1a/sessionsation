@@ -33,38 +33,6 @@ fn peer_failures_keep_their_own_code_and_ok() {
     );
 }
 #[test]
-fn hosted_rows_point_stop_at_the_hosted_api_and_explain_add_to_herdr() {
-    let mut v = json!({"capabilities":{"stop":false,"add_to_herdr":false},"capability_reasons":{
-        "stop":"no verified Claude process lifecycle control","add_to_herdr":"INTERACTIVE_ELSEWHERE: x"}});
-    apply_hosted_reasons(&mut v, false);
-    assert!(
-        v["capability_reasons"]["stop"]
-            .as_str()
-            .unwrap()
-            .starts_with("no verified")
-    );
-    apply_hosted_reasons(&mut v, true);
-    assert!(
-        v["capability_reasons"]["stop"]
-            .as_str()
-            .unwrap()
-            .contains("api hosted stop")
-    );
-    assert!(
-        v["capability_reasons"]["restart"]
-            .as_str()
-            .unwrap()
-            .starts_with("HOSTED_SESSION")
-    );
-    assert!(
-        v["capability_reasons"]["add_to_herdr"]
-            .as_str()
-            .unwrap()
-            .starts_with("HOSTED_SESSION")
-    );
-    assert_eq!(v["capabilities"]["add_to_herdr"], false);
-}
-#[test]
 fn transcript_scan_needs_the_anchor_and_stops_at_the_next_input() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("t.jsonl");

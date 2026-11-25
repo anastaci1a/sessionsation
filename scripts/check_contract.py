@@ -121,9 +121,7 @@ validate(fixtures["claude_steer_request"], "ClaudeSteerRequest")
 validate(fixtures["claude_steer_semantics"], "ClaudeSteerSemantics")
 for name in ["claude_steer_receipt_hosted", "claude_steer_receipt_interrupted", "claude_steer_receipt_cut", "claude_steer_receipt_peer", "claude_steer_receipt_peer_unanchored", "claude_steer_receipt_held"]:
     validate(fixtures[name], "ClaudeSteerReceipt")
-validate(fixtures["hosted_session"], "HostedSession")
 validate(fixtures["live_steering"], "LiveSteering")
-validate(fixtures["launch_request_hosted"], "LaunchRequest")
 hosted, peer, unanchored = fixtures["claude_steer_receipt_hosted"], fixtures["claude_steer_receipt_peer"], fixtures["claude_steer_receipt_peer_unanchored"]
 for invalid, definition in [
     ({**fixtures["claude_steer_request"], "mode": "queue"}, "ClaudeSteerRequest"),
@@ -138,8 +136,6 @@ for invalid, definition in [
     ({**unanchored, "reply": peer["reply"]}, "ClaudeSteerReceipt"),
     ({**unanchored, "state": "completed_with_reply"}, "ClaudeSteerReceipt"),
     ({**peer, "peer_message": None}, "ClaudeSteerReceipt"),
-    ({**fixtures["hosted_session"], "effective_permission_mode": "bypassPermissions"}, "HostedSession"),
-    ({**fixtures["launch_request_hosted"], "account_id": "codex:fixture"}, "LaunchRequest"),
 ]:
     try:
         validate(invalid, definition)

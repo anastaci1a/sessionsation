@@ -45,8 +45,6 @@ pub const MSG_V: u64 = 1;
 pub const VERIFIED_VERSIONS: &[&str] = &["2.1.312", "2.1.314"];
 /// Largest accepted frame line (Claude refuses about a million characters).
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
-/// A subscription for an idle notice expires after 12 hours.
-pub const IDLE_NOTICE_EXPIRY_SECONDS: i64 = 12 * 3600;
 /// How long the sender waits for a first receipt before reporting a silent accept.
 pub const STATUS_WINDOW: Duration = Duration::from_secs(3);
 

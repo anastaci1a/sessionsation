@@ -89,35 +89,6 @@ fn session_limit_is_separate_from_directory_and_space_names() {
     }
 }
 #[test]
-fn hosted_launches_are_claude_only_with_a_known_permission_mode() {
-    let fixtures: serde_json::Value =
-        serde_json::from_str(include_str!("../../docs/contract/fixtures.json")).unwrap();
-    let mut r: Request = serde_json::from_value(fixtures["launch_request"].clone()).unwrap();
-    assert!(r.hosted.is_none(), "older requests stay valid");
-    r.account_id = "claude:personal".into();
-    r.hosted = Some(Hosted {
-        permission_mode: Some("plan".into()),
-    });
-    shape(&r).unwrap();
-    r.hosted = Some(Hosted {
-        permission_mode: Some("yolo".into()),
-    });
-    assert!(shape(&r).is_err());
-    r.hosted = Some(Hosted {
-        permission_mode: None,
-    });
-    r.account_id = "codex:work".into();
-    assert!(
-        shape(&r)
-            .unwrap_err()
-            .to_string()
-            .contains("UNSUPPORTED_PROVIDER_OPERATION")
-    );
-    let mut v = fixtures["launch_request"].clone();
-    v["hosted"] = serde_json::json!({"permission_mode":"plan","extra":1});
-    assert!(serde_json::from_value::<Request>(v).is_err());
-}
-#[test]
 fn model_and_reasoning_effort_are_codex_only_validated_and_become_options() {
     let fixtures: serde_json::Value =
         serde_json::from_str(include_str!("../../docs/contract/fixtures.json")).unwrap();
@@ -176,16 +147,6 @@ fn model_and_reasoning_effort_are_codex_only_validated_and_become_options() {
             .contains("INVALID_REASONING_EFFORT")
     );
     r.reasoning_effort = Some("high".into());
-    r.hosted = Some(Hosted {
-        permission_mode: None,
-    });
-    assert!(
-        shape(&r)
-            .unwrap_err()
-            .to_string()
-            .contains("UNSUPPORTED_PROVIDER_OPERATION")
-    );
-    r.hosted = None;
     r.account_id = "gemini:g".into();
     assert!(
         shape(&r)
@@ -320,4 +281,16 @@ async fn abandon_uncertain_launch_releases_name_and_refuses_when_a_session_exist
         "OPERATION_ALREADY_TERMINAL"
     );
     catalog::reserve_name(&paths, None, "stuck-name", "other").unwrap();
+}
+#[test]
+fn a_legacy_receipt_request_with_hosted_still_reads_and_a_new_one_is_refused() {
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("../../docs/contract/fixtures.json")).unwrap();
+    let mut v = fixtures["launch_request"].clone();
+    v["hosted"] = json!({"permission_mode": "account"});
+    let r: Request = serde_json::from_value(v).unwrap();
+    assert!(r.hosted.is_some());
+    assert!(!serde_json::to_string(&r).unwrap().contains("hosted"));
+    let e = shape(&r).unwrap_err().to_string();
+    assert!(e.contains("hosted sessions were removed in 1.69.0"), "{e}");
 }

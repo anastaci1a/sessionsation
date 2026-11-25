@@ -303,7 +303,7 @@ pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> V
             explain_stale_meter(&mut usage["meter"], codex_stale_reason(paths, &a.name));
         }
         json!({
-        "name":a.name,"folder_name":a.name,"name_mismatch":a.display_name.is_some(),"generation":crate::account_rename::account_generation(a),
+        "name":a.name,"folder_name":a.name,"name_mismatch":a.display_name.is_some(),"generation":crate::accounts::account_generation(a),
         "order":a.order,"display_name":a.display_name,"provider":a.provider,"config_home":a.config_home,
         "enabled":a.enabled,"auth_required":a.auth_required,"auth_detail":a.auth_detail,"deletion_id":a.deletion_id,
         "switch_thresholds":a.switch_thresholds,
@@ -428,8 +428,6 @@ pub async fn serve(paths: Paths) -> Result<()> {
     if !state.normalize_order().is_empty() {
         store.save(&state, now(), "account.order_migrated", "")?;
     }
-    crate::account_rename::reconcile_all(&paths, &mut state, &mut store);
-    store.save(&state, now(), "automatic_reconciled", "")?;
     let mut config = load_config(&paths)?;
     // Data-root retention (logs, cache, operations history, receipts): first
     // pass a few minutes after start, then hourly. Housekeeping never blocks.
@@ -537,7 +535,6 @@ pub async fn serve(paths: Paths) -> Result<()> {
     let compaction_task = tokio::spawn(crate::messaging::compaction::monitor(paths.clone()));
     // Contract 1.49.0: model changes and one-pass launches.
     let model_task = tokio::spawn(crate::messaging::model_change::monitor(paths.clone()));
-    let turn_notify_task = tokio::spawn(crate::turn_notify::monitor(paths.clone()));
     // Contract 1.64.0: one re-dispatch of an unsent request whose worker died.
     let message_worker_task = tokio::spawn(crate::messaging::claude_steer::monitor(paths.clone()));
     // Contract 1.62.0 (SM8): idle Claude meters are read in the background.
@@ -955,7 +952,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             let (name, provider) = (account.name.clone(), account.provider);
                             if let Some(expected) = params["expected_generation"].as_str() {
-                                ensure!(crate::account_rename::account_generation(account) == expected, "STALE_TARGET: the account changed since it was read; refresh the account list");
+                                ensure!(crate::accounts::account_generation(account) == expected, "STALE_TARGET: the account changed since it was read; refresh the account list");
                             }
                             let next = params["display_name"].as_str().map(str::trim).filter(|d| !d.is_empty() && *d != name).map(str::to_owned);
                             if let Some(display) = &next {
@@ -969,42 +966,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             if changed { a.display_name = next.clone(); store.save(&state,now(),"account.renamed",&format!("{provider}:{name}"))?; }
                             let a = state.account(provider,&name).context("unknown account")?;
                             Ok(json!({"account_id":format!("{provider}:{name}"),"name":name,"folder_name":name,"display_name":next,"name_mismatch":a.display_name.is_some(),
-                                "generation":crate::account_rename::account_generation(a),"changed":changed}))
-                        }
-                        "account/rename-backend" => {
-                            let account = named(&state,params)?.clone();
-                            let (provider, key) = (account.provider, account.key());
-                            let request_id = params["request_id"].as_str().context("INVALID_ARGUMENT: request_id is required")?;
-                            uuid::Uuid::parse_str(request_id).context("INVALID_ARGUMENT: request_id must be a UUID")?;
-                            if crate::account_rename::exists(&paths,request_id) {
-                                // Never replayed: report the recorded operation.
-                                let record = crate::account_rename::read(&paths,request_id)?;
-                                return Ok(json!({"already_recorded":true,"operation":crate::account_rename::public(&record)}));
-                            }
-                            let expected = params["expected_generation"].as_str().context("INVALID_ARGUMENT: expected_generation is required")?;
-                            // A native auth probe in flight is harmless (its result is dropped once the
-                            // key is gone); a Codex helper still holds the home.
-                            ensure!(!ops::facts(provider).supervised || !pending.contains(&key), "ACCOUNT_POLL_IN_PROGRESS: account poll is in progress; retry shortly");
-                            let plan = crate::account_rename::plan(&paths,&state,provider,&account.name,params["new_name"].as_str(),expected)?;
-                            let _old_lock = crate::accounts::operation_lock(&paths,provider,&plan.old_name)?;
-                            let _new_lock = crate::accounts::operation_lock(&paths,provider,&plan.new_name)?;
-                            crate::account_rename::ensure_idle(&paths,&plan).await?;
-                            if ops::facts(provider).supervised {
-                                if let Some(helper) = helpers.remove(&key) { helper.stop_idle().await?; }
-                                crate::account_rename::stop_codex_server(&config,&plan.old_home).await?;
-                            }
-                            last_poll.remove(&key);
-                            let (previous_id, new_name) = (format!("{provider}:{}",plan.old_name), plan.new_name.clone());
-                            let operation = crate::account_rename::execute(&paths,&mut state,&mut store,plan,request_id,&|_| Ok(()))?;
-                            let a = state.account(provider,&new_name).context("unknown account")?;
-                            Ok(json!({"account_id":format!("{provider}:{new_name}"),"previous_account_id":previous_id,"name":new_name,"folder_name":new_name,
-                                "display_name":a.display_name,"name_mismatch":a.display_name.is_some(),"generation":crate::account_rename::account_generation(a),
-                                "home":crate::layout::account_home(&paths.root,provider,&new_name),"operation":operation,"changed":true}))
-                        }
-                        "account/rename-backend/recover" => {
-                            let id = params["request_id"].as_str().context("INVALID_ARGUMENT: request_id is required")?;
-                            let operation = crate::account_rename::reconcile(&paths,&mut state,&mut store,id,&|_| Ok(()))?;
-                            Ok(json!({"operation":operation}))
+                                "generation":crate::accounts::account_generation(a),"changed":changed}))
                         }
                         "account/managed-home" => {
                             let name = params["name"].as_str().context("missing account name")?;
@@ -1162,7 +1124,6 @@ pub async fn serve(paths: Paths) -> Result<()> {
     auto_recover_task.abort();
     compaction_task.abort();
     model_task.abort();
-    turn_notify_task.abort();
     message_worker_task.abort();
     meter_task.abort();
     events_task.abort();

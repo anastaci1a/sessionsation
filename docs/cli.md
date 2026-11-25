@@ -87,7 +87,6 @@ sessionsation api account add claude:personal [--config-dir DIR]
 sessionsation api account list [--platform claude]
 sessionsation api account login|refresh|logout|enable|disable codex:example
 sessionsation api account rename codex:example --display-name Office [--expected-generation G]   # or --clear
-sessionsation api account rename-backend codex:example [NEW] --expected-generation G [--request-id UUID]
 sessionsation api account reorder codex:example --position N
 sessionsation api account managed-home claude:NAME
 sessionsation api account live-steering claude:NAME [--enable|--disable]
@@ -166,8 +165,8 @@ sessionsation api observe --session ID --expected-generation G [--history [N]]
 sessionsation api observations < batch.json
 sessionsation api turn-target --session ID --expected-generation G
 sessionsation api rename --session ID --expected-generation G --name NAME
-sessionsation api launcher new --account codex:example [--hosted]
-sessionsation api launcher resume --session ID --expected-generation G [--hosted]
+sessionsation api launcher new --account codex:example
+sessionsation api launcher resume --session ID --expected-generation G
 sessionsation api launcher shell
 ```
 
@@ -254,9 +253,6 @@ sessionsation api checkpoints < request.json
 sessionsation api answer --session ID --expected-generation G --request-id call_... [--answers JSON]
 sessionsation api events [--after SEQ] [--wait SECONDS] [--session ID] [--kind KIND] [--limit N]
 sessionsation api hooks [install [--account ID]]
-sessionsation api turn-notify --session ID --expected-generation G --enable [--notify-session ID2]   # or --disable
-sessionsation api turn-events [--after SEQ] [--wait SECONDS]
-sessionsation api idle-notify --session ID --expected-generation G [--notify-session ID2]
 ```
 
 Modes are the intents `deliver`, `when_idle`, `interrupt` (every provider), the
@@ -278,22 +274,6 @@ sessionsation api state | jq ".result.sessions[] | select(.pending_questions != 
 echo '{"q1":{"option_ids":["o2"]},"name":{"text":"zebra"}}' | \
   sessionsation api answer --session ID --expected-generation G --request-id call_...
 ```
-
-### Hosted Claude sessions
-
-```sh
-sessionsation run --account claude:personal --hosted [--permission-mode plan] [--thread CONVERSATION-UUID]
-sessionsation view SESSION-ID [--once]        # live log; t + Enter takes over, q quits
-sessionsation take-over SESSION-ID            # stop the worker, then claude --resume here
-sessionsation api hosted start --account claude:personal --directory /abs/dir [--name N]
-sessionsation api hosted start --session ID --expected-generation G
-sessionsation api hosted status|events --session ID
-sessionsation api hosted stop --session ID --expected-generation G [--interrupt] [--timeout-seconds N]
-sessionsation api hosted respond --session ID --request-id R --allow|--deny [--message TEXT]
-```
-
-Closing the viewer does not stop the worker. Priorities, receipts and permission
-requests: [hosted sessions](contract.md#hosted-sessions).
 
 ## HERDR Spaces
 

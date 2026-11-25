@@ -329,8 +329,7 @@ archived, unverified or unobserved sessions). Codex: the verified process start.
 Claude: the registry `sessions/<pid>.json` `startedAt` when the registry process is
 verified against /proc and `startedAt` is neither before that process start nor in
 the future, else the verified /proc start; a session whose process is a pre-started
-`claude bg-spare` uses only the verified HERDR `claude attach` client start; a hosted
-session without a registry time uses the worker's `started_at`. Gemini and
+`claude bg-spare` uses only the verified HERDR `claude attach` client start. Gemini and
 Antigravity: the verified /proc start.
 
 `last_accessed` is in Unix milliseconds. Codex reports the open/attach time. Claude,
@@ -547,7 +546,7 @@ reason. `capabilities.session_meters` lists the fields and sources.
 Every provider process Sessionsation starts for a session carries
 `SESSIONSATION_SESSION_ID=<session id>` (the catalog id, not the conversation id), on
 every start path: launch and `session launch`, resume (also by Auto Start and account
-switch), Codex restart and move, hosted Claude, headless runs and Claude
+switch), Codex restart and move, headless runs and Claude
 `add-to-herdr`. For Codex it is also set as the thread's shell environment
 (`shell_environment_policy.set` on `thread/start` and `thread/resume`; a thread the
 app-server already has loaded keeps its value). An inherited value is removed from
@@ -620,8 +619,7 @@ they have no source session. Terminal phases are `complete` and `failed`. See
 
 `api launcher new --account codex:example`, `api launcher resume --session ID
 --expected-generation GENERATION` and `api launcher shell` return an opaque
-`{action:"exec",argv:[...],cwd:...}` plan (`--hosted` returns a `run --hosted` plan
-for Claude). A terminal client executes the exact argv without a shell, applying cwd
+`{action:"exec",argv:[...],cwd:...}` plan. A terminal client executes the exact argv without a shell, applying cwd
 only when non-null. The backend revalidates the session when the resume plan
 executes. Do not reconstruct provider launch commands or handle credentials in a
 client. Plain-shell launch and every command typed into a pane set
@@ -636,8 +634,7 @@ status --request-id UUID` reconciles a durable record. Request v1 has `version`,
 UUID `request_id`, provider-qualified `account_id`, `name`, `host: {session,
 socket}`, `space: {kind: "existing", id}` or `{kind: "new", label}`, and
 `directory: {path, create, confirmed_existing}`, plus optional `permissions`
-([launch permissions](#launch-permissions)), `model`/`reasoning_effort` (Codex) and
-`hosted` (Claude). Paths are absolute. `create` is an ordered contiguous list of
+([launch permissions](#launch-permissions)), `model`/`reasoning_effort` (Codex). Paths are absolute. `create` is an ordered contiguous list of
 missing directories ending at `path`; an existing directory requires an empty list
 and `confirmed_existing: true`. Validation creates no directories or HERDR
 resources. Start revalidates, reserves the name and dispatches once. Reusing a UUID
@@ -791,7 +788,7 @@ operations:true, ...}`).
   must name the pane's own Space, outside HERDR it is `INVALID_ARGUMENT`). `run` gives
   the new entry that name; `resume` renames first (the generation changes). With
   `HERDR_PANE_ID` set the pane's tab is relabelled (best effort). `run --name` is
-  refused with `--thread`, `--hosted` or `--host herdr`. Without `--name`, `run` uses
+  refused with `--thread` or `--host herdr`. Without `--name`, `run` uses
   the directory name (`-2` suffix on a clash).
 - `resume --confirm-unfinished` acknowledges only the `unfinished_history` warning of
   a saved Codex session (otherwise `UNFINISHED_HISTORY_CONFIRMATION_REQUIRED`; any other
@@ -807,9 +804,7 @@ operations:true, ...}`).
   released; also a resume whose process ended before any provider attached) and
   `uncertain` (never replayed; holds its reservation; release an inline resumption with
   `api abandon-operation`). Phases settle lazily when read; an ended process gets the
-  detail "The inline provider process has ended.". Hosted `api launch` /
-  `api resume-launch` receipts keep `running` as their terminal success phase; treat
-  inline `complete` like `running`.
+  detail "The inline provider process has ended.".
 - `api operations` lists them as `{id, kind:"launch"|"resume", inline:true,
   session_id, name, account_id, phase, detail, created_at, updated_at, pane_id,
   can_cancel:false, can_respond:false, can_recover:false}`; finished entries drop out
@@ -817,7 +812,7 @@ operations:true, ...}`).
 - Locks: launches take the shared account launch lock and the name reservation;
   resumes take the resumption admission lock, the per-conversation admission lock,
   the handoff check and the conversation lock, exactly like `api resume-launch`.
-  `run --thread`, `run --hosted` and `run --host herdr` are not journaled this way.
+  `run --thread` and `run --host herdr` are not journaled this way.
 
 ### Early provider exit
 
@@ -841,7 +836,7 @@ report a bare shell in front of the pane (`TERMINAL_PROVIDER_EXITED`,
 `permissions` (`yolo` | `default`); omitted, the `launch_permissions` setting applies.
 Every provider process started for a session uses one mode: new launches, resume
 launches, inline `run`/`resume`, Codex restart and account switch, saved-session
-open, move recovery and hosted Claude without a `permission_mode`.
+open and move recovery.
 
 | Mode | Codex | Claude Code | Gemini CLI | Antigravity CLI |
 |---|---|---|---|---|
@@ -850,7 +845,7 @@ open, move recovery and hosted Claude without a `permission_mode`.
 
 Explicit Codex options after `--` (`-a`, `-s`,
 `--dangerously-bypass-approvals-and-sandbox`, `--full-auto`; `--yolo` is an alias of
-the bypass flag) and a hosted Claude `permission_mode` win. Claude refuses permission
+the bypass flag) win. Claude refuses permission
 bypass as root unless `IS_SANDBOX=1`, set only for bypassing starts. Codex rejects
 permission flags on a remote resume, so they are never passed to the remote terminal;
 instead every verified `thread/resume` is followed by `thread/settings/update` with
@@ -872,8 +867,7 @@ start. `default` launch permissions and headless delivery change nothing.
 
 - Claude (`capabilities.claude_folder_trust`: `setting:"claude_pretrust_folders"`,
   `built_in_default:true`, `applies_when:"launch_permissions_yolo"`,
-  `applies_to:["interactive","hosted"]`): before an interactive bypass start or a
-  hosted worker with effective `bypassPermissions`, it sets
+  `applies_to:["interactive","hosted"]`): before an interactive bypass start it sets
   `projects["<directory>"].hasTrustDialogAccepted = true` in the account's
   `CLAUDE_CONFIG_DIR/.claude.json`, under the canonical directory and, when
   different, the recorded spelling. A directory Claude does not know yet gets
@@ -923,15 +917,14 @@ fields `model` and `reasoning_effort`.
   efforts `none|minimal|low|medium|high|xhigh`. Claude: `claude-` followed by
   lower-case letters, digits, dots and dashes, optional `[1m]`; efforts
   `low|medium|high|xhigh|max`; aliases (`opus`, `sonnet`, `default`, ...) are
-  `INVALID_MODEL`. Hosted Claude with a model is `UNSUPPORTED_PROVIDER_OPERATION`, as
-  are Gemini and Antigravity. A launch model is not checked against what the account
+  `INVALID_MODEL`. Gemini and Antigravity are `UNSUPPORTED_PROVIDER_OPERATION`. A launch model is not checked against what the account
   can use. Applied values are always the ones the session reports; a substituted
   model or capped effort is a failure carrying the observed value (ASCII
   case-insensitive equality; Claude ids compare ignoring a trailing `[1m]`).
 - **Always pass a model.** A Claude `/model` or `/effort` (including the ones
   `set-model` types) saves the value as the account default for later starts without
   a model; Sessionsation does not restore it. Resumes (`api resume`, inline `resume`,
-  Auto Start, account switch, hosted resume) pass the conversation's last recorded
+  Auto Start, account switch) pass the conversation's last recorded
   model and effort; headless sends pass none. A Codex launch model starts the thread
   with that model and `model_reasoning_effort` and opens the terminal with `-m` and
   `-c model_reasoning_effort="..."`; Claude terminal launches use `--model`/`--effort`.
@@ -1048,8 +1041,7 @@ Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
   (`claude_lifecycle.stop.wait_seconds`). A turn in progress is interrupted
   (`interrupted_turn:true`; its unfinished reply is not saved); the transcript stays
   resumable. Background (`bg`) sessions and pre-started spares are
-  `UNSUPPORTED_PROVIDER_OPERATION` (they belong to Claude's daemon); hosted sessions
-  are `HOSTED_SESSION` (use `api hosted stop`). Rows report `capabilities.stop:true`
+  `UNSUPPORTED_PROVIDER_OPERATION` (they belong to Claude's daemon). Rows report `capabilities.stop:true`
   exactly while the registry-verified interactive process runs.
 - **Antigravity** (`capabilities.antigravity_lifecycle`): SIGTERM to the exact
   verified agy process (pidfd; pid, start time, `agy` command line, account home, and
@@ -1132,10 +1124,10 @@ paths, account_memory:{moved:false, stays_with, detail}, shared_state}`.
   `resume_pending`, `resuming`, then `complete`, `failed` or `abandoned`;
   `uncertain` waits for `api recover` or `api abandon-operation`.
 - **Admission** (nothing changes on refusal): `STALE_TARGET`, `SWITCH_SAME_ACCOUNT`,
-  `ACCOUNT_UNAVAILABLE`, `ACCOUNT_REMOVED`, `ACCOUNT_RENAME_UNRESOLVED`,
+  `ACCOUNT_UNAVAILABLE`, `ACCOUNT_REMOVED`,
   `OPERATION_BUSY`, `SESSION_OPERATION_IN_PROGRESS`, a headless delivery in flight,
   `HISTORY_NOT_FOUND`, `SESSION_STALE`, `SESSION_STATE_UNVERIFIED`, `TARGET_CONFLICT`
-  (a copy in the target home), `SESSION_HOSTED` (stop it first),
+  (a copy in the target home),
   `SESSION_NOT_SWITCHABLE` (background or parked), `AMBIGUOUS_SESSION`,
   `SESSION_PANE_UNKNOWN` (a running process outside a recorded pane cannot be resumed
   afterwards), `SAVED_DIRECTORY_UNAVAILABLE`, `SHARED_STATE_MIXED`, and
@@ -1183,7 +1175,7 @@ the control only when present; it carries `default_prompt`, `default_prompt_cras
   prompt once (the custom `--prompt`, 1-4000 bytes and only valid with
   `start_prompt`, else the default). `--mode start_prompt` without `--prompt` clears a
   custom prompt. The mode can be set on live, stopped and saved sessions; archived,
-  hosted, background and unsupported sessions get `AUTO_RECOVER_UNSUPPORTED`; a stale
+  background and unsupported sessions get `AUTO_RECOVER_UNSUPPORTED`; a stale
   generation is `STALE_TARGET`, an unfinished operation
   `SESSION_OPERATION_IN_PROGRESS`, a bad prompt `INVALID_ARGUMENT`. Disabling is always
   allowed and the toggle never changes the generation. The receipt is
@@ -1198,7 +1190,7 @@ the control only when present; it carries `default_prompt`, `default_prompt_cras
 - **Triggers.** The supervisor checks shortly after start and then every 15 s
   (`SESSIONSATION_AUTO_RECOVER_SECONDS`, `0` disables; skipped when no session has a
   mode). A session is due only after 3 consecutive not-running checks with the
-  `api state` identity rules, when it is not archived, deleted, hosted or suppressed,
+  `api state` identity rules, when it is not archived, deleted or suppressed,
   has no other operation (lifecycle admission) or unfinished recovery, and HERDR
   answers (`HERDR_UNAVAILABLE` is surfaced and retried).
   - *Host boot*: `/proc/sys/kernel/random/boot_id` differs from the `boot_id` in
@@ -1438,8 +1430,7 @@ and the options each provider ignores):
 | `interrupt` | `steer` of the active turn, its target read by Sessionsation (as `steer-target`); with no turn it can steer, delivered as `deliver` with `delivery.fallback_reason` | `steer` | `steer` (the key that sends immediately) |
 
 `interrupt` hands the text to the running turn as soon as the provider allows; it
-never cancels the turn (only `steering.interrupt:true` on a hosted Claude session
-does). A Codex `interrupt` that names its own `steering` target is sent with it.
+never cancels the turn. A Codex `interrupt` that names its own `steering` target is sent with it.
 `resume` and `new` (headless and recovery sends) are not intents.
 
 `delivery`, `await_reply`, `timeout_seconds`, `if_busy`, `recovery` and the `steering`
@@ -1454,10 +1445,10 @@ option values and a path a provider has but cannot use now
 | `if_busy` | Codex `submit` (an intent sets it) | Claude, Antigravity, Gemini; Codex `when_idle` / `interrupt` |
 | `recovery` | Codex `resume` | Claude, Antigravity, Gemini |
 | `steering.expected_turn_id`, `steering.expected_runtime_generation` | Codex `steer` | Claude, Antigravity, Gemini |
-| `steering.interrupt` | hosted Claude | Codex, Antigravity, Gemini |
+| `steering.interrupt` | none (Claude refuses it: `TERMINAL_INTERRUPT_UNSUPPORTED`, `PEER_INTERRUPT_UNSUPPORTED`) | Codex, Antigravity, Gemini |
 | `timeout_seconds` | Claude, Antigravity, Gemini workers | Codex |
 | `await_reply` | Claude peer messages | Codex, Antigravity, Gemini |
-| `delivery` (`peer_message`, `native`, `hosted_stream_json`, `terminal_input`) | Claude; `terminal_input` also Antigravity and Gemini | every value but `auto` on Codex; `peer_message`, `native`, `hosted_stream_json` on Antigravity and Gemini |
+| `delivery` (`peer_message`, `native`, `terminal_input`) | Claude; `terminal_input` also Antigravity and Gemini | every value but `auto` on Codex; `peer_message`, `native` on Antigravity and Gemini |
 
 Every live result and receipt has one delivery block:
 
@@ -1467,7 +1458,7 @@ Every live result and receipt has one delivery block:
 ```
 
 `mode_used` is the provider mode that ran; `framing` is `native_queue`,
-`native_steer`, `peer_message`, `terminal_input` or `hosted_stream_json`. `queued` is
+`native_steer`, `peer_message` or `terminal_input`. `queued` is
 true while the provider keeps the message in its own queue behind a running turn;
 `held` while it is kept back before the conversation (a Codex compaction or
 model-change hold, a Claude peer message reported `held`). Both become false once the
@@ -2005,7 +1996,6 @@ Detection is passive (incremental history scan; no provider contact) and survive
 |---|---|---|---|
 | `codex_request_user_input` | Plan-mode `request_user_input` (blocking) | its tool output, or the turn ends | `item/tool/requestUserInput` response |
 | `codex_request_user_input_async` | Default-mode `request_user_input_async` (the turn keeps running) | a new turn starts, or Sessionsation answers | follow-up message on the public non-steering queue, delivered when the turn ends |
-| `claude_hosted_ask_user_question` | `AskUserQuestion` in a hosted session | its permission request is answered | `can_use_tool` allow with `updatedInput.answers` |
 | `claude_ask_user_question` | `AskUserQuestion` in a Claude terminal | its `tool_result` | none: `answerable:false`, `unanswerable_reason` `PROVIDER_TERMINAL_ONLY` |
 
 Gemini records `ask_user` calls only after they complete and Antigravity questions
@@ -2018,8 +2008,7 @@ is not visible until the next turn starts; answer each question in one place.
 maps every question id to `{"option_ids":[…],"text":"…"}`: at least one of them,
 one option unless `multi`, text only when `allow_free_text`. Codex encodes text as
 `user_note: …` after the selected labels; Claude joins labels and text with `, `.
-The `QuestionAnswerReceipt` state is `answered` (Codex `serverRequest/resolved`, or
-the hosted worker wrote its control response), `queued` (an async Codex answer
+The `QuestionAnswerReceipt` state is `answered` (Codex `serverRequest/resolved`), `queued` (an async Codex answer
 accepted by `api send` mode `queue`; `message_receipt` is that receipt),
 `delivery_unknown` (never resent) or `rejected` (nothing sent; `reason`).
 
@@ -2082,24 +2071,6 @@ method, required, events, installed, missing_events, stale_events, user_hooks,
 last_event_at, reason`, plus `changed`/`already_installed` for `install`) and one per
 Claude conversation the hooks reported (`session_id, provider_conversation_id,
 process_started_at, last_event_at, ended, subagents_running`).
-
-### Turn-end notifications
-
-`api turn-notify --session ID --expected-generation G (--enable [--notify-session ID2]
-| --disable)` (Codex sessions; capability `turn_notify`; rows carry
-`turn_notify:{enabled,notify_session,enabled_at}`). While enabled the supervisor (poll
-`SESSIONSATION_TURN_NOTIFY_SECONDS`, default 5, 0 disables) records an event each time
-a turn ends: `kind:"turn_ended"` (completed or interrupted) or `kind:"error"` (the
-provider text in `error`). A turn is identified by the rollout timestamp of its end,
-so it is reported exactly once; the first observation after enabling is a baseline.
-Settings and the last 500 events live in `registry/turn-notify.json` and never change
-a generation. `api turn-events [--after SEQ] [--wait SECONDS]` returns
-`{events:[{seq,at,session_id,name,kind,error,delivery}],cursor,gap}` (also the
-`idle`/`exited` events of `api idle-notify`); `--wait` is at most 300. With
-`--notify-session` the supervisor also queues one short message (`mode:"queue"`,
-never a steer, never retried; the session's name and id and, for an error, the
-provider text) to that session; its outcome is the event's `delivery`. The journal is
-the source of truth. For every provider use [session events](#session-events).
 
 ## HERDR placement
 
@@ -2208,7 +2179,7 @@ metadata. A crash before dispatch can release its unissued intent. Durable
 A running session without a HERDR terminal reports `capabilities.add_to_herdr` and
 `capability_reasons.add_to_herdr` (`SESSION_NOT_RUNNING`, `ALREADY_IN_HERDR`,
 `INTERACTIVE_ELSEWHERE`, `ATTACHED_ELSEWHERE`, `CODEX_TERMINAL_NOT_MOVABLE`,
-`NO_NATIVE_ATTACH` (Gemini, Antigravity), `HOSTED_SESSION`, each followed by `: text`).
+`NO_NATIVE_ATTACH` (Gemini, Antigravity), each followed by `: text`).
 `api spaces --session ID --expected-generation G --herdr-session SERVER
 [--herdr-socket PATH]` lists that server's Spaces (`HostSpaceChoices`,
 `current_space_id:null`, `pane:null`).
@@ -2321,7 +2292,7 @@ providers files without the transcript still fail `HISTORY_NOT_FOUND`. Credentia
 
 Row reasons (`capability_reasons.archive|delete`) and refusals: `SESSION_RUNNING` (a
 verified registry entry or process, interactive or headless, holds a lineage
-conversation), `SESSION_HOSTED`, `SESSION_STATE_UNKNOWN` (the live probe failed),
+conversation), `SESSION_STATE_UNKNOWN` (the live probe failed),
 `ACCOUNT_DELETED`, `HISTORY_UNAVAILABLE` (archive only), `SESSION_ALREADY_ARCHIVED`,
 `SESSION_NOT_ARCHIVED` (`restore` on a live row), `SESSION_MERGED` (act on the
 survivor); the worker also refuses `HISTORY_IN_USE` (open writer), `HISTORY_SYMLINK`,
@@ -2339,7 +2310,7 @@ display name (several providers: `ACCOUNT_AMBIGUOUS`).
 
 Account rows carry `provider`, `provider_capabilities`, `membership`, `selectable`,
 `order`, `display_name`, `folder_name`, `name_mismatch`, `running_sessions`,
-`generation`, `backend_rename`, `home`, `home_deferred`, `config_home` (adopted Claude
+`generation`, `home`, `home_deferred`, `config_home` (adopted Claude
 homes), `auth_required`, `auth_detail` (`AUTH_REQUIRED`, `WRONG_AUTH_MODE`,
 `AUTH_FAILED`; never identity), `usage_state`
 (`fresh|partial|stale|missing|no_windows|error|unsupported`), `usage`, `plan`,
@@ -2368,24 +2339,6 @@ sessions run. They use the account-name characters, at most 64
 the provider's accounts (`ACCOUNT_DISPLAY_NAME_EXISTS`; a new account name equal to a
 display name is `ACCOUNT_NAME_EXISTS`). Errors also `INVALID_DISPLAY_NAME`,
 `ACCOUNT_DELETION_IN_PROGRESS`. Event `account.renamed`.
-
-**Backend rename** (`api account rename-backend ID [NEW_NAME] --expected-generation G
-[--request-id UUID]`; without `NEW_NAME` the folder and id are renamed to match the
-display name) returns `{account_id, previous_account_id, name, folder_name,
-display_name, name_mismatch, generation, home, operation, changed}`; clients must
-switch to the new id and re-read sessions (their generations change). The home moves
-to `accounts/<platform>/<new>` even from a deferred legacy path; the registry, catalog
-entries, switching policies, Gemini auth-failure state and usage history move with
-it; old receipts, digests and message journals keep the old id. Refusals:
-`ACCOUNT_SESSIONS_RUNNING` (any session or provider process runs or launches),
-`ACCOUNT_NAME_EXISTS`, `ACCOUNT_NAME_UNCHANGED`, `ACCOUNT_HOME_EXISTS`,
-`ACCOUNT_HOME_ADOPTED`, `ACCOUNT_REMOVED`, `ACCOUNT_DELETION_IN_PROGRESS`,
-`ACCOUNT_POLL_IN_PROGRESS`, `ACCOUNT_RENAME_UNRESOLVED`, `ACCOUNT_HOME_MOVE_FAILED`,
-`STALE_TARGET`. It is journaled in `operations/account-renames/` (`kind:"account_rename"`),
-never replayed, reconciled from evidence at supervisor start or by `api recover`;
-what cannot be decided stays `uncertain` until `api abandon-operation`.
-`backend_rename` on the row is `{available, reason, update_backend,
-update_backend_target}` with `reason` the code a rename would return now.
 
 **Order.** `order` is 0-based and dense; `account list` and `state` are sorted by it,
 and a new account is appended. `api account reorder ID --position N` returns
@@ -2443,7 +2396,7 @@ deleted), `ACCOUNT_REMOVED`, `ACCOUNT_PROVIDER_MISMATCH`,
 
 `api account remove ID` previews affected catalog sessions, active/loaded
 conversations, pending operations and stored-data counts/paths (four bounded readers,
-deterministic order; Claude adds `active_processes`, hosted sessions and
+deterministic order; Claude adds `active_processes` and
 `stored_data.adopted`). `--confirm ID --revision PREVIEW-REVISION` removes the local
 membership; `api account restore ID` reverses it. Removal refuses active/loaded
 conversations or pending lifecycle jobs, never disables the original enrollment,
@@ -2718,7 +2671,7 @@ readable, the process's config dir is the account home; `native_status` and
 or `unknown` (probe failed). Supported: new, resume, rename (HERDR tab), stop, account
 switch, archive/restore/delete, compaction, set-model, Add to HERDR for background
 sessions, live delivery ([input delivery](#claude-input-delivery)), headless delivery,
-pending questions (hosted answers), events and hooks. Unsupported: restart (stop,
+events and hooks. Unsupported: restart (stop,
 then resume), relocation and Space moves.
 
 #### Claude usage and statusline
@@ -2761,8 +2714,8 @@ root until `shared enable` writes `shared/claude/.sessionsation-shared`.
   inside private `shared/` and `shared/claude/`. Anything else is refused as before.
   The helper is consulted only for launch-time repair, the parent check when
   restoring archived files, account deletion and the switch no-op.
-- **Ensure-links.** On `account add` and before every Claude launch, resume, hosted
-  start, headless delivery, attach and switch, a missing link is created, an empty
+- **Ensure-links.** On `account add` and before every Claude launch, resume,
+  headless delivery, attach and switch, a missing link is created, an empty
   real directory is replaced by a link and a trusted link is kept. Errors:
   `SHARED_STATE_UNMIGRATED` (a real directory with data where a link belongs; shared
   state must be enabled on a layout-3 root), `SHARED_STATE_LINK_UNTRUSTED`, `SHARED_STATE_STORE_UNSAFE`.
@@ -2778,21 +2731,19 @@ root until `shared enable` writes `shared/claude/.sessionsation-shared`.
 
 ### Claude input delivery
 
-`capabilities.claude_input_delivery` (`version:1`; the provider entry repeats it as
-`input_delivery`) describes three live paths plus [headless delivery](#headless-delivery)
+`capabilities.claude_input_delivery` (`version:1`; its `hosted` object and the `hosted_stream_json` values are historical text kept for clients that validate them: no session is hosted since 1.69.0; the provider entry repeats it as
+`input_delivery`) describes the live paths plus [headless delivery](#headless-delivery)
 for stopped sessions. Session rows carry `capabilities.submit|queue|steer`,
 `capability_reasons` (`SESSION_NOT_RUNNING`, `LIVE_STEERING_DISABLED`,
 `PEER_ENDPOINT_UNAVAILABLE`, `PEER_SOCKET_UNLINKED`, `TERMINAL_NOT_ATTACHED`,
 `TERMINAL_QUEUE_UNSUPPORTED`, `SESSION_OPERATION_IN_PROGRESS`) and `input_delivery`
 (`semantics`, `interrupt`, `label`, `steer`, `modes` `{submit,queue,steer}` → path or
-null, `available` in preference order, `terminal_input:{available,reason}`). A hosted
-session reports `availability:"running"`, `resume:false`, `stop`/`restart` reason
-`HOSTED_SESSION` (use `api hosted stop`) and `add_to_herdr` reason `HOSTED_SESSION`.
+null, `available` in preference order, `terminal_input:{available,reason}`).
 
 Request (`ClaudeSteerRequest`): the ordinary `api send` fields with
 `mode:"submit"|"queue"|"steer"`, optional `timeout_seconds` (reply wait, default 600,
 max 3600), `delivery` (`claude_input_delivery.delivery_request`: field `delivery`,
-values `auto` (default), `hosted_stream_json`, `terminal_input`, `peer_message`; `native`
+values `auto` (default), `hosted_stream_json` (always refused: no session is hosted), `terminal_input`, `peer_message`; `native`
 is also accepted), `origin` (`operator`|`agent`), `await_reply` (boolean,
 default false) and, for steer, `"steering":{"version":1,"interrupt":bool}`.
 Priorities: submit `next`, queue `later`, steer `next`. There is no idle preflight:
@@ -2801,12 +2752,10 @@ its next tool round (or runs it as the next turn) and never cuts the turn for it
 `later` runs as its own later turn; `now` would **cancel** the running turn, so
 Sessionsation never sends it. `input_delivery.steer` (`ClaudeSteerSemantics`) reports
 `{priority:"next",interrupts:false,delivery:"next_tool_boundary_or_next_turn",
-interrupt_option:"steering.interrupt",interrupted_inputs_state:"interrupted"}`; only
-`steering.interrupt:true` on a hosted session cancels the running turn first.
+interrupt_option:"steering.interrupt",interrupted_inputs_state:"interrupted"}`; no live path cancels the running turn.
 
 **Path choice** (`claude_input_delivery.preference`
-`["hosted_stream_json","terminal_input","peer_message"]`). A running hosted worker
-always wins. Otherwise, with `delivery:"auto"`, a `submit` or `steer` from an `agent`
+`["hosted_stream_json","terminal_input","peer_message"]`). With `delivery:"auto"`, a `submit` or `steer` from an `agent`
 origin (or `delivery:"native"`) tries the native peer message first, waiting up to
 5 s (`SESSIONSATION_NATIVE_WAIT_SECONDS`) for the endpoint, and types into the HERDR pane only when nothing native was
 possible: no verified registry entry, `peerProtocol` other than 1, inbound messages
@@ -2840,67 +2789,15 @@ Receipt (`ClaudeSteerReceipt`, also from `api receipt`): `delivery_semantics`,
 (`written`, `accepted_native`, `input_recorded`, `input_consumed`, `reply_observed`,
 `reply_final`, `folded`, `shared_with_turn`, `interrupt_requested`, `lifecycle[]`,
 `held`, `peer_status[]`, `idle_notice`), `correlation`, `reply`
-(`{text,text_truncated,final,shared_with_turn}` plus the hosted `result` fields
-`is_error,subtype,num_turns,duration_ms,usage`), `execution` (`phase`
+(`{text,text_truncated,final,shared_with_turn}`), `execution` (`phase`
 admitted/dispatching/written/complete, `host_epoch`, `automatic_replay:false`) and
 `observation`. States: `pending_local`, `held`, `native_accepted`,
 `execution_started`, `completed_with_reply`, `completed_without_reply`, `failed`,
 `interrupted`, `cancelled`, `refused`, `rejected`, `expired`, `delivery_unknown`.
 Terminal states are never regressed; only `completed_*` carries `reply.final:true`.
 `api cancel` cancels only a request still `admitted`, otherwise
-`STEERING_CANCELLATION_UNSUPPORTED` (interrupt a hosted turn with `api hosted stop
---interrupt` or a steer with `interrupt:true`). Fixtures: `claude_steer_request`,
-`claude_steer_receipt_*`, `claude_steer_semantics`, `hosted_session`, `live_steering`,
-`launch_request_hosted`.
-
-#### Hosted sessions
-
-A hosted session is run by a detached Sessionsation worker instead of a terminal: it
-owns the stdin of `claude -p --input-format stream-json --output-format stream-json
---verbose --replay-user-messages --permission-prompt-tool stdio` with `--session-id
-UUID` (new) or `--resume UUID` (a stopped conversation), appends a normalized
-`events.jsonl` for the viewer and serves a private control socket. `api hosted start`
-(`--account claude:N --directory DIR [--name]` or `--session ID
---expected-generation G`, `--permission-mode account|default|acceptEdits|plan|bypassPermissions`),
-`status`, `events`, `stop [--interrupt] [--timeout-seconds N]` and `respond
---request-id R --allow|--deny [--message TEXT]`; `api launch start` accepts
-`"hosted":{"permission_mode"}`. `account` passes no flag (an account default of
-`bypassPermissions` becomes `default`); without a `permission_mode` the
-[launch permissions](#launch-permissions) decide (`yolo` → `bypassPermissions`). Tool
-permission prompts arrive as `can_use_tool` requests and stay pending until answered
-with `api hosted respond`; nothing is auto-approved.
-
-`HostedSession` fields: `state` (`starting|running|stopping|stopped|failed`), `reason`
-(`STOPPED`, `WORKER_LOST`, `WORKER_LOST_PROVIDER_DRAINING`, `PROVIDER_EXITED[_CODE]`,
-…), `permission_mode`, `effective_permission_mode`, `epoch`, `busy`, `worker`,
-`provider_process`, `pending_permissions[]` (`request_id`, `tool_name`, `input`,
-`input_preview`, `requested_at`), `viewer_argv` and `take_over_argv`. The worker lock
-(`DATA_ROOT/sessions/hosted/UUID/worker.lock`) makes it the only writer: a worker, or
-a provider it started that still drains, blocks interactive/headless resume and a
-second host (`SESSION_ALREADY_RUNNING`). The worker survives supervisor restarts and
-is re-adopted by the next read; a lost worker is `stopped` (`WORKER_LOST`) and its
-in-flight deliveries settle as below. Closing the viewer does not stop the worker;
-`take-over` stops it cleanly, then execs the interactive `claude --resume UUID` in
-the same terminal.
-
-Hosted delivery writes one stream-json user frame with `uuid` = `message_id`. The
-worker marks the record `dispatching` before writing; a request it never claimed is
-`rejected` (`HOST_UNREACHABLE_NOT_SENT`, `HOST_STOPPED_BEFORE_DELIVERY`).
-`command_lifecycle` `queued` → `native_accepted`, `started` → `execution_started`;
-`cancelled`/`discarded` before `started` → `cancelled`
-(`NATIVE_CANCELLED`/`NATIVE_DISCARDED`), `refused` → `refused`. The terminal state needs
-both the `result` whose `user_message_uuids` contains the id and the id's terminal
-lifecycle, in either order: `completed` → `completed_with_reply` /
-`completed_without_reply`, or `failed` (`PROVIDER_REPORTED_ERROR`). The reply is the
-assistant text streamed between `started` and that result. `cancelled`/`discarded`
-after `started` means the consuming turn was cut: the input ends `interrupted`
-(`TURN_INTERRUPTED` after a requested interrupt, else `TURN_CANCELLED_BY_PROVIDER`)
-with the partial reply and `final:false`. A steer folded into a running turn has
-`facts.folded:true` and `shared_with_turn:true`. Another reported `session_id` is
-`delivery_unknown` (`SESSION_ID_MISMATCH`). A provider or worker exit makes
-in-flight messages `failed` (`*_DURING_TURN`) or `delivery_unknown`
-(`PROVIDER_EXITED…`, `HOST_WORKER_EXITED`, `STDIN_WRITE_FAILED`). `correlation` is
-`{kind:"command_uuid",command_uuid,lifecycle,user_message_uuids}`.
+`STEERING_CANCELLATION_UNSUPPORTED` . Fixtures: `claude_steer_request`,
+`claude_steer_receipt_*`, `claude_steer_semantics` and `live_steering`.
 
 #### Native peer messages
 
@@ -2966,15 +2863,6 @@ subscribes to Claude's idle notice (which Claude shows the receiving user) so th
 receipt can reach `completed_with_reply`; otherwise the worker exits after the
 3-second status window. Errors also include `PEER_REPLY_SOCKET_UNAVAILABLE`.
 
-`api idle-notify --session ID --expected-generation G [--notify-session ID2]` (a
-running Claude session that accepts inbound messages) subscribes with
-`notify_when_idle` for one `peer_idle_notice`, without a model request in the watched
-session. Journaled in `operations/claude-idle-notify/`; a detached worker keeps the
-subscription for 12 hours. The notice becomes a `kind:"idle"` or `"exited"` event in
-`api turn-events` with `detail:{state,finished_at,status}` and, with
-`--notify-session`, one queued message. A repeat call returns the active
-subscription; a lost worker shows `stalled:true`; nothing is replayed.
-
 Parked sessions: moving an interactive session to the background with Claude Code's
 left-arrow gesture records `parkedJobId` in the interactive process's registry entry
 and forks the conversation into that `bg` job. The interactive process remains the
@@ -2994,7 +2882,7 @@ mid-turn, read at the next tool round. Capabilities: `claude_input_delivery.term
 (`GeminiTerminalInputDelivery`) and `antigravity_input_delivery` (with
 `herdr_agent:"agy"`, `keys_by_queued_messages`, `max_text_bytes`, `max_lines`).
 
-**Eligibility.** A running, non-hosted catalog session whose `attachment` is a
+**Eligibility.** A running catalog session whose `attachment` is a
 verified HERDR pane (`attachment.host:"herdr"` with the exact PID and start time of
 the provider process). A Claude background session (`native.kind:"bg"`) qualifies
 through its `claude attach <job>` client: the attachment must be that exact client
@@ -3187,9 +3075,7 @@ except `api version` and `layout` with `LAYOUT_MIGRATION_REQUIRED` (`layout vers
 supported; this release needs 3`); other codes are
 `LAYOUT_MIGRATION_IN_PROGRESS`, `LAYOUT_CONFLICT`, `LAYOUT_UNSUPPORTED`,
 `BACKUP_REQUIRED` and `DAEMON_RUNNING`. Owner and home paths recorded before a home
-moved are compared by resolved path, and backend rename rewrites
-stored conversation `owner` and pane-binding `home` values (`home_refs_rewritten`);
-journals and receipts are never rewritten. Only `sessionsation setup` creates a
+moved are compared by resolved path,; journals and receipts are never rewritten. Only `sessionsation setup` creates a
 missing root; every other command fails closed with `DATA_ROOT_MISSING`.
 
 ### Disk-space guard

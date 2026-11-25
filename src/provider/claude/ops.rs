@@ -13,7 +13,6 @@ use std::path::Path;
 pub struct Ops;
 pub static OPS: Ops = Ops;
 pub const FACTS: Facts = Facts {
-    hosted_sessions: true,
     bare_name: false,
     supervised: false,
     meter: Reader::OAuth,

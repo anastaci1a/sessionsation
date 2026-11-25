@@ -36,7 +36,7 @@ use super::{
 use crate::{
     catalog,
     paths::{Paths, lock_file, private_dir},
-    provider::{ProviderId, claude, claude::hosted},
+    provider::{ProviderId, claude},
 };
 use anyhow::Result;
 use fs2::FileExt;
@@ -200,10 +200,6 @@ impl ScreenProfile for Claude {
         attachment: Option<&catalog::Attachment>,
     ) -> claude::Observation {
         claude::observe(home, conversation, attachment)
-    }
-    /// No hosted worker serves the conversation.
-    fn before_observe(paths: &Paths, r: &Record) -> Result<()> {
-        hosted::ensure_not_hosted(paths, &r.conversation_id)
     }
     fn apply_transcript(paths: &Paths, id: &str, idle: bool) -> Result<()> {
         observe(paths, id, idle)
@@ -1007,7 +1003,8 @@ pub(crate) fn find(path: &Path, offset: u64, text: &str, since_ms: i64) -> Resul
         }
         match v["type"].as_str() {
             Some("assistant") => {
-                let t = hosted::text_blocks(&v["message"]["content"]).join("");
+                let t =
+                    crate::provider::conversation::text_blocks(&v["message"]["content"]).join("");
                 if !t.is_empty() {
                     out.reply.push(t);
                 }

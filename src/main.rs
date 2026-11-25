@@ -82,11 +82,7 @@ enum Commands {
     #[command(hide = true)]
     ClaudeDeliveryWorker { message_id: String },
     #[command(hide = true)]
-    ClaudeHostWorker { conversation_id: String },
-    #[command(hide = true)]
     ClaudePeerWorker { message_id: String },
-    #[command(hide = true)]
-    ClaudeIdleWorker { id: String },
     #[command(hide = true)]
     ClaudeTerminalWorker { message_id: String },
     #[command(hide = true)]
@@ -94,16 +90,6 @@ enum Commands {
     /// Contract 1.49.0: apply one Claude model change in its HERDR pane.
     #[command(hide = true)]
     ModelChangeWorker { id: String },
-    /// Render a Sessionsation-hosted Claude session live (t + Enter takes it over).
-    View {
-        /// Catalog session id or hosted conversation id.
-        session: String,
-        /// Print the current log and exit.
-        #[arg(long)]
-        once: bool,
-    },
-    /// Stop a hosted Claude worker cleanly, then resume the conversation interactively here.
-    TakeOver { session: String },
     /// Provider integration hooks (invoked by provider processes, not people).
     #[command(hide = true)]
     ProviderHook {
@@ -115,7 +101,7 @@ enum Commands {
         #[arg(long, default_value = "1", value_parser=sessionsation::api::parse_api_version)]
         api_version: u32,
         #[command(subcommand)]
-        command: sessionsation::api::Command,
+        command: Box<sessionsation::api::Command>,
     },
     /// Initialize private state and start the metadata-only supervisor.
     Setup {
@@ -314,12 +300,6 @@ enum Commands {
         thread: Option<String>,
         #[arg(long)]
         session: Option<String>,
-        /// Claude: run a Sessionsation-hosted (stream-json) session and show its viewer here.
-        #[arg(long)]
-        hosted: bool,
-        /// With --hosted: account (default) | default | acceptEdits | plan | bypassPermissions.
-        #[arg(long, requires = "hosted")]
-        permission_mode: Option<String>,
         /// Name of the new session (same rules as `api launch`); also labels this HERDR tab. Inline host only.
         #[arg(long)]
         name: Option<String>,
@@ -550,14 +530,11 @@ async fn run(cli: Cli) -> Result<()> {
         std::process::exit(provider::claude::hooks::event_hook());
     }
     // Only setup may create a data root; everything else fails closed.
-    let any_layout = matches!(
-        cli.command,
-        Commands::Layout { .. }
-            | Commands::Api {
-                command: sessionsation::api::Command::Version,
-                ..
-            }
-    );
+    let any_layout = match &cli.command {
+        Commands::Layout { .. } => true,
+        Commands::Api { command, .. } => matches!(**command, sessionsation::api::Command::Version),
+        _ => false,
+    };
     let paths = if matches!(cli.command, Commands::Setup { .. }) {
         Paths::new(cli.data_dir)?
     } else if any_layout {
@@ -596,12 +573,6 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::ClaudeDeliveryWorker { message_id } => {
             sessionsation::messaging::headless::worker(&paths, &message_id).await?
         }
-        Commands::ClaudeHostWorker { conversation_id } => {
-            sessionsation::provider::claude::hosted::worker(&paths, &conversation_id).await?
-        }
-        Commands::ClaudeIdleWorker { id } => {
-            sessionsation::claude_idle::worker(&paths, &id).await?
-        }
         Commands::ClaudePeerWorker { message_id } => {
             sessionsation::messaging::claude_steer::peer_worker(&paths, &message_id).await?
         }
@@ -613,12 +584,6 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::ModelChangeWorker { id } => {
             sessionsation::messaging::model_change::claude::worker(&paths, &id).await?
-        }
-        Commands::View { session, once } => {
-            sessionsation::provider::claude::hosted::view(&paths, &session, once).await?
-        }
-        Commands::TakeOver { session } => {
-            sessionsation::provider::claude::hosted::take_over(&paths, &session).await?
         }
         Commands::AccountDeleteWorker { request_id } => {
             sessionsation::account_deletion::worker(&paths, &request_id).await?
@@ -657,7 +622,7 @@ async fn run(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Api { command, .. } => sessionsation::api::run(&paths, command).await?,
+        Commands::Api { command, .. } => sessionsation::api::run(&paths, *command).await?,
         Commands::Account {
             command: AccountCommand::Reorder { name, position },
         } => {
@@ -1214,9 +1179,7 @@ async fn run(cli: Cli) -> Result<()> {
             account,
             thread,
             session,
-            hosted,
             name,
-            permission_mode,
             codex_options,
         } => {
             if let Some(account) = account {
@@ -1227,37 +1190,12 @@ async fn run(cli: Cli) -> Result<()> {
                 let account = resolve_account(&paths, &account)?;
                 anyhow::ensure!(
                     name.is_none()
-                        || (!hosted
-                            && thread.is_none()
+                        || (thread.is_none()
                             && herdr_session.is_none()
                             && matches!(host, Host::Inline)),
-                    "INVALID_ARGUMENT: --name names a new session started in this terminal (inline host, no --thread or --hosted)"
+                    "INVALID_ARGUMENT: --name names a new session started in this terminal (inline host, no --thread)"
                 );
-                if hosted {
-                    ops::require(
-                        ops::facts(account.provider).hosted_sessions,
-                        ops::HOSTED_CLAUDE_ONLY,
-                    )?;
-                    anyhow::ensure!(
-                        matches!(host, Host::Inline)
-                            && herdr_session.is_none()
-                            && codex_options.is_empty(),
-                        "INVALID_ARGUMENT: --hosted runs its viewer in this terminal (inline host, no provider options)"
-                    );
-                    return sessionsation::provider::claude::hosted::run_in_terminal(
-                        &paths,
-                        &account.name,
-                        thread.as_deref(),
-                        permission_mode,
-                        None,
-                    )
-                    .await;
-                }
-                if matches!(host, Host::Inline)
-                    && !hosted
-                    && thread.is_none()
-                    && herdr_session.is_none()
-                {
+                if matches!(host, Host::Inline) && thread.is_none() && herdr_session.is_none() {
                     ops::require(
                         codex_options.is_empty() || ops::facts(account.provider).cli_options,
                         ops::CLI_OPTIONS_CODEX_ONLY,

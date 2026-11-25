@@ -720,11 +720,9 @@ pub const TABLES_DIGEST: &str = "87174a895f5a52f50635990275007df70b363f3a0885378
 /// file in neither `MODULES` nor here fails `every_production_file_is_listed`.
 pub const UNLISTED_OK: &[&str] = &[
     "src/account_deletion",
-    "src/account_rename",
     "src/auto_recover",
     "src/background",
     "src/caller_origin",
-    "src/claude_idle",
     "src/claude_switch",
     "src/external",
     "src/generation",
@@ -772,6 +770,5 @@ pub const UNLISTED_OK: &[&str] = &[
     "src/sync",
     "src/terminal",
     "src/timing",
-    "src/turn_notify",
     "src/usage_history",
 ];

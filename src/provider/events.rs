@@ -694,8 +694,7 @@ pub fn capability() -> Value {
             "antigravity":{"supported":true,"kinds":["turn_started","turn_completed"],
                 "via":"full state observations of the agy step log","short_turns":"may be missed between two observations"},
             "gemini":{"supported":false,"reason":super::conversation::GEMINI_UNSUPPORTED}},
-        "never_included":["prompt text","reply text","tool input or output"],
-        "turn_events":"api turn-events stays the Codex turn-notify journal"})
+        "never_included":["prompt text","reply text","tool input or output"]})
 }
 
 #[cfg(test)]

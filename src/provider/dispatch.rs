@@ -15,13 +15,12 @@ pub async fn exec_new_inline(
     name: &str,
     options: &[String],
 ) -> Result<()> {
-    start_new(paths, provider, account, id, name, options, None).await
+    start_new(paths, provider, account, id, name, options).await
 }
 
 /// Start a journaled new session in this process (`launch::run`, moved from
 /// `launch::start_provider`): Codex through the supervisor's account launch with its
-/// options, hosted Claude (`hosted` = its permission mode) in this terminal, native
-/// providers by exec.
+/// options, native providers by exec.
 pub async fn start_new(
     paths: &Paths,
     provider: ProviderId,
@@ -29,14 +28,10 @@ pub async fn start_new(
     id: &str,
     name: &str,
     options: &[String],
-    hosted: Option<Option<String>>,
 ) -> Result<()> {
     match provider {
         ProviderId::Codex => {
             crate::external::run_account_new_named_options(paths, account, id, name, options).await
-        }
-        ProviderId::Claude if hosted.is_some() => {
-            claude::hosted::run_in_terminal(paths, account, None, hosted.flatten(), Some(id)).await
         }
         ProviderId::Claude => claude::launch::exec_new(paths, account, None, Some(id)).await,
         ProviderId::Gemini => gemini::exec_new(paths, account, None, Some(id)).await,

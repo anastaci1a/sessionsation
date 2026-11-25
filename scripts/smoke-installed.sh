@@ -7,6 +7,7 @@
 set -eu
 bin=${1:?usage: smoke-installed.sh BIN [EXPECTED_COMMIT]}
 expected=${2:-}
+[ -z "${SESSIONSATION_DATA_DIR:-}" ] || "$(dirname "$0")/preflight-account-renames.sh" "$SESSIONSATION_DATA_DIR" >/dev/null || exit 1
 run() { "$bin" api --api-version 1 "$@"; }
 out=$(run version) || { echo "SMOKE FAIL: api version" >&2; exit 1; }
 echo "$out"

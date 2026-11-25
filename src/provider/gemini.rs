@@ -138,7 +138,6 @@ pub fn live_sessions(_: &Path) -> Result<Vec<Live>> {
 pub struct Ops;
 pub static OPS: Ops = Ops;
 pub const FACTS: Facts = Facts {
-    hosted_sessions: false,
     bare_name: false,
     supervised: false,
     meter: Reader::None,

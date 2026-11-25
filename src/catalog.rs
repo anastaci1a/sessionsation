@@ -903,24 +903,6 @@ pub(crate) fn remove(paths: &Paths, before: &Session) -> Result<Session> {
         Ok(removed)
     })
 }
-/// Point every session of `provider:old` at `new` (account backend rename).
-/// Idempotent; returns how many entries changed. Each changed entry gets a new
-/// revision, so its generation changes and clients refresh.
-pub fn reassign_account(paths: &Paths, provider: &str, old: &str, new: &str) -> Result<usize> {
-    transaction(paths, |c| {
-        let mut changed = 0;
-        for s in c
-            .sessions
-            .values_mut()
-            .filter(|s| s.provider == provider && s.account == old)
-        {
-            s.account = new.into();
-            s.revision += 1;
-            changed += 1;
-        }
-        Ok(changed)
-    })
-}
 /// Move a Claude entry's account after its conversation files were moved
 /// (contract 1.34.0). Idempotent: an entry already on `to` is returned
 /// unchanged. The process attachment is cleared (the old process is gone) and

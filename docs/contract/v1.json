@@ -2019,22 +2019,6 @@
             }
           }
         },
-        "hosted": {
-          "description": "Revision 16, Claude accounts only: start a Sessionsation-hosted (stream-json) session whose pane shows the viewer.",
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "permission_mode": {
-              "enum": [
-                "account",
-                "default",
-                "acceptEdits",
-                "plan",
-                "bypassPermissions"
-              ]
-            }
-          }
-        },
         "permissions": {
           "description": "Revision 19: launch permissions for this start; omitted uses the launch_permissions setting (built-in default yolo).",
           "$ref": "#/$defs/LaunchPermissions"
@@ -2047,18 +2031,6 @@
         "reasoning_effort": {
           "description": "Revision 38, Codex accounts only: reasoning effort for this session.",
           "enum": ["none", "minimal", "low", "medium", "high", "xhigh"]
-        }
-      },
-      "if": {
-        "required": [
-          "hosted"
-        ]
-      },
-      "then": {
-        "properties": {
-          "account_id": {
-            "pattern": "^claude:"
-          }
         }
       }
     },
@@ -5549,130 +5521,6 @@
           }
         }
       ]
-    },
-    "HostedSession": {
-      "description": "Revision 16: api hosted start|status|stop result.",
-      "type": "object",
-      "required": [
-        "session_id",
-        "conversation_id",
-        "account_id",
-        "delivery_semantics",
-        "state",
-        "reason",
-        "permission_mode",
-        "effective_permission_mode",
-        "epoch",
-        "busy",
-        "worker",
-        "provider_process",
-        "pending_permissions",
-        "viewer_argv",
-        "take_over_argv"
-      ],
-      "properties": {
-        "session_id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "conversation_id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "account_id": {
-          "type": "string",
-          "pattern": "^claude:"
-        },
-        "delivery_semantics": {
-          "const": "hosted_stream_json"
-        },
-        "state": {
-          "enum": [
-            "starting",
-            "running",
-            "stopping",
-            "stopped",
-            "failed"
-          ]
-        },
-        "reason": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "origin": {
-          "enum": [
-            "new",
-            "resume"
-          ]
-        },
-        "permission_mode": {
-          "enum": [
-            "account",
-            "default",
-            "acceptEdits",
-            "plan",
-            "bypassPermissions"
-          ]
-        },
-        "effective_permission_mode": {
-          "enum": [
-            null,
-            "default",
-            "acceptEdits",
-            "plan",
-            "bypassPermissions"
-          ]
-        },
-        "epoch": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "busy": {
-          "type": "boolean"
-        },
-        "pending_permissions": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": [
-              "request_id",
-              "tool_name",
-              "input_preview",
-              "requested_at"
-            ]
-          }
-        },
-        "viewer_argv": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "take_over_argv": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "if": {
-        "properties": {
-          "permission_mode": {
-            "const": "account"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "effective_permission_mode": {
-            "not": {
-              "const": "bypassPermissions"
-            }
-          }
-        }
-      }
     },
     "LiveSteering": {
       "description": "Revision 16: api account live-steering claude:NAME [--enable|--disable].",

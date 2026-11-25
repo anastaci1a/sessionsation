@@ -269,10 +269,6 @@ fn refusals(f: &Fixture, state: &Value) -> Value {
             cases.push((name.into(), args.iter().map(|s| s.to_string()).collect()));
         };
         case(
-            "launcher_new_hosted",
-            &["launcher", "new", "--account", &account, "--hosted"],
-        );
-        case(
             "bypass_warning",
             &["account", "bypass-warning", &account, "--skip"],
         );
@@ -307,16 +303,10 @@ fn refusals(f: &Fixture, state: &Value) -> Value {
                 .map(|s| s.to_string())
                 .collect()
         };
-        cases.push(("idle_notify".into(), with(&["idle-notify"], &[])));
         cases.push(("observe".into(), with(&["observe"], &[])));
-        cases.push((
-            "launcher_resume_hosted".into(),
-            with(&["launcher", "resume"], &["--hosted"]),
-        ));
         if *provider != "codex" {
             cases.push(("turn_target".into(), with(&["turn-target"], &[])));
             cases.push(("steer_target".into(), with(&["steer-target"], &[])));
-            cases.push(("turn_notify".into(), with(&["turn-notify"], &["--enable"])));
             cases.push(("restart".into(), with(&["restart"], &[])));
             cases.push((
                 "relocate_dry_run".into(),

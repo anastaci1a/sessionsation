@@ -1,19 +1,7 @@
 //! Submit, Queue and Steer for Claude sessions (contract revisions 16 and 17).
 //!
-//! Three delivery paths, chosen by the target session (hosted first, then
-//! terminal input, then peer message; `delivery` in the request narrows it):
-//! - **hosted** (`delivery_semantics:"hosted_stream_json"`): the session is run
-//!   by a Sessionsation worker (`provider::claude::hosted`). The message is a
-//!   stream-json stdin frame carrying `uuid` = message id and a priority
-//!   (submit=`next`, queue=`later`, steer=`next`, optional interrupt first).
-//!   Claude Code folds a `next` input into a running turn at its next tool
-//!   round (or runs it as the next turn); `now` would CANCEL the running turn,
-//!   so it is never sent. Correlation uses `command_lifecycle` events for that
-//!   uuid and the `user_message_uuids` of the `result` that closes its turn;
-//!   the reply is the assistant text streamed between `started` and that
-//!   result. The terminal state needs both: a cut turn still emits a
-//!   `success` result and only its `cancelled` lifecycle (after the result)
-//!   tells it apart, so such inputs end `interrupted` with a non-final reply.
+//! Two delivery paths, chosen by the target session (terminal input, then peer
+//! message; `delivery` in the request narrows it):
 //! - **peer message** (`delivery_semantics:"peer_message"`): a live interactive
 //!   session of an account that opted in (`crossSessionInbound: accept`). A
 //!   detached worker owns a private listening socket, sends one inbound frame
@@ -35,7 +23,6 @@ use crate::{
     paths::{Paths, atomic_write, lock_file, private_dir},
     provider::{
         ProviderId, claude,
-        claude::hosted,
         claude::native_peer,
         ops::{self, TerminalInput},
     },
@@ -155,7 +142,7 @@ pub struct Peer {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
     pub schema_version: u32,
-    /// hosted | peer | terminal
+    /// peer | terminal (legacy: hosted)
     pub kind: String,
     pub request: Request,
     pub session_id: String,
@@ -440,21 +427,7 @@ pub async fn send_planned(
         ensure!(terminal::enabled(paths), "{}", terminal::DISABLED);
         typed = Some(antigravity::admit(&request, &session, &account.home)?);
         ("terminal", None, None)
-    } else if let Some(h) = hosted::accepting(paths, &c) {
-        ensure!(
-            matches!(wanted, "auto" | "hosted_stream_json"),
-            "DELIVERY_UNAVAILABLE: this session is hosted; use delivery hosted_stream_json or auto"
-        );
-        ensure!(
-            h.session_id == session.id,
-            "STALE_TARGET: the hosted worker serves another catalog entry"
-        );
-        ("hosted", Some(h.epoch), None)
     } else {
-        ensure!(
-            !hosted::live(paths, &c),
-            "SESSION_OPERATION_IN_PROGRESS: the hosted worker of this session is starting or stopping"
-        );
         ensure!(
             wanted != "hosted_stream_json",
             "DELIVERY_UNAVAILABLE: this session is not hosted"
@@ -462,7 +435,7 @@ pub async fn send_planned(
         let observation = claude::observe(&account.home, &c, session.attachment.as_ref());
         ensure!(
             observation.availability == "running",
-            "SESSION_NOT_RUNNING: submit/queue/steer need a hosted or live Claude session; use mode resume for a stopped session"
+            "SESSION_NOT_RUNNING: submit/queue/steer need a live Claude session; use mode resume for a stopped session"
         );
         let attached = if terminal::enabled(paths) {
             terminal::eligible(&observation)
@@ -629,28 +602,14 @@ pub async fn send_planned(
     // Journal before any write to a provider.
     save(paths, &mut record)?;
     drop(admission);
-    if kind == "hosted" {
-        let answer = hosted::call(
-            paths,
-            &c,
-            json!({"op":"deliver","message_id":id}),
-            Duration::from_secs(10),
-        )
-        .await;
-        if answer.is_err() {
-            // Unsent unless the worker already took it (then its own journal rules).
-            abandon_unsent(paths, &id, "HOST_UNREACHABLE_NOT_SENT")?;
+    if !start_worker(paths, worker_for(&record), &id).await {
+        abandon_unsent(paths, &id, "WORKER_COULD_NOT_START_NO_PROVIDER_ACTION")?;
+    }
+    for _ in 0..40 {
+        if read(paths, &id)?.phase != "admitted" {
+            break;
         }
-    } else {
-        if !start_worker(paths, worker_for(&record), &id).await {
-            abandon_unsent(paths, &id, "WORKER_COULD_NOT_START_NO_PROVIDER_ACTION")?;
-        }
-        for _ in 0..40 {
-            if read(paths, &id)?.phase != "admitted" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     receipt(paths, &id, false).await
 }
@@ -663,291 +622,6 @@ pub fn abandon_unsent(paths: &Paths, id: &str, reason: &str) -> Result<()> {
         }
         Ok(())
     })
-}
-
-// ------------------------------------------------------------ hosted events
-
-/// Worker: claim an admitted request for writing; returns the stdin frames.
-pub fn hosted_begin(paths: &Paths, id: &str, c: &str, epoch: u64) -> Result<Option<Vec<Value>>> {
-    change(paths, id, |r| {
-        ensure!(r.kind == "hosted" && r.conversation_id == c, "STALE_TARGET");
-        if r.phase != "admitted" {
-            return Ok(None);
-        }
-        if r.request.expires_at <= crate::daemon::now() {
-            finish(r, "expired", Some("EXPIRED_BEFORE_DELIVERY"));
-            return Ok(None);
-        }
-        r.phase = "dispatching".into();
-        r.host_epoch = Some(epoch);
-        r.dispatched_at = Some(crate::daemon::now());
-        let mut frames = vec![];
-        if r.facts.interrupt_requested {
-            frames.push(
-                json!({"type":"control_request","request_id":uuid::Uuid::new_v4().to_string(),
-                "request":{"subtype":"interrupt"}}),
-            );
-        }
-        frames.push(json!({"type":"user","message":{"role":"user","content":r.request.text},
-            "uuid":r.request.message_id,"priority":r.priority,"parent_tool_use_id":null,"session_id":c}));
-        Ok(Some(frames))
-    })
-}
-pub fn hosted_written(paths: &Paths, id: &str, ok: bool) -> Result<()> {
-    change(paths, id, |r| {
-        if r.phase == "dispatching" {
-            if ok {
-                r.phase = "written".into();
-                r.facts.written = true;
-            } else {
-                // Part of the frame may have reached the provider.
-                finish(r, "delivery_unknown", Some("STDIN_WRITE_FAILED"));
-            }
-        }
-        Ok(())
-    })
-}
-fn hosted_record(paths: &Paths, c: &str, id: &str) -> Option<Record> {
-    uuid::Uuid::parse_str(id).ok()?;
-    read(paths, id)
-        .ok()
-        .filter(|r| r.kind == "hosted" && r.conversation_id == c)
-}
-pub(crate) fn hosted_lifecycle(
-    paths: &Paths,
-    c: &str,
-    id: &str,
-    state: &str,
-    turns: &mut hosted::Turns,
-) -> Result<()> {
-    if state == "started" {
-        // A new turn (or fold) proves the earlier turns' lifecycles were sent.
-        settle_awaiting(paths, c, turns, Some(id))?;
-    }
-    if hosted_record(paths, c, id).is_none() {
-        return Ok(());
-    }
-    let folded = !turns.active.is_empty();
-    if state == "started" && !turns.active.iter().any(|a| a == id) {
-        turns.active.push(id.to_owned());
-    }
-    if matches!(state, "completed" | "cancelled" | "discarded" | "refused") {
-        turns.awaiting.retain(|a| a != id);
-    }
-    if matches!(state, "cancelled" | "discarded" | "refused") {
-        turns.active.retain(|a| a != id);
-    }
-    let interrupted = turns.interrupted;
-    change(paths, id, |r| {
-        r.facts.lifecycle.push(state.into());
-        r.evidence_at = Some(crate::daemon::now());
-        if is_terminal(r) {
-            return Ok(());
-        }
-        let started = r.facts.lifecycle.iter().any(|s| s == "started");
-        match state {
-            "queued" if r.state == "pending_local" => r.state = "native_accepted".into(),
-            "started" => {
-                r.state = "execution_started".into();
-                r.started_at = Some(crate::daemon::now());
-                r.facts.input_recorded = true;
-                r.facts.folded = folded;
-            }
-            // Folded inputs complete before the result; wait for it.
-            "completed" if r.facts.result_seen => settle(r),
-            // Consumed by a turn that was cut (interrupt, a `now` input of
-            // another client) or died: never `completed`, reply not final.
-            "cancelled" | "discarded" if started => {
-                r.facts.turn_interrupted |= interrupted;
-                interrupt_end(r);
-            }
-            "cancelled" => finish(r, "cancelled", Some("NATIVE_CANCELLED")),
-            "discarded" => finish(r, "cancelled", Some("NATIVE_DISCARDED")),
-            "refused" => finish(r, "refused", Some("NATIVE_REFUSED")),
-            _ => {}
-        }
-        Ok(())
-    })
-}
-fn result_is_error(r: &Record) -> bool {
-    r.result.as_ref().is_some_and(|v| {
-        v["is_error"] == true
-            || v["subtype"]
-                .as_str()
-                .is_some_and(|s| s.starts_with("error"))
-    })
-}
-/// Terminal state of an input whose consuming turn was cut after it started.
-fn interrupt_end(r: &mut Record) {
-    if r.facts.turn_interrupted {
-        finish(r, "interrupted", Some("TURN_INTERRUPTED"));
-    } else if result_is_error(r) {
-        finish(r, "failed", Some("PROVIDER_REPORTED_ERROR"));
-    } else {
-        finish(r, "interrupted", Some("TURN_CANCELLED_BY_PROVIDER"));
-    }
-}
-/// Terminal state once both the result and a `completed` lifecycle are known.
-fn settle(r: &mut Record) {
-    if r.facts.turn_interrupted && result_is_error(r) {
-        finish(r, "interrupted", Some("TURN_INTERRUPTED"));
-    } else if result_is_error(r) {
-        finish(r, "failed", Some("PROVIDER_REPORTED_ERROR"));
-    } else if r.reply_text.is_empty() {
-        finish(r, "completed_without_reply", None);
-    } else {
-        finish(r, "completed_with_reply", None);
-    }
-}
-/// Inputs whose result arrived but whose terminal lifecycle never did, once a
-/// later turn shows that none will come (a turn that threw, older producers):
-/// settled from the result. A cut turn always sends `cancelled` first.
-fn settle_awaiting(
-    paths: &Paths,
-    c: &str,
-    turns: &mut hosted::Turns,
-    except: Option<&str>,
-) -> Result<()> {
-    let waiting: Vec<String> = turns
-        .awaiting
-        .iter()
-        .filter(|a| Some(a.as_str()) != except)
-        .cloned()
-        .collect();
-    turns.awaiting.retain(|a| Some(a.as_str()) == except);
-    for id in waiting {
-        if hosted_record(paths, c, &id).is_some() {
-            change(paths, &id, |r| {
-                if !is_terminal(r) && r.facts.result_seen {
-                    settle(r);
-                }
-                Ok(())
-            })?;
-        }
-    }
-    Ok(())
-}
-pub(crate) fn hosted_echo(paths: &Paths, c: &str, id: &str) -> Result<()> {
-    if hosted_record(paths, c, id).is_none() {
-        return Ok(());
-    }
-    change(paths, id, |r| {
-        r.facts.input_recorded = true;
-        if r.state == "pending_local" && !is_terminal(r) {
-            r.state = "native_accepted".into();
-        }
-        Ok(())
-    })
-}
-pub(crate) fn hosted_assistant(
-    paths: &Paths,
-    c: &str,
-    text: &str,
-    turns: &mut hosted::Turns,
-) -> Result<()> {
-    let shared = turns.active.len() > 1;
-    for id in turns.active.clone() {
-        if hosted_record(paths, c, &id).is_none() {
-            continue;
-        }
-        change(paths, &id, |r| {
-            if !is_terminal(r) {
-                append_reply(r, text);
-                r.facts.shared_with_turn |= shared;
-            }
-            Ok(())
-        })?;
-    }
-    Ok(())
-}
-pub(crate) fn hosted_result(
-    paths: &Paths,
-    c: &str,
-    v: &Value,
-    turns: &mut hosted::Turns,
-) -> Result<()> {
-    let listed: Option<Vec<String>> = v["user_message_uuids"].as_array().map(|a| {
-        a.iter()
-            .filter_map(|x| x.as_str().map(str::to_owned))
-            .collect()
-    });
-    let ids = listed.unwrap_or_else(|| turns.active.clone());
-    // Inputs of an earlier result still without a lifecycle terminal.
-    settle_awaiting(paths, c, turns, None)?;
-    let interrupted = std::mem::take(&mut turns.interrupted);
-    let result = json!({"subtype":v["subtype"],"is_error":v["is_error"],"num_turns":v["num_turns"],
-        "duration_ms":v["duration_ms"],"usage":v["usage"],"session_id":v["session_id"],
-        "user_message_uuids":v["user_message_uuids"]});
-    let shared = ids.len() > 1;
-    for id in &ids {
-        turns.active.retain(|a| a != id);
-        if hosted_record(paths, c, id).is_none() {
-            continue;
-        }
-        change(paths, id, |r| {
-            if is_terminal(r) {
-                return Ok(());
-            }
-            r.result = Some(result.clone());
-            r.facts.result_seen = true;
-            r.facts.turn_interrupted |= interrupted;
-            r.facts.shared_with_turn |= shared;
-            r.facts.input_recorded = true;
-            r.evidence_at = Some(crate::daemon::now());
-            if v["session_id"].as_str().is_some_and(|s| s != c) {
-                finish(r, "delivery_unknown", Some("SESSION_ID_MISMATCH"));
-                return Ok(());
-            }
-            if r.reply_text.is_empty()
-                && ids.len() == 1
-                && !result_is_error(r)
-                && let Some(text) = v["result"].as_str().filter(|t| !t.is_empty())
-            {
-                append_reply(r, text);
-            }
-            // A success result alone is not completion: a turn cut by an
-            // interrupt or a `now` input also ends with one, followed by
-            // `cancelled`. A fresh turn's `completed` follows the result; a
-            // folded input's `completed` came before it.
-            if r.facts.lifecycle.iter().any(|s| s == "completed") {
-                settle(r);
-            } else if !turns.awaiting.iter().any(|a| a == id) {
-                turns.awaiting.push(id.clone());
-            }
-            Ok(())
-        })?;
-    }
-    Ok(())
-}
-/// The host of epoch `epoch` ended: in-flight deliveries are uncertain (or
-/// failed when their turn had started), never replayed.
-pub fn hosted_exited(paths: &Paths, c: &str, epoch: u64, reason: &str) -> Result<()> {
-    for r in all(paths) {
-        if r.kind != "hosted"
-            || r.conversation_id != c
-            || r.host_epoch != Some(epoch)
-            || is_terminal(&r)
-        {
-            continue;
-        }
-        change(paths, &r.request.message_id, |r| {
-            if is_terminal(r) || r.phase == "admitted" {
-                return Ok(());
-            }
-            if r.facts.result_seen {
-                // The turn ended but its completed/cancelled never arrived.
-                let why = format!("{reason}_BEFORE_TURN_OUTCOME");
-                finish(r, "delivery_unknown", Some(&why));
-            } else if r.state == "execution_started" {
-                let why = format!("{reason}_DURING_TURN");
-                finish(r, "failed", Some(&why));
-            } else {
-                finish(r, "delivery_unknown", Some(reason));
-            }
-            Ok(())
-        })?;
-    }
-    Ok(())
 }
 
 // ------------------------------------------------------------- peer worker
@@ -1364,12 +1038,11 @@ pub async fn monitor(paths: Paths) {
 }
 
 /// Recheck the target before sending: same verified process and endpoint, the
-/// opt-in still on, no hosted worker. Returns the endpoint data.
+/// opt-in still on. Returns the endpoint data.
 fn peer_recheck(paths: &Paths, r: &Record) -> Result<Peer> {
     let account = super::headless::usable_account(paths, ProviderId::Claude, &r.account)?;
     let session = catalog::find(paths, &r.session_id)?;
     ensure!(session.conversation_id == r.conversation_id, "STALE_TARGET");
-    hosted::ensure_not_hosted(paths, &r.conversation_id)?;
     let recorded = r.peer.clone().context("STALE_TARGET")?;
     let live = claude::holder(&claude::live_sessions(&account.home)?, &r.conversation_id)
         .cloned()
@@ -1491,7 +1164,8 @@ pub(crate) fn scan(path: &Path, offset: u64, id: &str) -> Result<Scan> {
         };
         match v["type"].as_str() {
             Some("assistant") => {
-                let text = hosted::text_blocks(&v["message"]["content"]).join("");
+                let text =
+                    crate::provider::conversation::text_blocks(&v["message"]["content"]).join("");
                 if !text.is_empty() {
                     out.reply.push(text);
                 }
@@ -1585,83 +1259,74 @@ async fn reconcile(paths: &Paths, id: &str, supervisor: bool) -> Result<Record> 
         return Ok(r);
     }
     let age = crate::daemon::now() - r.updated_at;
-    match r.kind.as_str() {
-        "hosted" => {
-            hosted::reconcile(paths, &r.conversation_id)?;
-            let r = read(paths, id)?;
-            if r.phase == "admitted" && age > ADMITTED_GRACE_SECONDS {
-                let accepting = hosted::accepting(paths, &r.conversation_id)
-                    .is_some_and(|h| Some(h.epoch) == r.host_epoch);
-                if !accepting || r.request.expires_at <= crate::daemon::now() {
-                    abandon_unsent(paths, id, "HOST_STOPPED_BEFORE_DELIVERY")?;
-                }
-            }
+    let stopped = crate::background::worker_stopped(&worker_lock(paths, id)?)?;
+    let typed = r.kind == "terminal";
+    if r.facts.written && typed && antigravity::is_antigravity(&r) {
+        antigravity::observe(paths, id, false)?;
+        if stopped {
+            antigravity::unconfirmed_after_exit(paths, id)?;
         }
-        _ => {
-            let stopped = crate::background::worker_stopped(&worker_lock(paths, id)?)?;
-            let typed = r.kind == "terminal";
-            if r.facts.written && typed && antigravity::is_antigravity(&r) {
-                antigravity::observe(paths, id, false)?;
-                if stopped {
-                    antigravity::unconfirmed_after_exit(paths, id)?;
-                }
-            } else if r.facts.written && typed {
-                terminal::observe(paths, id, false)?;
-                if stopped {
-                    terminal::unconfirmed_after_exit(paths, id)?;
-                }
-            } else if r.facts.written {
-                peer_observe(paths, id)?;
-            } else if stopped
-                && age > ADMITTED_GRACE_SECONDS
-                && terminal::orphaned(&r)
-                && !terminal::cleanup_started(&r)
-            {
-                // The worker died after clearing or typing: a cleanup worker withdraws the
-                // text and restores the draft, and ends the request `rejected`.
-                terminal::step(paths, id, "orphan_cleanup", |_| {})?;
-                if !start_from(paths, "claude-terminal-worker", id, supervisor).await {
-                    terminal::unsent_left_in_input(paths, id)?;
-                }
-            } else if stopped
-                && age > ADMITTED_GRACE_SECONDS
-                && change(paths, id, |r| {
-                    // Claimed under the records lock: one re-dispatch, whoever reconciles.
-                    let claim = redispatchable(r);
-                    if claim {
-                        r.redispatched_at.push(crate::daemon::now());
-                    }
-                    Ok(claim)
-                })?
-            {
-                // Contract 1.64.0: nothing of it reached the provider (still admitted, nothing
-                // written or typed), so dispatching it again is not a replay.
-                let worker = worker_for(&read(paths, id)?);
-                if !start_from(paths, worker, id, supervisor).await {
-                    abandon_unsent(paths, id, "WORKER_EXITED_BEFORE_DELIVERY")?;
-                }
-            } else if stopped && age > ADMITTED_GRACE_SECONDS {
-                terminal::unsent_left_in_input(paths, id)?;
-                change(paths, id, |r| {
-                    // Enter is journaled (`submit`) before it is sent.
-                    let submitting = r
-                        .terminal
-                        .as_ref()
-                        .is_some_and(|t| t.steps.iter().any(|s| s == "submit"));
-                    match r.phase.as_str() {
-                        "admitted" => finish(r, "rejected", Some("WORKER_EXITED_BEFORE_DELIVERY")),
-                        "dispatching" if typed && !submitting => {
-                            finish(r, "rejected", Some("TERMINAL_WORKER_EXITED_BEFORE_SUBMIT"))
-                        }
-                        "dispatching" => {
-                            finish(r, "delivery_unknown", Some("WORKER_EXITED_DURING_DELIVERY"))
-                        }
-                        _ => {}
-                    }
-                    Ok(())
-                })?;
-            }
+    } else if r.facts.written && typed {
+        terminal::observe(paths, id, false)?;
+        if stopped {
+            terminal::unconfirmed_after_exit(paths, id)?;
         }
+    } else if r.kind == "hosted" && r.facts.written {
+        // A removed hosted worker can no longer settle it.
+        change(paths, id, |r| {
+            finish(r, "delivery_unknown", Some("HOST_REMOVED"));
+            Ok(())
+        })?;
+    } else if r.facts.written {
+        peer_observe(paths, id)?;
+    } else if stopped
+        && age > ADMITTED_GRACE_SECONDS
+        && terminal::orphaned(&r)
+        && !terminal::cleanup_started(&r)
+    {
+        // The worker died after clearing or typing: a cleanup worker withdraws the
+        // text and restores the draft, and ends the request `rejected`.
+        terminal::step(paths, id, "orphan_cleanup", |_| {})?;
+        if !start_from(paths, "claude-terminal-worker", id, supervisor).await {
+            terminal::unsent_left_in_input(paths, id)?;
+        }
+    } else if stopped
+        && age > ADMITTED_GRACE_SECONDS
+        && change(paths, id, |r| {
+            // Claimed under the records lock: one re-dispatch, whoever reconciles.
+            let claim = redispatchable(r);
+            if claim {
+                r.redispatched_at.push(crate::daemon::now());
+            }
+            Ok(claim)
+        })?
+    {
+        // Contract 1.64.0: nothing of it reached the provider (still admitted, nothing
+        // written or typed), so dispatching it again is not a replay.
+        let worker = worker_for(&read(paths, id)?);
+        if !start_from(paths, worker, id, supervisor).await {
+            abandon_unsent(paths, id, "WORKER_EXITED_BEFORE_DELIVERY")?;
+        }
+    } else if stopped && age > ADMITTED_GRACE_SECONDS {
+        terminal::unsent_left_in_input(paths, id)?;
+        change(paths, id, |r| {
+            // Enter is journaled (`submit`) before it is sent.
+            let submitting = r
+                .terminal
+                .as_ref()
+                .is_some_and(|t| t.steps.iter().any(|s| s == "submit"));
+            match r.phase.as_str() {
+                "admitted" => finish(r, "rejected", Some("WORKER_EXITED_BEFORE_DELIVERY")),
+                "dispatching" if typed && !submitting => {
+                    finish(r, "rejected", Some("TERMINAL_WORKER_EXITED_BEFORE_SUBMIT"))
+                }
+                "dispatching" => {
+                    finish(r, "delivery_unknown", Some("WORKER_EXITED_DURING_DELIVERY"))
+                }
+                _ => {}
+            }
+            Ok(())
+        })?;
     }
     read(paths, id)
 }
@@ -1670,7 +1335,7 @@ fn semantics_of(r: &Record) -> &'static str {
     match r.kind.as_str() {
         "peer" => PEER_SEMANTICS,
         "terminal" => terminal::SEMANTICS,
-        _ => hosted::SEMANTICS,
+        _ => "hosted_stream_json",
     }
 }
 
@@ -1800,8 +1465,7 @@ pub fn receipt_value(r: &Record) -> Value {
 
 /// Contract 1.64.0: the uniform `delivery` block and `ignored_options` of a Claude,
 /// Antigravity or Gemini receipt. `queued`: the provider keeps the message in its own queue
-/// behind the running turn (a typed mid-turn `queued_command`, a hosted `queued` lifecycle
-/// event, agy's queue row); `held`: Claude Code reported the peer message held.
+/// behind the running turn (a typed mid-turn `queued_command`, agy's queue row); `held`: Claude Code reported the peer message held.
 fn uniform(r: &Record, v: &mut Value) {
     let pending = !is_terminal(r) && r.state != "execution_started";
     let t = r.terminal.as_ref();
@@ -1858,7 +1522,7 @@ pub async fn receipt(paths: &Paths, id: &str, cancelling: bool) -> Result<Value>
         })?;
         if !cancelled {
             bail!(
-                "STEERING_CANCELLATION_UNSUPPORTED: this Claude message was already written to the session; read its receipt (a hosted turn can be interrupted with api hosted stop --interrupt)"
+                "STEERING_CANCELLATION_UNSUPPORTED: this Claude message was already written to the session; read its receipt"
             );
         }
     }
@@ -1871,8 +1535,7 @@ pub async fn receipt(paths: &Paths, id: &str, cancelling: bool) -> Result<Value>
 /// What a Claude steer does to a running turn (all paths deliver at priority
 /// `next`): it never interrupts; Claude Code folds it into the running turn
 /// at the turn's next tool round, or runs it as the next turn when the turn
-/// ends without one. `steering.interrupt:true` (hosted only) cancels the
-/// running turn first; that turn's inputs then end `interrupted`.
+/// ends without one. `steering.interrupt` is accepted only by providers that can cancel a turn.
 pub fn steer_semantics() -> Value {
     json!({"priority":"next","interrupts":false,"delivery":"next_tool_boundary_or_next_turn",
         "interrupt_option":"steering.interrupt","interrupted_inputs_state":"interrupted"})
@@ -1903,8 +1566,6 @@ fn queue_blocked_reason(terminal_available: bool, peer: &Result<(), String>) -> 
     }
     Some(peer_reason.clone())
 }
-pub const HOSTED_STOP: &str = "HOSTED_SESSION: this is a Sessionsation-hosted session; stop it with `api hosted stop` (restart = stop, then resume)";
-pub const HOSTED_NO_TERMINAL: &str = "HOSTED_SESSION: a hosted stream-json worker has no terminal to add to HERDR; drive it with the hosted API, or stop it and use Start Session";
 /// Error for a terminal path that is not eligible (the code names the blocker).
 fn terminal_unavailable(code: &'static str) -> anyhow::Error {
     if code == "TERMINAL_INPUT_DISABLED" {
@@ -1931,17 +1592,6 @@ fn peer_endpoint_reason(error: &anyhow::Error) -> String {
     let detail: String = text.chars().take(200).collect();
     format!("PEER_ENDPOINT_UNAVAILABLE: {detail}")
 }
-/// A hosted worker has no terminal and stops through the hosted API, not a process kill.
-fn apply_hosted_reasons(value: &mut Value, hosted: bool) {
-    if !hosted {
-        return;
-    }
-    value["capabilities"]["stop"] = json!(false);
-    value["capability_reasons"]["stop"] = json!(HOSTED_STOP);
-    value["capability_reasons"]["restart"] = json!(HOSTED_STOP);
-    value["capabilities"]["add_to_herdr"] = json!(false);
-    value["capability_reasons"]["add_to_herdr"] = json!(HOSTED_NO_TERMINAL);
-}
 fn terminal_reason(value: &Value, enabled: bool) -> Option<&'static str> {
     if !enabled {
         return Some("TERMINAL_INPUT_DISABLED");
@@ -1949,38 +1599,15 @@ fn terminal_reason(value: &Value, enabled: bool) -> Option<&'static str> {
     terminal::row_reason(value)
 }
 
-/// Per-session submit/queue/steer support (and the hosted host summary) for a
-/// Claude session row. Hosted sessions also report `availability:"running"`.
-/// Path choice: hosted, else terminal input (submit/steer), else peer message.
-// guard-allow(typing): Claude rows choose hosted, terminal or peer input; typing::apply_session_input covers typed-only providers
+/// Per-session submit/queue/steer support for a
+/// Claude session row. Path choice: terminal input (submit/steer), else peer message.
+// guard-allow(typing): Claude rows choose terminal or peer input; typing::apply_session_input covers typed-only providers
 pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>) {
     let Some(c) = value["conversation_id"].as_str().map(str::to_owned) else {
         return;
     };
-    let host = hosted::reconcile(paths, &c).ok().flatten();
-    let accepting = host
-        .as_ref()
-        .is_some_and(|h| h.state == "running" && hosted::worker_alive(paths, &c));
-    if let Some(h) = &host {
-        let mut summary = hosted::public(paths, h);
-        summary["pending_permission_count"] = json!(h.pending_permissions.len());
-        value["hosted"] = summary;
-        if accepting && value["active_since"].is_null() {
-            // Worker-recorded start of a live (worker_alive) hosted session.
-            value["active_since"] = json!(h.started_at);
-        }
-        if !matches!(h.state.as_str(), "stopped" | "failed") {
-            value["availability"] = json!("running");
-            value["resume_block_reason"] = json!("already_running");
-            value["capabilities"]["resume"] = json!(false);
-        }
-    } else {
-        value["hosted"] = Value::Null;
-    }
+    value["hosted"] = Value::Null;
     let running = value["availability"] == "running";
-    let busy_host = host
-        .as_ref()
-        .is_some_and(|h| !matches!(h.state.as_str(), "stopped" | "failed"));
     // (mode -> path or refusal reason)
     let mut modes: [(&str, Option<&str>, Option<String>); 3] = [
         ("submit", None, None),
@@ -1988,17 +1615,8 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
         ("steer", None, None),
     ];
     let mut terminal_status: (bool, Option<String>) = (false, None);
-    if accepting {
-        for m in &mut modes {
-            m.1 = Some(hosted::SEMANTICS);
-        }
-        terminal_status.1 = Some("SESSION_HOSTED".into());
-    } else if busy_host || !running {
-        let reason = if busy_host {
-            "SESSION_OPERATION_IN_PROGRESS: the hosted worker is starting or stopping"
-        } else {
-            "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session, or start it hosted"
-        };
+    if !running {
+        let reason = "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session";
         for m in &mut modes {
             m.2 = Some(reason.into());
         }
@@ -2037,13 +1655,9 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
         value["capabilities"][*k] = json!(path.is_some());
         value["capability_reasons"][*k] = json!(reason);
     }
-    apply_hosted_reasons(value, busy_host);
     // The primary path is the one submit and steer use.
     let path = modes[0].1;
     let mut available: Vec<&str> = vec![];
-    if accepting {
-        available.push(hosted::SEMANTICS);
-    }
     if terminal_status.0 {
         available.push(terminal::SEMANTICS);
     }
@@ -2053,7 +1667,7 @@ pub fn apply_session_input(paths: &Paths, value: &mut Value, home: Option<&Path>
         available.push(PEER_SEMANTICS);
     }
     available.dedup();
-    value["input_delivery"] = json!({"semantics":path,"interrupt":accepting,
+    value["input_delivery"] = json!({"semantics":path,"interrupt":false,
         "label":path_label(path),
         "steer":path.map(|p| if p == terminal::SEMANTICS {terminal_steer_semantics()} else {steer_semantics()}),
         "modes":{"submit":modes[0].1,"queue":modes[1].1,"steer":modes[2].1},
