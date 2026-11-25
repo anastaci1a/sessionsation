@@ -243,6 +243,20 @@ pub(super) async fn snapshot(paths: &Paths, receipt: &Receipt) -> Result<Option<
     )
     .await
     .map_err(|_| Fault("reply_scan_incomplete"))??;
+    // Contract 1.69.3: Codex never starts queued input after an interrupted turn (its queue
+    // service skips the idle event of an interrupt), so say why the message waits.
+    let observed = match observed {
+        None if receipt.state == "native_accepted"
+            && modes::session_status::observe_fresh_public(&mut control, &receipt.session_id)
+                .await
+                .is_ok_and(|o| o.state == "interrupted") =>
+        {
+            let mut held = receipt.clone();
+            held.reason = Some("queued_after_interrupted_turn".into());
+            Some(held)
+        }
+        observed => observed,
+    };
     if attachment(paths, &receipt.session_id)?.generation() != generation {
         return Err(Fault("generation_mismatch"));
     }

@@ -401,6 +401,11 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                             } else { json!({"fixture_error":true}) }
                         },
                         "thread/queue/list" if s.messaging_profile => json!({"data":s.native_messages,"nextCursor":null}),
+                        "thread/queue/delete" => {
+                            let before = s.native_messages.len();
+                            s.native_messages.retain(|i| i["id"] != p["queuedSubmissionId"]);
+                            json!({"deleted":s.native_messages.len() < before})
+                        }
                         "thread/queue/list" => {
                             s.queue_reads += 1;
                             json!({"data":if s.queue_after_reads.is_some_and(|n| s.queue_reads >= n) {

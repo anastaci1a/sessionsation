@@ -97,9 +97,9 @@ POINTER = re.compile("^((?:\x1b\\[[0-9;]*m)*❯[  ])")
 
 
 def save():
-    with open(state_file + ".tmp", "w") as f:
+    with open("%s.%d.tmp" % (state_file, os.getpid()), "w") as f:
         json.dump(state, f)
-    os.replace(state_file + ".tmp", state_file)
+    os.replace("%s.%d.tmp" % (state_file, os.getpid()), state_file)
 
 
 def out(obj):

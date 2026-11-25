@@ -143,7 +143,7 @@ fn list(paths: &Paths) -> anyhow::Result<Vec<Record>> {
     Ok(all)
 }
 /// Short critical section around journal read-modify-write; never held across an await.
-fn lock(paths: &Paths) -> anyhow::Result<fs::File> {
+pub(crate) fn lock(paths: &Paths) -> anyhow::Result<fs::File> {
     private_dir(&paths.root.join(crate::layout::OPERATIONS))?;
     let f = lock_file(&paths.root.join(crate::layout::COMPACTIONS_LOCK))?;
     f.lock_exclusive()?;
@@ -276,7 +276,7 @@ fn public(r: &Record) -> Value {
         "provider_conversation_id":r.conversation_id,"phase":r.phase,"terminal":r.terminal(),
         "reason":r.reason,"detail":r.reason.as_deref().map(explain).filter(|s| !s.is_empty()),
         "hold":{"active":holds && !r.terminal(),"released":r.hold_released,
-            "scope":if holds {json!("new native input for this session")} else {Value::Null}},
+            "scope":if holds {json!("new public submit and queue sends to this session")} else {Value::Null}},
         "created_at":r.created_at,"updated_at":r.updated_at,"expires_at":r.expires_at,
         "started_at":r.started_at,"finished_at":r.finished_at,"attempts":r.attempts,
         "compaction_turn_id":r.compaction_turn_id,
@@ -385,11 +385,17 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
 
 /// Held message ids of a conversation, in arrival order (best effort; `None` when the
 /// ledger is unavailable).
-pub(super) async fn held_ids(paths: &Paths, conversation: &str) -> Option<Vec<String>> {
+pub(super) async fn held_ids(paths: &Paths, c: &str) -> Option<Vec<String>> {
     let ledger = ledger::open_read(paths, wait_budget(paths, Wait::Read))
         .await
         .ok()?;
-    ledger.held_ids(conversation).ok()
+    Some(
+        [
+            ledger.held_ids(c, false).ok()?,
+            claude_steer::held_ids(paths, c, false),
+        ]
+        .concat(),
+    )
 }
 
 pub async fn status(
@@ -1105,7 +1111,7 @@ pub fn capability() -> Value {
         // Contract 1.64.0 (SM6): one request and result shape for every provider.
         "unsupported":{"gemini":crate::provider::compact::UNSUPPORTED_CODE,"antigravity":crate::provider::compact::UNSUPPORTED_CODE},
         "providers":{"codex":{"supported":true,"method":"app_server","native_method":"thread/compact/start","holds_input":true},
-            "claude":{"supported":true,"method":"terminal","native_method":claude::COMMAND,"holds_input":false,
+            "claude":{"supported":true,"method":"terminal","native_method":claude::COMMAND,"holds_input":true,
                 "requires":["herdr_terminal","terminal_input_enabled","idle","empty_prompt"],
                 "completed_by":["PostCompact hook event","transcript compact_boundary"],
                 "hosted":"refused: a hosted session has no terminal pane (TERMINAL_* code)"},

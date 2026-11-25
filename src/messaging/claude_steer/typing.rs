@@ -576,13 +576,19 @@ pub(crate) async fn deliver<P: ScreenProfile>(
     }
     // 3. Journal the draft, then clear. From here on every exit restores the
     //    draft or accounts for it.
-    step(paths, id, "clear", |r| {
+    // 1.69.3: the clear claims `admitted` atomically, so a cancel (`stop --discard-queued`)
+    // that won the race is never typed over.
+    change(paths, id, |r| {
+        ensure!(r.phase == "admitted", "CANCELLED_BEFORE_DELIVERY");
+        r.reason = None;
         r.phase = "dispatching".into();
         r.dispatched_at = Some(crate::daemon::now());
         if let Some(t) = r.terminal.as_mut() {
+            t.steps.push("clear".into());
             t.draft = Some(draft.clone());
             t.draft_chars = Some(draft.chars().count());
         }
+        Ok(())
     })?;
     let mut submitted = false;
     let outcome = typed_input(p, paths, id, host, t, &mode, &draft, &mut submitted).await;

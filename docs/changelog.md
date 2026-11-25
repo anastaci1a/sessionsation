@@ -20,6 +20,7 @@ and package history are in Git.
 
 ## Versions
 
+- **1.69.3** Claude compaction holds input; `stop --discard-queued`; queued Codex input refuses `stop --interrupt`.
 - **1.69.2** Codex `force_interrupt` false again (1.68.2 bug).
 - **1.69.1** Meter: idle replays ignored after a redeem.
 - **1.69.0** Removed: hosted Claude (`api hosted`, `--hosted`, `view`, `take-over`), `api turn-notify`,

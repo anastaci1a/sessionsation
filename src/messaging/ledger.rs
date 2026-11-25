@@ -56,8 +56,9 @@ pub(super) trait Reads {
     fn retired(&self, id: &str) -> Result<Option<Tombstone>>;
     fn binding(&self, id: &str) -> Result<Option<String>>;
     fn expiry(&self, id: &str) -> Result<i64>;
-    /// Held public messages of a conversation, in arrival order.
-    fn held_ids(&self, conversation: &str) -> Result<Vec<String>>;
+    /// Held public messages of a conversation, in arrival order; with `queued`, every message
+    /// still `pending_local` or `native_accepted` too (`stop --discard-queued`, 1.69.3).
+    fn held_ids(&self, conversation: &str, queued: bool) -> Result<Vec<String>>;
 }
 
 /// Read-only queries (no statement here writes; `guard::ledger_read_is_read_only`).
@@ -93,14 +94,20 @@ mod read {
     pub(super) fn expiry(db: &Connection, id: &str) -> Result<i64> {
         Ok(db.query_row("SELECT expiry FROM receipts WHERE id=?", [id], |r| r.get(0))?)
     }
-    pub(super) fn held_ids(db: &Connection, conversation: &str) -> Result<Vec<String>> {
+    pub(super) fn held_ids(
+        db: &Connection,
+        conversation: &str,
+        queued: bool,
+    ) -> Result<Vec<String>> {
         let mut statement = db.prepare(
             "SELECT r.id FROM receipts r JOIN public_messages p ON p.id=r.id \
-             WHERE json_extract(r.receipt,'$.state')='pending_local' \
-             AND json_extract(r.receipt,'$.reason') IN ('compaction_hold','compaction_release_retry','model_change_hold') \
-             AND json_extract(p.binding,'$.native.session_id')=? ORDER BY p.rowid",
+             WHERE (?2 AND json_extract(r.receipt,'$.state') IN ('pending_local','native_accepted') \
+             OR json_extract(r.receipt,'$.state')='pending_local' \
+             AND json_extract(r.receipt,'$.reason') IN ('compaction_hold','compaction_release_retry','model_change_hold')) \
+             AND json_extract(p.binding,'$.native.session_id')=?1 ORDER BY p.rowid",
         )?;
-        let rows = statement.query_map([conversation], |row| row.get::<_, String>(0))?;
+        let rows =
+            statement.query_map(params![conversation, queued], |row| row.get::<_, String>(0))?;
         Ok(rows.flatten().collect())
     }
 }
@@ -125,8 +132,8 @@ impl Reads for LedgerRead {
     fn expiry(&self, id: &str) -> Result<i64> {
         read::expiry(&self.db, id)
     }
-    fn held_ids(&self, conversation: &str) -> Result<Vec<String>> {
-        read::held_ids(&self.db, conversation)
+    fn held_ids(&self, conversation: &str, queued: bool) -> Result<Vec<String>> {
+        read::held_ids(&self.db, conversation, queued)
     }
 }
 
@@ -709,8 +716,8 @@ impl Reads for Ledger {
     fn expiry(&self, id: &str) -> Result<i64> {
         read::expiry(&self.db, id)
     }
-    fn held_ids(&self, conversation: &str) -> Result<Vec<String>> {
-        read::held_ids(&self.db, conversation)
+    fn held_ids(&self, conversation: &str, queued: bool) -> Result<Vec<String>> {
+        read::held_ids(&self.db, conversation, queued)
     }
 }
 

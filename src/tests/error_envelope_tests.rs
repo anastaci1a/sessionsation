@@ -60,3 +60,22 @@ fn failed_wait_is_operation_failed_and_retryable_only_when_the_account_was_busy(
     assert_eq!(timeout["error"]["code"], "OPERATION_TIMEOUT");
     assert_eq!(timeout["error"]["retryable"], true);
 }
+
+/// Contract 1.69.3: a stop that failed after `--discard-queued` keeps its code and message and
+/// reports what it discarded.
+#[test]
+fn a_failed_discarding_stop_reports_what_it_discarded() {
+    let inner = anyhow::anyhow!("QUEUED_INPUT: queued input [\"m\"] would be stranded");
+    let (top, full) = (inner.to_string(), format!("{inner:#}"));
+    let value = json!({"discarded_messages":["a"],"not_discarded":[],"discarded_native_items":[]});
+    let error = inner.context(sessionsation::api::Discarded { value, top, full });
+    let envelope = error_envelope(&error);
+    assert_eq!(envelope["error"]["code"], "QUEUED_INPUT");
+    assert_eq!(
+        envelope["error"]["message"],
+        "QUEUED_INPUT: queued input [\"m\"] would be stranded"
+    );
+    assert_eq!(envelope["error"]["retryable"], false);
+    assert_eq!(envelope["error"]["discarded_messages"], json!(["a"]));
+    assert_eq!(envelope["error"]["not_discarded"], json!([]));
+}

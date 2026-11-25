@@ -22,8 +22,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 69;
-pub const CONTRACT_PATCH: u32 = 2;
-pub const CONTRACT_VERSION: &str = "1.69.2";
+pub const CONTRACT_PATCH: u32 = 3;
+pub const CONTRACT_VERSION: &str = "1.69.3";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -323,6 +323,9 @@ pub enum Command {
         wait: bool,
         #[arg(long)]
         interrupt: bool,
+        /// Cancel the session's own still-queued input first and list it (1.69.3).
+        #[arg(long)]
+        discard_queued: bool,
     },
     Resume {
         #[arg(long)]
@@ -1707,6 +1710,7 @@ pub fn capabilities() -> Value {
     // Contract 1.61.0: `api stop --wait` for every provider.
     value["stop_wait"] = json!({"since_contract":"1.61.0","flag":"--wait","providers":{"codex":"polls the terminate job to its end","claude":"already synchronous","antigravity":"already synchronous"},"timeout_seconds":300,"timeout_env":"SESSIONSATION_OPERATION_WAIT_MS","errors":["OPERATION_FAILED","OPERATION_TIMEOUT"],"retryable":["OPERATION_TIMEOUT"],"disable_auto_start":"after the stop completed (with --wait)"});
     value["stop_interrupt"] = json!({"since_contract":"1.68.2","flag":"--interrupt","providers":{"codex":"turn/interrupt on the active turn, then the terminate job ends the session at idle","claude":"accepted; the stop always interrupts","antigravity":"accepted; the stop always interrupts"},"result_field":"interrupted_turn"});
+    value["stop_discard_queued"] = json!({"since_contract":"1.69.3","flag":"--discard-queued","cancels":"the session's own pending_local, held and native_accepted public input, through api cancel","codex_native_items":"items no receipt names are deleted (thread/queue/delete) and reported","result_fields":["discarded_messages","not_discarded","discarded_native_items"],"on_error":"the same fields in error","without_flag":{"codex_queued_input":"QUEUED_INPUT before turn/interrupt with --interrupt, or when the last turn is interrupted (queue paused); otherwise the stop job is queued"}});
     // Contract 1.62.0: provider parity SM7 (session env var), SM8 (usage meter), SM3 (session meters).
     value["session_env"] = json!({"since_contract":"1.62.0","var":crate::provider::SESSION_ENV,
         "value":"the session id (api state sessions[].id), not the provider conversation id",
@@ -2864,7 +2868,30 @@ pub(crate) fn resolve_session_arg(paths: &Paths, target: &mut String) -> Result<
     Ok(())
 }
 
+/// Contract 1.69.3: a stop that failed after `--discard-queued` still reports what it discarded
+/// (the error carries `discarded_messages`, `not_discarded` and `discarded_native_items`).
+#[derive(Debug)]
+pub struct Discarded {
+    pub value: Value,
+    pub top: String,
+    pub full: String,
+}
+impl std::fmt::Display for Discarded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.top)
+    }
+}
 pub async fn run(paths: &Paths, command: Command) -> Result<()> {
+    let mut discarded = None;
+    match (run_command(paths, command, &mut discarded).await, discarded) {
+        (Err(e), Some(value)) => {
+            let (top, full) = (e.to_string(), format!("{e:#}"));
+            Err(e.context(Discarded { value, top, full }))
+        }
+        (out, _) => out,
+    }
+}
+async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Value>) -> Result<()> {
     let mut command = command;
     resolve_session_args(paths, &mut command)?;
     if let Some(operation) = space_hungry(&command) {
@@ -2889,6 +2916,20 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
         }
         _ => None,
     };
+    // Contract 1.69.3: `stop --discard-queued` cancels the session's own queued input first.
+    if let Command::Stop {
+        session,
+        expected_generation,
+        discard_queued: true,
+        ..
+    } = &command
+    {
+        *discarded =
+            Some(json!({"discarded_messages":[],"not_discarded":[],"discarded_native_items":[]}));
+        if let Ok(s) = catalog::resolve(paths, session, expected_generation) {
+            *discarded = Some(crate::messaging::discard_queued(paths, &s.conversation_id).await?);
+        }
+    }
     let mut result = match command {
         Command::ResumeLaunch { command } => crate::resume::api(paths, command).await?,
         Command::Session {
@@ -3491,8 +3532,8 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 Err(s) => already_stopped(paths, &s, keep_pane).await?,
                 Ok((s, source)) => {
                     let (pid, start) = (source.pid, source.start_time);
-                    let interrupted =
-                        interrupt && source.shared_server && interrupt_turn(&source).await?;
+                    let interrupted = source.shared_server
+                        && stop_preflight(paths, &source, interrupt, discarded.as_mut()).await?;
                     let queued = operation(
                         paths,
                         external::queue_snapshot(
@@ -3692,6 +3733,11 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             crate::messaging::receipt_public(paths, &message, true).await?
         }
     };
+    if let Some(Value::Object(map)) = discarded.as_ref() {
+        for (k, v) in map {
+            result[k] = v.clone();
+        }
+    }
     if let Some(s) = disable_auto_start_of {
         result["auto_start"] = crate::auto_recover::disable(paths, &s)?["auto_start"].take();
     }
@@ -4318,22 +4364,73 @@ async fn archive_unknown(paths: &Paths, t: &external::archiving::Target) -> Resu
 }
 
 /// Contract 1.68.2: `api stop --interrupt` interrupts the running Codex turn; the stop ends at idle.
-async fn interrupt_turn(s: &external::Instance) -> Result<bool> {
-    let mut c = crate::control::Control::connect(&s.home).await?;
-    let t = c.thread(&s.thread_id, true).await?;
-    let turn = t["turns"]
+/// Contract 1.69.3: Codex never starts queued input after an interrupted turn. So queued input
+/// refuses `--interrupt` here, before turn/interrupt (and before any job), as it does a plain
+/// stop whose last turn is already interrupted (its queue is paused). A plain stop otherwise
+/// needs no connection here (Codex drains the queue at idle). `--discard-queued` first deletes
+/// the native items no receipt names.
+async fn stop_preflight(
+    paths: &Paths,
+    s: &external::Instance,
+    interrupt: bool,
+    discard: Option<&mut Value>,
+) -> Result<bool> {
+    let plain = !interrupt && discard.is_none();
+    let checked = async {
+        let mut c = crate::control::Control::connect(&s.home).await?;
+        let list = json!({"threadId":s.thread_id,"limit":100});
+        if let Some(d) = discard {
+            let q = c.request("thread/queue/list", list.clone()).await?;
+            let items = q["data"].as_array().cloned().unwrap_or_default();
+            let mut out = vec![];
+            for item in crate::messaging::discard_items(paths, &items, d).await {
+                let done = c
+                    .request("thread/queue/delete", json!({"threadId":s.thread_id,"queuedSubmissionId":item["id"]}))
+                    .await;
+                out.push(json!({"queued_submission_id":item["id"],"client_user_message_id":item["clientUserMessageId"],
+                    "deleted":done.ok().map(|v| v["deleted"] == true)}));
+            }
+            d["discarded_native_items"] = json!(out);
+        }
+        let q = c.request("thread/queue/list", list).await?;
+        let t = if interrupt { c.thread(&s.thread_id, true).await? } else { Value::Null };
+        // A plain stop reads only the bounded latest-turn summary, and only with input queued.
+        let last = if interrupt || q["data"].as_array().is_none_or(Vec::is_empty) {
+            Value::Null
+        } else {
+            let summary = json!({"threadId":s.thread_id,"itemsView":"summary","sortDirection":"desc","limit":1});
+            c.request("thread/turns/list", summary).await?
+        };
+        anyhow::Ok((c, q, t, last))
+    }
+    .await;
+    let (mut c, q, t, last) = match checked {
+        Err(_) if plain => return Ok(false),
+        other => other?,
+    };
+    let turns = t["turns"].as_array().cloned().unwrap_or_default();
+    let paused = last["data"][0]["status"] == "interrupted";
+    let ids: Vec<&Value> = q["data"]
         .as_array()
         .into_iter()
         .flatten()
-        .rfind(|t| t["status"] == "inProgress");
-    if let Some(turn) = turn {
+        .map(|i| &i["clientUserMessageId"])
+        .collect();
+    ensure!(
+        ids.is_empty() || !(interrupt || paused),
+        "QUEUED_INPUT: queued input {} would be stranded (Codex never starts queued input after an interrupted turn); run api cancel on it or stop with --discard-queued",
+        json!(ids)
+    );
+    let turn = turns.iter().rfind(|t| t["status"] == "inProgress");
+    if let Some(turn) = turn.filter(|_| interrupt) {
         c.request(
             "turn/interrupt",
             json!({"threadId":s.thread_id,"turnId":turn["id"]}),
         )
         .await?;
+        return Ok(true);
     }
-    Ok(turn.is_some())
+    Ok(false)
 }
 fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
     let id = catalog::list(paths)?

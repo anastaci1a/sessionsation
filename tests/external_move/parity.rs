@@ -402,3 +402,101 @@ async fn codex_stop_interrupt_sends_turn_interrupt_and_completes_at_idle() {
         "{calls:?}"
     );
 }
+
+/// Contract 1.69.3: queued input refuses a Codex stop at admission (QUEUED_INPUT, not
+/// retryable): no turn is interrupted (Codex never starts queued input after an interrupt) and
+/// repeated stops add no terminate job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_stop_with_queued_input_is_refused_at_admission_without_a_job() {
+    let f = Fixture::new().await;
+    f.live(ID, true);
+    {
+        let mut a = f.a.lock().unwrap();
+        a.messaging_profile = true;
+        a.native_messages
+            .push(json!({"id":"queue-9","clientUserMessageId":"m-9"}));
+    }
+    for _ in 0..3 {
+        let (ok, v) = stop(&f, &["--interrupt"], &[]);
+        assert!(!ok, "{v}");
+        assert_eq!(v["error"]["code"], "QUEUED_INPUT", "{v}");
+        assert_eq!(v["error"]["retryable"], false, "{v}");
+        assert!(
+            v["error"]["message"].as_str().unwrap().contains("m-9"),
+            "{v}"
+        );
+    }
+    assert_eq!(f.invoke(&["moves"]).as_array().unwrap().len(), 0);
+    let calls = f.a.lock().unwrap().calls.clone();
+    assert!(
+        !calls.iter().any(|(m, _)| m == "turn/interrupt"),
+        "{calls:?}"
+    );
+}
+
+/// Contract 1.69.3: `api stop --discard-queued` deletes native queue items no receipt names
+/// (reported), so the stop that queued input refused now completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_stop_discard_queued_deletes_native_items_and_stops() {
+    let f = Fixture::new().await;
+    f.live(ID, true);
+    {
+        let mut a = f.a.lock().unwrap();
+        a.messaging_profile = true;
+        a.native_messages
+            .push(json!({"id":"queue-9","clientUserMessageId":"m-9"}));
+    }
+    let (ok, v) = stop(&f, &["--wait", "--interrupt", "--discard-queued"], &[]);
+    assert!(ok, "{v}");
+    let r = &v["result"];
+    assert_eq!(r["phase"], "complete", "{v}");
+    assert_eq!(r["interrupted_turn"], true, "{v}");
+    assert_eq!(r["discarded_messages"], json!([]), "{v}");
+    assert_eq!(
+        r["discarded_native_items"],
+        json!([{"queued_submission_id":"queue-9",
+        "client_user_message_id":"m-9","deleted":true}]),
+        "{v}"
+    );
+    assert!(f.a.lock().unwrap().native_messages.is_empty());
+}
+
+/// Contract 1.69.3: a plain Codex stop with queued input still queues its terminate job (Codex
+/// drains the queue at idle), and repeated stops return that one job. Only a queue that is
+/// already paused behind an interrupted turn refuses it (QUEUED_INPUT, no job).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_plain_stop_queues_once_and_refuses_only_a_paused_queue() {
+    let f = Fixture::new().await;
+    f.live(ID, true);
+    {
+        let mut a = f.a.lock().unwrap();
+        a.messaging_profile = true;
+        a.native_messages
+            .push(json!({"id":"queue-9","clientUserMessageId":"m-9"}));
+    }
+    let mut ids = vec![];
+    for _ in 0..3 {
+        let (ok, v) = stop(&f, &[], &[]);
+        assert!(ok, "{v}");
+        ids.push(v["result"]["id"].clone());
+    }
+    assert!(ids.iter().all(|i| *i == ids[0] && i.is_string()), "{ids:?}");
+    assert_eq!(f.invoke(&["moves"]).as_array().unwrap().len(), 1);
+
+    let f = Fixture::new().await;
+    f.live(ID, false);
+    {
+        let mut a = f.a.lock().unwrap();
+        a.messaging_profile = true;
+        a.native_messages
+            .push(json!({"id":"queue-9","clientUserMessageId":"m-9"}));
+        a.threads.get_mut(ID).unwrap()["turns"] =
+            json!([{"id":"t1","status":"interrupted","items":[],"itemsView":"summary"}]);
+    }
+    for _ in 0..3 {
+        let (ok, v) = stop(&f, &[], &[]);
+        assert!(!ok, "{v}");
+        assert_eq!(v["error"]["code"], "QUEUED_INPUT", "{v}");
+    }
+    assert_eq!(f.invoke(&["moves"]).as_array().unwrap().len(), 0);
+}

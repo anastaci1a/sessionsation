@@ -106,7 +106,7 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         "provider_conversation_id":binding.native.session_id,"mode":binding.request.mode,"if_busy":binding.request.if_busy,"hold_release":if binding.released_hold {json!({"from":"compaction","delivered_as":"queue","note":"held while a compaction ran; delivered with queue semantics (native queue, arrival order) after it"})} else {Value::Null},
         "delivery_semantics":"non_steering_native_queue",
         "state":if value["state"]=="unknown" {json!("delivery_unknown")} else {value["state"].clone()},
-        "reason":value["reason"],"reason_detail":if value["reason"]=="unsupported_native_version" {Some("The account app-server version is not supported by this Sessionsation build. Use api observe to inspect its native_protocol version and supported_versions; no native input was attempted.")} else if value["reason"]=="compaction_hold" {Some("A compaction is queued for this session. The message is held locally (nothing is in the native queue) and is delivered once the compaction completes, fails, expires or is cancelled; cancel it or let it expire to drop it.")} else if value["reason"]=="model_change_hold" {Some("A model change is pending for this session (contract 1.49.0). The message is held locally (nothing is in the native queue) and is delivered on the new model once the change completes, fails, expires or is cancelled.")} else {None},"facts":{"accepted_local":true,"accepted_native":accepted,
+        "reason":value["reason"],"reason_detail":if value["reason"]=="unsupported_native_version" {Some("The account app-server version is not supported by this Sessionsation build. Use api observe to inspect its native_protocol version and supported_versions; no native input was attempted.")} else if value["reason"]=="compaction_hold" {Some(HOLD_DETAIL)} else if value["reason"]=="queued_after_interrupted_turn" {Some("The last turn was interrupted and Codex never starts queued input after an interrupt. Resume the session (mode resume) or cancel the message (api cancel, or api stop --discard-queued).")} else if value["reason"]=="model_change_hold" {Some("A model change is pending for this session (contract 1.49.0). The message is held locally (nothing is in the native queue) and is delivered on the new model once the change completes, fails, expires or is cancelled.")} else {None},"facts":{"accepted_local":true,"accepted_native":accepted,
             "input_recorded":!value["correlation"].is_null(),"input_consumed":if !value["correlation"].is_null() {json!(true)} else if value["state"]=="failed" && value["reason"]=="input_not_consumed" {json!(false)} else {json!("unknown")},
             "reply_observed":!reply.is_null()},
         "native_queue_id":value["native_queue_id"],"recovery_start":value["recovery_start"],
@@ -191,9 +191,13 @@ fn check_codex_options(request: &PublicRequest) -> anyhow::Result<()> {
     }
 }
 
+pub(crate) const HOLD_DETAIL: &str = "A compaction is queued for this session. The message is held locally (nothing is in the native queue) and is delivered once the compaction completes, fails, expires or is cancelled; cancel it or let it expire to drop it.";
 /// Deliver a message a compaction held: marks its binding so it is sent with queue semantics
 /// (it may not be the first to start a turn), then runs the ordinary idempotent send.
 pub(super) async fn send_released(paths: &Paths, id: &str) -> anyhow::Result<Value> {
+    if super::claude_steer::exists(paths, id) {
+        return super::claude_steer::send_released(paths, id).await;
+    }
     let ledger = ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?;
     let mut binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
     if !binding.released_hold {
@@ -206,6 +210,66 @@ pub(super) async fn send_released(paths: &Paths, id: &str) -> anyhow::Result<Val
     let request = binding.into_request();
     drop(ledger);
     send_public(paths, request).await
+}
+
+/// Contract 1.69.3 (`api stop --discard-queued`): cancel the conversation's own still-queued
+/// public input through `api cancel`. Never touches a message that may already have run.
+pub async fn discard_queued(paths: &Paths, conversation: &str) -> anyhow::Result<Value> {
+    let reader = ledger::open_read(paths, wait_budget(paths, Wait::Read)).await?;
+    let mut ids = reader.held_ids(conversation, true)?;
+    drop(reader);
+    ids.extend(super::claude_steer::held_ids(paths, conversation, true));
+    let (mut discarded, mut kept) = (vec![], vec![]);
+    for id in ids {
+        match receipt_public(paths, &id, true).await {
+            Ok(v) if v["state"] == "cancelled" => discarded.push(id),
+            r => kept.push(json!({"message_id":id,"error":r.err().map(|e| format!("{e:#}"))})),
+        }
+    }
+    // Codex native items no receipt names are deleted by the stop itself (`api stop`).
+    Ok(json!({"discarded_messages":discarded,"not_discarded":kept,"discarded_native_items":[]}))
+}
+/// The Codex native queue items `stop --discard-queued` may delete directly: those no receipt
+/// names. An item whose receipt exists (a send that raced the discard) is cancelled through
+/// `api cancel` instead and recorded in `d`; one whose cancel failed is kept and reported.
+pub async fn discard_items(paths: &Paths, items: &[Value], d: &mut Value) -> Vec<Value> {
+    let mut delete = vec![];
+    for item in items {
+        let id = item["clientUserMessageId"].as_str().unwrap_or_default();
+        let kept = |d: &Value| {
+            d["not_discarded"]
+                .as_array()
+                .is_some_and(|k| k.iter().any(|k| k["message_id"] == id))
+        };
+        if kept(d) {
+            continue;
+        }
+        if !receipt_known(paths, id).await {
+            delete.push(item.clone());
+            continue;
+        }
+        let (list, entry) = match receipt_public(paths, id, true).await {
+            Ok(v) if v["state"] == "cancelled" => ("discarded_messages", json!(id)),
+            r => (
+                "not_discarded",
+                json!({"message_id":id,"error":r.err().map(|e| format!("{e:#}"))}),
+            ),
+        };
+        if let Some(a) = d[list].as_array_mut() {
+            a.push(entry);
+        }
+    }
+    delete
+}
+/// Whether any receipt store knows this message id (unreadable ledger: assumed known).
+async fn receipt_known(paths: &Paths, id: &str) -> bool {
+    super::claude_steer::exists(paths, id)
+        || super::headless::exists(paths, id)
+        || super::recovery::exists(paths, id)
+        || match ledger::open_read(paths, wait_budget(paths, Wait::Read)).await {
+            Ok(r) => !matches!(r.binding(id), Ok(None)),
+            Err(_) => true,
+        }
 }
 
 pub async fn send_public(paths: &Paths, request: PublicRequest) -> anyhow::Result<Value> {

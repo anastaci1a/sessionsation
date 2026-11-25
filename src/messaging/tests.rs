@@ -1232,3 +1232,192 @@ pub(super) fn wait_budget(paths: &Paths, wait: Wait) -> std::time::Duration {
         .find(|(root, _)| *root == paths.root) // raw-path: in-process registry keyed by Paths.root
         .map_or(std::time::Duration::ZERO, |(_, d)| *d)
 }
+
+/// Contract 1.69.3: Codex never starts queued input after an interrupted turn; the receipt
+/// of input still queued then says why instead of reading as merely accepted.
+#[tokio::test]
+async fn queued_input_behind_an_interrupted_turn_reports_why_it_waits() {
+    let (_dir, paths, input, now) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    bind(&paths, &mut a);
+    let id = a.id.clone();
+    let server = scripted_connections(
+        &a.endpoint(),
+        move |r| match r["method"].as_str().unwrap() {
+            "thread/read" => Some(json!({"thread":{"id":id,"status":{"type":"idle"}}})),
+            "thread/turns/list" => Some(json!({"data":[{"id":"previous","status":"interrupted",
+                "itemsView":"summary","items":[]}],"nextCursor":null})),
+            method => panic!("observation must not send: {method}"),
+        },
+        2,
+    )
+    .await;
+    let instance:external::Instance=serde_json::from_value(json!({"pane":"%1","tmux_session":"fixture","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
+    crate::catalog::reconcile(&paths, &[instance]).unwrap();
+    let mut db = Ledger::open(&paths).unwrap();
+    let mut receipt = db.accept(&input, now).unwrap();
+    receipt.state = "native_accepted".into();
+    receipt.native_queue_id = Some("queue-1".into());
+    receipt.generation = a.generation();
+    let seen = observe::snapshot(&paths, &receipt).await.unwrap().unwrap();
+    assert_eq!(seen.state, "native_accepted");
+    assert_eq!(
+        seen.reason.as_deref(),
+        Some("queued_after_interrupted_turn")
+    );
+    server.abort();
+}
+/// Contract 1.69.3 (`api stop --discard-queued`): the session's own queued public input is
+/// cancelled through `api cancel` (thread/queue/delete); its receipt says so.
+#[tokio::test]
+async fn discard_queued_cancels_the_sessions_own_queued_receipts() {
+    let (_dir, paths, input, _) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    bind(&paths, &mut a);
+    fs::create_dir_all(paths.root.join(crate::layout::MANAGED_PANES)).unwrap();
+    fs::write(
+        paths.root.join(crate::layout::MANAGED_PANES).join("1.json"),
+        json!({"pid":a.pid,"start_time":a.start,"home":a.home,"thread":a.id}).to_string(),
+    )
+    .unwrap();
+    let queue = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let native = queue.clone();
+    let id = a.id.clone();
+    // Concurrent connections: a released one must not block the next send.
+    let handler = Arc::new(move |r: &Value| {
+        let p = &r["params"];
+        let mut q = native.lock().unwrap();
+        Some(match r["method"].as_str().unwrap() {
+            "thread/read" => json!({"thread":{"id":id,"status":{"type":"active"}}}),
+            "thread/turns/list" => json!({"data":[],"nextCursor":null}),
+            "thread/queue/add" => {
+                let item = json!({"id":format!("queue-{}", q.len() + 1),"clientUserMessageId":p["clientUserMessageId"]});
+                q.push(item.clone());
+                json!({"queuedSubmission":item})
+            }
+            "thread/queue/list" => json!({"data":*q,"nextCursor":null}),
+            "thread/queue/delete" => {
+                let before = q.len();
+                q.retain(|i| i["id"] != p["queuedSubmissionId"]);
+                json!({"deleted":q.len() < before})
+            }
+            method => panic!("unexpected {method}"),
+        })
+    });
+    let listener = UnixListener::bind(a.endpoint()).unwrap();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(Message::Text(text))) = socket.next().await {
+                    let req: Value = serde_json::from_str(&text).unwrap();
+                    let result = match req["method"].as_str() {
+                        Some("initialized") => continue,
+                        Some("initialize") => {
+                            json!({"userAgent":"test-originator/0.163.0 (Linux)"})
+                        }
+                        _ => handler(&req).unwrap(),
+                    };
+                    let frame = json!({"id":req["id"],"result":result}).to_string();
+                    if socket.send(Message::Text(frame.into())).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let instance:external::Instance=serde_json::from_value(json!({"pane":"%1","tmux_session":"test","pid":a.pid,"start_time":a.start,"cwd":"/tmp","thread_id":a.id,"rollout":"/tmp/unused","home":a.home,"binary":"fixture","resume_options":[],"account":"selected"})).unwrap();
+    let session = crate::catalog::reconcile(&paths, &[instance])
+        .unwrap()
+        .remove(0);
+    let request = PublicRequest {
+        origin: None,
+        delivery: None,
+        await_reply: false,
+        if_busy: None,
+        steering: None,
+        recovery: None,
+        api_version: 1,
+        message_id: input.message_id.clone(),
+        session_id: session.id.clone(),
+        expected_generation: session.generation(),
+        mode: PublicMode::Queue,
+        text: "queued".into(),
+        expires_at: crate::daemon::now() + 120,
+    };
+    assert_eq!(
+        send_public(&paths, request.clone()).await.unwrap()["state"],
+        "native_accepted"
+    );
+    let v = discard_queued(&paths, &a.id).await.unwrap();
+    assert_eq!(v["discarded_messages"], json!([input.message_id]), "{v}");
+    assert!(queue.lock().unwrap().is_empty());
+    let r = receipt_public(&paths, &input.message_id, false)
+        .await
+        .unwrap();
+    assert_eq!(r["state"], "cancelled", "{r}");
+    // A native item whose receipt appeared after the discard read the ledger (a racing send) is
+    // cancelled through `api cancel`, never deleted behind its receipt; only receipt-less ones are
+    // returned for direct deletion.
+    let late = "33333333-3333-4333-8333-333333333333".to_string();
+    let late_request = PublicRequest {
+        message_id: late.clone(),
+        ..request
+    };
+    let sent = send_public(&paths, late_request).await.unwrap();
+    assert_eq!(sent["state"], "native_accepted", "{sent}");
+    let mut items = queue.lock().unwrap().clone();
+    let stray = json!({"id":"stray","clientUserMessageId":"22222222-2222-4222-8222-222222222222"});
+    items.push(stray.clone());
+    let mut d = json!({"discarded_messages":[],"not_discarded":[]});
+    assert_eq!(discard_items(&paths, &items, &mut d).await, vec![stray]);
+    assert_eq!(d["discarded_messages"], json!([late]), "{d}");
+    assert_eq!(
+        receipt_public(&paths, &late, false).await.unwrap()["state"],
+        "cancelled"
+    );
+    server.abort();
+}
+
+/// Contract 1.69.3: a stop (terminate) job never reads as MIGRATING. Its running worker is a
+/// retryable `operation_busy`; once that worker died, a job left `queued` for over 10 s is
+/// settled (as `api operations` infers) and no longer blocks input or `api cancel`, unless it
+/// died after a side effect (the source archived), which stays uncertain.
+#[test]
+fn a_stop_job_is_busy_while_its_worker_runs_and_settled_once_it_died() {
+    let (_dir, paths, input, _) = fixture();
+    let root = paths.root.join(crate::layout::HANDOFF_JOBS);
+    crate::paths::private_dir(&root).unwrap();
+    let source = json!({"pane":"%1","tmux_session":"fixture","pid":1,
+        "cwd":"/fixture","thread_id":input.session_id,"rollout":"/fixture/history",
+        "home":"/fixture/home","binary":"/fixture/codex","resume_options":[]});
+    fs::write(
+        root.join("stop.json"),
+        serde_json::to_vec(&json!({"id":"stop","kind":"terminate","source":source,
+            "target":"self","phase":"queued","detail":"","created_at":1}))
+        .unwrap(),
+    )
+    .unwrap();
+    let worker = lock_file(&root.join("stop.worker-lock")).unwrap();
+    worker.lock_exclusive().unwrap();
+    assert_eq!(
+        mutation_lock(&paths, &input.session_id).unwrap_err().0,
+        "operation_busy"
+    );
+    FileExt::unlock(&worker).unwrap();
+    assert!(mutation_lock(&paths, &input.session_id).is_ok());
+    // Killed after it archived the source (`stopping_source`): uncertain, it keeps blocking.
+    fs::write(
+        root.join("stop.json"),
+        serde_json::to_vec(&json!({"id":"stop","kind":"terminate","source":source,
+            "target":"self","phase":"stopping_source","detail":"","created_at":1,"source_archived":true}))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        mutation_lock(&paths, &input.session_id).unwrap_err().0,
+        "migration_state_unknown"
+    );
+}

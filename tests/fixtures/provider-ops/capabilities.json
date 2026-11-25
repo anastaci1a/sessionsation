@@ -2110,7 +2110,7 @@
           "PostCompact hook event",
           "transcript compact_boundary"
         ],
-        "holds_input": false,
+        "holds_input": true,
         "hosted": "refused: a hosted session has no terminal pane (TERMINAL_* code)",
         "method": "terminal",
         "native_method": "/compact",

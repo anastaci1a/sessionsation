@@ -42,10 +42,10 @@ impl Method {
             Self::Unsupported(_) => None,
         }
     }
-    /// Whether new native input is held while the compaction is pending (Codex only: a
-    /// terminal session queues typed input itself).
+    /// Whether new public submit/queue input is held while the compaction is pending (every
+    /// supported method since contract 1.69.3).
     pub fn holds_input(self) -> bool {
-        self == Self::AppServer
+        !matches!(self, Self::Unsupported(_))
     }
 }
 

@@ -1458,3 +1458,184 @@ async fn typing_golden_herdr_sequences_for_claude() {
     g.end(&r);
     g.check("claude");
 }
+
+/// Contract 1.69.2: `api session compact` for this session; returns the operation id.
+fn compact(f: &Fixture, s: &Value, expires_at: Option<i64>) -> String {
+    let generation = s["generation"].as_str().unwrap();
+    let mut args = vec!["session", "compact", "--session", s["id"].as_str().unwrap()];
+    args.extend(["--expected-generation", generation, "--when-idle"]);
+    let at = expires_at.map(|t| t.to_string());
+    if let Some(at) = &at {
+        args.extend(["--expires-at", at]);
+    }
+    let v = f.api(&args);
+    assert_eq!(v["hold"]["active"], true, "{v}");
+    v["id"].as_str().unwrap().to_owned()
+}
+fn compaction(f: &Fixture, op: &str) -> Value {
+    f.api(&["session", "compact-status", "--operation", op])
+}
+/// Sends a submit that a pending compaction holds: journaled, never typed.
+fn held_send(f: &Fixture, s: &Value, text: &str) -> String {
+    let b = body("submit", s, text);
+    let r = f.send_ok(&b);
+    assert_eq!(
+        (&r["state"], &r["reason"]),
+        (&json!("pending_local"), &json!("compaction_hold")),
+        "{r}"
+    );
+    assert!(
+        r["reason_detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("A compaction is queued"),
+        "{r}"
+    );
+    assert_eq!(
+        (&r["execution"]["phase"], &r["delivery"]["held"]),
+        (&json!("admitted"), &json!(true)),
+        "{r}"
+    );
+    // The same message id again is the same held receipt.
+    assert_eq!(f.send_ok(&b)["reason"], "compaction_hold");
+    b["message_id"].as_str().unwrap().to_owned()
+}
+fn typed(f: &Fixture, text: &str) -> bool {
+    f.writes()
+        .iter()
+        .any(|w| w.iter().any(|x| x.contains(text)))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pending_claude_compaction_holds_sends_and_releases_them_in_order() {
+    let f = fixture_with(true).await;
+    let (_claude, id, reset) = live_pane(&f).await;
+    let s = f.session(&id);
+    let first = body("submit", &s, "history to compact");
+    f.send_ok(&first);
+    f.settled(first["message_id"].as_str().unwrap());
+    // A draft keeps the compaction waiting.
+    reset(json!({"input":"draft"}));
+    let op = compact(&f, &s, None);
+    let (a, b) = (held_send(&f, &s, "held one"), held_send(&f, &s, "held two"));
+    wait_for("draft_present", || {
+        compaction(&f, &op)["reason"] == "draft_present"
+    });
+    assert_eq!(compaction(&f, &op)["held_messages"], json!([a, b]));
+    // No deadlock: the held input does not keep the compaction from starting.
+    reset(json!({}));
+    wait_for("compaction running", || {
+        compaction(&f, &op)["phase"] == "running"
+    });
+    assert!(typed(&f, "/compact"));
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(!typed(&f, "held one") && !typed(&f, "held two"));
+    assert_eq!(f.api(&["receipt", &a])["reason"], "compaction_hold");
+    // Claude reports the compaction: held input is delivered in arrival order, queued.
+    let stamp = Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%S.999Z"])
+        .output()
+        .unwrap();
+    let transcript = PathBuf::from(f.tui()["transcript"].as_str().unwrap());
+    let line = json!({"type":"system","subtype":"compact_boundary",
+        "timestamp":String::from_utf8_lossy(&stamp.stdout).trim()});
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+    writeln!(file, "{line}").unwrap();
+    wait_for("compaction complete", || {
+        compaction(&f, &op)["phase"] == "complete"
+    });
+    for m in [&a, &b] {
+        let done = f.settled(m);
+        assert_eq!(
+            (&done["state"], &done["priority"]),
+            (&json!("completed_with_reply"), &json!("later")),
+            "{done}"
+        );
+    }
+    let text = read(&transcript);
+    assert!(text.find("held one").unwrap() < text.find("held two").unwrap());
+    wait_for("hold released", || {
+        compaction(&f, &op)["hold"]["released"] == true
+    });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn held_claude_input_is_released_after_a_failed_expired_or_cancelled_compaction() {
+    let f = fixture_with(true).await;
+    let (_claude, id, reset) = live_pane(&f).await;
+    let s = f.session(&id);
+    let first = body("submit", &s, "history to compact");
+    f.send_ok(&first);
+    f.settled(first["message_id"].as_str().unwrap());
+    for end in ["failed", "expired", "cancelled"] {
+        reset(json!({"input":"draft"}));
+        let expires = (end == "expired").then(|| daemon::now() + 12);
+        let op = compact(&f, &s, expires);
+        let m = held_send(&f, &s, &format!("held for {end}"));
+        wait_for("draft_present", || {
+            compaction(&f, &op)["reason"] == "draft_present"
+        });
+        assert!(!typed(&f, &format!("held for {end}")));
+        match end {
+            "cancelled" => {
+                f.api(&["session", "compact-cancel", "--operation", &op]);
+            }
+            "failed" => {
+                // The journal is the source of truth: a pass that failed the operation.
+                let path = f
+                    .paths
+                    .root
+                    .join(format!("operations/compactions/{op}.json"));
+                let mut r: Value = serde_json::from_str(&read(&path)).unwrap();
+                r["phase"] = json!("failed");
+                r["reason"] = json!("compaction_not_observed");
+                r["finished_at"] = json!(daemon::now());
+                let tmp = path.with_extension("tmp");
+                std::fs::write(&tmp, r.to_string()).unwrap();
+                std::fs::rename(&tmp, &path).unwrap();
+            }
+            _ => {}
+        }
+        wait_for(end, || compaction(&f, &op)["phase"] == end);
+        let done = f.settled(&m);
+        assert_eq!(done["state"], "completed_with_reply", "{end}: {done}");
+        assert_eq!(done["priority"], "later");
+        wait_for("hold released", || {
+            compaction(&f, &op)["hold"]["released"] == true
+        });
+    }
+}
+
+/// Contract 1.69.3: `api stop --discard-queued` cancels the Claude session's own unsent input
+/// (here a message a pending compaction holds) through `api cancel` before the stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_discard_queued_cancels_held_claude_input() {
+    let f = fixture_with(true).await;
+    let (_claude, id, reset) = live_pane(&f).await;
+    let s = f.session(&id);
+    let first = body("submit", &s, "history to compact");
+    f.send_ok(&first);
+    f.settled(first["message_id"].as_str().unwrap());
+    reset(json!({"input":"draft"}));
+    compact(&f, &s, None);
+    let m = held_send(&f, &s, "never delivered");
+    let s = f.session(&id);
+    let generation = s["generation"].as_str().unwrap();
+    let args = [
+        "stop",
+        "--session",
+        &id,
+        "--expected-generation",
+        generation,
+        "--discard-queued",
+    ];
+    let v = f.api(&args);
+    assert_eq!(v["discarded_messages"], json!([m]), "{v}");
+    assert_eq!(v["not_discarded"], json!([]), "{v}");
+    let r = f.api(&["receipt", &m]);
+    assert_eq!(r["state"], "cancelled", "{r}");
+    assert!(!typed(&f, "never delivered"));
+}

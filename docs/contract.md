@@ -1012,9 +1012,18 @@ fields `model` and `reasoning_effort`.
 ## Stop and restart
 
 `api stop --session ID --expected-generation G [--keep-pane] [--wait] [--interrupt]
-[--disable-auto-start]` ends the selected agent and preserves resumable history. `--interrupt` first interrupts a Codex
+[--discard-queued] [--disable-auto-start]` ends the selected agent and preserves resumable history. `--interrupt` first interrupts a Codex
 turn (`turn/interrupt`); Claude and Antigravity stops always do. A Codex `--wait` that ends while the job still waits
 for idle is retryable `OPERATION_TIMEOUT` (`operation.id`, `operation.phase`); a repeat stop returns that job.
+Queued Codex input refuses `--interrupt` before `turn/interrupt` (`QUEUED_INPUT`, not retryable, naming the client
+message ids; no job is added), as it refuses a plain stop whose last turn is already interrupted: Codex never starts
+queued input after an interrupted turn. A plain stop otherwise queues its job (Codex drains the queue at idle).
+`--discard-queued` (1.69.3, every provider) first cancels the session's own unsent public input through `api cancel`,
+then deletes Codex native items no receipt names (an item with a receipt is cancelled through `api cancel`); the result,
+or the error of a stop that failed afterwards, adds `discarded_messages`, `not_discarded` and `discarded_native_items`.
+A message still queued behind an interrupted Codex turn reports `reason:"queued_after_interrupted_turn"`. While a stop
+job's worker runs, `api cancel` is retryable `OPERATION_BUSY`; a stop whose worker died before archiving anything is
+settled after 10 s, one that died later is `MIGRATION_STATE_UNKNOWN` until `recover`.
 Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
 `session_id`, `source_session_id` (both name the catalog session), `provider`,
 `phase`, `detail`, `already_stopped`, `pid`, `process_start`, `signal`, `pane_closed`,
@@ -1284,7 +1293,7 @@ by `api operations` (`kind:"compaction"`) while pending and for an hour after.
 {"id":"UUID","kind":"compaction","provider":"codex","when":"idle","session_id":"...","accepted_generation":"...",
  "provider_conversation_id":"...","phase":"waiting","terminal":false,"reason":"turn_active",
  "detail":"A turn is active; the compaction starts when it ends.",
- "hold":{"active":true,"released":false,"scope":"new native input for this session"},
+ "hold":{"active":true,"released":false,"scope":"new public submit and queue sends to this session"},
  "created_at":0,"updated_at":0,"expires_at":0,"started_at":null,"finished_at":null,"attempts":0,
  "compaction_turn_id":null,"can_cancel":true,"can_respond":false,"can_recover":false,
  "non_steering":true,"replays":false,"existing":false,"held_messages":["message ids"],
@@ -1322,9 +1331,9 @@ by `api operations` (`kind:"compaction"`) while pending and for an hour after.
   logged once a minute per step. A process replaced before the start fails
   `generation_changed`. A pending operation does not block `stop`, `restart` or
   `switch`.
-- **Hold** (Codex). While an operation is `waiting` (until its `expires_at`),
+- **Hold** (Codex and Claude). While an operation is `waiting` (until its `expires_at`),
   `starting` or `running`, and until its held input is released, public `submit` and
-  `queue` sends stay `pending_local` (`reason:"compaction_hold"`). `steer` is refused
+  `queue` sends stay `pending_local` (`reason:"compaction_hold"`). A Codex `steer` is refused
   (`api steer-target` returns `available:false`, `reason:"target_compacting"`; a steer
   send becomes a terminal `rejected` receipt with `target_compacting`); send `submit`
   with `if_busy:"queue"` or `queue` instead. `resume` and the legacy `messaging`
@@ -1341,7 +1350,8 @@ by `api operations` (`kind:"compaction"`) while pending and for an hour after.
   transcript `compact_boundary` at or after the start. A draft is never cleared; a
   command Enter did not run is removed and the operation fails
   `compaction_not_started`; an idle pane with no compaction after 2 minutes fails
-  `compaction_not_observed`. Claude compactions hold no input.
+  `compaction_not_observed`. A held Claude send has no worker until released (priority
+  `later`); a Claude `steer` is not held.
 - Gemini and Antigravity refuse with `UNSUPPORTED_PROVIDER_OPERATION`
   (`error.supported:false`, `error.reason`). Other refusals: `STALE_TARGET`,
   `SESSION_NOT_RUNNING` (no live app-server attachment), `INVALID_OPERATION_ID`,

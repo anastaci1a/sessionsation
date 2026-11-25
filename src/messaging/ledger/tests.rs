@@ -141,7 +141,12 @@ fn reader_connection_is_query_only() {
             .len(),
         1
     );
-    assert!(reader.held_ids(&input.session_id).unwrap().is_empty());
+    assert!(
+        reader
+            .held_ids(&input.session_id, false)
+            .unwrap()
+            .is_empty()
+    );
     // ... and a write through it fails instead of racing other readers.
     assert!(reader.db.execute("DELETE FROM events", []).is_err());
     assert!(reader.db.execute_batch("CREATE TABLE x(y)").is_err());

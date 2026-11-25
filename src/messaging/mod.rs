@@ -15,7 +15,8 @@ pub mod recovery;
 mod retention;
 pub use batch::{BatchRequest, observations};
 pub use public::{
-    PublicMode, PublicRequest, SteeringIntent, receipt_public, send_public, steering_target,
+    PublicMode, PublicRequest, SteeringIntent, discard_items, discard_queued, receipt_public,
+    send_public, steering_target,
 };
 pub use readiness::{observe_command, observe_public};
 pub(crate) use retention::DELIVERED_JOURNAL_STATES;

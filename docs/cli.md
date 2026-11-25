@@ -215,7 +215,7 @@ See [session model](contract.md#session-model-and-one-pass-launch).
 ## Lifecycle
 
 ```sh
-sessionsation api stop --session ID --expected-generation G [--keep-pane] [--wait] [--interrupt] [--disable-auto-start]
+sessionsation api stop --session ID --expected-generation G [--keep-pane] [--wait] [--interrupt] [--discard-queued] [--disable-auto-start]
 sessionsation api restart --session ID --expected-generation G
 sessionsation api switch --session ID --expected-generation G --to PROVIDER:OTHER [--accept-risks]
 sessionsation api relocate --session ID --expected-generation G --to /abs/dest [--move-files] [--dry-run]

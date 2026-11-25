@@ -2903,16 +2903,35 @@ pub(crate) fn messaging_lock(
         if entry.path().extension().is_some_and(|s| s == "json") {
             let bytes = fs::read(entry.path()).map_err(|_| "local_io_error")?;
             let job: Job = serde_json::from_slice(&bytes).map_err(|_| "migration_state_unknown")?;
-            if job.source.thread_id == id
-                && (!matches!(
-                    job.phase.as_str(),
-                    "complete" | "failed" | "cancelled" | "recovered"
-                ) || !crate::background::worker_stopped(
-                    &entry.path().with_extension("worker-lock"),
-                )
-                .map_err(|_| "migration_state_unknown")?)
-            {
-                return Err("migrating");
+            if job.source.thread_id != id {
+                continue;
+            }
+            let running =
+                !crate::background::worker_stopped(&entry.path().with_extension("worker-lock"))
+                    .map_err(|_| "migration_state_unknown")?;
+            let open = !matches!(
+                job.phase.as_str(),
+                "complete" | "failed" | "cancelled" | "recovered"
+            );
+            // 1.69.3: a running stop is busy (retryable); MIGRATING is for real moves. A stop
+            // whose worker died before any side effect (still waiting for idle, nothing
+            // archived) is settled after 10 s, as `api operations` infers; one that died later
+            // is uncertain and needs `recover`.
+            let stop = job.kind == "terminate";
+            let unstarted = matches!(
+                job.phase.as_str(),
+                "queued" | "waiting_for_idle" | "waiting_for_pause"
+            ) && !job.source_archived;
+            let young = daemon::now() - job.created_at <= 10;
+            if stop && (running || open && unstarted && young) {
+                return Err("operation_busy");
+            }
+            if running || open && !(stop && unstarted) {
+                return Err(if stop {
+                    "migration_state_unknown"
+                } else {
+                    "migrating"
+                });
             }
         }
     }

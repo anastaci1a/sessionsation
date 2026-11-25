@@ -199,6 +199,55 @@ pub struct Record {
     /// died (contract 1.64.0; at most once).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redispatched_at: Vec<i64>,
+    /// Arrival sequence of a request a compaction holds (contract 1.69.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_at: Option<i64>,
+}
+/// Contract 1.69.3: journaled behind a pending compaction, no worker started yet.
+fn held(r: &Record) -> bool {
+    r.phase == "admitted" && r.reason.as_deref() == Some("compaction_hold")
+}
+/// Released from a hold, its worker not yet past `admitted`: later held input waits for it.
+fn releasing(r: &Record) -> bool {
+    r.phase == "admitted" && r.reason.as_deref() == Some("compaction_release")
+}
+/// Held (and releasing) requests of a conversation, in arrival order; with `queued`, every
+/// unsent (`admitted`) one.
+fn held_of(paths: &Paths, conversation: &str, queued: bool) -> Vec<Record> {
+    let mut mine: Vec<Record> = all(paths)
+        .into_iter()
+        .filter(|r| {
+            (held(r) || releasing(r) || queued && r.phase == "admitted")
+                && r.conversation_id == conversation
+        })
+        .collect();
+    mine.sort_by_key(|r| r.held_at);
+    mine
+}
+pub(crate) fn held_ids(paths: &Paths, conversation: &str, queued: bool) -> Vec<String> {
+    held_of(paths, conversation, queued)
+        .into_iter()
+        .map(|r| r.request.message_id)
+        .collect()
+}
+/// Deliver a request a compaction held, with queue semantics (priority `later`). `state` stays
+/// `pending_local` while it has not left `admitted` (the worker may still be starting): it then
+/// stays in `held_ids`, so `deliver_held` retries it on the next tick and no later held message
+/// is dispatched before it.
+pub(crate) async fn send_released(paths: &Paths, id: &str) -> Result<Value> {
+    let claimed = change(paths, id, |r| {
+        let claim = held(r);
+        if claim {
+            r.reason = Some("compaction_release".into());
+            r.priority = priority("queue").into();
+        }
+        Ok(claim)
+    })?;
+    if claimed {
+        dispatch(paths, id).await?;
+    }
+    let unsent = read(paths, id)?.phase == "admitted";
+    Ok(json!({"state":if unsent {"pending_local"} else {"released"}}))
 }
 
 fn dir(paths: &Paths) -> PathBuf {
@@ -596,22 +645,39 @@ pub async fn send_planned(
         finished_at: None,
         evidence_at: None,
         redispatched_at: vec![],
+        held_at: None,
         plan,
         request,
     };
-    // Journal before any write to a provider.
+    // Journal before any write to a provider. Contract 1.69.3: behind a pending compaction a
+    // submit or queue is journaled held (no worker) under the compaction journal lock, so it
+    // is journaled before the request (the start then sees it) or held.
+    let hold_lock = super::compaction::lock(paths)?;
+    if matches!(record.request.mode.as_str(), "submit" | "queue")
+        && super::compaction::hold_active(paths, &c)
+    {
+        record.reason = Some("compaction_hold".into());
+        let last = held_of(paths, &c, false).last().and_then(|r| r.held_at);
+        record.held_at = Some(last.map_or(0, |n| n + 1));
+    }
     save(paths, &mut record)?;
-    drop(admission);
-    if !start_worker(paths, worker_for(&record), &id).await {
-        abandon_unsent(paths, &id, "WORKER_COULD_NOT_START_NO_PROVIDER_ACTION")?;
+    drop((hold_lock, admission));
+    if held(&record) {
+        return receipt(paths, &id, false).await;
+    }
+    dispatch(paths, &id).await
+}
+async fn dispatch(paths: &Paths, id: &str) -> Result<Value> {
+    if !start_worker(paths, worker_for(&read(paths, id)?), id).await {
+        abandon_unsent(paths, id, "WORKER_COULD_NOT_START_NO_PROVIDER_ACTION")?;
     }
     for _ in 0..40 {
-        if read(paths, &id)?.phase != "admitted" {
+        if read(paths, id)?.phase != "admitted" {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    receipt(paths, &id, false).await
+    receipt(paths, id, false).await
 }
 
 /// A provably unsent (still `admitted`) request becomes terminal `rejected`.
@@ -694,6 +760,9 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
         .and_then(|p| fs::metadata(p).ok())
         .map(|m| m.len());
     change(paths, id, |r| {
+        // 1.69.3: claims `admitted` atomically; a cancel that won the race is never sent.
+        ensure!(r.phase == "admitted", "CANCELLED_BEFORE_DELIVERY");
+        r.reason = None;
         r.phase = "dispatching".into();
         r.dispatched_at = Some(crate::daemon::now());
         if let Some(p) = r.peer.as_mut() {
@@ -1255,7 +1324,12 @@ fn peer_observe(paths: &Paths, id: &str) -> Result<()> {
 /// `supervisor`: called by the supervisor itself, which starts workers as its own children.
 async fn reconcile(paths: &Paths, id: &str, supervisor: bool) -> Result<Record> {
     let r = read(paths, id)?;
-    if is_terminal(&r) {
+    if held(&r) && !super::compaction::hold_active(paths, &r.conversation_id) {
+        // 1.69.3: no compaction holds it any more (its record is gone): release it.
+        Box::pin(super::compaction::deliver_held(paths, &r.conversation_id)).await;
+        return read(paths, id);
+    }
+    if is_terminal(&r) || held(&r) {
         return Ok(r);
     }
     let age = crate::daemon::now() - r.updated_at;
@@ -1447,6 +1521,9 @@ pub fn receipt_value(r: &Record) -> Value {
         }
     ));
     v["native_fallback"] = r.fallback.clone().unwrap_or(Value::Null);
+    if held(r) {
+        v["reason_detail"] = json!(super::public::HOLD_DETAIL);
+    }
     if let Some(why) = &r.facts.from_component_ignored {
         v["facts"]["from_component_ignored"] = json!(why);
     }
@@ -1501,6 +1578,7 @@ fn uniform(r: &Record, v: &mut Value) {
         ),
     };
     let held = r.state == "held"
+        || held(r)
         || (pending
             && r.facts
                 .peer_status

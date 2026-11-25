@@ -1434,9 +1434,23 @@ fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
     } else {
         sessionsation::messaging::recovery::diagnostic(&code)
             .map(|help| format!("{code}: {help}"))
-            .unwrap_or_else(|| format!("{error:#}"))
+            .unwrap_or_else(
+                || match error.downcast_ref::<sessionsation::api::Discarded>() {
+                    Some(d) => d.full.clone(),
+                    None => format!("{error:#}"),
+                },
+            )
     };
     let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"OPERATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS"|"STOP_TIMEOUT"|"AUTH_STALE")}});
+    // Contract 1.69.3: a stop that failed after `--discard-queued` reports what it discarded.
+    if let Some(Value::Object(d)) = error
+        .downcast_ref::<sessionsation::api::Discarded>()
+        .map(|d| &d.value)
+    {
+        for (k, v) in d {
+            envelope["error"][k] = v.clone();
+        }
+    }
     // Contract 1.63.0: a provider that cannot perform the operation at all.
     if let Some(u) = error.downcast_ref::<sessionsation::provider::stop_shape::Unsupported>() {
         envelope["error"]["supported"] = json!(false);

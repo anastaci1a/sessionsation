@@ -646,7 +646,7 @@ async fn the_codex_result_has_the_one_compact_shape() {
     );
     assert_eq!(
         (c["method"].as_str(), c["hold"]["active"].as_bool()),
-        (Some("terminal"), Some(false))
+        (Some("terminal"), Some(true))
     );
 }
 
