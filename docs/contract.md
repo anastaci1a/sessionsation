@@ -2339,6 +2339,12 @@ survivor); the worker also refuses `HISTORY_IN_USE` (open writer), `HISTORY_SYML
 `ACCOUNT_HOME_CHANGED` and `ACCOUNT_DELETED`. Fixtures: `archived_session_claude`,
 `native_conversation_archive`.
 
+Repeats (since 1.70.1, every provider): `api archive` of an already archived session returns
+ok with `already_archived:true`, and `api restore-session` of an active one `already_active:true`,
+both `phase:"complete"` with the usual job keys (`kind` `archive_session` or `restore_session`, no
+job is journaled). The generation is not checked on a repeat, as for `stop` of an archived
+session; the row reasons `SESSION_ALREADY_ARCHIVED` and `SESSION_NOT_ARCHIVED` are unchanged.
+
 ## Accounts
 
 Command usage is in the [CLI guide](cli.md#accounts). Every account belongs to one

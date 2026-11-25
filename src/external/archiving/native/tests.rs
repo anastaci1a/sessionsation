@@ -81,3 +81,32 @@ fn restore_remaps_the_project_key_and_reads_the_manifest_through_the_alias() {
     );
     crate::alias::uninstall(&entries);
 }
+
+#[test]
+fn only_settled_states_answer_a_repeat() {
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(t.path().join("state"))).unwrap();
+    let s = session("/p");
+    assert_eq!(settled(&paths, &s).unwrap(), Some(false), "no manifest");
+    for (state, want) in [
+        ("archived", Some(true)),
+        ("restored", Some(false)),
+        ("archiving", None),
+        ("restoring", None),
+    ] {
+        let m = Manifest {
+            version: 1,
+            session: s.clone(),
+            provider: "claude".into(),
+            home: t.path().join("h"),
+            state: state.into(),
+            archived_at: 0,
+            bundle: uuid::Uuid::new_v4().to_string(),
+            conversation_ids: vec![s.conversation_id.clone()],
+            entries: vec![],
+            nothing_to_archive: false,
+        };
+        save(&paths, &m).unwrap();
+        assert_eq!(settled(&paths, &s).unwrap(), want, "{state}");
+    }
+}

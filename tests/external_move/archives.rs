@@ -120,6 +120,10 @@ async fn public_archive_restore_and_delete_preserve_identity_and_other_data() {
     let compressed = dir.join("bundles").join(rid).join("0.jsonl.gz");
     assert_eq!(&fs::read(&compressed).unwrap()[..2], &[31, 139]);
     assert!(!dir.starts_with(f.paths.root.join("accounts")));
+    let dup = start(&f, "archive", &s, "16161616-1616-4616-8616-161616161616");
+    assert_eq!(dup["already_archived"], true, "{dup}");
+    assert_eq!(dup["phase"], "complete");
+    assert_eq!(dup["kind"], "archive_session");
     let restore_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     start(&f, "restore-session", &archived, restore_id);
     let result = wait(&f, restore_id).await;
@@ -140,6 +144,15 @@ async fn public_archive_restore_and_delete_preserve_identity_and_other_data() {
         .unwrap(),
         bytes
     );
+    let dup = start(
+        &f,
+        "restore-session",
+        &restored,
+        "17171717-1717-4717-8717-171717171717",
+    );
+    assert_eq!(dup["already_active"], true, "{dup}");
+    assert_eq!(dup["phase"], "complete");
+    assert_eq!(dup["kind"], "restore_session");
     let again = "14141414-1414-4414-8414-141414141414";
     start(&f, "archive", &restored, again);
     let rearchive_result = wait(&f, again).await;

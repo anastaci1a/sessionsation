@@ -22,8 +22,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 70;
-pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.70.0";
+pub const CONTRACT_PATCH: u32 = 1;
+pub const CONTRACT_VERSION: &str = "1.70.1";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -2173,7 +2173,7 @@ pub fn capabilities() -> Value {
         "reasons":crate::launch::availability_reasons()});
     value["session_lifecycle"] = json!({"since_contract":"1.66.0","resume_launch":resume_launch,
         "unknown_session":unknown_session,"launch_listing":launching,
-        "archived_stop":"already_stopped:true, archived:true (any generation)","pane_settle_seconds":external::hosting::PANE_SETTLE_SECONDS});
+        "archived_stop":"already_stopped:true, archived:true (any generation)","archive_repeat":"already_archived:true (any generation)","restore_active":"already_active:true (any generation)","pane_settle_seconds":external::hosting::PANE_SETTLE_SECONDS});
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
     value["launch_model"] = json!({"since_revision":38,"request_fields":["model","reasoning_effort"],"requests":["launch"],"providers":["codex"],"reasoning_efforts":crate::launch::REASONING_EFFORTS,"errors":["INVALID_MODEL","INVALID_REASONING_EFFORT",ops::UNSUPPORTED],"model_not_checked_against_account":true});
     value["turn_notify"] = crate::turn_notify::capability();

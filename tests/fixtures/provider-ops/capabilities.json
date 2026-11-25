@@ -2359,7 +2359,9 @@
     "turn_events": "api turn-events stays the Codex turn-notify journal"
   },
   "session_lifecycle": {
+    "archive_repeat": "already_archived:true (any generation)",
     "archived_stop": "already_stopped:true, archived:true (any generation)",
+    "restore_active": "already_active:true (any generation)",
     "launch_listing": {
       "availability": "launching",
       "field": "availability_reason",

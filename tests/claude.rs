@@ -2716,6 +2716,20 @@ fn all_claude(f: &Fixture) -> Vec<Value> {
         .cloned()
         .collect()
 }
+fn job_ok(f: &Fixture, command: &str, session: &Value) -> Value {
+    let id = session["id"].as_str().unwrap();
+    f.api(&[
+        command,
+        "--session",
+        id,
+        "--expected-generation",
+        "stale-generation",
+        "--request-id",
+        &uuid::Uuid::new_v4().to_string(),
+        "--confirm",
+        id,
+    ])
+}
 fn job_error(f: &Fixture, command: &str, session: &Value) -> String {
     let id = session["id"].as_str().unwrap();
     f.api_error(&[
@@ -2867,10 +2881,35 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(row["provider"], "claude");
     assert_eq!(row["account_id"], "claude:personal");
     assert_eq!(row["generation"], archived["generation"]);
-    assert!(
-        job_error(&f, "archive", &archived).contains("SESSION_ALREADY_ARCHIVED"),
-        "archive is not repeated"
+    assert_eq!(
+        archived["capability_reasons"]["archive"],
+        "SESSION_ALREADY_ARCHIVED"
     );
+    let again = job_ok(&f, "archive", &archived);
+    assert_eq!(again["already_archived"], true, "{again}");
+    assert_eq!(again["phase"], "complete");
+    assert_eq!(again["kind"], "archive_session");
+    assert_eq!(again["session_id"], s["id"]);
+    // In-progress states are not settled: the normal path answers, exactly as before.
+    let manifest = f
+        .paths
+        .root
+        .join(sessionsation::layout::ARCHIVED_SESSIONS)
+        .join(s["id"].as_str().unwrap())
+        .join("native.json");
+    let original = std::fs::read_to_string(&manifest).unwrap();
+    for state in ["archiving", "restoring"] {
+        std::fs::write(
+            &manifest,
+            original.replace("\"state\":\"archived\"", &format!("\"state\":\"{state}\"")),
+        )
+        .unwrap();
+        assert!(
+            job_error(&f, "archive", &archived).contains("SESSION_ALREADY_ARCHIVED"),
+            "archive while {state}"
+        );
+    }
+    std::fs::write(&manifest, &original).unwrap();
     assert!(
         f.api_error(&[
             "launcher",
@@ -2892,10 +2931,14 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(restored["availability"], "stopped");
     assert_eq!(restored["capabilities"]["resume"], true);
     assert_eq!(restored["capabilities"]["archive"], true);
-    assert!(
-        job_error(&f, "restore-session", &restored).contains("SESSION_NOT_ARCHIVED"),
-        "restore needs an archived session"
+    assert_eq!(
+        restored["capability_reasons"]["restore"],
+        "SESSION_NOT_ARCHIVED"
     );
+    let again = job_ok(&f, "restore-session", &restored);
+    assert_eq!(again["already_active"], true, "{again}");
+    assert_eq!(again["phase"], "complete");
+    assert_eq!(again["kind"], "restore_session");
 
     // Delete removes the files, dead registry entries and the catalog entry.
     let dead = Command::new("true").spawn().unwrap();

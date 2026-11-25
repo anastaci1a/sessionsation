@@ -279,6 +279,49 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         .filter(|s| crate::provider::native::of(&s.provider).is_some());
     let archived =
         optional(paths, &t.session)?.is_some_and(|a| a.state != "restored" && a.state != "deleted");
+    // Contract 1.70.1: repeats succeed; no generation applies (as for stop of an archived session).
+    // Only a settled state answers a repeat; in-progress states take the normal path.
+    let pending = operations(paths)?.iter().any(|o| {
+        o["session_id"] == t.session && !matches!(o["phase"].as_str(), Some("complete" | "failed"))
+    });
+    let repeat = match (&native_target, kind) {
+        _ if pending => None,
+        (Some(s), Kind::Archive | Kind::Restore) => {
+            native::settled(paths, s)?.map(|a| (s.clone(), a))
+        }
+        (None, Kind::Archive | Kind::Restore) => match optional(paths, &t.session)? {
+            Some(a) if a.state == "archived" => Some((a.session, true)),
+            Some(a) if a.state != "restored" => None,
+            _ => crate::catalog::find(paths, &t.session)
+                .ok()
+                .map(|s| (s, false)),
+        },
+        _ => None,
+    };
+    if let Some((session, is_archived)) = repeat.filter(|(_, a)| *a == (kind == Kind::Archive)) {
+        let (flag, detail) = if is_archived {
+            ("already_archived", "Already archived; nothing to do.")
+        } else {
+            ("already_active", "Already active; nothing to do.")
+        };
+        let mut v = Operation {
+            id: t.request_id,
+            kind,
+            session,
+            source: None,
+            expected_generation: t.expected_generation,
+            phase: "complete".into(),
+            detail: detail.into(),
+            created_at: daemon::now(),
+            updated_at: daemon::now(),
+            worker_pid: None,
+            worker_start: None,
+            nothing_to_archive: false,
+        }
+        .public();
+        v[flag] = json!(true);
+        return Ok(v);
+    }
     let (session, source) = if native_target.is_some() {
         let s = crate::catalog::resolve(paths, &t.session, &t.expected_generation)?;
         native::admit(paths, kind, &s)?;

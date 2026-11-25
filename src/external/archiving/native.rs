@@ -266,6 +266,17 @@ pub fn apply_session(
     value["capability_reasons"]["restore"] = json!("SESSION_NOT_ARCHIVED");
 }
 
+/// Settled archive state of a native session: `Some(true)` archived, `Some(false)` active,
+/// `None` while an archive or restore is in progress.
+pub(super) fn settled(paths: &Paths, s: &Session) -> Result<Option<bool>> {
+    Ok(match load(paths, &s.id)?.map(|m| m.state) {
+        None => Some(false),
+        Some(m) if m == "restored" => Some(false),
+        Some(m) if m == "archived" => Some(true),
+        Some(_) => None,
+    })
+}
+
 /// Admission checks before a job is journaled (rechecked by the worker).
 pub(super) fn admit(paths: &Paths, kind: Kind, s: &Session) -> Result<()> {
     let provider = native::of(&s.provider).context(ops::UNSUPPORTED)?;
