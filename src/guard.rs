@@ -1628,7 +1628,7 @@ fn doc_caps_are_enforced() {
     let v = cap_violations(&fake("doc_bytes:docs/new.md", 10), &base);
     assert!(v[0].starts_with("guard: counter doc_bytes:docs/new.md is 10 and has no cap"));
     assert_eq!(cap_initial_of("doc_bytes:docs/new.md"), Some(0));
-    assert_eq!(cap_initial_of("src_lines"), Some(103063));
+    assert_eq!(cap_initial_of("src_lines"), Some(103236));
     // Raising a cap needs a balancing ledger entry with a real "considered".
     let mut base = baseline();
     base.caps.get_mut("doc_bytes:docs/cli.md").unwrap().value += 100;

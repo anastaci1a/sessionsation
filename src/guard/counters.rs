@@ -106,7 +106,7 @@ pub const COUNTERS: &[Counter] = &[
         scope: None,
         files: &[],
         role: None,
-        initial: 19250,
+        initial: 19352,
         kind: Kind::InlineTestLines,
     },
     // locks
@@ -612,7 +612,7 @@ pub const CAP_INITIAL: &[(&str, usize)] = &[
     ("doc_bytes:docs/operations.md", 24200),
     ("doc_bytes_total", 313300),
     ("doc_duplicate_paragraphs", 0),
-    ("src_lines", 103063),
+    ("src_lines", 103236),
     ("inline_test_lines", 0),
 ];
 
@@ -623,7 +623,7 @@ pub const MODULE_LINES: &str = "module_lines:";
 
 /// Ledger index of the falls-only marker entry (`program: "shrink"`, step
 /// `shrink-S0`): entries after it are under the falls-only rule (design §6.2).
-pub const SHRINK_MARKER_INDEX: usize = 150;
+pub const SHRINK_MARKER_INDEX: usize = 154;
 
 /// The `src_lines` target budget of each module of the design's §3.1 module map
 /// (single-module rows; grouped rows such as `store`/`model`/`usage_history` or
@@ -684,13 +684,13 @@ pub const MODULE_INITIAL: &[(&str, usize)] = &[
     ("src/catalog", 3912),
     ("src/config", 276),
     ("src/control", 442),
-    ("src/daemon", 1500),
+    ("src/daemon", 1503),
     ("src/disk_space", 177),
     ("src/file_cache", 207),
     ("src/launch", 1661),
     ("src/main", 2188),
     ("src/messaging/compaction", 1565),
-    ("src/messaging/ledger", 823),
+    ("src/messaging/ledger", 824),
     ("src/messaging/model_change", 1882),
     ("src/messaging/transport", 586),
     ("src/pane_reuse", 546),
@@ -704,7 +704,7 @@ pub const MODULE_INITIAL: &[(&str, usize)] = &[
     ("src/questions", 1109),
     ("src/reset_credit", 1160),
     ("src/retention", 401),
-    ("src/rpc", 297),
+    ("src/rpc", 299),
     ("src/session_model", 524),
     ("src/shared_state", 1431),
 ];
@@ -712,7 +712,7 @@ pub const MODULE_INITIAL: &[(&str, usize)] = &[
 /// sha256 of `ledger[..=SHRINK_MARKER_INDEX]` (see `guard::ledger_prefix_digest`): the entries
 /// before the falls-only marker are never edited.
 pub const LEDGER_PREFIX_DIGEST: &str =
-    "ad7db05c24845dec8b1d4b4cffd56135bbeb8fe08b9d2a4dcc948cdcb8566f69";
+    "ed08070acb6d556ff4c0dad1e0851a9569760526b92059d2a1360de04dd0c0ff";
 /// sha256 of baseline `steps` and `trajectory` (see `guard::tables_digest`): loosening a row is
 /// a reviewed change of this file.
 pub const TABLES_DIGEST: &str = "87174a895f5a52f50635990275007df70b363f3a08853781279e137893b03c97";

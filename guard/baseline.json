@@ -1,6 +1,6 @@
 {
   "roles_digest": "a1f92d442a9adaa9b5219be0240237eb215c62dc35ddd1c733c751b2f7700ce0",
-  "counters_digest": "910c867c1b63c9ba1994c226342fa2ec4a608411fbba18701aee756147f23fdd",
+  "counters_digest": "653d1450adbf3d672d8d3c44ac8fb6f073f84a4442e6290e8ddd9ba620a48541",
   "counters": {
     "alive_fns": { "value": 0 },
     "apply_session_input_fns": { "value": 1 },
@@ -16,11 +16,11 @@
     "doc_bytes:agents/README.md": { "value": 10289 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13604 },
+    "doc_bytes:docs/changelog.md": { "value": 13628 },
     "doc_bytes:docs/cli.md": { "value": 18220 },
-    "doc_bytes:docs/contract.md": { "value": 219208 },
+    "doc_bytes:docs/contract.md": { "value": 219225 },
     "doc_bytes:docs/operations.md": { "value": 17360 },
-    "doc_bytes_total": { "value": 289669 },
+    "doc_bytes_total": { "value": 289710 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 168 },
     "env_scrub_sites": { "value": 45 },
@@ -49,7 +49,7 @@
     "module_lines:src/config": { "value": 238 },
     "module_lines:src/contract": { "value": 0 },
     "module_lines:src/control": { "value": 381 },
-    "module_lines:src/daemon": { "value": 1297 },
+    "module_lines:src/daemon": { "value": 1300 },
     "module_lines:src/disk_space": { "value": 126 },
     "module_lines:src/file_cache": { "value": 117 },
     "module_lines:src/host": { "value": 0 },
@@ -57,7 +57,7 @@
     "module_lines:src/main": { "value": 1565 },
     "module_lines:src/messaging/codex_input": { "value": 0 },
     "module_lines:src/messaging/compaction": { "value": 1565 },
-    "module_lines:src/messaging/ledger": { "value": 744 },
+    "module_lines:src/messaging/ledger": { "value": 745 },
     "module_lines:src/messaging/model_change": { "value": 1882 },
     "module_lines:src/messaging/peer": { "value": 0 },
     "module_lines:src/messaging/send": { "value": 0 },
@@ -78,7 +78,7 @@
     "module_lines:src/record": { "value": 0 },
     "module_lines:src/reset_credit": { "value": 1079 },
     "module_lines:src/retention": { "value": 269 },
-    "module_lines:src/rpc": { "value": 297 },
+    "module_lines:src/rpc": { "value": 299 },
     "module_lines:src/session_model": { "value": 397 },
     "module_lines:src/shared_state": { "value": 409 },
     "module_lines:src/state": { "value": 0 },
@@ -106,7 +106,7 @@
     "spawn_sites": { "value": 54 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 4 },
-    "src_lines": { "value": 68714 },
+    "src_lines": { "value": 68785 },
     "stale_target_literals": { "value": 58 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -132,7 +132,7 @@
     "doc_bytes_total": { "value": 313300 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "inline_test_lines": { "value": 0 },
-    "src_lines": { "value": 68714 }
+    "src_lines": { "value": 68785 }
   },
   "ledger": [
     {
@@ -1186,6 +1186,34 @@
       "step": "1.67.0"
     },
     {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": -26,
+      "reason": "1.67.1 line, offset by tightening older entries to stay within the cap",
+      "considered": "n/a",
+      "step": "hotfix:1.67.1"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 17,
+      "reason": "1.67.1: receipt retention runs in a send only from 9,000 receipts",
+      "considered": "n/a",
+      "step": "hotfix:1.67.1"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": -9,
+      "reason": "1.67.1 changelog and contract text",
+      "considered": "n/a",
+      "step": "hotfix:1.67.1"
+    },
+    {
+      "counter": "src_lines",
+      "by": 173,
+      "reason": "1.67.1 hotfix: fd-inheritance close helper and tests, launch re-admission, send-path retention gating, regression tests",
+      "considered": "n/a",
+      "step": "hotfix:1.67.1"
+    },
+    {
       "counter": "src_lines",
       "by": 0,
       "reason": "falls-only from here",
@@ -1763,7 +1791,7 @@
     },
     {
       "counter": "inline_test_lines",
-      "by": -17707,
+      "by": -17809,
       "reason": "shrink-S1c: every inline test module moved to src/<m>/tests.rs or tests/<name>.rs",
       "considered": "n/a",
       "step": "shrink-S1c",
@@ -1955,7 +1983,7 @@
     },
     {
       "counter": "src_lines",
-      "by": -18344,
+      "by": -18446,
       "reason": "shrink-S1c: inline test modules moved to sibling test files (SHRINK 5.3 path rule); test-only seams moved into the tests modules",
       "considered": "n/a",
       "step": "shrink-S1c",
@@ -1963,7 +1991,7 @@
     },
     {
       "counter": "cap:src_lines",
-      "by": -18344,
+      "by": -18446,
       "reason": "shrink-S1c: the cap follows the counter down",
       "considered": "n/a",
       "step": "shrink-S1c",
@@ -2029,6 +2057,22 @@
       "counter": "sha256_digests",
       "by": -3,
       "reason": "review fixes: modes capability_id removed",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 50,
+      "reason": "rebase onto 1.67.1: the 1.67.1 entry sits above 1.68.0",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 50,
+      "reason": "rebase onto 1.67.1: changelog",
       "considered": "n/a",
       "step": "shrink-S1c",
       "program": "shrink"
