@@ -2,7 +2,7 @@
 //! the account home path stay so an enrolled `gemini:<name>` can be listed and deleted
 //! with its history preserved; every other operation is unsupported with [`REASON`].
 use super::{
-    ProviderCapabilities, ProviderId,
+    Capability, ProviderCapabilities, ProviderId,
     claude::{Enrolled, Live, Observation, Transcript},
     no,
     ops::{
@@ -29,6 +29,11 @@ pub const STRIPPED_ENV: &[&str] = &[];
 
 pub fn capabilities() -> ProviderCapabilities {
     let n = || no(REASON);
+    // An enrolled account stays removable and deletable (its history is preserved).
+    let kept = || Capability {
+        supported: true,
+        reason: Some("managed homes: conversation history preserved, home and credentials deleted"),
+    };
     ProviderCapabilities {
         enrollment: n(),
         adopt_config_dir: n(),
@@ -49,8 +54,8 @@ pub fn capabilities() -> ProviderCapabilities {
         submit: n(),
         queue: n(),
         steer: n(),
-        account_removal: n(),
-        account_deletion: n(),
+        account_removal: kept(),
+        account_deletion: kept(),
         account_rename: n(),
         account_logout: n(),
         headless_delivery: n(),

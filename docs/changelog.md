@@ -21,10 +21,14 @@ and package history are in Git.
 ## Versions
 
 - **1.68.0** Removed `root status|migrate|rollback|finalize` (capability `root_alias`),
-  `layout migrate|rollback` and `shared migrate`; `layout status` loses `in_use_now`; a dropped
-  config key is ignored, not refused. Gemini CLI is dropped (`providers[gemini]`
-  unsupported, `account auth` gone) with auto-switching, `doctor`, `simulate` and the
-  `message`, `ready`, `import`, `pause`, `session` CLI. [Root alias](contract.md#root-alias).
+  `layout migrate|rollback`, `shared migrate`, `account auth`, `doctor`, `simulate` and the hidden
+  `message`, `ready`, `session`, `import`, `pause`, `thresholds`, `auto-switch`, `auto-start`,
+  `account show|history` commands; the daemon answers `automatic/*`, `auto-start/*`,
+  `session/run|import|pause|resume` with unknown control method. `api auto-recover` and the
+  external-job verbs (`move`, `restart`, `terminate`, ...) stay. Gemini CLI is dropped
+  (`providers[gemini]` unsupported; accounts stay deletable). A dropped config key
+  (`gemini_binary`, `native_sender_registration`) is ignored, not refused; `active_poll_seconds`
+  is unused; `layout status` loses `in_use_now`. [Root alias](contract.md#root-alias).
 - **1.67.1** Workers inherit no client lock fds; a repeated `session launch` re-admits;
   sends skip hourly retention.
 - **1.67.0** A refused check before Enter withdraws the typed text. Launches use the
@@ -98,32 +102,25 @@ and package history are in Git.
   (`session_spaces.from_component`, `since_contract` 1.50.0).
   [Component names](contract.md#component-sender-names).
 - **1.49.1** Launches wait up to 120 s for account operations; pre-start refusals end
-  `failed`. [Launch](contract.md#launch-acknowledgement-and-abandoning-uncertain-operations).
+  `failed`.
 - **1.49.0** Session `model`, `api session set-model`, one-pass `api session launch`;
-  Claude launch models. [Model](contract.md#session-model-and-one-pass-launch).
+  Claude launch models.
 - **1.48.1** No steering while a compaction is pending (`target_compacting`).
-  [Compaction](contract.md#compaction-at-the-next-idle-point).
 - **1.48.0** Space-scoped session names (`space`, `canonical`, `--create-space`,
   `session set-space`, `session resolve`; `session_spaces`, `since_contract` 1.48.0).
-  [Names](contract.md#space-scoped-session-names).
 - **1.47.1** Compaction completion read from the full view of new turns; 180 s
   no-progress bound. **1.47.0** `api session compact --when-idle` for Codex with an
   input hold.
-  [Compaction](contract.md#compaction-at-the-next-idle-point).
 - **1.46.8** Auto Start `already_running` result. **1.46.7** `accounts[].plan`.
-  [Auto Start](contract.md#auto-start), [plan](contract.md#limits-plan-and-usage).
 - **1.46.5** Codex steer and cancel wait for the ledger; `if_busy:"queue"` on submit.
   **1.46.4** Codex messaging waits for the ledger lease and releases it during
-  app-server I/O. [Contention](contract.md#admission-and-contention).
+  app-server I/O.
 - **1.46.3** Codex callers detected by `CODEX_THREAD_ID`; every native frame carries the
   `cross-session-message` envelope; `native_sender_registration` is a no-op.
-  [Peer messages](contract.md#native-peer-messages).
 - **1.46.2** Launch acknowledgement wait 120 s (`LAUNCH_RUN_NEVER_STARTED`); abandon an
   uncertain new launch.
-  [Abandon](contract.md#launch-acknowledgement-and-abandoning-uncertain-operations).
 - **1.46.1** Statusline `refreshInterval`; `skills` no longer shared. **1.46.0** `agents`
   and `commands` shared with merge on migration.
-  [Shared state](contract.md#shared-claude-state).
 - **1.45.2** Codex accepts Claude send options; Codex usage clock fixes.
   [Usage](contract.md#limits-plan-and-usage).
 - **1.45.0** Auto Start prompt delivery read back from its receipt, native first for

@@ -1213,7 +1213,14 @@ const WORKER_LOG_MAX: u64 = 64 * 1024;
 const MAX_REDISPATCH: usize = 1;
 
 fn worker_for(r: &Record) -> &'static str {
-    if antigravity::is_antigravity(r) {
+    // A leftover Gemini terminal record (the provider is dropped): no such worker exists, so the
+    // start is refused and the unsent request is abandoned cleanly.
+    if r.provider
+        .as_deref()
+        .is_some_and(|p| ops::holds(p, |f| f.terminal_input == TerminalInput::None))
+    {
+        "gemini-dropped"
+    } else if antigravity::is_antigravity(r) {
         "antigravity-terminal-worker"
     } else if r.kind == "terminal" {
         "claude-terminal-worker"

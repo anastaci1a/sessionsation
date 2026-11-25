@@ -702,7 +702,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             daemon::ensure_started(&paths).await?;
             println!(
-                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add --platform codex|claude|gemini|antigravity <name>`.\nNative switching remains blocked; inspect `sessionsation doctor --probe`.",
+                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add --platform codex|claude|gemini|antigravity <name>`.\nNative switching is not available.",
                 paths.root.display()
             );
         }
@@ -731,7 +731,7 @@ async fn run(cli: Cli) -> Result<()> {
                 print_json(&value)?;
             } else {
                 println!(
-                    "Supervisor: {}\nNative switching: unavailable (run doctor --probe)\nAccounts: {}",
+                    "Supervisor: {}\nNative switching: unavailable\nAccounts: {}",
                     if value["daemon"]["running"] == true {
                         "running"
                     } else {
@@ -987,7 +987,7 @@ async fn run(cli: Cli) -> Result<()> {
             daemon::ensure_started(&paths).await?;
             let mut config = daemon::call(&paths, "config/get", json!({})).await?;
             if let Some(ConfigCommand::Set { key, value }) = command {
-                anyhow::ensure!(config.get(&key).is_some(), "unknown setting {key}");
+                // Config::parse drops a retired key and refuses an unknown one.
                 config[&key] = serde_json::from_str(&value).unwrap_or(Value::String(value));
                 let (validated, _) = Config::parse(config.clone())?;
                 validated.validate()?;

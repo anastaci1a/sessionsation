@@ -16,11 +16,11 @@
     "doc_bytes:agents/README.md": { "value": 10289 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13913 },
-    "doc_bytes:docs/cli.md": { "value": 18164 },
+    "doc_bytes:docs/changelog.md": { "value": 13604 },
+    "doc_bytes:docs/cli.md": { "value": 18220 },
     "doc_bytes:docs/contract.md": { "value": 219208 },
     "doc_bytes:docs/operations.md": { "value": 17360 },
-    "doc_bytes_total": { "value": 289922 },
+    "doc_bytes_total": { "value": 289669 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 168 },
     "env_scrub_sites": { "value": 45 },
@@ -101,12 +101,12 @@
     "settings_json_claude": { "value": 6 },
     "sha256_digests": { "value": 20 },
     "since_contract_literals": { "value": 43 },
-    "since_revision_literals": { "value": 22 },
+    "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
     "spawn_sites": { "value": 54 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 4 },
-    "src_lines": { "value": 69539 },
+    "src_lines": { "value": 69551 },
     "stale_target_literals": { "value": 58 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -132,7 +132,7 @@
     "doc_bytes_total": { "value": 313300 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "inline_test_lines": { "value": 0 },
-    "src_lines": { "value": 69539 }
+    "src_lines": { "value": 69551 }
   },
   "ledger": [
     {
@@ -1955,7 +1955,7 @@
     },
     {
       "counter": "src_lines",
-      "by": -17519,
+      "by": -17507,
       "reason": "shrink-S1c: inline test modules moved to sibling test files (SHRINK 5.3 path rule); test-only seams moved into the tests modules",
       "considered": "n/a",
       "step": "shrink-S1c",
@@ -1963,9 +1963,41 @@
     },
     {
       "counter": "cap:src_lines",
-      "by": -17519,
+      "by": -17507,
       "reason": "shrink-S1c: the cap follows the counter down",
       "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": -309,
+      "reason": "review fixes: 1.68.0 entry lists the removed commands and daemon methods; links trimmed from older entries",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes:docs/cli.md",
+      "by": 56,
+      "reason": "review fixes: gemini_binary is ignored by config set, active_poll_seconds is unused",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": -253,
+      "reason": "review fixes: changelog and cli.md",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "since_revision_literals",
+      "by": 1,
+      "reason": "review fixes: providers[gemini].auth_command restored as static data (SHRINK 3.5 rule 6)",
+      "considered": "the key is Agent-DM-visible data kept until S8; there is no constant to derive it from before contract::FEATURES",
       "step": "shrink-S1c",
       "program": "shrink"
     }

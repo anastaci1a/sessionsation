@@ -271,7 +271,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert questions["providers"]["gemini"]["detect"] is False and questions["providers"]["gemini"]["reason"]
             # Revision 21: per-account Gemini authentication modes.
             gemini = next(p for p in value["result"]["providers"] if p["id"] == "gemini")
-            assert gemini["implemented"] is False and "auth_modes" not in gemini and "auth_command" not in gemini, gemini
+            assert gemini["implemented"] is False and "auth_modes" not in gemini, gemini
             # Revision 22: per-account Claude bypass-permissions warning.
             assert value["result"]["claude_bypass_warning"]["since_revision"] == 22
             assert value["result"]["claude_bypass_warning"]["new_accounts_default"] == "skip"

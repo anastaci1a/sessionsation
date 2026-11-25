@@ -58,7 +58,8 @@ Config keys (`config.json`): `codex_binary`, `claude_binary`,
 [`min_free_disk_mb`](contract.md#disk-space-guard),
 [`receipt_retention_days`, `receipt_unknown_horizon_days`](contract.md#receipt-retention)
 and the [retention](operations.md#retention) keys. `gemini_binary` and
-`native_sender_registration` are accepted and ignored.
+`native_sender_registration` are accepted and ignored (also by `config set`); `active_poll_seconds`
+is unused.
 
 ## Accounts
 

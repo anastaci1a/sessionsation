@@ -1718,7 +1718,9 @@ fn gemini_provider() -> Value {
     json!({"id":"gemini","implemented":false,"enrollment":false,"adopt_config_dir":false,"login":null,"usage":false,"usage_state":"unsupported","usage_source":"gemini-cli-unsupported",
         "new":false,"resume":false,"rename":false,"native_rename":false,"stop":false,
         "account_switch":false,"restart":false,"submit":false,"queue":false,
-        "account_deletion":false,"account_removal":false,"account_rename":false,"account_refresh":false,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
+        "account_deletion":true,"account_removal":true,"account_rename":false,"account_refresh":false,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
+        "headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false,"approval_mode":"default"},
+        "auth_command":{"since_revision":21,"command":"account auth","modes":["google","api_key"],"key_input":"stdin_json","validation_timeout_seconds":15,"unsupported_modes":["vertex"]},
         "force_interrupt":false,"steer":false,"input_delivery":gemini_input_delivery(),"cross_provider_conversion":false,
         "operations":crate::provider::capabilities(ProviderId::Gemini),"reason":no})
 }
@@ -1737,9 +1739,7 @@ fn gemini_input_delivery() -> Value {
         "steer":{"priority":"next","interrupts":false,"delivery":"next_tool_step_or_after_turn","interrupt_option":null,"label":"Steer","caveat":"dropped","not_applied":"submitted_after_turn_as_steering_prompt"},
         "model_steering":{"setting":"experimental.modelSteering","default":false,"toggle":"account live-steering gemini:<name> --enable|--disable","read_at":"session_start","restart_required":true},
         "keys":{"text":"pane send-text (no bracketed paste)","newline":"ctrl+j","clear":["ctrl+e","ctrl+u","ctrl+k","backspace"],"submit":"enter","leave_views":{"help":"backspace"},"never":["esc","ctrl+c","ctrl+d","ctrl+l"]},
-        "escaped_prefixes":["/","!","?"],"max_text_bytes":1000,"max_lines":8,
-        "draft":"read from the screen, cleared, typed back unsubmitted and verified; refused when not exactly reconstructable",
-        "correlation":"first user record at or after the submit containing the typed text","reply_requires_anchor":true,
+        "escaped_prefixes":["/","!","?"],"max_text_bytes":1000,"max_lines":8,"reply_requires_anchor":true,
         "refusal_reasons":[],"automatic_replay":false,"interrupt":false})
 }
 

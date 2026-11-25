@@ -1380,24 +1380,52 @@
       "usage_source": "claude-code-statusline"
     },
     {
-      "account_deletion": false,
+      "account_deletion": true,
       "account_display_name_max": 64,
       "account_limits": false,
       "account_logout": false,
       "account_refresh": false,
-      "account_removal": false,
+      "account_removal": true,
       "account_rename": false,
       "account_switch": false,
       "adopt_config_dir": false,
+      "auth_command": {
+        "command": "account auth",
+        "key_input": "stdin_json",
+        "modes": [
+          "google",
+          "api_key"
+        ],
+        "unsupported_modes": [
+          "vertex"
+        ],
+        "validation_timeout_seconds": 15
+      },
       "cross_provider_conversion": false,
       "enrollment": false,
       "force_interrupt": false,
+      "headless_delivery": {
+        "approval_mode": "default",
+        "automatic_replay": false,
+        "cancellation": false,
+        "command": "send",
+        "modes": [
+          "resume",
+          "new"
+        ],
+        "requires_stopped_session": true,
+        "semantics": "headless_print",
+        "timeout_is_uncertain": true,
+        "timeout_seconds": {
+          "default": 600,
+          "max": 3600
+        },
+        "version": 1
+      },
       "id": "gemini",
       "implemented": false,
       "input_delivery": {
         "automatic_replay": false,
-        "correlation": "first user record at or after the submit containing the typed text",
-        "draft": "read from the screen, cleared, typed back unsubmitted and verified; refused when not exactly reconstructable",
         "eligibility": "none: Gemini CLI is dropped",
         "enter": {
           "busy_model_steering_off": "native_queue",
@@ -1481,8 +1509,8 @@
       "new_account_name_max": 30,
       "operations": {
         "account_deletion": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "reason": "managed homes: conversation history preserved, home and credentials deleted",
+          "supported": true
         },
         "account_limits": {
           "reason": "gemini_cli_dropped_individual_accounts",
@@ -1493,8 +1521,8 @@
           "supported": false
         },
         "account_removal": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "reason": "managed homes: conversation history preserved, home and credentials deleted",
+          "supported": true
         },
         "account_rename": {
           "reason": "gemini_cli_dropped_individual_accounts",

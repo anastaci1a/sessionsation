@@ -315,8 +315,8 @@ pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> V
     })}).collect();
     let sessions: Vec<_> = state.sessions.values().map(|s|json!({"id":s.id,"thread_id":s.root_thread,"cwd":s.cwd,"account":s.account,"phase":s.phase,"reason":s.reason,"tmux_pane":s.tmux_pane,"manual_pause":s.manual_pause,"resume_work":s.resume_work})).collect();
     json!({"schema_version":1,"daemon":{"running":true,"package_version":env!("CARGO_PKG_VERSION"),"api_version":1,"lifecycle_reservations":["message-recoveries","space-moves"]},"codex_version":version,
-        "capabilities":{"account_deletion":true,"account_monitoring":true,"scheduler_simulation":true,"manual_exit_handoff":true,"manual_moves":true,"explicit_account_launch":true,"session_inventory":true,"session_open":true,"archive_recovery":true,"project_relocation":true,"session_restart":true,"session_termination":true,"session_pause":true,"job_retry":true,"verified_paginated_moves":true,"managed_launch":false,"experimental_auto_start":true,"experimental_auto_switching":true,"automatic_switching":false,"conversation_import":false},
-        "readiness":{"ready":false,"code":"NATIVE_HANDOFF_UNVERIFIED","detail":"Native handoff compatibility gates have not passed. See docs/COMPATIBILITY.md."},
+        "capabilities":{"account_deletion":true,"account_monitoring":true,"manual_exit_handoff":true,"manual_moves":true,"explicit_account_launch":true,"session_inventory":true,"session_open":true,"archive_recovery":true,"project_relocation":true,"session_restart":true,"session_termination":true,"session_pause":true,"job_retry":true,"verified_paginated_moves":true,"managed_launch":false,"experimental_auto_start":false,"experimental_auto_switching":false,"automatic_switching":false,"conversation_import":false},
+        "readiness":{"ready":false,"code":"NATIVE_HANDOFF_UNVERIFIED","detail":"Automatic account switching is not available."},
         "automatic_switch_preferences":state.automatic_switching,
         "automatic_start_preferences":state.automatic_start,
         "accounts":accounts,"sessions":sessions,"settings":config,"observed_at":at})

@@ -35,8 +35,8 @@ use std::{
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 600;
 pub const MAX_TIMEOUT_SECONDS: u64 = 3600;
 const MAX_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
-/// Bound of the stderr read of a headless run (kept for the agy sign-in refusal).
-const STDERR_SCAN_BYTES: u64 = 16 * 1024;
+/// Bound of the stderr read of a headless run (the agy sign-in refusal scans it).
+const STDERR_SCAN_BYTES: u64 = 64 * 1024;
 const MAX_REPLY_TEXT: usize = 64 * 1024;
 pub const SEMANTICS: &str = "headless_print";
 fn claude_provider() -> ProviderId {
@@ -675,7 +675,7 @@ async fn execute(
         }
         let mut bytes = vec![];
         let mut errors = vec![];
-        // Read both pipes together so a chatty stderr cannot stall stdout. Stderr (Gemini
+        // Read both pipes together so a chatty stderr cannot stall stdout. Stderr (agy
         // only) is bounded and used solely to recognize an authentication failure.
         let out_read = async {
             if let Some(out) = stdout.as_mut() {
