@@ -20,7 +20,8 @@ and package history are in Git.
 
 ## Versions
 
-- **1.69.1** Idle statusline replays no longer refill the meter after a redeem.
+- **1.69.2** Codex `force_interrupt` false again (1.68.2 bug).
+- **1.69.1** Meter: idle replays ignored after a redeem.
 - **1.69.0** Removed: hosted Claude (`api hosted`, `--hosted`, `view`, `take-over`), `api turn-notify`,
   `turn-events`, `idle-notify` (use `api events`), `api account rename-backend` and their capability keys
   and the row `backend_rename`. Check `operations/account-renames` before the cutover
@@ -59,9 +60,9 @@ and package history are in Git.
   `not_found:true`; `resume-launch` for Claude and Antigravity.
   [State](contract.md#identity-and-snapshots), [stop](contract.md#stop-and-restart),
   [resume](contract.md#saved-session-popup-resume).
-- **1.65.0** (meter cycles) Usage windows gain `cycle`, `cycle_started_at`, `cycle_reason`,
+- **1.65.0** Usage windows gain `cycle`, `cycle_started_at`, `cycle_reason`,
   `starts_on_first_use`; meters `window_reasons` and (Claude) `cedar_ember`; `reset_credits`
-  `fresh`, `age_seconds`; a redeem starts a cycle. [Usage](contract.md#limits-plan-and-usage).
+  `fresh`, `age_seconds`. [Usage](contract.md#limits-plan-and-usage).
 - **1.64.0** One `api send` body for every provider (intents `deliver`, `when_idle`,
   `interrupt`; `ignored_options`; one `delivery` block), supervisor-owned delivery
   workers with one safe re-dispatch; `api events`, `api hooks [install]`, Claude

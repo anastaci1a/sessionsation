@@ -944,7 +944,7 @@
       "cross_provider_conversion": false,
       "delivery": "non_steering_native_queue",
       "enrollment": true,
-      "force_interrupt": true,
+      "force_interrupt": false,
       "id": "codex",
       "implemented": true,
       "new": true,
