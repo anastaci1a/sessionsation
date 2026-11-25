@@ -199,15 +199,6 @@ pub const MOVES: &[(&str, &str)] = &[
     ("handoff.log", HANDOFF_LOG),
 ];
 
-/// Legacy entries whose absolute paths are recorded inside durable journals
-/// (archive manifests, account-deletion records, move backups). A relative
-/// compatibility symlink stays at the legacy path so recorded paths resolve.
-pub const COMPAT_LINKS: &[&str] = &[
-    "archived-sessions",
-    "preserved-conversations",
-    "move-backups",
-];
-
 /// Version 1 parents of non-Codex managed homes.
 pub const LEGACY_HOME_PARENTS: &[(ProviderId, &str)] = &[
     (ProviderId::Claude, "claude-accounts"),

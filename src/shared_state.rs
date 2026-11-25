@@ -368,38 +368,6 @@ pub fn detach_links(home: &Path) -> Result<Vec<&'static str>> {
     Ok(removed)
 }
 
-/// `renameat2(RENAME_EXCHANGE)`: atomically swap two existing paths.
-pub fn rename_exchange(a: &Path, b: &Path) -> std::io::Result<()> {
-    renameat2(a, b, 2)
-}
-/// `renameat2(RENAME_NOREPLACE)`: move without ever overwriting.
-pub fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
-    renameat2(from, to, 1)
-}
-fn renameat2(a: &Path, b: &Path, flags: libc::c_uint) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-    let c = |p: &Path| {
-        std::ffi::CString::new(p.as_os_str().as_bytes())
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
-    };
-    let (a, b) = (c(a)?, c(b)?);
-    let r = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            a.as_ptr(),
-            libc::AT_FDCWD,
-            b.as_ptr(),
-            flags,
-        )
-    };
-    if r == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
 /// Per-account link states for `shared status`.
 pub fn account_status(paths: &Paths, name: &str, home: &Path) -> Value {
     match managed_home(home) {

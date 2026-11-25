@@ -80,7 +80,7 @@
     "module_lines:src/retention": { "value": 401 },
     "module_lines:src/rpc": { "value": 297 },
     "module_lines:src/session_model": { "value": 524 },
-    "module_lines:src/shared_state": { "value": 441 },
+    "module_lines:src/shared_state": { "value": 409 },
     "module_lines:src/state": { "value": 0 },
     "now_sites": { "value": 21 },
     "oauth_allow_markers": { "value": 2 },
@@ -106,7 +106,7 @@
     "spawn_sites": { "value": 54 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 4 },
-    "src_lines": { "value": 87099 },
+    "src_lines": { "value": 87058 },
     "stale_target_literals": { "value": 58 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -131,7 +131,7 @@
     "doc_bytes:docs/operations.md": { "value": 24200 },
     "doc_bytes_total": { "value": 313300 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "src_lines": { "value": 87099 }
+    "src_lines": { "value": 87058 }
   },
   "ledger": [
     {
@@ -1730,7 +1730,7 @@
     },
     {
       "counter": "src_lines",
-      "by": -7978,
+      "by": -8019,
       "reason": "shrink-S1b: Gemini reduced to a stub; automatic, autostart, scheduler, compatibility, simulation, cli_views, sender_registry, the legacy CLI variants and the messaging/modes shell deleted",
       "considered": "n/a",
       "step": "shrink-S1b",
@@ -1746,8 +1746,16 @@
     },
     {
       "counter": "cap:src_lines",
-      "by": -7978,
+      "by": -8019,
       "reason": "shrink-S1b: the cap follows the counter down",
+      "considered": "n/a",
+      "step": "shrink-S1b",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/shared_state",
+      "by": -32,
+      "reason": "shrink-S1b: dead rename_exchange/rename_noreplace removed",
       "considered": "n/a",
       "step": "shrink-S1b",
       "program": "shrink"
