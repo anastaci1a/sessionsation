@@ -1,6 +1,6 @@
 {
   "roles_digest": "a1f92d442a9adaa9b5219be0240237eb215c62dc35ddd1c733c751b2f7700ce0",
-  "counters_digest": "19dcfc1e6e34d372c851823fb928c0b697c7798af21dec345039122f2f609bea",
+  "counters_digest": "794de3f4554fa41ba8ace3dcc54db7512a13ae633e451dcfc957626540b791f7",
   "counters": {
     "alive_fns": { "value": 0 },
     "apply_session_input_fns": { "value": 1 },

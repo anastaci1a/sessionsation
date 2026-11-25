@@ -19,8 +19,8 @@ mod counters;
 mod roles;
 
 use counters::{
-    CAP, CAP_INITIAL, COUNTERS, Counter, DOC_BYTES, DOC_INITIAL, Kind, MODULE_INITIAL,
-    MODULE_LINES, MODULES, SHRINK_MARKER_INDEX,
+    CAP, CAP_INITIAL, COUNTERS, Counter, DOC_BYTES, DOC_INITIAL, Kind, LEDGER_PREFIX_DIGEST,
+    MODULE_INITIAL, MODULE_LINES, MODULES, SHRINK_MARKER_INDEX, TABLES_DIGEST, UNLISTED_OK,
 };
 use regex::Regex;
 use roles::{Mech, Mode, ROLES, ROLES_DIGEST, Role};
@@ -1084,7 +1084,8 @@ fn is_shrink_marker(e: &Entry) -> bool {
 /// while it already has lines (`prior > 0`: creating a listed module is exempt).
 fn falls_only(counter: &str, prior: i64) -> bool {
     matches!(counter, "src_lines" | "cap:src_lines" | "inline_test_lines")
-        || (counter.starts_with(MODULE_LINES) && prior > 0)
+        || (counter.starts_with(MODULE_LINES)
+            && (prior > 0 || initial_of(counter).is_some_and(|i| i > 0)))
 }
 
 /// SHRINK §6.2 failures: the marker (pinned index), `agreed_by` on every rise of a
@@ -1135,9 +1136,9 @@ fn shrink_problems(base: &Baseline) -> Vec<String> {
                     "{at} raises a falls-only counter (by: {:+}) without agreed_by {{who: operator|lead, ref}}",
                     e.by
                 )),
-                Some(a) if a.reference.trim().is_empty() => {
+                Some(a) if !ref_looks_valid(&a.reference) => {
                     out.push(format!(
-                        "{at} has an agreed_by ({:?}) with an empty ref",
+                        "{at} has an agreed_by ({:?}) whose ref is not a message id or URL",
                         a.who
                     ));
                 }
@@ -1148,13 +1149,98 @@ fn shrink_problems(base: &Baseline) -> Vec<String> {
     out
 }
 
+/// `agreed_by.ref`: a URL, or a message id (at least six id characters, no spaces).
+fn ref_looks_valid(r: &str) -> bool {
+    static RX: OnceLock<Regex> = OnceLock::new();
+    RX.get_or_init(|| re(r"^(https?://\S+|[A-Za-z0-9][A-Za-z0-9._:/-]{5,})$"))
+        .is_match(r)
+}
+
+/// sha256 of the ledger entries up to and including the shrink marker.
+fn ledger_prefix_digest(base: &Baseline) -> String {
+    let mut s = String::new();
+    for e in base.ledger.iter().take(SHRINK_MARKER_INDEX + 1) {
+        s.push_str(&format!(
+            "{}|{}|{}|{}|{}|{:?}\n",
+            e.counter, e.by, e.reason, e.considered, e.step, e.program
+        ));
+    }
+    sha256_hex(s.as_bytes())
+}
+/// sha256 of the `steps` map and the `trajectory` rows.
+fn tables_digest(base: &Baseline) -> String {
+    let mut s = String::new();
+    for (k, v) in &base.steps {
+        s.push_str(&format!("step|{k}|{v}\n"));
+    }
+    for r in &base.trajectory {
+        s.push_str(&format!(
+            "row|{}|{}|{}|{}\n",
+            r.counter, r.by, r.max, r.step
+        ));
+    }
+    sha256_hex(s.as_bytes())
+}
+/// Pins: the ledger before the marker, the steps and the trajectory (a reviewed change of
+/// `counters.rs`, itself pinned by `counters_digest`); trajectory rows must fall strictly
+/// along their dates.
+fn ratchet_pin_problems(base: &Baseline) -> Vec<String> {
+    let mut out = vec![];
+    if ledger_prefix_digest(base) != LEDGER_PREFIX_DIGEST {
+        out.push(
+            "guard: ledger entries up to the shrink marker changed; they are never edited"
+                .to_owned(),
+        );
+    }
+    if tables_digest(base) != TABLES_DIGEST {
+        out.push("guard: guard/baseline.json steps or trajectory changed; update TABLES_DIGEST in src/guard/counters.rs (reviewed change)".to_owned());
+    }
+    let mut last: BTreeMap<&str, (&str, i64)> = BTreeMap::new();
+    for r in &base.trajectory {
+        if let Some((by, max)) = last.insert(&r.counter, (&r.by, r.max))
+            && (r.by.as_str() <= by || r.max >= max)
+            && !(r.max == 0 && max == 0)
+        {
+            out.push(format!(
+                "guard: trajectory row {} {} {} does not fall strictly after {by} {max}",
+                r.counter, r.by, r.max
+            ));
+        }
+    }
+    out
+}
+
+/// Every production file belongs to a listed module or to an allowlisted existing one.
+fn unlisted_problems(sources: &[Source]) -> Vec<String> {
+    sources
+        .iter()
+        .filter(|s| {
+            !MODULES.iter().any(|(m, _)| in_module(&s.path, m))
+                && !UNLISTED_OK.iter().any(|m| in_module(&s.path, m))
+        })
+        .map(|s| {
+            format!(
+                "guard: {} is in no module of counters::MODULES and not in UNLISTED_OK; list it (a budgeted module) or move it",
+                s.path
+            )
+        })
+        .collect()
+}
+
 /// Budget cap of the exemption: a listed module created by the program (initial
 /// 0) may not exceed its budget.
-fn module_budget_problems(actual: &BTreeMap<String, Measured>) -> Vec<String> {
+fn module_budget_problems(actual: &BTreeMap<String, Measured>, base: &Baseline) -> Vec<String> {
     let mut out = vec![];
     for (path, budget) in MODULES {
         let name = format!("{MODULE_LINES}{path}");
-        let new = initial_of(&name) == Some(0);
+        // New (initial 0) or recreated (its ledger value reached 0 once).
+        let mut v = initial_of(&name).unwrap_or(0) as i64;
+        let mut zero = v == 0;
+        for e in base.ledger.iter().filter(|e| e.counter == name) {
+            v += e.by;
+            zero |= v == 0;
+        }
+        let new = zero;
         if let Some(m) = actual.get(&name)
             && new
             && m.value > *budget
@@ -1175,18 +1261,36 @@ fn trajectory_problems(
     base: &Baseline,
     actual: &BTreeMap<String, Measured>,
     step: Option<&str>,
+    contract: (&str, u32),
 ) -> Vec<String> {
     let Some(step) = step.map(str::trim).filter(|s| !s.is_empty()) else {
         return vec![];
     };
     if step.starts_with("hotfix:") {
-        return vec![];
+        return if contract.1 > 0 {
+            vec![]
+        } else {
+            vec![format!(
+                "guard: a hotfix label needs a patch release; the contract is {}",
+                contract.0
+            )]
+        };
     }
-    let Some(release) = base.steps.get(step) else {
+    let Some(release) = base
+        .steps
+        .get(step)
+        .or_else(|| base.steps.values().find(|v| v.as_str() == step))
+    else {
         return vec![format!(
             "guard: release step {step:?} is not in guard/baseline.json \"steps\""
         )];
     };
+    if release != contract.0 {
+        return vec![format!(
+            "guard: step {step} is release {release}, but this build is contract {}",
+            contract.0
+        )];
+    }
     let rows: Vec<&Trajectory> = base
         .trajectory
         .iter()
@@ -1975,6 +2079,13 @@ fn measure() {
     println!("roles_digest {}", roles_digest_of(ROLES_RS));
     println!("counters_digest {}", sha256_hex(COUNTERS_RS.as_bytes()));
     println!("files {}", sources().len());
+    println!("ledger_prefix_digest {}", ledger_prefix_digest(&baseline()));
+    println!("tables_digest {}", tables_digest(&baseline()));
+    for s in sources() {
+        if !MODULES.iter().any(|(m, _)| in_module(&s.path, m)) {
+            println!("unlisted {}", s.path);
+        }
+    }
     for (p, files) in duplicate_paragraphs(docs).iter().take(10) {
         println!("dup [{}] {}", files.join(", "), first_chars(p, 60));
     }
@@ -2677,7 +2788,7 @@ fn program_entry(counter: &str, by: i64, step: &str) -> Entry {
 fn agreed(who: Who) -> Option<Agreed> {
     Some(Agreed {
         who,
-        reference: "msg-1".into(),
+        reference: "msg-000001".into(),
     })
 }
 
@@ -2804,16 +2915,19 @@ fn creating_a_listed_module_is_exempt() {
             sites: vec![],
         },
     );
-    assert!(module_budget_problems(&m).is_empty());
+    assert!(module_budget_problems(&m, &baseline()).is_empty());
     m.get_mut(&name).unwrap().value += 1;
-    assert_eq!(module_budget_problems(&m).len(), 1);
+    assert_eq!(module_budget_problems(&m, &baseline()).len(), 1);
     // Unlisted paths have no counter at all.
     assert_eq!(initial_of(&format!("{MODULE_LINES}src/not_listed")), None);
 }
 
 #[test]
 fn module_budgets_hold_for_new_modules() {
-    fail_on(module_budget_problems(&measure_all(sources(), docs())));
+    fail_on(module_budget_problems(
+        &measure_all(sources(), docs()),
+        &baseline(),
+    ));
 }
 
 #[test]
@@ -2840,6 +2954,7 @@ fn src_lines_cap_is_enforced() {
 
 #[test]
 fn trajectory_gates_only_the_release() {
+    const C: (&str, u32) = ("1.69.0", 0);
     let base = baseline();
     let mut m = measure_all(&[], &[]);
     let set = |m: &mut BTreeMap<String, Measured>, name: &str, v: usize| {
@@ -2860,28 +2975,39 @@ fn trajectory_gates_only_the_release() {
     };
     // Unset and hotfix labels skip, even with absurd values.
     set(&mut m, "src_lines", 10_000_000);
-    assert!(trajectory_problems(&base, &m, None).is_empty());
-    assert!(trajectory_problems(&base, &m, Some("")).is_empty());
-    assert!(trajectory_problems(&base, &m, Some("hotfix:1.68.1")).is_empty());
+    assert!(trajectory_problems(&base, &m, None, C).is_empty());
+    assert!(trajectory_problems(&base, &m, Some(""), C).is_empty());
+    assert!(trajectory_problems(&base, &m, Some("hotfix:1.69.1"), ("1.69.1", 1)).is_empty());
+    // A hotfix label is refused on a minor release, and a step of another release fails.
+    assert_eq!(trajectory_problems(&base, &m, Some("hotfix:x"), C).len(), 1);
+    assert_eq!(
+        trajectory_problems(&base, &m, Some("shrink-S3"), C).len(),
+        1
+    );
+    // The release label resolves like its step (S2 is over its ceiling here).
+    assert!(trajectory_problems(&base, &m, Some("1.69.0"), C)[0].contains("trajectory ceiling"));
     // A release step above its ceiling fails; at the ceiling passes.
     let rows = row("shrink-S2");
     assert!(!rows.is_empty());
     for (c, max) in &rows {
         set(&mut m, c, *max as usize);
     }
-    assert!(trajectory_problems(&base, &m, Some("shrink-S2")).is_empty());
+    assert!(trajectory_problems(&base, &m, Some("shrink-S2"), C).is_empty());
     let (c, max) = rows[0].clone();
     set(&mut m, &c, max as usize + 1);
-    let p = trajectory_problems(&base, &m, Some("shrink-S2"));
+    let p = trajectory_problems(&base, &m, Some("shrink-S2"), C);
     assert_eq!(p.len(), 1, "{p:#?}");
     assert!(p[0].contains("above the trajectory ceiling"));
     // An unmapped step fails; a release without a row fails (a missed row).
-    assert_eq!(trajectory_problems(&base, &m, Some("shrink-S42")).len(), 1);
+    assert_eq!(
+        trajectory_problems(&base, &m, Some("shrink-S42"), C).len(),
+        1
+    );
     let mut missed = baseline();
     missed
         .trajectory
         .retain(|r| r.step != base.steps["shrink-S2"]);
-    let p = trajectory_problems(&missed, &m, Some("shrink-S2"));
+    let p = trajectory_problems(&missed, &m, Some("shrink-S2"), C);
     assert_eq!(p.len(), 1, "{p:#?}");
     assert!(p[0].contains("has no trajectory row"));
 }
@@ -2894,7 +3020,18 @@ fn trajectory_holds() {
         &baseline(),
         &measure_all(sources(), docs()),
         step.as_deref(),
+        (crate::api::CONTRACT_VERSION, crate::api::CONTRACT_PATCH),
     ));
+}
+
+#[test]
+fn ratchet_tables_are_pinned() {
+    fail_on(ratchet_pin_problems(&baseline()));
+}
+
+#[test]
+fn every_production_file_is_listed() {
+    fail_on(unlisted_problems(sources()));
 }
 
 #[test]
@@ -2914,4 +3051,76 @@ fn inline_test_lines_count_only_braced_items() {
         inline_test_lines("#[cfg(test)]\nmod tests;\n#[cfg(test)]\nconst X: u8 = 1;\n"),
         0
     );
+}
+
+#[test]
+fn ratchet_pins_catch_edits() {
+    let base = baseline();
+    assert!(ratchet_pin_problems(&base).is_empty());
+    let mut b = baseline();
+    b.ledger[0].by += 1;
+    assert_eq!(ratchet_pin_problems(&b).len(), 1);
+    let mut b = baseline();
+    b.trajectory[1].max += 1;
+    assert!(
+        ratchet_pin_problems(&b)
+            .iter()
+            .any(|m| m.contains("steps or trajectory changed"))
+    );
+    let mut b = baseline();
+    b.steps.insert("shrink-S9".into(), "1.99.0".into());
+    assert!(!ratchet_pin_problems(&b).is_empty());
+    // A trajectory that does not fall strictly is refused even with a matching digest check.
+    let mut b = baseline();
+    let last = b.trajectory.len() - 1;
+    b.trajectory[last].max = b.trajectory[last - 1].max;
+    assert!(
+        ratchet_pin_problems(&b)
+            .iter()
+            .any(|m| m.contains("does not fall strictly"))
+    );
+}
+
+#[test]
+fn a_new_unlisted_path_and_a_recreated_module_are_caught() {
+    let src = source("src/brand_new.rs", "fn a() {}\n");
+    assert_eq!(unlisted_problems(&[src]).len(), 1);
+    assert!(unlisted_problems(&[source("src/api.rs", "fn a() {}\n")]).is_empty());
+    // An existing module that fell to zero lines is under its budget again when recreated.
+    let existing = MODULES
+        .iter()
+        .find(|(p, _)| initial_of(&format!("{MODULE_LINES}{p}")).unwrap() > 0)
+        .unwrap();
+    let name = format!("{MODULE_LINES}{}", existing.0);
+    let mut base = shrink_fixture();
+    let initial = initial_of(&name).unwrap() as i64;
+    base.ledger
+        .push(program_entry(&name, -initial, "shrink-S3"));
+    let mut m = measure_all(&[], &[]);
+    m.insert(
+        name.clone(),
+        Measured {
+            value: existing.1 + 1,
+            sites: vec![],
+        },
+    );
+    assert_eq!(module_budget_problems(&m, &base).len(), 1);
+    // And it stays falls-only after the rewrite rose again.
+    base.ledger.push(program_entry(&name, 5, "shrink-S3"));
+    assert_eq!(shrink_problems(&base).len(), 1);
+}
+
+#[test]
+fn agreed_by_refs_look_like_ids_or_urls() {
+    for ok in [
+        "msg-000001",
+        "https://example.org/x/1",
+        "8c1f2a3b-0000",
+        "api_send:42/7",
+    ] {
+        assert!(ref_looks_valid(ok), "{ok}");
+    }
+    for bad in ["", "ok", "see chat", "x y z abc"] {
+        assert!(!ref_looks_valid(bad), "{bad}");
+    }
 }
