@@ -15,6 +15,6 @@ registry=
 # shellcheck disable=SC2086
 exec docker run --rm -v "$root:/work" -w /work -e CARGO_TARGET_DIR=/target \
     -e RUST_TEST_THREADS -e TOKIO_WORKER_THREADS -e SESSIONSATION_TEST_TIME_SCALE \
-    -e SESSIONSATION_NO_NEXTEST -e NEXTEST_TEST_THREADS \
+    -e SESSIONSATION_NO_NEXTEST -e NEXTEST_TEST_THREADS -e SESSIONSATION_RELEASE_STEP \
     -v "$target:/target" $registry --tmpfs /tmp:rw,exec,size="${CHECK_TMPFS:-6g}" \
     "${CHECK_IMAGE:-sessionsation-public-check:local}" "$@"

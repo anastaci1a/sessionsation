@@ -87,8 +87,12 @@ compares them with `guard/baseline.json`. Any change of a counter, up or down, n
 a ledger entry `{counter, by, reason, considered, step}`; the guard requires
 `value == initial + Σ by`. `initial` is pinned in `src/guard/counters.rs`, and that
 file and the roles table are pinned by `counters_digest` and `roles_digest`. A rise
-needs a real `considered`, except for the size counters (`src_lines`, `api_rs_lines`,
-`doc_bytes:*`, `doc_bytes_total`). The ledger also covers `doc_bytes:<path>` for
+needs a real `considered`, except for the size counters (`src_lines`, `inline_test_lines`,
+`module_lines:*`, `doc_bytes:*`, `doc_bytes_total`). After the `shrink-S0` ledger entry (the shrink
+program) a rise of `src_lines`, its cap (`cap:src_lines`, enforced), `inline_test_lines` or an
+existing `module_lines:*` also needs `agreed_by: {who: operator|lead, ref}`; creating a module
+listed in `counters::MODULES` is exempt. The release gate checks the trajectory:
+`SESSIONSATION_RELEASE_STEP=<step> scripts/check.sh` (`hotfix:*` skips it). The ledger also covers `doc_bytes:<path>` for
 every Markdown file in the repository (outside `.git`, `target*` and vendored
 registries; Git-tracked files only when Git is available, otherwise everything
 except root-level and dot-directory scratch), their total, and the count of long

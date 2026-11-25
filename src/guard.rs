@@ -18,7 +18,10 @@
 mod counters;
 mod roles;
 
-use counters::{CAP, CAP_INITIAL, COUNTERS, Counter, DOC_BYTES, DOC_INITIAL, Kind};
+use counters::{
+    CAP, CAP_INITIAL, COUNTERS, Counter, DOC_BYTES, DOC_INITIAL, Kind, MODULE_INITIAL,
+    MODULE_LINES, MODULES, SHRINK_MARKER_INDEX,
+};
 use regex::Regex;
 use roles::{Mech, Mode, ROLES, ROLES_DIGEST, Role};
 use serde::Deserialize;
@@ -53,6 +56,8 @@ struct Source {
     path: String,
     /// `wc -l` of the whole file.
     raw_lines: usize,
+    /// Lines of the file's `}`-ended `#[cfg(test)]` items ([`Kind::InlineTestLines`]).
+    inline_test_lines: usize,
     lines: Vec<Line>,
 }
 
@@ -147,6 +152,7 @@ fn source(rel: &str, text: &str) -> Source {
     Source {
         path: rel.to_owned(),
         raw_lines: text.bytes().filter(|&b| b == b'\n').count(),
+        inline_test_lines: inline_test_lines(text),
         lines,
     }
 }
@@ -339,12 +345,11 @@ fn item_end(sk: &[u8], from: usize) -> usize {
     sk.len()
 }
 
-/// The text with every `#[cfg(test)]` / `#[cfg(all(test, ..))]` item
-/// (attribute included) replaced by spaces.
-fn strip_tests(text: &str) -> String {
-    let sk = skeleton(text);
+/// The byte span (attribute start, item end) of every `#[cfg(test)]` /
+/// `#[cfg(all(test, ..))]` item of the skeleton `sk`, outermost first.
+fn test_items(sk: &[u8]) -> Vec<(usize, usize)> {
     let n = sk.len();
-    let mut out = text.as_bytes().to_vec();
+    let mut out = vec![];
     let mut i = 0;
     while i < n {
         if sk[i] != b'#' {
@@ -383,14 +388,38 @@ fn strip_tests(text: &str) -> String {
             .map(|&c| c as char)
             .collect();
         if is_test_cfg(&attr) {
-            let end = item_end(&sk, k + 1);
-            blank(&mut out, i, end);
+            let end = item_end(sk, k + 1);
+            out.push((i, end));
             i = end;
         } else {
             i = k + 1;
         }
     }
+    out
+}
+
+/// The text with every `#[cfg(test)]` / `#[cfg(all(test, ..))]` item
+/// (attribute included) replaced by spaces.
+fn strip_tests(text: &str) -> String {
+    let sk = skeleton(text);
+    let mut out = text.as_bytes().to_vec();
+    for (from, to) in test_items(&sk) {
+        blank(&mut out, from, to);
+    }
     String::from_utf8(out).expect("guard: blanking keeps UTF-8")
+}
+
+/// SHRINK §6.1: the lines (attribute line to closing line) of every test-only
+/// item whose end is a `}` (a body: `mod x { }`, `fn`, `impl`, `struct { }`).
+/// Items ending in `;` or `,` (`mod tests;`, `use`, a field or variant) are not
+/// counted.
+fn inline_test_lines(text: &str) -> usize {
+    let sk = skeleton(text);
+    test_items(&sk)
+        .into_iter()
+        .filter(|&(_, to)| to > 0 && sk[to - 1] == b'}')
+        .map(|(from, to)| sk[from..to].iter().filter(|&&b| b == b'\n').count() + 1)
+        .sum()
 }
 
 // ---------------------------------------------------------------- matching
@@ -460,6 +489,10 @@ fn measure_one(c: &Counter, sources: &[Source], docs: &[Doc]) -> Measured {
             value: applicable().map(|s| s.raw_lines).sum(),
             sites: vec![],
         },
+        Kind::InlineTestLines => Measured {
+            value: applicable().map(|s| s.inline_test_lines).sum(),
+            sites: vec![],
+        },
         Kind::Sites | Kind::Markers => {
             let rx = re(c.regex);
             let permitted = permitted_of(c);
@@ -518,12 +551,32 @@ fn measure_one(c: &Counter, sources: &[Source], docs: &[Doc]) -> Measured {
     }
 }
 
-/// Every counter by name, including one `doc_bytes:<path>` per doc file.
+/// `file` is `<module>.rs` or lies under `<module>/`.
+fn in_module(file: &str, module: &str) -> bool {
+    file.strip_prefix(module)
+        .is_some_and(|rest| rest == ".rs" || rest.starts_with('/'))
+}
+
+/// Every counter by name, including one `doc_bytes:<path>` per doc file and one
+/// `module_lines:<path>` per module of [`MODULES`].
 fn measure_all(sources: &[Source], docs: &[Doc]) -> BTreeMap<String, Measured> {
     let mut out: BTreeMap<String, Measured> = COUNTERS
         .iter()
         .map(|c| (c.name.to_owned(), measure_one(c, sources, docs)))
         .collect();
+    for (path, _) in MODULES {
+        out.insert(
+            format!("{MODULE_LINES}{path}"),
+            Measured {
+                value: sources
+                    .iter()
+                    .filter(|s| in_module(&s.path, path))
+                    .map(|s| s.raw_lines)
+                    .sum(),
+                sites: vec![],
+            },
+        );
+    }
     for d in docs {
         out.insert(
             format!("{DOC_BYTES}{}", d.path),
@@ -545,12 +598,22 @@ fn initial_of(name: &str) -> Option<usize> {
                 .map_or(0, |(_, v)| *v),
         );
     }
+    if let Some(path) = name.strip_prefix(MODULE_LINES) {
+        return MODULES.iter().any(|(p, _)| *p == path).then(|| {
+            MODULE_INITIAL
+                .iter()
+                .find(|(p, _)| *p == path)
+                .map_or(0, |(_, v)| *v)
+        });
+    }
     COUNTERS.iter().find(|c| c.name == name).map(|c| c.initial)
 }
 
-/// Counters under an Enforced hard cap: every documentation counter.
+/// Counters under an Enforced hard cap: `src_lines` (SHRINK §6.2, falls-only)
+/// and every documentation counter.
 fn capped(name: &str) -> bool {
-    name.starts_with(DOC_BYTES)
+    name == "src_lines"
+        || name.starts_with(DOC_BYTES)
         || COUNTERS.iter().any(|c| {
             c.name == name && matches!(c.kind, Kind::DocBytesTotal | Kind::DocDuplicateParagraphs)
         })
@@ -791,6 +854,37 @@ struct Baseline {
     caps: BTreeMap<String, BaselineCounter>,
     ledger: Vec<Entry>,
     enforced: BTreeMap<String, String>,
+    /// Shrink program: step label -> release label (SHRINK §6.2).
+    steps: BTreeMap<String, String>,
+    /// Shrink program: counter ceilings per release (SHRINK §6.3).
+    trajectory: Vec<Trajectory>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Trajectory {
+    counter: String,
+    /// Date the release is due (informational).
+    by: String,
+    max: i64,
+    /// Release label, resolved from the step through `steps`.
+    step: String,
+}
+
+/// Who agreed to a rise of a falls-only counter.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum Who {
+    Operator,
+    Lead,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Agreed {
+    who: Who,
+    #[serde(rename = "ref")]
+    reference: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -799,7 +893,7 @@ struct BaselineCounter {
     value: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
     counter: String,
@@ -810,6 +904,12 @@ struct Entry {
     considered: String,
     #[serde(default)]
     step: String,
+    /// `"shrink"` for the entries of the shrink program (SHRINK §6.2).
+    #[serde(default)]
+    program: Option<String>,
+    /// Required for a rise of a falls-only counter after the shrink marker.
+    #[serde(default)]
+    agreed_by: Option<Agreed>,
 }
 
 fn load_baseline(root: &Path) -> Result<Baseline, String> {
@@ -888,7 +988,7 @@ fn ledger_problems(base: &Baseline) -> Vec<String> {
             }
             _ => {}
         }
-        if e.by == 0 {
+        if e.by == 0 && !is_shrink_marker(e) {
             out.push(format!("{at} has by: 0"));
         }
         if e.reason.trim().is_empty() {
@@ -965,6 +1065,150 @@ fn ledger_problems(base: &Baseline) -> Vec<String> {
                 "guard: counter {} is missing from guard/baseline.json",
                 c.name
             ));
+        }
+    }
+    out.extend(shrink_problems(base));
+    out
+}
+
+/// The marker entry that opens the falls-only rule: `src_lines`, `by: 0`, step
+/// `shrink-S0`, program `shrink`.
+fn is_shrink_marker(e: &Entry) -> bool {
+    e.counter == "src_lines"
+        && e.by == 0
+        && e.step == "shrink-S0"
+        && e.program.as_deref() == Some("shrink")
+}
+
+/// Counters whose rise needs `agreed_by` after the marker; a module counter only
+/// while it already has lines (`prior > 0`: creating a listed module is exempt).
+fn falls_only(counter: &str, prior: i64) -> bool {
+    matches!(counter, "src_lines" | "cap:src_lines" | "inline_test_lines")
+        || (counter.starts_with(MODULE_LINES) && prior > 0)
+}
+
+/// SHRINK §6.2 failures: the marker (pinned index), `agreed_by` on every rise of a
+/// falls-only counter after it, one `src_lines` entry per program step, program
+/// steps listed in `steps`, and the budget cap of a newly created module.
+fn shrink_problems(base: &Baseline) -> Vec<String> {
+    let mut out = vec![];
+    let markers: Vec<usize> = (0..base.ledger.len())
+        .filter(|&i| is_shrink_marker(&base.ledger[i]))
+        .collect();
+    if markers != [SHRINK_MARKER_INDEX] {
+        out.push(format!(
+            "guard: the shrink marker entry (src_lines, by 0, step shrink-S0, program shrink) must be the single one, at ledger index {SHRINK_MARKER_INDEX}; found at {markers:?}"
+        ));
+    }
+    let mut running: BTreeMap<&str, i64> = BTreeMap::new();
+    let mut per_step: BTreeMap<&str, usize> = BTreeMap::new();
+    for (i, e) in base.ledger.iter().enumerate() {
+        let prior = *running
+            .entry(e.counter.as_str())
+            .or_insert_with(|| initial_of(&e.counter).unwrap_or(0) as i64);
+        *running.get_mut(e.counter.as_str()).expect("inserted") += e.by;
+        let at = format!("guard: ledger entry {i} ({})", e.counter);
+        if e.program.as_deref() == Some("shrink") {
+            if !base.steps.contains_key(&e.step) {
+                out.push(format!(
+                    "{at}: step {:?} is not in guard/baseline.json \"steps\"",
+                    e.step
+                ));
+            }
+            if e.counter == "src_lines" {
+                let n = per_step.entry(e.step.as_str()).or_insert(0);
+                *n += 1;
+                if *n > 1 {
+                    out.push(format!(
+                        "{at}: step {} has more than one src_lines entry (one squash commit, one line)",
+                        e.step
+                    ));
+                }
+            }
+        }
+        if !markers.is_empty() && i <= markers[0] {
+            continue;
+        }
+        if e.by > 0 && falls_only(&e.counter, prior) {
+            match &e.agreed_by {
+                None => out.push(format!(
+                    "{at} raises a falls-only counter (by: {:+}) without agreed_by {{who: operator|lead, ref}}",
+                    e.by
+                )),
+                Some(a) if a.reference.trim().is_empty() => {
+                    out.push(format!(
+                        "{at} has an agreed_by ({:?}) with an empty ref",
+                        a.who
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    out
+}
+
+/// Budget cap of the exemption: a listed module created by the program (initial
+/// 0) may not exceed its budget.
+fn module_budget_problems(actual: &BTreeMap<String, Measured>) -> Vec<String> {
+    let mut out = vec![];
+    for (path, budget) in MODULES {
+        let name = format!("{MODULE_LINES}{path}");
+        let new = initial_of(&name) == Some(0);
+        if let Some(m) = actual.get(&name)
+            && new
+            && m.value > *budget
+        {
+            out.push(format!(
+                "guard: new module {path} has {} lines, above its budget {budget}",
+                m.value
+            ));
+        }
+    }
+    out
+}
+
+/// SHRINK §6.3, release gate only: the measured counters against the trajectory
+/// rows of the release named by `step` (`SESSIONSATION_RELEASE_STEP`). Unset or
+/// `hotfix:*` skips; an unmapped step or a release without a row fails.
+fn trajectory_problems(
+    base: &Baseline,
+    actual: &BTreeMap<String, Measured>,
+    step: Option<&str>,
+) -> Vec<String> {
+    let Some(step) = step.map(str::trim).filter(|s| !s.is_empty()) else {
+        return vec![];
+    };
+    if step.starts_with("hotfix:") {
+        return vec![];
+    }
+    let Some(release) = base.steps.get(step) else {
+        return vec![format!(
+            "guard: release step {step:?} is not in guard/baseline.json \"steps\""
+        )];
+    };
+    let rows: Vec<&Trajectory> = base
+        .trajectory
+        .iter()
+        .filter(|r| &r.step == release)
+        .collect();
+    if rows.is_empty() {
+        return vec![format!(
+            "guard: release {release} (step {step}) has no trajectory row in guard/baseline.json"
+        )];
+    }
+    let mut out = vec![];
+    for r in rows {
+        match actual.get(&r.counter) {
+            None => out.push(format!(
+                "guard: trajectory row for {release} names unknown counter {}",
+                r.counter
+            )),
+            Some(m) if m.value as i64 > r.max => out.push(format!(
+                "guard: release {release} (step {step}): {} is {}, above the trajectory ceiling {} (due {})",
+                r.counter, m.value, r.max, r.by
+            )),
+            Some(_) => {}
         }
     }
     out
@@ -1126,9 +1370,14 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// Size counters: their rises need no `considered`.
 fn size_counter(name: &str) -> bool {
     name.starts_with(DOC_BYTES)
-        || COUNTERS
-            .iter()
-            .any(|c| c.name == name && matches!(c.kind, Kind::Lines | Kind::DocBytesTotal))
+        || name.starts_with(MODULE_LINES)
+        || COUNTERS.iter().any(|c| {
+            c.name == name
+                && matches!(
+                    c.kind,
+                    Kind::Lines | Kind::InlineTestLines | Kind::DocBytesTotal
+                )
+        })
 }
 
 /// `roles_table_is_pinned` / `counters_table_is_pinned` failures: the roles
@@ -1275,7 +1524,7 @@ fn doc_caps_are_enforced() {
     let v = cap_violations(&fake("doc_bytes:docs/new.md", 10), &base);
     assert!(v[0].starts_with("guard: counter doc_bytes:docs/new.md is 10 and has no cap"));
     assert_eq!(cap_initial_of("doc_bytes:docs/new.md"), Some(0));
-    assert_eq!(cap_initial_of("src_lines"), None);
+    assert_eq!(cap_initial_of("src_lines"), Some(103063));
     // Raising a cap needs a balancing ledger entry with a real "considered".
     let mut base = baseline();
     base.caps.get_mut("doc_bytes:docs/cli.md").unwrap().value += 100;
@@ -1291,6 +1540,7 @@ fn doc_caps_are_enforced() {
         reason: "x".into(),
         considered: "n/a".into(),
         step: "S9".into(),
+        ..Default::default()
     });
     let p = ledger_problems(&base);
     assert_eq!(p.len(), 1, "{p:#?}");
@@ -1304,6 +1554,7 @@ fn doc_caps_are_enforced() {
         reason: "x".into(),
         considered: String::new(),
         step: "S9".into(),
+        ..Default::default()
     });
     base.caps.remove("doc_bytes:AGENTS.md");
     let p = ledger_problems(&base);
@@ -2302,6 +2553,7 @@ fn baseline_tampering_is_caught() {
         reason: "x".into(),
         considered: String::new(),
         step: "S7".into(),
+        ..Default::default()
     });
     let p = ledger_problems(&base);
     assert_eq!(p.len(), 1, "{p:#?}");
@@ -2398,4 +2650,268 @@ fn provider_dispatch_pattern() {
     ] {
         assert!(!rx.is_match(miss), "should not match: {miss}");
     }
+}
+
+// ---------------------------------------------------------------- shrink ratchet (SHRINK §6)
+
+/// A baseline with the marker at its pinned index and nothing after it.
+fn shrink_fixture() -> Baseline {
+    let mut base = baseline();
+    base.ledger.truncate(SHRINK_MARKER_INDEX + 1);
+    assert!(is_shrink_marker(&base.ledger[SHRINK_MARKER_INDEX]));
+    base
+}
+
+fn program_entry(counter: &str, by: i64, step: &str) -> Entry {
+    Entry {
+        counter: counter.into(),
+        by,
+        reason: "x".into(),
+        considered: "tried a smaller change".into(),
+        step: step.into(),
+        program: Some("shrink".into()),
+        ..Default::default()
+    }
+}
+
+fn agreed(who: Who) -> Option<Agreed> {
+    Some(Agreed {
+        who,
+        reference: "msg-1".into(),
+    })
+}
+
+#[test]
+fn shrink_marker_and_labels_are_pinned() {
+    let base = baseline();
+    assert!(is_shrink_marker(&base.ledger[SHRINK_MARKER_INDEX]));
+    assert_eq!(
+        base.ledger
+            .iter()
+            .filter(|e| e.program.as_deref() == Some("shrink") && e.by == 0)
+            .count(),
+        1
+    );
+    // Every step label maps to a release that has trajectory rows.
+    for label in [
+        "shrink-S0",
+        "shrink-S1a",
+        "shrink-S1b",
+        "shrink-S1c",
+        "shrink-S2",
+        "shrink-S3",
+        "shrink-S4a",
+        "shrink-S4b",
+        "shrink-S4c",
+        "shrink-S5",
+        "shrink-S6a",
+        "shrink-S6b",
+        "shrink-S7",
+        "shrink-S8",
+    ] {
+        let release = base.steps.get(label);
+        assert!(release.is_some(), "steps lacks {label}");
+        if label != "shrink-S0" {
+            let release = release.unwrap();
+            assert!(
+                base.trajectory.iter().any(|r| &r.step == release),
+                "no trajectory row for {release} ({label})"
+            );
+        }
+    }
+    // The marker is the only by-0 entry and the baseline passes as it stands.
+    assert!(shrink_problems(&base).is_empty());
+}
+
+#[test]
+fn falls_only_rejects_a_rise_without_agreed_by() {
+    let mut base = shrink_fixture();
+    for counter in ["src_lines", "cap:src_lines", "inline_test_lines"] {
+        let mut b = shrink_fixture();
+        b.ledger.push(program_entry(counter, 5, "shrink-S1a"));
+        let p = shrink_problems(&b);
+        assert_eq!(p.len(), 1, "{counter}: {p:#?}");
+        assert!(p[0].contains("without agreed_by"), "{p:#?}");
+        // A fall, or a rise carrying agreed_by (either who), passes.
+        b.ledger.last_mut().unwrap().by = -5;
+        assert!(shrink_problems(&b).is_empty());
+        b.ledger.last_mut().unwrap().by = 5;
+        for who in [Who::Operator, Who::Lead] {
+            b.ledger.last_mut().unwrap().agreed_by = agreed(who);
+            assert!(shrink_problems(&b).is_empty(), "{counter} {who:?}");
+        }
+        b.ledger.last_mut().unwrap().agreed_by = Some(Agreed {
+            who: Who::Lead,
+            reference: " ".into(),
+        });
+        assert_eq!(shrink_problems(&b).len(), 1);
+    }
+    // An existing module (value > 0) is falls-only too.
+    let existing = MODULES
+        .iter()
+        .map(|(p, _)| *p)
+        .find(|p| initial_of(&format!("{MODULE_LINES}{p}")).unwrap() > 0)
+        .expect("an existing module");
+    base.ledger.push(program_entry(
+        &format!("{MODULE_LINES}{existing}"),
+        1,
+        "shrink-S1a",
+    ));
+    assert_eq!(shrink_problems(&base).len(), 1);
+    // Entries before the marker are exempt: the same rise earlier is not flagged.
+    let mut early = baseline();
+    early.ledger[0].by = 5;
+    early.ledger[0].counter = "src_lines".into();
+    assert!(shrink_problems(&early).is_empty());
+    // A second src_lines entry in one program step is refused.
+    let mut two = shrink_fixture();
+    two.ledger
+        .push(program_entry("src_lines", -1, "shrink-S1a"));
+    two.ledger
+        .push(program_entry("src_lines", -1, "shrink-S1a"));
+    let p = shrink_problems(&two);
+    assert_eq!(p.len(), 1, "{p:#?}");
+    assert!(p[0].contains("more than one src_lines entry"));
+    // A program step missing from "steps" is refused.
+    let mut odd = shrink_fixture();
+    odd.ledger
+        .push(program_entry("src_lines", -1, "shrink-S99"));
+    assert!(shrink_problems(&odd)[0].contains("not in guard/baseline.json \"steps\""));
+}
+
+#[test]
+fn creating_a_listed_module_is_exempt() {
+    let new = MODULES
+        .iter()
+        .map(|(p, b)| (*p, *b))
+        .find(|(p, _)| initial_of(&format!("{MODULE_LINES}{p}")) == Some(0))
+        .expect("a module not created yet");
+    let name = format!("{MODULE_LINES}{}", new.0);
+    let mut base = shrink_fixture();
+    base.ledger.push(program_entry(&name, 100, "shrink-S3"));
+    assert!(shrink_problems(&base).is_empty(), "creation is exempt");
+    // The second rise: the module exists now, so it is falls-only.
+    base.ledger.push(program_entry(&name, 10, "shrink-S3"));
+    assert_eq!(shrink_problems(&base).len(), 1);
+    base.ledger.last_mut().unwrap().agreed_by = agreed(Who::Operator);
+    assert!(shrink_problems(&base).is_empty());
+    // The budget still binds a new module.
+    let mut m = measure_all(&[], &[]);
+    m.insert(
+        name.clone(),
+        Measured {
+            value: new.1,
+            sites: vec![],
+        },
+    );
+    assert!(module_budget_problems(&m).is_empty());
+    m.get_mut(&name).unwrap().value += 1;
+    assert_eq!(module_budget_problems(&m).len(), 1);
+    // Unlisted paths have no counter at all.
+    assert_eq!(initial_of(&format!("{MODULE_LINES}src/not_listed")), None);
+}
+
+#[test]
+fn module_budgets_hold_for_new_modules() {
+    fail_on(module_budget_problems(&measure_all(sources(), docs())));
+}
+
+#[test]
+fn src_lines_cap_is_enforced() {
+    let base = baseline();
+    assert!(capped("src_lines"));
+    let cap = base.caps["src_lines"].value;
+    let fake = |value: i64| {
+        let mut m = measure_all(&[], &[]);
+        m.insert(
+            "src_lines".to_owned(),
+            Measured {
+                value: value as usize,
+                sites: vec![],
+            },
+        );
+        m
+    };
+    assert!(cap_violations(&fake(cap), &base).is_empty());
+    let v = cap_violations(&fake(cap + 1), &base);
+    assert_eq!(v.len(), 1, "{v:#?}");
+    assert!(v[0].contains("cap:src_lines"));
+}
+
+#[test]
+fn trajectory_gates_only_the_release() {
+    let base = baseline();
+    let mut m = measure_all(&[], &[]);
+    let set = |m: &mut BTreeMap<String, Measured>, name: &str, v: usize| {
+        m.insert(
+            name.to_owned(),
+            Measured {
+                value: v,
+                sites: vec![],
+            },
+        );
+    };
+    let row = |step: &str| {
+        base.trajectory
+            .iter()
+            .filter(|r| r.step == base.steps[step])
+            .map(|r| (r.counter.clone(), r.max))
+            .collect::<Vec<_>>()
+    };
+    // Unset and hotfix labels skip, even with absurd values.
+    set(&mut m, "src_lines", 10_000_000);
+    assert!(trajectory_problems(&base, &m, None).is_empty());
+    assert!(trajectory_problems(&base, &m, Some("")).is_empty());
+    assert!(trajectory_problems(&base, &m, Some("hotfix:1.68.1")).is_empty());
+    // A release step above its ceiling fails; at the ceiling passes.
+    let rows = row("shrink-S2");
+    assert!(!rows.is_empty());
+    for (c, max) in &rows {
+        set(&mut m, c, *max as usize);
+    }
+    assert!(trajectory_problems(&base, &m, Some("shrink-S2")).is_empty());
+    let (c, max) = rows[0].clone();
+    set(&mut m, &c, max as usize + 1);
+    let p = trajectory_problems(&base, &m, Some("shrink-S2"));
+    assert_eq!(p.len(), 1, "{p:#?}");
+    assert!(p[0].contains("above the trajectory ceiling"));
+    // An unmapped step fails; a release without a row fails (a missed row).
+    assert_eq!(trajectory_problems(&base, &m, Some("shrink-S42")).len(), 1);
+    let mut missed = baseline();
+    missed
+        .trajectory
+        .retain(|r| r.step != base.steps["shrink-S2"]);
+    let p = trajectory_problems(&missed, &m, Some("shrink-S2"));
+    assert_eq!(p.len(), 1, "{p:#?}");
+    assert!(p[0].contains("has no trajectory row"));
+}
+
+/// The release gate: `SESSIONSATION_RELEASE_STEP=shrink-S2 scripts/check.sh`.
+#[test]
+fn trajectory_holds() {
+    let step = std::env::var("SESSIONSATION_RELEASE_STEP").ok();
+    fail_on(trajectory_problems(
+        &baseline(),
+        &measure_all(sources(), docs()),
+        step.as_deref(),
+    ));
+}
+
+#[test]
+fn inline_test_lines_count_only_braced_items() {
+    let text = "fn a() {}\n\
+                #[cfg(test)]\nmod tests;\n\
+                #[cfg(test)]\nuse std::fmt;\n\
+                #[cfg(test)]\nmod t {\n    fn f() { let s = r#\"}\"#; }\n}\n\
+                struct S {\n    #[cfg(test)]\n    x: u8,\n    y: u8,\n}\n\
+                #[cfg(all(test, unix))]\nfn g() {\n    let _ = '}';\n}\n\
+                #[cfg(any(test, unix))]\nfn h() {\n}\n\
+                fn tail() {}\n";
+    // `mod t` spans 3 lines + attribute = 4 lines; `fn g` 3 + 1 = 4.
+    assert_eq!(inline_test_lines(text), 4 + 4);
+    assert_eq!(inline_test_lines("fn a() {}\n"), 0);
+    assert_eq!(
+        inline_test_lines("#[cfg(test)]\nmod tests;\n#[cfg(test)]\nconst X: u8 = 1;\n"),
+        0
+    );
 }

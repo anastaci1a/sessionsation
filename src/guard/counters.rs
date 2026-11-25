@@ -18,6 +18,10 @@ pub enum Kind {
     /// Normalized paragraphs (>= 160 chars) shared by several doc files; a
     /// paragraph in N files counts N - 1.
     DocDuplicateParagraphs,
+    /// Lines of every `#[cfg(test)]` / `#[cfg(all(test, ..))]` item that ends in a
+    /// `}` (attribute line to closing line): inline test mods, fns, impls. Items
+    /// ending in `;` or `,` (`mod tests;`, `use`, a field) are not counted.
+    InlineTestLines,
 }
 
 #[derive(Debug)]
@@ -96,14 +100,14 @@ pub const COUNTERS: &[Counter] = &[
         kind: Kind::Lines,
     },
     Counter {
-        name: "api_rs_lines",
+        name: "inline_test_lines",
         regex: "",
         exclude: &[],
         scope: None,
-        files: &["src/api.rs"],
+        files: &[],
         role: None,
-        initial: 5132,
-        kind: Kind::Lines,
+        initial: 19250,
+        kind: Kind::InlineTestLines,
     },
     // locks
     sites(
@@ -608,4 +612,98 @@ pub const CAP_INITIAL: &[(&str, usize)] = &[
     ("doc_bytes:docs/operations.md", 24200),
     ("doc_bytes_total", 313300),
     ("doc_duplicate_paragraphs", 0),
+    ("src_lines", 103063),
+];
+
+/// Prefix of the per-module line counters: `module_lines:<path>` (SHRINK design
+/// §6.1). A path is a module stem: it covers `<path>.rs` and every file under
+/// `<path>/`, test files and the guard excluded like `src_lines`.
+pub const MODULE_LINES: &str = "module_lines:";
+
+/// Ledger index of the falls-only marker entry (`program: "shrink"`, step
+/// `shrink-S0`): entries after it are under the falls-only rule (design §6.2).
+pub const SHRINK_MARKER_INDEX: usize = 150;
+
+/// The `src_lines` target budget of each module of the design's §3.1 module map
+/// (single-module rows; grouped rows such as `store`/`model`/`usage_history` or
+/// `timing`..`lib` have no counter). A module absent here has no counter.
+pub const MODULES: &[(&str, usize)] = &[
+    ("src/main", 600),
+    ("src/api", 1500),
+    ("src/contract", 200),
+    ("src/codes", 150),
+    ("src/daemon", 700),
+    ("src/control", 200),
+    ("src/rpc", 300),
+    ("src/accounts", 1100),
+    ("src/reset_credit", 500),
+    ("src/catalog", 1200),
+    ("src/state", 700),
+    ("src/activity", 300),
+    ("src/record", 400),
+    ("src/launch", 1300),
+    ("src/pane_reuse", 250),
+    ("src/auto_start", 600),
+    ("src/archive", 800),
+    ("src/host", 900),
+    ("src/messaging/send", 600),
+    ("src/messaging/ledger", 400),
+    ("src/messaging/codex_input", 600),
+    ("src/messaging/transport", 300),
+    ("src/messaging/typing", 900),
+    ("src/messaging/peer", 500),
+    ("src/questions", 600),
+    ("src/messaging/model_change", 500),
+    ("src/messaging/compaction", 400),
+    ("src/retention", 300),
+    ("src/provider/mod", 400),
+    ("src/provider/caps", 150),
+    ("src/provider/codex", 900),
+    ("src/provider/claude", 2000),
+    ("src/provider/antigravity", 800),
+    ("src/provider/events", 500),
+    ("src/provider/observe", 350),
+    ("src/provider/usage", 600),
+    ("src/session_model", 300),
+    ("src/paths", 350),
+    ("src/alias", 300),
+    ("src/shared_state", 200),
+    ("src/proc", 300),
+    ("src/file_cache", 150),
+    ("src/config", 200),
+    ("src/disk_space", 100),
+];
+
+/// `initial` of each `module_lines:<path>` counter at the S0 landing of the
+/// shrink program. A module absent here has initial 0 (a module not created yet).
+pub const MODULE_INITIAL: &[(&str, usize)] = &[
+    ("src/accounts", 654),
+    ("src/alias", 706),
+    ("src/api", 5663),
+    ("src/catalog", 3912),
+    ("src/config", 276),
+    ("src/control", 442),
+    ("src/daemon", 1500),
+    ("src/disk_space", 177),
+    ("src/file_cache", 207),
+    ("src/launch", 1661),
+    ("src/main", 2188),
+    ("src/messaging/compaction", 1565),
+    ("src/messaging/ledger", 823),
+    ("src/messaging/model_change", 1882),
+    ("src/messaging/transport", 586),
+    ("src/pane_reuse", 546),
+    ("src/paths", 511),
+    ("src/proc", 199),
+    ("src/provider/antigravity", 2188),
+    ("src/provider/claude", 9405),
+    ("src/provider/codex", 298),
+    ("src/provider/events", 1004),
+    ("src/provider/mod", 358),
+    ("src/questions", 1109),
+    ("src/reset_credit", 1160),
+    ("src/retention", 401),
+    ("src/rpc", 297),
+    ("src/session_model", 524),
+    ("src/shared_state", 1431),
 ];

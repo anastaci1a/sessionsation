@@ -1,9 +1,8 @@
 {
   "roles_digest": "a1f92d442a9adaa9b5219be0240237eb215c62dc35ddd1c733c751b2f7700ce0",
-  "counters_digest": "405652eab99e850ea7c19f25e42fbb3a3469bbf5dd1132e60677974bc9cfbd10",
+  "counters_digest": "19dcfc1e6e34d372c851823fb928c0b697c7798af21dec345039122f2f609bea",
   "counters": {
     "alive_fns": { "value": 0 },
-    "api_rs_lines": { "value": 5663 },
     "apply_session_input_fns": { "value": 1 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 0 },
@@ -14,14 +13,14 @@
     "daemon_methods": { "value": 25 },
     "doc_bytes:AGENTS.md": { "value": 103 },
     "doc_bytes:README.md": { "value": 2441 },
-    "doc_bytes:agents/README.md": { "value": 9872 },
+    "doc_bytes:agents/README.md": { "value": 10289 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13974 },
+    "doc_bytes:docs/changelog.md": { "value": 14000 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
-    "doc_bytes:docs/contract.md": { "value": 231501 },
+    "doc_bytes:docs/contract.md": { "value": 231484 },
     "doc_bytes:docs/operations.md": { "value": 23430 },
-    "doc_bytes_total": { "value": 308811 },
+    "doc_bytes_total": { "value": 309237 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -34,10 +33,55 @@
     "herdr_allow_markers": { "value": 0 },
     "herdr_cli_callers": { "value": 42 },
     "identity_allow_markers": { "value": 0 },
+    "inline_test_lines": { "value": 19250 },
     "json_parse_sites": { "value": 136 },
     "ledger_allow_markers": { "value": 2 },
     "ledger_opens": { "value": 0 },
     "locks_allow_markers": { "value": 0 },
+    "module_lines:src/accounts": { "value": 654 },
+    "module_lines:src/activity": { "value": 0 },
+    "module_lines:src/alias": { "value": 706 },
+    "module_lines:src/api": { "value": 5663 },
+    "module_lines:src/archive": { "value": 0 },
+    "module_lines:src/auto_start": { "value": 0 },
+    "module_lines:src/catalog": { "value": 3912 },
+    "module_lines:src/codes": { "value": 0 },
+    "module_lines:src/config": { "value": 276 },
+    "module_lines:src/contract": { "value": 0 },
+    "module_lines:src/control": { "value": 442 },
+    "module_lines:src/daemon": { "value": 1500 },
+    "module_lines:src/disk_space": { "value": 177 },
+    "module_lines:src/file_cache": { "value": 207 },
+    "module_lines:src/host": { "value": 0 },
+    "module_lines:src/launch": { "value": 1661 },
+    "module_lines:src/main": { "value": 2188 },
+    "module_lines:src/messaging/codex_input": { "value": 0 },
+    "module_lines:src/messaging/compaction": { "value": 1565 },
+    "module_lines:src/messaging/ledger": { "value": 823 },
+    "module_lines:src/messaging/model_change": { "value": 1882 },
+    "module_lines:src/messaging/peer": { "value": 0 },
+    "module_lines:src/messaging/send": { "value": 0 },
+    "module_lines:src/messaging/transport": { "value": 586 },
+    "module_lines:src/messaging/typing": { "value": 0 },
+    "module_lines:src/pane_reuse": { "value": 546 },
+    "module_lines:src/paths": { "value": 511 },
+    "module_lines:src/proc": { "value": 199 },
+    "module_lines:src/provider/antigravity": { "value": 2188 },
+    "module_lines:src/provider/caps": { "value": 0 },
+    "module_lines:src/provider/claude": { "value": 9405 },
+    "module_lines:src/provider/codex": { "value": 298 },
+    "module_lines:src/provider/events": { "value": 1004 },
+    "module_lines:src/provider/mod": { "value": 358 },
+    "module_lines:src/provider/observe": { "value": 0 },
+    "module_lines:src/provider/usage": { "value": 0 },
+    "module_lines:src/questions": { "value": 1109 },
+    "module_lines:src/record": { "value": 0 },
+    "module_lines:src/reset_credit": { "value": 1160 },
+    "module_lines:src/retention": { "value": 401 },
+    "module_lines:src/rpc": { "value": 297 },
+    "module_lines:src/session_model": { "value": 524 },
+    "module_lines:src/shared_state": { "value": 1431 },
+    "module_lines:src/state": { "value": 0 },
     "now_sites": { "value": 26 },
     "oauth_allow_markers": { "value": 2 },
     "oauth_sites": { "value": 2 },
@@ -62,7 +106,7 @@
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 103236 },
+    "src_lines": { "value": 103063 },
     "stale_target_literals": { "value": 62 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -86,7 +130,8 @@
     "doc_bytes:docs/contract.md": { "value": 233400 },
     "doc_bytes:docs/operations.md": { "value": 24200 },
     "doc_bytes_total": { "value": 313300 },
-    "doc_duplicate_paragraphs": { "value": 0 }
+    "doc_duplicate_paragraphs": { "value": 0 },
+    "src_lines": { "value": 103063 }
   },
   "ledger": [
     {
@@ -121,13 +166,6 @@
       "counter": "src_lines",
       "by": 1223,
       "reason": "1.62.0 SM8 usage meter, SM3 session meters, SM7 SESSIONSATION_SESSION_ID",
-      "considered": "n/a",
-      "step": "1.62.0"
-    },
-    {
-      "counter": "api_rs_lines",
-      "by": 104,
-      "reason": "1.62.0 usage_read for every provider (usage meter rows, capabilities for session_env, usage_meter, session_meters)",
       "considered": "n/a",
       "step": "1.62.0"
     },
@@ -244,20 +282,6 @@
       "step": "S0"
     },
     {
-      "counter": "api_rs_lines",
-      "by": 1,
-      "reason": "R1 rebase onto 1.62.0: the api.rs guard-allow(oauth) marker line",
-      "considered": "n/a",
-      "step": "S0"
-    },
-    {
-      "counter": "api_rs_lines",
-      "by": 65,
-      "reason": "1.62.1: api usage and account limits read Codex meters on demand through the supervisor; stale-reason annotation",
-      "considered": "n/a",
-      "step": "1.62.1"
-    },
-    {
       "counter": "daemon_methods",
       "by": 1,
       "reason": "1.62.1: account/usage_read, the supervisor read of one Codex meter on demand",
@@ -314,13 +338,6 @@
       "step": "1.62.1"
     },
     {
-      "counter": "api_rs_lines",
-      "by": 77,
-      "reason": "1.62.1: supervisor keeps the active state snapshot fresh (snapshot_monitor, refresh_snapshot_if_due)",
-      "considered": "n/a",
-      "step": "1.62.1"
-    },
-    {
       "counter": "doc_bytes:docs/contract.md",
       "by": 893,
       "reason": "1.62.1 contract section: cached state kept fresh by the supervisor",
@@ -354,13 +371,6 @@
       "reason": "1.62.1: supervisor keeps the active state snapshot fresh (snapshot_monitor, refresh_snapshot_if_due)",
       "considered": "n/a",
       "step": "1.62.1"
-    },
-    {
-      "counter": "api_rs_lines",
-      "by": 47,
-      "reason": "1.63.0: observe --history flag, Gemini stop refusal, stop result shaping in the stop paths, capabilities observe_conversation and stop_result",
-      "considered": "n/a",
-      "step": "1.63.0"
     },
     {
       "counter": "doc_bytes:docs/cli.md",
@@ -424,13 +434,6 @@
       "reason": "1.63.0: provider::conversation (SM4 reader), provider::stop_shape, native observe, launch exit window, typing guard, empty archive and their unit tests",
       "considered": "n/a",
       "step": "1.63.0"
-    },
-    {
-      "counter": "api_rs_lines",
-      "by": 3,
-      "reason": "1.64.0 (part A: send): capabilities.send_request (one line, built by provider::send::capability) and the contract-version test",
-      "considered": "n/a",
-      "step": "1.64.0"
     },
     {
       "counter": "doc_bytes:docs/contract.md",
@@ -513,13 +516,6 @@
       "counter": "src_lines",
       "by": 195,
       "reason": "1.64.0 (part A: send): supervisor-owned delivery workers (message/worker, local setsid fallback, worker log), the one re-dispatch of an admitted orphan and the sweep",
-      "considered": "n/a",
-      "step": "1.64.0"
-    },
-    {
-      "counter": "api_rs_lines",
-      "by": 74,
-      "reason": "1.64.0 part B: api events and api hooks [install] commands, the turn facts handed to the event observer from full state rows, capabilities session_events and hooks",
       "considered": "n/a",
       "step": "1.64.0"
     },
@@ -734,13 +730,6 @@
       "step": "1.65.0"
     },
     {
-      "counter": "api_rs_lines",
-      "by": -31,
-      "reason": "1.65.0 S1 (measured): api.rs per-provider decisions moved into provider::ops",
-      "considered": "n/a",
-      "step": "1.65.0"
-    },
-    {
       "counter": "src_lines",
       "by": 920,
       "reason": "1.65.0 S1 (measured): provider::ops (Op, OP_KEYS, ProviderOps, Facts and their enums, refusal helpers), the four provider/<p>/ops.rs tables (account_plan and account_usage moved from daemon.rs), provider::dispatch (exec_new_inline, exec_login moved from main.rs)",
@@ -786,20 +775,6 @@
       "counter": "provider_string_compares",
       "by": -5,
       "reason": "1.65.0 S1 review: ops::supervised_name replaces strip_prefix(\"codex:\"); gemini typing asks ops::holds(terminal_input) and matches gemini::MODEL_RECORD_TYPE",
-      "considered": "n/a",
-      "step": "1.65.0"
-    },
-    {
-      "counter": "api_rs_lines",
-      "by": -2,
-      "reason": "1.65.0 S1 review: ops::supervised_name in api switch",
-      "considered": "n/a",
-      "step": "1.65.0"
-    },
-    {
-      "counter": "api_rs_lines",
-      "by": 16,
-      "reason": "1.65.0 meter cycles: capability usage_meter.cycles, reset_credits, starts_on_first_use and window_reasons, usage_read.windows_after_own_reset, the cedar status URL of the meter read",
       "considered": "n/a",
       "step": "1.65.0"
     },
@@ -898,13 +873,6 @@
       "counter": "doc_bytes_total",
       "by": 44,
       "reason": "1.66.0 changelog entry (S3)",
-      "considered": "n/a",
-      "step": "1.66.0"
-    },
-    {
-      "counter": "api_rs_lines",
-      "by": 138,
-      "reason": "1.66.0 lifecycle: state rows get availability reasons and launching rows, stop/archive of an unknown session (one terminal answer) and pane close on already_stopped, resume_launch_native, capability session_lifecycle",
       "considered": "n/a",
       "step": "1.66.0"
     },
@@ -1012,13 +980,6 @@
       "reason": "1.66.1: docs/changelog.md, docs/contract.md and docs/operations.md as above",
       "considered": "n/a",
       "step": "1.66.1"
-    },
-    {
-      "counter": "api_rs_lines",
-      "by": 34,
-      "reason": "1.66.2 lifecycle edges: stop of an archived session answers already_stopped with archived:true (any generation), the resume pane in already_stopped, the no-history fresh start in resume_current and resume_launch_native, capability additions",
-      "considered": "n/a",
-      "step": "1.66.2"
     },
     {
       "counter": "doc_bytes:docs/changelog.md",
@@ -1189,13 +1150,6 @@
       "step": "1.67.0"
     },
     {
-      "counter": "api_rs_lines",
-      "by": 5,
-      "reason": "1.67.0 SM10: per-window fresh and age_seconds in the usage_meter capability; contract 1.67.0",
-      "considered": "n/a",
-      "step": "1.67.0"
-    },
-    {
       "counter": "doc_bytes:docs/changelog.md",
       "by": 2,
       "reason": "1.67.0: one merged entry for the typing, launch-path, PATH, compaction and meter-freshness changes",
@@ -1231,35 +1185,59 @@
       "step": "1.67.0"
     },
     {
-      "counter": "doc_bytes:docs/changelog.md",
-      "by": -26,
-      "reason": "1.67.1 line, offset by tightening older entries to stay within the cap",
+      "counter": "src_lines",
+      "by": 0,
+      "reason": "falls-only from here",
       "considered": "n/a",
-      "step": "hotfix:1.67.1"
+      "step": "shrink-S0",
+      "program": "shrink"
     },
     {
-      "counter": "doc_bytes:docs/contract.md",
-      "by": 17,
-      "reason": "1.67.1: receipt retention runs in a send only from 9,000 receipts",
+      "counter": "doc_bytes:agents/README.md",
+      "by": 417,
+      "reason": "shrink-S0: falls-only, agreed_by, trajectory and release-step paragraph in Owned roles and the guard",
       "considered": "n/a",
-      "step": "hotfix:1.67.1"
+      "step": "shrink-S0",
+      "program": "shrink"
     },
     {
       "counter": "doc_bytes_total",
-      "by": -9,
-      "reason": "1.67.1 changelog and contract text",
+      "by": 417,
+      "reason": "shrink-S0 paragraph in agents/README.md",
       "considered": "n/a",
-      "step": "hotfix:1.67.1"
-    },
-    {
-      "counter": "src_lines",
-      "by": 173,
-      "reason": "1.67.1 hotfix: fd-inheritance close helper and tests, launch re-admission, send-path retention gating, regression tests",
-      "considered": "n/a",
-      "step": "hotfix:1.67.1"
+      "step": "shrink-S0",
+      "program": "shrink"
     }
   ],
-  "enforced"
-
-: { "identity": "1.66.0", "ledger": "1.66.1", "oauth": "S0", "provider-ops": "1.65.0", "typing": "1.67.0" }
+  "enforced": { "identity": "1.66.0", "ledger": "1.66.1", "oauth": "S0", "provider-ops": "1.65.0", "typing": "1.67.0" },
+  "steps": {
+    "shrink-S0": "main",
+    "shrink-S1a": "1.68.0",
+    "shrink-S1b": "1.68.0",
+    "shrink-S1c": "1.68.0",
+    "shrink-S2": "1.69.0",
+    "shrink-S3": "1.70.0",
+    "shrink-S4a": "1.71.0",
+    "shrink-S4b": "1.72.0",
+    "shrink-S4c": "1.73.0",
+    "shrink-S5": "1.74.0",
+    "shrink-S6a": "1.75.0",
+    "shrink-S6b": "1.76.0",
+    "shrink-S7": "1.77.0",
+    "shrink-S8": "1.78.0"
+  },
+  "trajectory": [
+    {"counter": "inline_test_lines", "by": "2026-11-28", "max": 0, "step": "1.68.0"},
+    {"counter": "src_lines", "by": "2026-11-28", "max": 71000, "step": "1.68.0"},
+    {"counter": "src_lines", "by": "2026-11-30", "max": 67600, "step": "1.69.0"},
+    {"counter": "src_lines", "by": "2026-12-02", "max": 62600, "step": "1.70.0"},
+    {"counter": "src_lines", "by": "2026-12-03", "max": 62300, "step": "1.71.0"},
+    {"counter": "src_lines", "by": "2026-12-05", "max": 56300, "step": "1.72.0"},
+    {"counter": "src_lines", "by": "2026-12-08", "max": 53000, "step": "1.73.0"},
+    {"counter": "src_lines", "by": "2026-12-10", "max": 43700, "step": "1.74.0"},
+    {"counter": "src_lines", "by": "2026-12-12", "max": 38200, "step": "1.75.0"},
+    {"counter": "src_lines", "by": "2026-12-14", "max": 34400, "step": "1.76.0"},
+    {"counter": "src_lines", "by": "2026-12-16", "max": 29900, "step": "1.77.0"},
+    {"counter": "src_lines", "by": "2026-12-18", "max": 25900, "step": "1.78.0"}
+  ]
 }
