@@ -461,6 +461,40 @@ async fn lost_acceptance_survives_restart_and_reconciles_without_resubmitting() 
         1
     );
 }
+#[tokio::test]
+async fn stale_generation_blocks_actual_submission() {
+    let (_dir, paths, mut input, now) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    a.pid = std::process::id();
+    let stat = fs::read_to_string(format!("/proc/{}/stat", a.pid)).unwrap();
+    a.start = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    fs::create_dir_all(paths.root.join(crate::layout::MANAGED_PANES)).unwrap();
+    fs::write(
+        paths.root.join(crate::layout::MANAGED_PANES).join("1.json"),
+        json!({"pid":a.pid,"start_time":a.start,"home":a.home,"thread":a.id}).to_string(),
+    )
+    .unwrap();
+    let fake = server(&a.endpoint(), "0.163.0", true, false, true).await;
+    input.expected_generation = "0".repeat(64);
+    let mut db = Ledger::open(&paths).unwrap();
+    let mut receipt = db.accept(&input, now).unwrap();
+    assert_eq!(
+        deliver(&paths, &mut db, &mut receipt, Some(&input))
+            .await
+            .unwrap_err()
+            .0,
+        "generation_mismatch"
+    );
+    assert!(fake.methods.lock().unwrap().is_empty());
+}
 
 pub(super) fn bind(paths: &Paths, a: &mut Attachment) {
     a.pid = std::process::id();
@@ -480,6 +514,37 @@ pub(super) fn bind(paths: &Paths, a: &mut Attachment) {
         json!({"pid":a.pid,"start_time":a.start,"home":a.home,"thread":a.id}).to_string(),
     )
     .unwrap();
+}
+#[tokio::test]
+async fn native_cancellation_true_vs_too_late() {
+    for deleted in [true, false] {
+        let (_dir, paths, mut input, now) = fixture();
+        let mut a = attachment_fixture(&paths, &input);
+        bind(&paths, &mut a);
+        let fake = server(&a.endpoint(), "0.163.0", true, false, deleted).await;
+        input.expected_generation = a.generation();
+        let mut db = Ledger::open(&paths).unwrap();
+        let mut receipt = db.accept(&input, now).unwrap();
+        deliver(&paths, &mut db, &mut receipt, Some(&input))
+            .await
+            .unwrap();
+        assert_eq!(receipt.state, "native_accepted");
+        let outcome = cancel(&paths, &mut db, &mut receipt).await;
+        if deleted {
+            outcome.unwrap();
+            assert_eq!(receipt.state, "cancelled");
+        } else {
+            assert_eq!(outcome.unwrap_err().0, "already_submitted");
+            assert_ne!(receipt.state, "cancelled");
+        }
+        assert!(
+            fake.methods
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|s| !s.contains("interrupt") && !s.contains("steer"))
+        );
+    }
 }
 
 pub(super) async fn scripted_server(
@@ -529,6 +594,29 @@ pub(super) async fn scripted_connections(
             }
         }
     })
+}
+#[tokio::test]
+async fn revalidates_generation_after_native_preflight() {
+    let (_dir, paths, mut input, now) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    bind(&paths, &mut a);
+    let binding = paths.root.join(crate::layout::MANAGED_PANES).join("1.json");
+    let task = scripted_server(&a.endpoint(), move |req| {
+        assert_eq!(req["method"], "thread/read");
+        fs::remove_file(&binding).unwrap();
+        Some(json!({"thread":{"id":req["params"]["threadId"],"status":{"type":"idle"}}}))
+    })
+    .await;
+    input.expected_generation = a.generation();
+    let mut db = Ledger::open(&paths).unwrap();
+    let mut receipt = db.accept(&input, now).unwrap();
+    assert!(
+        deliver(&paths, &mut db, &mut receipt, Some(&input))
+            .await
+            .is_err()
+    );
+    assert_eq!(receipt.state, "pending_local");
+    task.abort();
 }
 #[tokio::test]
 async fn missing_native_evidence_never_replays_and_duplicate_correlation_is_rejected() {
@@ -599,6 +687,54 @@ async fn malformed_and_oversized_frames_fail_closed() {
         assert!(a.connect().await.is_err());
         task.await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn submission_holds_movement_locks_and_journals_before_native_mutation() {
+    let (_dir, paths, mut input, now) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    bind(&paths, &mut a);
+    let root = paths.root.clone();
+    let task=scripted_server(&a.endpoint(),move|req|{
+        let queue=lock_file(&root.join(crate::layout::HANDOFF_JOBS).join("queue.lock")).unwrap();assert!(queue.try_lock_exclusive().is_err());
+        let conversation=lock_file(&root.join(crate::layout::HANDOFF_JOBS).join(format!("{}.open-lock",req["params"]["threadId"].as_str().unwrap()))).unwrap();assert!(conversation.try_lock_exclusive().is_err());
+        if req["method"]=="thread/read" {return Some(json!({"thread":{"id":req["params"]["threadId"],"status":{"type":"active"}}}));}
+        assert_eq!(req["method"],"thread/queue/add");
+        let db=Connection::open(root.join("messaging/receipts.db")).unwrap();let text:String=db.query_row("SELECT receipt FROM receipts",[],|r|r.get(0)).unwrap();let persisted:Receipt=serde_json::from_str(&text).unwrap();assert_eq!(persisted.state,"unknown");
+        Some(json!({"queuedSubmission":{"id":"q","clientUserMessageId":req["params"]["clientUserMessageId"]}}))
+    }).await;
+    input.expected_generation = a.generation();
+    let mut db = Ledger::open(&paths).unwrap();
+    let mut receipt = db.accept(&input, now).unwrap();
+    deliver(&paths, &mut db, &mut receipt, Some(&input))
+        .await
+        .unwrap();
+    assert_eq!(receipt.state, "native_accepted");
+    task.abort();
+}
+#[tokio::test]
+async fn already_queued_migration_rejects_enqueue_before_any_socket_use() {
+    let (_dir, paths, mut input, now) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    bind(&paths, &mut a);
+    let fake = server(&a.endpoint(), "0.163.0", true, false, true).await;
+    let dir = paths.root.join(crate::layout::HANDOFF_JOBS);
+    fs::create_dir_all(&dir).unwrap();
+    let job = json!({"id":"job","source":{"pane":"%1","tmux_session":"fake","pid":a.pid,"start_time":a.start,"cwd":"/fixture","thread_id":a.id,"rollout":"/fixture/unused","home":a.home,"binary":"unused","resume_options":[]},"target":"other","phase":"queued","detail":"fixture","source_lease_released":false,"pause_approved":false,"risks_approved":false});
+    let _: external::Job = serde_json::from_value(job.clone()).unwrap();
+    fs::write(dir.join("job.json"), job.to_string()).unwrap();
+    input.expected_generation = a.generation();
+    let mut db = Ledger::open(&paths).unwrap();
+    let mut receipt = db.accept(&input, now).unwrap();
+    assert_eq!(
+        deliver(&paths, &mut db, &mut receipt, Some(&input))
+            .await
+            .unwrap_err()
+            .0,
+        "migrating"
+    );
+    assert_eq!(receipt.state, "pending_local");
+    assert!(fake.methods.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -678,6 +814,60 @@ async fn native_socket_symlink_is_validated_and_target_replacement_changes_gener
     )
     .unwrap();
     assert_eq!(a.connect().await.err().unwrap().0, "unsafe_endpoint");
+}
+
+#[tokio::test]
+async fn session_labels_are_bounded_metadata_not_identity_or_credentials() {
+    let (_dir, paths, input, _) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    let gen_before = a.generation();
+    assert_eq!(labels(&paths, &a.id, Some(&a.home)).unwrap(), (None, None));
+    let shared: Value =
+        serde_json::from_str(include_str!("../../docs/messaging/v1.2.1/fixtures.json")).unwrap();
+    let other = shared["duplicate_name_session"]["session_id"]
+        .as_str()
+        .unwrap();
+    fs::create_dir_all(paths.root.join(crate::layout::CONVERSATIONS)).unwrap();
+    let write_name = |id: &str, name: &str| {
+        fs::write(
+            paths
+                .root
+                .join(crate::layout::CONVERSATIONS)
+                .join(format!("{id}.json")),
+            json!({"name":name}).to_string(),
+        )
+        .unwrap();
+    };
+    let name = shared["named_session"]["display_name"].as_str().unwrap();
+    write_name(&a.id, name);
+    write_name(other, name);
+    let first = resolve(&paths, &a.id).await.unwrap();
+    let second = resolve(&paths, other).await.unwrap();
+    assert_eq!(first["display_name"], name);
+    assert_eq!(first["display_name"], second["display_name"]);
+    assert_ne!(first["session_id"], second["session_id"]);
+    assert!(resolve(&paths, name).await.is_err());
+    write_name(&a.id, "renamed");
+    assert_eq!(
+        labels(&paths, &a.id, None).unwrap().0.as_deref(),
+        Some("renamed")
+    );
+    assert_eq!(a.generation(), gen_before);
+    write_name(&a.id, &format!("\u{1b}{}", "界".repeat(100)));
+    let bounded = labels(&paths, &a.id, None).unwrap().0.unwrap();
+    assert_eq!(bounded, "界".repeat(42));
+    write_name(&a.id, "\n\t");
+    assert_eq!(labels(&paths, &a.id, None).unwrap().0, None);
+    for account in ["personal", "work"] {
+        a.home = paths.account(account).unwrap();
+        fs::create_dir_all(&a.home).unwrap();
+        // Invalid credential fixture proves this mapping does not parse auth.
+        fs::write(a.home.join("auth.json"), "must not be parsed").unwrap();
+        assert_eq!(
+            labels(&paths, &a.id, Some(&a.home)).unwrap().1.as_deref(),
+            Some(account)
+        );
+    }
 }
 
 #[tokio::test]
@@ -923,6 +1113,104 @@ async fn open_wait_outlasts_a_brief_holder_then_reports_busy() {
     assert_eq!(busy.err().unwrap().0, "adapter_busy");
     drop(waited);
     release.join().unwrap();
+}
+
+/// A slow native add must not hold the ledger lease: concurrent receipt reads
+/// proceed, a second sender of the same id waits and then submits nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_delivery_releases_lease_and_one_id_is_delivered_once() {
+    let (_dir, paths, mut input, now) = fixture();
+    let mut a = attachment_fixture(&paths, &input);
+    bind(&paths, &mut a);
+    TEST_WAIT
+        .lock()
+        .unwrap()
+        .push((paths.root.clone(), std::time::Duration::from_secs(10)));
+    let adds = Arc::new(Mutex::new(0usize));
+    let lease_free_during_add = Arc::new(Mutex::new(None::<(bool, String)>));
+    let (counter, probe, p, message) = (
+        adds.clone(),
+        lease_free_during_add.clone(),
+        paths.clone(),
+        input.message_id.clone(),
+    );
+    let server = scripted_connections(
+        &a.endpoint(),
+        move |req| match req["method"].as_str().unwrap() {
+            "thread/read" => {
+                Some(json!({"thread":{"id":req["params"]["threadId"],"status":{"type":"idle"}}}))
+            }
+            "thread/queue/add" => {
+                *counter.lock().unwrap() += 1;
+                let state = Ledger::open(&p)
+                    .ok()
+                    .and_then(|db| db.get(&message).ok().flatten())
+                    .map(|r| r.state);
+                *probe.lock().unwrap() = Some((state.is_some(), state.unwrap_or_default()));
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                Some(
+                    json!({"queuedSubmission":{"id":"q1","clientUserMessageId":req["params"]["clientUserMessageId"]}}),
+                )
+            }
+            other => panic!("unexpected {other}"),
+        },
+        2,
+    )
+    .await;
+    input.expected_generation = a.generation();
+    let first = {
+        let (paths, input) = (paths.clone(), input.clone());
+        tokio::spawn(async move {
+            let mut db = Ledger::open(&paths).unwrap();
+            let mut receipt = db.accept(&input, now).unwrap();
+            deliver(&paths, &mut db, &mut receipt, Some(&input))
+                .await
+                .unwrap();
+            receipt
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    // A receipt read while the add is outstanding is not blocked and sees the journal.
+    let started = std::time::Instant::now();
+    let mut reader = ledger::open_write(&paths, std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_millis(300));
+    let mut seen = reader.lookup(&input.message_id).unwrap();
+    assert_eq!(seen.state, "unknown");
+    // A second sender of the same id waits for session ownership, then finds the
+    // first process's result and does not submit again.
+    let second = {
+        let (paths, input) = (paths.clone(), input.clone());
+        tokio::spawn(async move {
+            let mut db = ledger::open_write(&paths, std::time::Duration::from_secs(10))
+                .await
+                .unwrap();
+            let mut receipt = db.accept(&input, now).unwrap();
+            // Normally still `unknown`; under heavy load the first may already be done.
+            assert!(matches!(
+                receipt.state.as_str(),
+                "unknown" | "native_accepted"
+            ));
+            deliver(&paths, &mut db, &mut receipt, Some(&input))
+                .await
+                .unwrap();
+            receipt
+        })
+    };
+    // Status-style observation of the in-flight receipt must not regress anything.
+    reader.expire(&mut seen, crate::daemon::now()).unwrap();
+    drop(reader);
+    let first = first.await.unwrap();
+    let second = second.await.unwrap();
+    assert_eq!(first.state, "native_accepted");
+    assert_eq!(second.state, "native_accepted");
+    assert_eq!(*adds.lock().unwrap(), 1);
+    assert_eq!(
+        lease_free_during_add.lock().unwrap().clone(),
+        Some((true, "unknown".to_string()))
+    );
+    server.abort();
 }
 
 /// Receipt observation reads Codex without the ledger lease and never regresses a
@@ -1220,6 +1508,60 @@ fn attachment_generation_is_the_golden_formula() {
     assert_eq!(a.generation(), formula(None));
     fs::write(a.endpoint(), b"").unwrap();
     assert_eq!(a.generation(), formula(fs::metadata(a.endpoint()).ok()));
+}
+
+pub(super) const SHORTCUT_STATES: [&str; 10] = [
+    "pending_local",
+    "unknown",
+    "native_accepted",
+    "execution_started",
+    "completed_with_reply",
+    "completed_without_reply",
+    "failed",
+    "rejected",
+    "cancelled",
+    "expired",
+];
+
+/// Legacy `status`: the shared-reader shortcut answers what the writer path answers
+/// and writes nothing; unsettled and expiring receipts take the writer path.
+#[tokio::test]
+async fn status_shortcut_matches_the_writer_path_or_declines() {
+    let mut answered = 0;
+    for state in SHORTCUT_STATES {
+        for expires in [false, true] {
+            let (_dir, paths, mut input, _) = fixture();
+            let now = crate::daemon::now() - if expires { 3600 } else { 0 };
+            input.expires_at = now + 600;
+            let mut db = Ledger::open(&paths).unwrap();
+            let mut r = db.accept(&input, now).unwrap();
+            r.state = state.into();
+            db.save(&r).unwrap();
+            drop(db);
+            let reader = ledger::open_read_blocking(&paths, std::time::Duration::ZERO).unwrap();
+            let receipt = reader.lookup(&input.message_id).unwrap();
+            // An `expires` row is past its expiry by the real clock.
+            let got = observe::settled(&reader, &receipt, crate::daemon::now()).unwrap();
+            drop(reader);
+            let unsettled = matches!(state, "unknown" | "native_accepted" | "execution_started");
+            let expiring = state == "pending_local" && expires;
+            assert_eq!(
+                got.is_none(),
+                unsettled || expiring,
+                "{state} {expires}: {got:?}"
+            );
+            if let Some(got) = got {
+                let before = Ledger::open(&paths).unwrap().events(None).unwrap();
+                let writer = status_write(&paths, &input.message_id, std::time::Duration::ZERO)
+                    .await
+                    .unwrap();
+                assert_eq!(got, writer, "{state}");
+                assert_eq!(Ledger::open(&paths).unwrap().events(None).unwrap(), before);
+                answered += 1;
+            }
+        }
+    }
+    assert_eq!(answered, 2 * 7 - 1);
 }
 
 pub(super) fn wait_budget(paths: &Paths, wait: Wait) -> std::time::Duration {

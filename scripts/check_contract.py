@@ -121,7 +121,9 @@ validate(fixtures["claude_steer_request"], "ClaudeSteerRequest")
 validate(fixtures["claude_steer_semantics"], "ClaudeSteerSemantics")
 for name in ["claude_steer_receipt_hosted", "claude_steer_receipt_interrupted", "claude_steer_receipt_cut", "claude_steer_receipt_peer", "claude_steer_receipt_peer_unanchored", "claude_steer_receipt_held"]:
     validate(fixtures[name], "ClaudeSteerReceipt")
+validate(fixtures["hosted_session"], "HostedSession")
 validate(fixtures["live_steering"], "LiveSteering")
+validate(fixtures["launch_request_hosted"], "LaunchRequest")
 hosted, peer, unanchored = fixtures["claude_steer_receipt_hosted"], fixtures["claude_steer_receipt_peer"], fixtures["claude_steer_receipt_peer_unanchored"]
 for invalid, definition in [
     ({**fixtures["claude_steer_request"], "mode": "queue"}, "ClaudeSteerRequest"),
@@ -136,6 +138,8 @@ for invalid, definition in [
     ({**unanchored, "reply": peer["reply"]}, "ClaudeSteerReceipt"),
     ({**unanchored, "state": "completed_with_reply"}, "ClaudeSteerReceipt"),
     ({**peer, "peer_message": None}, "ClaudeSteerReceipt"),
+    ({**fixtures["hosted_session"], "effective_permission_mode": "bypassPermissions"}, "HostedSession"),
+    ({**fixtures["launch_request_hosted"], "account_id": "codex:fixture"}, "LaunchRequest"),
 ]:
     try:
         validate(invalid, definition)
@@ -267,7 +271,10 @@ with tempfile.TemporaryDirectory() as directory:
             assert questions["providers"]["gemini"]["detect"] is False and questions["providers"]["gemini"]["reason"]
             # Revision 21: per-account Gemini authentication modes.
             gemini = next(p for p in value["result"]["providers"] if p["id"] == "gemini")
-            assert gemini["implemented"] is False and "auth_modes" not in gemini, gemini
+            assert [m["id"] for m in gemini["auth_modes"]] == ["google_personal", "google_workspace", "api_key"]
+            assert gemini["auth_modes"][0]["available"] is False and gemini["auth_modes"][0]["reason"]
+            assert gemini["auth_command"]["since_revision"] == 21
+            assert gemini["auth_command"]["key_input"] == "stdin_json"
             # Revision 22: per-account Claude bypass-permissions warning.
             assert value["result"]["claude_bypass_warning"]["since_revision"] == 22
             assert value["result"]["claude_bypass_warning"]["new_accounts_default"] == "skip"
@@ -286,7 +293,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert value["result"]["antigravity_folder_trust"]["setting"] == "antigravity_pretrust_folders"
             assert value["result"]["antigravity_folder_trust"]["credentials_read"] is False
             assert value["result"]["antigravity_lifecycle"]["stop"]["sigkill"] is False
-            for p in [p for p in value["result"]["providers"] if p["id"] != "gemini"]:
+            for p in value["result"]["providers"]:
                 # Revision 25: every provider, Antigravity included, supports archive and delete.
                 assert p["operations"]["archive"]["supported"] is True and p["operations"]["delete_session"]["supported"] is True
             agy = [p for p in value["result"]["providers"] if p["id"] == "antigravity"][0]
@@ -305,12 +312,12 @@ with tempfile.TemporaryDirectory() as directory:
             validate(value["result"]["gemini_input_delivery"], "GeminiTerminalInputDelivery")
             gemini = [p for p in value["result"]["providers"] if p["id"] == "gemini"][0]
             validate(gemini["input_delivery"], "GeminiTerminalInputDelivery")
-            assert gemini["steer"] is False and gemini["input_delivery"]["automatic_replay"] is False
+            assert gemini["steer"] is True and gemini["input_delivery"]["automatic_replay"] is False
             assert "esc" in gemini["input_delivery"]["keys"]["never"] and "ctrl+c" in gemini["input_delivery"]["keys"]["never"]
             claude = [p for p in value["result"]["providers"] if p["id"] == "claude"][0]
             assert claude["account_removal"] is True and claude["account_deletion"] is True
             assert claude["headless_delivery"]["automatic_replay"] is False
-            assert all(p["account_rename"] is True for p in value["result"]["providers"] if p["id"] != "gemini")
+            assert all(p["account_rename"] is True for p in value["result"]["providers"])
             assert value["result"]["checkpoints"]["version"] == 1
             assert value["result"]["checkpoints"]["max_response_bytes"] == 786432
             assert value["result"]["checkpoints"]["history_modes"] == ["legacy", "paginated"]
@@ -330,7 +337,12 @@ with tempfile.TemporaryDirectory() as directory:
             retention = value["result"]["receipt_retention"]
             assert retention["delivered_journal_states_retire_as_terminal"] == ["execution_started", "native_accepted"], retention
             assert retention["delivered_requires"]["worker"] == "stopped" and retention["delivered_requires"]["since_contract"] == "1.52.0", retention
-            assert "root_alias" not in value["result"], "root_alias was removed in 1.68.0"
+            root_alias = value["result"]["root_alias"]
+            assert root_alias["since_contract"] == "1.54.0" and root_alias["layout_version"] == 3, root_alias
+            assert root_alias["commands"] == ["root status", "root migrate", "root rollback", "root finalize"], root_alias
+            assert root_alias["gate"]["field"] == "gate" and root_alias["gate"]["values"] == ["pass", "fail", "not_applicable"], root_alias
+            assert root_alias["retained_copies"]["deleted_by"] == "never (1.54)", root_alias
+            assert "ROOT_ALIAS_UNVERIFIED" in root_alias["errors"] and "ROOT_REKEY_CONFLICT" in root_alias["errors"], root_alias
             reset = value["result"]["account_reset_credit"]
             assert reset["since_contract"] == "1.53.0" and reset["providers"] == ["codex", "claude"], reset
             assert reset["claude"]["since_contract"] == "1.60.0" and reset["claude"]["claim"]["program"] == "cedar_ember", reset

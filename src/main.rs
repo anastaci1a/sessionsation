@@ -7,15 +7,19 @@
 )]
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sessionsation::{
+    compatibility,
     config::Config,
     daemon, external,
+    model::State,
     paths::{Paths, atomic_write, private_dir},
     provider::{
         self, AccountRef, ProviderId,
         ops::{self, Enrollment},
     },
+    simulation::{self, Input},
     store,
 };
 use std::path::PathBuf;
@@ -51,6 +55,9 @@ enum Commands {
     ConversationWorker { request_id: String },
     #[command(hide = true)]
     ClaudeSwitchWorker { request_id: String },
+    /// Tier S worker of `root migrate --session` (contract 1.54.0).
+    #[command(hide = true)]
+    RootRekeyWorker { session_id: String },
     /// One auto-recover pass (the supervisor runs this loop itself); prints the recoveries it ran.
     #[command(hide = true)]
     AutoRecoverTick,
@@ -82,14 +89,30 @@ enum Commands {
     #[command(hide = true)]
     ClaudeDeliveryWorker { message_id: String },
     #[command(hide = true)]
+    ClaudeHostWorker { conversation_id: String },
+    #[command(hide = true)]
     ClaudePeerWorker { message_id: String },
     #[command(hide = true)]
+    ClaudeIdleWorker { id: String },
+    #[command(hide = true)]
     ClaudeTerminalWorker { message_id: String },
+    #[command(hide = true)]
+    GeminiTerminalWorker { message_id: String },
     #[command(hide = true)]
     AntigravityTerminalWorker { message_id: String },
     /// Contract 1.49.0: apply one Claude model change in its HERDR pane.
     #[command(hide = true)]
     ModelChangeWorker { id: String },
+    /// Render a Sessionsation-hosted Claude session live (t + Enter takes it over).
+    View {
+        /// Catalog session id or hosted conversation id.
+        session: String,
+        /// Print the current log and exit.
+        #[arg(long)]
+        once: bool,
+    },
+    /// Stop a hosted Claude worker cleanly, then resume the conversation interactively here.
+    TakeOver { session: String },
     /// Provider integration hooks (invoked by provider processes, not people).
     #[command(hide = true)]
     ProviderHook {
@@ -101,7 +124,13 @@ enum Commands {
         #[arg(long, default_value = "1", value_parser=sessionsation::api::parse_api_version)]
         api_version: u32,
         #[command(subcommand)]
-        command: Box<sessionsation::api::Command>,
+        command: sessionsation::api::Command,
+    },
+    /// Transport-neutral, attach-only messaging API (JSON).
+    #[command(hide = true)]
+    Message {
+        #[command(subcommand)]
+        command: sessionsation::messaging::Command,
     },
     /// Initialize private state and start the metadata-only supervisor.
     Setup {
@@ -120,19 +149,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Exit successfully only when managed native launching is available (currently unavailable).
     #[command(hide = true)]
-    HandoffWorker {
-        #[arg(long)]
-        job: String,
-    },
-    #[command(hide = true)]
-    Config {
-        #[command(subcommand)]
-        command: Option<ConfigCommand>,
-    },
+    Ready,
     /// List live tmux instances and completed inactive conversations available to move.
     #[command(hide = true)]
     Instances,
+    /// Inspect one exact inventory ID, its account usage and automation settings (JSON).
+    #[command(hide = true)]
+    Session {
+        #[arg(long)]
+        session: String,
+    },
     /// List archived conversations available for explicit restoration (JSON).
     #[command(hide = true)]
     Archives,
@@ -144,6 +172,14 @@ enum Commands {
         /// Name for a newly created tmux session; existing live sessions are reused.
         #[arg(long)]
         name: Option<String>,
+    },
+    /// Rename a live or saved conversation; the name survives moves and reopening.
+    #[command(hide = true)]
+    Rename {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        name: String,
     },
     /// Preview permanent deletion of an inactive conversation and its local history copies.
     #[command(hide = true)]
@@ -277,14 +313,67 @@ enum Commands {
     /// Retry a stopped job with fresh session discovery and new confirmations.
     #[command(hide = true)]
     Retry { job: String },
-    /// Rename a live or saved conversation; the name survives moves and reopening.
     #[command(hide = true)]
-    Rename {
+    HandoffWorker {
         #[arg(long)]
-        session: String,
-        #[arg(long)]
-        name: String,
+        job: String,
     },
+    #[command(hide = true)]
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommand>,
+    },
+    /// Configure experimental automatic moves, or disable them immediately.
+    #[command(hide = true)]
+    AutoSwitch {
+        #[arg(long)]
+        thread: String,
+        /// Comma-separated account order. Pass an empty string to clear.
+        #[arg(long)]
+        accounts: Option<String>,
+        #[arg(long, default_value = "")]
+        current_account: String,
+        /// Opt in to automatic pause/move/continuation using the manual move worker.
+        #[arg(long, requires = "accept_experimental", conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+        #[arg(long)]
+        accept_experimental: bool,
+    },
+    /// Resume unfinished work after a confirmed usage stop and verified reset.
+    #[command(hide = true)]
+    AutoStart {
+        #[arg(long)]
+        thread: String,
+        #[arg(long, requires = "accept_experimental", conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+        #[arg(long)]
+        accept_experimental: bool,
+    },
+    /// Set an account's used-percentage thresholds or confirm its plan ratio.
+    #[command(hide = true)]
+    Thresholds {
+        account: String,
+        #[arg(long, requires = "weekly")]
+        short: Option<f64>,
+        #[arg(long, requires = "short")]
+        weekly: Option<f64>,
+        #[arg(long)]
+        multiplier: Option<f64>,
+    },
+    /// Report native compatibility; --probe starts only isolated, unauthenticated workers.
+    Doctor {
+        #[arg(long)]
+        probe: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a deterministic offline scenario. Never starts a provider or reads credentials.
+    #[command(hide = true)]
+    Simulate { scenario: PathBuf },
     /// Start a session with a selected enrolled account (Codex, Claude Code or Gemini CLI); managed switching remains gated.
     Run {
         /// Terminal hosting; inline retains the invoking terminal.
@@ -300,12 +389,28 @@ enum Commands {
         thread: Option<String>,
         #[arg(long)]
         session: Option<String>,
+        /// Claude: run a Sessionsation-hosted (stream-json) session and show its viewer here.
+        #[arg(long)]
+        hosted: bool,
+        /// With --hosted: account (default) | default | acceptEdits | plan | bypassPermissions.
+        #[arg(long, requires = "hosted")]
+        permission_mode: Option<String>,
         /// Name of the new session (same rules as `api launch`); also labels this HERDR tab. Inline host only.
         #[arg(long)]
         name: Option<String>,
         #[arg(last = true)]
         codex_options: Vec<String>,
     },
+    /// Reserved conversation import; refuses unsafe copying while compatibility is unverified.
+    #[command(hide = true)]
+    Import {
+        #[arg(long)]
+        thread: String,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    #[command(hide = true)]
+    Pause { session: String },
     /// Resume a saved stable backend ID on its recorded account in this terminal.
     Resume {
         session: String,
@@ -320,7 +425,8 @@ enum Commands {
     },
     /// Open a plain interactive shell; never re-enter the terminal launcher.
     Shell,
-    /// Data-root layout: report its version, deferred homes and legacy entries.
+    /// Data-root layout: report it, migrate a legacy (version 1) root to
+    /// version 2, or roll back. Migrate and rollback need the supervisor stopped.
     Layout {
         #[command(subcommand)]
         command: LayoutCommand,
@@ -335,6 +441,63 @@ enum Commands {
         #[command(subcommand)]
         command: SharedCommand,
     },
+    /// Root alias and re-key (contract 1.54.0): move the data root and its sessions from one
+    /// spelling of a bind-mounted tree (/mnt/user/...) to the other (/mnt/disk1/...).
+    Root {
+        #[command(subcommand)]
+        command: RootCommand,
+    },
+}
+#[derive(Subcommand)]
+enum RootCommand {
+    /// Alias, run, per-session states, sessions left behind and the rollback gate (`gate: pass|fail`).
+    Status,
+    /// Tier R (`--from --to --backup`, supervisor stopped) or Tier S (`--session`, supervisor running).
+    Migrate {
+        /// Old spelling prefix, for example /mnt/user.
+        #[arg(long, requires = "to", conflicts_with = "session")]
+        from: Option<PathBuf>,
+        /// New spelling prefix, for example /mnt/disk1.
+        #[arg(long, requires = "from")]
+        to: Option<PathBuf>,
+        /// New or empty directory outside the data root for the backup and retained copies.
+        #[arg(long)]
+        backup: Option<PathBuf>,
+        /// Print the full plan (JSON, plus a short summary on stderr); change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Accept full copies where the file system cannot reflink.
+        #[arg(long)]
+        allow_full_copy: bool,
+        /// Re-key one session (UUID, alias, space:name or bare name).
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        expected_generation: Option<String>,
+        /// Allow stopping a busy session.
+        #[arg(long)]
+        accept_risks: bool,
+        /// Text delivered once to a resumed Claude session after verification.
+        #[arg(long, conflicts_with = "prompt_file")]
+        prompt: Option<String>,
+        #[arg(long)]
+        prompt_file: Option<PathBuf>,
+    },
+    /// Whole root back to layout version 2 (supervisor stopped), or one session (`--session`).
+    Rollback {
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove empty old project-key directories (rmdir only). Retained copies are never deleted.
+    Finalize {
+        #[arg(long)]
+        dry_run: bool,
+        /// Also count sessions re-keyed but not yet resumed.
+        #[arg(long)]
+        accept_unresumed: bool,
+    },
 }
 #[derive(Subcommand)]
 enum SharedCommand {
@@ -342,11 +505,41 @@ enum SharedCommand {
     Status,
     /// Turn the feature on for this root (creates the store; new and empty homes are then linked).
     Enable,
+    /// Move one account's directories into the shared store and link them (journaled, idempotent, resumable).
+    Migrate {
+        /// The Claude account, claude:NAME.
+        #[arg(long)]
+        account: String,
+        /// Print the plan and preflight facts; change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Accept a full-copy backup where the file system cannot reflink.
+        #[arg(long)]
+        allow_full_copy: bool,
+        /// Real-disk alias of the data root used for all file operations (for example /mnt/disk1/appdata/sessionsation
+        /// when --data-dir is the Unraid FUSE share /mnt/user/...). Link targets still use --data-dir.
+        #[arg(long)]
+        fs_path: Option<PathBuf>,
+    },
 }
 #[derive(Subcommand)]
 enum LayoutCommand {
     /// Layout version, deferred account homes (with reasons) and legacy entries.
     Status,
+    /// Migrate to layout version 2 (idempotent; also moves deferred homes that are now idle).
+    Migrate {
+        /// New or empty directory for the metadata backup taken before any change.
+        #[arg(long)]
+        backup: Option<PathBuf>,
+        /// Print the plan only.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Move everything back to the legacy (version 1) layout.
+    Rollback {
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 #[derive(Subcommand)]
 enum RetentionCommand {
@@ -398,10 +591,27 @@ enum AccountCommand {
         no_login: bool,
         name: String,
     },
-    /// Log in: Codex prints a device code; Claude runs `claude auth login --claudeai` here.
+    /// Log in: Codex prints a device code; Claude runs `claude auth login --claudeai` here; Gemini runs `gemini` with NO_BROWSER=true here (choose Login with Google).
     Login {
         /// NAME or PROVIDER:NAME.
         name: String,
+    },
+    /// Gemini: show or set the authentication mode. `--mode google` selects Login with
+    /// Google (Workspace accounts; then run `account login`). `--mode api-key --key-stdin`
+    /// reads a Gemini API key (aistudio.google.com/apikey) from stdin only, stores it in
+    /// GEMINI_CLI_HOME/secrets/gemini-api-key (0600) and runs one headless validation.
+    /// Without --mode, shows the mode and whether a key is stored (never the key).
+    #[command(
+        after_help = "Examples:\n  sessionsation account auth gemini:me\n  sessionsation account auth gemini:me --mode api-key --key-stdin < keyfile\n  sessionsation account auth gemini:me --mode google"
+    )]
+    Auth {
+        /// NAME or gemini:NAME.
+        name: String,
+        #[arg(long, value_name = "google|api-key")]
+        mode: Option<String>,
+        /// Read the API key from stdin (never pass it as an argument).
+        #[arg(long, requires = "mode")]
+        key_stdin: bool,
     },
     /// Move an account to a 0-based position in the shared account order (list and UI).
     Reorder {
@@ -470,6 +680,25 @@ enum AccountCommand {
         /// NAME or PROVIDER:NAME.
         name: String,
     },
+    /// Read account details, plan, limits and remaining percentages without starting a monitor.
+    Show { name: String },
+    /// Export the same usage/activity bins shown by the account history UI (JSON).
+    History {
+        name: String,
+        #[arg(long, value_parser = ["hourly", "weekly"], conflicts_with_all = ["hours", "start"])]
+        range: Option<String>,
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=2160), conflicts_with = "start")]
+        hours: Option<u32>,
+        /// Inclusive Unix-second range start; requires --end.
+        #[arg(long, requires = "end")]
+        start: Option<i64>,
+        /// Exclusive Unix-second range end; defaults to the next half-hour boundary.
+        #[arg(long)]
+        end: Option<i64>,
+        /// Bin width in seconds, a multiple of 1800; at most 168 bins.
+        #[arg(long)]
+        step: Option<i64>,
+    },
 }
 #[derive(Subcommand)]
 enum ConfigCommand {
@@ -516,6 +745,10 @@ async fn run(cli: Cli) -> Result<()> {
     if let Some(mode) = cli.permissions {
         sessionsation::config::override_launch_permissions(mode);
     }
+    // Offline simulation deliberately avoids creating a daemon or accessing user state.
+    if let Commands::Simulate { scenario } = &cli.command {
+        return simulate(scenario);
+    }
     // Runs inside Claude's statusline: never create or touch a data root.
     if let Commands::ProviderHook {
         command: ProviderHookCommand::ClaudeStatusline { record_only },
@@ -530,11 +763,15 @@ async fn run(cli: Cli) -> Result<()> {
         std::process::exit(provider::claude::hooks::event_hook());
     }
     // Only setup may create a data root; everything else fails closed.
-    let any_layout = match &cli.command {
-        Commands::Layout { .. } => true,
-        Commands::Api { command, .. } => matches!(**command, sessionsation::api::Command::Version),
-        _ => false,
-    };
+    let any_layout = matches!(
+        cli.command,
+        Commands::Layout { .. }
+            | Commands::Root { .. }
+            | Commands::Api {
+                command: sessionsation::api::Command::Version,
+                ..
+            }
+    );
     let paths = if matches!(cli.command, Commands::Setup { .. }) {
         Paths::new(cli.data_dir)?
     } else if any_layout {
@@ -544,8 +781,17 @@ async fn run(cli: Cli) -> Result<()> {
     };
     match cli.command {
         Commands::Layout { command } => {
-            let LayoutCommand::Status = command;
-            print_json(&sessionsation::layout::status(&paths.root)?)?;
+            use sessionsation::layout::migrate;
+            print_json(&match command {
+                LayoutCommand::Status => migrate::status(&paths.root)?,
+                LayoutCommand::Migrate { backup, dry_run } => {
+                    if !dry_run {
+                        sessionsation::disk_space::preflight(&paths, "layout migrate")?;
+                    }
+                    migrate::migrate(&paths.root, &migrate::Options { backup, dry_run })?
+                }
+                LayoutCommand::Rollback { dry_run } => migrate::rollback(&paths.root, dry_run)?,
+            })?;
         }
         Commands::Retention {
             command: RetentionCommand::Run { dry_run },
@@ -558,6 +804,38 @@ async fn run(cli: Cli) -> Result<()> {
                     shared::enable(&paths.root)?;
                     shared::status(&paths)?
                 }
+                SharedCommand::Migrate {
+                    account,
+                    dry_run,
+                    allow_full_copy,
+                    fs_path,
+                } => {
+                    let account = AccountRef::parse(&account)?;
+                    anyhow::ensure!(
+                        ops::facts(account.provider).shared_state,
+                        "ACCOUNT_PROVIDER_REQUIRED: shared state applies to claude:<name> accounts"
+                    );
+                    if !dry_run {
+                        sessionsation::disk_space::preflight(&paths, "shared migrate")?;
+                    }
+                    let result = shared::migrate::migrate(
+                        &paths,
+                        &shared::migrate::Options {
+                            account: account.name,
+                            dry_run,
+                            allow_full_copy,
+                            fs_path,
+                        },
+                    )?;
+                    let incomplete = !dry_run && result["complete"] == false;
+                    print_json(&result)?;
+                    if incomplete {
+                        bail!(
+                            "SHARED_STATE_MIGRATION_INCOMPLETE: entries conflict with the shared store; see the conflicts in the output above"
+                        );
+                    }
+                    return Ok(());
+                }
             })?;
         }
         Commands::ConversationWorker { request_id } => {
@@ -566,6 +844,87 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::ClaudeSwitchWorker { request_id } => {
             sessionsation::claude_switch::worker(&paths, &request_id).await?;
         }
+        Commands::RootRekeyWorker { session_id } => {
+            sessionsation::root_migrate::session::worker(&paths, &session_id).await?;
+        }
+        Commands::Root { command } => {
+            use sessionsation::root_migrate as root;
+            print_json(&match command {
+                RootCommand::Status => root::status(&paths).await?,
+                RootCommand::Migrate {
+                    from: Some(from),
+                    to: Some(to),
+                    backup,
+                    dry_run,
+                    allow_full_copy,
+                    ..
+                } => {
+                    if !dry_run {
+                        sessionsation::disk_space::preflight(&paths, "root migrate")?;
+                    }
+                    let v = root::migrate(
+                        &paths,
+                        &root::Options {
+                            from,
+                            to,
+                            backup,
+                            dry_run,
+                            allow_full_copy,
+                        },
+                    )
+                    .await?;
+                    if let Some(lines) = v["summary"].as_array() {
+                        for l in lines {
+                            eprintln!("# {}", l.as_str().unwrap_or_default());
+                        }
+                    }
+                    v
+                }
+                RootCommand::Migrate {
+                    session: Some(session),
+                    expected_generation,
+                    accept_risks,
+                    prompt,
+                    prompt_file,
+                    ..
+                } => {
+                    let prompt = match prompt_file {
+                        Some(f) => Some(std::fs::read_to_string(&f).with_context(|| {
+                            format!(
+                                "INVALID_ARGUMENT: cannot read --prompt-file {}",
+                                f.display()
+                            )
+                        })?),
+                        None => prompt,
+                    };
+                    root::session::migrate_session(
+                        &paths,
+                        &root::session::SessionOptions {
+                            session,
+                            expected_generation,
+                            accept_risks,
+                            prompt,
+                        },
+                    )
+                    .await?
+                }
+                RootCommand::Migrate { .. } => bail!(
+                    "INVALID_ARGUMENT: root migrate needs --from F --to T --backup DIR, or --session S"
+                ),
+                RootCommand::Rollback {
+                    session: Some(session),
+                    dry_run,
+                } => root::session::rollback_session(&paths, &session, dry_run).await?,
+                RootCommand::Rollback {
+                    session: None,
+                    dry_run,
+                } => root::rollback(&paths, dry_run)?,
+                RootCommand::Finalize {
+                    dry_run,
+                    accept_unresumed,
+                } => root::finalize(&paths, dry_run, accept_unresumed)?,
+            })?;
+        }
         Commands::AutoRecoverTick => {
             let outcomes = sessionsation::auto_recover::tick(&paths).await?;
             println!("{}", serde_json::to_string(&outcomes)?);
@@ -573,17 +932,32 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::ClaudeDeliveryWorker { message_id } => {
             sessionsation::messaging::headless::worker(&paths, &message_id).await?
         }
+        Commands::ClaudeHostWorker { conversation_id } => {
+            sessionsation::provider::claude::hosted::worker(&paths, &conversation_id).await?
+        }
+        Commands::ClaudeIdleWorker { id } => {
+            sessionsation::claude_idle::worker(&paths, &id).await?
+        }
         Commands::ClaudePeerWorker { message_id } => {
             sessionsation::messaging::claude_steer::peer_worker(&paths, &message_id).await?
         }
         Commands::ClaudeTerminalWorker { message_id } => {
             sessionsation::messaging::claude_steer::terminal::worker(&paths, &message_id).await?
         }
+        Commands::GeminiTerminalWorker { message_id } => {
+            sessionsation::messaging::claude_steer::gemini::worker(&paths, &message_id).await?
+        }
         Commands::AntigravityTerminalWorker { message_id } => {
             sessionsation::messaging::claude_steer::antigravity::worker(&paths, &message_id).await?
         }
         Commands::ModelChangeWorker { id } => {
             sessionsation::messaging::model_change::claude::worker(&paths, &id).await?
+        }
+        Commands::View { session, once } => {
+            sessionsation::provider::claude::hosted::view(&paths, &session, once).await?
+        }
+        Commands::TakeOver { session } => {
+            sessionsation::provider::claude::hosted::take_over(&paths, &session).await?
         }
         Commands::AccountDeleteWorker { request_id } => {
             sessionsation::account_deletion::worker(&paths, &request_id).await?
@@ -622,7 +996,10 @@ async fn run(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Api { command, .. } => sessionsation::api::run(&paths, *command).await?,
+        Commands::Api { command, .. } => sessionsation::api::run(&paths, command).await?,
+        Commands::Session { session } => {
+            print_json(&sessionsation::cli_views::session(&paths, &session).await?)?;
+        }
         Commands::Account {
             command: AccountCommand::Reorder { name, position },
         } => {
@@ -654,6 +1031,114 @@ async fn run(cli: Cli) -> Result<()> {
             .await?;
             print_json(&value)?;
         }
+        Commands::Account {
+            command:
+                AccountCommand::Auth {
+                    name,
+                    mode,
+                    key_stdin,
+                },
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            let key = if key_stdin {
+                use std::io::Read;
+                let mut text = String::new();
+                std::io::stdin()
+                    .take(4097)
+                    .read_to_string(&mut text)
+                    .map_err(|_| anyhow::anyhow!("INVALID_API_KEY_FORMAT: stdin is not text"))?;
+                anyhow::ensure!(
+                    text.len() <= 4096,
+                    "INVALID_API_KEY_FORMAT: stdin is too large"
+                );
+                Some(sessionsation::provider::gemini::auth_mode::ApiKey::new(
+                    &text,
+                )?)
+            } else {
+                None
+            };
+            print_json(
+                &sessionsation::api::gemini_auth(&paths, &account, mode.as_deref(), key).await?,
+            )?;
+        }
+        Commands::Account {
+            command: AccountCommand::BypassWarning { name, skip, show },
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            daemon::ensure_started(&paths).await?;
+            let value = daemon::call(
+                &paths,
+                "account/bypass-warning",
+                json!({"name":account.name,"provider":account.provider,"skip":if skip {Some(true)} else if show {Some(false)} else {None}}),
+            )
+            .await?;
+            print_json(&value)?;
+        }
+        Commands::Account {
+            command: AccountCommand::Logout { name },
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            sessionsation::accounts::ensure_available(&paths, account.provider, &account.name)?;
+            daemon::ensure_started(&paths).await?;
+            let value = daemon::call(
+                &paths,
+                "account/logout",
+                json!({"name":account.name,"provider":account.provider}),
+            )
+            .await?;
+            println!(
+                "{} logged out ({}).\nLog in again: sessionsation account login {}",
+                account.id(),
+                value["method"].as_str().unwrap_or("provider logout"),
+                account.id()
+            );
+        }
+        Commands::Account {
+            command: AccountCommand::Show { name },
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            let status = daemon::call(&paths, "status", json!({})).await?;
+            print_json(&sessionsation::cli_views::account(
+                &status,
+                account.provider.as_str(),
+                &account.name,
+            )?)?;
+        }
+        Commands::Account {
+            command:
+                AccountCommand::History {
+                    name,
+                    range,
+                    hours,
+                    start,
+                    end,
+                    step,
+                },
+        } => {
+            let at = daemon::now();
+            let hours = hours.unwrap_or(if range.as_deref() == Some("weekly") {
+                168
+            } else {
+                12
+            });
+            let (start, end, step) =
+                sessionsation::cli_views::history_range(at, hours, start, end, step)?;
+            let account = resolve_account(&paths, &name)?;
+            let history = daemon::call(
+                &paths,
+                "account/history",
+                json!({"name":account.name,"provider":account.provider,"start":start,"end":end,"step":step}),
+            )
+            .await?;
+            print_json(
+                &json!({"schema_version":1,"observed_at":at,"range":{"start":start,"end":end,"step":step},"history":history}),
+            )?;
+        }
+        Commands::Message { command } => {
+            if !sessionsation::messaging::run(&paths, command).await {
+                std::process::exit(1);
+            }
+        }
         Commands::Setup { systemd } => {
             if !paths.root.join("config.json").exists() {
                 store::save_config(&paths, &Config::default())?;
@@ -667,7 +1152,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             daemon::ensure_started(&paths).await?;
             println!(
-                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add --platform codex|claude|gemini|antigravity <name>`.\nNative switching is not available.",
+                "Initialized {}\nSupervisor running. Enroll accounts with `sessionsation account add --platform codex|claude|gemini|antigravity <name>`.\nNative switching remains blocked; inspect `sessionsation doctor --probe`.",
                 paths.root.display()
             );
         }
@@ -696,7 +1181,7 @@ async fn run(cli: Cli) -> Result<()> {
                 print_json(&value)?;
             } else {
                 println!(
-                    "Supervisor: {}\nNative switching: unavailable\nAccounts: {}",
+                    "Supervisor: {}\nNative switching: unavailable (run doctor --probe)\nAccounts: {}",
                     if value["daemon"]["running"] == true {
                         "running"
                     } else {
@@ -705,6 +1190,93 @@ async fn run(cli: Cli) -> Result<()> {
                     value["accounts"].as_array().map_or(0, Vec::len)
                 );
             }
+        }
+        Commands::Ready => compatibility::require_native_handoff()?,
+        Commands::AutoSwitch {
+            thread,
+            accounts,
+            current_account,
+            enable,
+            disable,
+            accept_experimental,
+        } => {
+            uuid::Uuid::parse_str(&thread)?;
+            daemon::ensure_started(&paths).await?;
+            if disable {
+                daemon::call(&paths, "automatic/disable", json!({"thread":thread})).await?;
+            }
+            if let Some(accounts) = accounts {
+                let accounts: Vec<_> = accounts
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                daemon::call(
+                    &paths,
+                    "automatic/set",
+                    json!({"thread":thread,"accounts":accounts}),
+                )
+                .await?;
+            }
+            if enable {
+                daemon::call(
+                    &paths,
+                    "automatic/enable",
+                    json!({"thread":thread,"accept_experimental":accept_experimental}),
+                )
+                .await?;
+            }
+            print_json(
+                &daemon::call(
+                    &paths,
+                    "automatic/get",
+                    json!({"thread":thread,"current_account":current_account}),
+                )
+                .await?,
+            )?;
+        }
+        Commands::AutoStart {
+            thread,
+            enable,
+            disable,
+            accept_experimental,
+        } => {
+            uuid::Uuid::parse_str(&thread)?;
+            daemon::ensure_started(&paths).await?;
+            let method = if disable {
+                "auto-start/disable"
+            } else if enable {
+                "auto-start/enable"
+            } else {
+                "auto-start/get"
+            };
+            print_json(
+                &daemon::call(
+                    &paths,
+                    method,
+                    json!({"thread":thread,"accept_experimental":accept_experimental}),
+                )
+                .await?,
+            )?;
+        }
+        Commands::Thresholds {
+            account,
+            short,
+            weekly,
+            multiplier,
+        } => {
+            daemon::ensure_started(&paths).await?;
+            let mut params = json!({"name":account});
+            if let Some(short) = short {
+                params["short"] = json!(short);
+            }
+            if let Some(weekly) = weekly {
+                params["weekly"] = json!(weekly);
+            }
+            if let Some(multiplier) = multiplier {
+                params["multiplier"] = json!(multiplier);
+            }
+            print_json(&daemon::call(&paths, "account/thresholds", params).await?)?;
         }
         Commands::Account {
             command: AccountCommand::Login { name },
@@ -845,40 +1417,8 @@ async fn run(cli: Cli) -> Result<()> {
             if as_json {
                 print_json(&json!(accounts))?;
             } else {
-                print!("{}", account_table(&accounts));
+                print!("{}", sessionsation::cli_views::account_table(&accounts));
             }
-        }
-        Commands::Account {
-            command: AccountCommand::BypassWarning { name, skip, show },
-        } => {
-            let account = resolve_account(&paths, &name)?;
-            daemon::ensure_started(&paths).await?;
-            let value = daemon::call(
-                &paths,
-                "account/bypass-warning",
-                json!({"name":account.name,"provider":account.provider,"skip":if skip {Some(true)} else if show {Some(false)} else {None}}),
-            )
-            .await?;
-            print_json(&value)?;
-        }
-        Commands::Account {
-            command: AccountCommand::Logout { name },
-        } => {
-            let account = resolve_account(&paths, &name)?;
-            sessionsation::accounts::ensure_available(&paths, account.provider, &account.name)?;
-            daemon::ensure_started(&paths).await?;
-            let value = daemon::call(
-                &paths,
-                "account/logout",
-                json!({"name":account.name,"provider":account.provider}),
-            )
-            .await?;
-            println!(
-                "{} logged out ({}).\nLog in again: sessionsation account login {}",
-                account.id(),
-                value["method"].as_str().unwrap_or("provider logout"),
-                account.id()
-            );
         }
         Commands::Account { command } => {
             daemon::ensure_started(&paths).await?;
@@ -915,9 +1455,12 @@ async fn run(cli: Cli) -> Result<()> {
                 | AccountCommand::List { .. }
                 | AccountCommand::Rename { .. }
                 | AccountCommand::Logout { .. }
+                | AccountCommand::Auth { .. }
                 | AccountCommand::Reorder { .. }
                 | AccountCommand::LiveSteering { .. }
-                | AccountCommand::BypassWarning { .. } => {
+                | AccountCommand::BypassWarning { .. }
+                | AccountCommand::Show { .. }
+                | AccountCommand::History { .. } => {
                     unreachable!("handled above")
                 }
             };
@@ -952,13 +1495,42 @@ async fn run(cli: Cli) -> Result<()> {
             daemon::ensure_started(&paths).await?;
             let mut config = daemon::call(&paths, "config/get", json!({})).await?;
             if let Some(ConfigCommand::Set { key, value }) = command {
-                // Config::parse drops a retired key and refuses an unknown one.
+                anyhow::ensure!(config.get(&key).is_some(), "unknown setting {key}");
                 config[&key] = serde_json::from_str(&value).unwrap_or(Value::String(value));
-                let (validated, _) = Config::parse(config.clone())?;
+                let validated: Config = serde_json::from_value(config.clone())?;
                 validated.validate()?;
                 print_json(&daemon::call(&paths, "config/set", config).await?)?;
             } else {
                 print_json(&config)?;
+            }
+        }
+        Commands::Doctor {
+            probe,
+            json: as_json,
+        } => {
+            let config = store::load_config(&paths)?;
+            let report = if probe {
+                compatibility::probe(&config.codex_binary, &paths).await?
+            } else {
+                compatibility::Report::unverified(
+                    compatibility::version(&config.codex_binary)
+                        .await
+                        .unwrap_or_else(|_| "unavailable".into()),
+                )
+            };
+            if probe {
+                compatibility::save_report(
+                    &paths.root.join(sessionsation::layout::COMPATIBILITY_REPORT),
+                    &report,
+                )?;
+            }
+            if as_json {
+                print_json(&serde_json::to_value(report)?)?;
+            } else {
+                println!("{}\nAutomatic switching ready: NO", report.codex_version);
+                for check in report.checks {
+                    println!("{:?}: {} — {}", check.outcome, check.name, check.detail);
+                }
             }
         }
         Commands::Instances => {
@@ -967,6 +1539,23 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Archives => print_json(&external::opening::archives_snapshot(&paths)?)?,
         Commands::Open { session, name } => {
             print_json(&external::opening::open(&paths, &session, name.as_deref()).await?)?
+        }
+        Commands::Rename { session, name } => {
+            // Claude sessions are addressed by stable catalog id and take the same
+            // HERDR tab/catalog rename path as `api rename`.
+            let claude = sessionsation::catalog::list(&paths)?
+                .into_iter()
+                .find(|s| s.id == session && provider::native::of(&s.provider).is_some());
+            if let Some(s) = claude {
+                let renamed =
+                    sessionsation::catalog::names::rename(&paths, &s.id, &s.generation(), &name)
+                        .await?;
+                print_json(
+                    &json!({"schema_version":1,"id":renamed.id,"thread_id":renamed.conversation_id,"name":renamed.name}),
+                )?
+            } else {
+                print_json(&external::catalog::rename(&paths, &session, &name).await?)?
+            }
         }
         Commands::DeleteSession {
             session,
@@ -1155,23 +1744,6 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Retry { job } => {
             print_json(&serde_json::to_value(external::retry(&paths, &job).await?)?)?
         }
-        Commands::Rename { session, name } => {
-            // Claude sessions are addressed by stable catalog id and take the same
-            // HERDR tab/catalog rename path as `api rename`.
-            let claude = sessionsation::catalog::list(&paths)?
-                .into_iter()
-                .find(|s| s.id == session && provider::native::of(&s.provider).is_some());
-            if let Some(s) = claude {
-                let renamed =
-                    sessionsation::catalog::names::rename(&paths, &s.id, &s.generation(), &name)
-                        .await?;
-                print_json(
-                    &json!({"schema_version":1,"id":renamed.id,"thread_id":renamed.conversation_id,"name":renamed.name}),
-                )?
-            } else {
-                print_json(&external::catalog::rename(&paths, &session, &name).await?)?
-            }
-        }
         Commands::HandoffWorker { job } => external::worker(&paths, &job).await?,
         Commands::Run {
             host,
@@ -1179,7 +1751,9 @@ async fn run(cli: Cli) -> Result<()> {
             account,
             thread,
             session,
+            hosted,
             name,
+            permission_mode,
             codex_options,
         } => {
             if let Some(account) = account {
@@ -1190,12 +1764,37 @@ async fn run(cli: Cli) -> Result<()> {
                 let account = resolve_account(&paths, &account)?;
                 anyhow::ensure!(
                     name.is_none()
-                        || (thread.is_none()
+                        || (!hosted
+                            && thread.is_none()
                             && herdr_session.is_none()
                             && matches!(host, Host::Inline)),
-                    "INVALID_ARGUMENT: --name names a new session started in this terminal (inline host, no --thread)"
+                    "INVALID_ARGUMENT: --name names a new session started in this terminal (inline host, no --thread or --hosted)"
                 );
-                if matches!(host, Host::Inline) && thread.is_none() && herdr_session.is_none() {
+                if hosted {
+                    ops::require(
+                        ops::facts(account.provider).hosted_sessions,
+                        ops::HOSTED_CLAUDE_ONLY,
+                    )?;
+                    anyhow::ensure!(
+                        matches!(host, Host::Inline)
+                            && herdr_session.is_none()
+                            && codex_options.is_empty(),
+                        "INVALID_ARGUMENT: --hosted runs its viewer in this terminal (inline host, no provider options)"
+                    );
+                    return sessionsation::provider::claude::hosted::run_in_terminal(
+                        &paths,
+                        &account.name,
+                        thread.as_deref(),
+                        permission_mode,
+                        None,
+                    )
+                    .await;
+                }
+                if matches!(host, Host::Inline)
+                    && !hosted
+                    && thread.is_none()
+                    && herdr_session.is_none()
+                {
                     ops::require(
                         codex_options.is_empty() || ops::facts(account.provider).cli_options,
                         ops::CLI_OPTIONS_CODEX_ONLY,
@@ -1268,9 +1867,7 @@ async fn run(cli: Cli) -> Result<()> {
                     )?,
                 }
             } else {
-                return Err(ops::unsupported(
-                    "this account's sessions are not started here",
-                ));
+                compatibility::require_native_handoff()?;
             }
         }
         Commands::Resume {
@@ -1299,7 +1896,10 @@ async fn run(cli: Cli) -> Result<()> {
                 .exec())
             .context("could not open shell");
         }
-        Commands::ProviderHook { .. } => unreachable!(),
+        Commands::Import { .. } | Commands::Pause { .. } => {
+            compatibility::require_native_handoff()?
+        }
+        Commands::Simulate { .. } | Commands::ProviderHook { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -1347,55 +1947,43 @@ fn resolve_account(paths: &Paths, id: &str) -> Result<AccountRef> {
         name,
     })
 }
-/// `display (name)` when a display name differs from the stable name.
-fn account_label(a: &Value) -> String {
-    let name = a["name"].as_str().unwrap_or("?");
-    match a["display_name"].as_str() {
-        Some(display) if display != name => format!("{display} ({name})"),
-        _ => name.to_owned(),
-    }
-}
-/// Human account listing across providers. Unknown usage shows `-`, never 0%.
-fn account_table(accounts: &[Value]) -> String {
-    let percent = |a: &Value, window: &str| {
-        a["usage"][window]["used_percent"]
-            .as_f64()
-            .map_or("-".to_owned(), |p| format!("{p:.0}%"))
-    };
-    let mut out = format!(
-        "{:<24} {:<8} {:<12} {:>5} {:>5} {}\n",
-        "NAME", "PROVIDER", "STATUS", "5H", "WEEK", "USAGE"
-    );
-    for a in accounts {
-        let status = if a["membership"] == "removed" {
-            "removed".to_owned()
-        } else if a["enabled"] != true {
-            "disabled".to_owned()
-        } else if a["auth_required"] == true {
-            a["auth_detail"]
-                .as_str()
-                .map_or("login".to_owned(), str::to_ascii_lowercase)
-        } else {
-            "ready".to_owned()
-        };
-        out.push_str(&format!(
-            "{:<24} {:<8} {:<12} {:>5} {:>5} {}\n",
-            account_label(a),
-            a["provider"].as_str().unwrap_or("?"),
-            status,
-            percent(a, "short"),
-            percent(a, "weekly"),
-            a["usage_state"].as_str().unwrap_or("unknown"),
-        ));
-    }
-    out
-}
-
 fn print_json(value: &Value) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Scenario {
+    #[serde(default)]
+    config: Config,
+    state: State,
+    events: Vec<TimedInput>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TimedInput {
+    at: i64,
+    input: Input,
+}
+fn simulate(path: &std::path::Path) -> Result<()> {
+    let mut scenario: Scenario = serde_json::from_slice(&std::fs::read(path)?)?;
+    scenario.config.validate()?;
+    let mut last = i64::MIN;
+    for event in scenario.events {
+        anyhow::ensure!(event.at >= last, "scenario clock moved backwards");
+        last = event.at;
+        let effects =
+            simulation::step(&mut scenario.state, &scenario.config, event.at, event.input)?;
+        println!(
+            "{}",
+            serde_json::to_string(
+                &json!({"at":event.at,"effects":effects,"sessions":scenario.state.sessions})
+            )?
+        );
+    }
+    Ok(())
+}
 fn install_systemd(paths: &Paths) -> Result<()> {
     let home = std::env::var_os("HOME").context("HOME missing")?;
     let executable = sessionsation::provider::claude::hooks::executable()?;

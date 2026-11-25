@@ -715,15 +715,21 @@ pub const LEDGER_PREFIX_DIGEST: &str =
     "ed08070acb6d556ff4c0dad1e0851a9569760526b92059d2a1360de04dd0c0ff";
 /// sha256 of baseline `steps` and `trajectory` (see `guard::tables_digest`): loosening a row is
 /// a reviewed change of this file.
-pub const TABLES_DIGEST: &str = "87174a895f5a52f50635990275007df70b363f3a08853781279e137893b03c97";
+pub const TABLES_DIGEST: &str = "6b01b840ce804eaae989e8abc7ea82ee1944db6f0c7998dc5e2c74e50de29145";
 /// Existing modules (file stems; `<stem>.rs` and `<stem>/`) that have no budget row. A production
 /// file in neither `MODULES` nor here fails `every_production_file_is_listed`.
 pub const UNLISTED_OK: &[&str] = &[
     "src/account_deletion",
+    "src/account_rename",
     "src/auto_recover",
+    "src/automatic",
+    "src/autostart",
     "src/background",
     "src/caller_origin",
+    "src/claude_idle",
     "src/claude_switch",
+    "src/cli_views",
+    "src/compatibility",
     "src/external",
     "src/generation",
     "src/identity",
@@ -764,11 +770,15 @@ pub const UNLISTED_OK: &[&str] = &[
     "src/provider/usage_cycle",
     "src/provider/usage_meter",
     "src/resume",
+    "src/root_migrate",
+    "src/scheduler",
     "src/self_executable",
     "src/session_launch",
+    "src/simulation",
     "src/store",
     "src/sync",
     "src/terminal",
     "src/timing",
+    "src/turn_notify",
     "src/usage_history",
 ];

@@ -22,7 +22,7 @@ use crate::{
     sync::{Lock, LockKind},
 };
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -54,11 +54,23 @@ pub(super) mod trace;
 pub(super) trait Reads {
     fn get(&self, id: &str) -> Result<Option<Receipt>>;
     fn retired(&self, id: &str) -> Result<Option<Tombstone>>;
+    /// The stored public-send binding (JSON text) of a message id.
     fn binding(&self, id: &str) -> Result<Option<String>>;
+    /// Whether `id` was admitted through `modes` (queue or submit).
+    fn mode_record(&self, id: &str) -> Result<bool>;
     fn expiry(&self, id: &str) -> Result<i64>;
+    fn events(&self, cursor: Option<&str>) -> Result<Value>;
     /// Held public messages of a conversation, in arrival order; with `queued`, every message
     /// still `pending_local` or `native_accepted` too (`stop --discard-queued`, 1.69.3).
     fn held_ids(&self, conversation: &str, queued: bool) -> Result<Vec<String>>;
+    /// A receipt by id; a retired id is `receipt_retired`, never `not_found`.
+    fn lookup(&self, id: &str) -> Result<Receipt> {
+        match self.get(id)? {
+            Some(r) => Ok(r),
+            None if self.retired(id)?.is_some() => Err(Fault("receipt_retired")),
+            None => Err(Fault("receipt_not_found")),
+        }
+    }
 }
 
 /// Read-only queries (no statement here writes; `guard::ledger_read_is_read_only`).
@@ -91,6 +103,13 @@ mod read {
             )
             .optional()?)
     }
+    pub(super) fn mode_record(db: &Connection, id: &str) -> Result<bool> {
+        Ok(db.query_row(
+            "SELECT count(*) FROM mode_requests WHERE id=? AND mode IN ('queue','submit')",
+            [id],
+            |r| r.get::<_, i64>(0),
+        )? == 1)
+    }
     pub(super) fn expiry(db: &Connection, id: &str) -> Result<i64> {
         Ok(db.query_row("SELECT expiry FROM receipts WHERE id=?", [id], |r| r.get(0))?)
     }
@@ -109,6 +128,41 @@ mod read {
         let rows =
             statement.query_map(params![conversation, queued], |row| row.get::<_, String>(0))?;
         Ok(rows.flatten().collect())
+    }
+    pub(super) fn events(db: &Connection, cursor: Option<&str>) -> Result<Value> {
+        let epoch: String = db.query_row("SELECT epoch FROM metadata", [], |r| r.get(0))?;
+        let (min, max): (i64, i64) = db.query_row(
+            "SELECT coalesce(min(seq),1),coalesce(max(seq),0) FROM events",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let after = if let Some(cursor) = cursor {
+            let (given, seq) = cursor.split_once(':').ok_or(Fault("invalid_cursor"))?;
+            let seq: i64 = seq.parse().map_err(|_| Fault("invalid_cursor"))?;
+            if given != epoch || seq < min - 1 || seq > max {
+                return Err(Fault("cursor_gap"));
+            }
+            seq
+        } else {
+            min - 1
+        };
+        let mut statement =
+            db.prepare("SELECT seq,receipt FROM events WHERE seq>? ORDER BY seq LIMIT 100")?;
+        let rows = statement.query_map([after], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut events = Vec::new();
+        let mut last = after;
+        for row in rows {
+            let (seq, text) = row?;
+            last = seq;
+            let receipt: Receipt =
+                serde_json::from_str(&text).map_err(|_| Fault("storage_error"))?;
+            events.push(json!({"cursor":format!("{epoch}:{seq}"),"receipt":receipt}));
+        }
+        Ok(
+            json!({"events":events,"cursor":format!("{epoch}:{last}"),"has_more":last<max,"public_replies":"correlated_terminal_summary"}),
+        )
     }
 }
 
@@ -129,8 +183,14 @@ impl Reads for LedgerRead {
     fn binding(&self, id: &str) -> Result<Option<String>> {
         read::binding(&self.db, id)
     }
+    fn mode_record(&self, id: &str) -> Result<bool> {
+        read::mode_record(&self.db, id)
+    }
     fn expiry(&self, id: &str) -> Result<i64> {
         read::expiry(&self.db, id)
+    }
+    fn events(&self, cursor: Option<&str>) -> Result<Value> {
+        read::events(&self.db, cursor)
     }
     fn held_ids(&self, conversation: &str, queued: bool) -> Result<Vec<String>> {
         read::held_ids(&self.db, conversation, queued)
@@ -159,6 +219,12 @@ pub(super) fn open_read(
         let (db, lease) = acquire(paths, Access::Read, budget, caller).await?;
         Ok(LedgerRead { db, _lease: lease })
     }
+}
+/// Blocking [`open_read`] for sync callers.
+#[track_caller]
+pub(super) fn open_read_blocking(paths: &Paths, budget: Duration) -> Result<LedgerRead> {
+    let (db, lease) = acquire_blocking(paths, Access::Read, budget, Location::caller())?;
+    Ok(LedgerRead { db, _lease: lease })
 }
 /// Open the ledger for writing, waiting up to `budget` for readers and writers.
 #[track_caller]
@@ -713,8 +779,14 @@ impl Reads for Ledger {
     fn binding(&self, id: &str) -> Result<Option<String>> {
         read::binding(&self.db, id)
     }
+    fn mode_record(&self, id: &str) -> Result<bool> {
+        read::mode_record(&self.db, id)
+    }
     fn expiry(&self, id: &str) -> Result<i64> {
         read::expiry(&self.db, id)
+    }
+    fn events(&self, cursor: Option<&str>) -> Result<Value> {
+        read::events(&self.db, cursor)
     }
     fn held_ids(&self, conversation: &str, queued: bool) -> Result<Vec<String>> {
         read::held_ids(&self.db, conversation, queued)
@@ -722,4 +794,4 @@ impl Reads for Ledger {
 }
 
 #[cfg(test)]
-pub(super) mod tests;
+mod tests;

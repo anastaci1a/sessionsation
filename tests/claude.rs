@@ -1287,7 +1287,7 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         caps["providers"][0]["operations"]["headless_delivery"]["supported"],
         false
     );
-    assert_eq!(caps["contract_revision"], 69);
+    assert_eq!(caps["contract_revision"], 70);
     assert_eq!(caps["receipt_retention"]["since_revision"], 18);
     assert_eq!(caps["launch_permissions"]["since_revision"], 19);
     assert_eq!(caps["launch_permissions"]["built_in_default"], "yolo");
@@ -1685,7 +1685,7 @@ async fn display_names_rename_any_provider_without_changing_identity() {
     assert!(row("claude:personal")["display_name"].is_null());
     let caps = f.api(&["capabilities"]);
     for p in caps["providers"].as_array().unwrap() {
-        assert_eq!(p["account_rename"], p["id"] != "gemini");
+        assert_eq!(p["account_rename"], true);
     }
 }
 
@@ -1918,7 +1918,7 @@ async fn claude_identity_follows_switches_continuations_and_killed_processes() {
     );
     assert!(!f.api(&["state"]).to_string().contains("private prompt"));
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 69);
+    assert_eq!(caps["contract_revision"], 70);
     assert_eq!(
         caps["session_identity"]["claude_continuation_marker"],
         "continued-in"
@@ -2501,7 +2501,7 @@ async fn claude_logout_uses_the_official_command_refuses_in_use_and_is_idempoten
     assert!(capabilities["contract_revision"].as_i64().unwrap() >= 14);
     for provider in capabilities["providers"].as_array().unwrap() {
         // Antigravity signs out only inside agy (/logout): declared unsupported.
-        let expected = provider["id"] != "antigravity" && provider["id"] != "gemini";
+        let expected = provider["id"] != "antigravity";
         assert_eq!(provider["account_logout"], expected);
         assert_eq!(
             provider["operations"]["account_logout"]["supported"],
@@ -2791,7 +2791,7 @@ async fn claude_sessions_archive_restore_and_delete_only_their_own_files() {
     assert_eq!(s["capabilities"]["delete"], true);
     assert_eq!(s["capabilities"]["restore"], false);
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 69);
+    assert_eq!(caps["contract_revision"], 70);
     assert_eq!(caps["conversation_archive"]["native"]["since_revision"], 17);
     let claude = caps["providers"]
         .as_array()

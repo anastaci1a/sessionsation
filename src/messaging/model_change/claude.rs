@@ -95,6 +95,9 @@ fn target(paths: &Paths, r: &Record) -> std::result::Result<(term::Terminal, Pat
     if session.conversation_id != r.conversation_id {
         return Err("generation_changed".into());
     }
+    if crate::provider::claude::hosted::ensure_not_hosted(paths, &r.conversation_id).is_err() {
+        return Err("generation_changed".into());
+    }
     let o = claude::observe(
         &account.home,
         &r.conversation_id,

@@ -96,7 +96,7 @@ pub fn report(paths: &Paths) -> serde_json::Value {
     serde_json::json!({"since_contract":"1.41.0","path":paths.root,"free_bytes":free,
         "min_free_bytes":needed,"min_free_disk_mb":needed / MB,
         "ok":free.is_none_or(|f| f >= needed),
-        "operations":["archive","restore","delete","switch","restart","resume","relocate","move","launch","account delete"],
+        "operations":["archive","restore","delete","switch","restart","resume","relocate","move","launch","account delete","shared migrate","layout migrate"],
         "refusal":"INSUFFICIENT_DISK_SPACE","write_failure":"DISK_FULL"})
 }
 

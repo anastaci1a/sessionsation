@@ -199,7 +199,8 @@ fn locked_account_reports_paused_monitoring_without_claiming_fresh_usage() {
     FileExt::unlock(&lease).unwrap();
 }
 
-// ---- usage meters feeding eligibility (ported from the retired scheduling suite)
+// ---- usage meters feeding eligibility (kept from the S1 port of the scheduling suite)
+use crate::scheduler::{eligible, pressure};
 
 fn meter_usage(short: f64, weekly: f64, at: i64) -> crate::model::Usage {
     use crate::model::{Usage, Window};

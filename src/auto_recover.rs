@@ -474,10 +474,16 @@ fn status_of(s: &Session, seen: &Seen) -> Status {
     }
 }
 
-/// Checks for `enable` (an interactive session; running or not) and the pane
+/// Checks for `enable` (an interactive, non-hosted session; running or not) and the pane
 /// its running process is in, if any.
 async fn live_for_enable(paths: &Paths, s: &Session) -> Result<Option<String>> {
     if let Some(provider) = native::of(&s.provider) {
+        if crate::provider::ops::facts(provider).hosted_sessions {
+            ensure!(
+                !claude::hosted::live(paths, &s.conversation_id),
+                "AUTO_RECOVER_UNSUPPORTED: a Sessionsation-hosted (stream-json) session has no terminal to resume into"
+            );
+        }
         let account = native::account(paths, provider, &s.account)
             .map_err(|_| anyhow::anyhow!("ACCOUNT_UNAVAILABLE: {}:{}", s.provider, s.account))?;
         let seen = observe_all(paths, std::slice::from_ref(s)).await;
@@ -2064,11 +2070,12 @@ async fn attempt<S: Sender>(
         );
         return None;
     }
-    // Another operation or an archive: leave it alone.
+    // Another operation, a hosted worker or an archive: leave it alone.
     if crate::lifecycle::pending(paths, &s.conversation_id, None)
         .ok()
         .flatten()
         .is_some()
+        || claude::hosted::live(paths, &s.conversation_id)
     {
         return None;
     }

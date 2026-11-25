@@ -108,6 +108,7 @@ impl Fixture {
         };
         let claude = install("fake-claude", include_str!("support/fake-claude.sh"));
         let codex = install("fake-codex", include_str!("support/fake-codex.sh"));
+        let gemini = install("gemini.js", include_str!("support/fake-gemini.sh"));
         let fake = tmp.path().join("curl-data");
         fs::create_dir(&fake).unwrap();
         let curl = install(
@@ -136,6 +137,7 @@ printf '%s\n%s' "$(cat "$d/$k-body" 2>/dev/null)" "$(cat "$d/$k-status" 2>/dev/n
             &sessionsation::config::Config {
                 codex_binary: codex.to_str().unwrap().into(),
                 claude_binary: claude.to_str().unwrap().into(),
+                gemini_binary: gemini.to_str().unwrap().into(),
                 curl_binary: curl.to_str().unwrap().into(),
                 ..Default::default()
             },
@@ -330,10 +332,10 @@ async fn idle_codex_and_claude_accounts_have_one_meter_shape_without_a_session()
     );
 
     // Every provider has a row of the same shape; Gemini says why it has no meter.
-    ok(&root, &["account", "add", "antigravity:g"]);
+    ok(&root, &["account", "add", "gemini:g"]);
     let sent = f.calls();
     let all = ok(&root, &["usage", "--cached"]);
-    let gemini = row(&all, "antigravity:g");
+    let gemini = row(&all, "gemini:g");
     assert_eq!(gemini["supported"], false);
     assert!(gemini["meter"]["reason"].is_string());
     let shape = keys(row(&all, "codex:first"));

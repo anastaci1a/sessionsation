@@ -72,11 +72,13 @@ described in [contributor guidance](../agents/README.md#owned-roles-and-the-guar
 - Codex behaviour lives in the supervisor, discovery and lifecycle modules, talking to
   each account's app-server over its control socket.
 - `provider/claude.rs` owns Claude enrollment, environment, the authentication probe,
-  launch/resume plans, discovery, live identity and usage;
+  launch/resume plans, discovery, live identity and usage; `provider/claude/hosted.rs`
+  the hosted (stream-json) worker, which holds `worker.lock`, owns the provider's stdin
+  and serves a private control socket, so a supervisor restart re-adopts it;
   `provider/claude/peer.rs` and `native_peer.rs` the cross-session messaging endpoint
   and wire format; `messaging/claude_steer.rs` admission, the durable records in
   `messaging/claude-steer/`, the per-message workers and the receipts of every native
-  live path.
+  live path; `claude_idle.rs` native agent delivery and idle notices.
 - `provider/native.rs` dispatches the shared native-session model (account home,
   transcript discovery, live identity, launch, headless delivery) between Claude,
   Gemini and Antigravity; `provider/gemini.rs` and `provider/antigravity.rs` (with

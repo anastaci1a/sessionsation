@@ -16,9 +16,10 @@
 //!
 //! Version 1 (the legacy layout) kept every store at the top level and account
 //! homes in `accounts/<name>` (Codex), `claude-accounts/`, `gemini-accounts/`
-//! and `antigravity-accounts/`. This build admits only layout 2 and 3 roots. An
-//! account home that was deferred at its legacy path is still resolved there by
-//! [`account_home`].
+//! and `antigravity-accounts/`. A legacy root is never used by this build until
+//! `sessionsation layout migrate` converts it (see [`migrate`]). An account home
+//! that was in use during the migration stays at its legacy path ("deferred")
+//! and [`account_home`] resolves it there until a later migrate run moves it.
 use crate::{paths::private_dir, provider::ProviderId};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -27,10 +28,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod migrate;
+
 /// The version a new root is stamped with (and every root before a root alias).
 pub const VERSION: u32 = 2;
 /// Version 3 (contract 1.54.0): version 2 plus an active root alias (see
-/// [`crate::alias`]). Builds that cannot
+/// [`crate::alias`] and `sessionsation root migrate`). Builds that cannot
 /// compare paths through the alias refuse it (`LAYOUT_UNSUPPORTED`).
 pub const ALIAS_VERSION: u32 = 3;
 /// The newest layout this build admits.
@@ -61,6 +64,9 @@ pub const PROVIDER_STATE: &str = "registry/provider-state";
 pub const AUTO_RECOVER: &str = "registry/auto-recover.json";
 pub const AUTO_RECOVER_LOCK: &str = "registry/auto-recover.lock";
 pub const AUTO_RECOVER_TICK_LOCK: &str = "registry/auto-recover-tick.lock";
+/// Per-session turn-end notification settings and event journal (contract 1.38.0).
+pub const TURN_NOTIFY: &str = "registry/turn-notify.json";
+pub const TURN_NOTIFY_LOCK: &str = "registry/turn-notify.lock";
 /// Session events in one shape for every provider (contract 1.64.0): the bounded journal,
 /// its cursor/tracker state and their lock.
 pub const EVENTS: &str = "registry/events.jsonl";
@@ -85,7 +91,7 @@ pub const ACCOUNT_RESET_CREDITS: &str = "operations/account-reset-credits";
 pub const CLAUDE_SWITCHES: &str = "operations/claude-switches";
 /// Native Claude idle-notice subscriptions (contract 1.40.0).
 pub const CLAUDE_IDLE_NOTIFY: &str = "operations/claude-idle-notify";
-/// Journals of the retired `shared migrate` (contract 1.39.0).
+/// Journals of `shared migrate` (contract 1.39.0).
 pub const SHARED_MIGRATIONS: &str = "operations/shared-migrations";
 pub const AUTO_RECOVERIES: &str = "operations/auto-recoveries";
 pub const CONVERSATION_OPERATIONS: &str = "operations/conversation-operations";
@@ -102,7 +108,7 @@ pub const MODEL_CHANGES_LOCK: &str = "operations/model-changes.lock";
 /// One-pass session launches: brief, verification, delivery (contract 1.49.0).
 pub const SESSION_LAUNCHES: &str = "operations/session-launches";
 pub const MOVE_BACKUPS: &str = "operations/move-backups";
-/// Journals of the retired `root migrate` (contract 1.54.0); never pruned.
+/// `root migrate` run and per-session journals (contract 1.54.0); never pruned.
 pub const ROOT_MIGRATIONS: &str = "operations/root-migrations";
 pub const PROJECT_RELOCATION_LOCK: &str = "operations/project-relocation.lock";
 
@@ -196,6 +202,15 @@ pub const MOVES: &[(&str, &str)] = &[
     ("handoff.log", HANDOFF_LOG),
 ];
 
+/// Legacy entries whose absolute paths are recorded inside durable journals
+/// (archive manifests, account-deletion records, move backups). A relative
+/// compatibility symlink stays at the legacy path so recorded paths resolve.
+pub const COMPAT_LINKS: &[&str] = &[
+    "archived-sessions",
+    "preserved-conversations",
+    "move-backups",
+];
+
 /// Version 1 parents of non-Codex managed homes.
 pub const LEGACY_HOME_PARENTS: &[(ProviderId, &str)] = &[
     (ProviderId::Claude, "claude-accounts"),
@@ -240,6 +255,12 @@ pub fn account_home(root: &Path, provider: ProviderId, name: &str) -> PathBuf {
         return legacy;
     }
     target
+}
+
+/// Create (0700) the parents of a new managed home for `provider`.
+pub fn ensure_home_parent(root: &Path, provider: ProviderId) -> Result<()> {
+    private_dir(&root.join(ACCOUNTS))?;
+    private_dir(&root.join(ACCOUNTS).join(provider.as_str()))
 }
 
 /// Codex account homes: `accounts/codex/<name>` plus deferred legacy homes
@@ -299,6 +320,46 @@ fn resolve_physical(path: &Path) -> PathBuf {
     }
 }
 
+/// Rewrite stored absolute home paths after homes moved (`from` to `to`).
+/// Only exact home matches change: `conversations/*.json` `owner`,
+/// `managed-panes/*.json` `home` and `herdr-panes/*.json` `binding.home`.
+/// Journals and receipts are never rewritten. Idempotent; returns the number
+/// of records changed.
+pub fn rewrite_home_refs(root: &Path, moves: &[(PathBuf, PathBuf)]) -> Result<usize> {
+    let mut changed = 0;
+    for (dir, field) in [
+        (CONVERSATIONS, "/owner"),
+        (MANAGED_PANES, "/home"),
+        (HERDR_PANES, "/binding/home"),
+    ] {
+        let Ok(entries) = fs::read_dir(root.join(dir)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "json")
+                || !entry.file_type().is_ok_and(|t| t.is_file())
+            {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else { continue };
+            let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            let target = value
+                .pointer(field)
+                .and_then(|v| v.as_str())
+                .and_then(|s| moves.iter().find(|(from, _)| from.as_os_str() == s));
+            if let Some((_, to)) = target {
+                *value.pointer_mut(field).expect("checked") = serde_json::json!(to);
+                crate::paths::atomic_write(&path, &serde_json::to_vec(&value)?)?;
+                changed += 1;
+            }
+        }
+    }
+    Ok(changed)
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
@@ -345,7 +406,7 @@ pub struct Record {
     pub root_alias: Option<RootAlias>,
 }
 
-/// The `root_alias` block of `layout.json` (written by the retired `root migrate`).
+/// The `root_alias` block of `layout.json` (written by `root migrate`).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RootAlias {
     pub version: u32,
@@ -425,7 +486,7 @@ fn ensure_store_dirs(root: &Path) -> Result<()> {
 
 /// Admit this build to a data root. A root with a complete version 2 record is
 /// used as is. A root without a record is stamped as version 2 when it holds
-/// no legacy content (a new root); a legacy root fails closed.
+/// no legacy content (a new root); a legacy root fails closed until migrated.
 pub fn admit(root: &Path) -> Result<()> {
     match read_record(root)? {
         Some(r) if r.version > MAX_VERSION => bail!(
@@ -438,7 +499,7 @@ pub fn admit(root: &Path) -> Result<()> {
                 && !r.root_alias.as_ref().is_some_and(RootAlias::is_active) =>
         {
             bail!(
-                "LAYOUT_INVALID: layout version {ALIAS_VERSION} requires an active root_alias block"
+                "LAYOUT_INVALID: layout version {ALIAS_VERSION} requires an active root_alias block; run `sessionsation root status`"
             )
         }
         Some(r)
@@ -450,18 +511,30 @@ pub fn admit(root: &Path) -> Result<()> {
             }
             Ok(())
         }
-        Some(r) if r.state != State::Complete => bail!(
-            "LAYOUT_MIGRATION_IN_PROGRESS: a data-root layout change did not finish; this release cannot continue it"
+        Some(r) if r.state != State::Complete && r.root_alias.is_some() => bail!(
+            "LAYOUT_MIGRATION_IN_PROGRESS: a `root {}` did not finish; rerun it (or `sessionsation root rollback`) with the supervisor stopped",
+            if r.state == State::Migrating {
+                "migrate"
+            } else {
+                "rollback"
+            }
         ),
-        Some(r) => bail!(
-            "LAYOUT_MIGRATION_REQUIRED: layout version {} is not supported; this release needs {ALIAS_VERSION}",
-            r.version
+        Some(r) if r.state != State::Complete => bail!(
+            "LAYOUT_MIGRATION_IN_PROGRESS: a data-root layout {} did not finish; run `sessionsation layout migrate` (or `layout rollback`) with the supervisor stopped",
+            if r.state == State::Migrating {
+                "migration"
+            } else {
+                "rollback"
+            }
+        ),
+        Some(_) => bail!(
+            "LAYOUT_MIGRATION_REQUIRED: run `sessionsation layout migrate` with the supervisor stopped"
         ),
         None => {
             let legacy = legacy_entries(root);
             if !legacy.is_empty() {
                 bail!(
-                    "LAYOUT_MIGRATION_REQUIRED: layout version 1 is not supported; this release needs {ALIAS_VERSION} ({}: {})",
+                    "LAYOUT_MIGRATION_REQUIRED: {} uses the legacy (version 1) layout ({}); stop the supervisor and run `sessionsation layout migrate`",
                     root.display(),
                     legacy
                         .iter()
@@ -482,22 +555,6 @@ pub fn admit(root: &Path) -> Result<()> {
             )
         }
     }
-}
-
-/// `layout status`: the layout version, state, deferred homes and legacy entries.
-pub fn status(root: &Path) -> Result<serde_json::Value> {
-    let record = read_record(root)?;
-    let legacy = legacy_entries(root);
-    Ok(serde_json::json!({
-        "layout_version": record.as_ref().map_or(1, |r| r.version),
-        "state": record.as_ref().map(|r| r.state.clone()),
-        "migration_required": record.is_none() && !legacy.is_empty(),
-        "legacy_entries": legacy,
-        "deferred": record.as_ref().map(|r| r.deferred.clone()).unwrap_or_default(),
-        "compat_links": record.as_ref().map(|r| r.compat_links.clone()).unwrap_or_default(),
-        "backup": record.as_ref().and_then(|r| r.backup.clone()),
-        "migrated_at": record.as_ref().and_then(|r| r.migrated_at),
-    }))
 }
 
 pub(crate) fn now() -> i64 {

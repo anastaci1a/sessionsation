@@ -131,6 +131,10 @@ fn claude_ask_user_question_pending_until_tool_result_and_multi_select() {
     assert!(open[0].questions[0].multi);
     let answers = parse_answers(r#"{"q1":{"option_ids":["o1","o2"],"text":"also C"}}"#).unwrap();
     validate(&open[0].questions, &answers).unwrap();
+    let input = json!({"questions":[{"question":"Which features?"}]});
+    let updated = claude_updated_input(&input, &open[0].questions, &answers);
+    assert_eq!(updated["answers"]["Which features?"], "A, B, also C");
+    assert_eq!(updated["questions"], input["questions"]);
     append(
         &t,
         &[
@@ -145,7 +149,12 @@ fn claude_ask_user_question_pending_until_tool_result_and_multi_select() {
             json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_2","name":"AskUserQuestion","input":{"questions":[{"question":"Q?","options":[]}]}}]}}),
         ],
     );
-    let rows = claude_pending(&paths, Some(&t));
+    let rows = claude_pending(
+        &paths,
+        "s",
+        "11111111-1111-4111-8111-111111111111",
+        Some(&t),
+    );
     assert_eq!(rows.len(), 1);
     assert!(!rows[0].answerable);
     assert!(

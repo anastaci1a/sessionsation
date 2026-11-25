@@ -60,8 +60,11 @@ fn the_own_process_is_alive_and_a_reused_pid_is_not() {
     let start = start_time(me).unwrap();
     assert_eq!(proc_start(me).map(|(_, s)| s), Some(start));
     assert!(alive(me, start) && !gone(me, start) && same(me, start));
+    assert!(alive_recorded(me, &start.to_string()));
     // Pid reuse: the same pid with another start time is another process.
     assert!(!alive(me, start + 1) && gone(me, start + 1) && !same(me, start + 1));
+    assert!(!alive_recorded(me, &(start + 1).to_string()));
+    assert!(!alive_recorded(me, &format!("0{start}")));
 }
 
 #[test]

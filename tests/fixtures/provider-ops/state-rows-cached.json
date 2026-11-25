@@ -8,6 +8,9 @@
     },
     "codex:g": {
       "provider": "codex"
+    },
+    "gemini:g": {
+      "provider": "gemini"
     }
   },
   "sessions": {
@@ -87,13 +90,13 @@
         "move_project": "native session is bound to its account config home",
         "move_space": "HERDR space moves are verified only for Codex",
         "native_rename": "label applied as --name on next launch/resume; live native title unchanged",
-        "queue": "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session",
+        "queue": "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session, or start it hosted",
         "restart": "no verified Claude restart: stop the session, then resume it",
         "restore": "SESSION_NOT_ARCHIVED",
         "resume": null,
-        "steer": "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session",
+        "steer": "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session, or start it hosted",
         "stop": "SESSION_NOT_RUNNING",
-        "submit": "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session",
+        "submit": "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session, or start it hosted",
         "switch_account": null
       },
       "provider": "claude",
@@ -126,6 +129,50 @@
         "stop": "SESSION_NOT_RUNNING"
       },
       "provider": "codex",
+      "resume_block_reason": null
+    },
+    "gemini": {
+      "capabilities": {
+        "add_to_herdr": false,
+        "archive": true,
+        "auto_recover": true,
+        "auto_start": true,
+        "change_directory": false,
+        "delete": true,
+        "focus": false,
+        "move_project": false,
+        "move_space": false,
+        "native_rename": false,
+        "queue": false,
+        "rename": true,
+        "restart": false,
+        "restore": false,
+        "resume": true,
+        "steer": false,
+        "stop": false,
+        "submit": false,
+        "switch_account": false
+      },
+      "capability_reasons": {
+        "add_to_herdr": "SESSION_NOT_RUNNING: a stopped session opens with Start Session (resume), which accepts a target Space and name",
+        "archive": null,
+        "auto_recover": null,
+        "auto_start": null,
+        "change_directory": "native session is bound to its account home",
+        "delete": null,
+        "move_project": "native session is bound to its account home",
+        "move_space": "HERDR space moves are verified only for Codex",
+        "native_rename": "label is a Sessionsation catalog label; Gemini CLI has no native session rename",
+        "queue": "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Gemini session",
+        "restart": "no verified Gemini process lifecycle control; stop it in its terminal",
+        "restore": "SESSION_NOT_ARCHIVED",
+        "resume": null,
+        "steer": "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Gemini session",
+        "stop": "Gemini CLI no longer supports individual accounts (migrate to Antigravity)",
+        "submit": "SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Gemini session",
+        "switch_account": "native session is bound to its account home"
+      },
+      "provider": "gemini",
       "resume_block_reason": null
     }
   }

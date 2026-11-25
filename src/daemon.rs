@@ -1,4 +1,5 @@
 use crate::{
+    compatibility,
     config::Config,
     model::{Account, Credits, State, Usage, Window},
     paths::{Paths, private_dir},
@@ -303,20 +304,20 @@ pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> V
             explain_stale_meter(&mut usage["meter"], codex_stale_reason(paths, &a.name));
         }
         json!({
-        "name":a.name,"folder_name":a.name,"name_mismatch":a.display_name.is_some(),"generation":crate::accounts::account_generation(a),
+        "name":a.name,"folder_name":a.name,"name_mismatch":a.display_name.is_some(),"generation":crate::account_rename::account_generation(a),
         "order":a.order,"display_name":a.display_name,"provider":a.provider,"config_home":a.config_home,
         "enabled":a.enabled,"auth_required":a.auth_required,"auth_detail":a.auth_detail,"deletion_id":a.deletion_id,
         "switch_thresholds":a.switch_thresholds,
         "usage":usage,"usage_fresh":fresh,"usage_state":usage_state,"plan":account_plan(a,at),
         "credit_fresh":supervised && a.usage.credits.is_some() && a.usage.observed_fresh(at,config.stale_seconds),
         "monitoring_pause_reason":supervised.then(||monitoring_pause_reason(paths,&a.name)).flatten(),
-        "eligible":supervised && eligible(a,config,at),
+        "eligible":supervised && crate::scheduler::eligible(a,config,at),
         "assigned_sessions":state.sessions.values().filter(|s|supervised && s.account.as_ref()==Some(&a.name)).count()
     })}).collect();
     let sessions: Vec<_> = state.sessions.values().map(|s|json!({"id":s.id,"thread_id":s.root_thread,"cwd":s.cwd,"account":s.account,"phase":s.phase,"reason":s.reason,"tmux_pane":s.tmux_pane,"manual_pause":s.manual_pause,"resume_work":s.resume_work})).collect();
     json!({"schema_version":1,"daemon":{"running":true,"package_version":env!("CARGO_PKG_VERSION"),"api_version":1,"lifecycle_reservations":["message-recoveries","space-moves"]},"codex_version":version,
-        "capabilities":{"account_deletion":true,"account_monitoring":true,"manual_exit_handoff":true,"manual_moves":true,"explicit_account_launch":true,"session_inventory":true,"session_open":true,"archive_recovery":true,"project_relocation":true,"session_restart":true,"session_termination":true,"session_pause":true,"job_retry":true,"verified_paginated_moves":true,"managed_launch":false,"experimental_auto_start":false,"experimental_auto_switching":false,"automatic_switching":false,"conversation_import":false},
-        "readiness":{"ready":false,"code":"NATIVE_HANDOFF_UNVERIFIED","detail":"Automatic account switching is not available."},
+        "capabilities":{"account_deletion":true,"account_monitoring":true,"scheduler_simulation":true,"manual_exit_handoff":true,"manual_moves":true,"explicit_account_launch":true,"session_inventory":true,"session_open":true,"archive_recovery":true,"project_relocation":true,"session_restart":true,"session_termination":true,"session_pause":true,"job_retry":true,"verified_paginated_moves":true,"managed_launch":false,"experimental_auto_start":true,"experimental_auto_switching":true,"automatic_switching":false,"conversation_import":false},
+        "readiness":{"ready":false,"code":"NATIVE_HANDOFF_UNVERIFIED","detail":"Native handoff compatibility gates have not passed. See docs/COMPATIBILITY.md."},
         "automatic_switch_preferences":state.automatic_switching,
         "automatic_start_preferences":state.automatic_start,
         "accounts":accounts,"sessions":sessions,"settings":config,"observed_at":at})
@@ -408,7 +409,7 @@ fn apply_poll(state: &mut State, store: &mut Store, result: Poll) -> Result<bool
 pub async fn serve(paths: Paths) -> Result<()> {
     std::env::set_current_dir(&paths.root)?;
     // Root alias (contract 1.54.0): old-spelling runtime paths reach this runtime.
-    for link in crate::alias::runtime::ensure(&paths) {
+    for link in crate::root_migrate::runtime::ensure(&paths) {
         if link["result"]
             .as_str()
             .is_some_and(|r| r.starts_with("refused"))
@@ -425,9 +426,13 @@ pub async fn serve(paths: Paths) -> Result<()> {
     // Must precede removing the stale socket and opening the database.
     let mut store = Store::open(&paths)?;
     let mut state = store.load()?;
+    crate::automatic::reconcile(&mut state);
     if !state.normalize_order().is_empty() {
         store.save(&state, now(), "account.order_migrated", "")?;
     }
+    crate::autostart::reconcile(&mut state);
+    crate::account_rename::reconcile_all(&paths, &mut state, &mut store);
+    store.save(&state, now(), "automatic_reconciled", "")?;
     let mut config = load_config(&paths)?;
     // Data-root retention (logs, cache, operations history, receipts): first
     // pass a few minutes after start, then hourly. Housekeeping never blocks.
@@ -468,7 +473,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     // below; after that status says "unavailable" until the probe answers.
     let codex_binary = config.codex_binary.clone();
     let mut version_probe = tokio::spawn(async move {
-        codex_version(&codex_binary)
+        compatibility::version(&codex_binary)
             .await
             .unwrap_or_else(|_| "unavailable".into())
     });
@@ -531,10 +536,12 @@ pub async fn serve(paths: Paths) -> Result<()> {
             eprintln!("startup state snapshot failed: {e:#}");
         }
     });
+    let automatic_task = tokio::spawn(crate::automatic::monitor(paths.clone()));
     let auto_recover_task = tokio::spawn(crate::auto_recover::monitor(paths.clone()));
     let compaction_task = tokio::spawn(crate::messaging::compaction::monitor(paths.clone()));
     // Contract 1.49.0: model changes and one-pass launches.
     let model_task = tokio::spawn(crate::messaging::model_change::monitor(paths.clone()));
+    let turn_notify_task = tokio::spawn(crate::turn_notify::monitor(paths.clone()));
     // Contract 1.64.0: one re-dispatch of an unsent request whose worker died.
     let message_worker_task = tokio::spawn(crate::messaging::claude_steer::monitor(paths.clone()));
     // Contract 1.62.0 (SM8): idle Claude meters are read in the background.
@@ -549,6 +556,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     let mut helpers = BTreeMap::<String, Rpc>::new();
     let mut pending = BTreeSet::new();
     let mut last_poll = BTreeMap::<String, i64>::new();
+    let mut last_sender_sweep = 0i64;
     let (poll_tx, mut polls) = mpsc::channel::<Poll>(64);
     let (claude_tx, mut claude_polls) = mpsc::channel::<ClaudePoll>(64);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -585,6 +593,16 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             let end = params["end"].as_i64().context("missing range end")?;
                             let step = params["step"].as_i64().unwrap_or(1800);
                             Ok(serde_json::to_value(crate::usage_history::query(&store.db,name,&account.usage,start,end,step)?)?)
+                        }
+                        method if method.starts_with("automatic/") => {
+                            let value = crate::automatic::request(&paths,&mut state,&config,method,params)?;
+                            if method != "automatic/get" { store.save(&state,now(),method,params["thread"].as_str().unwrap_or(""))?; }
+                            Ok(value)
+                        }
+                        method if method.starts_with("auto-start/") => {
+                            let value = crate::autostart::request(&mut state,&config,method,params)?;
+                            if method != "auto-start/get" { store.save(&state,now(),method,params["thread"].as_str().unwrap_or(""))?; }
+                            Ok(value)
                         }
                         "account/thresholds" => {
                             let key = key_of(&state,params)?; let name = key.as_str();
@@ -656,7 +674,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         }
                         "config/get" => Ok(serde_json::to_value(&config)?),
                         "config/set" => {
-                            let (new, _) = Config::parse(params.clone())?; new.validate()?;
+                            let new: Config = serde_json::from_value(params.clone())?; new.validate()?;
                             ensure!(new.codex_binary == config.codex_binary || helpers.is_empty(), "restart supervisor before changing an active Codex binary");
                             save_config(&paths,&new)?; config = new; Ok(json!({"saved":true}))
                         }
@@ -805,6 +823,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             match logout {
                                 Logout::CodexRpc => crate::logout::codex(&config,&home,helpers.get(&key)).await?,
                                 Logout::ClaudeCli => crate::logout::claude(&config,&home).await?,
+                                Logout::GeminiFiles => crate::logout::gemini(&home)?,
                                 Logout::Refused(reason) => bail!("{}", reason),
                             }
                             let detail = crate::provider::native::is_native(provider).then(|| "AUTH_REQUIRED".to_owned());
@@ -819,10 +838,28 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             let account = named(&state,params)?;
                             let provider = account.provider;
                             let steering = ops::facts(provider).live_steering;
-                            ops::require(steering != LiveSteering::None, "live steering uses Claude Code peer messaging")?;
+                            ops::require(steering != LiveSteering::None, "live steering uses Claude Code peer messaging or Gemini CLI model steering")?;
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             let name = account.name.clone();
                             let home = crate::provider::account_home(&paths,account)?;
+                            if steering == LiveSteering::GeminiModelSteering {
+                                // Gemini: experimental.modelSteering, read by each session at startup.
+                                use crate::provider::gemini::steering;
+                                let (changed, previous) = match params["enable"].as_bool() {
+                                    Some(enable) => {
+                                        let t = steering::set(&home, enable)?;
+                                        if t.changed { store.save(&state,now(),if enable {"account.live_steering_enabled"} else {"account.live_steering_disabled"},&name)?; }
+                                        (t.changed, t.previous)
+                                    }
+                                    None => (false, steering::configured(&home).map(Value::Bool)),
+                                };
+                                let value = steering::configured(&home);
+                                let running = crate::provider::gemini::live_sessions(&home).map(|l| l.len()).unwrap_or(0);
+                                return Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"live_steering":value==Some(true),
+                                    "setting":steering::SETTING,"value":value,"previous":previous,"changed":changed,
+                                    "settings_file":steering::settings_file(&home),"applies_to":"sessions_started_after_the_change",
+                                    "restart_required":changed && running > 0,"running_sessions":running}));
+                            }
                             let (changed, previous) = match params["enable"].as_bool() {
                                 Some(enable) => {
                                     let t = crate::provider::claude::peer::set(&home, enable)?;
@@ -952,7 +989,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             let (name, provider) = (account.name.clone(), account.provider);
                             if let Some(expected) = params["expected_generation"].as_str() {
-                                ensure!(crate::accounts::account_generation(account) == expected, "STALE_TARGET: the account changed since it was read; refresh the account list");
+                                ensure!(crate::account_rename::account_generation(account) == expected, "STALE_TARGET: the account changed since it was read; refresh the account list");
                             }
                             let next = params["display_name"].as_str().map(str::trim).filter(|d| !d.is_empty() && *d != name).map(str::to_owned);
                             if let Some(display) = &next {
@@ -966,7 +1003,42 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             if changed { a.display_name = next.clone(); store.save(&state,now(),"account.renamed",&format!("{provider}:{name}"))?; }
                             let a = state.account(provider,&name).context("unknown account")?;
                             Ok(json!({"account_id":format!("{provider}:{name}"),"name":name,"folder_name":name,"display_name":next,"name_mismatch":a.display_name.is_some(),
-                                "generation":crate::accounts::account_generation(a),"changed":changed}))
+                                "generation":crate::account_rename::account_generation(a),"changed":changed}))
+                        }
+                        "account/rename-backend" => {
+                            let account = named(&state,params)?.clone();
+                            let (provider, key) = (account.provider, account.key());
+                            let request_id = params["request_id"].as_str().context("INVALID_ARGUMENT: request_id is required")?;
+                            uuid::Uuid::parse_str(request_id).context("INVALID_ARGUMENT: request_id must be a UUID")?;
+                            if crate::account_rename::exists(&paths,request_id) {
+                                // Never replayed: report the recorded operation.
+                                let record = crate::account_rename::read(&paths,request_id)?;
+                                return Ok(json!({"already_recorded":true,"operation":crate::account_rename::public(&record)}));
+                            }
+                            let expected = params["expected_generation"].as_str().context("INVALID_ARGUMENT: expected_generation is required")?;
+                            // A native auth probe in flight is harmless (its result is dropped once the
+                            // key is gone); a Codex helper still holds the home.
+                            ensure!(!ops::facts(provider).supervised || !pending.contains(&key), "ACCOUNT_POLL_IN_PROGRESS: account poll is in progress; retry shortly");
+                            let plan = crate::account_rename::plan(&paths,&state,provider,&account.name,params["new_name"].as_str(),expected)?;
+                            let _old_lock = crate::accounts::operation_lock(&paths,provider,&plan.old_name)?;
+                            let _new_lock = crate::accounts::operation_lock(&paths,provider,&plan.new_name)?;
+                            crate::account_rename::ensure_idle(&paths,&plan).await?;
+                            if ops::facts(provider).supervised {
+                                if let Some(helper) = helpers.remove(&key) { helper.stop_idle().await?; }
+                                crate::account_rename::stop_codex_server(&config,&plan.old_home).await?;
+                            }
+                            last_poll.remove(&key);
+                            let (previous_id, new_name) = (format!("{provider}:{}",plan.old_name), plan.new_name.clone());
+                            let operation = crate::account_rename::execute(&paths,&mut state,&mut store,plan,request_id,&|_| Ok(()))?;
+                            let a = state.account(provider,&new_name).context("unknown account")?;
+                            Ok(json!({"account_id":format!("{provider}:{new_name}"),"previous_account_id":previous_id,"name":new_name,"folder_name":new_name,
+                                "display_name":a.display_name,"name_mismatch":a.display_name.is_some(),"generation":crate::account_rename::account_generation(a),
+                                "home":crate::layout::account_home(&paths.root,provider,&new_name),"operation":operation,"changed":true}))
+                        }
+                        "account/rename-backend/recover" => {
+                            let id = params["request_id"].as_str().context("INVALID_ARGUMENT: request_id is required")?;
+                            let operation = crate::account_rename::reconcile(&paths,&mut state,&mut store,id,&|_| Ok(()))?;
+                            Ok(json!({"operation":operation}))
                         }
                         "account/managed-home" => {
                             let name = params["name"].as_str().context("missing account name")?;
@@ -1034,6 +1106,9 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         }
                         // Contract 1.64.0: delivery workers run as the supervisor's children.
                         "message/worker" => crate::messaging::claude_steer::supervised_start(&paths,params),
+                        "session/run" | "session/import" | "session/pause" | "session/resume" => {
+                            compatibility::require_native_handoff()?; unreachable!()
+                        }
                         _ => bail!("unknown control method"),
                     }
                 }.await;
@@ -1074,6 +1149,14 @@ pub async fn serve(paths: Paths) -> Result<()> {
                 }
             }
             _ = interval.tick() => {
+                if now() - last_sender_sweep >= 60 {
+                    last_sender_sweep = now();
+                        for a in state.accounts.values().filter(|a| ops::facts(a.provider).live_steering == LiveSteering::ClaudePeer) {
+                            if let Ok(home) = crate::provider::account_home(&paths, a) {
+                                crate::provider::claude::sender_registry::sweep(&home);
+                            }
+                        }
+                }
                 for a in state.accounts.values() {
                     let akey = a.key();
                     if !a.enabled || pending.contains(&akey) { continue; }
@@ -1100,8 +1183,12 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         set_meter_note(&a.name, Some(pause_sentence(code).to_owned()));
                         continue;
                     }
-                    let near = pressure(a,&config) >= 0.8;
-                    let cadence = if a.auth_required {5} else if near {config.near_limit_poll_seconds} else {config.idle_poll_seconds};
+                    let automatic = state.automatic_switching.values().any(|p| p.enabled && p.accounts.contains(&a.name))
+                        || state.automatic_start.values().any(|p|p.enabled);
+                    let threshold_near = a.usage.short.as_ref().is_some_and(|w| w.used_percent >= a.switch_thresholds.short_percent - 5.)
+                        || a.usage.weekly.as_ref().is_some_and(|w| w.used_percent >= a.switch_thresholds.weekly_percent - 5.);
+                    let near = crate::scheduler::pressure(a,&config) >= 0.8 || (automatic && threshold_near);
+                    let cadence = if a.auth_required {5} else if near {config.near_limit_poll_seconds} else if automatic {config.active_poll_seconds} else {config.idle_poll_seconds};
                     let reset_due = [&a.usage.short,&a.usage.weekly].iter().filter_map(|w|w.as_ref()).any(|w|w.resets_at <= now() && last_poll.get(&a.name).copied().unwrap_or(0) < w.resets_at);
                     if !reset_due && now() - last_poll.get(&a.name).copied().unwrap_or(0) < cadence as i64 {continue;}
                     last_poll.insert(a.name.clone(),now());
@@ -1121,9 +1208,11 @@ pub async fn serve(paths: Paths) -> Result<()> {
         }
     }
     version_probe.abort();
+    automatic_task.abort();
     auto_recover_task.abort();
     compaction_task.abort();
     model_task.abort();
+    turn_notify_task.abort();
     message_worker_task.abort();
     meter_task.abort();
     events_task.abort();
@@ -1207,54 +1296,6 @@ pub async fn ensure_started(paths: &Paths) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     bail!("supervisor startup timed out")
-}
-
-fn pressure(account: &Account, config: &Config) -> f64 {
-    if !account.usage.windows_complete() {
-        return f64::INFINITY;
-    }
-    [
-        (&account.usage.short, config.short_ceiling),
-        (&account.usage.weekly, config.weekly_ceiling),
-    ]
-    .into_iter()
-    .filter_map(|(w, ceiling)| w.as_ref().map(|w| w.used_percent / ceiling))
-    .fold(0., f64::max)
-}
-fn eligible(account: &Account, config: &Config, now: i64) -> bool {
-    let u = &account.usage;
-    if !account.enabled
-        || account.auth_required
-        || !u.observed_fresh(now, config.stale_seconds)
-        || u.spend_control_reached == Some(true)
-    {
-        return false;
-    }
-    // A reached plan allowance can still be served from purchased credits.
-    if (u.exhausted || u.ordinary_usage_allowed == Some(false))
-        && u.credits.as_ref().is_some_and(|c| c.available())
-        && matches!(u.reached_type.as_deref(), None | Some("rate_limit_reached"))
-    {
-        return true;
-    }
-    let below = |w: &Option<crate::model::Window>, ceiling: f64| {
-        w.as_ref()
-            .is_none_or(|w| w.used_percent < ceiling - config.drain_margin)
-    };
-    !u.exhausted
-        && u.ordinary_usage_allowed != Some(false)
-        && u.fresh(now, config.stale_seconds)
-        && below(&u.short, config.short_ceiling)
-        && below(&u.weekly, config.weekly_ceiling)
-}
-async fn codex_version(binary: &str) -> Result<String> {
-    let run = tokio::process::Command::new(binary)
-        .arg("--version")
-        .kill_on_drop(true)
-        .output();
-    let out = tokio::time::timeout(std::time::Duration::from_secs(10), run).await??;
-    ensure!(out.status.success(), "Codex version command failed");
-    Ok(String::from_utf8(out.stdout)?.trim().into())
 }
 
 #[cfg(test)]

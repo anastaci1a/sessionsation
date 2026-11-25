@@ -1,0 +1,19 @@
+Warning: 256-color support not detected. Using a terminal with at least 256-color support is recommended for a better visual experience.
+Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google
+    at throwIneligibleOrProjectIdError (file:///<install>/node_modules/@google/gemini-cli/bundle/chunk-RZ3ZVTZB.js:312524:11)
+    at _doSetupUser (file:///<install>/node_modules/@google/gemini-cli/bundle/chunk-RZ3ZVTZB.js:312513:5)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5) {
+  ineligibleTiers: [
+    {
+      reasonCode: 'UNSUPPORTED_CLIENT',
+      reasonMessage: 'This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google',
+      tierId: 'free-tier',
+      tierName: 'Gemini Code Assist for individuals'
+    }
+  ]
+}
+Ripgrep is not available. Falling back to GrepTool.
+An unexpected critical error occurred:IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google
+    at throwIneligibleOrProjectIdError (file:///<install>/node_modules/@google/gemini-cli/bundle/chunk-RZ3ZVTZB.js:312524:11)
+    at _doSetupUser (file:///<install>/node_modules/@google/gemini-cli/bundle/chunk-RZ3ZVTZB.js:312513:5)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)

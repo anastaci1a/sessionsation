@@ -36,7 +36,7 @@ use super::{
 use crate::{
     catalog,
     paths::{Paths, lock_file, private_dir},
-    provider::{ProviderId, claude},
+    provider::{ProviderId, claude, claude::hosted},
 };
 use anyhow::Result;
 use fs2::FileExt;
@@ -130,6 +130,9 @@ pub struct Terminal {
     pub input_record: Option<String>,
     pub turn_ended: bool,
     pub steps: Vec<String>,
+    /// Gemini CLI sessions only (see [`super::gemini`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini: Option<super::gemini::Facts>,
     /// Antigravity CLI sessions only (see [`super::antigravity`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub antigravity: Option<super::antigravity::Facts>,
@@ -200,6 +203,10 @@ impl ScreenProfile for Claude {
         attachment: Option<&catalog::Attachment>,
     ) -> claude::Observation {
         claude::observe(home, conversation, attachment)
+    }
+    /// No hosted worker serves the conversation.
+    fn before_observe(paths: &Paths, r: &Record) -> Result<()> {
+        hosted::ensure_not_hosted(paths, &r.conversation_id)
     }
     fn apply_transcript(paths: &Paths, id: &str, idle: bool) -> Result<()> {
         observe(paths, id, idle)
@@ -711,7 +718,11 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     if orphaned(&r) {
         return cleanup_orphan(paths, id, &r).await;
     }
-    if r.phase != "admitted" || r.kind != "terminal" || super::antigravity::is_antigravity(&r) {
+    if r.phase != "admitted"
+        || r.kind != "terminal"
+        || super::gemini::is_gemini(&r)
+        || super::antigravity::is_antigravity(&r)
+    {
         return Ok(());
     }
     if r.request.expires_at <= crate::daemon::now() {
@@ -1003,8 +1014,7 @@ pub(crate) fn find(path: &Path, offset: u64, text: &str, since_ms: i64) -> Resul
         }
         match v["type"].as_str() {
             Some("assistant") => {
-                let t =
-                    crate::provider::conversation::text_blocks(&v["message"]["content"]).join("");
+                let t = hosted::text_blocks(&v["message"]["content"]).join("");
                 if !t.is_empty() {
                     out.reply.push(t);
                 }

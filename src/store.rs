@@ -118,10 +118,8 @@ pub fn migrate_legacy_codex_provider(state: &mut Value) -> Vec<String> {
 }
 pub fn load_config(paths: &Paths) -> Result<Config> {
     let path = paths.root.join("config.json");
-    // Retired keys are accepted and ignored silently: a stderr line would corrupt the CLI
-    // error envelope that clients parse.
-    let mut config = if path.exists() {
-        Config::parse(serde_json::from_slice(&std::fs::read(path)?)?)?.0
+    let mut config: Config = if path.exists() {
+        serde_json::from_slice(&std::fs::read(path)?)?
     } else {
         Config::default()
     };

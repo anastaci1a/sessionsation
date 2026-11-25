@@ -132,11 +132,11 @@ fn computed() -> Vec<(&'static str, String)> {
         ("catalog claude", session(claude_entry(), None).generation()),
         (
             "account codex:work",
-            crate::accounts::generation("codex", "work", None, None),
+            crate::account_rename::generation("codex", "work", None, None),
         ),
         (
             "account claude:main",
-            crate::accounts::generation(
+            crate::account_rename::generation(
                 "claude",
                 "main",
                 Some("Main"),

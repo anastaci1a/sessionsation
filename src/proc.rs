@@ -72,6 +72,11 @@ pub mod identity {
     pub fn gone(pid: u32, start: u64) -> bool {
         !alive(pid, start)
     }
+    /// [`alive`] for a start time recorded as decimal text (Claude's registry `procStart`):
+    /// the text must equal the kernel's start time as written by the kernel.
+    pub fn alive_recorded(pid: u32, start: &str) -> bool {
+        stat(pid).is_ok_and(|s| s.running() && s.start_time.to_string() == start)
+    }
     /// `pid` still names the process started at `start`; unlike [`alive`] a zombie counts.
     pub fn same(pid: u32, start: u64) -> bool {
         stat(pid).is_ok_and(|s| s.start_time == start)

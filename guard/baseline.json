@@ -1,6 +1,6 @@
 {
   "roles_digest": "a1f92d442a9adaa9b5219be0240237eb215c62dc35ddd1c733c751b2f7700ce0",
-  "counters_digest": "37ebae31f67cdbe936300bd5a815261374a6bf904ea27b89da24d76f01dc1dd5",
+  "counters_digest": "b62124ffc695d0847a35f5fe0fade43019ff8f924746cd7ddb7045597feade76",
   "counters": {
     "alive_fns": { "value": 0 },
     "apply_session_input_fns": { "value": 1 },
@@ -10,104 +10,104 @@
     "codes_allow_markers": { "value": 0 },
     "contract_allow_markers": { "value": 0 },
     "control_allow_markers": { "value": 0 },
-    "daemon_methods": { "value": 22 },
+    "daemon_methods": { "value": 25 },
     "doc_bytes:AGENTS.md": { "value": 103 },
     "doc_bytes:README.md": { "value": 2441 },
     "doc_bytes:agents/README.md": { "value": 10289 },
     "doc_bytes:docs/README.md": { "value": 891 },
-    "doc_bytes:docs/architecture.md": { "value": 7303 },
-    "doc_bytes:docs/changelog.md": { "value": 14052 },
-    "doc_bytes:docs/cli.md": { "value": 16989 },
-    "doc_bytes:docs/contract.md": { "value": 212848 },
-    "doc_bytes:docs/operations.md": { "value": 17679 },
-    "doc_bytes_total": { "value": 282595 },
+    "doc_bytes:docs/architecture.md": { "value": 7553 },
+    "doc_bytes:docs/changelog.md": { "value": 14122 },
+    "doc_bytes:docs/cli.md": { "value": 19079 },
+    "doc_bytes:docs/contract.md": { "value": 233319 },
+    "doc_bytes:docs/operations.md": { "value": 23430 },
+    "doc_bytes_total": { "value": 311227 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "duration_literals": { "value": 153 },
-    "env_scrub_sites": { "value": 33 },
-    "error_code_literals": { "value": 570 },
-    "file_cache_statics": { "value": 7 },
-    "flock_sites": { "value": 75 },
-    "fs2_imports": { "value": 26 },
-    "fs_write_sites": { "value": 0 },
+    "duration_literals": { "value": 188 },
+    "env_scrub_sites": { "value": 43 },
+    "error_code_literals": { "value": 683 },
+    "file_cache_statics": { "value": 8 },
+    "flock_sites": { "value": 86 },
+    "fs2_imports": { "value": 32 },
+    "fs_write_sites": { "value": 5 },
     "generation_allow_markers": { "value": 0 },
     "herdr_allow_markers": { "value": 0 },
-    "herdr_cli_callers": { "value": 41 },
+    "herdr_cli_callers": { "value": 42 },
     "identity_allow_markers": { "value": 0 },
     "inline_test_lines": { "value": 0 },
-    "json_parse_sites": { "value": 105 },
-    "ledger_allow_markers": { "value": 0 },
+    "json_parse_sites": { "value": 136 },
+    "ledger_allow_markers": { "value": 2 },
     "ledger_opens": { "value": 0 },
     "locks_allow_markers": { "value": 0 },
     "module_lines:src/accounts": { "value": 436 },
     "module_lines:src/activity": { "value": 0 },
-    "module_lines:src/alias": { "value": 341 },
-    "module_lines:src/api": { "value": 4525 },
+    "module_lines:src/alias": { "value": 364 },
+    "module_lines:src/api": { "value": 4947 },
     "module_lines:src/archive": { "value": 0 },
     "module_lines:src/auto_start": { "value": 0 },
-    "module_lines:src/catalog": { "value": 2104 },
+    "module_lines:src/catalog": { "value": 2174 },
     "module_lines:src/codes": { "value": 0 },
-    "module_lines:src/config": { "value": 238 },
+    "module_lines:src/config": { "value": 242 },
     "module_lines:src/contract": { "value": 0 },
     "module_lines:src/control": { "value": 381 },
-    "module_lines:src/daemon": { "value": 1261 },
+    "module_lines:src/daemon": { "value": 1302 },
     "module_lines:src/disk_space": { "value": 126 },
     "module_lines:src/file_cache": { "value": 117 },
     "module_lines:src/host": { "value": 0 },
-    "module_lines:src/launch": { "value": 1317 },
-    "module_lines:src/main": { "value": 1517 },
+    "module_lines:src/launch": { "value": 1335 },
+    "module_lines:src/main": { "value": 2105 },
     "module_lines:src/messaging/codex_input": { "value": 0 },
     "module_lines:src/messaging/compaction": { "value": 1571 },
-    "module_lines:src/messaging/ledger": { "value": 752 },
-    "module_lines:src/messaging/model_change": { "value": 1868 },
+    "module_lines:src/messaging/ledger": { "value": 824 },
+    "module_lines:src/messaging/model_change": { "value": 1877 },
     "module_lines:src/messaging/peer": { "value": 0 },
     "module_lines:src/messaging/send": { "value": 0 },
-    "module_lines:src/messaging/transport": { "value": 537 },
+    "module_lines:src/messaging/transport": { "value": 572 },
     "module_lines:src/messaging/typing": { "value": 0 },
     "module_lines:src/pane_reuse": { "value": 307 },
     "module_lines:src/paths": { "value": 374 },
-    "module_lines:src/proc": { "value": 194 },
-    "module_lines:src/provider/antigravity": { "value": 1738 },
+    "module_lines:src/proc": { "value": 199 },
+    "module_lines:src/provider/antigravity": { "value": 1740 },
     "module_lines:src/provider/caps": { "value": 0 },
-    "module_lines:src/provider/claude": { "value": 5389 },
-    "module_lines:src/provider/codex": { "value": 242 },
-    "module_lines:src/provider/events": { "value": 701 },
+    "module_lines:src/provider/claude": { "value": 7006 },
+    "module_lines:src/provider/codex": { "value": 244 },
+    "module_lines:src/provider/events": { "value": 702 },
     "module_lines:src/provider/mod": { "value": 292 },
     "module_lines:src/provider/observe": { "value": 0 },
     "module_lines:src/provider/usage": { "value": 0 },
-    "module_lines:src/questions": { "value": 1020 },
+    "module_lines:src/questions": { "value": 1109 },
     "module_lines:src/record": { "value": 0 },
     "module_lines:src/reset_credit": { "value": 1079 },
     "module_lines:src/retention": { "value": 269 },
     "module_lines:src/rpc": { "value": 299 },
     "module_lines:src/session_model": { "value": 397 },
-    "module_lines:src/shared_state": { "value": 409 },
+    "module_lines:src/shared_state": { "value": 1427 },
     "module_lines:src/state": { "value": 0 },
-    "now_sites": { "value": 21 },
+    "now_sites": { "value": 26 },
     "oauth_allow_markers": { "value": 2 },
     "oauth_sites": { "value": 2 },
-    "operations_dir_sites": { "value": 35 },
-    "phase_records": { "value": 9 },
+    "operations_dir_sites": { "value": 40 },
+    "phase_records": { "value": 12 },
     "pidfd_sites": { "value": 0 },
     "proc_stat_readers": { "value": 0 },
     "provider_enum_dispatch": { "value": 0 },
     "provider_ops_allow_markers": { "value": 0 },
     "provider_string_compares": { "value": 0 },
-    "raw_sleeps": { "value": 83 },
-    "receipts_sites": { "value": 0 },
+    "raw_sleeps": { "value": 101 },
+    "receipts_sites": { "value": 2 },
     "records_allow_markers": { "value": 0 },
-    "rename_sites": { "value": 15 },
-    "save_fns": { "value": 21 },
+    "rename_sites": { "value": 26 },
+    "save_fns": { "value": 28 },
     "settings_allow_markers": { "value": 0 },
-    "settings_json_claude": { "value": 5 },
-    "sha256_digests": { "value": 17 },
-    "since_contract_literals": { "value": 43 },
+    "settings_json_claude": { "value": 6 },
+    "sha256_digests": { "value": 25 },
+    "since_contract_literals": { "value": 46 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
-    "spawn_sites": { "value": 39 },
+    "spawn_sites": { "value": 49 },
     "sqlite_allow_markers": { "value": 0 },
-    "sqlite_opens": { "value": 4 },
-    "src_lines": { "value": 65369 },
-    "stale_target_literals": { "value": 49 },
+    "sqlite_opens": { "value": 10 },
+    "src_lines": { "value": 84066 },
+    "stale_target_literals": { "value": 62 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
     "tmux_raw": { "value": 5 },
@@ -115,9 +115,9 @@
     "typing_dup_fns": { "value": 0 },
     "unsupported_literals": { "value": 0 },
     "waits_allow_markers": { "value": 0 },
-    "worker_lock_sites": { "value": 18 },
+    "worker_lock_sites": { "value": 21 },
     "ws_allow_markers": { "value": 0 },
-    "ws_connects": { "value": 2 }
+    "ws_connects": { "value": 3 }
   },
   "caps": {
     "doc_bytes:AGENTS.md": { "value": 110 },
@@ -125,14 +125,14 @@
     "doc_bytes:agents/README.md": { "value": 10400 },
     "doc_bytes:docs/README.md": { "value": 940 },
     "doc_bytes:docs/architecture.md": { "value": 8000 },
-    "doc_bytes:docs/changelog.md": { "value": 14052 },
+    "doc_bytes:docs/changelog.md": { "value": 14200 },
     "doc_bytes:docs/cli.md": { "value": 20000 },
     "doc_bytes:docs/contract.md": { "value": 233400 },
     "doc_bytes:docs/operations.md": { "value": 24200 },
     "doc_bytes_total": { "value": 313300 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "inline_test_lines": { "value": 0 },
-    "src_lines": { "value": 65369 }
+    "src_lines": { "value": 84066 }
   },
   "ledger": [
     {
@@ -2213,37 +2213,632 @@
     {"counter":"doc_bytes:docs/cli.md","by":19,"reason":"1.69.3 stop flag","considered":"n/a","step":"hotfix:1.69.3"},
     {"counter":"doc_bytes_total","by":1280,"reason":"1.69.3 docs","considered":"n/a","step":"hotfix:1.69.3"},
     {"counter":"module_lines:src/main","by":14,"reason":"1.69.3 a failed discarding stop reports what it discarded","considered":"one downcast in the error envelope","step":"hotfix:1.69.3","agreed_by":{"who":"lead","ref":"p-1125-134637-10699/p-1125-153509-9488"}},
-    {"counter":"cap:doc_bytes:docs/changelog.md","by":52,"reason":"1.69.3 entry; nothing may be removed from the changelog","considered":"rewording older entries would lose information","step":"hotfix:1.69.3","agreed_by":{"who":"operator","ref":"operator-1125-no-removals"}}
+    {"counter":"cap:doc_bytes:docs/changelog.md","by":52,"reason":"1.69.3 entry; nothing may be removed from the changelog","considered":"rewording older entries would lose information","step":"hotfix:1.69.3","agreed_by":{"who":"operator","ref":"operator-1125-no-removals"}},
+    {
+      "counter": "daemon_methods",
+      "by": 3,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "doc_bytes:docs/architecture.md",
+      "by": 250,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 70,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "doc_bytes:docs/cli.md",
+      "by": 2090,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 20471,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "doc_bytes:docs/operations.md",
+      "by": 5751,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 28632,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "duration_literals",
+      "by": 35,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "env_scrub_sites",
+      "by": 10,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "error_code_literals",
+      "by": 113,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "file_cache_statics",
+      "by": 1,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "flock_sites",
+      "by": 11,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "fs2_imports",
+      "by": 6,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "fs_write_sites",
+      "by": 5,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "herdr_cli_callers",
+      "by": 1,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "json_parse_sites",
+      "by": 31,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "ledger_allow_markers",
+      "by": 2,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/alias",
+      "by": 23,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/api",
+      "by": 422,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/catalog",
+      "by": 70,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/config",
+      "by": 4,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/daemon",
+      "by": 41,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/launch",
+      "by": 18,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/main",
+      "by": 588,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/messaging/ledger",
+      "by": 72,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/messaging/model_change",
+      "by": 9,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/messaging/transport",
+      "by": 35,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/proc",
+      "by": 5,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/provider/antigravity",
+      "by": 2,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/provider/claude",
+      "by": 1617,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/provider/codex",
+      "by": 2,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/provider/events",
+      "by": 1,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/questions",
+      "by": 89,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "module_lines:src/shared_state",
+      "by": 1018,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "now_sites",
+      "by": 5,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "operations_dir_sites",
+      "by": 5,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "phase_records",
+      "by": 3,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "raw_sleeps",
+      "by": 18,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "receipts_sites",
+      "by": 2,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "rename_sites",
+      "by": 11,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "save_fns",
+      "by": 7,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "settings_json_claude",
+      "by": 1,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "sha256_digests",
+      "by": 8,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "since_contract_literals",
+      "by": 3,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "spawn_sites",
+      "by": 10,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "sqlite_opens",
+      "by": 6,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "src_lines",
+      "by": 18696,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "stale_target_literals",
+      "by": 13,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "worker_lock_sites",
+      "by": 3,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "ws_connects",
+      "by": 1,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "cap:src_lines",
+      "by": 18696,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "cap:doc_bytes:docs/changelog.md",
+      "by": 148,
+      "reason": "1.70.0 restores everything removed in 1.68.0 (S1a, S1b) and 1.69.0 (S2): root, layout/shared migrate, account auth|show|history, doctor, simulate, the hidden legacy commands, automatic switching and auto-start, the session/* control methods, Gemini CLI, hosted Claude, turn/idle notifications and the backend rename",
+      "considered": "operator ruling: reducing lines never removes features or compatibility; the removal hunks are reverted onto 1.69.2 and every later fix is kept (tests stay in their sibling files)",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "src_lines",
+      "by": 1,
+      "reason": "1.70.0 review: hosted_begin clears the compaction hold/release reason on its claim, as peer_worker and typing::deliver do",
+      "considered": "one assignment inside the existing claim closure; no helper",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    },
+    {
+      "counter": "cap:src_lines",
+      "by": 1,
+      "reason": "1.70.0 review: hosted_begin clears the compaction hold/release reason on its claim, as peer_worker and typing::deliver do",
+      "considered": "one assignment inside the existing claim closure; no helper",
+      "step": "restore-1.70.0",
+      "agreed_by": {
+        "who": "operator",
+        "ref": "operator-1125-no-removals"
+      }
+    }
   ],
   "enforced": { "identity": "1.66.0", "ledger": "1.66.1", "oauth": "S0", "provider-ops": "1.65.0", "typing": "1.67.0" },
   "steps": {
+    "restore-1.70.0": "1.70.0",
+    "shrink-C1": "1.71.0",
+    "shrink-C2": "1.72.0",
+    "shrink-C3": "1.73.0",
+    "shrink-C4": "1.74.0",
+    "shrink-C5": "1.75.0",
+    "shrink-C6": "1.76.0",
     "shrink-S0": "main",
     "shrink-S1a": "1.68.0",
     "shrink-S1b": "1.68.0",
     "shrink-S1c": "1.68.0",
     "shrink-S2": "1.69.0",
-    "shrink-S3": "1.70.0",
-    "shrink-S4a": "1.71.0",
-    "shrink-S4b": "1.72.0",
-    "shrink-S4c": "1.73.0",
-    "shrink-S5": "1.74.0",
-    "shrink-S6a": "1.75.0",
-    "shrink-S6b": "1.76.0",
     "shrink-S7": "1.77.0",
     "shrink-S8": "1.78.0"
   },
+  "target": {"src_lines": 25000, "by": "operator"},
   "trajectory": [
-    {"counter": "inline_test_lines", "by": "2026-11-28", "max": 0, "step": "1.68.0"},
-    {"counter": "src_lines", "by": "2026-11-28", "max": 71000, "step": "1.68.0"},
-    {"counter": "src_lines", "by": "2026-11-30", "max": 67600, "step": "1.69.0"},
-    {"counter": "src_lines", "by": "2026-12-02", "max": 62600, "step": "1.70.0"},
-    {"counter": "src_lines", "by": "2026-12-03", "max": 62300, "step": "1.71.0"},
-    {"counter": "src_lines", "by": "2026-12-05", "max": 56300, "step": "1.72.0"},
-    {"counter": "src_lines", "by": "2026-12-08", "max": 53000, "step": "1.73.0"},
-    {"counter": "src_lines", "by": "2026-12-10", "max": 43700, "step": "1.74.0"},
-    {"counter": "src_lines", "by": "2026-12-12", "max": 38200, "step": "1.75.0"},
-    {"counter": "src_lines", "by": "2026-12-14", "max": 34400, "step": "1.76.0"},
-    {"counter": "src_lines", "by": "2026-12-16", "max": 29900, "step": "1.77.0"},
-    {"counter": "src_lines", "by": "2026-12-18", "max": 25900, "step": "1.78.0"}
+    {"counter": "inline_test_lines", "by": "2026-11-28", "max": 0, "step": "1.68.0", "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-11-28", "max": 84366, "step": "1.68.0", "raised_from": 71000, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-11-30", "max": 84266, "step": "1.69.0", "raised_from": 67600, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-12-02", "max": 84166, "step": "1.70.0", "raised_from": 62600, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-12-03", "max": 83950, "step": "1.71.0", "raised_from": 62300, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-12-05", "max": 83050, "step": "1.72.0", "raised_from": 56300, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-12-08", "max": 82450, "step": "1.73.0", "raised_from": 53000, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-12-10", "max": 81750, "step": "1.74.0", "raised_from": 43700, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-12-12", "max": 81250, "step": "1.75.0", "raised_from": 38200, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-12-14", "max": 80800, "step": "1.76.0", "raised_from": 34400, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-12-16", "max": 80700, "step": "1.77.0", "raised_from": 29900, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}},
+    {"counter": "src_lines", "by": "2026-12-18", "max": 80600, "step": "1.78.0", "raised_from": 25900, "agreed_by": {"who": "operator", "ref": "operator-1125-no-removals"}}
   ]
 }

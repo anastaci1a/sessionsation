@@ -12,25 +12,6 @@ use fs2::FileExt;
 use serde_json::{Value, json};
 use std::{fs, os::unix::fs::MetadataExt, path::Path};
 
-/// The row `generation` (identity facts); clients pass it back as `expected_generation`.
-pub fn generation(
-    provider: &str,
-    name: &str,
-    display_name: Option<&str>,
-    config_home: Option<&str>,
-) -> String {
-    crate::generation::of(&json!([provider, name, display_name, config_home]))
-        .expect("serializable")[..16]
-        .to_owned()
-}
-pub fn account_generation(a: &crate::model::Account) -> String {
-    generation(
-        a.provider.as_str(),
-        &a.name,
-        a.display_name.as_deref(),
-        a.config_home.as_deref().and_then(Path::to_str),
-    )
-}
 fn marker_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<std::path::PathBuf> {
     validate_name(name)?;
     Ok(paths
@@ -39,13 +20,19 @@ fn marker_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<std::pa
         .join(provider.as_str())
         .join(format!("{name}.removed.json")))
 }
-/// [`removed`] for a catalog record's provider string (Codex when unrecognised).
-pub fn removed_session(paths: &Paths, provider: &str, name: &str) -> Result<bool> {
-    let provider = ProviderId::parse(provider).unwrap_or(ProviderId::Codex);
-    removed(paths, provider, name)
-}
 /// Whether this provider's account has been unregistered locally (membership removal).
 pub fn removed(paths: &Paths, provider: ProviderId, name: &str) -> Result<bool> {
+    removed_for(paths, provider, name)
+}
+/// [`removed`] for a catalog record's provider string (Codex when unrecognised).
+pub fn removed_session(paths: &Paths, provider: &str, name: &str) -> Result<bool> {
+    removed(
+        paths,
+        ProviderId::parse(provider).unwrap_or(ProviderId::Codex),
+        name,
+    )
+}
+fn removed_for(paths: &Paths, provider: ProviderId, name: &str) -> Result<bool> {
     let path = marker_for(paths, provider, name)?;
     match fs::symlink_metadata(path) {
         Ok(m) => {
@@ -63,6 +50,10 @@ pub fn ensure_available(paths: &Paths, provider: ProviderId, name: &str) -> Resu
     ensure!(
         !removed(paths, provider, name)?,
         "ACCOUNT_REMOVED: restore the local membership before using this account"
+    );
+    ensure!(
+        crate::account_rename::unresolved_for(paths, provider, name)?.is_none(),
+        "ACCOUNT_RENAME_UNRESOLVED: an account rename has not finished; recover or abandon it first"
     );
     Ok(())
 }
@@ -341,6 +332,15 @@ pub(crate) fn native_activity(
     let headless = crate::messaging::headless::active_for_account(paths, provider, name)?
         .into_iter()
         .map(|id| json!({"id":id,"phase":"headless_delivery"}))
+        .chain(
+            if crate::provider::ops::facts(provider).hosted_sessions {
+                crate::provider::claude::hosted::live_for_account(paths, name)
+            } else {
+                Vec::new()
+            }
+            .into_iter()
+            .map(|id| json!({"id":id,"phase":"hosted_session"})),
+        )
         .collect();
     Ok((live, processes, headless))
 }
@@ -377,7 +377,7 @@ async fn native_preview(paths: &Paths, provider: ProviderId, name: &str) -> Resu
         "config_home":account["config_home"],"history":history,"active":active,"processes":processes,"operations":operations,"affected":affected});
     let revision = crate::generation::of(&fingerprint)?;
     Ok(
-        json!({"account_id":format!("{provider}:{name}"),"removed":removed(paths,provider,name)?,"revision":revision,
+        json!({"account_id":format!("{provider}:{name}"),"removed":removed_for(paths,provider,name)?,"revision":revision,
         "affected_sessions":affected,"active_sessions":active,"loaded_conversations":[],"pending_operations":operations,
         "active_processes":processes,
         "can_remove":active.is_empty() && !processes && operations.is_empty(),
@@ -424,7 +424,7 @@ pub async fn remove(
 pub fn restore(paths: &Paths, provider: ProviderId, name: &str) -> Result<Value> {
     let _account = operation_lock(paths, provider, name)?;
     let file = marker_for(paths, provider, name)?;
-    ensure!(removed(paths, provider, name)?, "ACCOUNT_NOT_REMOVED");
+    ensure!(removed_for(paths, provider, name)?, "ACCOUNT_NOT_REMOVED");
     fs::remove_file(&file)?;
     fs::File::open(file.parent().context("missing membership directory")?)?.sync_all()?;
     Ok(

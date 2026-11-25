@@ -95,14 +95,22 @@ pub fn command(provider: ProviderId, config: &Config, home: &Path) -> std::proce
 }
 /// Bounded authentication probe: (problem code, non-identifying auth mode).
 pub async fn probe(
-    _paths: &Paths,
-    _name: &str,
+    paths: &Paths,
+    name: &str,
     provider: ProviderId,
     config: &Config,
     home: &Path,
 ) -> (Option<String>, Value) {
     match provider {
-        ProviderId::Gemini => (Some(gemini::REASON.to_owned()), Value::Null),
+        ProviderId::Gemini => {
+            let s = gemini::auth_status(home);
+            // Credentials can be present yet rejected by the provider: the last observed
+            // recognizable auth failure keeps the account in need of a login.
+            let problem = s.problem().map(str::to_owned).or_else(|| {
+                gemini::auth_failure::current(paths, name, home).map(|_| "AUTH_FAILED".to_owned())
+            });
+            (problem, s.mode())
+        }
         ProviderId::Antigravity => {
             let s = antigravity::auth_status(home);
             (s.problem().map(str::to_owned), s.mode())
@@ -221,7 +229,7 @@ pub fn launch_observed(session: &catalog::Session) -> bool {
 }
 pub fn ensure_resumable(session: &catalog::Session, observation: &Observation) -> Result<()> {
     match of(&session.provider) {
-        Some(ProviderId::Gemini) => gemini::ensure_resumable(session, observation),
+        Some(ProviderId::Gemini) => gemini::launch::ensure_resumable(session, observation),
         Some(ProviderId::Antigravity) => {
             antigravity::launch::ensure_resumable(session, observation)
         }
@@ -248,7 +256,7 @@ pub async fn exec_new(
     creation: Option<&str>,
 ) -> Result<()> {
     match provider {
-        ProviderId::Gemini => gemini::exec_new(paths, account, label, creation).await,
+        ProviderId::Gemini => gemini::launch::exec_new(paths, account, label, creation).await,
         ProviderId::Antigravity => {
             antigravity::launch::exec_new(paths, account, label, creation).await
         }
@@ -264,7 +272,7 @@ pub async fn exec_resume(
     generation: &str,
 ) -> Result<()> {
     match provider {
-        ProviderId::Gemini => gemini::exec_resume(paths, id, generation).await,
+        ProviderId::Gemini => gemini::launch::exec_resume(paths, id, generation).await,
         ProviderId::Antigravity => antigravity::launch::exec_resume(paths, id, generation).await,
         ProviderId::Claude | ProviderId::Codex => {
             claude::launch::exec_resume(paths, id, generation).await
@@ -286,3 +294,6 @@ pub fn reconcile(paths: &Paths) -> Result<BTreeMap<String, (Observation, PathBuf
     all.extend(antigravity::reconcile(paths).unwrap_or_default());
     Ok(all)
 }
+
+#[cfg(test)]
+mod tests;

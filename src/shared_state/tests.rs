@@ -1,3 +1,4 @@
+use super::migrate::{self, Options};
 use super::*;
 use crate::{
     model::{Account, State},
@@ -8,6 +9,18 @@ use std::{cell::RefCell, os::unix::fs::PermissionsExt};
 thread_local! {
     static CRASH_AT: RefCell<Option<&'static str>> = const { RefCell::new(None) };
 }
+/// Simulated crash: the journal keeps the phase just written, nothing after runs.
+pub(super) fn crash_check(name: &str) -> Result<()> {
+    ensure!(
+        CRASH_AT.with(|c| *c.borrow()) != Some(name),
+        "SIMULATED_CRASH at {name}"
+    );
+    Ok(())
+}
+fn crash_at(phase: Option<&'static str>) {
+    CRASH_AT.with(|c| *c.borrow_mut() = phase);
+}
+
 pub(super) struct Fx {
     pub _dir: tempfile::TempDir,
     pub paths: Paths,
@@ -34,12 +47,29 @@ impl Fx {
         self.store.save(&self.state, 1, "test", name).unwrap();
         home
     }
+    fn adopted(&mut self, name: &str, dir: &Path) {
+        let mut a = Account::with_provider(ProviderId::Claude, name.into(), String::new());
+        a.config_home = Some(dir.to_path_buf());
+        self.state.insert_account(a);
+        self.store.save(&self.state, 1, "test", name).unwrap();
+    }
     fn root(&self) -> &Path {
         &self.paths.root
+    }
+    fn migrate(&self, name: &str) -> Result<Value> {
+        migrate::migrate(
+            &self.paths,
+            &Options {
+                account: name.into(),
+                allow_full_copy: true,
+                ..Default::default()
+            },
+        )
     }
 }
 
 const CONVERSATION_A: &str = "11111111-1111-4111-8111-111111111111";
+const CONVERSATION_B: &str = "22222222-2222-4222-8222-222222222222";
 const SLUG: &str = "-work-project";
 
 fn write(path: &Path, text: &str) {
@@ -62,6 +92,27 @@ fn seed(home: &Path, id: &str, tag: &str) {
     );
     write(&home.join(format!("session-env/{id}/e1")), tag);
     write(&home.join(format!("todos/{id}-agent-1.json")), "[]");
+}
+fn ino(path: &Path) -> u64 {
+    fs::symlink_metadata(path).unwrap().ino()
+}
+fn exchange_supported() -> bool {
+    let dir = tempfile::tempdir().unwrap();
+    let (x, y) = (dir.path().join("x"), dir.path().join("y"));
+    fs::create_dir(&x).unwrap();
+    symlink("t", &y).unwrap();
+    rename_exchange(&x, &y).is_ok()
+}
+macro_rules! require_exchange {
+    () => {
+        if !exchange_supported() {
+            eprintln!(
+                "SKIPPED {}: renameat2(RENAME_EXCHANGE) is not supported on this test file system",
+                module_path!()
+            );
+            return;
+        }
+    };
 }
 fn assert_all_trusted(home: &Path) {
     for n in NAMES {
@@ -179,6 +230,9 @@ fn nothing_happens_until_the_feature_is_enabled_and_adopted_homes_are_never_link
         Ensure::NotApplicable
     );
     assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    f.adopted("adopt", &outside);
+    let error = f.migrate("adopt").unwrap_err().to_string();
+    assert!(error.starts_with("SHARED_STATE_NOT_APPLICABLE"), "{error}");
 }
 
 #[test]
@@ -216,7 +270,10 @@ fn ensure_links_creates_repairs_and_refuses_data_and_foreign_links() {
     seed(&b, CONVERSATION_A, "b");
     let error = ensure_links(&f.paths, &b).unwrap_err().to_string();
     assert!(error.starts_with("SHARED_STATE_UNMIGRATED"), "{error}");
-    assert!(error.contains("layout-3 root"), "{error}");
+    assert!(
+        error.contains("shared migrate --account claude:b"),
+        "{error}"
+    );
     assert!(
         fs::symlink_metadata(b.join("projects")).unwrap().is_dir(),
         "data directory untouched"
@@ -333,6 +390,434 @@ fn a_renamed_home_keeps_trusted_links_and_data() {
 // ------------------------------------------------------------- the migration
 
 #[test]
+fn first_account_is_adopted_by_one_exchange_without_copying_or_a_missing_moment() {
+    require_exchange!();
+    let mut f = fx();
+    let home = f.account("a");
+    seed(&home, CONVERSATION_A, "a");
+    write(
+        &home.join(format!("projects/{SLUG}/memory/MEMORY.md")),
+        "mem-a",
+    );
+    write(&home.join("settings.json"), "{\"keep\":true}");
+    let dir_inodes: Vec<_> = CORE.iter().map(|n| ino(&home.join(n))).collect();
+    let transcript = home.join(format!("projects/{SLUG}/{CONVERSATION_A}.jsonl"));
+    let inode = ino(&transcript);
+    // A "live Claude process": an open append handle on the transcript.
+    let mut live = fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+
+    // Observer: the account path must never be missing during the migration.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observer = {
+        let (stop, paths): (_, Vec<PathBuf>) =
+            (stop.clone(), CORE.iter().map(|n| home.join(n)).collect());
+        std::thread::spawn(move || {
+            let mut missing = 0u64;
+            let mut seen = 0u64;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                for p in &paths {
+                    match fs::symlink_metadata(p) {
+                        Ok(_) => seen += 1,
+                        Err(_) => missing += 1,
+                    }
+                }
+            }
+            (missing, seen)
+        })
+    };
+    let out = f.migrate("a").unwrap();
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (missing, seen) = observer.join().unwrap();
+    assert!(seen > 0);
+    assert_eq!(
+        missing, 0,
+        "the account path was missing during the exchange"
+    );
+
+    assert_eq!(out["complete"], true, "{out}");
+    assert_all_trusted(&home);
+    for (n, before) in CORE.iter().zip(dir_inodes) {
+        assert_eq!(out["results"][n]["link"], "adopted", "{out}");
+        assert_eq!(
+            ino(&target(f.root(), n)),
+            before,
+            "{n}: the same directory inode now lives in the store (nothing was copied)"
+        );
+    }
+    assert_eq!(
+        fs::metadata(target(f.root(), "projects")).unwrap().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(ino(&transcript), inode, "same file through the link");
+    use std::io::Write;
+    live.write_all(b"appended by the live process\n").unwrap();
+    assert!(
+        fs::read_to_string(
+            target(f.root(), "projects").join(format!("{SLUG}/{CONVERSATION_A}.jsonl"))
+        )
+        .unwrap()
+        .ends_with("appended by the live process\n"),
+        "the open file descriptor still writes to the same inode"
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("settings.json")).unwrap(),
+        "{\"keep\":true}"
+    );
+    // Backups hold the pre-migration content; the journal is complete.
+    let backup = PathBuf::from(out["backup_dir"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(backup.join(format!("projects/{SLUG}/memory/MEMORY.md"))).unwrap(),
+        "mem-a"
+    );
+    assert!(
+        backup
+            .join(format!("todos/{CONVERSATION_A}-agent-1.json"))
+            .exists()
+    );
+    assert!(backup.starts_with(f.root().join("backups")));
+    let journals: Vec<_> = fs::read_dir(f.root().join(crate::layout::SHARED_MIGRATIONS))
+        .unwrap()
+        .collect();
+    assert_eq!(journals.len(), 1);
+    // Idempotent: nothing more to do, no second journal or backup.
+    let again = f.migrate("a").unwrap();
+    assert_eq!(again["already_migrated"], true);
+    assert_eq!(
+        fs::read_dir(f.root().join(crate::layout::SHARED_MIGRATIONS))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_eq!(fs::read_dir(f.root().join("backups")).unwrap().count(), 1);
+}
+
+#[test]
+fn second_account_merges_without_overwriting_and_resumes_after_conflicts() {
+    require_exchange!();
+    let mut f = fx();
+    let a = f.account("a");
+    seed(&a, CONVERSATION_A, "a");
+    write(
+        &a.join(format!("projects/{SLUG}/memory/MEMORY.md")),
+        "mem-a",
+    );
+    f.migrate("a").unwrap();
+    let b = f.account("b");
+    seed(&b, CONVERSATION_B, "b");
+    write(
+        &b.join(format!("projects/{SLUG}/memory/MEMORY.md")),
+        "mem-b",
+    );
+    write(&b.join("projects/-other/x.jsonl"), "only b");
+    let b_projects_before = ino(&b.join("projects"));
+
+    let dry = migrate::migrate(
+        &f.paths,
+        &Options {
+            account: "b".into(),
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(dry["names"]["projects"]["action"], "conflicts");
+    assert_eq!(
+        dry["names"]["projects"]["conflicts"][0],
+        format!("{SLUG}/memory/MEMORY.md")
+    );
+    assert_eq!(dry["names"]["file-history"]["action"], "merge_then_link");
+    assert_eq!(dry["would_complete"], false);
+    assert_eq!(
+        fs::read_dir(f.root().join(crate::layout::SHARED_MIGRATIONS))
+            .unwrap()
+            .count(),
+        1,
+        "a dry run journals nothing"
+    );
+    assert_eq!(ino(&b.join("projects")), b_projects_before);
+
+    let out = f.migrate("b").unwrap();
+    assert_eq!(out["complete"], false, "{out}");
+    assert_eq!(
+        out["results"]["projects"]["conflicts"],
+        json!([format!("{SLUG}/memory/MEMORY.md")])
+    );
+    // The conflicting file was neither overwritten nor lost.
+    assert_eq!(
+        fs::read_to_string(target(f.root(), "projects").join(format!("{SLUG}/memory/MEMORY.md")))
+            .unwrap(),
+        "mem-a"
+    );
+    assert_eq!(
+        fs::read_to_string(b.join(format!("projects/{SLUG}/memory/MEMORY.md"))).unwrap(),
+        "mem-b"
+    );
+    // Names without conflicts are linked; the conflicted one stays a real directory.
+    assert!(trusted_link(&b.join("file-history")));
+    assert!(trusted_link(&b.join("todos")));
+    assert!(trusted_link(&b.join("session-env")));
+    assert!(fs::symlink_metadata(b.join("projects")).unwrap().is_dir());
+    // Non-conflicting entries were moved into the store.
+    let store_projects = target(f.root(), "projects");
+    assert!(store_projects.join("-other/x.jsonl").exists());
+    assert!(
+        store_projects
+            .join(format!("{SLUG}/{CONVERSATION_B}.jsonl"))
+            .exists()
+    );
+    assert!(
+        store_projects
+            .join(format!("{SLUG}/{CONVERSATION_A}.jsonl"))
+            .exists()
+    );
+    // ensure_links keeps refusing the half-migrated name.
+    assert!(
+        ensure_links(&f.paths, &b)
+            .unwrap_err()
+            .to_string()
+            .starts_with("SHARED_STATE_UNMIGRATED")
+    );
+
+    // The operator resolves the conflict (here: keeps the store's copy) and repeats.
+    fs::remove_file(b.join(format!("projects/{SLUG}/memory/MEMORY.md"))).unwrap();
+    let done = f.migrate("b").unwrap();
+    assert_eq!(done["complete"], true, "{done}");
+    assert_all_trusted(&b);
+    assert_eq!(
+        fs::read_dir(f.root().join(crate::layout::SHARED_MIGRATIONS))
+            .unwrap()
+            .count(),
+        2,
+        "the unfinished journal was resumed, not duplicated"
+    );
+    // Both accounts now see the same files.
+    for home in [&a, &b] {
+        for id in [CONVERSATION_A, CONVERSATION_B] {
+            assert!(home.join(format!("projects/{SLUG}/{id}.jsonl")).exists());
+            assert!(home.join(format!("file-history/{id}/h1")).exists());
+        }
+    }
+    // The backup of b kept the conflicting file.
+    let backup = PathBuf::from(out["backup_dir"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(backup.join(format!("projects/{SLUG}/memory/MEMORY.md"))).unwrap(),
+        "mem-b"
+    );
+}
+
+#[test]
+fn merge_without_conflicts_links_atomically() {
+    require_exchange!();
+    let mut f = fx();
+    let a = f.account("a");
+    seed(&a, CONVERSATION_A, "a");
+    f.migrate("a").unwrap();
+    let b = f.account("b");
+    seed(&b, CONVERSATION_B, "b");
+    let out = f.migrate("b").unwrap();
+    assert_eq!(out["complete"], true, "{out}");
+    for n in CORE {
+        assert_eq!(out["results"][n]["link"], "merged");
+    }
+    assert!(fs::read_dir(&b).unwrap().all(|e| {
+        let name = e.unwrap().file_name();
+        !name.to_string_lossy().contains("shared-link")
+    }));
+}
+
+#[test]
+fn an_interrupted_migration_resumes_from_every_phase() {
+    require_exchange!();
+    for phase in ["backing_up", "backed_up", "linking"] {
+        let mut f = fx();
+        let home = f.account("a");
+        seed(&home, CONVERSATION_A, "a");
+        crash_at(Some(phase));
+        let error = f.migrate("a").unwrap_err();
+        crash_at(None);
+        assert!(format!("{error:#}").contains("SIMULATED_CRASH"), "{phase}");
+        let done = f.migrate("a").unwrap();
+        assert_eq!(done["complete"], true, "{phase}: {done}");
+        assert_all_trusted(&home);
+        assert!(
+            target(f.root(), "projects")
+                .join(format!("{SLUG}/{CONVERSATION_A}.jsonl"))
+                .exists()
+        );
+        assert_eq!(
+            fs::read_dir(f.root().join(crate::layout::SHARED_MIGRATIONS))
+                .unwrap()
+                .count(),
+            1,
+            "{phase}"
+        );
+    }
+}
+
+#[test]
+fn an_interrupted_exchange_placeholder_is_replaced_and_a_foreign_link_in_the_store_is_not() {
+    require_exchange!();
+    let mut f = fx();
+    let home = f.account("a");
+    seed(&home, CONVERSATION_A, "a");
+    enable(f.root()).unwrap();
+    // Our own placeholder: a link at the store path to itself.
+    let z = target(f.root(), "projects");
+    symlink(&z, &z).unwrap();
+    let done = f.migrate("a").unwrap();
+    assert_eq!(done["complete"], true, "{done}");
+    assert!(z.is_dir() && !fs::symlink_metadata(&z).unwrap().file_type().is_symlink());
+
+    let mut g = fx();
+    let home = g.account("a");
+    seed(&home, CONVERSATION_A, "a");
+    enable(g.root()).unwrap();
+    let elsewhere = g.root().join("elsewhere");
+    crate::paths::private_dir(&elsewhere).unwrap();
+    symlink(&elsewhere, target(g.root(), "projects")).unwrap();
+    let error = format!("{:#}", g.migrate("a").unwrap_err());
+    assert!(error.contains("SHARED_STATE_STORE_UNSAFE"), "{error}");
+    assert!(home.join("projects").is_dir());
+    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
+}
+
+#[test]
+fn a_foreign_link_in_the_account_path_is_refused_and_left_unchanged() {
+    require_exchange!();
+    let mut f = fx();
+    let home = f.account("a");
+    let elsewhere = f.root().join("elsewhere");
+    write(&elsewhere.join("secret"), "s");
+    symlink(&elsewhere, home.join("projects")).unwrap();
+    let error = format!("{:#}", f.migrate("a").unwrap_err());
+    assert!(error.contains("SHARED_STATE_LINK_UNTRUSTED"), "{error}");
+    assert_eq!(fs::read_link(home.join("projects")).unwrap(), elsewhere);
+    assert!(elsewhere.join("secret").exists());
+}
+
+#[test]
+fn dry_run_changes_nothing() {
+    let mut f = fx();
+    let home = f.account("a");
+    seed(&home, CONVERSATION_A, "a");
+    let out = migrate::migrate(
+        &f.paths,
+        &Options {
+            account: "a".into(),
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(out["dry_run"], true);
+    assert_eq!(out["names"]["projects"]["action"], "adopt_by_exchange");
+    assert_eq!(out["names"]["projects"]["files"], 2);
+    assert_eq!(out["would_complete"], true);
+    assert!(fs::symlink_metadata(f.root().join("shared")).is_err());
+    assert!(fs::symlink_metadata(f.root().join("backups")).is_err());
+    assert!(fs::symlink_metadata(f.root().join(crate::layout::SHARED_MIGRATIONS)).is_err());
+    assert!(
+        fs::symlink_metadata(home.join("projects"))
+            .unwrap()
+            .is_dir()
+    );
+}
+
+#[test]
+fn backup_needs_reflink_unless_a_full_copy_is_allowed() {
+    require_exchange!();
+    let mut f = fx();
+    let home = f.account("a");
+    seed(&home, CONVERSATION_A, "a");
+    let probe_dir = f._dir.path().join("probe");
+    fs::create_dir(&probe_dir).unwrap();
+    let reflinks = migrate::probe_reflink(&probe_dir).is_ok();
+    let result = migrate::migrate(
+        &f.paths,
+        &Options {
+            account: "a".into(),
+            ..Default::default()
+        },
+    );
+    if reflinks {
+        let out = result.unwrap();
+        assert_eq!(out["backup_mode"], "reflink");
+    } else {
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(error.contains("BACKUP_REFLINK_UNSUPPORTED"), "{error}");
+        assert!(error.contains("--allow-full-copy"));
+        // Refused before anything changed.
+        assert!(
+            fs::symlink_metadata(home.join("projects"))
+                .unwrap()
+                .is_dir()
+        );
+        assert!(
+            !fs::symlink_metadata(home.join("projects"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let out = f.migrate("a").unwrap();
+        assert_eq!(out["backup_mode"], "includes_full_copies");
+        assert_all_trusted(&home);
+    }
+}
+
+#[test]
+fn fs_path_does_the_io_but_link_targets_use_the_configured_root() {
+    require_exchange!();
+    let mut f = fx();
+    let home = f.account("a");
+    seed(&home, CONVERSATION_A, "a");
+    // A different spelling of the same tree stands in for /mnt/disk1 vs /mnt/user.
+    let alias = f._dir.path().join("disk");
+    symlink(f.root(), &alias).unwrap();
+    let out = migrate::migrate(
+        &f.paths,
+        &Options {
+            account: "a".into(),
+            allow_full_copy: true,
+            fs_path: Some(alias.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(out["complete"], true, "{out}");
+    assert_eq!(out["alias_proof"], "probe_file");
+    let stored = fs::read_link(home.join("projects")).unwrap();
+    assert_eq!(stored, target(f.root(), "projects"));
+    assert!(!stored.starts_with(&alias));
+    assert_all_trusted(&home);
+
+    // A path that is not the same tree is rejected before any change.
+    let mut g = fx();
+    let home = g.account("a");
+    seed(&home, CONVERSATION_A, "a");
+    let other = g._dir.path().join("other");
+    fs::create_dir(&other).unwrap();
+    let error = format!(
+        "{:#}",
+        migrate::migrate(
+            &g.paths,
+            &Options {
+                account: "a".into(),
+                allow_full_copy: true,
+                fs_path: Some(other),
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+    );
+    assert!(error.contains("SHARED_STATE_FS_PATH_MISMATCH"), "{error}");
+    assert!(home.join("projects").is_dir());
+    assert!(!trusted_link(&home.join("projects")));
+}
+
+#[test]
 fn switching_needs_both_accounts_linked_or_both_plain() {
     let mut f = fx();
     let a = f.account("a");
@@ -354,7 +839,34 @@ fn switching_needs_both_accounts_linked_or_both_plain() {
     assert!(error.starts_with("SHARED_STATE_MIXED"), "{error}");
 }
 
+#[test]
+fn stamp_formats_utc_seconds() {
+    assert_eq!(migrate::stamp(0), "19700101T000000Z");
+    assert_eq!(migrate::stamp(1_793_000_000), "20261026T073320Z");
+}
+
 // ------------------------------------------- agents, skills and commands (1.46.0)
+
+fn set_mtime(path: &Path, secs: u64) {
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+    fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(t)
+        .unwrap();
+}
+fn dry(f: &Fx, name: &str) -> Value {
+    migrate::migrate(
+        &f.paths,
+        &Options {
+            account: name.into(),
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
 
 #[test]
 fn custom_names_are_shared_status_reports_them_and_settings_stay_per_account() {
@@ -399,8 +911,9 @@ fn custom_names_are_shared_status_reports_them_and_settings_stay_per_account() {
 #[test]
 fn a_new_account_gets_the_custom_links_when_shared_state_is_enabled() {
     let mut f = fx();
-    enable(f.root()).unwrap();
-    write(&target(f.root(), "agents").join("builder.md"), "builder");
+    let a = f.account("a");
+    write(&a.join("agents/builder.md"), "builder");
+    f.migrate("a").unwrap();
     let work = f.account("work");
     // What the daemon does when an account is added.
     ensure_links(&f.paths, &work).unwrap();
@@ -411,4 +924,153 @@ fn a_new_account_gets_the_custom_links_when_shared_state_is_enabled() {
         fs::read_to_string(work.join("agents/builder.md")).unwrap(),
         "builder"
     );
+}
+
+#[test]
+fn custom_merge_keeps_identical_once_newest_of_differing_and_every_unique_file() {
+    require_exchange!();
+    let mut f = fx();
+    let a = f.account("a");
+    write(&a.join("agents/same.md"), "same");
+    write(&a.join("agents/newer-in-b.md"), "a-old");
+    write(&a.join("agents/newer-in-a.md"), "a-new");
+    write(&a.join("agents/only-a.md"), "only a");
+    write(&a.join("commands/s/SKILL.md"), "skill a");
+    set_mtime(&a.join("agents/newer-in-b.md"), 1_000);
+    set_mtime(&a.join("agents/newer-in-a.md"), 3_000);
+    f.migrate("a").unwrap();
+    let b = f.account("b");
+    write(&b.join("agents/same.md"), "same");
+    write(&b.join("agents/newer-in-b.md"), "b-new");
+    write(&b.join("agents/newer-in-a.md"), "b-old");
+    write(&b.join("agents/only-b.md"), "only b");
+    write(&b.join("commands/s/SKILL.md"), "skill b");
+    write(&b.join("commands/s/extra.md"), "extra");
+    set_mtime(&b.join("agents/newer-in-b.md"), 2_000);
+    set_mtime(&b.join("agents/newer-in-a.md"), 2_000);
+    set_mtime(&b.join("commands/s/SKILL.md"), 5);
+    let store = target(f.root(), "agents");
+
+    let d = dry(&f, "b");
+    assert_eq!(d["names"]["agents"]["action"], "merge_then_link");
+    assert_eq!(d["names"]["agents"]["would_keep_once"], 1);
+    assert_eq!(d["names"]["agents"]["would_replace_with_newer"], 1);
+    assert_eq!(d["names"]["agents"]["would_set_aside"], 2);
+    assert_eq!(d["names"]["agents"]["would_move"], 1);
+    assert_eq!(d["names"]["agents"]["conflicts"], json!([]));
+    assert_eq!(d["would_complete"], true);
+    let lines: Vec<String> = d["names"]["agents"]["report"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap().to_owned())
+        .collect();
+    let backup = d["backup_dir"].as_str().unwrap();
+    assert_eq!(
+        lines,
+        vec![
+            format!(
+                "differs agents/newer-in-a.md: shared copy is newer, kept in the shared store; the account copy is set aside at {backup}/set-aside/agents/newer-in-a.md"
+            ),
+            format!(
+                "differs agents/newer-in-b.md: account copy is newer, kept in the shared store; the previous shared copy is set aside at {backup}/set-aside/agents/newer-in-b.md"
+            ),
+            "identical agents/same.md: kept once".to_owned(),
+        ]
+    );
+    // The dry run changed nothing.
+    assert_eq!(
+        fs::read_to_string(store.join("newer-in-b.md")).unwrap(),
+        "a-old"
+    );
+    assert!(b.join("agents").is_dir() && !b.join("agents").is_symlink());
+    assert!(
+        !f.root()
+            .join("backups")
+            .read_dir()
+            .unwrap()
+            .any(|e| { fs::read_dir(e.unwrap().path().join("b")).is_ok() })
+    );
+
+    let out = f.migrate("b").unwrap();
+    assert_eq!(out["complete"], true, "{out:#}");
+    assert!(trusted_link(&b.join("agents")));
+    let read = |p: &str| fs::read_to_string(store.join(p)).unwrap();
+    assert_eq!(read("same.md"), "same");
+    assert_eq!(read("newer-in-b.md"), "b-new");
+    assert_eq!(read("newer-in-a.md"), "a-new");
+    assert_eq!(read("only-a.md"), "only a");
+    assert_eq!(read("only-b.md"), "only b");
+    let skills = target(f.root(), "commands");
+    assert_eq!(
+        fs::read_to_string(skills.join("s/SKILL.md")).unwrap(),
+        "skill a"
+    );
+    assert_eq!(
+        fs::read_to_string(skills.join("s/extra.md")).unwrap(),
+        "extra"
+    );
+    let backup = PathBuf::from(out["backup_dir"].as_str().unwrap());
+    let aside = |p: &str| fs::read_to_string(backup.join("set-aside").join(p)).unwrap();
+    assert_eq!(aside("agents/newer-in-a.md"), "b-old");
+    assert_eq!(aside("agents/newer-in-b.md"), "a-old");
+    assert_eq!(aside("commands/s/SKILL.md"), "skill b");
+    // The reflink backup of the account still holds its own versions.
+    assert_eq!(
+        fs::read_to_string(backup.join("agents/newer-in-a.md")).unwrap(),
+        "b-old"
+    );
+    let rec = &out["results"]["agents"];
+    assert_eq!(rec["duplicates"], 1);
+    assert_eq!(rec["replaced"], 1);
+    assert_eq!(rec["set_aside"], 2);
+    assert_eq!(rec["report"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn conversation_files_present_on_both_sides_stay_conflicts() {
+    require_exchange!();
+    let mut f = fx();
+    let a = f.account("a");
+    write(&a.join("todos/t.json"), "a");
+    f.migrate("a").unwrap();
+    let b = f.account("b");
+    write(&b.join("todos/t.json"), "b");
+    let d = dry(&f, "b");
+    assert_eq!(d["names"]["todos"]["action"], "conflicts");
+    assert!(d["names"]["todos"].get("report").is_none());
+}
+
+#[test]
+fn a_1_46_0_journal_that_listed_skills_resumes_without_it() {
+    require_exchange!();
+    let mut f = fx();
+    let home = f.account("a");
+    seed(&home, CONVERSATION_A, "a");
+    write(&home.join("skills/synced/org1/s.md"), "cloud skill");
+    crash_at(Some("backed_up"));
+    f.migrate("a").unwrap_err();
+    crash_at(None);
+    let dir = f.root().join(crate::layout::SHARED_MIGRATIONS);
+    let journal = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+    let journal = if journal.is_dir() {
+        fs::read_dir(&journal)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+    } else {
+        journal
+    };
+    let mut v: Value = serde_json::from_str(&fs::read_to_string(&journal).unwrap()).unwrap();
+    v["names"]["skills"] = json!({"backup":"pending","link":"pending"});
+    fs::write(&journal, v.to_string()).unwrap();
+    let done = f.migrate("a").unwrap();
+    assert_eq!(done["complete"], true, "{done}");
+    assert!(done["results"].get("skills").is_none(), "{done}");
+    assert!(home.join("skills/synced/org1/s.md").exists());
+    assert!(!trusted_link(&home.join("skills")));
+    let status = account_status(&f.paths, "a", &home);
+    assert!(status["names"].get("skills").is_none());
 }

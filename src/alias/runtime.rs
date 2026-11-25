@@ -12,7 +12,8 @@
 //!
 //! Safety: a symlink is created only where nothing exists, or replaces nothing.
 //! A real directory is moved aside (never removed) only when it is ours, private
-//! and holds no connectable socket; a live socket is never touched.
+//! and holds no connectable socket; a live socket is never touched. Rollback
+//! removes only symlinks that point at the canonical runtime directory.
 use super::Alias;
 use crate::{
     layout::{self, RootAlias},
@@ -112,4 +113,26 @@ pub(crate) fn ensure_one(link: &Path, runtime: &Path) -> String {
         Ok(_) => "refused: not a directory".into(),
         Err(e) => format!("refused: {e}"),
     }
+}
+
+/// Remove the compatibility links of `run` (rollback): only symlinks that
+/// point at the canonical runtime directory.
+pub fn remove(run: &crate::root_migrate::Run) -> Vec<Value> {
+    let canonical_runtime = crate::paths::runtime_for(&run.canonical_root);
+    let a = RootAlias {
+        previous_root: run.previous_root.clone(),
+        entries: run.entries.clone(),
+        ..Default::default()
+    };
+    let mut out = vec![];
+    for old in old_spellings(&a, &run.canonical_root) {
+        let link = crate::paths::runtime_for(&old);
+        let ours = fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink())
+            && fs::read_link(&link).ok().as_deref() == Some(canonical_runtime.as_path());
+        if ours {
+            let r = fs::remove_file(&link); // our own compatibility symlink
+            out.push(json!({"path":link,"removed":r.is_ok()}));
+        }
+    }
+    out
 }

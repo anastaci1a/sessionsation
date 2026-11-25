@@ -187,6 +187,8 @@ pub enum StopMethod {
 /// provider ids. Every provider's table names every field.
 #[derive(Debug)]
 pub struct Facts {
+    /// Hosted (Claude `-p` stream) sessions exist for this provider.
+    pub hosted_sessions: bool,
     /// The provider predates providers (Codex): its accounts are keyed, homed (legacy
     /// layout `accounts/<name>`) and named in the launcher argv by their bare name; other
     /// providers use the qualified `<provider>:<name>`.
@@ -245,6 +247,8 @@ pub struct Facts {
     pub cli_options: bool,
     /// `account add` prints this when the new account is already signed in.
     pub logged_in: Option<&'static str>,
+    /// How `root migrate` re-keys the provider's sessions.
+    pub rekey: Rekey,
     /// The headless CLI dialect for `api send`.
     pub headless: Headless,
     /// Environment set on headless runs (Gemini cannot answer the folder-trust prompt).
@@ -306,6 +310,8 @@ pub enum Logout {
     CodexRpc,
     /// `claude auth logout`.
     ClaudeCli,
+    /// Gemini's cached credential files.
+    GeminiFiles,
     /// Refused with this text.
     Refused(&'static str),
 }
@@ -315,6 +321,8 @@ pub enum Logout {
 pub enum LiveSteering {
     /// Claude Code peer messaging (`channelsEnabled` inbound setting, sender registry).
     ClaudePeer,
+    /// Gemini CLI `experimental.modelSteering`.
+    GeminiModelSteering,
     /// Not configurable.
     None,
 }
@@ -357,7 +365,7 @@ pub fn ops(provider: ProviderId) -> &'static dyn ProviderOps {
     match provider {
         ProviderId::Codex => &codex::ops::OPS,
         ProviderId::Claude => &claude::ops::OPS,
-        ProviderId::Gemini => &gemini::OPS,
+        ProviderId::Gemini => &gemini::ops::OPS,
         ProviderId::Antigravity => &antigravity::ops::OPS,
     }
 }
@@ -382,6 +390,9 @@ pub fn holds(provider: &str, f: impl FnOnce(&'static Facts) -> bool) -> bool {
 pub(super) fn table_stop_reason(caps: &ProviderCapabilities) -> Option<&'static str> {
     caps.stop.reason
 }
+/// The detail of the hosted-session refusal.
+pub const HOSTED_CLAUDE_ONLY: &str = "hosted sessions are Claude-only";
+
 /// The model and effort grammar a provider accepts (launch, `session launch`, set-model).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelGrammar {
@@ -395,11 +406,24 @@ pub enum ModelGrammar {
 /// The detail of the refusal of provider options after `--` (Codex launches only).
 pub const CLI_OPTIONS_CODEX_ONLY: &str = "provider options after -- are Codex-only";
 
+/// How `root migrate` re-keys a provider's sessions to the new project paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rekey {
+    /// Rollout `cwd` and the thread-location record (Codex).
+    CodexRollouts,
+    /// The `projects/<cwd key>` transcript and memory directories (Claude).
+    ClaudeProjects,
+    /// Not re-keyed; the session stays on its old path (Gemini, Antigravity since 1.54).
+    Unsupported,
+}
+
 /// The headless CLI a native provider runs for `api send` (bounded, non-interactive).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Headless {
     /// `claude -p --output-format json`.
     ClaudePrint,
+    /// `gemini -p --output-format json` (stderr kept for auth failures).
+    GeminiJson,
     /// `agy` with its own argv and input framing; it cannot pre-assign a conversation id.
     AgyJson,
     /// No headless execution (Codex delivers through its native queue).
@@ -426,6 +450,8 @@ pub enum TranscriptFormat {
     None,
     /// Claude Code `projects/*/<id>.jsonl` records (plus the session registry).
     ClaudeJsonl,
+    /// Gemini CLI chat records.
+    GeminiChat,
     /// agy's `brain/<id>/.system_generated/logs/transcript.jsonl`.
     AgyLog,
 }
@@ -435,6 +461,8 @@ pub enum TranscriptFormat {
 pub enum TerminalInput {
     /// Claude Code: peer messages or typed terminal input.
     Claude,
+    /// Gemini CLI typed input (model steering when enabled).
+    Gemini,
     /// agy typed input.
     Agy,
     /// No terminal input (Codex delivers through its native queue).

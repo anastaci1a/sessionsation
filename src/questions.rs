@@ -13,7 +13,8 @@
 //! - Codex `request_user_input_async` (Default mode): the tool returns at once and
 //!   the reply is an ordinary later user message. The answer is delivered through
 //!   the public non-steering queue (`api send` mode `queue`), as the TUI does.
-//! - Claude `AskUserQuestion`: terminal sessions are read-only.
+//! - Claude `AskUserQuestion`: hosted sessions answer the `can_use_tool` request
+//!   with `updatedInput.answers`; terminal sessions are read-only.
 //! - Gemini `ask_user`: Gemini CLI records tool calls only after completion, so a
 //!   pending question is not visible outside its terminal.
 use crate::{catalog, paths::Paths, provider::ProviderId};
@@ -568,6 +569,26 @@ pub fn async_message(questions: &[Question], answers: &Answers) -> String {
     out
 }
 
+/// Claude `AskUserQuestion` `updatedInput`: answers keyed by question text,
+/// multiple selections joined with ", ".
+pub fn claude_updated_input(original: &Value, questions: &[Question], answers: &Answers) -> Value {
+    let mut map = serde_json::Map::new();
+    for q in questions {
+        let a = &answers[&q.id];
+        let mut parts = labels(q, a);
+        if let Some(t) = text(a) {
+            parts.push(t.to_owned());
+        }
+        map.insert(q.text.clone(), json!(parts.join(", ")));
+    }
+    let mut input = original.clone();
+    if !input.is_object() {
+        input = json!({});
+    }
+    input["answers"] = Value::Object(map);
+    input
+}
+
 /// Answer state of an async question from its public message receipt.
 fn async_state(message: &Value) -> &'static str {
     match message["state"].as_str() {
@@ -585,8 +606,7 @@ fn digest(request: &str, answers: &Answers) -> String {
 
 // ------------------------------------------------------------------ projection
 
-pub const NO_EXTERNAL_ANSWER_CLAUDE_TERMINAL: &str =
-    "PROVIDER_TERMINAL_ONLY: Claude Code answers AskUserQuestion only in its own terminal";
+pub const NO_EXTERNAL_ANSWER_CLAUDE_TERMINAL: &str = "PROVIDER_TERMINAL_ONLY: Claude Code answers AskUserQuestion only in its own terminal; a Sessionsation-hosted session can be answered";
 pub const NO_DETECTION_GEMINI: &str = "Gemini CLI records ask_user tool calls only after they complete, so a pending question is not visible outside its terminal";
 pub const NO_DETECTION_ANTIGRAVITY: &str = "Antigravity CLI asks its questions only inside its own terminal; Sessionsation does not detect or answer them";
 
@@ -608,8 +628,36 @@ pub fn codex_pending(paths: &Paths, session: &str, rollout: &Path) -> Vec<Pendin
         .collect()
 }
 
-/// Claude row: terminal prompts are read-only.
-pub fn claude_pending(paths: &Paths, transcript: Option<&Path>) -> Vec<Pending> {
+/// Claude row: hosted prompts are answerable; terminal ones are read-only.
+pub fn claude_pending(
+    paths: &Paths,
+    session: &str,
+    conversation: &str,
+    transcript: Option<&Path>,
+) -> Vec<Pending> {
+    use crate::provider::claude::hosted;
+    if let Some(h) = hosted::accepting(paths, conversation) {
+        let open = h
+            .pending_permissions
+            .iter()
+            .filter(|p| p["tool_name"] == "AskUserQuestion")
+            .filter_map(|p| {
+                let questions = claude_questions(&p["input"]);
+                (!questions.is_empty()).then(|| Pending {
+                    request_id: p["request_id"].as_str().unwrap_or_default().to_owned(),
+                    asked_at: p["requested_at"].as_i64().unwrap_or(0),
+                    kind: KIND_CLAUDE_HOSTED.into(),
+                    blocking: true,
+                    turn_id: None,
+                    questions,
+                    answerable: true,
+                    unanswerable_reason: None,
+                })
+            })
+            .filter(|p| !p.request_id.is_empty())
+            .collect();
+        return project(paths, session, open);
+    }
     let Some(path) = transcript else {
         return vec![];
     };
@@ -732,7 +780,10 @@ pub async fn answer(paths: &Paths, request: AnswerRequest) -> Result<Value> {
     } else {
         let observed = crate::provider::native::reconcile(paths).unwrap_or_default();
         let transcript = observed.get(&s.id).map(|(_, h)| h.clone());
-        (claude_pending(paths, transcript.as_deref()), None)
+        (
+            claude_pending(paths, &s.id, &s.conversation_id, transcript.as_deref()),
+            None,
+        )
     };
     let found = pending.iter().find(|p| p.request_id == request.request_id);
     let mut receipt = match admit(paths, &s.id, found, &request.request_id, &request.answers)? {
@@ -817,6 +868,44 @@ pub async fn answer(paths: &Paths, request: AnswerRequest) -> Result<Value> {
             save_receipt(paths, &mut receipt)?;
             let message = result?;
             Ok(public_receipt(&receipt, Some(message)))
+        }
+        KIND_CLAUDE_HOSTED => {
+            use crate::provider::claude::hosted;
+            let h = hosted::accepting(paths, &s.conversation_id)
+                .context("QUESTION_NOT_PENDING: the hosted session is not running")?;
+            let original = h
+                .pending_permissions
+                .iter()
+                .find(|x| x["request_id"] == p.request_id.as_str())
+                .map(|x| x["input"].clone())
+                .context("QUESTION_NOT_PENDING")?;
+            let updated = claude_updated_input(&original, &p.questions, &request.answers);
+            receipt.state = "dispatching".into();
+            save_receipt(paths, &mut receipt)?;
+            let response = hosted::call(
+                paths,
+                &s.conversation_id,
+                json!({"op":"respond","request_id":p.request_id,"behavior":"allow","updated_input":updated}),
+                Duration::from_secs(10),
+            )
+            .await;
+            match response {
+                Ok(v) if v["ok"] == true => receipt.state = "answered".into(),
+                Ok(v) if v["error"] == "PERMISSION_REQUEST_NOT_FOUND" => {
+                    receipt.state = "rejected".into();
+                    receipt.reason = Some("QUESTION_NOT_PENDING".into());
+                }
+                Ok(v) if v["error"] == "HOST_STOPPING" => {
+                    receipt.state = "rejected".into();
+                    receipt.reason = Some("HOST_STOPPING".into());
+                }
+                _ => {
+                    receipt.state = "delivery_unknown".into();
+                    receipt.reason = Some("hosted_response_unconfirmed".into());
+                }
+            }
+            save_receipt(paths, &mut receipt)?;
+            Ok(public_receipt(&receipt, None))
         }
         _ => Err(crate::provider::ops::unsupported(
             "this question cannot be answered outside its terminal",

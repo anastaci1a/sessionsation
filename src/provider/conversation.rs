@@ -97,17 +97,6 @@ fn time(v: &Value, key: &str) -> Option<i64> {
         .as_str()
         .and_then(crate::reset_credit::claude::parse_time)
 }
-pub(crate) fn text_blocks(content: &Value) -> Vec<String> {
-    match content {
-        Value::String(s) => vec![s.clone()],
-        Value::Array(items) => items
-            .iter()
-            .filter(|b| b["type"] == "text")
-            .filter_map(|b| b["text"].as_str().map(str::to_owned))
-            .collect(),
-        _ => vec![],
-    }
-}
 fn nonblank(s: String) -> Option<String> {
     (!s.trim().is_empty()).then_some(s)
 }
@@ -130,9 +119,10 @@ fn transcript_event(v: &Value) -> Option<Event> {
     let at = time(v, "timestamp");
     match v["type"].as_str()? {
         "system" if v["subtype"] == "compact_boundary" => Some(Event::Compacted(at)),
-        "assistant" => {
-            nonblank(text_blocks(&v["message"]["content"]).join("")).map(|t| Event::Reply(t, at))
-        }
+        "assistant" => nonblank(
+            crate::provider::claude::hosted::text_blocks(&v["message"]["content"]).join(""),
+        )
+        .map(|t| Event::Reply(t, at)),
         "user" => {
             let content = &v["message"]["content"];
             let tool_only = content
@@ -142,7 +132,8 @@ fn transcript_event(v: &Value) -> Option<Event> {
             if tool_only || v["isMeta"] == true || v["isCompactSummary"] == true || !human {
                 return None;
             }
-            nonblank(text_blocks(content).join("\n")).map(|t| Event::Instruction(t, at))
+            nonblank(crate::provider::claude::hosted::text_blocks(content).join("\n"))
+                .map(|t| Event::Instruction(t, at))
         }
         _ => None,
     }

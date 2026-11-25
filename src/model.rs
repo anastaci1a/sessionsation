@@ -1,4 +1,3 @@
-use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -134,104 +133,12 @@ impl Usage {
             })
     }
 }
-/// Published plan ratios are estimates, not token or message guarantees.
-/// A generic `pro` report deliberately has no inferred multiplier.
-fn plan_multiplier(plan: &str) -> Option<f64> {
-    match plan {
-        "plus" => Some(1.),
-        "pro_5x" | "pro-5x" => Some(5.),
-        "pro_20x" | "pro-20x" => Some(20.),
-        _ => None,
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Thresholds {
-    pub short_percent: f64,
-    pub weekly_percent: f64,
-    pub observed_plan: Option<String>,
-    pub multiplier: Option<f64>,
-    pub needs_plan_review: bool,
-    pub customized: bool,
-    // Keep unclamped reserve amounts so a downgrade followed by an upgrade
-    // restores the original intent, even when the downgrade allows no usage.
-    short_reserve: f64,
-    weekly_reserve: f64,
-}
-impl Default for Thresholds {
-    fn default() -> Self {
-        Self {
-            short_percent: 90.,
-            weekly_percent: 90.,
-            observed_plan: None,
-            multiplier: None,
-            needs_plan_review: true,
-            customized: false,
-            short_reserve: 10.,
-            weekly_reserve: 10.,
-        }
-    }
-}
-impl Thresholds {
-    pub fn observe_plan(&mut self, plan: Option<&str>) {
-        let Some(plan) = plan.filter(|p| !p.is_empty()) else {
-            return;
-        };
-        if self.observed_plan.as_deref() == Some(plan) {
-            return;
-        }
-        self.observed_plan = Some(plan.to_owned());
-        self.needs_plan_review = true;
-        if let Some(multiplier) = plan_multiplier(plan) {
-            self.apply_multiplier(multiplier);
-        } else {
-            // Do not carry a tier override into a different detected plan.
-            // Preserve both the last percentages and their known reserve basis.
-            self.needs_plan_review = true;
-        }
-    }
-    fn apply_multiplier(&mut self, multiplier: f64) {
-        if self.multiplier.is_none() && self.customized {
-            self.short_reserve = (100. - self.short_percent) * multiplier;
-            self.weekly_reserve = (100. - self.weekly_percent) * multiplier;
-        }
-        self.multiplier = Some(multiplier);
-        self.short_percent = (100. - self.short_reserve / multiplier).clamp(0., 100.);
-        self.weekly_percent = (100. - self.weekly_reserve / multiplier).clamp(0., 100.);
-        self.needs_plan_review = false;
-    }
-    pub fn set_multiplier(&mut self, multiplier: f64) -> Result<()> {
-        ensure!(
-            matches!(multiplier, 1. | 5. | 20.),
-            "choose a plan ratio of 1, 5 or 20"
-        );
-        self.apply_multiplier(multiplier);
-        Ok(())
-    }
-    pub fn set_percentages(&mut self, short: f64, weekly: f64) -> Result<()> {
-        ensure!(
-            [short, weekly]
-                .iter()
-                .all(|v| v.is_finite() && (0. ..=100.).contains(v)),
-            "thresholds must be used percentages between 0 and 100"
-        );
-        self.short_percent = short;
-        self.weekly_percent = weekly;
-        self.customized = true;
-        let multiplier = self.multiplier.unwrap_or(1.);
-        self.short_reserve = (100. - short) * multiplier;
-        self.weekly_reserve = (100. - weekly) * multiplier;
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Account {
     #[serde(default)]
     pub deletion_id: Option<String>,
     #[serde(default)]
-    pub switch_thresholds: Thresholds,
+    pub switch_thresholds: crate::automatic::Thresholds,
     pub name: String,
     pub identity: String,
     pub enabled: bool,
@@ -391,7 +298,7 @@ impl Account {
             plan: None,
             usage_cycles: BTreeMap::new(),
             deletion_id: None,
-            switch_thresholds: Thresholds::default(),
+            switch_thresholds: crate::automatic::Thresholds::default(),
             name,
             identity,
             enabled: true,
@@ -540,9 +447,9 @@ pub enum Continuation {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]
-    pub automatic_start: BTreeMap<String, serde_json::Value>,
+    pub automatic_start: BTreeMap<String, crate::autostart::Policy>,
     #[serde(default)]
-    pub automatic_switching: BTreeMap<String, serde_json::Value>,
+    pub automatic_switching: BTreeMap<String, crate::automatic::Policy>,
     pub accounts: BTreeMap<String, Account>,
     pub sessions: BTreeMap<String, Session>,
 }

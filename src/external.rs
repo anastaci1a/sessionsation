@@ -2211,6 +2211,8 @@ fn pane_state(paths: &Paths, pane: &str) -> Result<(bool, u32)> {
     ensure!(parts.len() == 2, "invalid tmux pane state");
     Ok((parts[0] == "1", parts[1].parse()?))
 }
+#[cfg(test)]
+pub(crate) use crate::proc::identity::start_time as process_start_time;
 pub(crate) fn attachment_definitely_gone(pid: u32, start: u64) -> bool {
     match process_info(pid) {
         Ok(info) => info.start_time != start || matches!(info.state, 'Z' | 'X'),
@@ -2503,7 +2505,9 @@ pub async fn queue_snapshot(
     let owner = source.account.clone();
     let target = if kind == "account" { target } else { &owner };
     validate_name(target)?;
-    if kind != "terminate" {
+    if kind == "terminate" {
+        session_control::disable_autostart(paths, &source).await?;
+    } else {
         let status = daemon::call(paths, "status", json!({})).await?;
         ensure!(
             status["accounts"]
@@ -2618,6 +2622,7 @@ pub(crate) fn new_launch_observed(
 }
 
 pub mod access;
+pub mod autostart;
 pub mod catalog;
 pub mod deletion;
 mod history;
@@ -2938,6 +2943,20 @@ pub(crate) fn messaging_lock(
     Ok((queue, conversation))
 }
 
+/// Messaging labels use only the existing catalog and enrolled home mapping.
+/// Never use credential-derived identity matching for external homes.
+pub(crate) fn messaging_labels(
+    paths: &Paths,
+    id: &str,
+    home: Option<&Path>,
+) -> Result<(Option<String>, Option<String>)> {
+    let name = catalog::saved_name(paths, id)?;
+    let account = home
+        .map(|h| account_for_home(paths, h))
+        .filter(|a| a != "external" && a != "unknown" && crate::paths::validate_name(a).is_ok());
+    Ok((name, account))
+}
+
 pub(crate) fn messaging_stop_intent(paths: &Paths, id: &str) -> Result<Option<String>> {
     let Some(stop) = catalog::stop_intent(paths, id)? else {
         return Ok(None);
@@ -2968,6 +2987,40 @@ pub(crate) fn source_still_running(job: &Job) -> bool {
         && job.source.pid != 0
         && process_info(job.source.pid)
             .is_ok_and(|p| p.start_time == job.source.start_time && !matches!(p.state, 'Z' | 'X'))
+}
+pub(crate) fn messaging_clear_stop_intent(paths: &Paths, id: &str) -> Result<()> {
+    catalog::set_stop_intent(paths, id, None)
+}
+pub(crate) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
+    let mut ids = catalog::messaging_inventory(paths)?;
+    for directory in [crate::layout::MANAGED_PANES, crate::layout::HERDR_PANES] {
+        let dir = paths.root.join(directory);
+        if !dir.exists() {
+            continue;
+        }
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|s| s != "json")
+            {
+                continue;
+            }
+            ensure!(entry.metadata()?.len() <= 65536, "invalid binding");
+            let record: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+            let binding: Binding =
+                serde_json::from_value(record.get("binding").unwrap_or(&record).clone())?;
+            if uuid::Uuid::parse_str(&binding.thread).is_ok()
+                && catalog::messaging_owner(paths, &binding.thread, &binding.home)?
+            {
+                ids.push(binding.thread);
+            }
+            ensure!(ids.len() <= 1024, "discovery limit");
+        }
+    }
+
+    ids.sort();
+    ids.dedup();
+    ensure!(ids.len() <= 256, "discovery limit");
+    Ok(ids)
 }
 
 /// The verified terminal hosting the current process, recorded before a

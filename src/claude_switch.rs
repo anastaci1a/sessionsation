@@ -275,6 +275,10 @@ pub async fn start(
             "ACCOUNT_UNAVAILABLE: claude:{name} is disabled or needs login"
         );
     }
+    ensure!(
+        !claude::hosted::live(paths, &s.conversation_id),
+        "SESSION_HOSTED: a Sessionsation-hosted (stream-json) Claude session cannot be switched; stop it first"
+    );
     crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
     let mut ids = s.previous_conversation_ids.clone();
     ids.push(s.conversation_id.clone());

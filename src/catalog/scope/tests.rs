@@ -377,10 +377,11 @@ fn an_inactive_session_keeps_its_space() {
     let (_t, p) = paths();
     let s = record_launch(&p, "fixture", "thread-1", "LEAD", None).unwrap();
     let s = set_space(&p, &s.id, &s.generation(), Some("localica")).unwrap();
-    // Detach / stop, a reconcile that finds nothing, a merge-free relink
-    // and an attachment clear never touch the Space.
+    // Detach / stop, a reconcile that finds nothing, a merge-free relink, an
+    // account move and an attachment clear never touch the Space.
     let s = invalidate(&p, &s.id, &s.generation()).unwrap();
     reconcile(&p, &[]).unwrap();
+    reassign_account(&p, "codex", "fixture", "other").unwrap();
     let moved = move_attachment(&p, &get(&p, &s.id), None, None).unwrap();
     assert_eq!(moved.space.as_deref(), Some("localica"));
     // A backfill rerun (sidecar lost its marker) never nulls a stored Space.

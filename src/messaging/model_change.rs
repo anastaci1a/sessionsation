@@ -395,6 +395,12 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
             )));
         }
     };
+    if ops::facts(provider).hosted_sessions {
+        crate::provider::claude::hosted::ensure_not_hosted(paths, &session.conversation_id)
+            .map_err(|_| {
+                ops::unsupported("hosted sessions cannot change model through Sessionsation yet")
+            })?;
+    }
     session_model::validate(provider, req.model, req.effort)?;
     if let Some(id) = req.operation {
         uuid::Uuid::parse_str(id).context("INVALID_OPERATION_ID")?;

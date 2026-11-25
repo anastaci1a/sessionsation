@@ -19,8 +19,9 @@
 //! Generic tree walkers (`reject_symlink`, `tree_digest`, `remove_tree`) still
 //! refuse a link, so no operation can copy, digest or delete *through* one.
 //!
-//! The feature is dormant until the operator runs `shared enable`: a marker file in
-//! the store turns on link creation and the `SHARED_STATE_UNMIGRATED` refusal. Adopted (operator-owned) config
+//! The feature is dormant until the operator runs `shared enable` or the first
+//! `shared migrate`: a marker file in the store turns on link creation and the
+//! `SHARED_STATE_UNMIGRATED` refusal. Adopted (operator-owned) config
 //! directories are never linked.
 use crate::{
     paths::{Paths, atomic_write, lock_file, validate_name},
@@ -35,6 +36,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod migrate;
 #[cfg(test)]
 mod tests;
 
@@ -55,7 +57,7 @@ pub const CORE: [&str; 4] = ["projects", "file-history", "todos", "session-env"]
 /// (1.46.1): a live `skills/` holds `skills/synced/<org-bucket-id>`, claude.ai
 /// cloud-synced skills specific to one account, so sharing it would mix accounts.
 pub const CUSTOM: [&str; 2] = ["agents", "commands"];
-/// Written by `shared enable`; its presence enables the feature.
+/// Written by `shared enable` / `shared migrate`; its presence enables the feature.
 pub const MARKER: &str = ".sessionsation-shared";
 const LOCK: &str = ".lock";
 
@@ -153,7 +155,7 @@ pub enum LinkState {
     Missing,
     /// A real, empty directory (safe to replace by a link).
     EmptyDir,
-    /// A real directory holding data that is not in the store.
+    /// A real directory holding data: needs `shared migrate`.
     Data,
     /// Any symlink that is not trusted, or a non-directory.
     Untrusted,
@@ -240,7 +242,7 @@ pub enum Ensure {
     NotApplicable,
     /// All links are trusted; `created` lists those made by this call. `unmigrated`
     /// lists `agents`/`commands` that still hold their own data (left
-    /// untouched; they never block a launch).
+    /// untouched until `shared migrate`; they never block a launch).
     Linked {
         created: Vec<&'static str>,
         unmigrated: Vec<&'static str>,
@@ -264,9 +266,10 @@ impl Ensure {
 /// Create or repair the account-home links of a managed Claude home.
 /// A missing name is linked, an empty real directory is replaced by a link, a
 /// trusted link is kept. A real directory that holds data is never merged here:
-/// it fails with `SHARED_STATE_UNMIGRATED`. Any other symlink is refused.
+/// it fails with `SHARED_STATE_UNMIGRATED` and the operator runs
+/// `sessionsation shared migrate`. Any other symlink is refused.
 pub fn ensure_links(paths: &Paths, home: &Path) -> Result<Ensure> {
-    let Some((root, _)) = managed_home(home) else {
+    let Some((root, account)) = managed_home(home) else {
         return Ok(Ensure::NotApplicable);
     };
     if !crate::alias::same_path(&root, &paths.root) {
@@ -304,7 +307,7 @@ pub fn ensure_links(paths: &Paths, home: &Path) -> Result<Ensure> {
             }
             LinkState::EmptyDir => {
                 fs::remove_dir(&link).with_context(|| {
-                    format!("SHARED_STATE_UNMIGRATED: {} is no longer empty; shared state must be enabled on a layout-3 root", link.display())
+                    format!("SHARED_STATE_UNMIGRATED: {} is no longer empty; run `sessionsation shared migrate --account claude:{account}`", link.display())
                 })?;
                 symlink(&shared, &link).context("SHARED_STATE_LINK_FAILED")?;
                 ensure!(
@@ -316,7 +319,7 @@ pub fn ensure_links(paths: &Paths, home: &Path) -> Result<Ensure> {
             }
             LinkState::Data if CUSTOM.contains(&name) => unmigrated.push(name),
             LinkState::Data => bail!(
-                "SHARED_STATE_UNMIGRATED: {} holds data that is not in the shared store; shared state must be enabled on a layout-3 root",
+                "SHARED_STATE_UNMIGRATED: {} holds data that is not in the shared store; run `sessionsation shared migrate --account claude:{account} --dry-run`, then without --dry-run",
                 link.display()
             ),
             LinkState::Untrusted => bail!(
@@ -347,7 +350,7 @@ pub fn switch_shared(paths: &Paths, source: &Path, target_home: &Path) -> Result
     }
     ensure!(
         !any_linked(source) && !any_linked(target_home),
-        "SHARED_STATE_MIXED: only one of the two accounts uses the shared store; a switch would delete from the shared store"
+        "SHARED_STATE_MIXED: only one of the two accounts uses the shared store; run `sessionsation shared migrate` for the other so a switch moves nothing instead of deleting from the shared store"
     );
     Ok(false)
 }
@@ -366,6 +369,38 @@ pub fn detach_links(home: &Path) -> Result<Vec<&'static str>> {
         }
     }
     Ok(removed)
+}
+
+/// `renameat2(RENAME_EXCHANGE)`: atomically swap two existing paths.
+pub fn rename_exchange(a: &Path, b: &Path) -> std::io::Result<()> {
+    renameat2(a, b, 2)
+}
+/// `renameat2(RENAME_NOREPLACE)`: move without ever overwriting.
+pub fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    renameat2(from, to, 1)
+}
+fn renameat2(a: &Path, b: &Path, flags: libc::c_uint) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = |p: &Path| {
+        std::ffi::CString::new(p.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    };
+    let (a, b) = (c(a)?, c(b)?);
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            a.as_ptr(),
+            libc::AT_FDCWD,
+            b.as_ptr(),
+            flags,
+        )
+    };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 /// Per-account link states for `shared status`.
@@ -401,7 +436,7 @@ pub fn capability() -> Value {
         "per_account":["settings.json","credentials","sessions"],"store":"<root>/shared/claude/<name>",
         "link":"<account home>/<name> -> <root>/shared/claude/<name>",
         "scope":"managed_claude_homes","adopted_config_dir":"never_linked",
-        "enable":"shared enable","commands":["shared status","shared enable"],
+        "enable":"shared enable | shared migrate","commands":["shared status","shared enable","shared migrate"],
         "trusted_link":"symlink at exactly <account home>/<name>, owned by this user, stored target exactly <root>/shared/claude/<name>, resolving to a real private directory",
         "account_switch":"nothing_copied_or_deleted_when_both_accounts_linked",
         "account_deletion":"removes_the_links_only",

@@ -14,12 +14,13 @@ and package history are in Git.
   `PROVIDER_DELIVERY_UNSUPPORTED`, `DELIVERY_UNAVAILABLE`,
   `UNSUPPORTED_PROVIDER_OPERATION` or `INVALID_REQUEST`). Detect providers with
   `capabilities.send_request.providers` instead.
-- 1.54.0 activates layout version 3; binaries before 1.54.0 refuse it (`root rollback`
-  is gone in 1.68.0). 1.49.0 adds journals older releases ignore; drain
+- 1.54.0 activates layout version 3; binaries before 1.54.0 refuse it, so run
+  `root rollback` before a downgrade. 1.49.0 adds journals older releases ignore; drain
   them before rolling back ([operations](operations.md#rolling-back-a-release)).
 
 ## Versions
 
+- **1.70.0** Restores everything removed in 1.68.0 and 1.69.0.
 - **1.69.3** Claude compaction holds input; `stop --discard-queued`; queued Codex input refuses `stop --interrupt`.
 - **1.69.2** Codex `force_interrupt` false again (1.68.2 bug).
 - **1.69.1** Meter: idle replays ignored after a redeem.

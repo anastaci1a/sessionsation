@@ -173,6 +173,7 @@ async fn fixture() -> Fixture {
         antigravity_binary: fake.to_str().unwrap().into(),
         codex_binary: "/nonexistent/codex".into(),
         claude_binary: "/nonexistent/claude".into(),
+        gemini_binary: "/nonexistent/gemini".into(),
         ..Default::default()
     };
     sessionsation::store::save_config(&paths, &config).unwrap();
@@ -234,11 +235,7 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
     // but not twice under this one.
     let taken = f.api_error(&["account", "add", "antigravity:fresh"]);
     assert!(taken.contains("ACCOUNT_NAME_EXISTS"), "{taken}");
-    // Gemini enrollment is dropped.
-    assert!(
-        f.api_error(&["account", "add", "gemini:fresh"])
-            .contains("gemini_cli_dropped_individual_accounts")
-    );
+    f.api(&["account", "add", "gemini:fresh"]);
     // Unauthenticated use never reaches agy (no OAuth wait).
     let refused = f.send_err(&new_body(
         &uuid::Uuid::new_v4().to_string(),
@@ -284,8 +281,8 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
         false
     );
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_revision"], 69);
-    assert_eq!(caps["contract_version"], "1.69.3");
+    assert_eq!(caps["contract_revision"], 70);
+    assert_eq!(caps["contract_version"], "1.70.0");
     let p = caps["providers"]
         .as_array()
         .unwrap()
@@ -459,12 +456,12 @@ async fn a_live_agy_process_holding_the_conversation_is_running_and_refuses_resu
 async fn api_version_reports_semver_and_negotiates_by_major() {
     let f = fixture().await;
     let v = f.api(&["version"]);
-    assert_eq!(v["contract_version"], "1.69.3");
-    assert_eq!(v["contract_revision"], 69);
+    assert_eq!(v["contract_version"], "1.70.0");
+    assert_eq!(v["contract_revision"], 70);
     for ok in ["1", "1.25", "1.26", "1.99.0"] {
         assert_eq!(
             f.api(&["--api-version", ok, "version"])["contract_version"],
-            "1.69.3"
+            "1.70.0"
         );
     }
     for bad in ["2", "2.0.0", "0.24"] {

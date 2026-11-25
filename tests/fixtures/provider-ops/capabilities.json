@@ -405,6 +405,33 @@
     },
     "version": 1
   },
+  "claude_idle_notify": {
+    "args": [
+      "--session",
+      "--expected-generation",
+      "--notify-session"
+    ],
+    "command": "idle-notify",
+    "events": "api turn-events (kind idle|exited, detail:{state,finished_at,status})",
+    "expiry_seconds": 43200,
+    "journal": "operations/claude-idle-notify",
+    "model_requests": false,
+    "providers": [
+      "claude"
+    ],
+    "refusal_codes": [
+      "UNSUPPORTED_PROVIDER_OPERATION",
+      "SESSION_NOT_RUNNING",
+      "LIVE_STEERING_DISABLED",
+      "PEER_ENDPOINT_UNAVAILABLE",
+      "PEER_SOCKET_UNLINKED",
+      "STALE_TARGET"
+    ],
+    "replays": false,
+    "requires": "live interactive session with inbound peer messages accepted",
+    "transport": "claude_cross_session_notify_when_idle",
+    "version": 1
+  },
   "claude_lifecycle": {
     "restart": false,
     "stop": {
@@ -452,6 +479,7 @@
       "receipt_field": "native_fallback",
       "to": "terminal_input"
     },
+    "idle_notice": "claude_idle_notify",
     "launch": {
       "kept_when_account_sets": [
         "hold",
@@ -1355,10 +1383,10 @@
       "account_deletion": true,
       "account_display_name_max": 64,
       "account_limits": false,
-      "account_logout": false,
-      "account_refresh": false,
+      "account_logout": true,
+      "account_refresh": true,
       "account_removal": true,
-      "account_rename": false,
+      "account_rename": true,
       "account_switch": false,
       "adopt_config_dir": false,
       "auth_command": {
@@ -1373,8 +1401,33 @@
         ],
         "validation_timeout_seconds": 15
       },
+      "auth_modes": [
+        {
+          "available": false,
+          "id": "google_personal",
+          "label": "Google login",
+          "mode": "google",
+          "reason": "retired by Google for personal accounts — use Antigravity, API key or Workspace"
+        },
+        {
+          "available": true,
+          "id": "google_workspace",
+          "label": "Google Workspace login",
+          "mode": "google",
+          "reason": null
+        },
+        {
+          "available": true,
+          "field": "api_key",
+          "id": "api_key",
+          "input": "stdin_json",
+          "label": "API key",
+          "mode": "api_key",
+          "reason": null
+        }
+      ],
       "cross_provider_conversion": false,
-      "enrollment": false,
+      "enrollment": true,
       "force_interrupt": false,
       "headless_delivery": {
         "approval_mode": "default",
@@ -1395,10 +1448,12 @@
         "version": 1
       },
       "id": "gemini",
-      "implemented": false,
+      "implemented": true,
       "input_delivery": {
         "automatic_replay": false,
-        "eligibility": "none: Gemini CLI is dropped",
+        "correlation": "first user record at or after the submit containing the typed text",
+        "draft": "read from the screen, cleared, typed back unsubmitted and verified; refused when not exactly reconstructable",
+        "eligibility": "tracked running Gemini session whose attachment is a verified HERDR pane (attachment.host herdr, exact pid/start)",
         "enter": {
           "busy_model_steering_off": "native_queue",
           "busy_model_steering_on": "steering_update",
@@ -1430,11 +1485,11 @@
           "submit": "enter",
           "text": "pane send-text (no bracketed paste)"
         },
-        "label": "Typed into the session's HERDR terminal as the user's own input",
+        "label": "Typed into the session's HERDR terminal as the user's own input: Gemini records a user turn when idle; mid-turn Enter queues it (model steering off) or adds a user steering update (model steering on)",
         "labels": {
-          "queue": "Queued in Gemini's own message queue as the user's input",
+          "queue": "Queued in Gemini's own message queue as the user's input: run when the current turn ends, joined with any other queued messages into one prompt",
           "steer": "Steer",
-          "submit": "Typed into the session's HERDR terminal as the user's own input"
+          "submit": "Typed into the session's HERDR terminal as the user's own input: Gemini records a user turn when idle; mid-turn Enter queues it (model steering off) or adds a user steering update (model steering on)"
         },
         "max_lines": 8,
         "max_text_bytes": 1000,
@@ -1459,12 +1514,39 @@
           "batching": "every queued message is joined with a blank line into one user prompt when the turn ends",
           "record": "one user record for the batch"
         },
-        "reason": "gemini_cli_dropped_individual_accounts",
-        "refusal_reasons": [],
+        "refusal_reasons": [
+          "TERMINAL_NOT_ATTACHED",
+          "TERMINAL_INPUT_DISABLED",
+          "TERMINAL_INTERRUPT_UNSUPPORTED",
+          "TERMINAL_PAYLOAD_UNSUPPORTED",
+          "TERMINAL_TEXT_TOO_LONG",
+          "TERMINAL_HOST_UNAVAILABLE",
+          "TERMINAL_AGENT_UNKNOWN",
+          "TERMINAL_AGENT_BLOCKED",
+          "TERMINAL_PANE_IS_SHELL",
+          "TERMINAL_PROVIDER_EXITED",
+          "TERMINAL_VIEW_UNDETERMINED",
+          "TERMINAL_OVERLAY_UNIDENTIFIED",
+          "TERMINAL_VIM_MODE",
+          "TERMINAL_SHELL_MODE",
+          "TERMINAL_DRAFT_UNRECONSTRUCTABLE",
+          "TERMINAL_DRAFT_UNRESTORABLE",
+          "TERMINAL_CLEAR_UNVERIFIED",
+          "TERMINAL_TYPED_TEXT_MISMATCH",
+          "TERMINAL_HOST_FAILED_BEFORE_SUBMIT",
+          "TERMINAL_WORKER_EXITED_BEFORE_SUBMIT",
+          "TERMINAL_SUBMIT_UNCERTAIN",
+          "TERMINAL_INPUT_UNCONFIRMED",
+          "GEMINI_STEERING_DISABLED",
+          "GEMINI_STEERING_RESTART_REQUIRED",
+          "GEMINI_STEERING_UNKNOWN",
+          "GEMINI_QUEUE_WOULD_STEER",
+          "GEMINI_SUBMIT_WOULD_STEER"
+        ],
         "reply_requires_anchor": true,
         "semantics": "terminal_input",
         "steer": {
-          "caveat": "dropped",
+          "caveat": "Gemini adds a steer to the next tool step of the running turn. If the turn ends without another tool call, Gemini submits it afterwards as a separate prompt wrapped as a steering update; the receipt reports which happened",
           "delivery": "next_tool_step_or_after_turn",
           "interrupt_option": null,
           "interrupts": false,
@@ -1472,12 +1554,11 @@
           "not_applied": "submitted_after_turn_as_steering_prompt",
           "priority": "next"
         },
-        "supported": false,
         "version": 1
       },
-      "login": null,
+      "login": "interactive_exec",
       "native_rename": false,
-      "new": false,
+      "new": true,
       "new_account_name_max": 30,
       "operations": {
         "account_deletion": {
@@ -1485,115 +1566,107 @@
           "supported": true
         },
         "account_limits": {
-          "reason": "gemini_cli_dropped_individual_accounts",
+          "reason": "Gemini CLI exposes no usage or quota hook or file; quota is visible only in its /stats model command",
           "supported": false
         },
         "account_logout": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "reason": "gemini-cli 0.66.0 clearCachedCredentialFile: remove .gemini/oauth_creds.json and clear the active account in .gemini/google_accounts.json (file storage; gemini has no logout command)",
+          "supported": true
         },
         "account_removal": {
-          "reason": "managed homes: conversation history preserved, home and credentials deleted",
           "supported": true
         },
         "account_rename": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "supported": true
         },
         "account_switch": {
-          "reason": "gemini_cli_dropped_individual_accounts",
+          "reason": "native session is bound to its account home",
           "supported": false
         },
         "adopt_config_dir": {
-          "reason": "gemini_cli_dropped_individual_accounts",
+          "reason": "Gemini homes are created and owned by sessionsation",
           "supported": false
         },
         "archive": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "reason": "stopped sessions: exact-id conversation files move to sessionsation-managed Archived Sessions and back on restore; refused while running or hosted (see each session's capability_reasons)",
+          "supported": true
         },
         "auth_status": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "reason": "file-based: credential files present and an active Google account recorded; validity is not checked without a network call",
+          "supported": true
         },
         "cross_provider_conversion": {
-          "reason": "gemini_cli_dropped_individual_accounts",
+          "reason": "conversations are bound to their provider",
           "supported": false
         },
         "delete_session": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "reason": "stopped or archived sessions: exact-id conversation files and the catalog entry are deleted; refused while running or hosted (see each session's capability_reasons)",
+          "supported": true
         },
         "enrollment": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "supported": true
         },
         "headless_delivery": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "reason": "api send mode resume (stopped session) and mode new run gemini -p headlessly; live sessions are refused",
+          "supported": true
         },
         "login": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "supported": true
         },
         "move_space": {
-          "reason": "gemini_cli_dropped_individual_accounts",
+          "reason": "HERDR space moves are verified only for Codex",
           "supported": false
         },
         "native_rename": {
-          "reason": "gemini_cli_dropped_individual_accounts",
+          "reason": "label is a Sessionsation catalog label; Gemini CLI has no native session rename",
           "supported": false
         },
         "new": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "supported": true
         },
         "queue": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "reason": "live sessions in a verified HERDR pane take typed input (terminal_input); queue needs experimental.modelSteering off and steer needs it on (account live-steering); see each session's capabilities",
+          "supported": true
         },
         "relocate": {
-          "reason": "gemini_cli_dropped_individual_accounts",
+          "reason": "native session is bound to its account home",
           "supported": false
         },
         "rename": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "supported": true
         },
         "restart": {
-          "reason": "gemini_cli_dropped_individual_accounts",
+          "reason": "no verified Gemini process lifecycle control; stop it in its terminal",
           "supported": false
         },
         "resume": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "supported": true
         },
         "steer": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "reason": "live sessions in a verified HERDR pane take typed input (terminal_input); queue needs experimental.modelSteering off and steer needs it on (account live-steering); see each session's capabilities",
+          "supported": true
         },
         "stop": {
-          "reason": "gemini_cli_dropped_individual_accounts",
+          "reason": "Gemini CLI no longer supports individual accounts (migrate to Antigravity)",
           "supported": false
         },
         "submit": {
-          "reason": "gemini_cli_dropped_individual_accounts",
-          "supported": false
+          "reason": "live sessions in a verified HERDR pane take typed input (terminal_input); queue needs experimental.modelSteering off and steer needs it on (account live-steering); see each session's capabilities",
+          "supported": true
         },
         "usage": {
-          "reason": "gemini_cli_dropped_individual_accounts",
+          "reason": "Gemini CLI exposes no usage or quota hook or file; quota is visible only in its /stats model command",
           "supported": false
         }
       },
-      "queue": false,
-      "reason": "gemini_cli_dropped_individual_accounts",
-      "rename": false,
+      "queue": true,
+      "rename": true,
       "restart": false,
-      "resume": false,
+      "resume": true,
       "session_name_max": 64,
-      "steer": false,
+      "steer": true,
       "stop": false,
-      "submit": false,
+      "submit": true,
       "usage": false,
       "usage_source": "gemini-cli-unsupported",
       "usage_state": "unsupported"
@@ -1883,7 +1956,7 @@
           "claude_ask_user_question",
           "claude_hosted_ask_user_question"
         ],
-        "reason": "PROVIDER_TERMINAL_ONLY: Claude Code answers AskUserQuestion only in its own terminal"
+        "reason": "PROVIDER_TERMINAL_ONLY: Claude Code answers AskUserQuestion only in its own terminal; a Sessionsation-hosted session can be answered"
       },
       "codex": {
         "answer": true,
@@ -2282,7 +2355,8 @@
       "claude": "hook",
       "codex": "supervisor",
       "gemini": null
-    }
+    },
+    "turn_events": "api turn-events stays the Codex turn-notify journal"
   },
   "session_lifecycle": {
     "archived_stop": "already_stopped:true, archived:true (any generation)",
@@ -2808,6 +2882,49 @@
     ],
     "timeout_env": "SESSIONSATION_OPERATION_WAIT_MS",
     "timeout_seconds": 300
+  },
+  "turn_notify": {
+    "args": [
+      "--session",
+      "--expected-generation",
+      "--enable",
+      "--disable",
+      "--notify-session"
+    ],
+    "changes_session_generation": false,
+    "command": "turn-notify",
+    "default": "disabled",
+    "delivery": [
+      "event_journal",
+      "queued_message_to_notify_session"
+    ],
+    "event_kinds": [
+      "turn_ended",
+      "error"
+    ],
+    "events_args": [
+      "--after",
+      "--wait"
+    ],
+    "events_command": "turn-events",
+    "first_observation": "baseline_only",
+    "max_events": 500,
+    "max_wait_seconds": 300,
+    "message_mode": "queue",
+    "message_replays": false,
+    "poll_seconds": 5,
+    "providers": [
+      "codex"
+    ],
+    "refusal_codes": [
+      "UNSUPPORTED_PROVIDER_OPERATION",
+      "STALE_TARGET",
+      "INVALID_ARGUMENT",
+      "SESSION_NOT_FOUND"
+    ],
+    "setting_storage": "registry/turn-notify.json",
+    "state_field": "turn_notify",
+    "version": 1
   },
   "usage_meter": {
     "args": [

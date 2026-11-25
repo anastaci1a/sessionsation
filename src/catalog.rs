@@ -903,6 +903,24 @@ pub(crate) fn remove(paths: &Paths, before: &Session) -> Result<Session> {
         Ok(removed)
     })
 }
+/// Point every session of `provider:old` at `new` (account backend rename).
+/// Idempotent; returns how many entries changed. Each changed entry gets a new
+/// revision, so its generation changes and clients refresh.
+pub fn reassign_account(paths: &Paths, provider: &str, old: &str, new: &str) -> Result<usize> {
+    transaction(paths, |c| {
+        let mut changed = 0;
+        for s in c
+            .sessions
+            .values_mut()
+            .filter(|s| s.provider == provider && s.account == old)
+        {
+            s.account = new.into();
+            s.revision += 1;
+            changed += 1;
+        }
+        Ok(changed)
+    })
+}
 /// Move a Claude entry's account after its conversation files were moved
 /// (contract 1.34.0). Idempotent: an entry already on `to` is returned
 /// unchanged. The process attachment is cleared (the old process is gone) and
@@ -929,6 +947,58 @@ pub(crate) fn switch_account(
         s.attachment = None;
         s.revision += 1;
         Ok(s.clone())
+    })
+}
+/// Root re-key (contract 1.54.0): point a session's stored directory at its
+/// new spelling. Idempotent (an entry already on `to` is returned unchanged);
+/// refuses when the identity or the stored directory changed since `from` was
+/// read. Returns (revision before, entry after).
+pub(crate) fn rekey_directory(
+    paths: &Paths,
+    id: &str,
+    conversation: &str,
+    from: Option<&str>,
+    to: &str,
+) -> Result<(u64, Session)> {
+    transaction(paths, |c| {
+        let s = live(c, id)?;
+        ensure!(s.conversation_id == conversation, "STALE_TARGET");
+        if s.directory.as_deref() == Some(to) {
+            return Ok((s.revision, s.clone()));
+        }
+        ensure!(s.directory.as_deref() == from, "STALE_TARGET");
+        let before = s.revision;
+        s.directory = Some(to.to_owned());
+        s.revision += 1;
+        Ok((before, s.clone()))
+    })
+}
+/// Undo [`rekey_directory`] exactly: the old directory and, when nothing else
+/// changed the entry since, the old revision (so the generation is the original
+/// one again). Returns whether the entry changed.
+pub(crate) fn restore_directory(
+    paths: &Paths,
+    id: &str,
+    conversation: &str,
+    to: &str,
+    from: Option<&str>,
+    revision_before: u64,
+    revision_after: u64,
+) -> Result<bool> {
+    transaction(paths, |c| {
+        let Some(s) = c.sessions.get_mut(id) else {
+            return Ok(false);
+        };
+        if s.conversation_id != conversation || s.directory.as_deref() != Some(to) {
+            return Ok(false);
+        }
+        s.directory = from.map(str::to_owned);
+        if s.revision == revision_after {
+            s.revision = revision_before;
+        } else {
+            s.revision += 1;
+        }
+        Ok(true)
     })
 }
 

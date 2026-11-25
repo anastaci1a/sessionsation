@@ -858,6 +858,10 @@ struct Baseline {
     steps: BTreeMap<String, String>,
     /// Shrink program: counter ceilings per release (SHRINK §6.3).
     trajectory: Vec<Trajectory>,
+    /// The stated goal (for example `{"src_lines": 25000, "by": "operator"}`): reported
+    /// against the measured counters at every release, never gating.
+    #[serde(default)]
+    target: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -869,6 +873,11 @@ struct Trajectory {
     max: i64,
     /// Release label, resolved from the step through `steps`.
     step: String,
+    /// A ceiling raised by a re-plan: the earlier ceiling, with `agreed_by`.
+    #[serde(default)]
+    raised_from: Option<i64>,
+    #[serde(default)]
+    agreed_by: Option<Agreed>,
 }
 
 /// Who agreed to a rise of a falls-only counter.
@@ -1178,6 +1187,13 @@ fn tables_digest(base: &Baseline) -> String {
             "row|{}|{}|{}|{}\n",
             r.counter, r.by, r.max, r.step
         ));
+        match (r.raised_from, &r.agreed_by) {
+            (Some(from), Some(a)) => {
+                s.push_str(&format!("raised|{from}|{:?}|{}\n", a.who, a.reference));
+            }
+            (None, Some(a)) => s.push_str(&format!("agreed|{:?}|{}\n", a.who, a.reference)),
+            _ => {}
+        }
     }
     sha256_hex(s.as_bytes())
 }
@@ -1197,6 +1213,17 @@ fn ratchet_pin_problems(base: &Baseline) -> Vec<String> {
     }
     let mut last: BTreeMap<&str, (&str, i64)> = BTreeMap::new();
     for r in &base.trajectory {
+        match (r.raised_from, &r.agreed_by) {
+            // A raised ceiling needs the operator; lead may only agree to a lower one.
+            (Some(from), Some(a))
+                if from < r.max && a.who == Who::Operator && ref_looks_valid(&a.reference) => {}
+            (None, Some(a)) if ref_looks_valid(&a.reference) => {}
+            (None, None) => {}
+            _ => out.push(format!(
+                "guard: trajectory row {} {}: a raised ceiling names raised_from (lower than max) and agreed_by {{who: operator, ref}}",
+                r.counter, r.step
+            )),
+        }
         if let Some((by, max)) = last.insert(&r.counter, (&r.by, r.max))
             && (r.by.as_str() <= by || r.max >= max)
             && !(r.max == 0 && max == 0)
@@ -2810,13 +2837,13 @@ fn shrink_marker_and_labels_are_pinned() {
         "shrink-S1b",
         "shrink-S1c",
         "shrink-S2",
-        "shrink-S3",
-        "shrink-S4a",
-        "shrink-S4b",
-        "shrink-S4c",
-        "shrink-S5",
-        "shrink-S6a",
-        "shrink-S6b",
+        "restore-1.70.0",
+        "shrink-C1",
+        "shrink-C2",
+        "shrink-C3",
+        "shrink-C4",
+        "shrink-C5",
+        "shrink-C6",
         "shrink-S7",
         "shrink-S8",
     ] {
@@ -2899,10 +2926,10 @@ fn creating_a_listed_module_is_exempt() {
         .expect("a module not created yet");
     let name = format!("{MODULE_LINES}{}", new.0);
     let mut base = shrink_fixture();
-    base.ledger.push(program_entry(&name, 100, "shrink-S3"));
+    base.ledger.push(program_entry(&name, 100, "shrink-C1"));
     assert!(shrink_problems(&base).is_empty(), "creation is exempt");
     // The second rise: the module exists now, so it is falls-only.
-    base.ledger.push(program_entry(&name, 10, "shrink-S3"));
+    base.ledger.push(program_entry(&name, 10, "shrink-C1"));
     assert_eq!(shrink_problems(&base).len(), 1);
     base.ledger.last_mut().unwrap().agreed_by = agreed(Who::Operator);
     assert!(shrink_problems(&base).is_empty());
@@ -2981,7 +3008,7 @@ fn trajectory_gates_only_the_release() {
     // A hotfix label is refused on a minor release, and a step of another release fails.
     assert_eq!(trajectory_problems(&base, &m, Some("hotfix:x"), C).len(), 1);
     assert_eq!(
-        trajectory_problems(&base, &m, Some("shrink-S3"), C).len(),
+        trajectory_problems(&base, &m, Some("shrink-C1"), C).len(),
         1
     );
     // The release label resolves like its step (S2 is over its ceiling here).
@@ -3111,7 +3138,7 @@ fn a_new_unlisted_path_and_a_recreated_module_are_caught() {
     let mut base = shrink_fixture();
     let initial = initial_of(&name).unwrap() as i64;
     base.ledger
-        .push(program_entry(&name, -initial, "shrink-S3"));
+        .push(program_entry(&name, -initial, "shrink-C1"));
     let mut m = measure_all(&[], &[]);
     m.insert(
         name.clone(),
@@ -3122,7 +3149,7 @@ fn a_new_unlisted_path_and_a_recreated_module_are_caught() {
     );
     assert_eq!(module_budget_problems(&m, &base).len(), 1);
     // And it stays falls-only after the rewrite rose again.
-    base.ledger.push(program_entry(&name, 5, "shrink-S3"));
+    base.ledger.push(program_entry(&name, 5, "shrink-C1"));
     assert_eq!(shrink_problems(&base).len(), 1);
 }
 
@@ -3139,4 +3166,53 @@ fn agreed_by_refs_look_like_ids_or_urls() {
     for bad in ["", "ok", "see chat", "x y z abc"] {
         assert!(!ref_looks_valid(bad), "{bad}");
     }
+}
+
+#[test]
+fn the_stated_target_is_recorded_and_never_gates() {
+    let base = baseline();
+    assert_eq!(base.target["src_lines"], 25000);
+    assert_eq!(base.target["by"], "operator");
+}
+
+#[test]
+fn a_raised_trajectory_row_needs_the_operator() {
+    let raised = |b: &Baseline| {
+        b.trajectory
+            .iter()
+            .position(|r| r.raised_from.is_some())
+            .expect("a raised row")
+    };
+    let base = baseline();
+    let i = raised(&base);
+    let only_rows = |b: &Baseline| {
+        ratchet_pin_problems(b)
+            .into_iter()
+            .filter(|m| m.contains("a raised ceiling"))
+            .collect::<Vec<_>>()
+    };
+    assert!(only_rows(&base).is_empty());
+    let mut b = baseline();
+    b.trajectory[i].agreed_by = agreed(Who::Lead);
+    assert_eq!(only_rows(&b).len(), 1, "a lead-agreed raise is refused");
+    let mut b = baseline();
+    b.trajectory[i].agreed_by = None;
+    assert_eq!(
+        only_rows(&b).len(),
+        1,
+        "a raise without agreed_by is refused"
+    );
+    let mut b = baseline();
+    let from = b.trajectory[i].max;
+    b.trajectory[i].raised_from = Some(from);
+    assert_eq!(only_rows(&b).len(), 1, "raised_from must be below max");
+    // A row that only carries agreed_by (no raise) may be agreed by lead.
+    let mut b = baseline();
+    let plain = b
+        .trajectory
+        .iter()
+        .position(|r| r.raised_from.is_none())
+        .expect("a plain row");
+    b.trajectory[plain].agreed_by = agreed(Who::Lead);
+    assert!(only_rows(&b).is_empty());
 }

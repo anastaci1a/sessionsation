@@ -1,5 +1,5 @@
-//! Gemini CLI is dropped, but an enrolled `gemini:<name>` account stays deletable and its
-//! conversation history is preserved (SHRINK S1b).
+//! An enrolled `gemini:<name>` account is deletable and its conversation history is
+//! preserved (kept from SHRINK S1b; Gemini CLI support is restored in 1.70.0).
 #![allow(
     clippy::disallowed_methods,
     reason = "integration tests are exempt from owned roles (src/guard.rs)"
@@ -77,7 +77,7 @@ async fn an_enrolled_gemini_account_is_deletable_and_its_history_is_preserved() 
         assert!(Instant::now() < deadline, "supervisor did not start");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // The provider entry says deletion and removal are supported; the rest is refused.
+    // The provider entry says deletion and removal are supported (and, since 1.70.0, new again).
     let caps = api(&paths, &["capabilities"]);
     let g = caps["providers"]
         .as_array()
@@ -88,7 +88,7 @@ async fn an_enrolled_gemini_account_is_deletable_and_its_history_is_preserved() 
     assert_eq!(g["account_deletion"], true);
     assert_eq!(g["account_removal"], true);
     assert_eq!(g["operations"]["account_deletion"]["supported"], true);
-    assert_eq!(g["new"], false);
+    assert_eq!(g["new"], true);
     assert_eq!(g["headless_delivery"]["version"], 1);
 
     let preview = api(&paths, &["account", "delete", "gemini:gone"]);

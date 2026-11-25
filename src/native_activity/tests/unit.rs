@@ -92,6 +92,40 @@ fn registry_wins_only_when_newer() {
 }
 
 #[test]
+fn gemini_and_antigravity_inferred_work_expires() {
+    let t = parse_rfc3339(T0).unwrap();
+    let working = Verdict {
+        tail: Tail::Working,
+        at_ms: Some(t),
+        error: None,
+    };
+    let fresh = combine(Some(working.clone()), None, t + 1000, true);
+    assert_eq!(live_activity::classify(&fresh.unwrap().0), "working");
+    assert!(combine(Some(working), None, t + UNANSWERED_MS + 1, true).is_none());
+    assert_eq!(
+        gemini_record(&json!({"type":"gemini","timestamp":T0,"toolCalls":[{}]}))
+            .unwrap()
+            .tail,
+        Tail::Working
+    );
+    assert_eq!(
+        gemini_record(&json!({"type":"gemini","timestamp":T0}))
+            .unwrap()
+            .tail,
+        Tail::Ended
+    );
+    assert_eq!(
+        antigravity_record(
+            &json!({"type":"PLANNER_RESPONSE","status":"DONE","created_at":T0,"tool_calls":[]})
+        )
+        .unwrap()
+        .tail,
+        Tail::Ended
+    );
+    assert!(antigravity_record(&json!({"type":"PLANNER_RESPONSE","status":"RUNNING"})).is_none());
+}
+
+#[test]
 fn oversized_last_line_falls_back_to_wider_tail() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("t.jsonl");

@@ -2089,6 +2089,57 @@
       "steps": []
     }
   },
+  "hosted_session": {
+    "session_id": "4a2aeded-e670-4097-8ce9-556aab3389b2",
+    "conversation_id": "493b99e3-11d8-4c18-88ff-a0adb9b732dc",
+    "account_id": "claude:work",
+    "delivery_semantics": "hosted_stream_json",
+    "state": "running",
+    "reason": null,
+    "origin": "new",
+    "directory": "/home/user/project",
+    "permission_mode": "account",
+    "effective_permission_mode": null,
+    "epoch": 1,
+    "busy": true,
+    "worker": {
+      "pid": 4242,
+      "alive": true
+    },
+    "provider_process": {
+      "pid": 4243,
+      "alive": true
+    },
+    "pending_permissions": [
+      {
+        "request_id": "c8c6b1d4-34a1-4c38-9a8e-0d1f1e7b2a11",
+        "tool_name": "Bash",
+        "input": {
+          "command": "ls"
+        },
+        "input_preview": "{\"command\":\"ls\"}",
+        "requested_at": 1793234133
+      }
+    ],
+    "viewer_argv": [
+      "/usr/local/bin/sessionsation",
+      "--data-dir",
+      "/home/user/.local/share/sessionsation",
+      "view",
+      "493b99e3-11d8-4c18-88ff-a0adb9b732dc"
+    ],
+    "take_over_argv": [
+      "/usr/local/bin/sessionsation",
+      "--data-dir",
+      "/home/user/.local/share/sessionsation",
+      "take-over",
+      "4a2aeded-e670-4097-8ce9-556aab3389b2"
+    ],
+    "created_at": 1793234120,
+    "started_at": 1793234121,
+    "stopped_at": null,
+    "updated_at": 1793234133
+  },
   "live_steering": {
     "account_id": "claude:work",
     "provider": "claude",
@@ -2098,6 +2149,30 @@
     "previous": null,
     "changed": true,
     "settings_file": "/home/user/.local/share/sessionsation/accounts/claude/work/settings.json"
+  },
+  "launch_request_hosted": {
+    "version": 1,
+    "request_id": "11111111-2222-4333-8444-555555555555",
+    "account_id": "claude:work",
+    "name": "Example",
+    "host": {
+      "session": "fixture",
+      "socket": "/tmp/fixture/herdr.sock"
+    },
+    "space": {
+      "kind": "existing",
+      "id": "w1"
+    },
+    "directory": {
+      "path": "/tmp/projects/Example",
+      "create": [
+        "/tmp/projects/Example"
+      ],
+      "confirmed_existing": false
+    },
+    "hosted": {
+      "permission_mode": "account"
+    }
   },
   "claude_steer_semantics": {
     "priority": "next",

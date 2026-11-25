@@ -68,7 +68,9 @@ fn not_used(provider: ProviderId, option: &str, value: &Value) -> Option<&'stati
         "steering.expected_turn_id" | "steering.expected_runtime_generation" if !codex => {
             Some("a Codex turn target")
         }
-        "steering.interrupt" if !claude => Some("a Claude-only option"),
+        "steering.interrupt" if !claude => {
+            Some("only a hosted Claude session can interrupt its running turn")
+        }
         "timeout_seconds" if codex => {
             Some("a terminal and peer worker timeout; Codex deliveries use the native queue")
         }

@@ -1,7 +1,8 @@
 //! Config rule 2 (SHRINK §3.5): a key a release once wrote is never refused. The table is the
-//! live `config.json` key set; each key either is a setting or is in `KNOWN_IGNORED`.
+//! live `config.json` key set; since 1.70.0 every key is a setting again (`gemini_binary` and
+//! `native_sender_registration` are honoured, as in 1.67.1).
 use serde_json::{Value, json};
-use sessionsation::config::{Config, KNOWN_IGNORED};
+use sessionsation::config::Config;
 
 const LIVE_KEYS: &[&str] = &[
     "active_poll_seconds",
@@ -28,49 +29,41 @@ fn live_document() -> Value {
 }
 
 #[test]
-fn the_live_key_set_loads_and_ignored_keys_are_reported() {
-    let (config, ignored) = Config::parse(live_document()).unwrap();
+fn the_live_key_set_loads_and_every_key_is_honoured() {
+    let config: Config = serde_json::from_value(live_document()).unwrap();
     config.validate().unwrap();
-    assert_eq!(ignored, ["gemini_binary", "native_sender_registration"]);
     assert_eq!(config.claude_binary, "/usr/local/bin/claude");
+    assert_eq!(config.gemini_binary, "gemini");
+    assert!(!config.native_sender_registration);
+    assert_eq!(config.active_poll_seconds, 30);
     assert_eq!(config.receipt_unknown_horizon_days, 90);
+    let on: Config = serde_json::from_value(json!({"native_sender_registration": true})).unwrap();
+    assert!(on.native_sender_registration);
+    let custom: Config = serde_json::from_value(json!({"gemini_binary": "/opt/gemini"})).unwrap();
+    assert_eq!(custom.gemini_binary, "/opt/gemini");
 }
 
 #[test]
-fn every_live_key_is_a_setting_or_known_ignored() {
+fn every_live_key_is_a_setting() {
     let settings = serde_json::to_value(Config::default()).unwrap();
     for key in LIVE_KEYS {
-        let setting = settings.get(*key).is_some();
-        assert_ne!(
-            setting,
-            KNOWN_IGNORED.contains(key),
-            "{key} must be exactly one of a setting or KNOWN_IGNORED"
-        );
+        assert!(settings.get(*key).is_some(), "{key} must be a setting");
         let mut doc = settings.clone();
         doc[*key] = live_document()[*key].clone();
-        assert!(Config::parse(doc).is_ok(), "{key}");
+        assert!(serde_json::from_value::<Config>(doc).is_ok(), "{key}");
     }
-    // An ignored key is accepted alone, and does not come back out.
-    let (config, ignored) = Config::parse(json!({"native_sender_registration": true})).unwrap();
-    assert_eq!(ignored, ["native_sender_registration"]);
-    assert!(
-        serde_json::to_value(config)
-            .unwrap()
-            .get("native_sender_registration")
-            .is_none()
-    );
 }
 
 #[test]
 fn an_unknown_key_is_still_refused() {
-    assert!(Config::parse(json!({"not_a_setting": 1})).is_err());
-    assert!(Config::parse(json!({"idle_poll_seconds": "soon"})).is_err());
+    assert!(serde_json::from_value::<Config>(json!({"not_a_setting": 1})).is_err());
+    assert!(serde_json::from_value::<Config>(json!({"idle_poll_seconds": "soon"})).is_err());
 }
 
-/// A retired key in `config.json` never reaches stderr: clients parse all of a failing CLI's
-/// stderr as one JSON error envelope.
+/// The live `config.json` never reaches stderr: clients parse all of a failing CLI's stderr
+/// as one JSON error envelope.
 #[test]
-fn a_config_with_ignored_keys_keeps_stderr_a_single_envelope() {
+fn the_live_config_keeps_stderr_a_single_envelope() {
     let dir = tempfile::tempdir().unwrap();
     let paths = sessionsation::paths::Paths::new(Some(dir.path().join("root"))).unwrap();
     std::fs::write(
@@ -78,6 +71,12 @@ fn a_config_with_ignored_keys_keeps_stderr_a_single_envelope() {
         serde_json::to_vec(&live_document()).unwrap(),
     )
     .unwrap();
+    assert_eq!(
+        sessionsation::store::load_config(&paths)
+            .unwrap()
+            .gemini_binary,
+        "gemini"
+    );
     let run = |args: &[&str]| {
         std::process::Command::new(env!("CARGO_BIN_EXE_sessionsation"))
             .arg("--data-dir")

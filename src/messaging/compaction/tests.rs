@@ -889,6 +889,20 @@ async fn a_waiting_operation_past_its_expiry_no_longer_holds_input() {
     assert_eq!(w.receipt_state(M1).0, "native_accepted");
 }
 
+#[tokio::test]
+async fn the_legacy_enqueue_path_is_not_held() {
+    let w = world().await;
+    w.fake.lock().unwrap().busy = true;
+    w.compact();
+    let mut ledger = Ledger::open(&w.paths).unwrap();
+    let mut receipt = ledger.accept(&w.input, crate::daemon::now()).unwrap();
+    deliver(&w.paths, &mut ledger, &mut receipt, Some(&w.input))
+        .await
+        .unwrap();
+    assert_eq!(receipt.state, "native_accepted");
+    assert_eq!(w.fake.lock().unwrap().count("thread/queue/add"), 1);
+}
+
 /// Move a started operation's start back by `seconds` (as if that much time had passed).
 fn backdate(w: &World, id: &str, seconds: i64) {
     let mut r = w.record(id);

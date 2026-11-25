@@ -22,6 +22,8 @@ pub struct Config {
     pub claude_binary: String,
     /// Optional HOME for Claude children; unset inherits the caller's HOME.
     pub claude_session_home: Option<std::path::PathBuf>,
+    /// Gemini CLI executable used for every Gemini account.
+    pub gemini_binary: String,
     /// Antigravity CLI (`agy`) executable used for every Antigravity account.
     pub antigravity_binary: String,
     /// Operator kill switch for typed terminal input into HERDR panes (Claude
@@ -64,6 +66,10 @@ pub struct Config {
     /// Days a finished operation journal is kept (unfinished or uncertain ones
     /// and tombstones are never removed).
     pub operation_retention_days: u32,
+    /// Deprecated no-op since contract 1.46.3 (kept so existing config files still load). It once made
+    /// the native-message worker register a sender entry; native frames now carry a sender envelope in
+    /// their content instead, always, so Claude renders the collapsed `@name` row without it.
+    pub native_sender_registration: bool,
     /// Contract 1.52.0: a HERDR start or resume into an existing Space first reuses an idle
     /// pane (the session's recorded pane, then a same-named single-pane tab) instead of
     /// opening a new tab. Off: always a new tab, as before 1.52.0.
@@ -88,6 +94,7 @@ impl Default for Config {
             codex_binary: "codex".into(),
             claude_binary: "claude".into(),
             claude_session_home: None,
+            gemini_binary: "gemini".into(),
             antigravity_binary: "agy".into(),
             terminal_input_enabled: true,
             receipt_retention_days: 14,
@@ -102,25 +109,13 @@ impl Default for Config {
             log_max_bytes: 8 * 1024 * 1024,
             cache_retention_days: 14,
             operation_retention_days: 90,
+            native_sender_registration: false,
             reuse_idle_tabs: true,
             curl_binary: "/usr/bin/curl".into(),
         }
     }
 }
-/// Retired settings: still accepted in `config.json` (a release never refuses a key it once
-/// wrote) and ignored. `native_sender_registration` is a no-op (1.46.3); `gemini_binary` went with Gemini.
-pub const KNOWN_IGNORED: &[&str] = &["gemini_binary", "native_sender_registration"];
 impl Config {
-    /// [`KNOWN_IGNORED`] keys are dropped and returned; any other unknown key is an error.
-    pub fn parse(mut value: serde_json::Value) -> Result<(Self, Vec<&'static str>)> {
-        let mut ignored = vec![];
-        for key in KNOWN_IGNORED {
-            if value.as_object_mut().and_then(|m| m.remove(*key)).is_some() {
-                ignored.push(*key);
-            }
-        }
-        Ok((serde_json::from_value(value)?, ignored))
-    }
     pub fn validate(&self) -> Result<()> {
         for (name, x) in [
             ("short_ceiling", self.short_ceiling),
@@ -157,14 +152,23 @@ impl Config {
                 && self.idle_poll_seconds > 0,
             "invalid poll intervals"
         );
-        for (name, binary) in [
-            ("curl_binary", &self.curl_binary),
-            ("codex_binary", &self.codex_binary),
-            ("claude_binary", &self.claude_binary),
-            ("antigravity_binary", &self.antigravity_binary),
-        ] {
-            ensure!(!binary.trim().is_empty(), "{name} is empty");
-        }
+        ensure!(!self.curl_binary.trim().is_empty(), "curl_binary is empty");
+        ensure!(
+            !self.codex_binary.trim().is_empty(),
+            "codex_binary is empty"
+        );
+        ensure!(
+            !self.claude_binary.trim().is_empty(),
+            "claude_binary is empty"
+        );
+        ensure!(
+            !self.gemini_binary.trim().is_empty(),
+            "gemini_binary is empty"
+        );
+        ensure!(
+            !self.antigravity_binary.trim().is_empty(),
+            "antigravity_binary is empty"
+        );
         ensure!(
             (1..=3650).contains(&self.receipt_retention_days)
                 && (self.receipt_retention_days..=3650)

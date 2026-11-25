@@ -96,6 +96,8 @@ pub(crate) enum Leave {
 
 /// How the typed message is verified.
 pub(crate) enum Typing {
+    /// Typed whole, then compared on screen (whitespace ignored).
+    Whole,
     /// Typed in segments, each checked as a window of the box ([`Host::type_checked`]);
     /// `reread`: the box is read once more afterwards and must still be the main prompt.
     Checked { reread: bool },
@@ -161,6 +163,10 @@ pub(crate) trait ScreenProfile {
         conversation: &str,
         attachment: Option<&catalog::Attachment>,
     ) -> crate::provider::claude::Observation;
+    /// Checked after the catalog entry, before the process (Claude: no hosted worker).
+    fn before_observe(_paths: &Paths, _r: &Record) -> Result<()> {
+        Ok(())
+    }
     /// The refusal of the request's mode on a session that is (not) busy, before typing.
     fn refusal(&self, _mode: &str, _busy: bool) -> Option<&'static str> {
         None
@@ -445,6 +451,7 @@ pub(crate) fn recheck<P: ScreenProfile>(
     let account = crate::messaging::headless::usable_account(paths, P::PROVIDER, &r.account)?;
     let session = catalog::find(paths, &r.session_id)?;
     ensure!(session.conversation_id == r.conversation_id, "STALE_TARGET");
+    P::before_observe(paths, r)?;
     let recorded = r.terminal.clone().context("STALE_TARGET")?;
     let o = P::observe_process(
         &account.home,
@@ -653,6 +660,12 @@ async fn typed_input<P: ScreenProfile>(
     step(paths, id, "type", |_| {})?;
     let text = &t.delivered_text;
     let (ok, typed) = match P::TYPING {
+        Typing::Whole => {
+            host.type_text(text).await?;
+            let want = squash(text);
+            let v = until::<P>(host, false, |v| is_main(v, |d| squash(d) == want)).await?;
+            (is_main(&v, |d| squash(d) == want), Some(v))
+        }
         Typing::Checked { reread } => {
             let ok = host
                 .type_checked(text, |rows| match P::classify(rows, false) {

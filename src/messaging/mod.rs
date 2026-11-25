@@ -29,12 +29,13 @@ use crate::{
 use fs2::FileExt;
 pub use input_health::NativeError;
 use ledger::{Ledger, LedgerRead, Reads};
-use rusqlite::params;
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
+    io::Read,
     os::unix::fs::{FileTypeExt, MetadataExt},
     path::PathBuf,
 };
@@ -64,6 +65,39 @@ impl From<std::io::Error> for Fault {
     }
 }
 
+#[derive(clap::Subcommand)]
+pub enum Command {
+    /// Versioned message modes: native Queue and read-only Submit preparation.
+    Modes {
+        #[command(subcommand)]
+        command: modes::Command,
+    },
+    Capabilities,
+    Sessions,
+    Resolve {
+        #[arg(long)]
+        session: String,
+    },
+    /// Read the immutable enqueue request as JSON from stdin.
+    Enqueue,
+    Status {
+        #[arg(long)]
+        message: String,
+    },
+    /// Refresh correlated public terminal replies without sending input.
+    Observe {
+        #[arg(long)]
+        message: String,
+    },
+    Events {
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    Cancel {
+        #[arg(long)]
+        message: String,
+    },
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Enqueue {
@@ -288,6 +322,56 @@ async fn activity_and_kind(control: &mut Transport, id: &str) -> Result<(&'stati
     };
     Ok((label, kind))
 }
+fn labels(
+    paths: &Paths,
+    id: &str,
+    home: Option<&std::path::Path>,
+) -> Result<(Option<String>, Option<String>)> {
+    let (name, account) =
+        external::messaging_labels(paths, id, home).map_err(|_| Fault("discovery_unavailable"))?;
+    let name = name.and_then(|s| {
+        let mut bounded = String::new();
+        for c in s.chars().filter(|c| !c.is_control()) {
+            if bounded.len() + c.len_utf8() > 128 {
+                break;
+            }
+            bounded.push(c);
+        }
+        (!bounded.trim().is_empty()).then_some(bounded)
+    });
+    Ok((name, account))
+}
+async fn resolve(paths: &Paths, id: &str) -> Result<Value> {
+    uuid(id)?;
+    let selected = match attachment(paths, id) {
+        Ok(a) => a,
+        Err(Fault("unavailable")) => {
+            let (name, account) = labels(paths, id, None)?;
+            return Ok(
+                json!({"session_id":id,"display_name":name,"account_name":account,"generation":null,"availability":"unavailable"}),
+            );
+        }
+        Err(e) => return Err(e),
+    };
+    let generation = selected.generation();
+    let availability = match mutation_lock(paths, id) {
+        Err(Fault("migrating")) => "migrating",
+        Err(error) => return Err(error),
+        Ok(_guard) => match selected.connect().await {
+            Ok(mut control) => activity(&mut control, id).await.unwrap_or("unavailable"),
+            Err(Fault("unsupported" | "unsupported_native_version")) => "unsupported",
+            Err(_) => "unavailable",
+        },
+    };
+    let (name, account) = labels(paths, id, Some(&selected.home))?;
+    Ok(
+        json!({"session_id":id,"display_name":name,"account_name":account,"generation":generation,"availability":availability}),
+    )
+}
+fn capabilities() -> Value {
+    json!({"protocol_version":VERSION,"schema":"urn:codex-switcher:messaging:1.2.1","experimental":true,"live_validated":false,"native_profiles":NATIVE_PROFILES,"operations":{"sessions":true,"resolve":true,"enqueue":true,"status":true,"observe":true,"events":true,"cancel":true},"native_queue":{"method":"thread/queue/add","delivery":"non_steering_idle_dispatch","deduplication":"adapter_only","expiry":"submission_deadline_only","cancel":"delete_true_under_native_dispatch_lock"},"events":{"scope":"adapter_lifecycle_and_terminal_replies","retained":1000,"page_size":100,"public_replies":"correlated_terminal_summary","execution_correlation":"public_client_id","native_replay":"unsupported"},"receipts":{"capacity":10000,"automatic_eviction":true,"eviction":"certain_terminal_after_retention_days_with_tombstone","retired_lookup":"receipt_retired","uncertain_submission":"never_replayed"},"reply_observation":{"mode":"poll_status_or_observe","native_method":"thread/turns/list","items_view":"summary","max_pages":20,"max_text_bytes":65536},"unsupported_reason":"native_push_subscription_and_token_streaming_not_supported"})
+}
+
 /// How long a public path waits for the root-wide ledger lease before it reports
 /// `adapter_busy`. Sends may wait longer than reads.
 #[derive(Clone, Copy)]
@@ -503,6 +587,16 @@ async fn submit(
     );
     Ok(())
 }
+async fn deliver(
+    paths: &Paths,
+    ledger: &mut Ledger,
+    receipt: &mut Receipt,
+    input: Option<&Enqueue>,
+) -> Result<()> {
+    deliver_with_policy(paths, ledger, receipt, input, None, false)
+        .await
+        .map(|_| ())
+}
 async fn deliver_with_policy(
     paths: &Paths,
     ledger: &mut Ledger,
@@ -679,6 +773,115 @@ fn changed_during_cancel(receipt: &Receipt) -> Result<()> {
         "execution_started" | "completed_with_reply" => Err(Fault("already_started")),
         "unknown" => Err(Fault("unknown")),
         _ => Err(Fault("already_submitted")),
+    }
+}
+async fn execute(paths: &Paths, command: Command) -> Result<Value> {
+    match command {
+        Command::Modes { .. } => Err(Fault("unsupported")),
+        Command::Capabilities => Ok(capabilities()),
+        Command::Sessions => {
+            let mut ids: Vec<_> = attachments(paths)?.into_iter().map(|a| a.id).collect();
+            ids.sort();
+            ids.dedup();
+            let mut sessions = Vec::new();
+            for id in ids {
+                sessions.push(resolve(paths, &id).await?);
+            }
+            Ok(json!({"sessions":sessions}))
+        }
+        Command::Resolve { session } => resolve(paths, &session).await,
+        Command::Enqueue => {
+            let mut bytes = Vec::new();
+            std::io::stdin().take(32769).read_to_end(&mut bytes)?;
+            if bytes.len() > 32768 {
+                return Err(Fault("input_too_large"));
+            }
+            let input: Enqueue =
+                serde_json::from_slice(&bytes).map_err(|_| Fault("invalid_request"))?;
+            let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?;
+            let mut receipt = ledger.accept(&input, crate::daemon::now())?;
+            ledger.expire(&mut receipt, crate::daemon::now())?;
+            if matches!(receipt.state.as_str(), "pending_local" | "unknown") {
+                if let Err(error) = deliver(paths, &mut ledger, &mut receipt, Some(&input)).await {
+                    if receipt.reason.as_deref() != Some(error.0) {
+                        ledger.amend(&mut receipt, |r| r.reason = Some(error.0.into()))?;
+                    }
+                }
+            }
+            Ok(json!(receipt))
+        }
+        Command::Status { message } | Command::Observe { message } => {
+            uuid(&message)?;
+            let deadline = tokio::time::Instant::now() + wait_budget(paths, Wait::Read);
+            {
+                // Shared first: a settled receipt needs no write and no provider read.
+                let reader = ledger::open_read(paths, remaining(deadline)).await?;
+                let receipt = reader.lookup(&message)?;
+                if receipt.submit.is_some() {
+                    return Err(Fault("mode_receipt_requires_modes_status"));
+                }
+                if let Some(settled) = observe::settled(&reader, &receipt, crate::daemon::now())? {
+                    return Ok(settled);
+                }
+            }
+            status_write(paths, &message, remaining(deadline)).await
+        }
+        Command::Events { cursor } => {
+            let mut page = ledger::open_read(paths, wait_budget(paths, Wait::Read))
+                .await?
+                .events(cursor.as_deref())?;
+            page["events"]
+                .as_array_mut()
+                .ok_or(Fault("storage_error"))?
+                .retain(|e| e["receipt"]["submit"].is_null());
+            Ok(page)
+        }
+        Command::Cancel { message } => {
+            uuid(&message)?;
+            let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Read)).await?;
+            let mut receipt = ledger.lookup(&message)?;
+            if receipt.submit.is_some() {
+                return Err(Fault("mode_receipt_requires_modes_cancel"));
+            }
+            cancel(paths, &mut ledger, &mut receipt).await?;
+            Ok(json!(receipt))
+        }
+    }
+}
+/// The writer path of legacy `status`/`observe`: may expire, re-deliver an `unknown`
+/// receipt and observe it natively.
+async fn status_write(paths: &Paths, message: &str, budget: std::time::Duration) -> Result<Value> {
+    let mut ledger = ledger::open_write(paths, budget).await?;
+    let mut receipt = ledger.lookup(message)?;
+    if receipt.submit.is_some() {
+        return Err(Fault("mode_receipt_requires_modes_status"));
+    }
+    ledger.expire(&mut receipt, crate::daemon::now())?;
+    if receipt.state == "unknown" {
+        let _ = deliver(paths, &mut ledger, &mut receipt, None).await;
+    }
+    observe::result(paths, &mut ledger, &mut receipt).await
+}
+/// JSON-only errors deliberately omit arbitrary native messages and local paths.
+pub async fn run(paths: &Paths, command: Command) -> bool {
+    if let Command::Modes { command } = command {
+        return modes::run(paths, command).await;
+    }
+    match execute(paths, command).await {
+        Ok(result) => {
+            println!(
+                "{}",
+                json!({"contract_version":VERSION,"ok":true,"result":result})
+            );
+            true
+        }
+        Err(error) => {
+            println!(
+                "{}",
+                json!({"contract_version":VERSION,"ok":false,"error":{"code":error.0}})
+            );
+            false
+        }
     }
 }
 #[cfg(test)]

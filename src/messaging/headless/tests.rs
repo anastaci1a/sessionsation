@@ -34,6 +34,25 @@ fn print_args_never_carry_the_message_and_select_the_session_flag() {
         print_args(ProviderId::Claude, Mode::New, id)[1],
         "--session-id"
     );
+    let g = print_args(ProviderId::Gemini, Mode::Resume, id);
+    assert_eq!(
+        g,
+        [
+            "-p",
+            "",
+            "-o",
+            "json",
+            "--approval-mode",
+            "default",
+            "-r",
+            id
+        ]
+    );
+    assert!(!g.iter().any(|a| a == "yolo" || a == "--yolo" || a == "-y"));
+    assert_eq!(
+        print_args(ProviderId::Gemini, Mode::New, id)[6],
+        "--session-id"
+    );
 }
 #[test]
 fn result_parsing_accepts_object_or_event_array_only() {
@@ -55,6 +74,29 @@ fn result_parsing_accepts_object_or_event_array_only() {
     assert!(parse(c, b"not json", Some(0)).is_none());
     assert!(parse(c, br#"{"type":"system"}"#, Some(0)).is_none());
     assert!(parse(c, b"[]", Some(0)).is_none());
+    let g = ProviderId::Gemini;
+    let ok = parse(
+        g,
+        br#"{"session_id":"s","response":"hi","stats":{"models":{}}}"#,
+        Some(0),
+    )
+    .unwrap();
+    assert_eq!(ok["result"], "hi");
+    assert_eq!(ok["is_error"], false);
+    let failed = parse(
+        g,
+        br#"{"session_id":"s","error":{"type":"FatalError","message":"x"}}"#,
+        Some(1),
+    )
+    .unwrap();
+    assert_eq!(failed["is_error"], true);
+    assert_eq!(failed["subtype"], "FatalError");
+    let exit = parse(g, br#"{"session_id":"s","response":"cut"}"#, Some(53)).unwrap();
+    assert_eq!(exit["is_error"], true);
+    assert_eq!(exit["subtype"], "exit_53");
+    assert!(parse(g, b"[]", Some(0)).is_none());
+    assert!(parse(g, br#"{"other":1}"#, Some(0)).is_none());
+    assert!(parse(g, b"plain text", Some(0)).is_none());
 }
 #[test]
 fn stale_worker_projection_is_never_success_and_never_replays() {
@@ -124,3 +166,5 @@ fn stale_worker_projection_is_never_success_and_never_replays() {
         "rejected"
     );
 }
+mod gemini_auth_tests;
+mod gemini_sign_in_refusal_tests;

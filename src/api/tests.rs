@@ -2,6 +2,7 @@ mod codex_reason_tests;
 mod codex_usage_overlay_tests;
 mod contract_semver_tests;
 mod disk_full_state_tests;
+mod gemini_auth_failure_tests;
 mod pending_operation_tests;
 mod prefill_tests;
 mod resolve_snapshot_tests;

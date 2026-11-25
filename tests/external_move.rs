@@ -5,6 +5,8 @@
 )]
 #[path = "external_move/archives.rs"]
 mod archives;
+#[path = "external_move/autostart.rs"]
+mod autostart;
 #[path = "external_move/launch.rs"]
 mod launch;
 #[path = "external_move/parity.rs"]
@@ -29,6 +31,10 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+/// Long enough for two compressed supervisor ticks (5 s each in production).
+fn settle() -> Duration {
+    sessionsation::timing::secs(10).max(Duration::from_secs(1))
+}
 use tokio::net::UnixListener;
 use tokio_tungstenite::tungstenite::Message;
 const ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -492,6 +498,17 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
+    async fn automatic_job(&self) -> Value {
+        let until = Instant::now() + Duration::from_secs(20);
+        loop {
+            let jobs = self.invoke(&["moves"]);
+            if let Some(job) = jobs.as_array().unwrap().first() {
+                return job.clone();
+            }
+            assert!(Instant::now() < until, "automatic operation did not start");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
     async fn new() -> Self {
         let tmp = rename_capable_tempdir();
         let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
@@ -652,6 +669,196 @@ int main(int argc,char**argv){char path[4096];if(argc>3 && strcmp(argv[1],"app-s
             tokio::time::sleep(Duration::from_millis(80)).await;
         }
     }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn experimental_rotation_moves_busy_work_with_explicit_consent() {
+    let f = Fixture::new().await;
+    f.live(ID, true);
+    f.invoke(&[
+        "thresholds",
+        "personal",
+        "--multiplier",
+        "1",
+        "--short",
+        "5",
+        "--weekly",
+        "90",
+    ]);
+    f.invoke(&["thresholds", "work", "--multiplier", "1"]);
+    let rejected = command(
+        &f.paths.root,
+        &f.socket,
+        &[
+            "auto-switch",
+            "--thread",
+            ID,
+            "--accounts",
+            "personal,work",
+            "--enable",
+        ],
+    );
+    assert!(!rejected.status.success());
+    assert!(f.invoke(&["moves"]).as_array().unwrap().is_empty());
+    let enabled = f.invoke(&[
+        "auto-switch",
+        "--thread",
+        ID,
+        "--accounts",
+        "personal,work",
+        "--enable",
+        "--accept-experimental",
+    ]);
+    assert_eq!(enabled["active"], true);
+    let job = f.automatic_job().await;
+    assert_eq!(job["kind"], "account");
+    assert_eq!(job["target"], "work");
+    assert_eq!(job["pause_approved"], true);
+    let done = f.wait(job["id"].as_str().unwrap(), "complete").await;
+    assert_eq!(done["continuation_delivery"], "accepted");
+    let disabled = f.invoke(&["auto-switch", "--thread", ID, "--disable"]);
+    assert_eq!(disabled["active"], false);
+    assert_eq!(
+        f.a.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|(m, _)| m == "turn/steer")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn experimental_exhaustion_pauses_once_and_keeps_terminal_open() {
+    let f = Fixture::new().await;
+    let pane = f.live(ID, true);
+    let pid = tmux(
+        &f.socket,
+        &["display-message", "-p", "-t", &pane, "#{pane_pid}"],
+    );
+    for account in ["personal", "work"] {
+        f.invoke(&[
+            "thresholds",
+            account,
+            "--multiplier",
+            "1",
+            "--short",
+            "5",
+            "--weekly",
+            "90",
+        ]);
+    }
+    f.invoke(&[
+        "auto-switch",
+        "--thread",
+        ID,
+        "--accounts",
+        "personal,work",
+        "--enable",
+        "--accept-experimental",
+    ]);
+    let job = f.automatic_job().await;
+    assert_eq!(job["kind"], "pause");
+    let done = f.wait(job["id"].as_str().unwrap(), "complete").await;
+    assert_eq!(done["resume_after_move"], false);
+    assert_eq!(
+        pid,
+        tmux(
+            &f.socket,
+            &["display-message", "-p", "-t", &pane, "#{pane_pid}"]
+        )
+    );
+    assert_eq!(f.invoke(&["auto-switch", "--thread", ID])["active"], false);
+    tokio::time::sleep(settle()).await;
+    assert_eq!(f.invoke(&["moves"]).as_array().unwrap().len(), 1);
+    assert!(
+        !f.b.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(m, _)| m == "thread/resume" || m == "turn/start")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn experimental_disable_prevents_threshold_actions() {
+    let f = Fixture::new().await;
+    f.live(ID, true);
+    for account in ["personal", "work"] {
+        f.invoke(&["thresholds", account, "--multiplier", "1"]);
+    }
+    f.invoke(&[
+        "auto-switch",
+        "--thread",
+        ID,
+        "--accounts",
+        "personal,work",
+        "--enable",
+        "--accept-experimental",
+    ]);
+    f.invoke(&["auto-switch", "--thread", ID, "--disable"]);
+    f.invoke(&["thresholds", "personal", "--short", "5", "--weekly", "5"]);
+    tokio::time::sleep(settle()).await;
+    assert!(f.invoke(&["moves"]).as_array().unwrap().is_empty());
+    assert!(
+        !f.a.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(m, _)| m == "turn/steer")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn experimental_uncertain_continuation_suspends_without_replaying() {
+    let f = Fixture::new().await;
+    f.live(ID, true);
+    f.b.lock().unwrap().reject_continuation = true;
+    f.invoke(&[
+        "thresholds",
+        "personal",
+        "--multiplier",
+        "1",
+        "--short",
+        "5",
+        "--weekly",
+        "90",
+    ]);
+    f.invoke(&["thresholds", "work", "--multiplier", "1"]);
+    f.invoke(&[
+        "auto-switch",
+        "--thread",
+        ID,
+        "--accounts",
+        "personal,work",
+        "--enable",
+        "--accept-experimental",
+    ]);
+    let job = f.automatic_job().await;
+    f.wait(job["id"].as_str().unwrap(), "complete").await;
+    let until = Instant::now() + Duration::from_secs(12);
+    loop {
+        let status = f.invoke(&["auto-switch", "--thread", ID]);
+        if status["active"] == false {
+            assert!(status["policy"]["error"].is_string());
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "automation should suspend after uncertain continuation"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(f.invoke(&["moves"]).as_array().unwrap().len(), 1);
+    assert_eq!(
+        f.b.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|(m, _)| m == "turn/start")
+            .count(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3135,6 +3342,49 @@ async fn sessions_group_activity_before_access_and_keep_names_after_external_exi
             .calls
             .iter()
             .any(|(m, _)| m == "turn/start")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn focused_cli_views_expose_existing_account_session_and_history_data() {
+    let f = Fixture::new().await;
+    let pane = f.live(ID, false);
+    let details = f.invoke(&["session", "--session", &format!("thread:{ID}")]);
+    assert_eq!(details["schema_version"], 1);
+    assert_eq!(details["session"]["pane"], pane);
+    assert_eq!(details["session"]["account"], "personal");
+    assert_eq!(details["account_details"]["account"]["name"], "personal");
+    let account = f.invoke(&["account", "show", "personal"]);
+    assert!(account["account"]["usage_fresh"].is_boolean());
+    assert!(account["remaining_percent"].is_object());
+    let history = f.invoke(&["account", "history", "personal", "--range", "weekly"]);
+    assert_eq!(history["history"]["account"], "personal");
+    assert_eq!(history["range"]["step"], 21600);
+    assert_eq!(history["history"]["bins"].as_array().unwrap().len(), 28);
+    let custom = f.invoke(&[
+        "account", "history", "personal", "--start", "0", "--end", "3600", "--step", "1800",
+    ]);
+    assert_eq!(custom["history"]["bins"].as_array().unwrap().len(), 2);
+    for args in [
+        vec!["account", "show", "missing"],
+        vec!["session", "--session", "a display name"],
+        vec![
+            "session",
+            "--session",
+            "thread:00000000-0000-4000-8000-000000000000",
+        ],
+        vec![
+            "account", "history", "personal", "--start", "0", "--end", "3600", "--step", "1",
+        ],
+    ] {
+        assert!(!command(&f.paths.root, &f.socket, &args).status.success());
+    }
+    assert!(
+        !f.a.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(m, _)| matches!(m.as_str(), "turn/start" | "turn/steer"))
     );
 }
 

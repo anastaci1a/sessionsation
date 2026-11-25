@@ -242,6 +242,41 @@ impl Transport {
         self.verified_profile = true;
         Ok(())
     }
+    /// Stock Enter-equivalent after the adapter's idle check. The native operation
+    /// may steer if a concurrent caller starts work; it has no atomic idle guard.
+    pub(super) async fn start_or_steer(
+        &mut self,
+        session: &str,
+        client: &str,
+        text: &str,
+    ) -> Result<String> {
+        super::uuid(session)?;
+        super::uuid(client)?;
+        if !self.verified_profile {
+            return Err(Fault("unsupported"));
+        }
+        if text.is_empty() || text.len() > 16384 {
+            return Err(Fault("invalid_request"));
+        }
+        #[derive(Deserialize)]
+        struct Ack {
+            turn: Turn,
+        }
+        #[derive(Deserialize)]
+        struct Turn {
+            id: String,
+            status: String,
+        }
+        let ack:Ack=self.rpc("turn/start",json!({"threadId":session,"clientUserMessageId":client,"input":[{"type":"text","text":text,"text_elements":[]}]})).await?;
+        if ack.turn.id.is_empty()
+            || ack.turn.id.len() > 256
+            || ack.turn.id.chars().any(char::is_control)
+            || ack.turn.status != "inProgress"
+        {
+            return Err(Fault("malformed_response"));
+        }
+        Ok(ack.turn.id)
+    }
     /// Starts a manual compaction turn (`thread/compact/start`, contract 1.47.0). Like
     /// `turn/start` it has no atomic idle guard: the caller verifies idle and an empty native
     /// queue under session ownership first. The response is empty; the turn is observed.

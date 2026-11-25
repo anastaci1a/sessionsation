@@ -7,11 +7,13 @@
 )]
 pub mod accounts;
 pub mod api;
-
+pub mod automatic;
+pub mod autostart;
 mod background;
 pub mod caller_origin;
 pub mod catalog;
-
+pub mod cli_views;
+pub mod compatibility;
 pub mod config;
 pub mod control;
 pub mod daemon;
@@ -31,15 +33,16 @@ pub(crate) mod proc;
 pub mod provider;
 pub mod questions;
 pub mod rpc;
-
+pub mod scheduler;
 mod self_executable;
 pub mod session_launch;
 pub mod session_model;
 pub mod shared_state;
-
+pub mod simulation;
 pub mod store;
 pub mod sync;
 pub mod timing;
+pub mod turn_notify;
 pub mod usage_history;
 
 mod terminal;
@@ -54,11 +57,14 @@ pub mod resume;
 pub mod retention;
 
 pub mod account_deletion;
+pub mod account_rename;
 pub mod alias;
 pub mod auto_recover;
+pub mod claude_idle;
 pub mod claude_switch;
 pub mod inline;
 pub mod reset_credit;
+pub mod root_migrate;
 
 #[cfg(test)]
 mod guard;

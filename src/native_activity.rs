@@ -150,6 +150,27 @@ fn claude_record(v: &Value) -> Option<Verdict> {
     }
 }
 
+fn gemini_record(v: &Value) -> Option<Verdict> {
+    let at_ms = v["timestamp"].as_str().and_then(parse_rfc3339);
+    let tail = match v["type"].as_str()? {
+        "user" => Tail::Working,
+        crate::provider::gemini::MODEL_RECORD_TYPE => {
+            if v["toolCalls"].as_array().is_some_and(|c| !c.is_empty()) {
+                Tail::Working
+            } else {
+                Tail::Ended
+            }
+        }
+        "error" => Tail::Error,
+        _ => return None,
+    };
+    Some(Verdict {
+        tail,
+        at_ms,
+        error: None,
+    })
+}
+
 fn antigravity_record(v: &Value) -> Option<Verdict> {
     let kind = v["type"].as_str()?;
     let at_ms = v["created_at"].as_str().and_then(parse_rfc3339);
@@ -288,6 +309,10 @@ pub fn facts(
             // A tool_use or prompt older than the unanswered window is still work for
             // Claude (tools may run for hours); only registry waiting upgrades it.
             combine(verdict, registry(home, o), now_ms, false)
+        }
+        TranscriptFormat::GeminiChat => {
+            let v = transcript.and_then(|t| scan(t, gemini_record))?;
+            combine(Some(v), None, now_ms, true)
         }
         TranscriptFormat::AgyLog => {
             let v = transcript

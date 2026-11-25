@@ -1,5 +1,4 @@
 use super::*;
-use crate::messaging::ledger::tests::Lookup;
 use crate::messaging::{Enqueue, Receipt, tests::fixture};
 const POLICY: Policy = Policy {
     terminal_seconds: 14 * DAY,

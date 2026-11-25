@@ -64,12 +64,11 @@ pub struct Request {
     pub host: Host,
     pub space: Space,
     pub directory: Directory,
-    /// Read-only: receipts written before 1.69.0 may carry the removed `hosted` request; `shape`
-    /// refuses it on a new request.
-    #[serde(default, skip_serializing)]
-    pub hosted: Option<serde_json::Value>,
+    /// Revision 16, Claude only: start a Sessionsation-hosted session whose pane shows the viewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted: Option<Hosted>,
     /// Revision 19: launch permissions for this start (`yolo` | `default`);
-    /// omitted uses the `launch_permissions` setting.
+    /// omitted uses the `launch_permissions` setting. A hosted `permission_mode` wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<crate::config::LaunchPermissions>,
     /// Revision 38, Codex only: model for this session (e.g. `gpt-6-astra`), overriding the account default.
@@ -78,6 +77,12 @@ pub struct Request {
     /// Revision 38, Codex only: reasoning effort for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hosted {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Receipt {
@@ -180,17 +185,25 @@ fn shape(r: &Request) -> Result<()> {
     crate::paths::validate_name(&r.host.session)?;
     AccountRef::parse(&r.account_id)?;
     ensure!(r.host.socket.is_absolute(), "INVALID_HOST_SOCKET");
-    ensure!(
-        r.hosted.is_none(),
-        "INVALID_ARGUMENT: hosted sessions were removed in 1.69.0"
-    );
+    if let Some(h) = &r.hosted {
+        ops::require(
+            ops::facts(AccountRef::parse(&r.account_id)?.provider).hosted_sessions,
+            ops::HOSTED_CLAUDE_ONLY,
+        )?;
+        ensure!(
+            h.permission_mode
+                .as_deref()
+                .is_none_or(|m| crate::provider::claude::hosted::PERMISSION_MODES.contains(&m)),
+            "INVALID_PERMISSION_MODE"
+        );
+    }
     if r.model.is_some() || r.reasoning_effort.is_some() {
         // Contract 1.49.0: Claude (terminal) launches take an exact model id and effort too.
         let model = ops::facts(AccountRef::parse(&r.account_id)?.provider).model;
         ops::require(
             match model {
                 ModelGrammar::Codex => true,
-                ModelGrammar::Claude => true,
+                ModelGrammar::Claude => r.hosted.is_none(),
                 ModelGrammar::None => false,
             },
             "model and reasoning_effort are for Codex and Claude terminal launches",
@@ -923,6 +936,11 @@ async fn start_provider(
         id,
         &receipt.request.name,
         &options,
+        receipt
+            .request
+            .hosted
+            .as_ref()
+            .map(|h| h.permission_mode.clone()),
     )
     .await
 }

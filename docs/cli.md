@@ -47,7 +47,7 @@ Keep one supervisor per root. An existing Codex Switcher root may be selected wi
 copy credentials or move account homes against live data. An unrelated default Codex
 home or unmanaged terminal is not adopted.
 
-Config keys (`config.json`): `codex_binary`, `claude_binary`,
+Config keys (`config.json`): `codex_binary`, `claude_binary`, `gemini_binary`,
 `antigravity_binary`, `claude_session_home`, `curl_binary`, monitoring thresholds,
 [`launch_permissions`](contract.md#launch-permissions),
 [`claude_pretrust_folders`, `antigravity_pretrust_folders`](contract.md#folder-pre-trust),
@@ -57,9 +57,8 @@ Config keys (`config.json`): `codex_binary`, `claude_binary`,
 [`reuse_idle_tabs`](contract.md#choosing-a-space-and-a-pane),
 [`min_free_disk_mb`](contract.md#disk-space-guard),
 [`receipt_retention_days`, `receipt_unknown_horizon_days`](contract.md#receipt-retention)
-and the [retention](operations.md#retention) keys. `gemini_binary` and
-`native_sender_registration` are accepted and ignored (also by `config set`); `active_poll_seconds`
-is unused.
+and the [retention](operations.md#retention) keys. `native_sender_registration` is
+accepted and ignored.
 
 ## Accounts
 
@@ -77,6 +76,7 @@ sessionsation account reorder claude:personal --position 0
 sessionsation account logout claude:personal
 sessionsation account live-steering claude:personal --enable|--disable
 sessionsation account bypass-warning claude:personal --skip|--show
+sessionsation account auth gemini:me [--mode google | --mode api-key --key-stdin < key.json]
 ```
 
 Human commands accept `PROVIDER:NAME`, an unambiguous bare name or a display name.
@@ -87,10 +87,12 @@ sessionsation api account add claude:personal [--config-dir DIR]
 sessionsation api account list [--platform claude]
 sessionsation api account login|refresh|logout|enable|disable codex:example
 sessionsation api account rename codex:example --display-name Office [--expected-generation G]   # or --clear
+sessionsation api account rename-backend codex:example [NEW] --expected-generation G [--request-id UUID]
 sessionsation api account reorder codex:example --position N
 sessionsation api account managed-home claude:NAME
 sessionsation api account live-steering claude:NAME [--enable|--disable]
 sessionsation api account bypass-warning claude:NAME [--skip|--show]
+sessionsation api account auth gemini:NAME [--mode google|api-key [--key-stdin]]
 sessionsation api account limits codex:example [--short-used 80 --weekly-used 90]
 sessionsation api account usage codex:example --start UNIX --end UNIX --step 1800
 sessionsation api usage [--account ID] [--cached]
@@ -165,8 +167,8 @@ sessionsation api observe --session ID --expected-generation G [--history [N]]
 sessionsation api observations < batch.json
 sessionsation api turn-target --session ID --expected-generation G
 sessionsation api rename --session ID --expected-generation G --name NAME
-sessionsation api launcher new --account codex:example
-sessionsation api launcher resume --session ID --expected-generation G
+sessionsation api launcher new --account codex:example [--hosted]
+sessionsation api launcher resume --session ID --expected-generation G [--hosted]
 sessionsation api launcher shell
 ```
 
@@ -253,6 +255,9 @@ sessionsation api checkpoints < request.json
 sessionsation api answer --session ID --expected-generation G --request-id call_... [--answers JSON]
 sessionsation api events [--after SEQ] [--wait SECONDS] [--session ID] [--kind KIND] [--limit N]
 sessionsation api hooks [install [--account ID]]
+sessionsation api turn-notify --session ID --expected-generation G --enable [--notify-session ID2]   # or --disable
+sessionsation api turn-events [--after SEQ] [--wait SECONDS]
+sessionsation api idle-notify --session ID --expected-generation G [--notify-session ID2]
 ```
 
 Modes are the intents `deliver`, `when_idle`, `interrupt` (every provider), the
@@ -274,6 +279,22 @@ sessionsation api state | jq ".result.sessions[] | select(.pending_questions != 
 echo '{"q1":{"option_ids":["o2"]},"name":{"text":"zebra"}}' | \
   sessionsation api answer --session ID --expected-generation G --request-id call_...
 ```
+
+### Hosted Claude sessions
+
+```sh
+sessionsation run --account claude:personal --hosted [--permission-mode plan] [--thread CONVERSATION-UUID]
+sessionsation view SESSION-ID [--once]        # live log; t + Enter takes over, q quits
+sessionsation take-over SESSION-ID            # stop the worker, then claude --resume here
+sessionsation api hosted start --account claude:personal --directory /abs/dir [--name N]
+sessionsation api hosted start --session ID --expected-generation G
+sessionsation api hosted status|events --session ID
+sessionsation api hosted stop --session ID --expected-generation G [--interrupt] [--timeout-seconds N]
+sessionsation api hosted respond --session ID --request-id R --allow|--deny [--message TEXT]
+```
+
+Closing the viewer does not stop the worker. Priorities, receipts and permission
+requests: [hosted sessions](contract.md#hosted-sessions).
 
 ## HERDR Spaces
 
@@ -326,18 +347,28 @@ accounts by hand. See [conversation archives](contract.md#conversation-archives)
 ```sh
 sessionsation shared status
 sessionsation shared enable
+sessionsation shared migrate --account claude:NAME --dry-run [--fs-path /mnt/disk1/appdata/sessionsation]
+sessionsation shared migrate --account claude:NAME [--allow-full-copy] [--fs-path DISK-PATH]
 ```
 
-See [shared Claude state](contract.md#shared-claude-state).
+On Unraid pass the real-disk path with `--fs-path` (the user share cannot exchange
+or reflink). See [shared Claude state](contract.md#shared-claude-state).
 
 ## Data-root maintenance
 
 ```sh
 sessionsation api disk-space
 sessionsation layout status
+sessionsation layout migrate [--dry-run] [--backup NEW-EMPTY-DIR]
+sessionsation layout rollback [--dry-run]
 sessionsation retention run [--dry-run]
+sessionsation root status
+sessionsation root migrate --from /mnt/user --to /mnt/disk1 --backup NEW-DIR [--dry-run] [--allow-full-copy]
+sessionsation root migrate --session space:name [--accept-risks] [--prompt-file F]
+sessionsation root rollback [--session space:name]
+sessionsation root finalize --dry-run
 ```
 
 Procedures: [layout](operations.md#data-root-layout), [retention](operations.md#retention),
-[root alias](operations.md#root-alias). Reference:
+[root re-key](operations.md#root-re-key). Reference:
 [data root](contract.md#data-root).

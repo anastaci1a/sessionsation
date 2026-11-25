@@ -21,9 +21,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 69;
-pub const CONTRACT_PATCH: u32 = 3;
-pub const CONTRACT_VERSION: &str = "1.69.3";
+pub const CONTRACT_MINOR: u32 = 70;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.70.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -72,7 +72,7 @@ pub fn version_for(paths: &Paths) -> Result<Value> {
     Ok(v)
 }
 
-/// Every operation row of `api operations`.
+/// Every operation row of `api operations` (also the `root migrate` P4 check).
 pub fn operations_list(paths: &Paths) -> Result<Vec<Value>> {
     let mut ops = external::jobs(paths)?
         .into_iter()
@@ -83,6 +83,11 @@ pub fn operations_list(paths: &Paths) -> Result<Vec<Value>> {
         crate::account_deletion::list(paths)?
             .into_iter()
             .map(|r| json!(r)),
+    );
+    ops.extend(
+        crate::account_rename::list(paths)?
+            .iter()
+            .map(crate::account_rename::public),
     );
     ops.extend(
         crate::reset_credit::list(paths)?
@@ -97,6 +102,8 @@ pub fn operations_list(paths: &Paths) -> Result<Vec<Value>> {
     ops.extend(crate::messaging::compaction::operations(paths)?);
     ops.extend(crate::messaging::model_change::operations(paths)?);
     ops.extend(crate::session_launch::operations(paths)?);
+    // Contract 1.54.0: per-session root re-keys in flight.
+    ops.extend(crate::root_migrate::operations(paths));
     Ok(ops)
 }
 
@@ -252,6 +259,30 @@ pub enum Command {
         #[arg(long, requires = "enable")]
         prompt: Option<String>,
     },
+    /// Per-session turn-end notification (opt-in): journal an event, optionally message a session.
+    TurnNotify {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+        /// Another Codex session (id) that also receives a queued message per event.
+        #[arg(long, requires = "enable")]
+        notify_session: Option<String>,
+    },
+    /// Ask a live Claude session for one native notice when it next goes idle or exits.
+    IdleNotify {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        expected_generation: String,
+        /// Another session (id) that also receives a queued message for the notice.
+        #[arg(long)]
+        notify_session: Option<String>,
+    },
     /// Usage windows of every account with age, source and the one meter shape (1.62.0).
     Usage {
         /// Only this account, e.g. claude:main (default: every account).
@@ -260,6 +291,13 @@ pub enum Command {
         /// Never contact a provider: report what is recorded.
         #[arg(long)]
         cached: bool,
+    },
+    /// Turn-end events of notifying sessions after a cursor; --wait blocks for the next one.
+    TurnEvents {
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
     },
     /// Session events of every provider in one shape after a cursor (1.64.0); --wait blocks for
     /// the next one, `gap` says when events after the cursor were already dropped.
@@ -387,6 +425,11 @@ pub enum Command {
         operation: String,
         #[arg(long)]
         confirm: String,
+    },
+    /// Sessionsation-hosted Claude sessions (stream-json worker, viewer, permission prompts).
+    Hosted {
+        #[command(subcommand)]
+        command: crate::provider::claude::hosted::Command,
     },
     /// Answer an agent's pending question (`pending_questions` in state); answers
     /// JSON from --answers or stdin. Idempotent; an attempted answer is never resent.
@@ -611,12 +654,23 @@ pub enum Launcher {
     New {
         #[arg(long)]
         account: String,
+        /// Claude: a Sessionsation-hosted (stream-json) session; the pane shows its viewer.
+        #[arg(long)]
+        hosted: bool,
+        /// With --hosted: account (default) | default | acceptEdits | plan | bypassPermissions.
+        #[arg(long, requires = "hosted")]
+        permission_mode: Option<String>,
     },
     Resume {
         #[arg(long)]
         session: String,
         #[arg(long)]
         expected_generation: String,
+        /// Claude: host the stopped conversation (stream-json) with a viewer instead of the TUI.
+        #[arg(long)]
+        hosted: bool,
+        #[arg(long, requires = "hosted")]
+        permission_mode: Option<String>,
     },
     Shell,
 }
@@ -736,6 +790,15 @@ pub async fn resume_current(
     result
 }
 
+fn hosted_flags(argv: &mut Vec<String>, hosted: bool, permission_mode: Option<String>) {
+    if hosted {
+        argv.push("--hosted".into());
+        if let Some(mode) = permission_mode {
+            argv.extend(["--permission-mode".into(), mode]);
+        }
+    }
+}
+
 async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
     let mut argv = vec![
         crate::provider::claude::hooks::executable()?
@@ -746,8 +809,16 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
     ];
     let mut cwd = None;
     match command {
-        Launcher::New { account } => {
+        Launcher::New {
+            account,
+            hosted,
+            permission_mode,
+        } => {
             let account = account_ref(paths, &account)?;
+            ops::require(
+                !hosted || ops::facts(account.provider).hosted_sessions,
+                ops::HOSTED_CLAUDE_ONLY,
+            )?;
             let name = account.name.as_str();
             crate::accounts::ensure_available(paths, account.provider, name)?;
             let status = daemon::call(paths, "status", json!({})).await?;
@@ -767,10 +838,13 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
                 account.id()
             };
             argv.extend(["run".into(), "--account".into(), target]);
+            hosted_flags(&mut argv, hosted, permission_mode);
         }
         Launcher::Resume {
             session,
             expected_generation,
+            hosted,
+            permission_mode,
         } if catalog::resolve(paths, &session, &expected_generation)
             .is_ok_and(|s| native::of(&s.provider).is_some()) =>
         {
@@ -778,17 +852,35 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
             native::ensure_resumable(&s, &observation)?;
             crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
             cwd = Some(native::resume_directory(&s, &observation)?);
-            argv.extend([
-                "resume".into(),
-                session,
-                "--expected-generation".into(),
-                expected_generation,
-            ]);
+            if hosted {
+                ops::require(
+                    ops::holds(&s.provider, |f| f.hosted_sessions),
+                    ops::HOSTED_CLAUDE_ONLY,
+                )?;
+                argv.extend([
+                    "run".into(),
+                    "--account".into(),
+                    format!("claude:{}", s.account),
+                    "--thread".into(),
+                    s.conversation_id.clone(),
+                ]);
+                hosted_flags(&mut argv, true, permission_mode);
+            } else {
+                argv.extend([
+                    "resume".into(),
+                    session,
+                    "--expected-generation".into(),
+                    expected_generation,
+                ]);
+            }
         }
         Launcher::Resume {
             session,
             expected_generation,
+            hosted,
+            ..
         } => {
+            ops::require(!hosted, ops::HOSTED_CLAUDE_ONLY)?;
             let (_, source) = selected(paths, &session, &expected_generation).await?;
             ensure!(source.inactive, "SESSION_ALREADY_RUNNING");
             cwd = Some(source.cwd);
@@ -835,6 +927,16 @@ pub enum AccountCommand {
     Logout {
         id: String,
     },
+    /// Gemini: show or set the authentication mode. `--mode google` selects Login with
+    /// Google (Workspace) and returns the login plan; `--mode api-key --key-stdin`
+    /// reads `{"api_key":"..."}` from stdin, stores it privately and validates it.
+    Auth {
+        id: String,
+        #[arg(long, value_name = "google|api-key")]
+        mode: Option<String>,
+        #[arg(long, requires = "mode")]
+        key_stdin: bool,
+    },
     /// Move an account to a 0-based position in the shared account order.
     Reorder {
         id: String,
@@ -856,6 +958,20 @@ pub enum AccountCommand {
         /// The row's `generation`; refuses with STALE_TARGET when the account changed.
         #[arg(long)]
         expected_generation: Option<String>,
+    },
+    /// "Rename & update backend": rename the display name, the account folder and
+    /// the account id (`codex:old` -> `codex:NEW`). Without NEW_NAME the backend is
+    /// renamed to match the existing display name ("Update backend"). Refused while
+    /// any session of the account runs; journaled, never replayed.
+    RenameBackend {
+        id: String,
+        new_name: Option<String>,
+        /// The row's `generation` (required).
+        #[arg(long)]
+        expected_generation: String,
+        /// Idempotency/operation id (a UUID); generated when omitted.
+        #[arg(long)]
+        request_id: Option<String>,
     },
     /// Codex or Claude: spend one stored rate-limit reset credit (not reversible). Journaled;
     /// the request id is the idempotency key, so a retry with the same --request-id can
@@ -1108,6 +1224,70 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
 fn account_selectable(a: &Value, removed: bool) -> bool {
     !removed && a["deletion_id"].is_null() && a["enabled"] == true && a["auth_required"] == false
 }
+/// Apply the last observed Gemini authentication failure to an account row: a
+/// recorded failure marks it `auth_failed` and in need of a login; once cleared (a
+/// successful run or login, or newer credentials) a failure-only marking is lifted.
+fn project_gemini_auth_failure(paths: &Paths, name: &str, a: &mut Value) {
+    use crate::provider::gemini::{auth_failure, auth_mode};
+    let home = a["config_home"]
+        .as_str()
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| crate::provider::native::default_home(paths, ProviderId::Gemini, name).ok());
+    // Mode and key presence only (stat); the key itself is never read here.
+    a["auth_mode"] = json!(home.as_deref().map(|h| auth_mode::mode(h).as_str()));
+    a["api_key_present"] = json!(home.as_deref().map(auth_mode::key_present));
+    let failure = home.and_then(|home| auth_failure::current(paths, name, &home));
+    let fields = auth_failure::fields(failure.as_ref());
+    for key in [
+        "auth_failed",
+        "auth_failure_reason",
+        "auth_failure_observed_at",
+    ] {
+        a[key] = fields[key].clone();
+    }
+    if failure.is_some() {
+        // Credentials exist but the provider rejected them: a login is needed.
+        a["auth_required"] = json!(true);
+        if a["auth_detail"].is_null() {
+            a["auth_detail"] = json!("AUTH_FAILED");
+        }
+    } else if a["auth_detail"] == "AUTH_FAILED" {
+        // The row was marked only for the failure, which no longer holds.
+        a["auth_required"] = json!(false);
+        a["auth_detail"] = Value::Null;
+    }
+}
+/// Refresh the cheap, local Gemini auth-failure projection of a cached state's
+/// accounts, so a failure recorded (or cleared) after the snapshot shows at once.
+fn refresh_cached_accounts(paths: &Paths, value: &mut Value) {
+    let Some(accounts) = value["accounts"].as_array_mut() else {
+        return;
+    };
+    let stale_seconds = crate::store::load_config(paths)
+        .map(|c| c.stale_seconds)
+        .ok();
+    for a in accounts {
+        if !a["provider"]
+            .as_str()
+            .is_some_and(|p| ops::holds(p, |f| f.auth_modes))
+        {
+            continue;
+        }
+        let Some(name) = a["name"].as_str().map(str::to_owned) else {
+            continue;
+        };
+        if crate::paths::validate_name(&name).is_err() {
+            continue;
+        }
+        project_gemini_auth_failure(paths, &name, a);
+        let removed = a["membership"] == "removed";
+        a["selectable"] = json!(account_selectable(a, removed));
+        if let Some(stale) = stale_seconds {
+            a["prefill"] = account_prefill(a, daemon::now(), stale);
+        }
+    }
+}
 pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value>> {
     let stale_seconds = crate::store::load_config(paths).map_or(300, |c| c.stale_seconds);
     // One process-table scan serves every Codex row.
@@ -1143,12 +1323,23 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             let deferred = a["config_home"].as_str().is_none_or(str::is_empty) && home != target; // raw-path: both derive from paths.root (one spelling)
             a["home_deferred"] = json!(deferred);
             a["home"] = json!(home);
-            project_rename_state(provider, name, &home, codex_instances.as_deref(), &mut a);
+            project_rename_state(
+                paths,
+                provider,
+                name,
+                &home,
+                codex_instances.as_deref(),
+                &mut a,
+            );
             if let Some(id) = a["deletion_id"].as_str() {
                 a["deletion"] = json!(crate::account_deletion::status(paths, id)?);
             }
-            a["auth_mode"] = Value::Null;
-            a["api_key_present"] = Value::Null;
+            if ops::facts(provider).auth_modes {
+                project_gemini_auth_failure(paths, name, &mut a);
+            } else {
+                a["auth_mode"] = Value::Null;
+                a["api_key_present"] = Value::Null;
+            }
             if ops::facts(provider).bypass_warning {
                 if let Some(home) = a["config_home"]
                     .as_str()
@@ -1185,6 +1376,7 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
 /// names the folder and the id), `name_mismatch`, `running_sessions` and
 /// `backend_rename` (whether "Rename & update backend" can run now, and why not).
 fn project_rename_state(
+    paths: &Paths,
     provider: ProviderId,
     name: &str,
     home: &std::path::Path,
@@ -1195,7 +1387,7 @@ fn project_rename_state(
     a["folder_name"] = json!(name);
     a["name_mismatch"] = json!(mismatch);
     if a["generation"].is_null() {
-        a["generation"] = json!(crate::accounts::generation(
+        a["generation"] = json!(crate::account_rename::generation(
             provider.as_str(),
             name,
             a["display_name"].as_str(),
@@ -1214,6 +1406,129 @@ fn project_rename_state(
         Some(0)
     };
     a["running_sessions"] = json!(running);
+    let reason = if !a["deletion_id"].is_null() {
+        Some("ACCOUNT_DELETION_IN_PROGRESS")
+    } else if a["membership"] == "removed" {
+        Some("ACCOUNT_REMOVED")
+    } else if a["config_home"].as_str().is_some_and(|h| !h.is_empty()) {
+        Some("ACCOUNT_HOME_ADOPTED")
+    } else if crate::account_rename::unresolved_for(paths, provider, name)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        Some("ACCOUNT_RENAME_UNRESOLVED")
+    } else if running != Some(0) {
+        Some("ACCOUNT_SESSIONS_RUNNING")
+    } else {
+        None
+    };
+    a["backend_rename"] = json!({"available":reason.is_none(),"reason":reason,
+        "update_backend":mismatch,"update_backend_target":a["display_name"]});
+}
+/// Show or set a Gemini account's authentication mode (`api account auth` and
+/// `account auth`). Setting `api_key` with a key stores it (0600, atomic) and runs
+/// one headless validation; `google` returns the login plan. The key is never
+/// part of the result or of any error.
+pub async fn gemini_auth(
+    paths: &Paths,
+    account: &AccountRef,
+    mode: Option<&str>,
+    key: Option<crate::provider::gemini::auth_mode::ApiKey>,
+) -> Result<Value> {
+    use crate::provider::gemini::{self, auth_failure, auth_mode};
+    ops::require(
+        ops::facts(account.provider).auth_modes,
+        "authentication modes are a Gemini account setting",
+    )?;
+    let mode = mode.map(auth_mode::Mode::parse).transpose()?;
+    ensure!(
+        key.is_none() || mode == Some(auth_mode::Mode::ApiKey),
+        "INVALID_ARGUMENT: --key-stdin is only valid with --mode api-key"
+    );
+    let enrolled = gemini::account(paths, &account.name)?;
+    let home = enrolled.home.clone();
+    let mut changed = false;
+    let mut validation = Value::Null;
+    if let Some(mode) = mode {
+        crate::accounts::ensure_available(paths, account.provider, &account.name)?;
+        ensure!(
+            home.is_dir(),
+            "ACCOUNT_HOME_UNAVAILABLE: the Gemini home does not exist"
+        );
+        if let Some(key) = &key {
+            auth_mode::store_key(&home, key)?;
+            changed = true;
+        }
+        ensure!(
+            mode != auth_mode::Mode::ApiKey || auth_mode::key_present(&home),
+            "API_KEY_REQUIRED: no API key is stored for {}; pass one with --key-stdin",
+            account.id()
+        );
+        changed |= auth_mode::set_mode(&home, mode)?;
+        if changed {
+            // A new key or mode starts with a clean slate; validation records afresh.
+            auth_failure::clear(paths, &account.name);
+        }
+        if mode == auth_mode::Mode::ApiKey && changed {
+            let config = crate::store::load_config(paths)?;
+            validation = crate::messaging::headless::validate_gemini_key(
+                paths,
+                &config,
+                &account.name,
+                &home,
+            )
+            .await;
+        }
+    }
+    // Let the supervisor observe the new state (auth_required) at once.
+    daemon::ensure_started(paths).await?;
+    let refreshed = daemon::call(
+        paths,
+        "account/refresh",
+        json!({"name":account.name,"provider":account.provider}),
+    )
+    .await?;
+    let current = auth_mode::mode(&home);
+    let failure = auth_failure::current(paths, &account.name, &home);
+    let running = gemini::live_sessions(&home).map(|l| l.len()).unwrap_or(0);
+    let mut value = json!({"account_id":account.id(),"provider":account.provider,
+        "auth_mode":current.as_str(),"api_key_present":auth_mode::key_present(&home),
+        "auth_required":refreshed["auth_required"].as_bool().unwrap_or(true) || failure.is_some(),
+        "changed":changed,"running_sessions":running,
+        "applies_to":"sessions_started_after_the_change"});
+    let fields = auth_failure::fields(failure.as_ref());
+    for key in [
+        "auth_failed",
+        "auth_failure_reason",
+        "auth_failure_observed_at",
+    ] {
+        value[key] = fields[key].clone();
+    }
+    if mode == Some(auth_mode::Mode::ApiKey) {
+        value["validation"] = validation;
+    }
+    if current == auth_mode::Mode::Google {
+        value["login_required"] = json!(!gemini::auth_status(&home).logged_in);
+        if mode.is_some() {
+            value["login"] = login_plan(paths, account)?["login"].clone();
+        }
+    }
+    Ok(value)
+}
+
+/// The ordered Gemini authentication choices for clients (`auth_modes`). Personal
+/// "Login with Google" stays listed but unavailable: Google ended Gemini CLI
+/// login for personal accounts (all tiers) on 2026-06-18; the same OAuth flow
+/// still serves Workspace accounts.
+pub fn gemini_auth_modes() -> Value {
+    json!([
+        {"id":"google_personal","mode":"google","label":"Google login","available":false,
+         "reason":"retired by Google for personal accounts — use Antigravity, API key or Workspace"},
+        {"id":"google_workspace","mode":"google","label":"Google Workspace login","available":true,"reason":null},
+        {"id":"api_key","mode":"api_key","label":"API key","available":true,"reason":null,
+         "input":"stdin_json","field":"api_key"}
+    ])
 }
 
 /// Exec plan for an interactive provider login; no URL or credential passes
@@ -1440,6 +1755,23 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             )
             .await
         }
+        AccountCommand::RenameBackend {
+            id,
+            new_name,
+            expected_generation,
+            request_id,
+        } => {
+            let account = account_ref(paths, &id)?;
+            daemon::ensure_started(paths).await?;
+            let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            daemon::call(
+                paths,
+                "account/rename-backend",
+                json!({"name":account.name,"provider":account.provider,"new_name":new_name,
+                    "expected_generation":expected_generation,"request_id":request_id}),
+            )
+            .await
+        }
         AccountCommand::ResetCredit {
             id,
             account,
@@ -1540,6 +1872,38 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             )
             .await
         }
+        AccountCommand::Auth {
+            id,
+            mode,
+            key_stdin,
+        } => {
+            let account = account_ref(paths, &id)?;
+            let key = if key_stdin {
+                let mut bytes = vec![];
+                std::io::stdin().take(32769).read_to_end(&mut bytes)?;
+                ensure!(
+                    bytes.len() <= 32768,
+                    "INVALID_REQUEST: the stdin request is too large"
+                );
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct KeyRequest {
+                    api_key: String,
+                }
+                // Never echo serde's message: it can quote the input.
+                let request: KeyRequest = serde_json::from_slice(&bytes).map_err(|_| {
+                    anyhow::anyhow!(
+                        "INVALID_REQUEST: stdin must be the JSON object {{\"api_key\":\"...\"}}"
+                    )
+                })?;
+                Some(crate::provider::gemini::auth_mode::ApiKey::new(
+                    &request.api_key,
+                )?)
+            } else {
+                None
+            };
+            gemini_auth(paths, &account, mode.as_deref(), key).await
+        }
         AccountCommand::Login { id } if native::is_native(AccountRef::parse(&id)?.provider) => {
             let account = account_ref(paths, &id)?;
             native::account(paths, account.provider, &account.name)?;
@@ -1571,33 +1935,14 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
 /// The Gemini provider entry of `api capabilities` (built apart: the whole document
 /// exceeds the `json!` macro recursion limit).
 fn gemini_provider() -> Value {
-    let no = "gemini_cli_dropped_individual_accounts";
-    json!({"id":"gemini","implemented":false,"enrollment":false,"adopt_config_dir":false,"login":null,"usage":false,"usage_state":"unsupported","usage_source":"gemini-cli-unsupported",
-        "new":false,"resume":false,"rename":false,"native_rename":false,"stop":false,
-        "account_switch":false,"restart":false,"submit":false,"queue":false,
-        "account_deletion":true,"account_removal":true,"account_rename":false,"account_refresh":false,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
-        "headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false,"approval_mode":"default"},
-        "auth_command":{"since_revision":21,"command":"account auth","modes":["google","api_key"],"key_input":"stdin_json","validation_timeout_seconds":15,"unsupported_modes":["vertex"]},
-        "force_interrupt":false,"steer":false,"input_delivery":gemini_input_delivery(),"cross_provider_conversion":false,
-        "operations":crate::provider::capabilities(ProviderId::Gemini),"reason":no})
-}
-
-/// `capabilities.gemini_input_delivery`: kept for clients that read its keys; Gemini CLI
-/// is dropped, so nothing is eligible (revision 17 shape, `supported:false`).
-fn gemini_input_delivery() -> Value {
-    let label = "Typed into the session's HERDR terminal as the user's own input";
-    json!({"version":1,"since_revision":17,"supported":false,"reason":"gemini_cli_dropped_individual_accounts",
-        "semantics":"terminal_input","modes":["submit","queue","steer"],
-        "label":label,"labels":{"submit":label,"queue":"Queued in Gemini's own message queue as the user's input","steer":"Steer"},
-        "eligibility":"none: Gemini CLI is dropped",
-        "enter":{"idle":"user_turn","busy_model_steering_off":"native_queue","busy_model_steering_on":"steering_update"},
-        "mode_requirements":{"submit":"idle, or busy with model steering off (then queued)","queue":"model steering off","steer":"model steering on"},
-        "queue":{"batching":"every queued message is joined with a blank line into one user prompt when the turn ends","record":"one user record for the batch"},
-        "steer":{"priority":"next","interrupts":false,"delivery":"next_tool_step_or_after_turn","interrupt_option":null,"label":"Steer","caveat":"dropped","not_applied":"submitted_after_turn_as_steering_prompt"},
-        "model_steering":{"setting":"experimental.modelSteering","default":false,"toggle":"account live-steering gemini:<name> --enable|--disable","read_at":"session_start","restart_required":true},
-        "keys":{"text":"pane send-text (no bracketed paste)","newline":"ctrl+j","clear":["ctrl+e","ctrl+u","ctrl+k","backspace"],"submit":"enter","leave_views":{"help":"backspace"},"never":["esc","ctrl+c","ctrl+d","ctrl+l"]},
-        "escaped_prefixes":["/","!","?"],"max_text_bytes":1000,"max_lines":8,"reply_requires_anchor":true,
-        "refusal_reasons":[],"automatic_replay":false,"interrupt":false})
+    json!({"id":"gemini","implemented":true,"enrollment":true,"adopt_config_dir":false,"login":"interactive_exec","usage":false,"usage_state":"unsupported","usage_source":crate::provider::gemini::USAGE_SOURCE,
+        "new":true,"resume":true,"rename":true,"native_rename":false,"stop":false,
+        "account_switch":false,"restart":false,"submit":true,"queue":true,
+        "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
+        "headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false,"approval_mode":crate::messaging::headless::GEMINI_APPROVAL_MODE},
+        "force_interrupt":false,"steer":true,"input_delivery":crate::messaging::claude_steer::gemini::input_delivery(),"cross_provider_conversion":false,
+        "auth_modes":gemini_auth_modes(),"auth_command":{"since_revision":21,"command":"account auth","modes":["google","api_key"],"key_input":"stdin_json","validation_timeout_seconds":crate::messaging::headless::GEMINI_VALIDATION_SECONDS,"unsupported_modes":["vertex"]},
+        "operations":crate::provider::capabilities(ProviderId::Gemini)})
 }
 
 /// The Antigravity provider entry of `api capabilities` (revision 24).
@@ -1774,12 +2119,17 @@ pub fn capabilities() -> Value {
     // Revision 21: per-account Claude bypass-permissions warning.
     value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.27.0: default statusLine for new managed Claude homes.
-    value["data_layout"] = json!({"since_contract":"1.29.0","version":crate::layout::VERSION,"directories":[crate::layout::REGISTRY,crate::layout::SESSIONS,crate::layout::OPERATIONS,crate::layout::MESSAGING,crate::layout::CACHE,crate::layout::LOGS,crate::layout::ACCOUNTS],"account_home":"accounts/<platform>/<name>","account_fields":{"home":"the account home in use (adopted, managed, or a deferred legacy path)","home_deferred":"true while the layout migration left an in-use home at its legacy path"},"commands":["layout status"],"legacy_root":"LAYOUT_MIGRATION_REQUIRED","interrupted":"LAYOUT_MIGRATION_IN_PROGRESS"});
+    value["data_layout"] = json!({"since_contract":"1.29.0","version":crate::layout::VERSION,"directories":[crate::layout::REGISTRY,crate::layout::SESSIONS,crate::layout::OPERATIONS,crate::layout::MESSAGING,crate::layout::CACHE,crate::layout::LOGS,crate::layout::ACCOUNTS],"account_home":"accounts/<platform>/<name>","account_fields":{"home":"the account home in use (adopted, managed, or a deferred legacy path)","home_deferred":"true while the layout migration left an in-use home at its legacy path"},"commands":["layout status","layout migrate --backup DIR [--dry-run]","layout rollback [--dry-run]"],"legacy_root":"LAYOUT_MIGRATION_REQUIRED","interrupted":"LAYOUT_MIGRATION_IN_PROGRESS"});
     value["retention"] = crate::retention::describe();
-    // 1.30.0: per-provider account names and the display-name rename.
+    // 1.30.0: per-provider account names, display/backend names and the backend rename.
     value["account_names"] = json!({"since_contract":"1.30.0","unique_across_providers":false,"unique_per_provider":true,"id_format":"<provider>:<name>","ambiguous_bare_name_error":"ACCOUNT_AMBIGUOUS",
-        "row_fields":["folder_name","display_name","name_mismatch","running_sessions","generation"],
-        "rename_only":{"command":"account rename","args":["id","--display-name|--clear","--expected-generation?"],"allowed_while_sessions_run":true,"changes":["display_name"]}});
+        "row_fields":["folder_name","display_name","name_mismatch","running_sessions","generation","backend_rename"],
+        "rename_only":{"command":"account rename","args":["id","--display-name|--clear","--expected-generation?"],"allowed_while_sessions_run":true,"changes":["display_name"]},
+        "rename_backend":{"command":"account rename-backend","args":["id","new_name?","--expected-generation","--request-id?"],"update_backend_without_new_name":true,
+            "refused_while_sessions_run":true,"journal":"operations/account-renames","phases":["admitted","moving_home","home_moved","registry_updated","complete","failed","uncertain","abandoned"],
+            "replays":false,"recover":"recover","abandon":"abandon-operation","changes":["id","folder","registry","sessions","gemini_auth_failure","usage_history"],
+            "unchanged":["receipts","digests","message_journals","operation_history"],"adopted_home":"ACCOUNT_HOME_ADOPTED",
+            "errors":["ACCOUNT_SESSIONS_RUNNING","ACCOUNT_NAME_EXISTS","ACCOUNT_NAME_UNCHANGED","ACCOUNT_HOME_EXISTS","ACCOUNT_HOME_ADOPTED","ACCOUNT_REMOVED","ACCOUNT_RENAME_UNRESOLVED","ACCOUNT_DELETION_IN_PROGRESS","ACCOUNT_POLL_IN_PROGRESS","ACCOUNT_BUSY","STALE_TARGET","ACCOUNT_AMBIGUOUS","ACCOUNT_HOME_MOVE_FAILED","INVALID_ARGUMENT"]}});
     value["claude_default_statusline"] = json!({"since_contract":"1.27.0","setting":"claude_default_statusline_command","built_in_default":crate::config::Config::default().claude_default_statusline_command,"empty":"disabled","config_file":"CLAUDE_CONFIG_DIR/settings.json","key":"statusLine","value":{"type":"command","command":"<setting>"},"applies_to":"new_managed_homes_only","existing_key":"kept","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.28.0: operator abandon of uncertain/stuck resume-launch operations.
     value["abandon_operation"] = json!({"since_contract":"1.28.0","command":"abandon-operation","requires":["operation","confirm"],"applies_to":["resume_launch","launch"],"launch_phases":["uncertain"],"phases":["uncertain","stuck"],"terminal_phase":"abandoned","replays":false,"sends":false,"refused_while_session_process_live":true});
@@ -1790,6 +2140,8 @@ pub fn capabilities() -> Value {
     value["pane_reuse"] = crate::pane_reuse::capability();
     // Contract 1.53.0: redeem a stored Codex rate-limit reset credit.
     value["account_reset_credit"] = crate::reset_credit::capability();
+    // Contract 1.54.0: root alias and re-key (`root status|migrate|rollback|finalize`).
+    value["root_alias"] = crate::root_migrate::capability();
     value["new_space"] = json!({"since_revision":20,"version":1,"resume":true,"add_to_herdr":true,"move_space":true,"label_validation":"space_label","exists_error":"WORKSPACE_NAME_EXISTS"});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
     value["auto_recover"] = crate::auto_recover::capability();
@@ -1824,7 +2176,9 @@ pub fn capabilities() -> Value {
         "archived_stop":"already_stopped:true, archived:true (any generation)","pane_settle_seconds":external::hosting::PANE_SETTLE_SECONDS});
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
     value["launch_model"] = json!({"since_revision":38,"request_fields":["model","reasoning_effort"],"requests":["launch"],"providers":["codex"],"reasoning_efforts":crate::launch::REASONING_EFFORTS,"errors":["INVALID_MODEL","INVALID_REASONING_EFFORT",ops::UNSUPPORTED],"model_not_checked_against_account":true});
+    value["turn_notify"] = crate::turn_notify::capability();
     value["claude_native_delivery"] = native_delivery_capability();
+    value["claude_idle_notify"] = crate::claude_idle::capability();
     value["disk_space"] = json!({"since_contract":"1.41.0","command":"disk-space","config":"min_free_disk_mb","default_mb":crate::disk_space::DEFAULT_MIN_FREE_MB,"refusal":"INSUFFICIENT_DISK_SPACE","write_failure":"DISK_FULL","state_fallback":"cached_snapshot_with_warning"});
     value["shared_claude_state"] = crate::shared_state::capability();
     value["account_plan"] = json!({"since_contract":"1.46.7","field":"accounts[].plan","read_only":true,"secret":false,"null_when":"not_observed_or_provider_has_none",
@@ -1859,7 +2213,7 @@ pub fn capabilities() -> Value {
     }
     value["claude_input_delivery"] = claude_input_delivery();
     // Revision 17: Gemini submit/queue/steer as typed input into a HERDR pane.
-    value["gemini_input_delivery"] = gemini_input_delivery();
+    value["gemini_input_delivery"] = crate::messaging::claude_steer::gemini::input_delivery();
     // Revision 24: Antigravity submit/queue/steer as typed input into a HERDR pane.
     value["antigravity_input_delivery"] =
         crate::messaging::claude_steer::antigravity::input_delivery();
@@ -1869,12 +2223,12 @@ pub fn capabilities() -> Value {
 
 /// Revision 16: Claude submit/queue/steer (hosted stream-json or live peer messages).
 fn claude_input_delivery() -> Value {
-    use crate::messaging::claude_steer;
+    use crate::{messaging::claude_steer, provider::claude::hosted};
     json!({"version":1,"since_revision":16,"modes":["submit","queue","steer"],"priority":{"submit":"next","queue":"later","steer":"next"},
         "steer":crate::messaging::claude_steer::steer_semantics(),
         "session_capability":"capabilities.submit|queue|steer with capability_reasons and input_delivery.semantics",
-        "hosted":{"semantics":"hosted_stream_json","command":"hosted","launch":["launch start hosted","launcher new --hosted","launcher resume --hosted","run --hosted"],
-            "permission_modes":["account","default","acceptEdits","plan","bypassPermissions"],"default_permission_mode":"account","implicit_bypass":false,"permission_prompts":"pending_until_answered",
+        "hosted":{"semantics":hosted::SEMANTICS,"command":"hosted","launch":["launch start hosted","launcher new --hosted","launcher resume --hosted","run --hosted"],
+            "permission_modes":hosted::PERMISSION_MODES,"default_permission_mode":"account","implicit_bypass":false,"permission_prompts":"pending_until_answered",
             "interrupt":"steering.interrupt","correlation":"command_lifecycle_and_result_user_message_uuids","viewer":"view","take_over":"take-over"},
         "peer_message":{"semantics":claude_steer::PEER_SEMANTICS,"label":claude_steer::PEER_LABEL,"opt_in":"account live-steering --enable","setting":"crossSessionInbound","interrupt":false,
             "correlation":"transcript_anchor_by_message_id","reply_requires_anchor":true},
@@ -2193,6 +2547,7 @@ fn serve_snapshot_when_disk_full(
         json!({"observed_at":observed_at,"fresh":false,"cached":true,"refresh_failed":"DISK_FULL"});
     value["warnings"] = json!([{"code":"STATE_REFRESH_FAILED_DISK_FULL","message":crate::disk_space::disk_full_message(&error)}]);
     value["capabilities"] = capabilities();
+    refresh_cached_accounts(paths, &mut value);
     Ok(value)
 }
 /// Contract 1.56.0: `session resolve` carries `availability`, `activity`, `pid` and
@@ -2246,6 +2601,7 @@ pub async fn state_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value>
     let stale = crate::store::load_config(paths).map_or(300, |c| c.stale_seconds);
     overlay_codex_usage(&mut value, status.as_ref(), daemon::now(), stale);
     value["capabilities"] = capabilities();
+    refresh_cached_accounts(paths, &mut value);
     // Model facts are local file reads: always current, even on a cached snapshot.
     if let Some(rows) = value["sessions"].as_array_mut() {
         crate::session_model::annotate(paths, rows);
@@ -2379,11 +2735,12 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                     .or_insert_with(|| native::deleted(paths, provider, &s.account).unwrap_or(false));
             let mut value = native_public(provider, s, observed.get(&id).map(|(o, _)| o), deleted);
             ops::ops(provider).add_session_input(paths, &mut value, observed.get(&id).map(|(_, h)| h.as_path()));
-            external::archiving::native::apply_session(provider, &mut value, observed.get(&id).map(|(_, h)| h.as_path()), archives.get(&id));
+            external::archiving::native::apply_session(paths, provider, &mut value, observed.get(&id).map(|(_, h)| h.as_path()), archives.get(&id));
             let running = value["availability"] == "running";
             let facts = ops::facts(provider);
             value["pending_questions"] = if facts.detects_questions && running {
-                    crate::questions::to_values(crate::questions::claude_pending(paths, observed.get(&id).map(|(_, h)| h.as_path())))
+                    let conversation = value["conversation_id"].as_str().unwrap_or_default().to_owned();
+                    crate::questions::to_values(crate::questions::claude_pending(paths, &id, &conversation, observed.get(&id).map(|(_, h)| h.as_path())))
             } else {
                 json!([])
             };
@@ -2504,12 +2861,16 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         }
     }
     let settings = crate::auto_recover::all(paths);
+    let turn_settings = crate::turn_notify::all(paths);
     crate::session_model::annotate(paths, &mut sessions);
     for session in &mut sessions {
         let setting = settings.get(session["id"].as_str().unwrap_or_default());
         let enabled = setting.is_some_and(|s| s.enabled);
         session["auto_recover"] = crate::auto_recover::public(setting);
         session["auto_start"] = crate::auto_recover::public_start(setting);
+        session["turn_notify"] = crate::turn_notify::public(
+            turn_settings.get(session["id"].as_str().unwrap_or_default()),
+        );
         let reason = crate::auto_recover::capability_reason(session, enabled).map(str::to_owned);
         session["capabilities"]["auto_recover"] = json!(reason.is_none());
         session["capability_reasons"]["auto_recover"] = json!(reason);
@@ -2707,6 +3068,7 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
             observed.get(id).map(|(_, h)| h.as_path()),
         );
         external::archiving::native::apply_session(
+            paths,
             provider,
             &mut value,
             observed.get(id).map(|(_, h)| h.as_path()),
@@ -2832,6 +3194,19 @@ fn resolve_session_args(paths: &Paths, command: &mut Command) -> Result<()> {
             }
         }
         Command::AutoStart { session, .. } => targets.extend(session.as_mut()),
+        Command::TurnNotify {
+            session,
+            notify_session,
+            ..
+        }
+        | Command::IdleNotify {
+            session,
+            notify_session,
+            ..
+        } => {
+            targets.push(session);
+            targets.extend(notify_session.as_mut());
+        }
         Command::Attachment { session, .. }
         | Command::Observe { session, .. }
         | Command::TurnTarget { session, .. }
@@ -3194,6 +3569,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
         Command::Launch { command } => crate::launch::api(paths, command).await?,
         Command::Account { command } => account(paths, command).await?,
         Command::Launcher { command } => launcher(paths, command).await?,
+        Command::Hosted { command } => crate::provider::claude::hosted::api(paths, command).await?,
         Command::Observe {
             session,
             expected_generation,
@@ -3315,7 +3691,36 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
                 value
             }
         }
+        Command::TurnNotify {
+            session,
+            expected_generation,
+            enable,
+            disable,
+            notify_session,
+        } => {
+            ensure!(
+                enable != disable,
+                "INVALID_ARGUMENT: pass exactly one of --enable or --disable"
+            );
+            crate::turn_notify::set(
+                paths,
+                &session,
+                &expected_generation,
+                enable,
+                notify_session,
+            )?
+        }
+        Command::IdleNotify {
+            session,
+            expected_generation,
+            notify_session,
+        } => {
+            crate::claude_idle::start(paths, &session, &expected_generation, notify_session).await?
+        }
         Command::Usage { account, cached } => usage_read(paths, account.as_deref(), cached).await?,
+        Command::TurnEvents { after, wait } => {
+            crate::turn_notify::events(paths, after, wait).await?
+        }
         Command::Events {
             after,
             wait,
@@ -3676,6 +4081,8 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
                 crate::auto_recover::abandon(paths, &operation, &confirm)?
             } else if crate::claude_switch::exists(paths, &operation) {
                 crate::claude_switch::abandon(paths, &operation, &confirm)?
+            } else if crate::account_rename::exists(paths, &operation) {
+                crate::account_rename::abandon(paths, &operation, &confirm)?
             } else if crate::launch::status(paths, &operation).is_ok() {
                 crate::launch::abandon(paths, &operation, &confirm).await?
             } else {
@@ -3708,6 +4115,15 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
         }
         Command::Recover { operation: id } if external::spaces::exists(paths, &id) => {
             external::spaces::recover(paths, &id)?
+        }
+        Command::Recover { operation: id } if crate::account_rename::exists(paths, &id) => {
+            daemon::ensure_started(paths).await?;
+            daemon::call(
+                paths,
+                "account/rename-backend/recover",
+                json!({"request_id":id}),
+            )
+            .await?
         }
         Command::Recover { operation: id }
             if crate::account_deletion::status(paths, &id).is_ok() =>
@@ -4219,6 +4635,11 @@ async fn stop_claude(paths: &Paths, id: &str, generation: &str, keep_pane: bool)
         !external::archiving::is_archived(paths, &s.id)?,
         "SESSION_ARCHIVED"
     );
+    ensure!(
+        !claude::hosted::live(paths, &s.conversation_id),
+        "{}",
+        crate::messaging::claude_steer::HOSTED_STOP
+    );
     let (s, observation) = native_selected(paths, id, generation)?;
     match observation.availability {
         "running" => {}
@@ -4521,5 +4942,6 @@ fn native_delivery_capability() -> Value {
         "receipt":{"states":["native_accepted","held","refused","expired","delivery_unknown","rejected"],
             "evidence":["transcript_anchor","peer_status_delivered","transport_accepted_silent"],
             "silent_accept_is_not_proof_of_reading":true},
+        "idle_notice":"claude_idle_notify",
         "origin_detection":{"since_contract":"1.41.0","when":"origin_omitted","agent_if":"caller_process_tree_contains_a_live_session_attachment","receipt_field":"origin_source","values":["explicit","detected","default"]}})
 }

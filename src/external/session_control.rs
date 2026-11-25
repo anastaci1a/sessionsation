@@ -18,7 +18,27 @@ async fn queue(paths: &Paths, pane: &str, options: MoveOptions, kind: &str) -> R
             "selected Codex session is no longer active; saved conversations are already stopped",
         )?;
     let account = source.account.clone();
+    disable_autostart(paths, &source).await?;
     enqueue(paths, source, &account, options, None, kind)
+}
+
+pub(super) async fn disable_autostart(paths: &Paths, source: &Instance) -> Result<()> {
+    // A manual pause/end expresses the user's intent to stay stopped. Cancel
+    // auto-start even if the monitor has not observed the quota failure yet.
+    let state = crate::store::load_state_snapshot(paths)?;
+    if state
+        .automatic_start
+        .get(&source.thread_id)
+        .is_some_and(|p| p.enabled || p.waiting.is_some())
+    {
+        daemon::call(
+            paths,
+            "auto-start/disable",
+            json!({"thread":source.thread_id}),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 pub(super) async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
