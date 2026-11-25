@@ -303,9 +303,10 @@ impl Slot {
         };
         let lower = old.is_some_and(|o| used < o);
         if r.replayable {
-            let replay = cycle.prior_percent.is_some_and(|p| {
-                (used - p).abs() < 0.5 && (cycle.open || old.is_none_or(|o| o < p - 0.5))
-            });
+            // Idle sessions replay pre-redeem readings at any time: any near the prior is one.
+            let replay = cycle
+                .prior_percent
+                .is_some_and(|p| used >= p - 5.0 && used < p + 0.5);
             // A statusline reading never lowers a cycle, open or not (another session's last
             // response can be older than the redeem).
             if replay || lower {

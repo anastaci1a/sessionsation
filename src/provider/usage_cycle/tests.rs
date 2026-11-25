@@ -270,3 +270,30 @@ fn a_statusline_rise_above_an_old_oauth_reading_is_accepted() {
     s.apply(&reading(&w(30.0, RESETS), late, true), late, WEEK);
     assert_eq!(s.window["used_percentage"], 30.0);
 }
+
+#[test]
+fn idle_statusline_replays_near_the_prior_never_confirm_a_rise_after_a_redeem() {
+    let mut s = Slot::default();
+    s.apply(&reading(&w(95.0, RESETS), NOW, true), NOW, WEEK);
+    s.apply(&reading(&w(0.0, RESETS), NOW + 10, false), NOW + 10, WEEK);
+    s.apply(&reading(&w(0.0, RESETS), NOW + 80, false), NOW + 80, WEEK);
+    for at in [NOW + 90, NOW + 151] {
+        s.apply(&reading(&w(94.0, RESETS), at, true), at, WEEK);
+        assert_eq!(s.window["used_percentage"], 0.0);
+    }
+    let at = NOW + 160;
+    s.apply(&reading(&w(50.0, RESETS), at, false), at, WEEK);
+    assert_eq!(s.window["used_percentage"], 50.0);
+}
+
+#[test]
+fn a_statusline_reading_below_the_prior_window_behaves_as_before() {
+    let mut s = Slot::default();
+    s.apply(&reading(&w(95.0, RESETS), NOW, true), NOW, WEEK);
+    s.apply(&reading(&w(0.0, RESETS), NOW + 10, false), NOW + 10, WEEK);
+    s.apply(&reading(&w(0.0, RESETS), NOW + 80, false), NOW + 80, WEEK);
+    s.apply(&reading(&w(30.0, RESETS), NOW + 90, true), NOW + 90, WEEK);
+    assert_eq!(s.window["used_percentage"], 0.0);
+    s.apply(&reading(&w(30.0, RESETS), NOW + 150, true), NOW + 150, WEEK);
+    assert_eq!(s.window["used_percentage"], 30.0);
+}

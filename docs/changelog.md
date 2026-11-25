@@ -20,6 +20,7 @@ and package history are in Git.
 
 ## Versions
 
+- **1.69.1** Idle statusline replays no longer refill the meter after a redeem.
 - **1.69.0** Removed: hosted Claude (`api hosted`, `--hosted`, `view`, `take-over`), `api turn-notify`,
   `turn-events`, `idle-notify` (use `api events`), `api account rename-backend` and their capability keys
   and the row `backend_rename`. Check `operations/account-renames` before the cutover

@@ -16,11 +16,11 @@
     "doc_bytes:agents/README.md": { "value": 10289 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7303 },
-    "doc_bytes:docs/changelog.md": { "value": 13856 },
+    "doc_bytes:docs/changelog.md": { "value": 13936 },
     "doc_bytes:docs/cli.md": { "value": 16970 },
     "doc_bytes:docs/contract.md": { "value": 211703 },
     "doc_bytes:docs/operations.md": { "value": 17679 },
-    "doc_bytes_total": { "value": 281235 },
+    "doc_bytes_total": { "value": 281315 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 153 },
     "env_scrub_sites": { "value": 33 },
@@ -106,7 +106,7 @@
     "spawn_sites": { "value": 39 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 4 },
-    "src_lines": { "value": 65062 },
+    "src_lines": { "value": 65063 },
     "stale_target_literals": { "value": 49 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -132,7 +132,7 @@
     "doc_bytes_total": { "value": 313300 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "inline_test_lines": { "value": 0 },
-    "src_lines": { "value": 65062 }
+    "src_lines": { "value": 65063 }
   },
   "ledger": [
     {
@@ -2196,7 +2196,11 @@
     {"counter":"src_lines","by":-3720,"reason":"shrink-S2: sites of the deleted code","considered":"n/a","step":"shrink-S2","program":"shrink"},
     {"counter":"stale_target_literals","by":-9,"reason":"shrink-S2: sites of the deleted code","considered":"n/a","step":"shrink-S2","program":"shrink"},
     {"counter":"worker_lock_sites","by":-2,"reason":"shrink-S2: sites of the deleted code","considered":"n/a","step":"shrink-S2","program":"shrink"},
-    {"counter":"cap:src_lines","by":-3770,"reason":"shrink-S2: the cap follows the counter down","considered":"n/a","step":"shrink-S2","program":"shrink"}
+    {"counter":"cap:src_lines","by":-3770,"reason":"shrink-S2: the cap follows the counter down","considered":"n/a","step":"shrink-S2","program":"shrink"},
+    {"counter":"src_lines","by":1,"reason":"1.69.1 statusline replays near the redeem prior are ignored","considered":"one comparison replaces the old replay test","step":"hotfix:1.69.1","agreed_by":{"who":"lead","ref":"p-1125-100656-22276"}},
+    {"counter":"cap:src_lines","by":1,"reason":"1.69.1 statusline replays near the redeem prior are ignored","considered":"one comparison replaces the old replay test","step":"hotfix:1.69.1","agreed_by":{"who":"lead","ref":"p-1125-100656-22276"}},
+    {"counter":"doc_bytes:docs/changelog.md","by":80,"reason":"1.69.1 entry","considered":"n/a","step":"hotfix:1.69.1"},
+    {"counter":"doc_bytes_total","by":80,"reason":"1.69.1 changelog","considered":"n/a","step":"hotfix:1.69.1"}
   ],
   "enforced": { "identity": "1.66.0", "ledger": "1.66.1", "oauth": "S0", "provider-ops": "1.65.0", "typing": "1.67.0" },
   "steps": {
