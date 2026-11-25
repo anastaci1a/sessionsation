@@ -3,7 +3,7 @@
   "counters_digest": "405652eab99e850ea7c19f25e42fbb3a3469bbf5dd1132e60677974bc9cfbd10",
   "counters": {
     "alive_fns": { "value": 0 },
-    "api_rs_lines": { "value": 5658 },
+    "api_rs_lines": { "value": 5663 },
     "apply_session_input_fns": { "value": 1 },
     "atomic_writes_allow_markers": { "value": 0 },
     "boot_id_readers": { "value": 0 },
@@ -17,11 +17,11 @@
     "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13998 },
+    "doc_bytes:docs/changelog.md": { "value": 14000 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
-    "doc_bytes:docs/contract.md": { "value": 230998 },
+    "doc_bytes:docs/contract.md": { "value": 231484 },
     "doc_bytes:docs/operations.md": { "value": 23430 },
-    "doc_bytes_total": { "value": 308332 },
+    "doc_bytes_total": { "value": 308820 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -56,13 +56,13 @@
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
     "sha256_digests": { "value": 25 },
-    "since_contract_literals": { "value": 43 },
+    "since_contract_literals": { "value": 44 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 102810 },
+    "src_lines": { "value": 103063 },
     "stale_target_literals": { "value": 62 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -1185,6 +1185,48 @@
       "counter": "doc_bytes_total",
       "by": 4,
       "reason": "1.67.0 changelog fix line",
+      "considered": "n/a",
+      "step": "1.67.0"
+    },
+    {
+      "counter": "api_rs_lines",
+      "by": 5,
+      "reason": "1.67.0 SM10: per-window fresh and age_seconds in the usage_meter capability; contract 1.67.0",
+      "considered": "n/a",
+      "step": "1.67.0"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 2,
+      "reason": "1.67.0: one merged entry for the typing, launch-path, PATH, compaction and meter-freshness changes",
+      "considered": "n/a",
+      "step": "1.67.0"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 486,
+      "reason": "1.67.0 SM10: meter window fresh and age_seconds, all_windows_fresh; stable current/ paths",
+      "considered": "n/a",
+      "step": "1.67.0"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 488,
+      "reason": "1.67.0: contract.md and changelog.md growth",
+      "considered": "n/a",
+      "step": "1.67.0"
+    },
+    {
+      "counter": "since_contract_literals",
+      "by": 1,
+      "reason": "1.67.0 usage_meter window_fields capability",
+      "considered": "contract::FEATURES arrives in S9 and absorbs every since_contract literal",
+      "step": "1.67.0"
+    },
+    {
+      "counter": "src_lines",
+      "by": 253,
+      "reason": "1.67.0 fixes: stable current/ path helper, PATH normalization, Codex errored-thread compaction, SM10 window freshness",
       "considered": "n/a",
       "step": "1.67.0"
     }

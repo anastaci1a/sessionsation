@@ -331,7 +331,7 @@ async fn advertised_capability_and_a_stopped_session_switches_with_memory_left_b
         .unwrap();
     assert_eq!(claude["account_switch"], true);
     assert_eq!(claude["operations"]["account_switch"]["supported"], true);
-    assert_eq!(caps["contract_version"], "1.66.3");
+    assert_eq!(caps["contract_version"], "1.67.0");
 
     let (id, native) = t.f.stopped_session("a");
     populate(&t.f.home("a"), &t.f.project, &native);

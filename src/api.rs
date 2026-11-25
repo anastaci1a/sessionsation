@@ -21,9 +21,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 66;
-pub const CONTRACT_PATCH: u32 = 3;
-pub const CONTRACT_VERSION: &str = "1.66.3";
+pub const CONTRACT_MINOR: u32 = 67;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.67.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -4913,7 +4913,7 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.66.3");
+        assert_eq!(c["contract_version"], "1.67.0");
         assert_eq!(c["send_request"]["since_contract"], "1.64.0");
         let root = &c["root_alias"];
         assert_eq!(root["since_contract"], "1.54.0");

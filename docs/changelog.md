@@ -20,14 +20,10 @@ and package history are in Git.
 
 ## Versions
 
-- **1.67.0** (internal: typing engine) Fix: a refused check before Enter withdraws the
-  typed text and restores the draft.
-- **1.67.0 (fixes)** Launched providers and pane commands name the stable `current/`
-  executable path; a Codex `systemError` thread fails `compaction_not_observed` after
-  30 s, not 180 s.
-- **1.67.0 (fixes)** Launches name the stable `current/` executable; `/mnt/user` `PATH`
-  entries map to `/mnt/disk1`; a Codex `systemError` compaction fails after 30 s, not
-  180 s; meter windows gain `fresh`, `age_seconds`, the meter `all_windows_fresh`.
+- **1.67.0** A refused check before Enter withdraws the typed text. Launches use the
+  stable `current/` executable; `/mnt/user` `PATH` entries map to `/mnt/disk1`; an
+  errored Codex thread fails compaction after 30 s, not 180 s. Meter windows gain
+  `fresh`, `age_seconds`; the meter `all_windows_fresh`.
 - **1.66.3** The supervisor no longer waits for `codex --version` to
   serve. [Operations](operations.md#safe-service-maintenance).
 - **1.66.2** `resume-launch` starts a Claude session without a transcript again under its
