@@ -93,7 +93,7 @@ non-steering v1 Submit/Queue.
 Check the [changelog](changelog.md) for every version you roll back over. From 1.66.1
 `messaging/receipts.db` carries `PRAGMA user_version` 1, stamped when the supervisor
 starts; older releases ignore it. A release older than 1.54.0 refuses a layout
-version 3 root: run `root rollback` first.
+version 3 root, and 1.68.0 removed `root rollback`: roll back only to 1.54.0 or later.
 Before rolling back below 1.49.0, drain its operations, because older releases do not run
 them and a pending Codex change keeps holding input:
 
@@ -114,7 +114,7 @@ them and a pending Codex change keeps holding input:
 
 `layout.json` records the layout version, the migration state and every deferred
 account home. Version 2 groups the root by purpose; an active
-[root alias](contract.md#root-alias-and-re-key) stamps version 3 with the same tree:
+[root alias](contract.md#root-alias) stamps version 3 with the same tree:
 
 ```text
 DATA_ROOT/
@@ -141,62 +141,11 @@ DATA_ROOT/
 ```
 
 A new root is created as version 2. A legacy (version 1) root is refused by every
-command except `api version` and `layout` with `LAYOUT_MIGRATION_REQUIRED`; an
-interrupted migration or rollback is refused with `LAYOUT_MIGRATION_IN_PROGRESS` until
-`layout migrate` (or `layout rollback`) is run again.
-
-### Migrate
-
-```sh
-sessionsation daemon stop
-sessionsation layout migrate --dry-run            # the plan, nothing changes
-sessionsation layout migrate --backup /path/new-empty-dir
-sessionsation daemon start
-sessionsation layout status                       # deferred homes and why
-```
-
-- It holds `daemon.lock` (no supervisor of any build runs) and `layout.lock`, and
-  refuses a destination that already exists (`LAYOUT_CONFLICT`) before changing
-  anything.
-- The backup holds every top-level entry except account homes, with `registry.db`
-  and `messaging/receipts.db` copied consistently (`VACUUM INTO`) and
-  `layout-backup.json` listing the homes (path, inode). Homes are only renamed, never
-  copied, so credentials stay in the root.
-- The registry WAL is checkpointed, then `registry.db` moves with its companions. A
-  non-database file is left at `registry.db` so an older build pointed at the root
-  fails instead of creating an empty registry.
-- `archived-sessions`, `preserved-conversations` and `move-backups` leave relative
-  compatibility symlinks, because archive manifests, account-deletion records and move
-  backups store absolute paths. Journals are never rewritten.
-- An account home that any process uses (an environment value such as `CODEX_HOME`,
-  `CLAUDE_CONFIG_DIR`, `GEMINI_CLI_HOME` or `HOME`, an argument such as a Codex
-  `--remote unix://.../app-server-control.sock`, a working directory, an executable or
-  an open file) is *deferred*: it stays at its legacy path, the reason is recorded in
-  `layout.json`, and the account keeps working there (`home_deferred: true`). Running
-  provider processes are never disturbed.
-- An idle home moves to `accounts/<platform>/<name>` and leaves a relative symlink at
-  its legacy path, so absolute paths inside provider state (Codex `state_5.sqlite`
-  rollout paths, control socket paths) keep resolving. Stored owner and pane-binding
-  home paths are rewritten (`home_refs_rewritten`); a later run repairs records an
-  earlier run left behind.
-- Run `layout migrate --backup NEW-DIR` again at any time (for example after a reboot,
-  before the supervisor starts) to move deferred homes that are now idle; a run with
-  nothing to do needs no backup.
-
-### Roll back
-
-```sh
-sessionsation daemon stop
-sessionsation layout rollback --dry-run
-sessionsation layout rollback        # with this (layout-aware) build
-# then switch the installed release back and start the older supervisor
-```
-
-Rollback moves every store and every home at `accounts/<platform>/<name>` back to its
-legacy name (removing compatibility links and the registry tripwire) and removes
-`layout.json`. It refuses, before any change, a home in use at its new path or an
-occupied legacy path. The retention keys below must not be present in `config.json`
-for an older build. As a last resort, the `--backup` directory restores all metadata.
+command except `api version` and `layout status` with `LAYOUT_MIGRATION_REQUIRED`
+(`layout version 1 is not supported; this release needs 3`); an unfinished layout change
+is refused with `LAYOUT_MIGRATION_IN_PROGRESS`. `layout status` prints the version, deferred
+homes and legacy entries. `layout migrate|rollback`, `root *` and `shared migrate` were
+removed in 1.68.0: convert a legacy root with 1.67.0 or earlier.
 
 ### Retention
 
@@ -214,70 +163,18 @@ The supervisor runs one retention pass a few minutes after start and then hourly
 `operations/root-migrations/` and `operations/account-reset-credits/` are never
 pruned.
 
-## Root re-key
+## Root alias
 
-`sessionsation root migrate` moves a data root and its sessions from one spelling of
-a bind-mounted tree to the other, for example from `/mnt/user/appdata/sessionsation`
-to `/mnt/disk1/appdata/sessionsation`. The old spelling keeps working throughout (the
-binds stay mounted); the alias only changes how paths are compared and which spelling
-new records use. Reference: [root alias and re-key](contract.md#root-alias-and-re-key).
+An active root alias (layout version 3) makes `/mnt/user/appdata/sessionsation` and
+`/mnt/disk1/appdata/sessionsation` compare equal while the binds stay mounted.
+Reference: [root alias](contract.md#root-alias).
 
-Order for a window:
-
-1. Before the window: install the release (the alias stays inert until `root
-   migrate`), run `root migrate --from F --to T --backup DIR --dry-run` and review
-   `left_behind`, `collisions`, `memory_conflicts`, `memory_split`,
-   `existing_target_keys` and `unmapped`. Resolve memory conflicts by making the two
-   files identical. Create throwaway canary sessions on the old path (one Claude, one
-   Codex) in a scratch directory. Stop every hosted (stream-json) Claude worker:
-   `root migrate` refuses while one is live.
-2. Wait until `api operations` shows nothing in flight, then `sessionsation daemon
-   stop`.
-3. `root migrate --from F --to T --backup DIR` (a new or empty directory outside the
-   root; add `--allow-full-copy` only where the file system cannot reflink). Running
-   sessions are not stopped (`deferred_running`); stopped Claude sessions are re-keyed.
-4. Start the supervisor, run `root status` and read `gate`. `fail` means a session
-   that ran before the activation is no longer recognised as running: stop and run
-   `root rollback` (supervisor stopped).
-5. Canaries: `root migrate --session <canary>` for the Claude and the Codex canary;
-   both must reach `verified` before any real session.
-6. Each running session in turn (sessions of one directory back to back): `root
-   migrate --session S [--accept-risks] [--prompt-file F]`, then `root status` until
-   `verified`, `left_behind` or `uncertain`.
-7. `root status`: report `left_behind`, `memory_split` and `unmapped`.
-
-Agent-DM keeps working through the window. It derives the supervisor's control socket
-from its configured `dataRoot`; while the alias is active the old runtime path is a
-directory symlink to the canonical runtime directory, so its owner check (`lstat` of
-the socket, owner and mode, then a connect) reaches the running supervisor. A stale
-old runtime directory without a live socket is moved aside (`.pre-alias-<time>`,
-never removed); one with a live socket or another symlink is left alone and reported.
-Agent-DM can be repointed to the canonical root later; `root rollback` removes the
-symlink.
-
-The dry run reads journals directly and settles nothing, but may still write what
-every command writes when it opens the root (catalog identity healing, a
-hosted-worker record whose worker has exited). Memory fast-forwards use an atomic
-exchange; a write landing in the same file within milliseconds can end in the saved
-previous version (a narrow, accepted race).
-
-Release gate: the real bind-mount test is `#[ignore]` in the default suite because it
-needs a user and mount namespace. Run it in the check image with:
-
-```sh
-docker run --rm --security-opt seccomp=unconfined -v "$PWD:/work" -w /work \
-  sessionsation-public-check:local \
-  cargo test --locked --test root_migrate bind_namespace -- --ignored
-```
-
-Rollback: `root rollback --session S` for one session, `root rollback` (supervisor
-stopped) for the whole root; sessions already `verified` stay on their new directory.
-The whole-root rollback refuses while any process runs with the new spelling of an
-account home (`ROOT_ROLLBACK_BLOCKED` lists them): stop those sessions first and
-revert the boot files, launcher and `/usr/bin/sessionsation` link together with it. A
-rollback that cannot finish ends `rollback_incomplete` and can be run again. Every
-moved transcript has a verified copy under `DIR/sessions/<session>/<attempt>/`; no
-command deletes these copies.
+Agent-DM derives the supervisor's control socket from its configured `dataRoot`; while
+the alias is active the old runtime path is a directory symlink to the canonical runtime
+directory, so its owner check (`lstat` of the socket, owner and mode, then a connect)
+reaches the running supervisor. The supervisor maintains the link at start: a stale old
+runtime directory without a live socket is moved aside (`.pre-alias-<time>`, never
+removed); one with a live socket or another symlink is left alone and reported.
 
 ## Remaining limits
 

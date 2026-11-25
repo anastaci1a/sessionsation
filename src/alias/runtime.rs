@@ -12,10 +12,18 @@
 //!
 //! Safety: a symlink is created only where nothing exists, or replaces nothing.
 //! A real directory is moved aside (never removed) only when it is ours, private
-//! and holds no connectable socket; a live socket is never touched. Rollback
-//! removes only symlinks that point at the canonical runtime directory.
-use super::*;
-use std::os::unix::fs::symlink;
+//! and holds no connectable socket; a live socket is never touched.
+use super::Alias;
+use crate::{
+    layout::{self, RootAlias},
+    paths::Paths,
+};
+use serde_json::{Value, json};
+use std::{
+    fs,
+    os::unix::fs::{MetadataExt, symlink},
+    path::{Path, PathBuf},
+};
 
 /// Old spellings whose runtime path should reach the canonical runtime.
 fn old_spellings(record: &RootAlias, canonical: &Path) -> Vec<PathBuf> {
@@ -91,7 +99,7 @@ pub(crate) fn ensure_one(link: &Path, runtime: &Path) -> String {
             let aside = link.with_file_name(format!(
                 "{}.pre-alias-{}",
                 link.file_name().unwrap_or_default().to_string_lossy(),
-                now()
+                layout::now()
             ));
             if let Err(e) = fs::rename(link, &aside) {
                 return format!("refused: cannot move the stale directory aside: {e}");
@@ -104,26 +112,4 @@ pub(crate) fn ensure_one(link: &Path, runtime: &Path) -> String {
         Ok(_) => "refused: not a directory".into(),
         Err(e) => format!("refused: {e}"),
     }
-}
-
-/// Remove the compatibility links of `run` (rollback): only symlinks that
-/// point at the canonical runtime directory.
-pub fn remove(run: &Run) -> Vec<Value> {
-    let canonical_runtime = crate::paths::runtime_for(&run.canonical_root);
-    let a = RootAlias {
-        previous_root: run.previous_root.clone(),
-        entries: run.entries.clone(),
-        ..Default::default()
-    };
-    let mut out = vec![];
-    for old in old_spellings(&a, &run.canonical_root) {
-        let link = crate::paths::runtime_for(&old);
-        let ours = fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink())
-            && fs::read_link(&link).ok().as_deref() == Some(canonical_runtime.as_path());
-        if ours {
-            let r = fs::remove_file(&link); // our own compatibility symlink
-            out.push(json!({"path":link,"removed":r.is_ok()}));
-        }
-    }
-    out
 }

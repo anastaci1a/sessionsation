@@ -2,14 +2,14 @@
 //!
 //! On Unraid `/mnt/user/appdata` is a bind mount of `/mnt/disk1/appdata`: both
 //! spellings name the same inodes, but `fs::canonicalize` returns each spelling
-//! unchanged (a bind is not a symlink). Once `sessionsation root migrate` has
-//! proven such a pair and activated it (layout version 3), every comparison of
+//! unchanged (a bind is not a symlink). Once such a pair has been proven and
+//! activated (layout version 3, `layout.json` `root_alias`), every comparison of
 //! two paths (homes, working directories, roots, transcripts) compares their
 //! [`logical`] forms: the longest matching `from` prefix (on component
 //! boundaries) is replaced by its `to`. Stored values keep the spelling in which
 //! they were recorded; only comparisons and new requests are normalised.
 //!
-//! The rule is enforced by a source gate (`tests::no_raw_path_comparisons`):
+//! The rule is enforced by a source gate (`tests::gate::no_raw_path_comparisons`):
 //! `fs::canonicalize(` and `==`/`!=` on home/cwd/directory/root values outside
 //! this module must either go through [`canonical`], [`same_path`],
 //! [`logical`] or `layout::same_home`, or carry a `raw-path:` comment saying
@@ -95,7 +95,7 @@ pub fn install(entries: &[Entry]) {
         }
     }
 }
-/// Deactivate `entries` (after `root rollback` in the same process).
+/// Deactivate `entries`.
 pub fn uninstall(entries: &[Entry]) {
     let mut active = ACTIVE.write().unwrap_or_else(|e| e.into_inner());
     active.retain(|a| !entries.iter().any(|e| a.from == e.from && a.to == e.to));
@@ -221,10 +221,11 @@ pub fn normalize_process_path() {
     }
 }
 
+pub mod runtime;
 #[cfg(test)]
-mod gate;
+mod tests;
 #[cfg(test)]
-mod tests {
+mod unit {
     use super::*;
 
     fn alias() -> Alias {

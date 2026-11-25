@@ -2744,8 +2744,7 @@ absolute path (as the root is configured). Credentials, `settings.json`,
 `sessions/`, `skills/` (it holds `skills/synced/<org-bucket-id>`, claude.ai
 cloud-synced skills of one account) and everything else stay per account. Adopted
 (`--config-dir`) homes are never linked (`applicable:false`). Nothing changes on a
-root until `shared enable` or the first `shared migrate` writes
-`shared/claude/.sessionsation-shared`.
+root until `shared enable` writes `shared/claude/.sessionsation-shared`.
 
 - **Trusted links.** Sessionsation refuses symlinks everywhere (digest, copy and
   remove fail with `HISTORY_SYMLINK`). Only `shared_state::trusted_link` accepts a
@@ -2758,40 +2757,17 @@ root until `shared enable` or the first `shared migrate` writes
 - **Ensure-links.** On `account add` and before every Claude launch, resume, hosted
   start, headless delivery, attach and switch, a missing link is created, an empty
   real directory is replaced by a link and a trusted link is kept. Errors:
-  `SHARED_STATE_UNMIGRATED` (a real directory with data where a link belongs; run
-  `shared migrate`), `SHARED_STATE_LINK_UNTRUSTED`, `SHARED_STATE_STORE_UNSAFE`.
+  `SHARED_STATE_UNMIGRATED` (a real directory with data where a link belongs; shared
+  state must be enabled on a layout-3 root), `SHARED_STATE_LINK_UNTRUSTED`, `SHARED_STATE_STORE_UNSAFE`.
   `account add` reports `shared_state:{state:"linked"|"disabled"|"not_applicable"|"error"}`.
   Once enabled, an unmigrated account cannot be launched or resumed; running
   sessions are not affected.
 - **Delete, log out, rename.** Account deletion removes the links only; shared data
   survives the account. Log out touches no history. Rename keeps the links valid.
-- **`shared migrate --account claude:NAME [--dry-run] [--allow-full-copy]
-  [--fs-path DIR]`** (CLI only; prints JSON) is journaled in
-  `operations/shared-migrations/<id>.json`, idempotent (`already_migrated:true`) and
-  resumable. (1) Preflight: account home and store on one file system (`st_dev`;
-  otherwise `SHARED_STATE_CROSS_DEVICE`), the alias proven, `renameat2(RENAME_EXCHANGE)`
-  and (unless `--allow-full-copy`) reflink probed; `--dry-run` stops here and prints
-  the plan. (2) Backup: a reflink copy of each directory to
-  `<root>/backups/shared-migrate-<UTC time>/<account>/<name>`
-  (`BACKUP_REFLINK_UNSUPPORTED` without reflink unless `--allow-full-copy`).
-  (3) Link per name with no moment in which the account path is missing and no data
-  copied (inodes unchanged, so open files keep working): with no `<name>` in the
-  store yet, a placeholder link is exchanged with the account's real directory; with
-  one, non-conflicting entries move by `RENAME_NOREPLACE`, shared directories merge
-  recursively, and the emptied account directory is exchanged with a link. A file
-  present on both sides is a conflict, never overwritten: the name stays a real
-  directory, paths are printed under `results.<name>.conflicts`, and the command
-  exits with `SHARED_STATE_MIGRATION_INCOMPLETE` until resolved. For `agents` and
-  `commands`, identical files are kept once and of two different files the newer
-  stays in the store and the other is set aside in `<backup_dir>/set-aside/`
-  (`--dry-run` prints one `report` line per such file).
-- **`--fs-path`.** On a FUSE union such as the Unraid user share (no
-  `RENAME_EXCHANGE`, no reflink) `--data-dir` stays the logical root, so link targets
-  keep that spelling, while `--fs-path /mnt/disk1/...` runs all file operations on
-  the real disk. The alias is proven with a probe file.
 - **`shared status`** lists the store state and each Claude account's per-name state
   (`linked`, `missing`, `empty_directory`, `unmigrated`, `untrusted`);
-  **`shared enable`** turns the feature on without migrating.
+  **`shared enable`** turns the feature on. (`shared migrate`, which moved an account's
+  directories into the store, was removed in 1.68.0.)
 
 ### Claude input delivery
 
@@ -3251,15 +3227,15 @@ to HERDR (`NO_NATIVE_ATTACH`), log out, compaction, set-model and pending questi
 ### Layout and retention
 
 `api capabilities.data_layout` reports the layout version, directories, account
-fields and the `layout` commands; `retention` reports classes, settings and built-in
-defaults. The layout, migration, rollback and retention procedures are in
-[operations](operations.md#data-root-layout). Account rows carry `home` (the home in
+fields and the `layout status` command; `retention` reports classes, settings and built-in
+defaults. The layout and retention procedures are in [operations](operations.md#data-root-layout). Account rows carry `home` (the home in
 use: an adopted Claude config home, the managed `accounts/<platform>/<name>`, or a
-deferred legacy path) and `home_deferred`. A legacy root is refused by every command
-except `api version` and `layout` with `LAYOUT_MIGRATION_REQUIRED`; other codes are
+deferred legacy path) and `home_deferred`. A root below layout version 2 is refused by every command
+except `api version` and `layout` with `LAYOUT_MIGRATION_REQUIRED` (`layout version N is not
+supported; this release needs 3`); other codes are
 `LAYOUT_MIGRATION_IN_PROGRESS`, `LAYOUT_CONFLICT`, `LAYOUT_UNSUPPORTED`,
 `BACKUP_REQUIRED` and `DAEMON_RUNNING`. Owner and home paths recorded before a home
-moved are compared by resolved path, and `layout migrate` and backend rename rewrite
+moved are compared by resolved path, and backend rename rewrites
 stored conversation `owner` and pane-binding `home` values (`home_refs_rewritten`);
 journals and receipts are never rewritten. Only `sessionsation setup` creates a
 missing root; every other command fails closed with `DATA_ROOT_MISSING`.
@@ -3268,7 +3244,7 @@ missing root; every other command fails closed with `DATA_ROOT_MISSING`.
 
 Capability `disk_space`; config `min_free_disk_mb` (default 512, 0 disables). Archive,
 restore, delete, switch, restart, resume, relocate, move-space, launch start,
-resume-launch start, account delete, `shared migrate` and `layout migrate` (not dry
+resume-launch start, account delete (not dry
 runs) check the free space of the file system holding the data root first and refuse
 with `INSUFFICIENT_DISK_SPACE` (`free_bytes`, `needed_bytes`, `operation`). `api
 disk-space` reports the same figures read-only. Any ENOSPC/EDQUOT is reported as
@@ -3277,35 +3253,19 @@ snapshot with `snapshot.refresh_failed:"DISK_FULL"`, `snapshot.fresh:false` and 
 `warnings[]` entry `STATE_REFRESH_FAILED_DISK_FULL`; without a snapshot it fails
 `DISK_FULL`.
 
-### Root alias and re-key
+### Root alias
 
 On Unraid `/mnt/user/<share>` and `/mnt/disk1/<share>` can be one tree with two
-spellings (a bind, not a symlink). `sessionsation root migrate` moves a data root and
-its sessions from one spelling to the other; the operator procedure is in
-[operations](operations.md#root-re-key). Capability `root_alias` (`since_contract`
-1.54.0, `version`, `layout_version: 3`, `state`, `entries`, `commands`,
-`session_states`, `normalize_requests`, `gate`, `retained_copies`, `memory_merge`,
-`errors`).
+spellings (a bind, not a symlink). A data root whose `layout.json` carries an active
+`root_alias` block is layout version 3; since 1.68.0 the commands that created it
+(`root status|migrate|rollback|finalize`) are gone and the capability `root_alias` is
+no longer reported. The operator procedure is in [operations](operations.md#root-alias).
 
-```sh
-sessionsation root status
-sessionsation root migrate --from /mnt/user --to /mnt/disk1 --backup DIR [--dry-run] [--allow-full-copy]
-sessionsation root migrate --session S [--expected-generation G] [--accept-risks] [--prompt TEXT | --prompt-file F]
-sessionsation root rollback [--session S] [--dry-run]
-sessionsation root finalize [--dry-run] [--accept-unresumed]
-```
-
-- **Alias.** `--from F --to T` becomes one entry per first path component found in
-  stored paths (for example `/mnt/user/appdata` -> `/mnt/disk1/appdata`), accepted only
-  when proven: both are real directories, no other array disk or pool mount beside the
-  two spellings holds content under the share (network/FUSE mounts are never
-  consulted; each check bounded to 2 s, `stat_timeout`), and `st_dev:st_ino` match or a
-  probe file written under `T` is read under `F`. Unproven shares are reported
-  (`unproven`, `unmapped`). The block is stored in `layout.json` as `root_alias`
-  (`version`, `state` `pending|active|inactive`, `root_id`, `canonical_root`,
-  `previous_root`, `entries`, `normalize_requests`, `run`, `backup`, `activated_at`).
-  Activation stamps layout version 3; earlier builds refuse it (`LAYOUT_UNSUPPORTED`)
-  and `root rollback` returns the root to version 2.
+- **Alias.** `root_alias` in `layout.json` holds `version`, `state`
+  (`pending|active|inactive`), `root_id`, `canonical_root`, `previous_root`, `entries` (one
+  proven prefix pair per share, for example `/mnt/user/appdata` -> `/mnt/disk1/appdata`),
+  `normalize_requests`, `run`, `backup` and `activated_at`. Version 3 requires an active
+  block (`LAYOUT_INVALID` otherwise); earlier builds refuse it (`LAYOUT_UNSUPPORTED`).
 - **Opening and comparing.** A root opened by either spelling resolves to
   `canonical_root` when both are the same directory or show the same `root_id`,
   otherwise `ROOT_ALIAS_UNVERIFIED`. `api version` adds `requested_root` and `root`.
@@ -3313,73 +3273,6 @@ sessionsation root finalize [--dry-run] [--accept-unresumed]
   process environments such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`) compares the alias
   forms, so a process started with the old spelling stays verified. Stored values keep
   their spelling; new request directories take the new spelling once the alias is
-  active. Path-valued fields change spelling for migrated rows; treat them as opaque
-  or compare after mapping. While active, each old spelling's runtime path
+  active. While active, each old spelling's runtime path
   (`/tmp/sessionsation-<uid>-<hash>`) is a directory symlink to the canonical runtime
   directory, so clients that derive the control socket from the old root keep working.
-- **Root step** (supervisor stopped, else `DAEMON_RUNNING`). Preconditions: layout 2
-  complete or an unfinished run of the same `--from/--to` (`LAYOUT_MIGRATION_REQUIRED`,
-  `ROOT_MIGRATION_MISMATCH`), the root's entry proven (`ROOT_ALIAS_UNPROVEN`), no
-  non-terminal operation and no live hosted Claude worker (`ROOT_MIGRATION_BLOCKED`
-  with the list; an unreadable journal also blocks), a rollback-gate snapshot for every
-  attached or running session, disk space, `--backup` new or empty and outside the
-  root (`BACKUP_REQUIRED`, `BACKUP_NOT_EMPTY`), and reflink unless `--allow-full-copy`
-  (`BACKUP_REFLINK_UNSUPPORTED`). Steps, journaled and idempotent in
-  `operations/root-migrations/<run>.json` (values in `<run>.changes.jsonl`): `backup`
-  (metadata, `VACUUM INTO` database copies, a reflink copy of `shared/claude/projects`,
-  every managed `.claude.json`; manifest `root-backup.json` with sha256 per file;
-  `BACKUP_VERIFY_FAILED`), `mark`, `links` (the shared-store links re-pointed),
-  `registry` (conversation owners, pane homes, thread locations, `codex_binary`),
-  `claude` (`.claude.json` project entries cloned to the new key, memory merged,
-  stopped sessions re-keyed), `codex` (thread locations of threads not running),
-  `activate`, `verify` (`ROOT_VERIFY_FAILED`). Only a session positively known to be
-  stopped is re-keyed; an undecided probe leaves it (`left_behind`, `probe_failed`).
-  Journals, receipts, archives and logs are never rewritten.
-- **Claude re-key of one session.** All lineage transcripts are located (two for one
-  id: `ROOT_REKEY_CONFLICT`). Every name to move (`<id>.jsonl`, `<id>/`) is copied to
-  `<backup>/sessions/<session>/<attempt>/<old key>/` and verified by sha256 **before**
-  any rename, which happens only while the session is stopped, with
-  `RENAME_NOREPLACE` (a name already in the new key is a collision). Memory
-  (`projects/<key>/memory/`) is merged per file, never moved: a missing file is copied,
-  a file changed on one side fast-forwards by an atomic exchange (undone if a writer
-  changed the target meanwhile), replaced versions are kept under
-  `<backup>/memory-versions/`, and a file changed on both sides is a conflict (copied to
-  `<backup>/memory-conflicts/`; the session is not switched). Then the catalog
-  `directory` changes once. The quiet check fails closed (unreadable registry or
-  account list, a process naming the conversation, a transcript writer). Any error
-  after the move moves the names back before `left_behind`.
-- **Session step** (`--session`, alias active). A running Claude session in a HERDR
-  pane is stopped (pidfd SIGTERM; a busy one needs `--accept-risks`; Claude deliveries
-  in flight are waited for up to 30 s, `SESSION_DELIVERY_IN_PROGRESS`), re-keyed,
-  resumed once in the same pane and verified (same conversation in the recorded pane;
-  registry and `/proc` cwd equal the new directory; the pre-move bytes are a prefix of
-  the live transcript; memory). A positive failure moves it back and resumes it on the
-  old path (`left_behind`); an unconfirmed resume is `uncertain`; memory problems end
-  `verify_failed`. `--prompt` is delivered once after verification. A stopped Claude
-  session is re-keyed in place (`rekeyed`); a Codex thread that is not running gets a
-  thread location, a running one goes through the directory job (`relocating`, then
-  `verified`); archived sessions are `archived_rekey_at_restore`; Gemini and
-  Antigravity are `ROOT_REKEY_UNSUPPORTED_PROVIDER`; other refusals
-  `ROOT_REKEY_UNSUPPORTED`. Records `operations/root-migrations/session-<session>.json`
-  (`kind:"root_rekey"` while in flight; never pruned).
-- **`root status`** returns `{layout_version, requested_root, root, root_alias, run,
-  counts, sessions, deferred_running, left_behind, memory_split, memory_conflicts,
-  collisions, unmapped, retained, gate, gate_detail}`. Session states: `verified`,
-  `rekeyed`, `archived_rekey_at_restore`, `deferred_running`, `left_behind`,
-  `unsupported_provider`, `not_applicable`, `verify_failed`, `failed`, `uncertain`,
-  `relocating`; rows carry their retained copies (`copy`, `sha256`, `verified`). `gate`
-  is `pass` when every session attached or running before activation is still
-  recognised as running and every probe succeeded (`gate_detail.sessions[]`), `fail`
-  otherwise (run `root rollback`), `not_applicable` without an activated run.
-- **Rollback** (supervisor stopped): every session this run changed that is not
-  `verified` moves back, journaled values are restored (original bytes when unchanged
-  since), links re-pointed, unchanged cloned `.claude.json` entries removed, thread
-  locations restored when still the re-key's record, `layout.json` back to version 2.
-  Refused while a re-key worker runs or a process uses the new spelling of a home in
-  `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GEMINI_CLI_HOME` (`ROOT_ROLLBACK_BLOCKED` with
-  the pids). `root rollback --session S` undoes one session (a running one is stopped,
-  moved back and resumed by a detached worker). Rollback also moves back lineage names
-  found only in the new key and maps records written after activation back. Problems
-  end `rollback_incomplete` (alias still active; rerun).
-- **Finalize** removes empty old project-key directories (`rmdir` only) and reports old
-  `memory/` directories (`memory_removable`). No command deletes the retained copies.

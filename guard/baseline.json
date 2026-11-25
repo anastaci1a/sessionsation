@@ -16,35 +16,35 @@
     "doc_bytes:agents/README.md": { "value": 10289 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 14000 },
-    "doc_bytes:docs/cli.md": { "value": 19046 },
-    "doc_bytes:docs/contract.md": { "value": 231484 },
-    "doc_bytes:docs/operations.md": { "value": 23430 },
-    "doc_bytes_total": { "value": 309237 },
+    "doc_bytes:docs/changelog.md": { "value": 13960 },
+    "doc_bytes:docs/cli.md": { "value": 18334 },
+    "doc_bytes:docs/contract.md": { "value": 223317 },
+    "doc_bytes:docs/operations.md": { "value": 17623 },
+    "doc_bytes_total": { "value": 294511 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "duration_literals": { "value": 188 },
-    "env_scrub_sites": { "value": 51 },
-    "error_code_literals": { "value": 683 },
+    "duration_literals": { "value": 172 },
+    "env_scrub_sites": { "value": 50 },
+    "error_code_literals": { "value": 643 },
     "file_cache_statics": { "value": 8 },
-    "flock_sites": { "value": 86 },
-    "fs2_imports": { "value": 32 },
-    "fs_write_sites": { "value": 5 },
+    "flock_sites": { "value": 84 },
+    "fs2_imports": { "value": 31 },
+    "fs_write_sites": { "value": 1 },
     "generation_allow_markers": { "value": 0 },
     "herdr_allow_markers": { "value": 0 },
-    "herdr_cli_callers": { "value": 42 },
+    "herdr_cli_callers": { "value": 41 },
     "identity_allow_markers": { "value": 0 },
-    "inline_test_lines": { "value": 19250 },
-    "json_parse_sites": { "value": 136 },
-    "ledger_allow_markers": { "value": 2 },
+    "inline_test_lines": { "value": 19236 },
+    "json_parse_sites": { "value": 129 },
+    "ledger_allow_markers": { "value": 0 },
     "ledger_opens": { "value": 0 },
     "locks_allow_markers": { "value": 0 },
     "module_lines:src/accounts": { "value": 654 },
     "module_lines:src/activity": { "value": 0 },
-    "module_lines:src/alias": { "value": 706 },
-    "module_lines:src/api": { "value": 5663 },
+    "module_lines:src/alias": { "value": 485 },
+    "module_lines:src/api": { "value": 5653 },
     "module_lines:src/archive": { "value": 0 },
     "module_lines:src/auto_start": { "value": 0 },
-    "module_lines:src/catalog": { "value": 3912 },
+    "module_lines:src/catalog": { "value": 3860 },
     "module_lines:src/codes": { "value": 0 },
     "module_lines:src/config": { "value": 276 },
     "module_lines:src/contract": { "value": 0 },
@@ -54,7 +54,7 @@
     "module_lines:src/file_cache": { "value": 207 },
     "module_lines:src/host": { "value": 0 },
     "module_lines:src/launch": { "value": 1661 },
-    "module_lines:src/main": { "value": 2188 },
+    "module_lines:src/main": { "value": 1974 },
     "module_lines:src/messaging/codex_input": { "value": 0 },
     "module_lines:src/messaging/compaction": { "value": 1565 },
     "module_lines:src/messaging/ledger": { "value": 823 },
@@ -80,34 +80,34 @@
     "module_lines:src/retention": { "value": 401 },
     "module_lines:src/rpc": { "value": 297 },
     "module_lines:src/session_model": { "value": 524 },
-    "module_lines:src/shared_state": { "value": 1431 },
+    "module_lines:src/shared_state": { "value": 441 },
     "module_lines:src/state": { "value": 0 },
-    "now_sites": { "value": 26 },
+    "now_sites": { "value": 24 },
     "oauth_allow_markers": { "value": 2 },
     "oauth_sites": { "value": 2 },
-    "operations_dir_sites": { "value": 43 },
-    "phase_records": { "value": 12 },
+    "operations_dir_sites": { "value": 40 },
+    "phase_records": { "value": 11 },
     "pidfd_sites": { "value": 0 },
     "proc_stat_readers": { "value": 0 },
     "provider_enum_dispatch": { "value": 0 },
     "provider_ops_allow_markers": { "value": 0 },
     "provider_string_compares": { "value": 0 },
-    "raw_sleeps": { "value": 101 },
-    "receipts_sites": { "value": 2 },
+    "raw_sleeps": { "value": 94 },
+    "receipts_sites": { "value": 0 },
     "records_allow_markers": { "value": 0 },
-    "rename_sites": { "value": 26 },
-    "save_fns": { "value": 28 },
+    "rename_sites": { "value": 19 },
+    "save_fns": { "value": 24 },
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
-    "sha256_digests": { "value": 25 },
-    "since_contract_literals": { "value": 44 },
+    "sha256_digests": { "value": 21 },
+    "since_contract_literals": { "value": 43 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
-    "spawn_sites": { "value": 62 },
+    "spawn_sites": { "value": 59 },
     "sqlite_allow_markers": { "value": 0 },
-    "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 103063 },
-    "stale_target_literals": { "value": 62 },
+    "sqlite_opens": { "value": 5 },
+    "src_lines": { "value": 95079 },
+    "stale_target_literals": { "value": 58 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
     "tmux_raw": { "value": 5 },
@@ -115,7 +115,7 @@
     "typing_dup_fns": { "value": 0 },
     "unsupported_literals": { "value": 0 },
     "waits_allow_markers": { "value": 0 },
-    "worker_lock_sites": { "value": 21 },
+    "worker_lock_sites": { "value": 20 },
     "ws_allow_markers": { "value": 0 },
     "ws_connects": { "value": 3 }
   },
@@ -131,7 +131,7 @@
     "doc_bytes:docs/operations.md": { "value": 24200 },
     "doc_bytes_total": { "value": 313300 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "src_lines": { "value": 103063 }
+    "src_lines": { "value": 95079 }
   },
   "ledger": [
     {
@@ -1206,6 +1206,286 @@
       "reason": "shrink-S0 paragraph in agents/README.md",
       "considered": "n/a",
       "step": "shrink-S0",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": -40,
+      "reason": "shrink-S1a: docs of the removed root/layout/shared migrations; 1.68.0 changelog entry",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes:docs/cli.md",
+      "by": -712,
+      "reason": "shrink-S1a: docs of the removed root/layout/shared migrations; 1.68.0 changelog entry",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": -8167,
+      "reason": "shrink-S1a: docs of the removed root/layout/shared migrations; 1.68.0 changelog entry",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes:docs/operations.md",
+      "by": -5807,
+      "reason": "shrink-S1a: docs of the removed root/layout/shared migrations; 1.68.0 changelog entry",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": -14726,
+      "reason": "shrink-S1a: docs of the removed root/layout/shared migrations; 1.68.0 changelog entry",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "duration_literals",
+      "by": -16,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "env_scrub_sites",
+      "by": -1,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "error_code_literals",
+      "by": -40,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "flock_sites",
+      "by": -2,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "fs2_imports",
+      "by": -1,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "fs_write_sites",
+      "by": -4,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "herdr_cli_callers",
+      "by": -1,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "inline_test_lines",
+      "by": -14,
+      "reason": "shrink-S1a: inline test lines of the deleted migration modules",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "json_parse_sites",
+      "by": -7,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "ledger_allow_markers",
+      "by": -2,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/alias",
+      "by": -221,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/api",
+      "by": -10,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/catalog",
+      "by": -52,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/main",
+      "by": -214,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/shared_state",
+      "by": -990,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "now_sites",
+      "by": -2,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "operations_dir_sites",
+      "by": -3,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "phase_records",
+      "by": -1,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "raw_sleeps",
+      "by": -7,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "receipts_sites",
+      "by": -2,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "rename_sites",
+      "by": -7,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "save_fns",
+      "by": -4,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "sha256_digests",
+      "by": -4,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "since_contract_literals",
+      "by": -1,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "spawn_sites",
+      "by": -3,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "sqlite_opens",
+      "by": -5,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "src_lines",
+      "by": -7984,
+      "reason": "shrink-S1a: delete root_migrate (runtime.rs kept as alias/runtime.rs), layout/migrate.rs, shared_state/migrate.rs, their CLI verbs and tests; alias/gate.rs moves under tests/",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "stale_target_literals",
+      "by": -4,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "worker_lock_sites",
+      "by": -1,
+      "reason": "shrink-S1a: sites of the deleted migration code",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "cap:src_lines",
+      "by": -7984,
+      "reason": "shrink-S1a: the cap follows the counter down",
+      "considered": "n/a",
+      "step": "shrink-S1a",
       "program": "shrink"
     }
   ],

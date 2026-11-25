@@ -409,7 +409,7 @@ fn apply_poll(state: &mut State, store: &mut Store, result: Poll) -> Result<bool
 pub async fn serve(paths: Paths) -> Result<()> {
     std::env::set_current_dir(&paths.root)?;
     // Root alias (contract 1.54.0): old-spelling runtime paths reach this runtime.
-    for link in crate::root_migrate::runtime::ensure(&paths) {
+    for link in crate::alias::runtime::ensure(&paths) {
         if link["result"]
             .as_str()
             .is_some_and(|r| r.starts_with("refused"))
@@ -674,7 +674,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         }
                         "config/get" => Ok(serde_json::to_value(&config)?),
                         "config/set" => {
-                            let new: Config = serde_json::from_value(params.clone())?; new.validate()?;
+                            let (new, _) = Config::parse(params.clone())?; new.validate()?;
                             ensure!(new.codex_binary == config.codex_binary || helpers.is_empty(), "restart supervisor before changing an active Codex binary");
                             save_config(&paths,&new)?; config = new; Ok(json!({"saved":true}))
                         }

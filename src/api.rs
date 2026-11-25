@@ -21,9 +21,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 67;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.67.1";
+pub const CONTRACT_MINOR: u32 = 68;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.68.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -72,7 +72,7 @@ pub fn version_for(paths: &Paths) -> Result<Value> {
     Ok(v)
 }
 
-/// Every operation row of `api operations` (also the `root migrate` P4 check).
+/// Every operation row of `api operations`.
 pub fn operations_list(paths: &Paths) -> Result<Vec<Value>> {
     let mut ops = external::jobs(paths)?
         .into_iter()
@@ -102,8 +102,6 @@ pub fn operations_list(paths: &Paths) -> Result<Vec<Value>> {
     ops.extend(crate::messaging::compaction::operations(paths)?);
     ops.extend(crate::messaging::model_change::operations(paths)?);
     ops.extend(crate::session_launch::operations(paths)?);
-    // Contract 1.54.0: per-session root re-keys in flight.
-    ops.extend(crate::root_migrate::operations(paths));
     Ok(ops)
 }
 
@@ -2133,8 +2131,6 @@ pub fn capabilities() -> Value {
     value["pane_reuse"] = crate::pane_reuse::capability();
     // Contract 1.53.0: redeem a stored Codex rate-limit reset credit.
     value["account_reset_credit"] = crate::reset_credit::capability();
-    // Contract 1.54.0: root alias and re-key (`root status|migrate|rollback|finalize`).
-    value["root_alias"] = crate::root_migrate::capability();
     value["new_space"] = json!({"since_revision":20,"version":1,"resume":true,"add_to_herdr":true,"move_space":true,"label_validation":"space_label","exists_error":"WORKSPACE_NAME_EXISTS"});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
     value["auto_recover"] = crate::auto_recover::capability();
@@ -4913,15 +4909,9 @@ mod prefill_tests {
             json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
         );
         assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-        assert_eq!(c["contract_version"], "1.67.1");
+        assert_eq!(c["contract_version"], "1.68.0");
         assert_eq!(c["send_request"]["since_contract"], "1.64.0");
-        let root = &c["root_alias"];
-        assert_eq!(root["since_contract"], "1.54.0");
-        assert_eq!(root["layout_version"], 3);
-        assert_eq!(
-            root["gate"]["values"],
-            json!(["pass", "fail", "not_applicable"])
-        );
+        assert!(c.get("root_alias").is_none());
         let reset = &c["account_reset_credit"];
         assert_eq!(reset["since_contract"], "1.53.0");
         assert_eq!(reset["providers"], json!(["codex", "claude"]));

@@ -1,4 +1,4 @@
-//! `sessionsation shared ...` through the real binary on disposable roots (contract 1.39.0).
+//! `sessionsation shared status|enable` through the real binary on disposable roots (contract 1.39.0).
 #![allow(
     clippy::disallowed_methods,
     reason = "integration tests are exempt from owned roles (src/guard.rs)"
@@ -11,8 +11,7 @@ use sessionsation::{
     store::Store,
 };
 use std::{
-    fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Output},
 };
 
@@ -61,36 +60,11 @@ impl Fx {
         self.root.join("accounts/claude").join(name)
     }
 }
-fn write(path: &Path, text: &str) {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, text).unwrap();
-}
-fn exchange_supported(dir: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let (x, y) = (dir.join("px"), dir.join("py"));
-    fs::create_dir(&x).unwrap();
-    std::os::unix::fs::symlink("t", &y).unwrap();
-    let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
-    let r = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            c(&x).as_ptr(),
-            libc::AT_FDCWD,
-            c(&y).as_ptr(),
-            2u32,
-        )
-    };
-    let _ = fs::remove_dir(&x).or_else(|_| fs::remove_file(&x));
-    let _ = fs::remove_dir(&y).or_else(|_| fs::remove_file(&y));
-    r == 0
-}
-
 #[test]
 fn capabilities_advertise_shared_claude_state() {
     let f = fixture(&[]);
     let caps = f.json(&["api", "capabilities"]);
-    assert_eq!(caps["result"]["contract_version"], "1.67.1");
+    assert_eq!(caps["result"]["contract_version"], "1.68.0");
     let shared = &caps["result"]["shared_claude_state"];
     assert_eq!(shared["version"], 1);
     assert_eq!(
@@ -104,99 +78,26 @@ fn capabilities_advertise_shared_claude_state() {
             "commands"
         ])
     );
+    assert_eq!(
+        shared["commands"],
+        serde_json::json!(["shared status", "shared enable"])
+    );
+    assert!(caps["result"].get("root_alias").is_none());
 }
 
 #[test]
-fn status_enable_and_migrate_through_the_cli() {
+fn status_and_enable_through_the_cli_and_migrate_is_gone() {
     let f = fixture(&["a", "b"]);
-    if !exchange_supported(&f.root) {
-        eprintln!("SKIPPED: renameat2(RENAME_EXCHANGE) is not supported on this test file system");
-        return;
-    }
     let status = f.json(&["shared", "status"]);
     assert_eq!(status["enabled"], false);
     assert_eq!(status["accounts"][0]["linked"], false);
-
-    write(&f.home("a").join("projects/-w/one.jsonl"), "one");
-    write(&f.home("b").join("projects/-w/two.jsonl"), "two");
-    write(&f.home("b").join("todos/t-agent-1.json"), "[]");
-    let dry = f.json(&["shared", "migrate", "--account", "claude:a", "--dry-run"]);
-    assert_eq!(dry["dry_run"], true);
-    assert_eq!(dry["names"]["projects"]["action"], "adopt_by_exchange");
-    assert!(!f.root.join("shared").exists(), "dry run wrote nothing");
-
-    for name in ["a", "b"] {
-        let out = f.json(&[
-            "shared",
-            "migrate",
-            "--account",
-            &format!("claude:{name}"),
-            "--allow-full-copy",
-        ]);
-        assert_eq!(out["complete"], true, "{out}");
-    }
-    let status = f.json(&["shared", "status"]);
-    assert_eq!(status["enabled"], true);
-    for account in status["accounts"].as_array().unwrap() {
-        assert_eq!(account["linked"], true, "{account}");
-        assert_eq!(account["names"]["projects"], "linked");
-    }
-    for name in ["a", "b"] {
-        assert_eq!(
-            fs::read_link(f.home(name).join("projects")).unwrap(),
-            f.root.join("shared/claude/projects")
-        );
-        assert!(f.home(name).join("projects/-w/one.jsonl").exists());
-        assert!(f.home(name).join("projects/-w/two.jsonl").exists());
-    }
-    let again = f.json(&["shared", "migrate", "--account", "claude:b"]);
-    assert_eq!(again["already_migrated"], true);
-}
-
-#[test]
-fn conflicts_exit_nonzero_with_a_code_and_change_nothing_destructively() {
-    let f = fixture(&["a", "b"]);
-    if !exchange_supported(&f.root) {
-        eprintln!("SKIPPED: renameat2(RENAME_EXCHANGE) is not supported on this test file system");
-        return;
-    }
-    write(&f.home("a").join("projects/-w/memory/MEMORY.md"), "a");
-    write(&f.home("b").join("projects/-w/memory/MEMORY.md"), "b");
+    let enabled = f.json(&["shared", "enable"]);
+    assert_eq!(enabled["enabled"], true);
+    assert!(f.root.join("shared/claude").is_dir());
     assert!(
-        f.run(&[
-            "shared",
-            "migrate",
-            "--account",
-            "claude:a",
-            "--allow-full-copy"
-        ])
-        .status
-        .success()
+        !f.run(&["shared", "migrate", "--account", "claude:a"])
+            .status
+            .success()
     );
-    let out = f.run(&[
-        "shared",
-        "migrate",
-        "--account",
-        "claude:b",
-        "--allow-full-copy",
-    ]);
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("SHARED_STATE_MIGRATION_INCOMPLETE"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("\"code\""));
-    let printed: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(printed["complete"], false);
-    assert_eq!(
-        fs::read_to_string(f.home("b").join("projects/-w/memory/MEMORY.md")).unwrap(),
-        "b"
-    );
-    assert_eq!(
-        fs::read_to_string(f.root.join("shared/claude/projects/-w/memory/MEMORY.md")).unwrap(),
-        "a"
-    );
-    let wrong = f.run(&["shared", "migrate", "--account", "codex:a"]);
-    assert!(String::from_utf8_lossy(&wrong.stderr).contains("ACCOUNT_PROVIDER_REQUIRED"));
+    assert!(!f.home("a").join("projects").exists());
 }

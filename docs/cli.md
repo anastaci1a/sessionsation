@@ -347,28 +347,18 @@ accounts by hand. See [conversation archives](contract.md#conversation-archives)
 ```sh
 sessionsation shared status
 sessionsation shared enable
-sessionsation shared migrate --account claude:NAME --dry-run [--fs-path /mnt/disk1/appdata/sessionsation]
-sessionsation shared migrate --account claude:NAME [--allow-full-copy] [--fs-path DISK-PATH]
 ```
 
-On Unraid pass the real-disk path with `--fs-path` (the user share cannot exchange
-or reflink). See [shared Claude state](contract.md#shared-claude-state).
+See [shared Claude state](contract.md#shared-claude-state).
 
 ## Data-root maintenance
 
 ```sh
 sessionsation api disk-space
 sessionsation layout status
-sessionsation layout migrate [--dry-run] [--backup NEW-EMPTY-DIR]
-sessionsation layout rollback [--dry-run]
 sessionsation retention run [--dry-run]
-sessionsation root status
-sessionsation root migrate --from /mnt/user --to /mnt/disk1 --backup NEW-DIR [--dry-run] [--allow-full-copy]
-sessionsation root migrate --session space:name [--accept-risks] [--prompt-file F]
-sessionsation root rollback [--session space:name]
-sessionsation root finalize --dry-run
 ```
 
 Procedures: [layout](operations.md#data-root-layout), [retention](operations.md#retention),
-[root re-key](operations.md#root-re-key). Reference:
+[root alias](operations.md#root-alias). Reference:
 [data root](contract.md#data-root).

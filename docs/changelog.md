@@ -14,12 +14,15 @@ and package history are in Git.
   `PROVIDER_DELIVERY_UNSUPPORTED`, `DELIVERY_UNAVAILABLE`,
   `UNSUPPORTED_PROVIDER_OPERATION` or `INVALID_REQUEST`). Detect providers with
   `capabilities.send_request.providers` instead.
-- 1.54.0 activates layout version 3; binaries before 1.54.0 refuse it, so run
-  `root rollback` before a downgrade. 1.49.0 adds journals older releases ignore; drain
+- 1.54.0 activates layout version 3; binaries before 1.54.0 refuse it (`root rollback`
+  is gone in 1.68.0). 1.49.0 adds journals older releases ignore; drain
   them before rolling back ([operations](operations.md#rolling-back-a-release)).
 
 ## Versions
 
+- **1.68.0** Removed `root status|migrate|rollback|finalize` (capability `root_alias`),
+  `layout migrate|rollback` and `shared migrate`; a dropped config key is ignored, not
+  refused. [Root alias](contract.md#root-alias).
 - **1.67.1** Workers inherit no client lock fds; a repeated `session launch` re-admits;
   sends skip hourly retention.
 - **1.67.0** A refused check before Enter withdraws the typed text. Launches use the
@@ -41,12 +44,9 @@ and package history are in Git.
   `not_found:true`; `resume-launch` for Claude and Antigravity.
   [State](contract.md#identity-and-snapshots), [stop](contract.md#stop-and-restart),
   [resume](contract.md#saved-session-popup-resume).
-- **1.65.0** (meter cycles) Usage windows gain `cycle`, `cycle_started_at`,
-  `cycle_reason` and `starts_on_first_use`; a redeem starts a cycle in
-  which a lower reading counts; usage never drops within one. Meters gain
-  `window_reasons`; a window past its reset is stale until a triggered read. Claude meter
-  reads carry `cedar_ember`; `reset_credits` gains `fresh`, `age_seconds`; Claude
-  `reset-credit` adds `cycles_started`. [Usage](contract.md#limits-plan-and-usage).
+- **1.65.0** (meter cycles) Usage windows gain `cycle`, `cycle_started_at`, `cycle_reason`,
+  `starts_on_first_use`; meters `window_reasons` and (Claude) `cedar_ember`; `reset_credits`
+  `fresh`, `age_seconds`; a redeem starts a cycle. [Usage](contract.md#limits-plan-and-usage).
 - **1.64.0** One `api send` body for every provider (intents `deliver`, `when_idle`,
   `interrupt`; `ignored_options`; one `delivery` block), supervisor-owned delivery
   workers with one safe re-dispatch; `api events`, `api hooks [install]`, Claude
@@ -85,7 +85,7 @@ and package history are in Git.
   [Archives](contract.md#conversation-archives), [stop](contract.md#stop-and-restart).
 - **1.54.0** Root alias and re-key (`root status|migrate|rollback|finalize`, layout
   version 3; capability `root_alias`, `since_contract` 1.54.0).
-  [Root alias](contract.md#root-alias-and-re-key).
+  [Root alias](contract.md#root-alias).
 - **1.53.0** Codex rate-limit reset credits (`api account reset-credit`,
   `usage.reset_credits`). [Reset credits](contract.md#reset-credits).
 - **1.52.0** Idle-tab reuse for starts and resumes (`reuse_idle_tabs`, `pane_reused`);
@@ -108,8 +108,8 @@ and package history are in Git.
   no-progress bound. **1.47.0** `api session compact --when-idle` for Codex with an
   input hold.
   [Compaction](contract.md#compaction-at-the-next-idle-point).
-- **1.46.8** Auto Start `already_running` result. [Auto Start](contract.md#auto-start).
-- **1.46.7** `accounts[].plan`. [Plan](contract.md#limits-plan-and-usage).
+- **1.46.8** Auto Start `already_running` result. **1.46.7** `accounts[].plan`.
+  [Auto Start](contract.md#auto-start), [plan](contract.md#limits-plan-and-usage).
 - **1.46.5** Codex steer and cancel wait for the ledger; `if_busy:"queue"` on submit.
   **1.46.4** Codex messaging waits for the ledger lease and releases it during
   app-server I/O. [Contention](contract.md#admission-and-contention).
@@ -194,7 +194,6 @@ and package history are in Git.
   [Headless](contract.md#headless-delivery).
 - **Revision 10** Claude provider and the per-operation capability table.
   [Claude](contract.md#claude-code).
-- **Revisions 5-9** In-turn steering, HERDR-owned names, public turn checkpoints,
-  `api turn-target`, batch placement observations.
-- **Revisions 3-4** Explicit Resume-and-submit and exact-item idle start.
+- **Revisions 3-9** Resume-and-submit, exact-item idle start, in-turn steering, HERDR-owned
+  names, turn checkpoints, `api turn-target`, batch observations.
   [Recovery](contract.md#explicit-resume-and-submit).
