@@ -269,6 +269,7 @@ pub(super) fn messaging_owner(paths: &Paths, id: &str, home: &Path) -> Result<bo
             .is_none_or(|owner| crate::layout::same_home(&owner, home)))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 /// Inventory only switcher's own naming/ownership metadata; no history scan.
 pub(super) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
     let dir = paths.root.join(crate::layout::CONVERSATIONS);

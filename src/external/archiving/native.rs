@@ -407,11 +407,7 @@ pub(crate) fn collect(provider: ProviderId, home: &Path, ids: &[String]) -> Resu
     for id in ids {
         uuid::Uuid::parse_str(id)?;
         match ops::facts(provider).archive {
-            ArchiveLayout::GeminiChats => {
-                for p in gemini::chat_paths(home, id) {
-                    add(p)?;
-                }
-            }
+            ArchiveLayout::GeminiChats => return Err(gemini::refusal()),
             ArchiveLayout::AgyIndex => {
                 for p in antigravity::conversation_files(home, id) {
                     add(p)?;

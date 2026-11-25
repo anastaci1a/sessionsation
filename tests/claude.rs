@@ -1685,7 +1685,7 @@ async fn display_names_rename_any_provider_without_changing_identity() {
     assert!(row("claude:personal")["display_name"].is_null());
     let caps = f.api(&["capabilities"]);
     for p in caps["providers"].as_array().unwrap() {
-        assert_eq!(p["account_rename"], true);
+        assert_eq!(p["account_rename"], p["id"] != "gemini");
     }
 }
 
@@ -2501,7 +2501,7 @@ async fn claude_logout_uses_the_official_command_refuses_in_use_and_is_idempoten
     assert!(capabilities["contract_revision"].as_i64().unwrap() >= 14);
     for provider in capabilities["providers"].as_array().unwrap() {
         // Antigravity signs out only inside agy (/logout): declared unsupported.
-        let expected = provider["id"] != "antigravity";
+        let expected = provider["id"] != "antigravity" && provider["id"] != "gemini";
         assert_eq!(provider["account_logout"], expected);
         assert_eq!(
             provider["operations"]["account_logout"]["supported"],

@@ -4,7 +4,7 @@
 use crate::{
     config::Config,
     paths::Paths,
-    provider::{ProviderId, claude, gemini},
+    provider::{ProviderId, claude},
     rpc::Rpc,
 };
 use anyhow::{Context, Result, ensure};
@@ -119,16 +119,6 @@ pub async fn claude(config: &Config, home: &Path) -> Result<()> {
     ensure!(
         !status.logged_in,
         "LOGOUT_INCOMPLETE: Claude still reports a login (an API key or cloud provider environment is not cleared by `claude auth logout`)"
-    );
-    Ok(())
-}
-
-/// Gemini: see `gemini::logout`.
-pub fn gemini(home: &Path) -> Result<()> {
-    gemini::logout(home)?;
-    ensure!(
-        !gemini::auth_status(home).logged_in,
-        "LOGOUT_INCOMPLETE: Gemini credentials are still present"
     );
     Ok(())
 }

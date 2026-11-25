@@ -208,8 +208,7 @@ synthetic tests do not prove a model send.
   `thread/turns/list`, `thread/items/list`, `thread/queue/*`, `thread/resume`, item
   notifications, rate limits, login/logout/account-read); differences are additive
   (`modelNotFound`, a `gcp` account variant, `thread/memory/read` and optional
-  parameters). `doctor --probe` against a temporary root, `check_native_compaction.py`
-  (both modes) and the checkpoint fixture passed in a network-disabled container. One
+  parameters). `check_native_compaction.py` (both modes) and the checkpoint fixture passed in a network-disabled container. One
   operator-approved live steer recorded the item order that
   [steer reply correlation](contract.md#steer-reply-correlation) relies on.
 - **0.166.0.** The managed daemons auto-updated while the terminal CLI stayed on
@@ -269,6 +268,3 @@ no real model. Source references: `core/src/session/turn_input.rs` and
 [Codex rust-v0.164.0](https://github.com/openai/codex/tree/rust-v0.164.0/codex-rs).
 Neither fixture sends input to, resumes or interrupts an installed working session.
 
-`NATIVE_HANDOFF_UNVERIFIED` (from `doctor`) means automatic switching stays
-unavailable until the cross-account, terminal draft, subagent restoration and
-tool-quiescence gates pass; run `sessionsation doctor --probe`.

@@ -1,5 +1,4 @@
 use crate::{
-    compatibility,
     config::Config,
     model::{Account, Credits, State, Usage, Window},
     paths::{Paths, private_dir},
@@ -311,7 +310,7 @@ pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> V
         "usage":usage,"usage_fresh":fresh,"usage_state":usage_state,"plan":account_plan(a,at),
         "credit_fresh":supervised && a.usage.credits.is_some() && a.usage.observed_fresh(at,config.stale_seconds),
         "monitoring_pause_reason":supervised.then(||monitoring_pause_reason(paths,&a.name)).flatten(),
-        "eligible":supervised && crate::scheduler::eligible(a,config,at),
+        "eligible":supervised && eligible(a,config,at),
         "assigned_sessions":state.sessions.values().filter(|s|supervised && s.account.as_ref()==Some(&a.name)).count()
     })}).collect();
     let sessions: Vec<_> = state.sessions.values().map(|s|json!({"id":s.id,"thread_id":s.root_thread,"cwd":s.cwd,"account":s.account,"phase":s.phase,"reason":s.reason,"tmux_pane":s.tmux_pane,"manual_pause":s.manual_pause,"resume_work":s.resume_work})).collect();
@@ -426,11 +425,9 @@ pub async fn serve(paths: Paths) -> Result<()> {
     // Must precede removing the stale socket and opening the database.
     let mut store = Store::open(&paths)?;
     let mut state = store.load()?;
-    crate::automatic::reconcile(&mut state);
     if !state.normalize_order().is_empty() {
         store.save(&state, now(), "account.order_migrated", "")?;
     }
-    crate::autostart::reconcile(&mut state);
     crate::account_rename::reconcile_all(&paths, &mut state, &mut store);
     store.save(&state, now(), "automatic_reconciled", "")?;
     let mut config = load_config(&paths)?;
@@ -473,7 +470,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
     // below; after that status says "unavailable" until the probe answers.
     let codex_binary = config.codex_binary.clone();
     let mut version_probe = tokio::spawn(async move {
-        compatibility::version(&codex_binary)
+        codex_version(&codex_binary)
             .await
             .unwrap_or_else(|_| "unavailable".into())
     });
@@ -536,7 +533,6 @@ pub async fn serve(paths: Paths) -> Result<()> {
             eprintln!("startup state snapshot failed: {e:#}");
         }
     });
-    let automatic_task = tokio::spawn(crate::automatic::monitor(paths.clone()));
     let auto_recover_task = tokio::spawn(crate::auto_recover::monitor(paths.clone()));
     let compaction_task = tokio::spawn(crate::messaging::compaction::monitor(paths.clone()));
     // Contract 1.49.0: model changes and one-pass launches.
@@ -556,7 +552,6 @@ pub async fn serve(paths: Paths) -> Result<()> {
     let mut helpers = BTreeMap::<String, Rpc>::new();
     let mut pending = BTreeSet::new();
     let mut last_poll = BTreeMap::<String, i64>::new();
-    let mut last_sender_sweep = 0i64;
     let (poll_tx, mut polls) = mpsc::channel::<Poll>(64);
     let (claude_tx, mut claude_polls) = mpsc::channel::<ClaudePoll>(64);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -593,16 +588,6 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             let end = params["end"].as_i64().context("missing range end")?;
                             let step = params["step"].as_i64().unwrap_or(1800);
                             Ok(serde_json::to_value(crate::usage_history::query(&store.db,name,&account.usage,start,end,step)?)?)
-                        }
-                        method if method.starts_with("automatic/") => {
-                            let value = crate::automatic::request(&paths,&mut state,&config,method,params)?;
-                            if method != "automatic/get" { store.save(&state,now(),method,params["thread"].as_str().unwrap_or(""))?; }
-                            Ok(value)
-                        }
-                        method if method.starts_with("auto-start/") => {
-                            let value = crate::autostart::request(&mut state,&config,method,params)?;
-                            if method != "auto-start/get" { store.save(&state,now(),method,params["thread"].as_str().unwrap_or(""))?; }
-                            Ok(value)
                         }
                         "account/thresholds" => {
                             let key = key_of(&state,params)?; let name = key.as_str();
@@ -823,7 +808,6 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             match logout {
                                 Logout::CodexRpc => crate::logout::codex(&config,&home,helpers.get(&key)).await?,
                                 Logout::ClaudeCli => crate::logout::claude(&config,&home).await?,
-                                Logout::GeminiFiles => crate::logout::gemini(&home)?,
                                 Logout::Refused(reason) => bail!("{}", reason),
                             }
                             let detail = crate::provider::native::is_native(provider).then(|| "AUTH_REQUIRED".to_owned());
@@ -838,28 +822,10 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             let account = named(&state,params)?;
                             let provider = account.provider;
                             let steering = ops::facts(provider).live_steering;
-                            ops::require(steering != LiveSteering::None, "live steering uses Claude Code peer messaging or Gemini CLI model steering")?;
+                            ops::require(steering != LiveSteering::None, "live steering uses Claude Code peer messaging")?;
                             ensure!(account.deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             let name = account.name.clone();
                             let home = crate::provider::account_home(&paths,account)?;
-                            if steering == LiveSteering::GeminiModelSteering {
-                                // Gemini: experimental.modelSteering, read by each session at startup.
-                                use crate::provider::gemini::steering;
-                                let (changed, previous) = match params["enable"].as_bool() {
-                                    Some(enable) => {
-                                        let t = steering::set(&home, enable)?;
-                                        if t.changed { store.save(&state,now(),if enable {"account.live_steering_enabled"} else {"account.live_steering_disabled"},&name)?; }
-                                        (t.changed, t.previous)
-                                    }
-                                    None => (false, steering::configured(&home).map(Value::Bool)),
-                                };
-                                let value = steering::configured(&home);
-                                let running = crate::provider::gemini::live_sessions(&home).map(|l| l.len()).unwrap_or(0);
-                                return Ok(json!({"account_id":format!("{provider}:{name}"),"provider":provider,"live_steering":value==Some(true),
-                                    "setting":steering::SETTING,"value":value,"previous":previous,"changed":changed,
-                                    "settings_file":steering::settings_file(&home),"applies_to":"sessions_started_after_the_change",
-                                    "restart_required":changed && running > 0,"running_sessions":running}));
-                            }
                             let (changed, previous) = match params["enable"].as_bool() {
                                 Some(enable) => {
                                     let t = crate::provider::claude::peer::set(&home, enable)?;
@@ -1106,9 +1072,6 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         }
                         // Contract 1.64.0: delivery workers run as the supervisor's children.
                         "message/worker" => crate::messaging::claude_steer::supervised_start(&paths,params),
-                        "session/run" | "session/import" | "session/pause" | "session/resume" => {
-                            compatibility::require_native_handoff()?; unreachable!()
-                        }
                         _ => bail!("unknown control method"),
                     }
                 }.await;
@@ -1149,14 +1112,6 @@ pub async fn serve(paths: Paths) -> Result<()> {
                 }
             }
             _ = interval.tick() => {
-                if now() - last_sender_sweep >= 60 {
-                    last_sender_sweep = now();
-                        for a in state.accounts.values().filter(|a| ops::facts(a.provider).live_steering == LiveSteering::ClaudePeer) {
-                            if let Ok(home) = crate::provider::account_home(&paths, a) {
-                                crate::provider::claude::sender_registry::sweep(&home);
-                            }
-                        }
-                }
                 for a in state.accounts.values() {
                     let akey = a.key();
                     if !a.enabled || pending.contains(&akey) { continue; }
@@ -1183,12 +1138,8 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         set_meter_note(&a.name, Some(pause_sentence(code).to_owned()));
                         continue;
                     }
-                    let automatic = state.automatic_switching.values().any(|p| p.enabled && p.accounts.contains(&a.name))
-                        || state.automatic_start.values().any(|p|p.enabled);
-                    let threshold_near = a.usage.short.as_ref().is_some_and(|w| w.used_percent >= a.switch_thresholds.short_percent - 5.)
-                        || a.usage.weekly.as_ref().is_some_and(|w| w.used_percent >= a.switch_thresholds.weekly_percent - 5.);
-                    let near = crate::scheduler::pressure(a,&config) >= 0.8 || (automatic && threshold_near);
-                    let cadence = if a.auth_required {5} else if near {config.near_limit_poll_seconds} else if automatic {config.active_poll_seconds} else {config.idle_poll_seconds};
+                    let near = pressure(a,&config) >= 0.8;
+                    let cadence = if a.auth_required {5} else if near {config.near_limit_poll_seconds} else {config.idle_poll_seconds};
                     let reset_due = [&a.usage.short,&a.usage.weekly].iter().filter_map(|w|w.as_ref()).any(|w|w.resets_at <= now() && last_poll.get(&a.name).copied().unwrap_or(0) < w.resets_at);
                     if !reset_due && now() - last_poll.get(&a.name).copied().unwrap_or(0) < cadence as i64 {continue;}
                     last_poll.insert(a.name.clone(),now());
@@ -1208,7 +1159,6 @@ pub async fn serve(paths: Paths) -> Result<()> {
         }
     }
     version_probe.abort();
-    automatic_task.abort();
     auto_recover_task.abort();
     compaction_task.abort();
     model_task.abort();
@@ -1296,6 +1246,54 @@ pub async fn ensure_started(paths: &Paths) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     bail!("supervisor startup timed out")
+}
+
+fn pressure(account: &Account, config: &Config) -> f64 {
+    if !account.usage.windows_complete() {
+        return f64::INFINITY;
+    }
+    [
+        (&account.usage.short, config.short_ceiling),
+        (&account.usage.weekly, config.weekly_ceiling),
+    ]
+    .into_iter()
+    .filter_map(|(w, ceiling)| w.as_ref().map(|w| w.used_percent / ceiling))
+    .fold(0., f64::max)
+}
+fn eligible(account: &Account, config: &Config, now: i64) -> bool {
+    let u = &account.usage;
+    if !account.enabled
+        || account.auth_required
+        || !u.observed_fresh(now, config.stale_seconds)
+        || u.spend_control_reached == Some(true)
+    {
+        return false;
+    }
+    // A reached plan allowance can still be served from purchased credits.
+    if (u.exhausted || u.ordinary_usage_allowed == Some(false))
+        && u.credits.as_ref().is_some_and(|c| c.available())
+        && matches!(u.reached_type.as_deref(), None | Some("rate_limit_reached"))
+    {
+        return true;
+    }
+    let below = |w: &Option<crate::model::Window>, ceiling: f64| {
+        w.as_ref()
+            .is_none_or(|w| w.used_percent < ceiling - config.drain_margin)
+    };
+    !u.exhausted
+        && u.ordinary_usage_allowed != Some(false)
+        && u.fresh(now, config.stale_seconds)
+        && below(&u.short, config.short_ceiling)
+        && below(&u.weekly, config.weekly_ceiling)
+}
+async fn codex_version(binary: &str) -> Result<String> {
+    let run = tokio::process::Command::new(binary)
+        .arg("--version")
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), run).await??;
+    ensure!(out.status.success(), "Codex version command failed");
+    Ok(String::from_utf8(out.stdout)?.trim().into())
 }
 
 #[cfg(test)]

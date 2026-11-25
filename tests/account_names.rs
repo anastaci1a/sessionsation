@@ -5,7 +5,7 @@
     reason = "integration tests are exempt from owned roles (src/guard.rs)"
 )]
 use serde_json::{Value, json};
-use sessionsation::{daemon, paths::Paths, provider::ProviderId};
+use sessionsation::{daemon, paths::Paths};
 use std::{
     os::unix::fs::PermissionsExt,
     path::PathBuf,
@@ -90,14 +90,14 @@ async fn fixture() -> Fixture {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         path
     };
-    let gemini = install("gemini.js", include_str!("support/fake-gemini.sh"));
+    let gemini = install("agy", include_str!("support/fake-agy.sh"));
     let claude = install("fake-claude", include_str!("support/fake-claude.sh"));
     let codex = install("fake-codex", include_str!("support/fake-codex.sh"));
     let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
     let config = sessionsation::config::Config {
         codex_binary: codex.to_str().unwrap().into(),
         claude_binary: claude.to_str().unwrap().into(),
-        gemini_binary: gemini.to_str().unwrap().into(),
+        antigravity_binary: gemini.to_str().unwrap().into(),
         ..Default::default()
     };
     sessionsation::store::save_config(&paths, &config).unwrap();
@@ -131,9 +131,9 @@ async fn fixture() -> Fixture {
 async fn one_name_can_exist_once_per_provider_and_bare_names_must_be_unambiguous() {
     let f = fixture().await;
     f.api(&["account", "add", "claude:work"]);
-    f.api(&["account", "add", "gemini:work"]);
-    f.api(&["account", "add", "gemini:solo"]);
-    assert!(f.home("claude", "work").is_dir() && f.home("gemini", "work").is_dir());
+    f.api(&["account", "add", "antigravity:work"]);
+    f.api(&["account", "add", "antigravity:solo"]);
+    assert!(f.home("claude", "work").is_dir() && f.home("antigravity", "work").is_dir());
     let ids: Vec<String> = f
         .api(&["account", "list"])
         .as_array()
@@ -141,7 +141,7 @@ async fn one_name_can_exist_once_per_provider_and_bare_names_must_be_unambiguous
         .iter()
         .map(|a| a["id"].as_str().unwrap().to_owned())
         .collect();
-    for want in ["claude:work", "gemini:work", "gemini:solo"] {
+    for want in ["claude:work", "antigravity:work", "antigravity:solo"] {
         assert!(ids.iter().any(|i| i == want), "{ids:?}");
     }
     // The same provider cannot hold the name twice.
@@ -156,7 +156,7 @@ async fn one_name_can_exist_once_per_provider_and_bare_names_must_be_unambiguous
         "Office",
     ]);
     assert_eq!(f.row("claude:work").unwrap()["display_name"], "Office");
-    assert!(f.row("gemini:work").unwrap()["display_name"].is_null());
+    assert!(f.row("antigravity:work").unwrap()["display_name"].is_null());
     // Human commands: an ambiguous bare name asks for PROVIDER:NAME, an unambiguous one still works.
     let out = f.run(&["account", "rename", "work", "Other"]);
     let err = String::from_utf8_lossy(&out.stderr);
@@ -165,7 +165,7 @@ async fn one_name_can_exist_once_per_provider_and_bare_names_must_be_unambiguous
         "{err}"
     );
     assert!(
-        err.contains("claude:work") && err.contains("gemini:work"),
+        err.contains("claude:work") && err.contains("antigravity:work"),
         "{err}"
     );
     let out = f.run(&["account", "rename", "solo", "Alone"]);
@@ -174,7 +174,7 @@ async fn one_name_can_exist_once_per_provider_and_bare_names_must_be_unambiguous
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(f.row("gemini:solo").unwrap()["display_name"], "Alone");
+    assert_eq!(f.row("antigravity:solo").unwrap()["display_name"], "Alone");
     // The supervisor itself refuses a bare name that matches two providers.
     let e = daemon::call(&f.paths, "account/disable", json!({"name":"work"}))
         .await
@@ -190,7 +190,7 @@ async fn one_name_can_exist_once_per_provider_and_bare_names_must_be_unambiguous
     .await
     .unwrap();
     assert_eq!(f.row("claude:work").unwrap()["enabled"], false);
-    assert_eq!(f.row("gemini:work").unwrap()["enabled"], true);
+    assert_eq!(f.row("antigravity:work").unwrap()["enabled"], true);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -234,77 +234,11 @@ async fn rows_expose_display_folder_mismatch_and_running_sessions() {
     assert!(e.contains("STALE_TARGET"), "{e}");
 }
 
-/// A catalog entry attached to this live test process is a running session.
-fn run_session(f: &Fixture, provider: ProviderId, account: &str) {
-    let me = std::process::id();
-    let stat = std::fs::read_to_string(format!("/proc/{me}/stat")).unwrap();
-    let start: u64 = stat
-        .rsplit_once(')')
-        .unwrap()
-        .1
-        .split_whitespace()
-        .nth(19)
-        .unwrap()
-        .parse()
-        .unwrap();
-    sessionsation::catalog::record_provider_launch(
-        &f.paths,
-        provider,
-        account,
-        &uuid::Uuid::new_v4().to_string(),
-        "running",
-        None,
-        Some(sessionsation::catalog::Attachment {
-            host: "tmux".into(),
-            target: "%1".into(),
-            pid: me,
-            process_start: start,
-        }),
-    )
-    .unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn backend_rename_is_blocked_by_a_running_session_but_rename_only_is_not() {
-    let f = fixture().await;
-    f.api(&["account", "add", "gemini:busy"]);
-    run_session(&f, ProviderId::Gemini, "busy");
-    let generation = f.generation("gemini:busy");
-    let e = f.api_error(&[
-        "account",
-        "rename-backend",
-        "gemini:busy",
-        "quiet",
-        "--expected-generation",
-        &generation,
-    ]);
-    assert!(e.contains("ACCOUNT_SESSIONS_RUNNING"), "{e}");
-    assert!(f.home("gemini", "busy").is_dir() && !f.home("gemini", "quiet").exists());
-    assert!(f.row("gemini:busy").is_some());
-    // Rename only stays available while the session runs.
-    let r = f.api(&[
-        "account",
-        "rename",
-        "gemini:busy",
-        "--display-name",
-        "Shown",
-    ]);
-    assert_eq!(r["display_name"], "Shown");
-    // Nothing was journaled for the refused attempt.
-    assert!(
-        f.api(&["operations"])
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|o| o["kind"] != "account_rename")
-    );
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backend_rename_moves_folder_and_id_and_update_backend_matches_the_display_name() {
     let f = fixture().await;
     f.api(&["account", "add", "claude:work"]);
-    f.api(&["account", "add", "gemini:work"]);
+    f.api(&["account", "add", "antigravity:work"]);
     f.api(&["account", "add", "claude:taken"]);
     std::fs::write(f.home("claude", "work").join("history-marker"), b"kept").unwrap();
     let generation = f.generation("claude:work");
@@ -361,7 +295,7 @@ async fn backend_rename_moves_folder_and_id_and_update_backend_matches_the_displ
     );
     assert!(!f.home("claude", "work").exists());
     // The Gemini account with the old name is untouched.
-    assert!(f.row("gemini:work").is_some() && f.home("gemini", "work").is_dir());
+    assert!(f.row("antigravity:work").is_some() && f.home("antigravity", "work").is_dir());
     // Allowed now: the freed name is free for claude again, and gemini keeps its own.
     f.api(&["account", "add", "claude:work"]);
     // Operation journal listed, terminal.
@@ -417,43 +351,43 @@ async fn backend_rename_moves_folder_and_id_and_update_backend_matches_the_displ
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_home_at_a_deferred_legacy_path_moves_to_the_layout_2_path() {
     let f = fixture().await;
-    f.api(&["account", "add", "gemini:old"]);
+    f.api(&["account", "add", "antigravity:old"]);
     // Model a home the layout migration deferred: it sits at the legacy path.
-    std::fs::create_dir_all(f.paths.root.join("gemini-accounts")).unwrap();
+    std::fs::create_dir_all(f.paths.root.join("antigravity-accounts")).unwrap();
     std::fs::rename(
-        f.home("gemini", "old"),
-        f.paths.root.join("gemini-accounts/old"),
+        f.home("antigravity", "old"),
+        f.paths.root.join("antigravity-accounts/old"),
     )
     .unwrap();
     let thread = "55555555-5555-4555-8555-555555555555";
     let conversations = f.paths.root.join(sessionsation::layout::CONVERSATIONS);
     std::fs::create_dir_all(&conversations).unwrap();
     let record = conversations.join(format!("{thread}.json"));
-    let legacy_home = f.paths.root.join("gemini-accounts/old");
+    let legacy_home = f.paths.root.join("antigravity-accounts/old");
     std::fs::write(
         &record,
         serde_json::to_vec(&json!({"owner":legacy_home})).unwrap(),
     )
     .unwrap();
-    let row = f.row("gemini:old").unwrap();
+    let row = f.row("antigravity:old").unwrap();
     assert_eq!(row["home_deferred"], true);
     let g = row["generation"].as_str().unwrap().to_owned();
     let done = f.api(&[
         "account",
         "rename-backend",
-        "gemini:old",
+        "antigravity:old",
         "new",
         "--expected-generation",
         &g,
     ]);
-    assert_eq!(done["account_id"], "gemini:new");
-    assert!(f.home("gemini", "new").is_dir());
-    assert!(!f.paths.root.join("gemini-accounts/old").exists());
-    assert_eq!(f.row("gemini:new").unwrap()["home_deferred"], false);
+    assert_eq!(done["account_id"], "antigravity:new");
+    assert!(f.home("antigravity", "new").is_dir());
+    assert!(!f.paths.root.join("antigravity-accounts/old").exists());
+    assert_eq!(f.row("antigravity:new").unwrap()["home_deferred"], false);
     // The conversation owner followed the renamed home.
     let owner: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
-    assert_eq!(owner["owner"], json!(f.home("gemini", "new")));
+    assert_eq!(owner["owner"], json!(f.home("antigravity", "new")));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -501,7 +435,7 @@ async fn display_names_collide_within_one_provider_only() {
     let f = fixture().await;
     f.api(&["account", "add", "claude:work"]);
     f.api(&["account", "add", "claude:other"]);
-    f.api(&["account", "add", "gemini:work"]);
+    f.api(&["account", "add", "antigravity:work"]);
     f.api(&[
         "account",
         "rename",
@@ -514,7 +448,7 @@ async fn display_names_collide_within_one_provider_only() {
         f.api(&[
             "account",
             "rename",
-            "gemini:work",
+            "antigravity:work",
             "--display-name",
             "Office"
         ])["display_name"],

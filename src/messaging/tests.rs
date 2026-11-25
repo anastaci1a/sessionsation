@@ -700,7 +700,7 @@ async fn submission_holds_movement_locks_and_journals_before_native_mutation() {
         let conversation=lock_file(&root.join(crate::layout::HANDOFF_JOBS).join(format!("{}.open-lock",req["params"]["threadId"].as_str().unwrap()))).unwrap();assert!(conversation.try_lock_exclusive().is_err());
         if req["method"]=="thread/read" {return Some(json!({"thread":{"id":req["params"]["threadId"],"status":{"type":"active"}}}));}
         assert_eq!(req["method"],"thread/queue/add");
-        let db=Connection::open(root.join("messaging/receipts.db")).unwrap();let text:String=db.query_row("SELECT receipt FROM receipts",[],|r|r.get(0)).unwrap();let persisted:Receipt=serde_json::from_str(&text).unwrap();assert_eq!(persisted.state,"unknown");
+        let db=rusqlite::Connection::open(root.join("messaging/receipts.db")).unwrap();let text:String=db.query_row("SELECT receipt FROM receipts",[],|r|r.get(0)).unwrap();let persisted:Receipt=serde_json::from_str(&text).unwrap();assert_eq!(persisted.state,"unknown");
         Some(json!({"queuedSubmission":{"id":"q","clientUserMessageId":req["params"]["clientUserMessageId"]}}))
     }).await;
     input.expected_generation = a.generation();

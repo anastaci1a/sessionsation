@@ -1,17 +1,20 @@
 //! Busy Submit with native expected-turn guard; acceptance never means consumption.
 use super::*;
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Deserialize)]
 struct Page {
     data: Vec<Turn>,
     #[serde(rename = "nextCursor")]
     next: Option<String>,
 }
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Deserialize)]
 struct Turn {
     id: String,
     status: String,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) async fn check(paths: &Paths, id: &str, expected: Option<&str>) -> Result<Value> {
     uuid(id)?;
     if expected.is_some_and(|t| t.is_empty() || t.len() > 256 || t.chars().any(char::is_control)) {
@@ -68,6 +71,7 @@ pub(super) async fn check(paths: &Paths, id: &str, expected: Option<&str>) -> Re
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn capability_id(generation: &str) -> String {
     format!(
         "{:x}",
@@ -75,6 +79,7 @@ pub(super) fn capability_id(generation: &str) -> String {
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn wrap(delivery: Value) -> Value {
     let acknowledged = !delivery["submit"]["acknowledged_turn_id"].is_null();
     let mut out = json!({"request_id":delivery["message_id"],"session_id":delivery["session_id"],"generation":delivery["generation"],"requested_mode":"submit","effective_action":if acknowledged {delivery["submit"]["action"].as_str().or(Some("steer"))} else {None},"state":if acknowledged {"native_accepted"} else if delivery["state"]=="rejected" {"rejected"} else {"delivery_unknown"},"reason":delivery["reason"],"expected_turn_id":delivery["submit"]["expected_turn_id"],"acknowledged_turn_id":delivery["submit"]["acknowledged_turn_id"],"facts":{"adapter_accepted":true,"native_input_accepted":acknowledged,"input_consumed":"unknown","turn_completed":"unknown","reply_observed":false},"reply":null,"resume":delivery["submit"]["resume"].as_bool().unwrap_or(false),"reconciliation":if delivery["submit"]["action"]=="start_or_steer" {"unsupported_submit_reply_evidence"} else {"unsupported_steer_evidence"}});
@@ -93,6 +98,7 @@ pub(super) fn wrap(delivery: Value) -> Value {
     out
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) async fn dispatch(
     paths: &Paths,
     ledger: &mut Ledger,
@@ -292,6 +298,7 @@ fn published_submit_receipt_matches_actual_projection() {
     );
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 /// Stock native start-or-steer after an idle/terminal preflight. The owner
 /// explicitly accepts concurrent-start steering; no atomic idle guarantee.
 async fn dispatch_idle(paths: &Paths, ledger: &mut Ledger, request: Request) -> Result<Value> {

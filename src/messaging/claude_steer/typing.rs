@@ -96,8 +96,6 @@ pub(crate) enum Leave {
 
 /// How the typed message is verified.
 pub(crate) enum Typing {
-    /// Typed whole, then compared on screen (whitespace ignored).
-    Whole,
     /// Typed in segments, each checked as a window of the box ([`Host::type_checked`]);
     /// `reread`: the box is read once more afterwards and must still be the main prompt.
     Checked { reread: bool },
@@ -654,12 +652,6 @@ async fn typed_input<P: ScreenProfile>(
     step(paths, id, "type", |_| {})?;
     let text = &t.delivered_text;
     let (ok, typed) = match P::TYPING {
-        Typing::Whole => {
-            host.type_text(text).await?;
-            let want = squash(text);
-            let v = until::<P>(host, false, |v| is_main(v, |d| squash(d) == want)).await?;
-            (is_main(&v, |d| squash(d) == want), Some(v))
-        }
         Typing::Checked { reread } => {
             let ok = host
                 .type_checked(text, |rows| match P::classify(rows, false) {

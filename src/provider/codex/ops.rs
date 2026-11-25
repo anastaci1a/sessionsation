@@ -3,7 +3,7 @@ use crate::provider::{
     ProviderCapabilities, ProviderId, claude,
     ops::{
         ArchiveLayout, Enrollment, Facts, Headless, LiveSteering, Logout, ModelGrammar,
-        ProviderOps, Reader, Rekey, StopMethod, TerminalInput, TranscriptFormat, table_stop_reason,
+        ProviderOps, Reader, StopMethod, TerminalInput, TranscriptFormat, table_stop_reason,
     },
 };
 use crate::{config::Config, model::Account, paths::Paths};
@@ -39,7 +39,6 @@ pub const FACTS: Facts = Facts {
     shared_state: false,
     cli_options: true,
     logged_in: None,
-    rekey: Rekey::CodexRollouts,
     headless: Headless::None,
     headless_env: &[],
     archive: ArchiveLayout::Rollouts,

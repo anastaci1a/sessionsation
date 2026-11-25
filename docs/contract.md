@@ -2336,7 +2336,7 @@ Account rows carry `provider`, `provider_capabilities`, `membership`, `selectabl
 homes), `auth_required`, `auth_detail` (`AUTH_REQUIRED`, `WRONG_AUTH_MODE`,
 `AUTH_FAILED`; never identity), `usage_state`
 (`fresh|partial|stale|missing|no_windows|error|unsupported`), `usage`, `plan`,
-`prefill` and provider fields (`bypass_warning*`, `auth_mode`, `api_key_present`,
+`prefill` and provider fields (`bypass_warning*`, `auth_mode`, `api_key_present` (both null),
 `auth_failed*`). Disabled accounts remain listed; disabling prevents future selection
 and does not stop agents.
 
@@ -3128,68 +3128,13 @@ outcome (submitted|queued|sent_immediately),caveat}`.
 
 ### Gemini CLI
 
-Google ended Gemini CLI login for individual accounts, so Gemini sessions cannot be
-started with a personal login; the provider is kept for Workspace and API-key
-accounts and reports `supported:false` with that reason for observe, stop and events.
-Each account is an isolated `GEMINI_CLI_HOME` at `DATA_ROOT/accounts/gemini/NAME`
-(0700; state in `HOME/.gemini/`); adoption is not supported. `gemini_binary` (default
-`gemini`) selects the executable (the pinned `@google/gemini-cli` through the host
-launcher). Every child gets `GEMINI_CLI_HOME`, `GEMINI_CLI_NO_RELAUNCH=1`,
-`GEMINI_FORCE_FILE_STORAGE=true`, and has `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
-`GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_CLOUD_PROJECT`,
-`GOOGLE_CLOUD_LOCATION`, `GOOGLE_CLOUD_ACCESS_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`,
-`GOOGLE_GEMINI_BASE_URL`, `GOOGLE_VERTEX_BASE_URL`, `CLOUD_SHELL`,
-`GEMINI_CLI_USE_COMPUTE_ADC` and `GEMINI_MODEL` removed. `.gemini/settings.json` is
-seeded on enrollment and before every launch without clobbering other keys:
-auto-update and its notice off, usage statistics off, automatic session deletion off,
-and the Login-with-Google auth type when none is selected.
-
-**Authentication modes** (provider entry `auth_modes` and `auth_command`). The mode
-is the account's `security.auth.selectedType` in `.gemini/settings.json`: `google`
-(`oauth-personal`; `google_personal` is `available:false` with its reason,
-`google_workspace` available) or `api_key` (`gemini-api-key`; `input:"stdin_json"`,
-`field:"api_key"`); Vertex is `UNSUPPORTED_AUTH_MODE`. Clients show unavailable
-entries disabled with their `reason`. `api account auth gemini:NAME [--mode google |
---mode api-key --key-stdin]` returns `{account_id,provider,auth_mode,api_key_present,
-auth_required,auth_failed,auth_failure_reason,auth_failure_observed_at,changed,
-running_sessions,applies_to}` (plus `login_required` and `login` in `google` mode).
-`--key-stdin` reads exactly `{"api_key":"..."}` (at most 32 KiB; 1-512 visible ASCII
-characters after trimming, else `INVALID_API_KEY_FORMAT`), stores it atomically in
-`HOME/secrets/gemini-api-key` (0600 in a 0700 directory; symlinks refused with
-`UNSAFE_SECRET_PATH`; a key file that is not owner-only is ignored) and adds
-`validation:{state,code,reason,timeout_seconds}` from one headless run (at most 15 s)
-in a throwaway home under `registry/provider-state/gemini-validate/`: `valid`,
-`auth_failed` or `inconclusive` (the key stays stored). The key reaches only that
-account's children as `GEMINI_API_KEY` and `SESSIONSATION_GEMINI_API_KEY` and never
-appears in argv, state, receipts, logs, errors or output. Other errors:
-`INVALID_REQUEST`, `API_KEY_REQUIRED`. In `api_key` mode the account is logged in when
-the key file exists, `account login` is refused (`AUTH_MODE_API_KEY`) and logout
-deletes the key. Running sessions keep the mode they started with.
-
-In `google` mode an account is logged in when `.gemini/oauth_creds.json` is a non-empty
-file (stat only) and `google_accounts.json` records an active account; login runs
-interactive `gemini` with `NO_BROWSER=true`. Account rows add `auth_mode`,
-`api_key_present`, `auth_failed`, `auth_failure_reason` (`AUTH_CLIENT_UNSUPPORTED`,
-`AUTH_TIER_INELIGIBLE`, `AUTH_GRANT_INVALID`, `AUTH_UNAUTHENTICATED`,
-`AUTH_PERMISSION_DENIED`, `AUTH_REAUTH_REQUIRED`, `AUTH_API_KEY_INVALID`,
-`AUTH_API_KEY_MISSING`, `AUTH_FAILED`) and `auth_failure_observed_at`, from the last
-recognizable failure of a headless run or the login terminal (fatal-authentication
-exit 41 or known messages; a network error never counts), stored outside the account
-home as a code, time and credential-file stat identity. While set the row is
-`auth_required:true`, `selectable:false`, `auth_detail:"AUTH_FAILED"`; a later
-successful run, login, newer credential file or newly stored key clears it.
-
-Sessions: `gemini --session-id UUID` (new) and `gemini -r UUID` in the recorded
-directory. Discovery reads only the first line (`sessionId`, `projectHash`,
-`startTime`) of `.gemini/tmp/SLUG/chats/session-*.jsonl` plus `projects.json`. A
-session is `running` only when a process's command line names its id after
-`gemini.js` or `gemini`, its environment has this `GEMINI_CLI_HOME` and its PID and
-start time verify. Usage is unsupported (`usage_state:"unsupported"`, null windows,
-never 0%). Supported: new, resume, rename, terminal input, headless delivery, archive.
-Unsupported: stop, restart, account switch, relocation, Space moves, Add to HERDR
-(`NO_NATIVE_ATTACH`), compaction, set-model, observe, events and pending questions.
-Login, headless JSON and the command-line shape are verified against fakes and the
-installed CLI's source only.
+Gemini CLI no longer signs in individual accounts and was dropped in 1.68.0. The provider
+id `gemini` stays: an existing `gemini:<name>` account is listed, can be deleted (its
+history is preserved) and reports every operation `supported:false` with reason
+`gemini_cli_dropped_individual_accounts`; `providers[gemini]` has `implemented:false`
+and no `auth_modes`, `gemini_input_delivery` keeps its keys with `supported:false`.
+`account auth`, Gemini enrollment, login, sessions, messaging and model steering are gone,
+and the config key `gemini_binary` is accepted and ignored.
 
 ### Antigravity CLI
 

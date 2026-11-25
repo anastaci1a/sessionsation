@@ -150,27 +150,6 @@ fn claude_record(v: &Value) -> Option<Verdict> {
     }
 }
 
-fn gemini_record(v: &Value) -> Option<Verdict> {
-    let at_ms = v["timestamp"].as_str().and_then(parse_rfc3339);
-    let tail = match v["type"].as_str()? {
-        "user" => Tail::Working,
-        crate::provider::gemini::MODEL_RECORD_TYPE => {
-            if v["toolCalls"].as_array().is_some_and(|c| !c.is_empty()) {
-                Tail::Working
-            } else {
-                Tail::Ended
-            }
-        }
-        "error" => Tail::Error,
-        _ => return None,
-    };
-    Some(Verdict {
-        tail,
-        at_ms,
-        error: None,
-    })
-}
-
 fn antigravity_record(v: &Value) -> Option<Verdict> {
     let kind = v["type"].as_str()?;
     let at_ms = v["created_at"].as_str().and_then(parse_rfc3339);
@@ -309,10 +288,6 @@ pub fn facts(
             // A tool_use or prompt older than the unanswered window is still work for
             // Claude (tools may run for hours); only registry waiting upgrades it.
             combine(verdict, registry(home, o), now_ms, false)
-        }
-        TranscriptFormat::GeminiChat => {
-            let v = transcript.and_then(|t| scan(t, gemini_record))?;
-            combine(Some(v), None, now_ms, true)
         }
         TranscriptFormat::AgyLog => {
             let v = transcript
@@ -461,42 +436,6 @@ mod tests {
         assert_eq!(class(ended, reg("idle", t + 500)).0, "idle");
         assert_eq!(class(None, reg("idle", t)).0, "idle");
         assert!(combine(None, None, t, false).is_none());
-    }
-
-    #[test]
-    fn gemini_and_antigravity_inferred_work_expires() {
-        let t = parse_rfc3339(T0).unwrap();
-        let working = Verdict {
-            tail: Tail::Working,
-            at_ms: Some(t),
-            error: None,
-        };
-        let fresh = combine(Some(working.clone()), None, t + 1000, true);
-        assert_eq!(live_activity::classify(&fresh.unwrap().0), "working");
-        assert!(combine(Some(working), None, t + UNANSWERED_MS + 1, true).is_none());
-        assert_eq!(
-            gemini_record(&json!({"type":"gemini","timestamp":T0,"toolCalls":[{}]}))
-                .unwrap()
-                .tail,
-            Tail::Working
-        );
-        assert_eq!(
-            gemini_record(&json!({"type":"gemini","timestamp":T0}))
-                .unwrap()
-                .tail,
-            Tail::Ended
-        );
-        assert_eq!(
-            antigravity_record(
-                &json!({"type":"PLANNER_RESPONSE","status":"DONE","created_at":T0,"tool_calls":[]})
-            )
-            .unwrap()
-            .tail,
-            Tail::Ended
-        );
-        assert!(
-            antigravity_record(&json!({"type":"PLANNER_RESPONSE","status":"RUNNING"})).is_none()
-        );
     }
 
     #[test]

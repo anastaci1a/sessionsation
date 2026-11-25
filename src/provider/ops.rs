@@ -247,8 +247,6 @@ pub struct Facts {
     pub cli_options: bool,
     /// `account add` prints this when the new account is already signed in.
     pub logged_in: Option<&'static str>,
-    /// How `root migrate` re-keys the provider's sessions.
-    pub rekey: Rekey,
     /// The headless CLI dialect for `api send`.
     pub headless: Headless,
     /// Environment set on headless runs (Gemini cannot answer the folder-trust prompt).
@@ -310,8 +308,6 @@ pub enum Logout {
     CodexRpc,
     /// `claude auth logout`.
     ClaudeCli,
-    /// Gemini's cached credential files.
-    GeminiFiles,
     /// Refused with this text.
     Refused(&'static str),
 }
@@ -321,8 +317,6 @@ pub enum Logout {
 pub enum LiveSteering {
     /// Claude Code peer messaging (`channelsEnabled` inbound setting, sender registry).
     ClaudePeer,
-    /// Gemini CLI `experimental.modelSteering`.
-    GeminiModelSteering,
     /// Not configurable.
     None,
 }
@@ -365,7 +359,7 @@ pub fn ops(provider: ProviderId) -> &'static dyn ProviderOps {
     match provider {
         ProviderId::Codex => &codex::ops::OPS,
         ProviderId::Claude => &claude::ops::OPS,
-        ProviderId::Gemini => &gemini::ops::OPS,
+        ProviderId::Gemini => &gemini::OPS,
         ProviderId::Antigravity => &antigravity::ops::OPS,
     }
 }
@@ -406,24 +400,11 @@ pub enum ModelGrammar {
 /// The detail of the refusal of provider options after `--` (Codex launches only).
 pub const CLI_OPTIONS_CODEX_ONLY: &str = "provider options after -- are Codex-only";
 
-/// How `root migrate` re-keys a provider's sessions to the new project paths.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Rekey {
-    /// Rollout `cwd` and the thread-location record (Codex).
-    CodexRollouts,
-    /// The `projects/<cwd key>` transcript and memory directories (Claude).
-    ClaudeProjects,
-    /// Not re-keyed; the session stays on its old path (Gemini, Antigravity since 1.54).
-    Unsupported,
-}
-
 /// The headless CLI a native provider runs for `api send` (bounded, non-interactive).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Headless {
     /// `claude -p --output-format json`.
     ClaudePrint,
-    /// `gemini -p --output-format json` (stderr kept for auth failures).
-    GeminiJson,
     /// `agy` with its own argv and input framing; it cannot pre-assign a conversation id.
     AgyJson,
     /// No headless execution (Codex delivers through its native queue).
@@ -450,8 +431,6 @@ pub enum TranscriptFormat {
     None,
     /// Claude Code `projects/*/<id>.jsonl` records (plus the session registry).
     ClaudeJsonl,
-    /// Gemini CLI chat records.
-    GeminiChat,
     /// agy's `brain/<id>/.system_generated/logs/transcript.jsonl`.
     AgyLog,
 }
@@ -461,8 +440,6 @@ pub enum TranscriptFormat {
 pub enum TerminalInput {
     /// Claude Code: peer messages or typed terminal input.
     Claude,
-    /// Gemini CLI typed input (model steering when enabled).
-    Gemini,
     /// agy typed input.
     Agy,
     /// No terminal input (Codex delivers through its native queue).

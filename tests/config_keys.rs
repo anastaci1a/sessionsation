@@ -31,7 +31,7 @@ fn live_document() -> Value {
 fn the_live_key_set_loads_and_ignored_keys_are_reported() {
     let (config, ignored) = Config::parse(live_document()).unwrap();
     config.validate().unwrap();
-    assert_eq!(ignored, ["native_sender_registration"]);
+    assert_eq!(ignored, ["gemini_binary", "native_sender_registration"]);
     assert_eq!(config.claude_binary, "/usr/local/bin/claude");
     assert_eq!(config.receipt_unknown_horizon_days, 90);
 }

@@ -47,7 +47,7 @@ Keep one supervisor per root. An existing Codex Switcher root may be selected wi
 copy credentials or move account homes against live data. An unrelated default Codex
 home or unmanaged terminal is not adopted.
 
-Config keys (`config.json`): `codex_binary`, `claude_binary`, `gemini_binary`,
+Config keys (`config.json`): `codex_binary`, `claude_binary`,
 `antigravity_binary`, `claude_session_home`, `curl_binary`, monitoring thresholds,
 [`launch_permissions`](contract.md#launch-permissions),
 [`claude_pretrust_folders`, `antigravity_pretrust_folders`](contract.md#folder-pre-trust),
@@ -57,8 +57,8 @@ Config keys (`config.json`): `codex_binary`, `claude_binary`, `gemini_binary`,
 [`reuse_idle_tabs`](contract.md#choosing-a-space-and-a-pane),
 [`min_free_disk_mb`](contract.md#disk-space-guard),
 [`receipt_retention_days`, `receipt_unknown_horizon_days`](contract.md#receipt-retention)
-and the [retention](operations.md#retention) keys. `native_sender_registration` is
-accepted and ignored.
+and the [retention](operations.md#retention) keys. `gemini_binary` and
+`native_sender_registration` are accepted and ignored.
 
 ## Accounts
 
@@ -76,7 +76,6 @@ sessionsation account reorder claude:personal --position 0
 sessionsation account logout claude:personal
 sessionsation account live-steering claude:personal --enable|--disable
 sessionsation account bypass-warning claude:personal --skip|--show
-sessionsation account auth gemini:me [--mode google | --mode api-key --key-stdin < key.json]
 ```
 
 Human commands accept `PROVIDER:NAME`, an unambiguous bare name or a display name.
@@ -92,7 +91,6 @@ sessionsation api account reorder codex:example --position N
 sessionsation api account managed-home claude:NAME
 sessionsation api account live-steering claude:NAME [--enable|--disable]
 sessionsation api account bypass-warning claude:NAME [--skip|--show]
-sessionsation api account auth gemini:NAME [--mode google|api-key [--key-stdin]]
 sessionsation api account limits codex:example [--short-used 80 --weekly-used 90]
 sessionsation api account usage codex:example --start UNIX --end UNIX --step 1800
 sessionsation api usage [--account ID] [--cached]

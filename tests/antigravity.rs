@@ -173,7 +173,6 @@ async fn fixture() -> Fixture {
         antigravity_binary: fake.to_str().unwrap().into(),
         codex_binary: "/nonexistent/codex".into(),
         claude_binary: "/nonexistent/claude".into(),
-        gemini_binary: "/nonexistent/gemini".into(),
         ..Default::default()
     };
     sessionsation::store::save_config(&paths, &config).unwrap();
@@ -235,7 +234,11 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
     // but not twice under this one.
     let taken = f.api_error(&["account", "add", "antigravity:fresh"]);
     assert!(taken.contains("ACCOUNT_NAME_EXISTS"), "{taken}");
-    f.api(&["account", "add", "gemini:fresh"]);
+    // Gemini enrollment is dropped.
+    assert!(
+        f.api_error(&["account", "add", "gemini:fresh"])
+            .contains("gemini_cli_dropped_individual_accounts")
+    );
     // Unauthenticated use never reaches agy (no OAuth wait).
     let refused = f.send_err(&new_body(
         &uuid::Uuid::new_v4().to_string(),

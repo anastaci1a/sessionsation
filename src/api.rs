@@ -920,16 +920,6 @@ pub enum AccountCommand {
     Logout {
         id: String,
     },
-    /// Gemini: show or set the authentication mode. `--mode google` selects Login with
-    /// Google (Workspace) and returns the login plan; `--mode api-key --key-stdin`
-    /// reads `{"api_key":"..."}` from stdin, stores it privately and validates it.
-    Auth {
-        id: String,
-        #[arg(long, value_name = "google|api-key")]
-        mode: Option<String>,
-        #[arg(long, requires = "mode")]
-        key_stdin: bool,
-    },
     /// Move an account to a 0-based position in the shared account order.
     Reorder {
         id: String,
@@ -1217,70 +1207,6 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
 fn account_selectable(a: &Value, removed: bool) -> bool {
     !removed && a["deletion_id"].is_null() && a["enabled"] == true && a["auth_required"] == false
 }
-/// Apply the last observed Gemini authentication failure to an account row: a
-/// recorded failure marks it `auth_failed` and in need of a login; once cleared (a
-/// successful run or login, or newer credentials) a failure-only marking is lifted.
-fn project_gemini_auth_failure(paths: &Paths, name: &str, a: &mut Value) {
-    use crate::provider::gemini::{auth_failure, auth_mode};
-    let home = a["config_home"]
-        .as_str()
-        .filter(|h| !h.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| crate::provider::native::default_home(paths, ProviderId::Gemini, name).ok());
-    // Mode and key presence only (stat); the key itself is never read here.
-    a["auth_mode"] = json!(home.as_deref().map(|h| auth_mode::mode(h).as_str()));
-    a["api_key_present"] = json!(home.as_deref().map(auth_mode::key_present));
-    let failure = home.and_then(|home| auth_failure::current(paths, name, &home));
-    let fields = auth_failure::fields(failure.as_ref());
-    for key in [
-        "auth_failed",
-        "auth_failure_reason",
-        "auth_failure_observed_at",
-    ] {
-        a[key] = fields[key].clone();
-    }
-    if failure.is_some() {
-        // Credentials exist but the provider rejected them: a login is needed.
-        a["auth_required"] = json!(true);
-        if a["auth_detail"].is_null() {
-            a["auth_detail"] = json!("AUTH_FAILED");
-        }
-    } else if a["auth_detail"] == "AUTH_FAILED" {
-        // The row was marked only for the failure, which no longer holds.
-        a["auth_required"] = json!(false);
-        a["auth_detail"] = Value::Null;
-    }
-}
-/// Refresh the cheap, local Gemini auth-failure projection of a cached state's
-/// accounts, so a failure recorded (or cleared) after the snapshot shows at once.
-fn refresh_cached_accounts(paths: &Paths, value: &mut Value) {
-    let Some(accounts) = value["accounts"].as_array_mut() else {
-        return;
-    };
-    let stale_seconds = crate::store::load_config(paths)
-        .map(|c| c.stale_seconds)
-        .ok();
-    for a in accounts {
-        if !a["provider"]
-            .as_str()
-            .is_some_and(|p| ops::holds(p, |f| f.auth_modes))
-        {
-            continue;
-        }
-        let Some(name) = a["name"].as_str().map(str::to_owned) else {
-            continue;
-        };
-        if crate::paths::validate_name(&name).is_err() {
-            continue;
-        }
-        project_gemini_auth_failure(paths, &name, a);
-        let removed = a["membership"] == "removed";
-        a["selectable"] = json!(account_selectable(a, removed));
-        if let Some(stale) = stale_seconds {
-            a["prefill"] = account_prefill(a, daemon::now(), stale);
-        }
-    }
-}
 pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value>> {
     let stale_seconds = crate::store::load_config(paths).map_or(300, |c| c.stale_seconds);
     // One process-table scan serves every Codex row.
@@ -1327,12 +1253,8 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             if let Some(id) = a["deletion_id"].as_str() {
                 a["deletion"] = json!(crate::account_deletion::status(paths, id)?);
             }
-            if ops::facts(provider).auth_modes {
-                project_gemini_auth_failure(paths, name, &mut a);
-            } else {
-                a["auth_mode"] = Value::Null;
-                a["api_key_present"] = Value::Null;
-            }
+            a["auth_mode"] = Value::Null;
+            a["api_key_present"] = Value::Null;
             if ops::facts(provider).bypass_warning {
                 if let Some(home) = a["config_home"]
                     .as_str()
@@ -1418,110 +1340,6 @@ fn project_rename_state(
     };
     a["backend_rename"] = json!({"available":reason.is_none(),"reason":reason,
         "update_backend":mismatch,"update_backend_target":a["display_name"]});
-}
-/// Show or set a Gemini account's authentication mode (`api account auth` and
-/// `account auth`). Setting `api_key` with a key stores it (0600, atomic) and runs
-/// one headless validation; `google` returns the login plan. The key is never
-/// part of the result or of any error.
-pub async fn gemini_auth(
-    paths: &Paths,
-    account: &AccountRef,
-    mode: Option<&str>,
-    key: Option<crate::provider::gemini::auth_mode::ApiKey>,
-) -> Result<Value> {
-    use crate::provider::gemini::{self, auth_failure, auth_mode};
-    ops::require(
-        ops::facts(account.provider).auth_modes,
-        "authentication modes are a Gemini account setting",
-    )?;
-    let mode = mode.map(auth_mode::Mode::parse).transpose()?;
-    ensure!(
-        key.is_none() || mode == Some(auth_mode::Mode::ApiKey),
-        "INVALID_ARGUMENT: --key-stdin is only valid with --mode api-key"
-    );
-    let enrolled = gemini::account(paths, &account.name)?;
-    let home = enrolled.home.clone();
-    let mut changed = false;
-    let mut validation = Value::Null;
-    if let Some(mode) = mode {
-        crate::accounts::ensure_available(paths, account.provider, &account.name)?;
-        ensure!(
-            home.is_dir(),
-            "ACCOUNT_HOME_UNAVAILABLE: the Gemini home does not exist"
-        );
-        if let Some(key) = &key {
-            auth_mode::store_key(&home, key)?;
-            changed = true;
-        }
-        ensure!(
-            mode != auth_mode::Mode::ApiKey || auth_mode::key_present(&home),
-            "API_KEY_REQUIRED: no API key is stored for {}; pass one with --key-stdin",
-            account.id()
-        );
-        changed |= auth_mode::set_mode(&home, mode)?;
-        if changed {
-            // A new key or mode starts with a clean slate; validation records afresh.
-            auth_failure::clear(paths, &account.name);
-        }
-        if mode == auth_mode::Mode::ApiKey && changed {
-            let config = crate::store::load_config(paths)?;
-            validation = crate::messaging::headless::validate_gemini_key(
-                paths,
-                &config,
-                &account.name,
-                &home,
-            )
-            .await;
-        }
-    }
-    // Let the supervisor observe the new state (auth_required) at once.
-    daemon::ensure_started(paths).await?;
-    let refreshed = daemon::call(
-        paths,
-        "account/refresh",
-        json!({"name":account.name,"provider":account.provider}),
-    )
-    .await?;
-    let current = auth_mode::mode(&home);
-    let failure = auth_failure::current(paths, &account.name, &home);
-    let running = gemini::live_sessions(&home).map(|l| l.len()).unwrap_or(0);
-    let mut value = json!({"account_id":account.id(),"provider":account.provider,
-        "auth_mode":current.as_str(),"api_key_present":auth_mode::key_present(&home),
-        "auth_required":refreshed["auth_required"].as_bool().unwrap_or(true) || failure.is_some(),
-        "changed":changed,"running_sessions":running,
-        "applies_to":"sessions_started_after_the_change"});
-    let fields = auth_failure::fields(failure.as_ref());
-    for key in [
-        "auth_failed",
-        "auth_failure_reason",
-        "auth_failure_observed_at",
-    ] {
-        value[key] = fields[key].clone();
-    }
-    if mode == Some(auth_mode::Mode::ApiKey) {
-        value["validation"] = validation;
-    }
-    if current == auth_mode::Mode::Google {
-        value["login_required"] = json!(!gemini::auth_status(&home).logged_in);
-        if mode.is_some() {
-            value["login"] = login_plan(paths, account)?["login"].clone();
-        }
-    }
-    Ok(value)
-}
-
-/// The ordered Gemini authentication choices for clients (`auth_modes`). Personal
-/// "Login with Google" stays listed but unavailable: Google ended Gemini CLI
-/// login for personal accounts (all tiers) on 2026-06-18; the same OAuth flow
-/// still serves Workspace accounts.
-pub fn gemini_auth_modes() -> Value {
-    json!([
-        {"id":"google_personal","mode":"google","label":"Google login","available":false,
-         "reason":"retired by Google for personal accounts — use Antigravity, API key or Workspace"},
-        {"id":"google_workspace","mode":"google","label":"Google Workspace login","available":true,"reason":null},
-        {"id":"api_key","mode":"api_key","label":"API key","available":true,"reason":null,
-         "input":"stdin_json","field":"api_key"}
-    ])
 }
 
 /// Exec plan for an interactive provider login; no URL or credential passes
@@ -1865,38 +1683,6 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             )
             .await
         }
-        AccountCommand::Auth {
-            id,
-            mode,
-            key_stdin,
-        } => {
-            let account = account_ref(paths, &id)?;
-            let key = if key_stdin {
-                let mut bytes = vec![];
-                std::io::stdin().take(32769).read_to_end(&mut bytes)?;
-                ensure!(
-                    bytes.len() <= 32768,
-                    "INVALID_REQUEST: the stdin request is too large"
-                );
-                #[derive(serde::Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct KeyRequest {
-                    api_key: String,
-                }
-                // Never echo serde's message: it can quote the input.
-                let request: KeyRequest = serde_json::from_slice(&bytes).map_err(|_| {
-                    anyhow::anyhow!(
-                        "INVALID_REQUEST: stdin must be the JSON object {{\"api_key\":\"...\"}}"
-                    )
-                })?;
-                Some(crate::provider::gemini::auth_mode::ApiKey::new(
-                    &request.api_key,
-                )?)
-            } else {
-                None
-            };
-            gemini_auth(paths, &account, mode.as_deref(), key).await
-        }
         AccountCommand::Login { id } if native::is_native(AccountRef::parse(&id)?.provider) => {
             let account = account_ref(paths, &id)?;
             native::account(paths, account.provider, &account.name)?;
@@ -1928,14 +1714,33 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
 /// The Gemini provider entry of `api capabilities` (built apart: the whole document
 /// exceeds the `json!` macro recursion limit).
 fn gemini_provider() -> Value {
-    json!({"id":"gemini","implemented":true,"enrollment":true,"adopt_config_dir":false,"login":"interactive_exec","usage":false,"usage_state":"unsupported","usage_source":crate::provider::gemini::USAGE_SOURCE,
-        "new":true,"resume":true,"rename":true,"native_rename":false,"stop":false,
-        "account_switch":false,"restart":false,"submit":true,"queue":true,
-        "account_deletion":true,"account_removal":true,"account_rename":true,"account_refresh":true,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
-        "headless_delivery":{"version":1,"command":"send","modes":["resume","new"],"semantics":"headless_print","requires_stopped_session":true,"timeout_seconds":{"default":crate::messaging::headless::DEFAULT_TIMEOUT_SECONDS,"max":crate::messaging::headless::MAX_TIMEOUT_SECONDS},"timeout_is_uncertain":true,"automatic_replay":false,"cancellation":false,"approval_mode":crate::messaging::headless::GEMINI_APPROVAL_MODE},
-        "force_interrupt":false,"steer":true,"input_delivery":crate::messaging::claude_steer::gemini::input_delivery(),"cross_provider_conversion":false,
-        "auth_modes":gemini_auth_modes(),"auth_command":{"since_revision":21,"command":"account auth","modes":["google","api_key"],"key_input":"stdin_json","validation_timeout_seconds":crate::messaging::headless::GEMINI_VALIDATION_SECONDS,"unsupported_modes":["vertex"]},
-        "operations":crate::provider::capabilities(ProviderId::Gemini)})
+    let no = "gemini_cli_dropped_individual_accounts";
+    json!({"id":"gemini","implemented":false,"enrollment":false,"adopt_config_dir":false,"login":null,"usage":false,"usage_state":"unsupported","usage_source":"gemini-cli-unsupported",
+        "new":false,"resume":false,"rename":false,"native_rename":false,"stop":false,
+        "account_switch":false,"restart":false,"submit":false,"queue":false,
+        "account_deletion":false,"account_removal":false,"account_rename":false,"account_refresh":false,"account_limits":false,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,
+        "force_interrupt":false,"steer":false,"input_delivery":gemini_input_delivery(),"cross_provider_conversion":false,
+        "operations":crate::provider::capabilities(ProviderId::Gemini),"reason":no})
+}
+
+/// `capabilities.gemini_input_delivery`: kept for clients that read its keys; Gemini CLI
+/// is dropped, so nothing is eligible (revision 17 shape, `supported:false`).
+fn gemini_input_delivery() -> Value {
+    let label = "Typed into the session's HERDR terminal as the user's own input";
+    json!({"version":1,"since_revision":17,"supported":false,"reason":"gemini_cli_dropped_individual_accounts",
+        "semantics":"terminal_input","modes":["submit","queue","steer"],
+        "label":label,"labels":{"submit":label,"queue":"Queued in Gemini's own message queue as the user's input","steer":"Steer"},
+        "eligibility":"none: Gemini CLI is dropped",
+        "enter":{"idle":"user_turn","busy_model_steering_off":"native_queue","busy_model_steering_on":"steering_update"},
+        "mode_requirements":{"submit":"idle, or busy with model steering off (then queued)","queue":"model steering off","steer":"model steering on"},
+        "queue":{"batching":"every queued message is joined with a blank line into one user prompt when the turn ends","record":"one user record for the batch"},
+        "steer":{"priority":"next","interrupts":false,"delivery":"next_tool_step_or_after_turn","interrupt_option":null,"label":"Steer","caveat":"dropped","not_applied":"submitted_after_turn_as_steering_prompt"},
+        "model_steering":{"setting":"experimental.modelSteering","default":false,"toggle":"account live-steering gemini:<name> --enable|--disable","read_at":"session_start","restart_required":true},
+        "keys":{"text":"pane send-text (no bracketed paste)","newline":"ctrl+j","clear":["ctrl+e","ctrl+u","ctrl+k","backspace"],"submit":"enter","leave_views":{"help":"backspace"},"never":["esc","ctrl+c","ctrl+d","ctrl+l"]},
+        "escaped_prefixes":["/","!","?"],"max_text_bytes":1000,"max_lines":8,
+        "draft":"read from the screen, cleared, typed back unsubmitted and verified; refused when not exactly reconstructable",
+        "correlation":"first user record at or after the submit containing the typed text","reply_requires_anchor":true,
+        "refusal_reasons":[],"automatic_replay":false,"interrupt":false})
 }
 
 /// The Antigravity provider entry of `api capabilities` (revision 24).
@@ -2202,7 +2007,7 @@ pub fn capabilities() -> Value {
     }
     value["claude_input_delivery"] = claude_input_delivery();
     // Revision 17: Gemini submit/queue/steer as typed input into a HERDR pane.
-    value["gemini_input_delivery"] = crate::messaging::claude_steer::gemini::input_delivery();
+    value["gemini_input_delivery"] = gemini_input_delivery();
     // Revision 24: Antigravity submit/queue/steer as typed input into a HERDR pane.
     value["antigravity_input_delivery"] =
         crate::messaging::claude_steer::antigravity::input_delivery();
@@ -2536,7 +2341,6 @@ fn serve_snapshot_when_disk_full(
         json!({"observed_at":observed_at,"fresh":false,"cached":true,"refresh_failed":"DISK_FULL"});
     value["warnings"] = json!([{"code":"STATE_REFRESH_FAILED_DISK_FULL","message":crate::disk_space::disk_full_message(&error)}]);
     value["capabilities"] = capabilities();
-    refresh_cached_accounts(paths, &mut value);
     Ok(value)
 }
 /// Contract 1.56.0: `session resolve` carries `availability`, `activity`, `pid` and
@@ -2590,7 +2394,6 @@ pub async fn state_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value>
     let stale = crate::store::load_config(paths).map_or(300, |c| c.stale_seconds);
     overlay_codex_usage(&mut value, status.as_ref(), daemon::now(), stale);
     value["capabilities"] = capabilities();
-    refresh_cached_accounts(paths, &mut value);
     // Model facts are local file reads: always current, even on a cached snapshot.
     if let Some(rows) = value["sessions"].as_array_mut() {
         crate::session_model::annotate(paths, rows);
@@ -5283,85 +5086,6 @@ mod codex_usage_overlay_tests {
         overlay_codex_usage(&mut cached, None, 1000, 300);
         assert_eq!(cached["accounts"][0]["usage"]["observed_at"], 1000);
         assert_eq!(cached["accounts"][0]["usage_fresh"], false);
-    }
-}
-
-#[cfg(test)]
-mod gemini_auth_failure_tests {
-    use super::*;
-    use crate::provider::gemini::auth_failure;
-    #[test]
-    fn a_failure_recorded_after_the_cached_state_shows_at_once_and_clears() {
-        let t = tempfile::tempdir().unwrap();
-        let paths = Paths::new(Some(t.path().join("root"))).unwrap();
-        let (home, _) = crate::provider::gemini::create_home(&paths, "g1").unwrap();
-        std::fs::write(home.join(".gemini/oauth_creds.json"), b"{}").unwrap();
-        // A cached state written before the failing run.
-        let row = json!({"name":"g1","provider":"gemini","enabled":true,"auth_required":false,"deletion_id":null,"auth_detail":null});
-        let mut cached = json!({"accounts": project_accounts(&paths, vec![row]).unwrap()});
-        assert_eq!(cached["accounts"][0]["selectable"], true);
-        auth_failure::record(
-            &paths,
-            "g1",
-            &home,
-            auth_failure::tests::UNSUPPORTED_CLIENT_STDERR,
-        )
-        .unwrap();
-        refresh_cached_accounts(&paths, &mut cached);
-        let a = &cached["accounts"][0];
-        assert_eq!(a["auth_failed"], true);
-        assert_eq!(a["auth_required"], true);
-        assert_eq!(a["auth_detail"], "AUTH_FAILED");
-        assert_eq!(a["selectable"], false);
-        assert_eq!(a["prefill"]["eligible"], false);
-        // A later success clears it in the cached rows too.
-        auth_failure::clear(&paths, "g1");
-        refresh_cached_accounts(&paths, &mut cached);
-        let a = &cached["accounts"][0];
-        assert_eq!(a["auth_failed"], false);
-        assert_eq!(a["auth_required"], false);
-        assert!(a["auth_detail"].is_null());
-        assert_eq!(a["selectable"], true);
-        // A Gemini login problem other than the failure is kept.
-        let mut other = json!({"accounts":[{"name":"g1","provider":"gemini","enabled":true,"auth_required":true,"deletion_id":null,"auth_detail":"AUTH_REQUIRED","membership":"enrolled"}]});
-        refresh_cached_accounts(&paths, &mut other);
-        assert_eq!(other["accounts"][0]["auth_required"], true);
-        assert_eq!(other["accounts"][0]["selectable"], false);
-    }
-    #[test]
-    fn recorded_gemini_auth_failure_makes_the_account_unselectable_until_cleared() {
-        let t = tempfile::tempdir().unwrap();
-        let paths = Paths::new(Some(t.path().join("root"))).unwrap();
-        let (home, _) = crate::provider::gemini::create_home(&paths, "g1").unwrap();
-        std::fs::write(home.join(".gemini/oauth_creds.json"), b"{}").unwrap();
-        let row = || json!({"name":"g1","provider":"gemini","enabled":true,"auth_required":false,"deletion_id":null,"auth_detail":null});
-        let project = || project_accounts(&paths, vec![row()]).unwrap().remove(0);
-        let a = project();
-        assert_eq!(a["auth_failed"], false);
-        assert_eq!(a["selectable"], true);
-        // A generic crash does not mark the account failed.
-        auth_failure::record(&paths, "g1", &home, "panic: segmentation fault").unwrap();
-        assert_eq!(project()["auth_failed"], false);
-        auth_failure::record(&paths, "g1", &home, "Error: client no longer supported").unwrap();
-        let a = project();
-        assert_eq!(a["auth_failed"], true);
-        assert!(
-            a["auth_failure_reason"]
-                .as_str()
-                .unwrap()
-                .starts_with("AUTH_CLIENT_UNSUPPORTED")
-        );
-        assert!(a["auth_failure_observed_at"].as_i64().is_some());
-        assert_eq!(a["auth_required"], true);
-        assert_eq!(a["selectable"], false);
-        assert_eq!(a["prefill"]["eligible"], false);
-        // Claude rows are untouched.
-        let c = project_accounts(&paths, vec![json!({"name":"g1","provider":"claude","enabled":true,"auth_required":false,"deletion_id":null})]).unwrap().remove(0);
-        assert!(c.get("auth_failed").is_none());
-        auth_failure::clear(&paths, "g1");
-        let a = project();
-        assert_eq!(a["auth_failed"], false);
-        assert_eq!(a["selectable"], true);
     }
 }
 

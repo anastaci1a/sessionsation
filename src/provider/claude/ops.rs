@@ -3,7 +3,7 @@ use crate::provider::{
     ProviderCapabilities, ProviderId, claude,
     ops::{
         ArchiveLayout, Enrollment, Facts, Headless, LiveSteering, Logout, ModelGrammar,
-        ProviderOps, Reader, Rekey, StopMethod, TerminalInput, TranscriptFormat,
+        ProviderOps, Reader, StopMethod, TerminalInput, TranscriptFormat,
     },
 };
 use crate::{config::Config, model::Account, paths::Paths};
@@ -39,7 +39,6 @@ pub const FACTS: Facts = Facts {
     shared_state: true,
     cli_options: false,
     logged_in: Some("logged in (claude.ai subscription)"),
-    rekey: Rekey::ClaudeProjects,
     headless: Headless::ClaudePrint,
     headless_env: &[],
     archive: ArchiveLayout::ClaudeProjects,

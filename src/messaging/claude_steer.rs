@@ -52,7 +52,6 @@ use std::{
 };
 
 pub mod antigravity;
-pub mod gemini;
 pub mod terminal;
 pub(crate) mod typing;
 
@@ -174,7 +173,7 @@ pub struct Record {
     pub reply_truncated: bool,
     pub result: Option<Value>,
     pub peer: Option<Peer>,
-    /// `gemini` for Gemini CLI sessions (terminal input only); absent for Claude.
+    /// `antigravity` for agy sessions (terminal input only); absent for Claude.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// Terminal-input delivery state (kind `terminal`).
@@ -417,14 +416,11 @@ pub async fn send_planned(
     );
     let session = catalog::resolve(paths, &request.session_id, &request.expected_generation)?;
     let input = ops::facts_of(&session.provider).map(|f| f.terminal_input);
-    let is_gemini = input == Some(TerminalInput::Gemini);
     let is_agy = input == Some(TerminalInput::Agy);
-    ops::require_bare(is_gemini || is_agy || input == Some(TerminalInput::Claude))?;
+    ops::require_bare(is_agy || input == Some(TerminalInput::Claude))?;
     let account = super::headless::usable_account(
         paths,
-        if is_gemini {
-            ProviderId::Gemini
-        } else if is_agy {
+        if is_agy {
             ProviderId::Antigravity
         } else {
             ProviderId::Claude
@@ -440,11 +436,7 @@ pub async fn send_planned(
     let mut fallback: Option<Value> = None;
     let mut fallback_allowed = false;
     let mut typed = None;
-    let (kind, epoch, peer) = if is_gemini {
-        ensure!(terminal::enabled(paths), "{}", terminal::DISABLED);
-        typed = Some(gemini::admit(&request, &session, &account.home)?);
-        ("terminal", None, None)
-    } else if is_agy {
+    let (kind, epoch, peer) = if is_agy {
         ensure!(terminal::enabled(paths), "{}", terminal::DISABLED);
         typed = Some(antigravity::admit(&request, &session, &account.home)?);
         ("terminal", None, None)
@@ -611,9 +603,7 @@ pub async fn send_planned(
         reply_truncated: false,
         result: None,
         peer,
-        provider: if is_gemini {
-            Some("gemini".to_owned())
-        } else if is_agy {
+        provider: if is_agy {
             Some(antigravity::PROVIDER.to_owned())
         } else {
             None
@@ -1210,10 +1200,9 @@ fn fall_back_to_terminal(paths: &Paths, id: &str, reason: &str, stage: &str) -> 
 }
 /// Start a detached worker subcommand for a record; whether it could be started.
 /// The delivery worker subcommands (`api send` journal records).
-pub const WORKERS: [&str; 4] = [
+pub const WORKERS: [&str; 3] = [
     "claude-peer-worker",
     "claude-terminal-worker",
-    "gemini-terminal-worker",
     "antigravity-terminal-worker",
 ];
 /// The supervisor control method that starts a delivery worker as its own child.
@@ -1224,9 +1213,7 @@ const WORKER_LOG_MAX: u64 = 64 * 1024;
 const MAX_REDISPATCH: usize = 1;
 
 fn worker_for(r: &Record) -> &'static str {
-    if gemini::is_gemini(r) {
-        "gemini-terminal-worker"
-    } else if antigravity::is_antigravity(r) {
+    if antigravity::is_antigravity(r) {
         "antigravity-terminal-worker"
     } else if r.kind == "terminal" {
         "claude-terminal-worker"
@@ -1629,12 +1616,7 @@ async fn reconcile(paths: &Paths, id: &str, supervisor: bool) -> Result<Record> 
         _ => {
             let stopped = crate::background::worker_stopped(&worker_lock(paths, id)?)?;
             let typed = r.kind == "terminal";
-            if r.facts.written && typed && gemini::is_gemini(&r) {
-                gemini::observe(paths, id, false)?;
-                if stopped {
-                    gemini::unconfirmed_after_exit(paths, id)?;
-                }
-            } else if r.facts.written && typed && antigravity::is_antigravity(&r) {
+            if r.facts.written && typed && antigravity::is_antigravity(&r) {
                 antigravity::observe(paths, id, false)?;
                 if stopped {
                     antigravity::unconfirmed_after_exit(paths, id)?;
@@ -1824,9 +1806,6 @@ pub fn receipt_value(r: &Record) -> Value {
     }
     if r.kind == "terminal" {
         terminal::receipt_fields(r, &mut v);
-        if gemini::is_gemini(r) {
-            gemini::receipt_fields(r, &mut v);
-        }
         if antigravity::is_antigravity(r) {
             antigravity::receipt_fields(r, &mut v);
         }

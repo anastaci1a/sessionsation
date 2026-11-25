@@ -22,7 +22,9 @@ and package history are in Git.
 
 - **1.68.0** Removed `root status|migrate|rollback|finalize` (capability `root_alias`),
   `layout migrate|rollback` and `shared migrate`; `layout status` loses `in_use_now`; a dropped
-  config key is ignored, not refused. [Root alias](contract.md#root-alias).
+  config key is ignored, not refused. Gemini CLI is dropped (`providers[gemini]`
+  unsupported, `account auth` gone) with auto-switching, `doctor`, `simulate` and the
+  `message`, `ready`, `import`, `pause`, `session` CLI. [Root alias](contract.md#root-alias).
 - **1.67.1** Workers inherit no client lock fds; a repeated `session launch` re-admits;
   sends skip hourly retention.
 - **1.67.0** A refused check before Enter withdraws the typed text. Launches use the
@@ -167,14 +169,14 @@ and package history are in Git.
 - **1.28.0** `api abandon-operation`.
   [Abandon](contract.md#launch-acknowledgement-and-abandoning-uncertain-operations).
 - **1.27.0** Claude default statusline. [Settings](contract.md#claude-account-settings).
-- **1.26.0** Native `last_accessed`. [Timestamps](contract.md#session-timestamps).
+- **1.26.0** Native `last_accessed`.
 - **1.25.1** Codex 0.166.0 native profile. **1.25.0** Antigravity folder trust, stop,
   archive and delete. [Antigravity](contract.md#antigravity-cli).
 - **1.24.0** Semantic `contract_version`. [Versioning](contract.md#contract-versioning-semver).
 - **Revision 24** Antigravity provider. [Antigravity](contract.md#antigravity-cli).
 - **Revision 23** Pending questions and `api answer`. [Questions](contract.md#pending-questions).
-- **Revision 22** Claude bypass-permissions warning. [Settings](contract.md#claude-account-settings).
-- **Revision 21** Gemini authentication modes. [Gemini](contract.md#gemini-cli).
+- **Revision 22** Claude bypass-permissions warning.
+- **Revision 21** Gemini authentication modes.
 - **Revision 20** `--new-space LABEL`; Claude folder pre-trust.
   [Spaces](contract.md#choosing-a-space-and-a-pane), [trust](contract.md#folder-pre-trust).
 - **Revision 19** Launch permissions. [Permissions](contract.md#launch-permissions).
@@ -186,12 +188,9 @@ and package history are in Git.
   [terminal input](contract.md#terminal-input).
 - **Revision 16** Claude hosted sessions and live peer messages.
   [Delivery](contract.md#claude-input-delivery).
-- **Revisions 13-15** Gemini provider; account log out, cached state, account order;
-  steer reply correlation.
+- **Revisions 13-15** Gemini provider; account log out, cached state, order; steer replies.
 - **Revision 12** Session identity, continuations, Add to HERDR.
-  [Identity](contract.md#session-identity-and-continuations).
 - **Revision 11** Claude removal/deletion, login plans, headless delivery, display names.
-  [Headless](contract.md#headless-delivery).
 - **Revision 10** Claude provider and the per-operation capability table.
   [Claude](contract.md#claude-code).
 - **Revisions 3-9** Resume-and-submit, exact-item idle start, in-turn steering, HERDR-owned

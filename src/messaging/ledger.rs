@@ -51,11 +51,11 @@ pub(super) type Tombstone = (String, Option<String>, i64);
 pub(super) trait Reads {
     fn get(&self, id: &str) -> Result<Option<Receipt>>;
     fn retired(&self, id: &str) -> Result<Option<Tombstone>>;
-    /// The stored public-send binding (JSON text) of a message id.
     fn binding(&self, id: &str) -> Result<Option<String>>;
     /// Whether `id` was admitted through `modes` (queue or submit).
     fn mode_record(&self, id: &str) -> Result<bool>;
     fn expiry(&self, id: &str) -> Result<i64>;
+    #[cfg_attr(not(test), allow(dead_code))]
     fn events(&self, cursor: Option<&str>) -> Result<Value>;
     /// Held public messages of a conversation, in arrival order.
     fn held_ids(&self, conversation: &str) -> Result<Vec<String>>;
@@ -210,8 +210,8 @@ pub(super) fn open_read(
         Ok(LedgerRead { db, _lease: lease })
     }
 }
-/// Blocking [`open_read`] for sync callers.
 #[track_caller]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn open_read_blocking(paths: &Paths, budget: Duration) -> Result<LedgerRead> {
     let (db, lease) = acquire_blocking(paths, Access::Read, budget, Location::caller())?;
     Ok(LedgerRead { db, _lease: lease })

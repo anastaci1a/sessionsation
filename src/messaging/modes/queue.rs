@@ -2,6 +2,7 @@
 //! Only immutable metadata is added; there is no second dispatcher or credential writer.
 use super::*;
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn capability_id(generation: &str) -> String {
     format!(
         "{:x}",
@@ -15,6 +16,7 @@ pub(in crate::messaging) fn sending_enabled(paths: &Paths) -> Result<bool> {
         Err(_) => Err(Fault("native_sending_disabled")),
     }
 }
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn sending(paths: &Paths, enable: bool, disable: bool) -> Result<Value> {
     // Same exclusive lock as all native enqueue calls: toggles cannot race dispatch.
     let _ledger = ledger::open_write_blocking(paths, wait_budget(paths, Wait::Send))?;
@@ -41,6 +43,7 @@ pub(super) fn sending(paths: &Paths, enable: bool, disable: bool) -> Result<Valu
         json!({"native_sending_enabled":sending_enabled(paths)?,"supported_modes":["queue","submit"],"submit_supported":"busy_only","does_not_cancel_native_queue":true}),
     )
 }
+#[cfg_attr(not(test), allow(dead_code))]
 fn receipt(ledger: &impl Reads, id: &str) -> Result<Receipt> {
     uuid(id)?;
     if !ledger.mode_record(id)? {
@@ -48,6 +51,7 @@ fn receipt(ledger: &impl Reads, id: &str) -> Result<Receipt> {
     }
     ledger.lookup(id)
 }
+#[cfg_attr(not(test), allow(dead_code))]
 fn wrap(delivery: Value) -> Value {
     if !delivery["submit"].is_null() {
         return super::submit::wrap(delivery);
@@ -56,6 +60,7 @@ fn wrap(delivery: Value) -> Value {
     let accepted = !delivery["native_queue_id"].is_null() || !delivery["correlation"].is_null();
     json!({"request_id":delivery["message_id"],"session_id":delivery["session_id"],"requested_mode":"queue","effective_action":if accepted {Some("queue")} else {None},"state":if state=="unknown" {"delivery_unknown"} else if state=="pending_local" {"adapter_accepted"} else {state},"facts":{"adapter_accepted":true,"native_queue_accepted":accepted,"input_recorded":!delivery["correlation"].is_null(),"input_consumed":"unknown","reply_observed":!delivery["reply"].is_null()},"delivery":delivery})
 }
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) async fn request(paths: &Paths, r: Request) -> Result<Value> {
     r.validate()?;
     let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?;
@@ -134,6 +139,7 @@ pub(super) async fn request(paths: &Paths, r: Request) -> Result<Value> {
     submit(&mut control, &mut ledger, &mut receipt, &input).await?;
     Ok(wrap(json!(receipt)))
 }
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) async fn status(paths: &Paths, id: &str) -> Result<Value> {
     let deadline = tokio::time::Instant::now() + wait_budget(paths, Wait::Read);
     {
@@ -149,6 +155,7 @@ pub(super) async fn status(paths: &Paths, id: &str) -> Result<Value> {
     }
     status_write(paths, id, remaining(deadline)).await
 }
+#[cfg_attr(not(test), allow(dead_code))]
 /// The writer path of `modes` status (may expire, re-deliver and observe).
 async fn status_write(paths: &Paths, id: &str, budget: std::time::Duration) -> Result<Value> {
     let mut ledger = ledger::open_write(paths, budget).await?;
@@ -164,36 +171,7 @@ async fn status_write(paths: &Paths, id: &str, budget: std::time::Duration) -> R
         observe::result(paths, &mut ledger, &mut receipt).await?,
     ))
 }
-pub(super) fn events(paths: &Paths, cursor: Option<&str>) -> Result<Value> {
-    let ledger = ledger::open_read_blocking(paths, wait_budget(paths, Wait::Read))?;
-    let mut page = ledger.events(cursor)?;
-    let mut out = Vec::new();
-    for event in page["events"].as_array().ok_or(Fault("storage_error"))? {
-        let id = event["receipt"]["message_id"]
-            .as_str()
-            .ok_or(Fault("storage_error"))?;
-        if ledger.mode_record(id)? {
-            out.push(json!({"cursor":event["cursor"],"receipt":wrap(event["receipt"].clone())}));
-        }
-    }
-    // Cursor advances over legacy events too; no private payloads or hidden gap resets.
-    page["events"] = json!(out);
-    Ok(page)
-}
-pub(super) async fn cancel_request(paths: &Paths, id: &str) -> Result<Value> {
-    let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Read)).await?;
-    let mut receipt = receipt(&ledger, id)?;
-    if receipt.submit.is_some() {
-        return Err(Fault(if receipt.state == "native_accepted" {
-            "already_submitted"
-        } else {
-            "unknown"
-        }));
-    }
-    cancel(paths, &mut ledger, &mut receipt).await?;
-    Ok(wrap(json!(receipt)))
-}
-
+#[cfg_attr(not(test), allow(dead_code))]
 #[cfg(test)]
 mod tests {
     use super::*;

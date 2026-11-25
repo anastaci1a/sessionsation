@@ -242,8 +242,8 @@ impl Transport {
         self.verified_profile = true;
         Ok(())
     }
-    /// Stock Enter-equivalent after the adapter's idle check. The native operation
-    /// may steer if a concurrent caller starts work; it has no atomic idle guard.
+    /// Stock Enter-equivalent after the idle check; may steer a concurrently started turn.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) async fn start_or_steer(
         &mut self,
         session: &str,

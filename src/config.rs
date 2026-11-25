@@ -22,8 +22,6 @@ pub struct Config {
     pub claude_binary: String,
     /// Optional HOME for Claude children; unset inherits the caller's HOME.
     pub claude_session_home: Option<std::path::PathBuf>,
-    /// Gemini CLI executable used for every Gemini account.
-    pub gemini_binary: String,
     /// Antigravity CLI (`agy`) executable used for every Antigravity account.
     pub antigravity_binary: String,
     /// Operator kill switch for typed terminal input into HERDR panes (Claude
@@ -90,7 +88,6 @@ impl Default for Config {
             codex_binary: "codex".into(),
             claude_binary: "claude".into(),
             claude_session_home: None,
-            gemini_binary: "gemini".into(),
             antigravity_binary: "agy".into(),
             terminal_input_enabled: true,
             receipt_retention_days: 14,
@@ -111,8 +108,8 @@ impl Default for Config {
     }
 }
 /// Retired settings: still accepted in `config.json` (a release never refuses a key it once
-/// wrote) and ignored. `native_sender_registration` has been a no-op since contract 1.46.3.
-pub const KNOWN_IGNORED: &[&str] = &["native_sender_registration"];
+/// wrote) and ignored. `native_sender_registration` is a no-op (1.46.3); `gemini_binary` went with Gemini.
+pub const KNOWN_IGNORED: &[&str] = &["gemini_binary", "native_sender_registration"];
 impl Config {
     /// [`KNOWN_IGNORED`] keys are dropped and returned; any other unknown key is an error.
     pub fn parse(mut value: serde_json::Value) -> Result<(Self, Vec<&'static str>)> {
@@ -164,7 +161,6 @@ impl Config {
             ("curl_binary", &self.curl_binary),
             ("codex_binary", &self.codex_binary),
             ("claude_binary", &self.claude_binary),
-            ("gemini_binary", &self.gemini_binary),
             ("antigravity_binary", &self.antigravity_binary),
         ] {
             ensure!(!binary.trim().is_empty(), "{name} is empty");

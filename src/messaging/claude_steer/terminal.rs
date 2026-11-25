@@ -130,9 +130,6 @@ pub struct Terminal {
     pub input_record: Option<String>,
     pub turn_ended: bool,
     pub steps: Vec<String>,
-    /// Gemini CLI sessions only (see [`super::gemini`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gemini: Option<super::gemini::Facts>,
     /// Antigravity CLI sessions only (see [`super::antigravity`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub antigravity: Option<super::antigravity::Facts>,
@@ -718,11 +715,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     if orphaned(&r) {
         return cleanup_orphan(paths, id, &r).await;
     }
-    if r.phase != "admitted"
-        || r.kind != "terminal"
-        || super::gemini::is_gemini(&r)
-        || super::antigravity::is_antigravity(&r)
-    {
+    if r.phase != "admitted" || r.kind != "terminal" || super::antigravity::is_antigravity(&r) {
         return Ok(());
     }
     if r.request.expires_at <= crate::daemon::now() {

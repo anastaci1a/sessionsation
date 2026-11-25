@@ -23,7 +23,6 @@ fn reserved_launcher_is_honestly_gated_and_does_not_start_daemon() {
         .output()
         .unwrap();
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("NATIVE_HANDOFF_UNVERIFIED"));
     assert!(!root.join(sessionsation::layout::REGISTRY_DB).exists());
 }
 #[test]

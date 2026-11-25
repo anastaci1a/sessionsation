@@ -322,8 +322,10 @@ fn rekey(state: &mut State, r: &Record) -> Result<()> {
     }
     if crate::provider::ops::facts(r.provider).supervised {
         for p in state.automatic_switching.values_mut() {
-            for n in p.accounts.iter_mut().filter(|n| **n == r.old_name) {
-                *n = r.new_name.clone();
+            for n in p["accounts"].as_array_mut().into_iter().flatten() {
+                if n == r.old_name.as_str() {
+                    *n = r.new_name.clone().into();
+                }
             }
         }
     }
@@ -336,9 +338,6 @@ fn update_references(paths: &Paths, store: &mut Store, r: &Record) -> Result<()>
     // Stored owner and pane-binding homes follow the moved folder.
     crate::layout::rewrite_home_refs(&paths.root, &[(r.old_home.clone(), r.new_home.clone())])?;
     crate::catalog::reassign_account(paths, r.provider.as_str(), &r.old_name, &r.new_name)?;
-    if crate::provider::ops::facts(r.provider).auth_modes {
-        crate::provider::gemini::auth_failure::rename(paths, &r.old_name, &r.new_name);
-    }
     let (old_key, new_key) = (
         crate::model::account_key(r.provider, &r.old_name),
         crate::model::account_key(r.provider, &r.new_name),

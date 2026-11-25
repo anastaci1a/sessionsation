@@ -3,7 +3,7 @@ use crate::provider::{
     ProviderCapabilities, ProviderId, claude,
     ops::{
         ArchiveLayout, Enrollment, Facts, Headless, LiveSteering, Logout, ModelGrammar,
-        ProviderOps, Reader, Rekey, StopMethod, TerminalInput, TranscriptFormat,
+        ProviderOps, Reader, StopMethod, TerminalInput, TranscriptFormat,
     },
 };
 use crate::{config::Config, model::Account, paths::Paths};
@@ -42,7 +42,6 @@ pub const FACTS: Facts = Facts {
     shared_state: false,
     cli_options: false,
     logged_in: Some("logged in (Google OAuth)"),
-    rekey: Rekey::Unsupported,
     headless: Headless::AgyJson,
     headless_env: &[],
     archive: ArchiveLayout::AgyIndex,

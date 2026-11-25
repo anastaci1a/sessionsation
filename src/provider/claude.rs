@@ -25,7 +25,6 @@ pub mod native_peer;
 pub mod oauth;
 pub mod ops;
 pub mod peer;
-pub mod sender_registry;
 pub mod statusline_seed;
 pub mod stop;
 pub mod trust;

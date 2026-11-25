@@ -271,10 +271,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert questions["providers"]["gemini"]["detect"] is False and questions["providers"]["gemini"]["reason"]
             # Revision 21: per-account Gemini authentication modes.
             gemini = next(p for p in value["result"]["providers"] if p["id"] == "gemini")
-            assert [m["id"] for m in gemini["auth_modes"]] == ["google_personal", "google_workspace", "api_key"]
-            assert gemini["auth_modes"][0]["available"] is False and gemini["auth_modes"][0]["reason"]
-            assert gemini["auth_command"]["since_revision"] == 21
-            assert gemini["auth_command"]["key_input"] == "stdin_json"
+            assert gemini["implemented"] is False and "auth_modes" not in gemini and "auth_command" not in gemini, gemini
             # Revision 22: per-account Claude bypass-permissions warning.
             assert value["result"]["claude_bypass_warning"]["since_revision"] == 22
             assert value["result"]["claude_bypass_warning"]["new_accounts_default"] == "skip"
@@ -293,7 +290,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert value["result"]["antigravity_folder_trust"]["setting"] == "antigravity_pretrust_folders"
             assert value["result"]["antigravity_folder_trust"]["credentials_read"] is False
             assert value["result"]["antigravity_lifecycle"]["stop"]["sigkill"] is False
-            for p in value["result"]["providers"]:
+            for p in [p for p in value["result"]["providers"] if p["id"] != "gemini"]:
                 # Revision 25: every provider, Antigravity included, supports archive and delete.
                 assert p["operations"]["archive"]["supported"] is True and p["operations"]["delete_session"]["supported"] is True
             agy = [p for p in value["result"]["providers"] if p["id"] == "antigravity"][0]
@@ -312,12 +309,12 @@ with tempfile.TemporaryDirectory() as directory:
             validate(value["result"]["gemini_input_delivery"], "GeminiTerminalInputDelivery")
             gemini = [p for p in value["result"]["providers"] if p["id"] == "gemini"][0]
             validate(gemini["input_delivery"], "GeminiTerminalInputDelivery")
-            assert gemini["steer"] is True and gemini["input_delivery"]["automatic_replay"] is False
+            assert gemini["steer"] is False and gemini["input_delivery"]["automatic_replay"] is False
             assert "esc" in gemini["input_delivery"]["keys"]["never"] and "ctrl+c" in gemini["input_delivery"]["keys"]["never"]
             claude = [p for p in value["result"]["providers"] if p["id"] == "claude"][0]
             assert claude["account_removal"] is True and claude["account_deletion"] is True
             assert claude["headless_delivery"]["automatic_replay"] is False
-            assert all(p["account_rename"] is True for p in value["result"]["providers"])
+            assert all(p["account_rename"] is True for p in value["result"]["providers"] if p["id"] != "gemini")
             assert value["result"]["checkpoints"]["version"] == 1
             assert value["result"]["checkpoints"]["max_response_bytes"] == 786432
             assert value["result"]["checkpoints"]["history_modes"] == ["legacy", "paginated"]

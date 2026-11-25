@@ -34,11 +34,10 @@ impl Drop for Process {
     }
 }
 
-const PROVIDERS: [&str; 4] = ["codex", "claude", "gemini", "antigravity"];
-const IDS: [&str; 4] = [
+const PROVIDERS: [&str; 3] = ["codex", "claude", "antigravity"];
+const IDS: [&str; 3] = [
     "0a0a0a0a-0000-4000-8000-00000000c0de",
     "0b0b0b0b-0000-4000-8000-0000000c1a0d",
-    "0c0c0c0c-0000-4000-8000-00000000003e",
     "0d0d0d0d-0000-4000-8000-000000000a9e",
 ];
 
@@ -104,13 +103,11 @@ async fn fixture() -> Fixture {
     };
     let codex = install("fake-codex", include_str!("support/fake-codex.sh"));
     let claude = install("fake-claude", include_str!("support/fake-claude.sh"));
-    let gemini = install("gemini.js", include_str!("support/fake-gemini.sh"));
     let agy = install("agy", include_str!("support/fake-agy.sh"));
     let paths = Paths::new(Some(tmp.path().join("state"))).unwrap();
     let config = sessionsation::config::Config {
         codex_binary: codex.to_str().unwrap().into(),
         claude_binary: claude.to_str().unwrap().into(),
-        gemini_binary: gemini.to_str().unwrap().into(),
         antigravity_binary: agy.to_str().unwrap().into(),
         ..Default::default()
     };
@@ -176,28 +173,6 @@ fn seed(f: &Fixture) {
         ),
     )
     .unwrap();
-    // Gemini chat.
-    let slug = cwd
-        .to_string_lossy()
-        .trim_start_matches('/')
-        .replace('/', "-");
-    let home = f.home("gemini");
-    let dir = home.join(".gemini/tmp").join(&slug).join("chats");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join(format!("session-2026-01-01T00-00-{}.jsonl", &IDS[2][..8])),
-        format!(
-            "{}\n{}\n",
-            json!({"sessionId":IDS[2],"projectHash":"fixture","startTime":"2026-01-01T00:00:00.000Z","lastUpdated":"2026-01-01T00:00:00.000Z"}),
-            json!({"type":"user","content":"x"})
-        ),
-    )
-    .unwrap();
-    std::fs::write(
-        home.join(".gemini/projects.json"),
-        json!({"projects":{cwd.to_string_lossy():slug}}).to_string(),
-    )
-    .unwrap();
     // Antigravity index row + conversation database.
     let state = f.home("antigravity").join(".gemini/antigravity-cli");
     std::fs::create_dir_all(state.join("conversations")).unwrap();
@@ -205,12 +180,12 @@ fn seed(f: &Fixture) {
     db.execute_batch("CREATE TABLE conversation_summaries (conversation_id text, title text NOT NULL DEFAULT '', step_count integer NOT NULL DEFAULT 0, last_modified_time datetime NOT NULL, workspace_uris text NOT NULL, PRIMARY KEY (conversation_id));").unwrap();
     db.execute(
         "INSERT INTO conversation_summaries (conversation_id, step_count, last_modified_time, workspace_uris) VALUES (?1, 3, '2026-01-01 00:00:00+00:00', ?2)",
-        rusqlite::params![IDS[3], format!("[\"file://{}\"]", cwd.display())],
+        rusqlite::params![IDS[2], format!("[\"file://{}\"]", cwd.display())],
     )
     .unwrap();
     drop(db);
     std::fs::write(
-        state.join("conversations").join(format!("{}.db", IDS[3])),
+        state.join("conversations").join(format!("{}.db", IDS[2])),
         "x",
     )
     .unwrap();
@@ -274,7 +249,7 @@ fn stable_rows(f: &Fixture) -> Value {
     loop {
         std::thread::sleep(Duration::from_millis(400));
         let next = rows(f, false);
-        if next == last && next["sessions"].as_object().is_some_and(|o| o.len() == 4) {
+        if next == last && next["sessions"].as_object().is_some_and(|o| o.len() == 3) {
             return next;
         }
         assert!(Instant::now() < deadline, "state did not settle: {next}");
@@ -304,19 +279,13 @@ fn refusals(f: &Fixture, state: &Value) -> Value {
         if *provider != "claude" {
             case("managed_home", &["account", "managed-home", &account]);
         }
-        if *provider != "gemini" {
-            case(
-                "auth_mode",
-                &["account", "auth", &account, "--mode", "google"],
-            );
-        }
         if matches!(*provider, "codex" | "antigravity") {
             case(
                 "live_steering",
                 &["account", "live-steering", &account, "--enable"],
             );
         }
-        if matches!(*provider, "gemini" | "antigravity") {
+        if *provider == "antigravity" {
             case("reset_credit", &["account", "reset-credit", &account]);
         }
         let session = sessions
@@ -454,7 +423,7 @@ fn stable_cached_rows(f: &Fixture) -> Value {
     loop {
         std::thread::sleep(Duration::from_millis(400));
         let next = rows(f, true);
-        if next == last && next["sessions"].as_object().is_some_and(|o| o.len() == 4) {
+        if next == last && next["sessions"].as_object().is_some_and(|o| o.len() == 3) {
             return next;
         }
         assert!(

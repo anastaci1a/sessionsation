@@ -7,13 +7,11 @@
 )]
 pub mod accounts;
 pub mod api;
-pub mod automatic;
-pub mod autostart;
+
 mod background;
 pub mod caller_origin;
 pub mod catalog;
-pub mod cli_views;
-pub mod compatibility;
+
 pub mod config;
 pub mod control;
 pub mod daemon;
@@ -33,12 +31,12 @@ pub(crate) mod proc;
 pub mod provider;
 pub mod questions;
 pub mod rpc;
-pub mod scheduler;
+
 mod self_executable;
 pub mod session_launch;
 pub mod session_model;
 pub mod shared_state;
-pub mod simulation;
+
 pub mod store;
 pub mod sync;
 pub mod timing;

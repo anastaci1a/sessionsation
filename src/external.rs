@@ -2505,9 +2505,7 @@ pub async fn queue_snapshot(
     let owner = source.account.clone();
     let target = if kind == "account" { target } else { &owner };
     validate_name(target)?;
-    if kind == "terminate" {
-        session_control::disable_autostart(paths, &source).await?;
-    } else {
+    if kind != "terminate" {
         let status = daemon::call(paths, "status", json!({})).await?;
         ensure!(
             status["accounts"]
@@ -2655,7 +2653,6 @@ fn copy_rollout(source: &Path, home: &Path, target_home: &Path) -> Result<()> {
 }
 
 pub mod access;
-pub mod autostart;
 pub mod catalog;
 pub mod deletion;
 mod history;
@@ -2957,6 +2954,7 @@ pub(crate) fn messaging_lock(
     Ok((queue, conversation))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 /// Messaging labels use only the existing catalog and enrolled home mapping.
 /// Never use credential-derived identity matching for external homes.
 pub(crate) fn messaging_labels(
@@ -3002,9 +3000,11 @@ pub(crate) fn source_still_running(job: &Job) -> bool {
         && process_info(job.source.pid)
             .is_ok_and(|p| p.start_time == job.source.start_time && !matches!(p.state, 'Z' | 'X'))
 }
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn messaging_clear_stop_intent(paths: &Paths, id: &str) -> Result<()> {
     catalog::set_stop_intent(paths, id, None)
 }
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
     let mut ids = catalog::messaging_inventory(paths)?;
     for directory in [crate::layout::MANAGED_PANES, crate::layout::HERDR_PANES] {
