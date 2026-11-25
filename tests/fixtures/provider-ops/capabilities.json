@@ -972,7 +972,7 @@
       "cross_provider_conversion": false,
       "delivery": "non_steering_native_queue",
       "enrollment": true,
-      "force_interrupt": false,
+      "force_interrupt": true,
       "id": "codex",
       "implemented": true,
       "new": true,
@@ -2737,6 +2737,15 @@
     "starts_process": false,
     "target_command": "steer-target",
     "version": 1
+  },
+  "stop_interrupt": {
+    "flag": "--interrupt",
+    "providers": {
+      "antigravity": "accepted; the stop always interrupts",
+      "claude": "accepted; the stop always interrupts",
+      "codex": "turn/interrupt on the active turn, then the terminate job ends the session at idle"
+    },
+    "result_field": "interrupted_turn"
   },
   "stop_pane_close": {
     "default": "close",

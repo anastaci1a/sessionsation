@@ -1018,8 +1018,10 @@ fields `model` and `reasoning_effort`.
 
 ## Stop and restart
 
-`api stop --session ID --expected-generation G [--keep-pane] [--wait]
-[--disable-auto-start]` ends the selected agent and preserves resumable history.
+`api stop --session ID --expected-generation G [--keep-pane] [--wait] [--interrupt]
+[--disable-auto-start]` ends the selected agent and preserves resumable history. `--interrupt` first interrupts a Codex
+turn (`turn/interrupt`); Claude and Antigravity stops always do. A Codex `--wait` that ends while the job still waits
+for idle is retryable `OPERATION_TIMEOUT` (`operation.id`, `operation.phase`); a repeat stop returns that job.
 Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
 `session_id`, `source_session_id` (both name the catalog session), `provider`,
 `phase`, `detail`, `already_stopped`, `pid`, `process_start`, `signal`, `pane_closed`,

@@ -362,3 +362,43 @@ async fn codex_resume_launch_of_a_running_session_is_already_running() {
     );
     assert_eq!(session(&f)["availability"], "running");
 }
+
+// ------------------------------------------------ contract 1.68.2: stop --interrupt
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_stop_wait_timeout_names_the_waiting_job_and_a_repeat_returns_it() {
+    let f = Fixture::new().await;
+    f.live(ID, true);
+    f.a.lock().unwrap().hold_busy = true;
+    let (ok, v) = stop(
+        &f,
+        &["--wait"],
+        &[("SESSIONSATION_OPERATION_WAIT_MS", "1500")],
+    );
+    assert!(!ok, "{v}");
+    assert_eq!(v["error"]["code"], "OPERATION_TIMEOUT", "{v}");
+    assert_eq!(v["error"]["retryable"], true, "{v}");
+    let op = &v["error"]["operation"];
+    assert_eq!(op["phase"], "waiting_for_idle", "{v}");
+    let (ok, again) = stop(&f, &[], &[]);
+    assert!(ok, "{again}");
+    assert_eq!(again["result"]["id"], op["id"], "{again}");
+    assert_eq!(again["result"]["phase"], "waiting_for_idle", "{again}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_stop_interrupt_sends_turn_interrupt_and_completes_at_idle() {
+    let f = Fixture::new().await;
+    f.live(ID, true);
+    let (ok, v) = stop(&f, &["--wait", "--interrupt"], &[]);
+    assert!(ok, "{v}");
+    assert_eq!(v["result"]["phase"], "complete", "{v}");
+    assert_eq!(v["result"]["interrupted_turn"], true, "{v}");
+    let calls = f.a.lock().unwrap().calls.clone();
+    assert!(
+        calls
+            .iter()
+            .any(|(m, p)| m == "turn/interrupt" && p["turnId"] == "turn1" && p["threadId"] == ID),
+        "{calls:?}"
+    );
+}

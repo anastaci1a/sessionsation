@@ -3624,7 +3624,10 @@ async fn stop_sends_sigterm_to_the_running_claude_process_and_waits_for_its_exit
     assert_eq!(caps["claude_lifecycle"]["stop"]["sigkill"], false);
     assert_eq!(caps["claude_lifecycle"]["stop"]["wait_seconds"], 10);
 
-    let stopped = stop(&f, &s);
+    // 1.68.2: `--interrupt` is accepted; the stop interrupts regardless.
+    let mut args = stop_args(&s).to_vec();
+    args.push("--interrupt".into());
+    let stopped = f.api(&args.iter().map(String::as_str).collect::<Vec<_>>());
     assert_eq!(stopped["phase"], "complete", "{stopped}");
     assert_eq!(stopped["kind"], "terminate");
     assert_eq!(stopped["provider"], "claude");

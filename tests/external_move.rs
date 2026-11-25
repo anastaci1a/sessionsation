@@ -338,6 +338,12 @@ async fn server(home: PathBuf, state: Arc<Mutex<Server>>) {
                             t["turns"] = json!([{"id":"continued-turn","status":"inProgress","itemsView":"summary","items":[{"type":"userMessage","clientId":p["clientUserMessageId"]}]}]);
                             json!({"turn":{"id":"continued-turn","status":"inProgress"}})
                         }
+                        "turn/interrupt" => {
+                            let t = s.threads.get_mut(id).unwrap();
+                            t["status"]["type"] = json!("idle");
+                            if let Some(turns) = t["turns"].as_array_mut() { for turn in turns { turn["status"] = json!("interrupted"); } }
+                            json!({})
+                        }
                         "turn/steer" if s.hold_busy => json!({}),
                         "turn/steer" => {
                             assert!(p["clientUserMessageId"].as_str().is_some_and(|c| uuid::Uuid::parse_str(c).is_ok()), "steer must carry a client message ID");

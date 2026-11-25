@@ -285,7 +285,7 @@ async fn accounts_enroll_log_in_and_report_unsupported_usage_logout_and_limits()
     );
     let caps = f.api(&["capabilities"]);
     assert_eq!(caps["contract_revision"], 68);
-    assert_eq!(caps["contract_version"], "1.68.1");
+    assert_eq!(caps["contract_version"], "1.68.2");
     let p = caps["providers"]
         .as_array()
         .unwrap()
@@ -459,12 +459,12 @@ async fn a_live_agy_process_holding_the_conversation_is_running_and_refuses_resu
 async fn api_version_reports_semver_and_negotiates_by_major() {
     let f = fixture().await;
     let v = f.api(&["version"]);
-    assert_eq!(v["contract_version"], "1.68.1");
+    assert_eq!(v["contract_version"], "1.68.2");
     assert_eq!(v["contract_revision"], 68);
     for ok in ["1", "1.25", "1.26", "1.99.0"] {
         assert_eq!(
             f.api(&["--api-version", ok, "version"])["contract_version"],
-            "1.68.1"
+            "1.68.2"
         );
     }
     for bad in ["2", "2.0.0", "0.24"] {

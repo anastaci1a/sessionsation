@@ -16,11 +16,11 @@
     "doc_bytes:agents/README.md": { "value": 10289 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13865 },
-    "doc_bytes:docs/cli.md": { "value": 18220 },
-    "doc_bytes:docs/contract.md": { "value": 219616 },
+    "doc_bytes:docs/changelog.md": { "value": 13985 },
+    "doc_bytes:docs/cli.md": { "value": 18234 },
+    "doc_bytes:docs/contract.md": { "value": 219898 },
     "doc_bytes:docs/operations.md": { "value": 17360 },
-    "doc_bytes_total": { "value": 290338 },
+    "doc_bytes_total": { "value": 290754 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 168 },
     "env_scrub_sites": { "value": 37 },
@@ -41,7 +41,7 @@
     "module_lines:src/accounts": { "value": 436 },
     "module_lines:src/activity": { "value": 0 },
     "module_lines:src/alias": { "value": 341 },
-    "module_lines:src/api": { "value": 4624 },
+    "module_lines:src/api": { "value": 4649 },
     "module_lines:src/archive": { "value": 0 },
     "module_lines:src/auto_start": { "value": 0 },
     "module_lines:src/catalog": { "value": 2122 },
@@ -100,13 +100,13 @@
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
     "sha256_digests": { "value": 17 },
-    "since_contract_literals": { "value": 43 },
+    "since_contract_literals": { "value": 44 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
     "spawn_sites": { "value": 42 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 4 },
-    "src_lines": { "value": 68735 },
+    "src_lines": { "value": 68760 },
     "stale_target_literals": { "value": 58 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -132,7 +132,7 @@
     "doc_bytes_total": { "value": 313300 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "inline_test_lines": { "value": 0 },
-    "src_lines": { "value": 68785 }
+    "src_lines": { "value": 68810 }
   },
   "ledger": [
     {
@@ -2146,7 +2146,15 @@
       "reason": "1.68.1 hotfix: launch receipt records its worker (pid, start), one redispatch of a starter-killed launch, blocking worker lock, per-worker stderr logs through one self_worker helper (redundant stdio/env lines removed)",
       "considered": "n/a",
       "step": "hotfix:1.68.1"
-    }
+    },
+    {"counter":"src_lines","by":25,"reason":"uniform stop --interrupt + clear waiting_for_idle timeout (LEAD request)","considered":"reused Control, the terminate job and stop_shape; no new job field","step":"hotfix:1.68.2","agreed_by":{"who":"lead","ref":"p-1125-090703-1810"}},
+    {"counter":"cap:src_lines","by":25,"reason":"uniform stop --interrupt + clear waiting_for_idle timeout (LEAD request)","considered":"reused Control, the terminate job and stop_shape; no new job field","step":"hotfix:1.68.2","agreed_by":{"who":"lead","ref":"p-1125-090703-1810"}},
+    {"counter":"module_lines:src/api","by":25,"reason":"1.68.2 stop --interrupt","considered":"n/a","step":"hotfix:1.68.2","agreed_by":{"who":"lead","ref":"p-1125-090703-1810"}},
+    {"counter":"since_contract_literals","by":1,"reason":"1.68.2 stop_interrupt capability","considered":"one capability object; folding into stop_wait would hide the flag","step":"hotfix:1.68.2"},
+    {"counter":"doc_bytes:docs/changelog.md","by":120,"reason":"1.68.2 entry","considered":"n/a","step":"hotfix:1.68.2"},
+    {"counter":"doc_bytes:docs/cli.md","by":14,"reason":"1.68.2 flag","considered":"n/a","step":"hotfix:1.68.2"},
+    {"counter":"doc_bytes:docs/contract.md","by":282,"reason":"1.68.2 stop text","considered":"n/a","step":"hotfix:1.68.2"},
+    {"counter":"doc_bytes_total","by":416,"reason":"1.68.2 docs","considered":"n/a","step":"hotfix:1.68.2"}
   ],
   "enforced": { "identity": "1.66.0", "ledger": "1.66.1", "oauth": "S0", "provider-ops": "1.65.0", "typing": "1.67.0" },
   "steps": {

@@ -22,8 +22,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 68;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.68.1";
+pub const CONTRACT_PATCH: u32 = 2;
+pub const CONTRACT_VERSION: &str = "1.68.2";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -357,6 +357,8 @@ pub enum Command {
         /// Wait for the stop to finish (1.61.0). Claude and Antigravity stops are already synchronous.
         #[arg(long)]
         wait: bool,
+        #[arg(long)]
+        interrupt: bool,
     },
     Resume {
         #[arg(long)]
@@ -1788,7 +1790,7 @@ pub fn capabilities() -> Value {
         {"id":"codex","implemented":true,"enrollment":true,"usage":true,
          "new":true,"resume":true,"account_switch":true,"restart":true,
          "submit":true,"queue":true,"delivery":"non_steering_native_queue",
-         "account_deletion":true,"account_removal":true,"account_rename":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"purge":false,"force_interrupt":false,"steer":true,"cross_provider_conversion":false,"operations":crate::provider::capabilities(ProviderId::Codex)},
+         "account_deletion":true,"account_removal":true,"account_rename":true,"account_limits":true,"new_account_name_max":crate::paths::NEW_ACCOUNT_NAME_MAX,"purge":false,"force_interrupt":true,"steer":true,"cross_provider_conversion":false,"operations":crate::provider::capabilities(ProviderId::Codex)},
         {"id":"claude","implemented":true,"enrollment":true,"adopt_config_dir":true,"login":"interactive_exec","usage":true,"usage_source":claude::USAGE_SOURCE,
          "new":true,"resume":true,"rename":true,"native_rename":false,"stop":true,
          "account_switch":true,"restart":false,"submit":false,"queue":false,
@@ -1852,6 +1854,7 @@ pub fn capabilities() -> Value {
     value["claude_lifecycle"] = json!({"since_contract":"1.59.0","version":1,"stop":{"method":"sigterm_exact_process","verified_by":["registry_pid","process_start","account_home","conversation"],"signal_handle":"pidfd","wait_seconds":claude::stop::STOP_SECONDS,"sigkill":false,"busy_turn":"interrupted","result_field":"interrupted_turn","not_running":"already_stopped","archived":"already_stopped with archived:true","refused":{"background":ops::UNSUPPORTED,"hosted":"HOSTED_SESSION","unregistered":"SESSION_STATE_UNVERIFIED"},"errors":["SESSION_STATE_UNVERIFIED","AMBIGUOUS_SESSION","STOP_TIMEOUT","STOP_UNAVAILABLE","STOP_FAILED"],"retryable":["STOP_TIMEOUT"]},"restart":false});
     // Contract 1.61.0: `api stop --wait` for every provider.
     value["stop_wait"] = json!({"since_contract":"1.61.0","flag":"--wait","providers":{"codex":"polls the terminate job to its end","claude":"already synchronous","antigravity":"already synchronous"},"timeout_seconds":300,"timeout_env":"SESSIONSATION_OPERATION_WAIT_MS","errors":["OPERATION_FAILED","OPERATION_TIMEOUT"],"retryable":["OPERATION_TIMEOUT"],"disable_auto_start":"after the stop completed (with --wait)"});
+    value["stop_interrupt"] = json!({"since_contract":"1.68.2","flag":"--interrupt","providers":{"codex":"turn/interrupt on the active turn, then the terminate job ends the session at idle","claude":"accepted; the stop always interrupts","antigravity":"accepted; the stop always interrupts"},"result_field":"interrupted_turn"});
     // Contract 1.62.0: provider parity SM7 (session env var), SM8 (usage meter), SM3 (session meters).
     value["session_env"] = json!({"since_contract":"1.62.0","var":crate::provider::SESSION_ENV,
         "value":"the session id (api state sessions[].id), not the provider conversation id",
@@ -3676,6 +3679,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
             expected_generation,
             keep_pane,
             wait,
+            interrupt,
             ..
         } => {
             // Idempotent (1.55.0): `Err(session)` is an existing session with no process.
@@ -3691,6 +3695,8 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                 Err(s) => already_stopped(paths, &s, keep_pane).await?,
                 Ok((s, source)) => {
                     let (pid, start) = (source.pid, source.start_time);
+                    let interrupted =
+                        interrupt && source.shared_server && interrupt_turn(&source).await?;
                     let queued = operation(
                         paths,
                         external::queue_snapshot(
@@ -3721,6 +3727,7 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
                     // Contract 1.63.0: the shared stop keys. The job signals the exact
                     // verified process with SIGTERM once it is idle.
                     v["pid"] = json!(pid);
+                    v["interrupted_turn"] = json!(interrupted);
                     v["process_start"] = json!(start);
                     v["signal"] = json!((v["phase"] == "complete").then_some("SIGTERM"));
                     crate::provider::stop_shape::shape(v, &s)
@@ -4530,6 +4537,24 @@ async fn archive_unknown(paths: &Paths, t: &external::archiving::Target) -> Resu
     )
 }
 
+/// Contract 1.68.2: `api stop --interrupt` interrupts the running Codex turn; the stop ends at idle.
+async fn interrupt_turn(s: &external::Instance) -> Result<bool> {
+    let mut c = crate::control::Control::connect(&s.home).await?;
+    let t = c.thread(&s.thread_id, true).await?;
+    let turn = t["turns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .rfind(|t| t["status"] == "inProgress");
+    if let Some(turn) = turn {
+        c.request(
+            "turn/interrupt",
+            json!({"threadId":s.thread_id,"turnId":turn["id"]}),
+        )
+        .await?;
+    }
+    Ok(turn.is_some())
+}
 fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
     let id = catalog::list(paths)?
         .into_iter()
