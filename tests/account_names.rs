@@ -477,3 +477,70 @@ async fn display_names_collide_within_one_provider_only() {
     ]);
     assert!(e.contains("ACCOUNT_NAME_EXISTS"), "{e}");
 }
+
+/// A catalog session of `account` attached to this test process (an exact pid and start
+/// time), standing in for a running provider.
+fn run_session(f: &Fixture, account: &str) {
+    let me = std::process::id();
+    let stat = std::fs::read_to_string(format!("/proc/{me}/stat")).unwrap();
+    let start: u64 = stat
+        .rsplit_once(')')
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    sessionsation::catalog::record_provider_launch(
+        &f.paths,
+        sessionsation::provider::ProviderId::Claude,
+        account,
+        &uuid::Uuid::new_v4().to_string(),
+        "running",
+        None,
+        Some(sessionsation::catalog::Attachment {
+            host: "tmux".into(),
+            target: "%1".into(),
+            pid: me,
+            process_start: start,
+        }),
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backend_rename_is_blocked_by_a_running_session_but_rename_only_is_not() {
+    let f = fixture().await;
+    f.api(&["account", "add", "claude:busy"]);
+    run_session(&f, "busy");
+    let generation = f.generation("claude:busy");
+    let e = f.api_error(&[
+        "account",
+        "rename-backend",
+        "claude:busy",
+        "quiet",
+        "--expected-generation",
+        &generation,
+    ]);
+    assert!(e.contains("ACCOUNT_SESSIONS_RUNNING"), "{e}");
+    assert!(f.home("claude", "busy").is_dir() && !f.home("claude", "quiet").exists());
+    assert!(f.row("claude:busy").is_some());
+    // Rename only stays available while the session runs.
+    let r = f.api(&[
+        "account",
+        "rename",
+        "claude:busy",
+        "--display-name",
+        "Shown",
+    ]);
+    assert_eq!(r["display_name"], "Shown");
+    // Nothing was journaled for the refused attempt.
+    assert!(
+        f.api(&["operations"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| o["kind"] != "account_rename")
+    );
+}
