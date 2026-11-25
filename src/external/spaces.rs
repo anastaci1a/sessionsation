@@ -421,13 +421,10 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         )?;
         return public(paths, &op);
     }
-    let child = crate::background::detach(&mut std::process::Command::new(
-        crate::self_executable::path()?,
-    ))
-    .arg("--data-dir")
-    .arg(&paths.root)
-    .args(["space-move-worker", &op.request.request_id])
-    .spawn_reaped();
+    let id = &op.request.request_id;
+    let log = file(paths, id)?.with_extension("worker.log");
+    let worker = crate::background::self_worker(paths, &log, &["space-move-worker", id]);
+    let child = worker?.spawn_reaped();
     if child.is_err() {
         save(
             paths,

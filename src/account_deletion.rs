@@ -120,27 +120,16 @@ pub async fn preview(paths: &Paths, provider: ProviderId, name: &str) -> Result<
     Ok(value)
 }
 fn spawn(paths: &Paths, r: &Record) -> Result<()> {
-    let mut command = std::process::Command::new(crate::self_executable::path()?);
-    crate::background::detach(&mut command)
-        .arg("--data-dir")
-        .arg(&paths.root)
-        .args(["account-delete-worker", &r.id])
-        .env_remove("CODEX_HOME")
-        .env_remove("OPENAI_API_KEY")
-        .env_remove("CODEX_API_KEY")
-        .env_remove("CODEX_ACCESS_TOKEN")
-        .env_remove("CLAUDE_CONFIG_DIR");
+    let log = record_file(paths, &r.id)?.with_extension("worker.log");
+    let mut command =
+        crate::background::self_worker(paths, &log, &["account-delete-worker", &r.id])?;
+    command.env_remove("CLAUDE_CONFIG_DIR");
     for provider in native::NATIVE {
         for name in native::stripped_env(provider) {
             command.env_remove(name);
         }
     }
-    command.env_remove("GEMINI_CLI_HOME");
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn_reaped()?;
+    command.env_remove("GEMINI_CLI_HOME").spawn_reaped()?;
     Ok(())
 }
 /// Refuse a symlinked or foreign directory between the data root and a

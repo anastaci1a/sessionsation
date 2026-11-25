@@ -323,18 +323,9 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         nothing_to_archive: false,
     };
     op_save(paths, &o)?;
-    let spawned = crate::background::detach(&mut Command::new(crate::self_executable::path()?))
-        .arg("--data-dir")
-        .arg(&paths.root)
-        .args(["conversation-worker", &o.id])
-        .env_remove("CODEX_HOME")
-        .env_remove("OPENAI_API_KEY")
-        .env_remove("CODEX_API_KEY")
-        .env_remove("CODEX_ACCESS_TOKEN")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn_reaped();
+    let log = op_path(paths, &o.id)?.with_extension("worker.log");
+    let worker = crate::background::self_worker(paths, &log, &["conversation-worker", &o.id]);
+    let spawned = worker?.spawn_reaped();
     if let Err(e) = spawned {
         let mut failed = o.clone();
         phase(

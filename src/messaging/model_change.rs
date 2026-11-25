@@ -748,17 +748,12 @@ fn spawn_claude_worker(paths: &Paths, r: &Record, now: i64) {
     }
     // Idle polling backs off (4 s doubling to 30 s) while the session stays busy.
     back_off(&r.id, now, CLAUDE_FIRST_BACKOFF_SECONDS);
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let _ = crate::background::detach(&mut std::process::Command::new(exe))
-        .arg("--data-dir")
-        .arg(&paths.root)
-        .args(["model-change-worker", &r.id])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn_reaped();
+    let args = ["model-change-worker", r.id.as_str()];
+    if let Ok(mut worker) =
+        crate::background::self_worker(paths, &lock_path.with_extension("log"), &args)
+    {
+        let _ = worker.spawn_reaped();
+    }
 }
 
 #[derive(Deserialize)]

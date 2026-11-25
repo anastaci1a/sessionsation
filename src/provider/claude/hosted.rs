@@ -483,13 +483,9 @@ pub async fn start(paths: &Paths, s: Start) -> Result<Host> {
     };
     // Journal before any provider process can start.
     save(paths, &mut host)?;
-    let spawned = crate::background::detach(&mut std::process::Command::new(
-        crate::self_executable::path()?,
-    ))
-    .arg("--data-dir")
-    .arg(&paths.root)
-    .args(["claude-host-worker", &c])
-    .spawn_reaped();
+    let log = dir(paths, &c)?.join("worker.log");
+    let worker = crate::background::self_worker(paths, &log, &["claude-host-worker", &c]);
+    let spawned = worker?.spawn_reaped();
     if spawned.is_err() {
         update(paths, &c, |h| {
             h.state = "failed".into();

@@ -651,7 +651,12 @@ native conversation ID when known. A failure or timeout must not trigger an
 automatic new Start; reconcile the original request (uncertain operations keep their
 name reservation). Status can reconcile a late attachment after a worker timeout
 using the same catalog generation, account, native UUID, PID/start time and remote
-socket argv. It never replays commands or changes focus. No credentials are in
+socket argv. It never replays commands or changes focus. The receipt's `worker`
+(`{pid, start}`) is the spawned `launch-worker`, whose stderr goes to
+`<request_id>.worker.log` next to the receipt (restarted above 64 KiB); while that
+exact process runs the launch is never judged dead. An `admitted` receipt without
+`worker`, more than 10 s old and under 60 s since admission, had its starter killed
+before any step: status dispatches it once more. No credentials are in
 requests or receipts. Launch timing, waits and abandonment:
 [launch acknowledgement](#launch-acknowledgement-and-abandoning-uncertain-operations).
 

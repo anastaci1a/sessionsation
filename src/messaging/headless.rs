@@ -451,13 +451,9 @@ pub async fn send(paths: &Paths, request: Request) -> Result<Value> {
     // Journal before any provider process can start.
     save(paths, &mut record)?;
     drop(admission);
-    let spawned = crate::background::detach(&mut std::process::Command::new(
-        crate::self_executable::path()?,
-    ))
-    .arg("--data-dir")
-    .arg(&paths.root)
-    .args(["claude-delivery-worker", &id])
-    .spawn_reaped();
+    let log = file(paths, &id)?.with_extension("worker.log");
+    let worker = crate::background::self_worker(paths, &log, &["claude-delivery-worker", &id]);
+    let spawned = worker?.spawn_reaped();
     if spawned.is_err() {
         record.phase = "complete".into();
         record.state = "rejected".into();

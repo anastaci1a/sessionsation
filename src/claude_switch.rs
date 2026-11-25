@@ -392,13 +392,9 @@ pub async fn start(
         session: s,
     };
     save(paths, &mut r)?;
-    let child = crate::background::detach(&mut std::process::Command::new(
-        crate::self_executable::path()?,
-    ))
-    .arg("--data-dir")
-    .arg(&paths.root)
-    .args(["claude-switch-worker", &r.id])
-    .spawn_reaped();
+    let log = file(paths, &r.id)?.with_extension("worker.log");
+    let worker = crate::background::self_worker(paths, &log, &["claude-switch-worker", &r.id]);
+    let child = worker?.spawn_reaped();
     if let Err(e) = child {
         phase(
             paths,

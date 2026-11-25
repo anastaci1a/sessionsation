@@ -113,6 +113,9 @@ pub struct Receipt {
     /// instead of a new tab; `detail` says which. Omitted when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pane_reused: bool,
+    /// Contract 1.68.1: the spawned `launch-worker` (pid, start time); absent before 1.68.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<crate::background::Worker>,
 }
 fn validate_id(id: &str) -> Result<()> {
     ensure!(uuid::Uuid::parse_str(id).is_ok(), "INVALID_REQUEST_ID");
@@ -313,26 +316,19 @@ pub(crate) fn location(paths: &Paths, id: &str) -> Result<PathBuf> {
     validate_id(id)?;
     Ok(paths
         .root
-        .join(crate::layout::LAUNCHES)
-        .join(format!("{id}.json")))
+        .join(format!("{}/{id}.json", crate::layout::LAUNCHES)))
 }
 pub(crate) fn lock(paths: &Paths) -> Result<fs::File> {
-    private_dir(&paths.root.join(crate::layout::LAUNCHES))?;
-    let f = lock_file(
-        &paths
-            .root
-            .join(crate::layout::LAUNCHES)
-            .join("admission.lock"),
-    )?;
+    let dir = paths.root.join(crate::layout::LAUNCHES);
+    private_dir(&dir)?;
+    let f = lock_file(&dir.join("admission.lock"))?;
     f.lock_exclusive()?;
     Ok(f)
 }
 pub(crate) fn save(paths: &Paths, r: &mut Receipt) -> Result<()> {
     r.updated_at = daemon::now();
-    atomic_write(
-        &location(paths, &r.request.request_id)?,
-        &serde_json::to_vec_pretty(r)?,
-    )
+    let file = location(paths, &r.request.request_id)?;
+    atomic_write(&file, &serde_json::to_vec_pretty(r)?)
 }
 pub fn status(paths: &Paths, id: &str) -> Result<Receipt> {
     let file = location(paths, id)?;
@@ -345,12 +341,21 @@ pub(crate) fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
         crate::inline::settle_launch(paths, &r.request.request_id)?;
         return status(paths, id);
     }
-    if daemon::now() - r.updated_at > 10
+    let now = daemon::now();
+    if now - r.updated_at > 10
+        && r.worker
+            .is_none_or(|w| crate::proc::identity::gone(w.pid, w.start))
         && let Some((phase, detail)) = crate::background::interrupted_launch(&r.phase)
         && crate::background::worker_stopped(&location(paths, id)?.with_extension("worker.lock"))?
     {
+        // 1.68.1: a running recorded worker is only slow. `admitted` with none recorded: its
+        // starter was killed before the worker ran (nothing was done); dispatch it once more.
+        let redo = r.phase == "admitted" && r.worker.is_none() && r.created_at > Some(now - 60);
         return change(paths, id, |current| {
             if current.phase == r.phase && current.updated_at == r.updated_at {
+                if redo && spawn_worker(paths, current) {
+                    return Ok(());
+                }
                 if phase == "failed" {
                     catalog::release_reservation(paths, id)?;
                 }
@@ -572,35 +577,30 @@ pub(crate) async fn admit(paths: &Paths, mut r: Request, validate_only: bool) ->
         inline: None,
         space_label: label,
         pane_reused: false,
+        worker: None,
     };
     save(paths, &mut receipt)?;
-    let spawned =
-        crate::background::detach(&mut std::process::Command::new(std::env::current_exe()?))
-            .arg("--data-dir")
-            .arg(&paths.root)
-            .args(["launch-worker", &receipt.request.request_id])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn_reaped();
-    if spawned.is_err() {
+    if !spawn_worker(paths, &mut receipt) {
         catalog::release_reservation(paths, &receipt.request.request_id)?;
         receipt.phase = "failed".into();
         receipt.detail = Some("Worker could not start; no resources created".into());
-        save(paths, &mut receipt)?;
     }
+    save(paths, &mut receipt)?;
     Ok(serde_json::to_value(receipt)?)
 }
+/// Start `launch-worker` (stderr: `<id>.worker.log`) and record it. Callers hold [`lock`].
+fn spawn_worker(paths: &Paths, r: &mut Receipt) -> bool {
+    let id = &r.request.request_id;
+    let log = format!("{}/{id}.worker.log", crate::layout::LAUNCHES);
+    let w = crate::background::self_worker(paths, &paths.root.join(log), &["launch-worker", id]);
+    r.worker = w.and_then(|mut w| w.spawn_reaped()).ok();
+    r.worker.is_some()
+}
 pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
-    // This process owns only a new-launch request, never a provider supervisor.
+    // Owns only a new-launch request, never a provider supervisor; waits out a probe (1.68.1).
     let _worker = {
-        let f = lock_file(
-            &paths
-                .root
-                .join(crate::layout::LAUNCHES)
-                .join(format!("{id}.worker.lock")),
-        )?;
-        f.try_lock_exclusive()?;
+        let f = lock_file(&location(paths, id)?.with_extension("worker.lock"))?;
+        f.lock_exclusive()?;
         f
     };
     let receipt = change(paths, id, |r| {

@@ -17,12 +17,12 @@ fn spawn_reaped_leaves_no_zombie_and_does_not_kill_a_slow_worker() {
     let dir = tempfile::tempdir().unwrap();
     let (pidfile, slow_done) = (dir.path().join("pid"), dir.path().join("slow"));
     let mut quick = Command::new("sh");
-    detach(&mut quick)
+    detach(&mut quick, &dir.path().join("quick.log"))
         .args(["-c", "echo $$ > \"$1\"", "w"])
         .arg(&pidfile);
     quick.spawn_reaped().unwrap();
     let mut slow = Command::new("sh");
-    detach(&mut slow)
+    detach(&mut slow, &dir.path().join("slow.log"))
         .args(["-c", "sleep 1; echo done > \"$1\"", "w"])
         .arg(&slow_done);
     slow.spawn_reaped().unwrap();
@@ -64,7 +64,7 @@ fn durable_worker_has_its_own_process_group_and_no_inherited_credentials() {
     command
         .env("CODEX_HOME", "synthetic")
         .env("OPENAI_API_KEY", "synthetic");
-    detach(&mut command)
+    detach(&mut command, &dir.path().join("w.log"))
         .args([
             "-c",
             "test -z \"$CODEX_HOME$OPENAI_API_KEY\" && echo $$ > \"$1\"; sleep 1",
@@ -83,7 +83,7 @@ fn durable_worker_has_its_own_process_group_and_no_inherited_credentials() {
 }
 
 /// Spawn through `spawn` a worker that outlives a held, inheritable lock; it must not hold it.
-fn assert_worker_does_not_hold_lock(spawn: impl Fn(&mut Command) -> std::io::Result<()>) {
+fn assert_worker_does_not_hold_lock(spawn: impl Fn(&mut Command) -> std::io::Result<Worker>) {
     use fs2::FileExt;
     use std::os::fd::AsRawFd;
     let dir = tempfile::tempdir().unwrap();
@@ -124,11 +124,11 @@ fn assert_worker_does_not_hold_lock(spawn: impl Fn(&mut Command) -> std::io::Res
 }
 #[test]
 fn detach_workers_do_not_inherit_a_clients_lock() {
-    assert_worker_does_not_hold_lock(|c| detach(c).spawn_reaped());
+    assert_worker_does_not_hold_lock(|c| detach(c, Path::new("/dev/null")).spawn_reaped());
 }
 #[test]
 fn detach_session_workers_do_not_inherit_a_clients_lock() {
-    assert_worker_does_not_hold_lock(|c| detach_session(c, Stdio::null()).spawn_reaped());
+    assert_worker_does_not_hold_lock(|c| detach_session(c, Path::new("/dev/null")).spawn_reaped());
 }
 #[test]
 fn handoff_style_workers_do_not_inherit_a_clients_lock() {
@@ -140,4 +140,59 @@ fn handoff_style_workers_do_not_inherit_a_clients_lock() {
             .process_group(0)
             .spawn_reaped()
     });
+}
+/// Contract 1.68.1: a worker that dies before doing anything leaves its reason in its log,
+/// and the log restarts instead of growing without bound.
+#[test]
+fn a_worker_that_dies_early_leaves_its_stderr_in_its_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("op.worker.log");
+    for _ in 0..2 {
+        detach(&mut Command::new("sh"), &log)
+            .args(["-c", "echo 'worker refused: LAYOUT_INVALID' >&2; exit 1"])
+            .spawn_reaped()
+            .unwrap();
+    }
+    assert!(wait_for(|| std::fs::read_to_string(&log).is_ok_and(|s| s
+        .matches("worker refused: LAYOUT_INVALID")
+        .count()
+        == 2)));
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(text.matches(" started by ").count(), 2, "{text}");
+    std::fs::write(&log, vec![b'x'; 70 * 1024]).unwrap();
+    detach(&mut Command::new("sh"), &log)
+        .args(["-c", "echo again >&2"])
+        .spawn_reaped()
+        .unwrap();
+    assert!(wait_for(
+        || std::fs::read_to_string(&log).is_ok_and(|s| s.ends_with("again\n"))
+    ));
+    assert!(std::fs::metadata(&log).unwrap().len() < 1024);
+    let mut session = Command::new("sh");
+    detach_session(&mut session, &log).args(["-c", "echo session >&2"]);
+    session.spawn_reaped().unwrap();
+    assert!(wait_for(
+        || std::fs::read_to_string(&log).is_ok_and(|s| s.ends_with("session\n"))
+    ));
+}
+/// The identity `spawn_reaped` returns names the running worker until it exits.
+#[test]
+fn spawn_reaped_returns_the_workers_exact_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("go");
+    let worker = detach(&mut Command::new("sh"), &dir.path().join("w.log"))
+        .args(["-c", "while [ ! -e \"$1\" ]; do sleep 0.05; done", "w"])
+        .arg(&gate)
+        .spawn_reaped()
+        .unwrap();
+    assert_eq!(
+        crate::proc::identity::start_time(worker.pid).unwrap(),
+        worker.start
+    );
+    assert!(!crate::proc::identity::gone(worker.pid, worker.start));
+    std::fs::write(&gate, "").unwrap();
+    assert!(wait_for(|| crate::proc::identity::gone(
+        worker.pid,
+        worker.start
+    )));
 }

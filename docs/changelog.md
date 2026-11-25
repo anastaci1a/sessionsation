@@ -20,6 +20,9 @@ and package history are in Git.
 
 ## Versions
 
+- **1.68.1** A launch whose starter was killed before its worker ran is dispatched once
+  more; a running recorded `worker` or a status probe never fails a launch; detached
+  workers log stderr. [Launch](contract.md#new-session-launch).
 - **1.68.0** Removed `root status|migrate|rollback|finalize` (capability `root_alias`),
   `layout migrate|rollback`, `shared migrate`, `account auth`, `doctor`, `simulate` and the hidden
   `message`, `ready`, `session`, `import`, `pause`, `thresholds`, `auto-switch`, `auto-start`,

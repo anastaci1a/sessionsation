@@ -2,7 +2,7 @@
 use super::*;
 use crate::background::SpawnReaped as _;
 use anyhow::{Context, ensure};
-use std::{os::unix::fs::PermissionsExt, path::Path, process::Stdio};
+use std::{os::unix::fs::PermissionsExt, path::Path};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Host {
@@ -611,16 +611,10 @@ pub(super) async fn send(paths: &Paths, request: PublicRequest) -> anyhow::Resul
         launch_confirmed: false,
     };
     save(paths, &record)?;
-    let child = crate::background::detach(&mut std::process::Command::new(
-        crate::self_executable::path()?,
-    ))
-    .arg("--data-dir")
-    .arg(&paths.root)
-    .args(["message-recovery-worker", &record.request.message_id])
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .spawn_reaped();
+    let id = &record.request.message_id;
+    let log = file(paths, id)?.with_extension("worker.log");
+    let worker = crate::background::self_worker(paths, &log, &["message-recovery-worker", id]);
+    let child = worker?.spawn_reaped();
     if child.is_err() {
         record.phase = "failed".into();
         record.detail = Some("RECOVERY_WORKER_COULD_NOT_START_NO_PROVIDER_ACTION".into());

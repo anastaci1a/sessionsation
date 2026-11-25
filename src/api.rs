@@ -22,8 +22,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 68;
-pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.68.0";
+pub const CONTRACT_PATCH: u32 = 1;
+pub const CONTRACT_VERSION: &str = "1.68.1";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -3995,14 +3995,12 @@ pub async fn refresh_active_snapshot(paths: &Paths) {
 /// Refresh the Active snapshot in a detached `snapshot-refresh` process so the caller never
 /// waits for the scan. Best effort.
 pub(crate) fn refresh_active_snapshot_detached(paths: &Paths) {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let _ = crate::background::detach(&mut std::process::Command::new(exe))
-        .arg("--data-dir")
-        .arg(&paths.root)
-        .arg("snapshot-refresh")
-        .spawn_reaped();
+    let log = paths
+        .root
+        .join(format!("{}/snapshot-refresh.log", crate::layout::LOGS));
+    if let Ok(mut worker) = crate::background::self_worker(paths, &log, &["snapshot-refresh"]) {
+        let _ = worker.spawn_reaped();
+    }
 }
 
 /// Rewrite every cached state snapshot (Active, Archived, All) from the current catalog.

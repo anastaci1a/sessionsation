@@ -1207,8 +1207,6 @@ pub const WORKERS: [&str; 3] = [
 ];
 /// The supervisor control method that starts a delivery worker as its own child.
 pub const WORKER_METHOD: &str = "message/worker";
-/// A worker log larger than this is started afresh (workers write only their errors).
-const WORKER_LOG_MAX: u64 = 64 * 1024;
 /// Re-dispatches of a provably unsent request whose worker died (contract 1.64.0).
 const MAX_REDISPATCH: usize = 1;
 
@@ -1231,28 +1229,6 @@ fn worker_for(r: &Record) -> &'static str {
 fn worker_log(paths: &Paths, id: &str) -> Result<PathBuf> {
     Ok(file(paths, id)?.with_extension("worker.log"))
 }
-/// The worker's stderr: `<id>.worker.log` next to its record (retired with it), started
-/// afresh when larger than [`WORKER_LOG_MAX`], with one line naming each start.
-fn open_worker_log(paths: &Paths, id: &str, worker: &str) -> Result<fs::File> {
-    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
-    let path = worker_log(paths, id)?;
-    let fresh = fs::metadata(&path).is_ok_and(|m| m.len() > WORKER_LOG_MAX);
-    let mut options = fs::OpenOptions::new();
-    options.create(true).mode(0o600);
-    if fresh {
-        options.write(true).truncate(true);
-    } else {
-        options.append(true);
-    }
-    let mut f = options.open(&path)?;
-    writeln!(
-        f,
-        "{} start {worker} pid {}",
-        crate::daemon::now(),
-        std::process::id()
-    )?;
-    Ok(f)
-}
 
 /// Start `worker` for `id` from this process, in a new session (`setsid`), with stderr to
 /// its log. `env` replaces the environment (a sender's, forwarded by the supervisor).
@@ -1265,8 +1241,9 @@ fn spawn_local(
     let Ok(exe) = crate::self_executable::path() else {
         return false;
     };
-    let stderr = open_worker_log(paths, id, worker)
-        .map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from);
+    let Ok(log) = worker_log(paths, id) else {
+        return false;
+    };
     let mut command = std::process::Command::new(exe);
     if let Some(env) = env {
         command.env_clear();
@@ -1276,7 +1253,7 @@ fn spawn_local(
             }
         }
     }
-    crate::background::detach_session(&mut command, stderr)
+    crate::background::detach_session(&mut command, &log)
         .arg("--data-dir")
         .arg(&paths.root)
         .arg(worker)

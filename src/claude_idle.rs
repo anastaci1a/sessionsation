@@ -192,13 +192,9 @@ pub async fn start(
     };
     save(paths, &mut r)?;
     drop(admission);
-    let spawned = crate::background::detach(&mut std::process::Command::new(
-        crate::self_executable::path()?,
-    ))
-    .arg("--data-dir")
-    .arg(&paths.root)
-    .args(["claude-idle-worker", &r.id])
-    .spawn_reaped();
+    let log = file(paths, &r.id)?.with_extension("worker.log");
+    let worker = crate::background::self_worker(paths, &log, &["claude-idle-worker", &r.id]);
+    let spawned = worker?.spawn_reaped();
     if spawned.is_err() {
         finish(paths, &mut r, "failed", Some("WORKER_COULD_NOT_START"))?;
         return Ok(public(paths, &r));

@@ -153,6 +153,7 @@ pub fn begin_new(
         phase: "starting_provider".into(),
         detail: None,
         pane_reused: false,
+        worker: None,
         workspace_id: None,
         tab_id: None,
         pane_id: info.pane_id.clone(),
