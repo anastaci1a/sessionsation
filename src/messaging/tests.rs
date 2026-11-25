@@ -1563,3 +1563,14 @@ async fn status_shortcut_matches_the_writer_path_or_declines() {
     }
     assert_eq!(answered, 2 * 7 - 1);
 }
+
+pub(super) fn wait_budget(paths: &Paths, wait: Wait) -> std::time::Duration {
+    // Unit tests keep the fail-fast behaviour unless a test registers its root.
+    let _ = wait;
+    TEST_WAIT
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(root, _)| *root == paths.root) // raw-path: in-process registry keyed by Paths.root
+        .map_or(std::time::Duration::ZERO, |(_, d)| *d)
+}

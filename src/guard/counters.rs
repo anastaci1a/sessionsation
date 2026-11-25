@@ -613,6 +613,7 @@ pub const CAP_INITIAL: &[(&str, usize)] = &[
     ("doc_bytes_total", 313300),
     ("doc_duplicate_paragraphs", 0),
     ("src_lines", 103063),
+    ("inline_test_lines", 0),
 ];
 
 /// Prefix of the per-module line counters: `module_lines:<path>` (SHRINK design

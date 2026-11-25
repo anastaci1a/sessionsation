@@ -612,7 +612,7 @@ fn initial_of(name: &str) -> Option<usize> {
 /// Counters under an Enforced hard cap: `src_lines` (SHRINK §6.2, falls-only)
 /// and every documentation counter.
 fn capped(name: &str) -> bool {
-    name == "src_lines"
+    matches!(name, "src_lines" | "inline_test_lines")
         || name.starts_with(DOC_BYTES)
         || COUNTERS.iter().any(|c| {
             c.name == name && matches!(c.kind, Kind::DocBytesTotal | Kind::DocDuplicateParagraphs)

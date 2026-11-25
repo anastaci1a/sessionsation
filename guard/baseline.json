@@ -1,6 +1,6 @@
 {
   "roles_digest": "a1f92d442a9adaa9b5219be0240237eb215c62dc35ddd1c733c751b2f7700ce0",
-  "counters_digest": "794de3f4554fa41ba8ace3dcc54db7512a13ae633e451dcfc957626540b791f7",
+  "counters_digest": "a415b458ba983a295e37fb66b9096146bb7f44d5c3de6c522a4490fba499d726",
   "counters": {
     "alive_fns": { "value": 0 },
     "apply_session_input_fns": { "value": 1 },
@@ -33,53 +33,53 @@
     "herdr_allow_markers": { "value": 0 },
     "herdr_cli_callers": { "value": 41 },
     "identity_allow_markers": { "value": 0 },
-    "inline_test_lines": { "value": 17707 },
+    "inline_test_lines": { "value": 0 },
     "json_parse_sites": { "value": 112 },
     "ledger_allow_markers": { "value": 0 },
     "ledger_opens": { "value": 0 },
     "locks_allow_markers": { "value": 0 },
-    "module_lines:src/accounts": { "value": 654 },
+    "module_lines:src/accounts": { "value": 436 },
     "module_lines:src/activity": { "value": 0 },
-    "module_lines:src/alias": { "value": 485 },
-    "module_lines:src/api": { "value": 5377 },
+    "module_lines:src/alias": { "value": 341 },
+    "module_lines:src/api": { "value": 4626 },
     "module_lines:src/archive": { "value": 0 },
     "module_lines:src/auto_start": { "value": 0 },
-    "module_lines:src/catalog": { "value": 3860 },
+    "module_lines:src/catalog": { "value": 2122 },
     "module_lines:src/codes": { "value": 0 },
-    "module_lines:src/config": { "value": 272 },
+    "module_lines:src/config": { "value": 238 },
     "module_lines:src/contract": { "value": 0 },
-    "module_lines:src/control": { "value": 442 },
-    "module_lines:src/daemon": { "value": 1498 },
-    "module_lines:src/disk_space": { "value": 177 },
-    "module_lines:src/file_cache": { "value": 207 },
+    "module_lines:src/control": { "value": 381 },
+    "module_lines:src/daemon": { "value": 1297 },
+    "module_lines:src/disk_space": { "value": 126 },
+    "module_lines:src/file_cache": { "value": 117 },
     "module_lines:src/host": { "value": 0 },
-    "module_lines:src/launch": { "value": 1661 },
-    "module_lines:src/main": { "value": 1662 },
+    "module_lines:src/launch": { "value": 1335 },
+    "module_lines:src/main": { "value": 1565 },
     "module_lines:src/messaging/codex_input": { "value": 0 },
     "module_lines:src/messaging/compaction": { "value": 1565 },
-    "module_lines:src/messaging/ledger": { "value": 823 },
+    "module_lines:src/messaging/ledger": { "value": 816 },
     "module_lines:src/messaging/model_change": { "value": 1882 },
     "module_lines:src/messaging/peer": { "value": 0 },
     "module_lines:src/messaging/send": { "value": 0 },
-    "module_lines:src/messaging/transport": { "value": 586 },
+    "module_lines:src/messaging/transport": { "value": 572 },
     "module_lines:src/messaging/typing": { "value": 0 },
-    "module_lines:src/pane_reuse": { "value": 546 },
-    "module_lines:src/paths": { "value": 511 },
+    "module_lines:src/pane_reuse": { "value": 307 },
+    "module_lines:src/paths": { "value": 374 },
     "module_lines:src/proc": { "value": 194 },
-    "module_lines:src/provider/antigravity": { "value": 2187 },
+    "module_lines:src/provider/antigravity": { "value": 1739 },
     "module_lines:src/provider/caps": { "value": 0 },
-    "module_lines:src/provider/claude": { "value": 9132 },
-    "module_lines:src/provider/codex": { "value": 297 },
-    "module_lines:src/provider/events": { "value": 1004 },
-    "module_lines:src/provider/mod": { "value": 358 },
+    "module_lines:src/provider/claude": { "value": 6847 },
+    "module_lines:src/provider/codex": { "value": 243 },
+    "module_lines:src/provider/events": { "value": 702 },
+    "module_lines:src/provider/mod": { "value": 292 },
     "module_lines:src/provider/observe": { "value": 0 },
     "module_lines:src/provider/usage": { "value": 0 },
     "module_lines:src/questions": { "value": 1109 },
     "module_lines:src/record": { "value": 0 },
-    "module_lines:src/reset_credit": { "value": 1160 },
-    "module_lines:src/retention": { "value": 401 },
+    "module_lines:src/reset_credit": { "value": 1079 },
+    "module_lines:src/retention": { "value": 269 },
     "module_lines:src/rpc": { "value": 297 },
-    "module_lines:src/session_model": { "value": 524 },
+    "module_lines:src/session_model": { "value": 397 },
     "module_lines:src/shared_state": { "value": 409 },
     "module_lines:src/state": { "value": 0 },
     "now_sites": { "value": 21 },
@@ -106,7 +106,7 @@
     "spawn_sites": { "value": 54 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 4 },
-    "src_lines": { "value": 87058 },
+    "src_lines": { "value": 69539 },
     "stale_target_literals": { "value": 58 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -131,7 +131,8 @@
     "doc_bytes:docs/operations.md": { "value": 24200 },
     "doc_bytes_total": { "value": 313300 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "src_lines": { "value": 87058 }
+    "inline_test_lines": { "value": 0 },
+    "src_lines": { "value": 69539 }
   },
   "ledger": [
     {
@@ -1758,6 +1759,214 @@
       "reason": "shrink-S1b: dead rename_exchange/rename_noreplace removed",
       "considered": "n/a",
       "step": "shrink-S1b",
+      "program": "shrink"
+    },
+    {
+      "counter": "inline_test_lines",
+      "by": -17707,
+      "reason": "shrink-S1c: every inline test module moved to src/<m>/tests.rs or tests/<name>.rs",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/accounts",
+      "by": -218,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/alias",
+      "by": -144,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/api",
+      "by": -751,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/catalog",
+      "by": -1738,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/config",
+      "by": -34,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/control",
+      "by": -61,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/daemon",
+      "by": -201,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/disk_space",
+      "by": -51,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/file_cache",
+      "by": -90,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/launch",
+      "by": -326,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/main",
+      "by": -97,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/messaging/ledger",
+      "by": -7,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/messaging/transport",
+      "by": -14,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/pane_reuse",
+      "by": -239,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/paths",
+      "by": -137,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/provider/antigravity",
+      "by": -448,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/provider/claude",
+      "by": -2285,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/provider/codex",
+      "by": -54,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/provider/events",
+      "by": -302,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/provider/mod",
+      "by": -66,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/reset_credit",
+      "by": -81,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/retention",
+      "by": -132,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/session_model",
+      "by": -127,
+      "reason": "shrink-S1c: sites of the deleted code",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "src_lines",
+      "by": -17519,
+      "reason": "shrink-S1c: inline test modules moved to sibling test files (SHRINK 5.3 path rule); test-only seams moved into the tests modules",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "cap:src_lines",
+      "by": -17519,
+      "reason": "shrink-S1c: the cap follows the counter down",
+      "considered": "n/a",
+      "step": "shrink-S1c",
       "program": "shrink"
     }
   ],

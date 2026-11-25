@@ -347,24 +347,16 @@ pub(super) static TEST_WAIT: std::sync::Mutex<Vec<(PathBuf, std::time::Duration)
     std::sync::Mutex::new(Vec::new());
 fn wait_budget(paths: &Paths, wait: Wait) -> std::time::Duration {
     #[cfg(test)]
-    {
-        // Unit tests keep the fail-fast behaviour unless a test registers its root.
-        let _ = wait;
-        TEST_WAIT
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(root, _)| *root == paths.root) // raw-path: in-process registry keyed by Paths.root
-            .map_or(std::time::Duration::ZERO, |(_, d)| *d)
-    }
+    let budget = tests::wait_budget(paths, wait);
     #[cfg(not(test))]
-    {
+    let budget = {
         let _ = paths;
         std::time::Duration::from_secs(match wait {
             Wait::Send => 20,
             Wait::Read => 10,
         })
-    }
+    };
+    budget
 }
 /// What is left of a wait budget started earlier (a shared read that falls back to a
 /// writer shares one budget).

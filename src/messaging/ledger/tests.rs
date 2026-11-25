@@ -623,3 +623,11 @@ fn concurrent_readers_roll_back_a_hot_journal() {
     let db = open_read_blocking(&paths, Duration::ZERO).unwrap();
     assert!(db.get("pad-0").unwrap().is_none());
 }
+
+impl Ledger {
+    /// One exclusive attempt, no waiting.
+    #[track_caller]
+    pub(in crate::messaging) fn open(paths: &Paths) -> Result<Self> {
+        open_write_blocking(paths, Duration::ZERO)
+    }
+}
