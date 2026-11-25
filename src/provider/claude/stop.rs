@@ -5,11 +5,11 @@
 //! start time, config home) names as the holder of the conversation. It must
 //! still be the exact process the caller observed (pid and start time), and it
 //! is signalled through a pidfd whose start time is checked after it was opened
-//! (`claude_switch::terminate`, the same owner the account switch uses), so a
+//! ([`crate::proc::identity::terminate`], the same owner the account switch uses), so a
 //! reused pid is never signalled. SIGTERM only, then a bounded wait: a process
 //! that has not exited is reported (`STOP_TIMEOUT`), never killed.
 use super::{Live, live_sessions};
-use crate::{claude_switch::terminate, proc::identity::gone};
+use crate::proc::identity::{gone, terminate};
 use anyhow::{Result, bail, ensure};
 use std::{path::Path, time::Duration};
 

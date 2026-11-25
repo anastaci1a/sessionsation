@@ -142,3 +142,16 @@ fn boot_id_is_trimmed_and_the_raw_reader_keeps_the_file_bytes() {
     assert!(raw.ends_with('\n'));
     assert_eq!(boot_id().as_deref(), Some(raw.trim()));
 }
+
+/// S3 invariant (exact pid identity): `terminate`, moved here from `claude_switch`, signals only
+/// the exact process and is a no-op for a reused pid or one that is gone.
+#[test]
+fn terminate_signals_only_the_exact_process() {
+    let (mut child, pid, start) = Spawned::sleeper();
+    terminate(pid, start + 1).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(child.running(), "a mismatched identity was terminated");
+    terminate(pid, start).unwrap();
+    assert!(eventually(|| !child.running()));
+    terminate(pid, start).unwrap();
+}

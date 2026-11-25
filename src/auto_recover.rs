@@ -27,6 +27,7 @@ use crate::{
     daemon, external,
     paths::{Paths, atomic_write, lock_file, private_dir},
     provider::{ProviderId, claude, native},
+    record::Journal,
     terminal,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -160,6 +161,13 @@ impl Setting {
             Mode::Disabled
         })
     }
+    /// Stop watching the recorded process (and, with `misses`, reset the miss count).
+    fn forget_process(&mut self, misses: bool) {
+        (self.live_pid, self.live_start, self.live_boot) = (None, None, None);
+        if misses {
+            self.misses = 0;
+        }
+    }
     fn set_mode(&mut self, mode: Mode) {
         self.mode = Some(mode);
         self.enabled = mode != Mode::Disabled;
@@ -217,9 +225,7 @@ fn load(paths: &Paths) -> Result<Store> {
 }
 /// Read-modify-write under an exclusive lock; the file is replaced atomically.
 fn with_store<R>(paths: &Paths, f: impl FnOnce(&mut Store) -> R) -> Result<R> {
-    private_dir(&paths.root.join(crate::layout::REGISTRY))?;
-    let lock = lock_file(&paths.root.join(crate::layout::AUTO_RECOVER_LOCK))?;
-    lock.lock_exclusive()?;
+    let _lock = crate::record::lock_exclusive(&paths.root.join(crate::layout::AUTO_RECOVER_LOCK))?;
     let (mut store, before) = match load_raw(paths)? {
         // Compared with the file as stored, so records from before 1.43.0 are rewritten
         // (with their mode filled in) by the first write.
@@ -317,10 +323,7 @@ pub fn all(paths: &Paths) -> BTreeMap<String, Setting> {
 pub fn explicit_stop(paths: &Paths, session: &str) {
     update(paths, session, |s| {
         s.stopped_explicitly_at = Some(daemon::now());
-        s.live_pid = None;
-        s.live_start = None;
-        s.live_boot = None;
-        s.misses = 0;
+        s.forget_process(true);
         if s.enabled {
             s.last_result = Some(result(
                 "skipped_explicit_stop",
@@ -343,9 +346,7 @@ pub fn retire(paths: &Paths, session: &str) {
                 None,
             ));
         }
-        s.live_pid = None;
-        s.live_start = None;
-        s.live_boot = None;
+        s.forget_process(false);
     });
 }
 /// A deliberate restart or account switch: recovery is suppressed until the
@@ -964,58 +965,31 @@ pub struct Record {
     created_at: i64,
     updated_at: i64,
 }
-fn dir(paths: &Paths) -> PathBuf {
-    paths.root.join(crate::layout::AUTO_RECOVERIES)
-}
-fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
-    uuid::Uuid::parse_str(id).context("INVALID_OPERATION_ID")?;
-    Ok(dir(paths).join(format!("{id}.json")))
-}
-fn worker_lock_path(paths: &Paths, id: &str) -> Result<PathBuf> {
-    Ok(file(paths, id)?.with_extension("worker.lock"))
+impl Journal for Record {
+    const DIR: &'static str = crate::layout::AUTO_RECOVERIES;
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn key(&self) -> (i64, &str) {
+        (self.created_at, &self.id)
+    }
+    fn touch(&mut self, now: i64) {
+        self.updated_at = now;
+    }
 }
 pub fn exists(paths: &Paths, id: &str) -> bool {
-    file(paths, id).is_ok_and(|f| f.is_file())
-}
-fn read(paths: &Paths, id: &str) -> Result<Record> {
-    let bytes = fs::read(file(paths, id)?).context("OPERATION_NOT_FOUND")?;
-    serde_json::from_slice(&bytes).context("UNREADABLE_OPERATION_RECORD")
-}
-fn save(paths: &Paths, r: &mut Record) -> Result<()> {
-    r.updated_at = daemon::now();
-    private_dir(&dir(paths))?;
-    atomic_write(&file(paths, &r.id)?, &serde_json::to_vec_pretty(r)?)
+    Record::exists(paths, id)
 }
 fn phase(paths: &Paths, r: &mut Record, name: &str, detail: &str) -> Result<()> {
     r.phase = name.into();
     r.detail = detail.into();
-    save(paths, r)
-}
-fn list(paths: &Paths) -> Result<Vec<Record>> {
-    let mut all = vec![];
-    if !dir(paths).is_dir() {
-        return Ok(all);
-    }
-    for entry in crate::paths::journal_paths(&dir(paths))? {
-        if let Some(id) = entry
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_suffix(".json"))
-            && let Ok(r) = read(paths, id)
-        {
-            all.push(r);
-        }
-    }
-    all.sort_by_key(|r| (r.created_at, r.id.clone()));
-    Ok(all)
+    r.save(paths)
 }
 pub fn is_terminal(r: &Record) -> bool {
     PHASES_TERMINAL.contains(&r.phase.as_str())
 }
 fn worker_stopped(paths: &Paths, r: &Record) -> bool {
-    worker_lock_path(paths, &r.id)
-        .and_then(|p| crate::background::worker_stopped(&p))
-        .unwrap_or(false)
+    Record::worker_stopped(paths, &r.id).unwrap_or(false)
 }
 fn stalled(paths: &Paths, r: &Record) -> bool {
     !is_terminal(r) && daemon::now() - r.updated_at > 10 && worker_stopped(paths, r)
@@ -1040,7 +1014,7 @@ fn public_record(paths: &Paths, r: &Record) -> Value {
     }})
 }
 pub fn operations(paths: &Paths) -> Result<Vec<Value>> {
-    Ok(list(paths)?
+    Ok(Record::list(paths)?
         .iter()
         .map(|r| public_record(paths, r))
         .collect())
@@ -1223,7 +1197,7 @@ async fn deliver<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result
         }
         r.prompt_state = "dispatching".into();
         r.prompt_attempts += 1;
-        save(paths, r)?;
+        r.save(paths)?;
         let attempt = r.prompt_attempts;
         let id = r.message_id.clone();
         let sent = match sender.send(paths, body).await {
@@ -1290,7 +1264,7 @@ async fn deliver<S: Sender>(paths: &Paths, r: &mut Record, sender: &S) -> Result
             r.message_id = uuid::Uuid::new_v4().to_string();
         }
         r.prompt_state = "pending".into();
-        save(paths, r)?;
+        r.save(paths)?;
         tokio::time::sleep(sender.backoff(refused)).await;
     }
 }
@@ -1702,10 +1676,7 @@ fn detect_boot(paths: &Paths, current: &str) -> Result<bool> {
         }
         for s in store.sessions.values_mut() {
             // Processes of the previous boot are gone; whatever paused recovery is moot.
-            s.live_pid = None;
-            s.live_start = None;
-            s.live_boot = None;
-            s.misses = 0;
+            s.forget_process(true);
             s.suppressed = false;
             s.boot_due = (s.mode() != Mode::Disabled && s.boot_started.as_deref() != Some(current))
                 .then(|| current.to_owned());
@@ -1729,10 +1700,7 @@ fn detect_array(paths: &Paths, current: &str, boot_changed: bool) -> Result<()> 
             return;
         }
         for s in store.sessions.values_mut() {
-            s.live_pid = None;
-            s.live_start = None;
-            s.live_boot = None;
-            s.misses = 0;
+            s.forget_process(true);
             s.suppressed = false;
             s.array_due = (s.mode() != Mode::Disabled
                 && s.array_started.as_deref() != Some(current))
@@ -1960,10 +1928,7 @@ pub(crate) async fn tick_with<S: Sender>(paths: &Paths, sender: &S) -> Result<Ve
 /// A vanished process that starts nothing: record why, once, and stop watching that pid.
 fn skip_exit(paths: &Paths, id: &str, state: &str, code: &str, detail: &str) {
     update(paths, id, |s| {
-        s.live_pid = None;
-        s.live_start = None;
-        s.live_boot = None;
-        s.misses = 0;
+        s.forget_process(true);
         s.last_result = Some(result(state, code, detail, None));
     });
 }
@@ -2056,7 +2021,7 @@ async fn attempt<S: Sender>(
         );
         return None;
     }
-    if list(paths)
+    if Record::list(paths)
         .ok()?
         .iter()
         .any(|o| o.session_id == s.id && !is_terminal(o))
@@ -2145,7 +2110,7 @@ async fn attempt<S: Sender>(
         created_at: now,
         updated_at: now,
     };
-    save(paths, &mut r).ok()?;
+    r.save(paths).ok()?;
     let id = s.id.clone();
     let boot = boot.map(str::to_owned);
     let array = array.map(str::to_owned);
@@ -2154,9 +2119,7 @@ async fn attempt<S: Sender>(
             setting.recoveries.retain(|t| now - *t < HOUR);
             setting.recoveries.push(now);
             // One start per boot and one per observed process, recorded at admission.
-            setting.live_pid = None;
-            setting.live_start = None;
-            setting.live_boot = None;
+            setting.forget_process(false);
             setting.stopped_explicitly_at = None;
             if boot.is_some() {
                 setting.boot_started = boot;
@@ -2168,8 +2131,7 @@ async fn attempt<S: Sender>(
             }
         }
     });
-    let lock = lock_file(&worker_lock_path(paths, &r.id).ok()?).ok()?;
-    lock.lock_exclusive().ok()?;
+    let lock = crate::record::lock_exclusive(&Record::worker_lock(paths, &r.id).ok()?).ok()?;
     run(paths, &mut r, sender).await;
     drop(lock);
     Some(public_record(paths, &r))
@@ -2193,16 +2155,16 @@ pub async fn monitor(paths: Paths) {
 
 /// Continue from the journaled phase; a dispatched resume or prompt is only re-checked.
 pub async fn recover(paths: &Paths, id: &str) -> Result<Value> {
-    let lock = lock_file(&worker_lock_path(paths, id)?)?;
+    let lock = lock_file(&Record::worker_lock(paths, id)?)?;
     crate::paths::try_lock_brief(&lock)
         .context("SESSION_OPERATION_IN_PROGRESS: the operation's worker is still running")?;
-    let mut r = read(paths, id)?;
+    let mut r = Record::read(paths, id)?;
     if is_terminal(&r) {
         return Ok(public_record(paths, &r));
     }
     if r.phase == "uncertain" {
         r.phase = r.uncertain_from.take().unwrap_or_else(|| "admitted".into());
-        save(paths, &mut r)?;
+        r.save(paths)?;
     }
     run(paths, &mut r, &Normal).await;
     drop(lock);
@@ -2212,7 +2174,7 @@ pub async fn recover(paths: &Paths, id: &str) -> Result<Value> {
 /// Operator abandon of an uncertain or stuck recovery (terminal; starts nothing).
 pub fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
     ensure!(id == confirm, "CONFIRMATION_MISMATCH");
-    let mut r = read(paths, id)?;
+    let mut r = Record::read(paths, id)?;
     ensure!(!is_terminal(&r), "OPERATION_ALREADY_TERMINAL");
     ensure!(
         r.phase == "uncertain" || stalled(paths, &r),

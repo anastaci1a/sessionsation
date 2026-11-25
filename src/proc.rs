@@ -1,6 +1,5 @@
-//! Processes. [`identity`] owns exact process identity: a pid together with its
-//! `/proc/<pid>/stat` start time, liveness checks on that pair, signalling
-//! through a pidfd, and the host boot id (guard role `identity`).
+//! Processes. [`identity`] owns exact process identity (pid plus `/proc/<pid>/stat` start
+//! time), liveness, pidfd signalling, termination and the boot id (guard role `identity`).
 
 pub mod identity {
     use anyhow::{Context, Result, ensure};
@@ -67,8 +66,7 @@ pub mod identity {
     pub fn alive(pid: u32, start: u64) -> bool {
         stat(pid).is_ok_and(|s| s.start_time == start && s.running())
     }
-    /// The exact process no longer runs: missing, unreadable, reused (another start time),
-    /// a zombie or dead. Always `!alive(pid, start)`.
+    /// The exact process no longer runs (missing, unreadable, reused, zombie or dead): `!alive`.
     pub fn gone(pid: u32, start: u64) -> bool {
         !alive(pid, start)
     }
@@ -82,8 +80,8 @@ pub mod identity {
         stat(pid).is_ok_and(|s| s.start_time == start)
     }
 
-    /// Identities proven gone. An identity never comes back (a reused pid has another start
-    /// time), so a gone one can be skipped without reading `/proc` again.
+    /// Identities proven gone (an identity never comes back, so `/proc` need not be read again).
+    #[derive(Default)]
     pub struct GoneSet(Mutex<BTreeSet<(u32, u64)>>);
     impl GoneSet {
         pub const fn new() -> Self {
@@ -98,16 +96,9 @@ pub mod identity {
             }
         }
     }
-    impl Default for GoneSet {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
 
-    /// A process handle (pidfd). It names one process object, so a signal sent through it
-    /// can never reach a later process that reuses the pid number. Open it first, then
-    /// re-verify the identity, then [`Pidfd::signal`]: a check made before the open could
-    /// be about another process by the time the signal is sent. Closed on drop.
+    /// A process handle (pidfd): a signal through it never reaches a later process reusing the
+    /// pid. Open, then re-verify the identity, then [`Pidfd::signal`]. Closed on drop.
     #[derive(Debug)]
     pub struct Pidfd(OwnedFd);
     impl Pidfd {
@@ -143,16 +134,13 @@ pub mod identity {
     #[derive(Debug, PartialEq, Eq)]
     pub enum Signalled {
         Sent,
-        /// The exact process had already gone (no such pid, reused, zombie or dead, or it
-        /// exited before the signal landed); nothing was signalled.
+        /// The exact process had already gone (missing, reused, zombie or dead); nothing sent.
         Gone,
     }
-    /// Why [`signal_exact`] could not finish.
+    /// Why [`signal_exact`] could not finish: opening the handle or sending (other than `ESRCH`).
     #[derive(Debug)]
     pub enum SignalError {
-        /// The handle could not be opened (other than `ESRCH`).
         Open(io::Error),
-        /// The signal could not be sent (other than `ESRCH`).
         Send(io::Error),
     }
     /// Sends `signal` only to the exact process `pid` started at `start`: the pidfd is
@@ -177,9 +165,21 @@ pub mod identity {
             Err(e) => Err(SignalError::Send(e)),
         }
     }
+    /// SIGTERM to exactly the process `pid` started at `start` (never a kill; owner of every stop).
+    pub fn terminate(pid: u32, start: u64) -> Result<()> {
+        signal_exact(pid, start, libc::SIGTERM)
+            .map(drop)
+            .map_err(|e| match e {
+                SignalError::Open(e) => anyhow::anyhow!(
+                    "STOP_UNAVAILABLE: could not open a stable handle on process {pid}: {e}"
+                ),
+                SignalError::Send(e) => {
+                    anyhow::anyhow!("STOP_FAILED: could not signal process {pid}: {e}")
+                }
+            })
+    }
 
-    /// The raw boot id file ("" when unreadable), newline included: the messaging
-    /// attachment generation hashes it as read.
+    /// The raw boot id file ("" when unreadable, newline kept): attachment generations hash it.
     pub fn boot_id_raw() -> String {
         std::fs::read_to_string(BOOT_ID_PATH).unwrap_or_default()
     }

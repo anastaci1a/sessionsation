@@ -11,7 +11,8 @@
 //! Both use the account's OAuth bearer ([`crate::provider::claude::oauth`]). The claim uses the
 //! shared journal of [`crate::reset_credit`]: journaled before it is sent, the request id is
 //! the backend `request_id` (its idempotency key), never retried with a new id.
-use super::{admit, finish, read as read_record, validate_request_id};
+use super::{Record, admit, finish, validate_request_id};
+use crate::record::Journal;
 use crate::{
     model::{ResetCredit, ResetCredits},
     paths::{Paths, atomic_write},
@@ -549,8 +550,8 @@ pub async fn redeem(c: Claim<'_>) -> Result<Value> {
         format!("AUTH_REQUIRED: {account} has no oauthAccount.organizationUuid in .claude.json; log in again")
     })?;
     // A retry reuses the grant its first send named, so one request id never names two.
-    let previous = super::exists(c.paths, &c.request_id)
-        .then(|| read_record(c.paths, &c.request_id))
+    let previous = super::Record::exists(c.paths, &c.request_id)
+        .then(|| Record::read(c.paths, &c.request_id))
         .transpose()?;
     let grant = match (&previous, &c.credit_id) {
         (Some(r), Some(g)) if r.credit_id.as_deref() != Some(g) => bail!(

@@ -971,7 +971,7 @@ async fn stop_process(r: &SessionRec, home: &Path) -> Result<()> {
                 if let Some(pane) = &r.pane {
                     crate::terminal::retain(pane, true)?;
                 }
-                crate::claude_switch::terminate(pid, start)?;
+                crate::proc::identity::terminate(pid, start)?;
                 let deadline = Instant::now() + Duration::from_secs(30);
                 while !crate::proc::identity::gone(pid, start) {
                     ensure!(
@@ -1264,7 +1264,7 @@ async fn revert(paths: &Paths, r: &mut SessionRec, home: &Path, why: &str) -> Re
         && Some(&a.target) == r.pane.as_ref()
         && claude::live_sessions(home).is_ok_and(|l| l.iter().any(|l| l.pid == a.pid))
     {
-        crate::claude_switch::terminate(a.pid, a.process_start)?;
+        crate::proc::identity::terminate(a.pid, a.process_start)?;
         let deadline = Instant::now() + Duration::from_secs(30);
         while !crate::proc::identity::gone(a.pid, a.process_start) {
             ensure!(

@@ -224,7 +224,7 @@ impl World {
         )
     }
     fn record(&self, id: &str) -> Record {
-        read(&self.paths, id).unwrap()
+        Record::read(&self.paths, id).unwrap()
     }
     fn updates(&self) -> Vec<String> {
         self.fake
@@ -261,7 +261,11 @@ impl World {
 }
 /// A supervisor pass that ignores the retry back-off of this world's operations.
 async fn tick_now(paths: &Paths) {
-    let mine: Vec<String> = list(paths).unwrap().into_iter().map(|r| r.id).collect();
+    let mine: Vec<String> = Record::list(paths)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
     BACKOFF.lock().unwrap().retain(|k, _| !mine.contains(k));
     tick(paths).await;
 }
@@ -441,7 +445,7 @@ async fn codex_applying_without_progress_fails_and_releases_held_input() {
     let mut r = w.record(&id);
     r.phase = "applying".into();
     r.updated_at = crate::daemon::now() - APPLY_UNOBSERVED_SECONDS - 1;
-    save(&w.paths, &r).unwrap();
+    r.write(&w.paths).unwrap();
     w.fake.lock().unwrap().busy = false;
     tick_now(&w.paths).await;
     let r = w.record(&id);
@@ -694,7 +698,7 @@ fn claude_record(paths: &Paths, model: &str, effort: Option<&str>) -> String {
         release_claimed_at: None,
         refusal_layout: None,
     };
-    save(paths, &r).unwrap();
+    r.write(paths).unwrap();
     r.id
 }
 fn claude_world() -> (tempfile::TempDir, Paths, std::path::PathBuf) {
@@ -726,7 +730,7 @@ async fn claude_change_answers_the_dialog_yes_then_sets_effort() {
     claude::procedure(&paths, &id, &pane, &home, "herdr/default/w1:p1")
         .await
         .unwrap();
-    let r = read(&paths, &id).unwrap();
+    let r = Record::read(&paths, &id).unwrap();
     assert_eq!(r.phase, "complete", "{r:?}");
     let applied = r.applied.unwrap();
     assert_eq!(
@@ -761,7 +765,7 @@ async fn a_dialog_that_cannot_be_answered_is_closed_never_left_open() {
     claude::procedure(&paths, &id, &pane, &home, "herdr/default/w1:p1")
         .await
         .unwrap();
-    let r = read(&paths, &id).unwrap();
+    let r = Record::read(&paths, &id).unwrap();
     assert_eq!(
         (r.phase.as_str(), r.reason.as_deref()),
         ("failed", Some("TERMINAL_OVERLAY_UNIDENTIFIED"))
@@ -791,7 +795,7 @@ async fn a_dialog_that_cannot_be_answered_is_closed_never_left_open() {
     claude::procedure(&paths3, &id3, &pane3, &home3, "herdr/default/w1:p1")
         .await
         .unwrap();
-    let r3 = read(&paths3, &id3).unwrap();
+    let r3 = Record::read(&paths3, &id3).unwrap();
     assert_eq!(r3.reason.as_deref(), Some("pane_left_in_dialog"));
     assert!(r3.detail.unwrap().contains("herdr/default/w1:p1"));
     let _ = paths2;
@@ -807,7 +811,7 @@ async fn claude_change_types_only_after_two_idle_reads_and_never_over_a_draft() 
     claude::procedure(&paths, &id, &pane, &home, "t")
         .await
         .unwrap();
-    let r = read(&paths, &id).unwrap();
+    let r = Record::read(&paths, &id).unwrap();
     assert_eq!(
         (r.phase.as_str(), r.reason.as_deref()),
         ("waiting", Some("turn_active"))
@@ -823,7 +827,7 @@ async fn claude_change_types_only_after_two_idle_reads_and_never_over_a_draft() 
         .await
         .unwrap();
     assert_eq!(
-        read(&paths, &id).unwrap().reason.as_deref(),
+        Record::read(&paths, &id).unwrap().reason.as_deref(),
         Some("draft_present")
     );
     assert!(pane.keys_sent().is_empty());
@@ -849,15 +853,15 @@ async fn a_leftover_command_of_a_dead_worker_is_cleared_exactly() {
     let (_d, paths, home) = claude_world();
     let pane = FakePane::new(&home, "claude-opus-5-5", "high");
     let id = claude_record(&paths, "claude-fable-5-2", Some("high"));
-    let mut r = read(&paths, &id).unwrap();
+    let mut r = Record::read(&paths, &id).unwrap();
     r.phase = "applying".into();
     r.attempts = 1;
-    save(&paths, &r).unwrap();
+    r.write(&paths).unwrap();
     pane.s.lock().unwrap().prompt = "/model claude-fable-5-2".into();
     claude::procedure(&paths, &id, &pane, &home, "t")
         .await
         .unwrap();
-    let r = read(&paths, &id).unwrap();
+    let r = Record::read(&paths, &id).unwrap();
     assert_eq!(r.phase, "complete", "{r:?}");
     let keys = pane.keys_sent();
     assert_eq!(
@@ -884,7 +888,7 @@ fn cached_records_list_like_fresh_reads_and_follow_the_files() {
         .unwrap()
     };
     let fresh = |paths: &Paths| -> Vec<Record> {
-        let mut all: Vec<Record> = fs::read_dir(dir(paths))
+        let mut all: Vec<Record> = fs::read_dir(Record::dir(paths))
             .unwrap()
             .filter_map(|e| serde_json::from_slice(&fs::read(e.unwrap().path()).ok()?).ok())
             .collect();
@@ -892,30 +896,32 @@ fn cached_records_list_like_fresh_reads_and_follow_the_files() {
         all
     };
     for (n, phase) in [(1, "complete"), (2, "waiting"), (3, "failed")] {
-        save(&paths, &record(n, phase)).unwrap();
+        record(n, phase).write(&paths).unwrap();
     }
     for _ in 0..2 {
-        assert_eq!(list(&paths).unwrap(), fresh(&paths));
+        assert_eq!(Record::list(&paths).unwrap(), fresh(&paths));
     }
-    save(&paths, &record(2, "applying-with-a-longer-phase-name")).unwrap();
-    assert_eq!(list(&paths).unwrap(), fresh(&paths));
+    record(2, "applying-with-a-longer-phase-name")
+        .write(&paths)
+        .unwrap();
+    assert_eq!(Record::list(&paths).unwrap(), fresh(&paths));
     assert_eq!(
-        read(&paths, &record(2, "x").id).unwrap().phase,
+        Record::read(&paths, &record(2, "x").id).unwrap().phase,
         "applying-with-a-longer-phase-name"
     );
-    fs::remove_file(file(&paths, &record(1, "x").id).unwrap()).unwrap();
-    assert_eq!(list(&paths).unwrap().len(), 2);
+    fs::remove_file(Record::file(&paths, &record(1, "x").id).unwrap()).unwrap();
+    assert_eq!(Record::list(&paths).unwrap().len(), 2);
     assert!(
-        read(&paths, &record(1, "x").id)
+        Record::read(&paths, &record(1, "x").id)
             .unwrap_err()
             .to_string()
             .contains("OPERATION_NOT_FOUND")
     );
-    fs::write(file(&paths, &record(3, "x").id).unwrap(), b"{").unwrap();
-    assert_eq!(list(&paths).unwrap(), fresh(&paths));
-    assert_eq!(list(&paths).unwrap().len(), 1);
+    fs::write(Record::file(&paths, &record(3, "x").id).unwrap(), b"{").unwrap();
+    assert_eq!(Record::list(&paths).unwrap(), fresh(&paths));
+    assert_eq!(Record::list(&paths).unwrap().len(), 1);
     assert!(
-        read(&paths, &record(3, "x").id)
+        Record::read(&paths, &record(3, "x").id)
             .unwrap_err()
             .to_string()
             .contains("UNREADABLE_OPERATION_RECORD")

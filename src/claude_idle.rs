@@ -14,12 +14,13 @@
 use crate::background::SpawnReaped as _;
 use crate::{
     catalog, daemon,
-    paths::{Paths, atomic_write, lock_file, private_dir},
+    paths::{Paths, lock_file},
     proc::identity::alive,
     provider::{
         ProviderId, claude,
         claude::native_peer::{self, Inbound},
     },
+    record::Journal,
 };
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -52,24 +53,17 @@ pub struct Record {
     pub expires_at: i64,
 }
 
-fn dir(paths: &Paths) -> PathBuf {
-    paths.root.join(crate::layout::CLAUDE_IDLE_NOTIFY)
-}
-fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
-    uuid::Uuid::parse_str(id).context("INVALID_OPERATION_ID")?;
-    Ok(dir(paths).join(format!("{id}.json")))
-}
-fn lock_path(paths: &Paths, id: &str) -> Result<PathBuf> {
-    Ok(file(paths, id)?.with_extension("worker.lock"))
-}
-fn read(paths: &Paths, id: &str) -> Result<Record> {
-    serde_json::from_slice(&fs::read(file(paths, id)?).context("OPERATION_NOT_FOUND")?)
-        .context("UNREADABLE_OPERATION_RECORD")
-}
-fn save(paths: &Paths, r: &mut Record) -> Result<()> {
-    r.updated_at = daemon::now();
-    private_dir(&dir(paths))?;
-    atomic_write(&file(paths, &r.id)?, &serde_json::to_vec_pretty(r)?)
+impl Journal for Record {
+    const DIR: &'static str = crate::layout::CLAUDE_IDLE_NOTIFY;
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn key(&self) -> (i64, &str) {
+        (self.created_at, &self.id)
+    }
+    fn touch(&mut self, now: i64) {
+        self.updated_at = now;
+    }
 }
 fn is_terminal(r: &Record) -> bool {
     r.phase == "complete"
@@ -78,10 +72,10 @@ fn finish(paths: &Paths, r: &mut Record, state: &str, reason: Option<&str>) -> R
     r.phase = "complete".into();
     r.state = state.into();
     r.reason = reason.map(str::to_owned);
-    save(paths, r)
+    r.save(paths)
 }
 fn all(paths: &Paths) -> Vec<Record> {
-    let Ok(entries) = fs::read_dir(dir(paths)) else {
+    let Ok(entries) = fs::read_dir(Record::dir(paths)) else {
         return vec![];
     };
     let mut records: Vec<Record> = entries
@@ -96,7 +90,7 @@ fn all(paths: &Paths) -> Vec<Record> {
 fn stalled(paths: &Paths, r: &Record) -> bool {
     !is_terminal(r)
         && daemon::now() - r.updated_at > 10
-        && lock_path(paths, &r.id)
+        && Record::worker_lock(paths, &r.id)
             .and_then(|p| crate::background::worker_stopped(&p))
             .unwrap_or(false)
 }
@@ -155,9 +149,7 @@ pub async fn start(
         claude::peer::DISABLED
     );
     let endpoint = claude::peer::endpoint(&account.home, &live)?;
-    private_dir(&dir(paths))?;
-    let admission = lock_file(&dir(paths).join("admission.lock"))?;
-    admission.lock_exclusive()?;
+    let admission = crate::record::lock_exclusive(&Record::dir(paths).join("admission.lock"))?;
     if let Some(existing) = all(paths).into_iter().find(|r| {
         !is_terminal(r)
             && r.session_id == s.id
@@ -190,9 +182,9 @@ pub async fn start(
         updated_at: now,
         expires_at: now + native_peer::IDLE_NOTICE_EXPIRY_SECONDS,
     };
-    save(paths, &mut r)?;
+    r.save(paths)?;
     drop(admission);
-    let log = file(paths, &r.id)?.with_extension("worker.log");
+    let log = Record::worker_lock(paths, &r.id)?.with_extension("log");
     let worker = crate::background::self_worker(paths, &log, &["claude-idle-worker", &r.id]);
     let spawned = worker?.spawn_reaped();
     if spawned.is_err() {
@@ -200,7 +192,7 @@ pub async fn start(
         return Ok(public(paths, &r));
     }
     for _ in 0..60 {
-        r = read(paths, &r.id)?;
+        r = Record::read(paths, &r.id)?;
         if r.phase != "admitted" {
             break;
         }
@@ -213,11 +205,11 @@ pub async fn start(
 /// 12-hour expiry), journal the event, optionally message another session.
 pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let lock = lock_file(&lock_path(paths, id)?)?;
+    let lock = lock_file(&Record::worker_lock(paths, id)?)?;
     if lock.try_lock_exclusive().is_err() {
         return Ok(());
     }
-    let mut r = read(paths, id)?;
+    let mut r = Record::read(paths, id)?;
     if r.phase != "admitted" {
         return Ok(());
     }
@@ -249,7 +241,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     }
     r.phase = "subscribed".into();
     r.state = "waiting".into();
-    save(paths, &mut r)?;
+    r.save(paths)?;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Value>(16);
     let lines = |reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
                  tx: tokio::sync::mpsc::Sender<Value>| async move {

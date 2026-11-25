@@ -7,6 +7,7 @@ use crate::{
         ProviderId, native,
         ops::{self, ArchiveLayout},
     },
+    record::Journal,
 };
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -42,22 +43,31 @@ pub struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_disposition: Option<String>,
 }
-fn record_file(paths: &Paths, id: &str) -> Result<PathBuf> {
-    uuid::Uuid::parse_str(id).context("INVALID_REQUEST_ID")?;
-    Ok(paths
-        .root
-        .join(crate::layout::ACCOUNT_DELETIONS)
-        .join(format!("{id}.json")))
+impl Journal for Record {
+    const DIR: &'static str = crate::layout::ACCOUNT_DELETIONS;
+    const NOT_FOUND: &'static str = "ACCOUNT_DELETION_NOT_FOUND";
+    const UNREADABLE: Option<&'static str> = None;
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn key(&self) -> (i64, &str) {
+        (self.created_at.unwrap_or_default(), &self.id)
+    }
+    fn touch(&mut self, now: i64) {
+        self.updated_at = now;
+    }
+    fn check_id(id: &str) -> Result<()> {
+        uuid::Uuid::parse_str(id).context("INVALID_REQUEST_ID")?;
+        Ok(())
+    }
 }
-fn save(paths: &Paths, r: &mut Record) -> Result<()> {
-    r.updated_at = daemon::now();
-    atomic_write(&record_file(paths, &r.id)?, &serde_json::to_vec_pretty(r)?)
+/// One admission (start or recover) at a time.
+fn admission(paths: &Paths) -> Result<fs::File> {
+    crate::record::lock_exclusive(&Record::dir(paths).join("admission.lock"))
 }
 pub fn status(paths: &Paths, id: &str) -> Result<Record> {
-    let mut r: Record = serde_json::from_slice(
-        &fs::read(record_file(paths, id)?).context("ACCOUNT_DELETION_NOT_FOUND")?,
-    )?;
-    let stopped = worker_stopped(paths, id)?;
+    let mut r = Record::read(paths, id)?;
+    let stopped = Record::worker_stopped(paths, id)?;
     if !matches!(r.phase.as_str(), "failed" | "complete")
         && daemon::now() - r.updated_at > 10
         && stopped
@@ -68,14 +78,10 @@ pub fn status(paths: &Paths, id: &str) -> Result<Record> {
     r.can_recover = r.phase == "failed" && stopped;
     Ok(r)
 }
-fn worker_stopped(paths: &Paths, id: &str) -> Result<bool> {
-    crate::background::worker_stopped(&record_file(paths, id)?.with_extension("worker.lock"))
-}
 pub fn list(paths: &Paths) -> Result<Vec<Record>> {
-    let dir = paths.root.join(crate::layout::ACCOUNT_DELETIONS);
     let mut out = vec![];
-    if dir.is_dir() {
-        for e in fs::read_dir(dir)? {
+    if Record::dir(paths).is_dir() {
+        for e in fs::read_dir(Record::dir(paths))? {
             let e = e?;
             if e.file_type()?.is_file() && e.path().extension().is_some_and(|x| x == "json") {
                 let r: Record = serde_json::from_slice(&fs::read(e.path())?)?;
@@ -120,7 +126,7 @@ pub async fn preview(paths: &Paths, provider: ProviderId, name: &str) -> Result<
     Ok(value)
 }
 fn spawn(paths: &Paths, r: &Record) -> Result<()> {
-    let log = record_file(paths, &r.id)?.with_extension("worker.log");
+    let log = Record::worker_lock(paths, &r.id)?.with_extension("log");
     let mut command =
         crate::background::self_worker(paths, &log, &["account-delete-worker", &r.id])?;
     command.env_remove("CLAUDE_CONFIG_DIR");
@@ -171,12 +177,9 @@ pub async fn start(
         confirm == format!("{provider}:{name}"),
         "CONFIRMATION_REQUIRED"
     );
-    record_file(paths, id)?;
-    let root = paths.root.join(crate::layout::ACCOUNT_DELETIONS);
-    private_dir(&root)?;
-    let lock = lock_file(&root.join("admission.lock"))?;
-    lock.lock_exclusive()?;
-    if record_file(paths, id)?.exists() {
+    Record::check_id(id)?;
+    let _admission = admission(paths)?;
+    if Record::exists(paths, id) {
         let r = status(paths, id)?;
         ensure!(r.account_id == confirm, "REQUEST_ID_CONFLICT");
         return Ok(json!(r));
@@ -244,23 +247,17 @@ pub async fn start(
         home_disposition: None,
         external_home,
     };
-    save(paths, &mut r)?;
+    r.save(paths)?;
     if let Err(e) = spawn(paths, &r) {
         r.phase = "failed".into();
         r.detail = format!("Worker did not start: {e}");
-        save(paths, &mut r)?;
+        r.save(paths)?;
     }
     Ok(json!(r))
 }
 pub fn recover(paths: &Paths, id: &str) -> Result<Value> {
-    let admission = lock_file(
-        &paths
-            .root
-            .join(crate::layout::ACCOUNT_DELETIONS)
-            .join("admission.lock"),
-    )?;
-    admission.lock_exclusive()?;
-    let worker = lock_file(&record_file(paths, id)?.with_extension("worker.lock"))?;
+    let _admission = admission(paths)?;
+    let worker = lock_file(&Record::worker_lock(paths, id)?)?;
     worker
         .try_lock_exclusive()
         .context("ACCOUNT_DELETION_WORKER_RUNNING")?;
@@ -268,22 +265,22 @@ pub fn recover(paths: &Paths, id: &str) -> Result<Value> {
     ensure!(r.phase != "complete", "ACCOUNT_DELETION_NOT_RECOVERABLE");
     r.phase = "admitted".into();
     r.detail = "Explicit recovery requested; rechecking ownership before continuing.".into();
-    save(paths, &mut r)?;
+    r.save(paths)?;
     drop(worker);
     if let Err(e) = spawn(paths, &r) {
         r.phase = "failed".into();
         r.detail = format!("Recovery worker did not start: {e}");
-        save(paths, &mut r)?;
+        r.save(paths)?;
     }
     Ok(json!(r))
 }
 fn phase(paths: &Paths, r: &mut Record, p: &str, detail: &str) -> Result<()> {
     r.phase = p.into();
     r.detail = detail.into();
-    save(paths, r)
+    r.save(paths)
 }
 pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
-    let guard = lock_file(&record_file(paths, id)?.with_extension("worker.lock"))?;
+    let guard = lock_file(&Record::worker_lock(paths, id)?)?;
     guard.try_lock_exclusive()?;
     let mut r = status(paths, id)?;
     ensure!(r.phase == "admitted", "ACCOUNT_DELETION_ALREADY_DISPATCHED");
@@ -292,7 +289,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         r.detail = format!(
             "{e:#}. Original or preserved conversation data is retained. Inspect this request; it was not automatically retried."
         );
-        save(paths, &mut r)?;
+        r.save(paths)?;
     }
     Ok(())
 }
@@ -358,20 +355,37 @@ fn no_symlinks(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn preserve(home: &Path, vault: &Path) -> Result<()> {
+/// Move the entries of `source` that `keep` accepts into `target` (inside `vault`; every
+/// directory down to it private), never through a symlink and never over an existing entry.
+/// A missing `source` is an error only when `required`.
+fn move_history(
+    vault: &Path,
+    source: &Path,
+    target: &Path,
+    keep: fn(&str) -> bool,
+    required: bool,
+) -> Result<()> {
     private_dir(vault)?;
-    for e in fs::read_dir(home)? {
+    let entries = match fs::read_dir(source) {
+        Ok(entries) => entries,
+        Err(_) if !required => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for e in entries {
         let e = e?;
         let name = e.file_name();
-        if !history_entry(name.to_str().context("INVALID_HISTORY_NAME")?) {
+        if !keep(name.to_str().context("INVALID_HISTORY_NAME")?) {
             continue;
         }
         no_symlinks(&e.path())?;
-        let dest = vault.join(name);
+        let mut dirs: Vec<&Path> = target.ancestors().take_while(|d| *d != vault).collect();
+        dirs.reverse();
+        dirs.into_iter().try_for_each(private_dir)?;
+        let dest = target.join(&name);
         ensure!(!dest.exists(), "PRESERVED_HISTORY_COLLISION");
         fs::rename(e.path(), &dest).context("HISTORY_MOVE_FAILED_SOURCE_RETAINED")?;
-        fs::File::open(home)?.sync_all()?;
-        fs::File::open(vault)?.sync_all()?;
+        fs::File::open(source)?.sync_all()?;
+        fs::File::open(target)?.sync_all()?;
     }
     Ok(())
 }
@@ -436,7 +450,7 @@ async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
         ensure!(inode == m.ino(), "ACCOUNT_HOME_REPLACED");
     } else {
         r.source_inode = Some(m.ino());
-        save(paths, r)?;
+        r.save(paths)?;
     }
     phase(
         paths,
@@ -516,10 +530,10 @@ async fn perform_codex(paths: &Paths, r: &mut Record) -> Result<()> {
             &json!({"version":1,"account":name,"request_id":r.id,"home":r.history_home}),
         )?,
     )?;
-    preserve(&home, &r.history_home)?;
+    move_history(&r.history_home, &home, &r.history_home, history_entry, true)?;
     external::verify_preserved_history(&r.history_home)?;
     r.history_preserved = true;
-    save(paths, r)?;
+    r.save(paths)?;
     idle(paths, &home).await?;
     ensure!(
         !external::home_has_processes(&home, false)?,
@@ -568,20 +582,7 @@ fn preserve_claude(home: &Path, vault: &Path) -> Result<()> {
     // the conversations stay in the shared store and remain visible to every
     // other account. Any other symlink still fails `no_symlinks` below.
     crate::shared_state::detach_links(home)?;
-    for e in fs::read_dir(home)? {
-        let e = e?;
-        let name = e.file_name();
-        if !claude_history_entry(name.to_str().context("INVALID_HISTORY_NAME")?) {
-            continue;
-        }
-        no_symlinks(&e.path())?;
-        let dest = vault.join(&name);
-        ensure!(!dest.exists(), "PRESERVED_HISTORY_COLLISION");
-        fs::rename(e.path(), &dest).context("HISTORY_MOVE_FAILED_SOURCE_RETAINED")?;
-        fs::File::open(home)?.sync_all()?;
-        fs::File::open(vault)?.sync_all()?;
-    }
-    Ok(())
+    move_history(vault, home, vault, claude_history_entry, true)
 }
 /// Gemini conversation history inside a managed home: chat files under
 /// `.gemini/tmp`, prompt history under `.gemini/history` and the project
@@ -590,29 +591,6 @@ fn preserve_claude(home: &Path, vault: &Path) -> Result<()> {
 /// `settings.json`, `trustedFolders.json`) stay behind and are deleted with the home.
 fn gemini_history_entry(name: &str) -> bool {
     matches!(name, "tmp" | "history" | "projects.json")
-}
-fn preserve_gemini(home: &Path, vault: &Path) -> Result<()> {
-    private_dir(vault)?;
-    let source = home.join(".gemini");
-    let Ok(entries) = fs::read_dir(&source) else {
-        return Ok(());
-    };
-    let target = vault.join(".gemini");
-    for e in entries {
-        let e = e?;
-        let name = e.file_name();
-        if !gemini_history_entry(name.to_str().context("INVALID_HISTORY_NAME")?) {
-            continue;
-        }
-        no_symlinks(&e.path())?;
-        private_dir(&target)?;
-        let dest = target.join(&name);
-        ensure!(!dest.exists(), "PRESERVED_HISTORY_COLLISION");
-        fs::rename(e.path(), &dest).context("HISTORY_MOVE_FAILED_SOURCE_RETAINED")?;
-        fs::File::open(&source)?.sync_all()?;
-        fs::File::open(&target)?.sync_all()?;
-    }
-    Ok(())
 }
 /// Antigravity conversation history inside a managed home: the per-conversation
 /// databases, transcripts and artifacts (`conversations`, `brain`, `annotations`,
@@ -632,34 +610,20 @@ fn antigravity_history_entry(name: &str) -> bool {
             | "history.jsonl"
     )
 }
-fn preserve_antigravity(home: &Path, vault: &Path) -> Result<()> {
-    private_dir(vault)?;
-    let source = crate::provider::antigravity::state_dir(home);
-    let Ok(entries) = fs::read_dir(&source) else {
-        return Ok(());
-    };
-    let target = vault.join(".gemini/antigravity-cli");
-    for e in entries {
-        let e = e?;
-        let name = e.file_name();
-        if !antigravity_history_entry(name.to_str().context("INVALID_HISTORY_NAME")?) {
-            continue;
-        }
-        no_symlinks(&e.path())?;
-        private_dir(&vault.join(".gemini"))?;
-        private_dir(&target)?;
-        let dest = target.join(&name);
-        ensure!(!dest.exists(), "PRESERVED_HISTORY_COLLISION");
-        fs::rename(e.path(), &dest).context("HISTORY_MOVE_FAILED_SOURCE_RETAINED")?;
-        fs::File::open(&source)?.sync_all()?;
-        fs::File::open(&target)?.sync_all()?;
-    }
-    Ok(())
-}
 fn preserve_native(provider: ProviderId, home: &Path, vault: &Path) -> Result<()> {
     match ops::facts(provider).archive {
-        ArchiveLayout::GeminiChats => preserve_gemini(home, vault),
-        ArchiveLayout::AgyIndex => preserve_antigravity(home, vault),
+        ArchiveLayout::GeminiChats => move_history(
+            vault,
+            &home.join(".gemini"),
+            &vault.join(".gemini"),
+            gemini_history_entry,
+            false,
+        ),
+        ArchiveLayout::AgyIndex => {
+            let source = crate::provider::antigravity::state_dir(home);
+            let target = vault.join(".gemini/antigravity-cli");
+            move_history(vault, &source, &target, antigravity_history_entry, false)
+        }
         ArchiveLayout::ClaudeProjects | ArchiveLayout::Rollouts => preserve_claude(home, vault),
     }
 }
@@ -822,7 +786,7 @@ async fn perform_native(paths: &Paths, r: &mut Record, provider: ProviderId) -> 
     )?;
     preserve_native(provider, &home, &r.history_home)?;
     r.history_preserved = true;
-    save(paths, r)?;
+    r.save(paths)?;
     native_idle(paths, provider, &name, &home)?;
     ensure!(
         fs::symlink_metadata(&home)?.ino() == r.source_inode.unwrap_or_default(),

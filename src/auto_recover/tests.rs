@@ -208,7 +208,7 @@ fn a_failure_before_dispatch_is_failed_and_after_it_uncertain() {
 fn abandon_needs_the_confirmation_and_a_stuck_operation() {
     let (_d, paths, s) = fixture();
     let mut r = record(&paths, &s);
-    save(&paths, &mut r).unwrap();
+    r.save(&paths).unwrap();
     assert!(
         abandon(&paths, &r.id, "nope")
             .unwrap_err()
@@ -222,7 +222,7 @@ fn abandon_needs_the_confirmation_and_a_stuck_operation() {
             .contains("OPERATION_NOT_STUCK")
     );
     r.phase = "uncertain".into();
-    save(&paths, &mut r).unwrap();
+    r.save(&paths).unwrap();
     let done = abandon(&paths, &r.id, &r.id).unwrap();
     assert_eq!(done["phase"], "abandoned");
     assert_eq!(done["terminal"], true);

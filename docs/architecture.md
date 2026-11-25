@@ -19,7 +19,9 @@ an outcome that cannot be proven is `uncertain` and settled by explicit recover 
 abandon. Operation discovery reads journals through both their JSON entries and
 stable worker-lock/log entries, because some file systems can briefly omit a JSON
 entry while it is atomically replaced; lifecycle reservations and operation lists
-share this helper. The supervisor (`daemon serve`) is the sole account and credential
+share this helper. `record.rs` is the one record engine (load, save, list, locks, worker
+lock) of the account-deletion, -rename, reset-credit, auto-start, idle-notice, compaction
+and model-change journals. The supervisor (`daemon serve`) is the sole account and credential
 writer per root; it polls usage, refreshes the cached state snapshot, runs Auto
 Start, compaction and model-change releases, event ingest, retention and the
 re-dispatch of provably unsent deliveries, and starts delivery workers as its own

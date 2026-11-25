@@ -24,7 +24,7 @@
 //! and Ctrl+C / Ctrl+D arm agy's exit; Ctrl+K approves a subagent, up/down
 //! edit queued messages or history: none of these is ever sent.
 use super::{
-    Record, Request, abandon_unsent, change, dir, finish, is_terminal, read,
+    Record, Request, abandon_unsent, change, finish, is_terminal, pane_lock, read,
     terminal::{
         self, CONFIRM_SECONDS, Cell, Host, Terminal, columns, now_ms, reason, row_text, squash,
         timestamp_ms,
@@ -36,7 +36,7 @@ use super::{
 };
 use crate::{
     catalog,
-    paths::{Paths, lock_file, private_dir},
+    paths::{Paths, lock_file},
     provider::{ProviderId, antigravity, antigravity::QueueMode, claude},
 };
 use anyhow::{Result, ensure};
@@ -490,13 +490,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     if matches!(r.request.mode.as_str(), "queue" | "steer") && q.is_none() {
         return abandon_unsent(paths, id, code(QUEUE_MODE_UNKNOWN));
     }
-    private_dir(&dir(paths))?;
-    let key: String = t
-        .target
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let pane_lock = lock_file(&dir(paths).join(format!("terminal-{key}.lock")))?;
+    let pane_lock = pane_lock(paths, &t.target)?;
     pane_lock.lock_exclusive()?;
     change(paths, id, |r| {
         let mut t = t.clone();

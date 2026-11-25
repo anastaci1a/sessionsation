@@ -32,6 +32,7 @@ pub mod plan;
 pub(crate) mod proc;
 pub mod provider;
 pub mod questions;
+pub(crate) mod record;
 pub mod rpc;
 pub mod scheduler;
 mod self_executable;

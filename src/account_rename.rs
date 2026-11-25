@@ -22,8 +22,9 @@
 use crate::{
     accounts,
     model::{Account, State},
-    paths::{Paths, atomic_write, private_dir, validate_new_account_name},
+    paths::{Paths, validate_new_account_name},
     provider::ProviderId,
+    record::Journal,
     store::Store,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -55,41 +56,27 @@ pub struct Record {
     pub updated_at: i64,
 }
 
-fn dir(paths: &Paths) -> PathBuf {
-    paths.root.join(crate::layout::ACCOUNT_RENAMES)
-}
-fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
-    uuid::Uuid::parse_str(id).context("INVALID_OPERATION_ID")?;
-    Ok(dir(paths).join(format!("{id}.json")))
-}
-fn save(paths: &Paths, r: &mut Record) -> Result<()> {
-    r.updated_at = crate::daemon::now();
-    private_dir(&dir(paths))?;
-    atomic_write(&file(paths, &r.id)?, &serde_json::to_vec_pretty(r)?)
+impl Journal for Record {
+    const DIR: &'static str = crate::layout::ACCOUNT_RENAMES;
+    const PLAIN_LIST: bool = true;
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn key(&self) -> (i64, &str) {
+        (self.created_at, &self.id)
+    }
+    fn touch(&mut self, now: i64) {
+        self.updated_at = now;
+    }
 }
 pub fn exists(paths: &Paths, id: &str) -> bool {
-    file(paths, id).is_ok_and(|f| f.is_file())
+    Record::exists(paths, id)
 }
 pub fn read(paths: &Paths, id: &str) -> Result<Record> {
-    let bytes = fs::read(file(paths, id)?).context("OPERATION_NOT_FOUND")?;
-    serde_json::from_slice(&bytes).context("UNREADABLE_OPERATION_RECORD")
+    Record::read(paths, id)
 }
 pub fn list(paths: &Paths) -> Result<Vec<Record>> {
-    let mut all = vec![];
-    let Ok(entries) = fs::read_dir(dir(paths)) else {
-        return Ok(all);
-    };
-    for e in entries.flatten() {
-        let name = e.file_name();
-        let Some(id) = name.to_str().and_then(|n| n.strip_suffix(".json")) else {
-            continue;
-        };
-        if let Ok(r) = read(paths, id) {
-            all.push(r);
-        }
-    }
-    all.sort_by_key(|r| (r.created_at, r.id.clone()));
-    Ok(all)
+    Record::list(paths)
 }
 pub fn is_terminal(r: &Record) -> bool {
     PHASES_TERMINAL.contains(&r.phase.as_str())
@@ -355,7 +342,7 @@ fn update_references(paths: &Paths, store: &mut Store, r: &Record) -> Result<()>
 fn phase(paths: &Paths, r: &mut Record, p: &str, detail: &str) -> Result<()> {
     r.phase = p.into();
     r.detail = detail.into();
-    save(paths, r)
+    r.save(paths)
 }
 
 /// Run an admitted rename. `hook` is called with the name of each completed
@@ -389,7 +376,7 @@ pub fn execute(
         updated_at: now,
     };
     ensure!(!exists(paths, request_id), "OPERATION_ALREADY_EXISTS");
-    save(paths, &mut r)?;
+    r.save(paths)?;
     hook("admitted")?;
     phase(paths, &mut r, "moving_home", "Moving the account home.")?;
     hook("moving_home")?;

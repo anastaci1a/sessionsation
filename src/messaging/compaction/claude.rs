@@ -77,27 +77,31 @@ fn target(paths: &Paths, r: &Record) -> std::result::Result<(term::Terminal, Pat
 }
 
 pub(super) async fn advance(paths: &Paths, id: &str) {
-    let Ok(r) = read(paths, id) else { return };
+    let Ok(r) = Record::read(paths, id) else {
+        return;
+    };
     let now = crate::daemon::now();
     match r.phase.as_str() {
-        "waiting" if now >= r.expires_at => finish(paths, id, &["waiting"], "expired", "expired"),
+        "waiting" if now >= r.expires_at => {
+            Record::finish(paths, id, &["waiting"], "expired", "expired")
+        }
         "waiting" => start(paths, r).await,
         // Only a pass that died while typing leaves `starting`: never type again.
-        "starting" => finish(paths, id, &["starting"], "failed", "start_interrupted"),
+        "starting" => Record::finish(paths, id, &["starting"], "failed", "start_interrupted"),
         "running" => follow(paths, r).await,
         _ => {}
     }
 }
 
 async fn start(paths: &Paths, r: Record) {
-    if super::super::model_change::pending_before(paths, &r.conversation_id, (r.created_at, &r.id))
-    {
-        return waiting(paths, &r.id, "model_change_pending");
+    let key = Some((r.created_at, r.id.as_str()));
+    if super::super::model_change::Record::pending_before(paths, &r.conversation_id, key) {
+        return Record::waiting(paths, &r.id, "model_change_pending");
     }
     let t = match target(paths, &r) {
         Ok((t, _)) => t,
         Err(code) if code == "generation_changed" => {
-            return finish(paths, &r.id, &["waiting"], "failed", "generation_changed");
+            return Record::finish(paths, &r.id, &["waiting"], "failed", "generation_changed");
         }
         Err(code) => {
             let code: &'static str = match code.as_str() {
@@ -105,27 +109,18 @@ async fn start(paths: &Paths, r: Record) {
                 "session_not_running" => "session_not_running",
                 _ => "state_unverified",
             };
-            return waiting(paths, &r.id, code);
+            return Record::waiting(paths, &r.id, code);
         }
     };
     // One terminal procedure per pane at a time (shared with deliveries and set-model).
-    let steer = paths.root.join(crate::layout::CLAUDE_STEER);
-    if private_dir(&steer).is_err() {
-        return waiting(paths, &r.id, "state_unverified");
-    }
-    let key: String = t
-        .target
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let Ok(pane_lock) = lock_file(&steer.join(format!("terminal-{key}.lock"))) else {
-        return waiting(paths, &r.id, "state_unverified");
+    let Ok(pane_lock) = crate::messaging::claude_steer::pane_lock(paths, &t.target) else {
+        return Record::waiting(paths, &r.id, "state_unverified");
     };
     if pane_lock.try_lock_exclusive().is_err() {
-        return waiting(paths, &r.id, "session_busy");
+        return Record::waiting(paths, &r.id, "session_busy");
     }
     let Ok(host) = Host::for_agent(&t, "claude") else {
-        return waiting(paths, &r.id, "provider_unavailable");
+        return Record::waiting(paths, &r.id, "provider_unavailable");
     };
     procedure(paths, &r.id, &Herdr(host)).await;
     drop(pane_lock);
@@ -162,14 +157,16 @@ async fn idle_twice(
 
 /// Everything after the target and pane lock are verified (testable with a fake pane).
 pub(super) async fn procedure(paths: &Paths, id: &str, pane: &(dyn Pane + Sync)) {
-    let Ok(r) = read(paths, id) else { return };
+    let Ok(r) = Record::read(paths, id) else {
+        return;
+    };
     if r.phase != "waiting" {
         return;
     }
     if let Err(why) = idle_twice(paths, &r, pane).await {
-        return waiting(paths, id, why);
+        return Record::waiting(paths, id, why);
     }
-    let claimed = update(paths, id, |x| {
+    let claimed = Record::update(paths, id, |x| {
         if x.phase != "waiting" || crate::daemon::now() >= x.expires_at {
             return false;
         }
@@ -181,7 +178,7 @@ pub(super) async fn procedure(paths: &Paths, id: &str, pane: &(dyn Pane + Sync))
     let Ok(Some(claimed)) = claimed else { return };
     match submit(pane).await {
         Ok(()) | Err((_, true)) => {
-            let _ = update(paths, id, |x| {
+            let _ = Record::update(paths, id, |x| {
                 if x.phase != "starting" {
                     return false;
                 }
@@ -193,7 +190,7 @@ pub(super) async fn procedure(paths: &Paths, id: &str, pane: &(dyn Pane + Sync))
         Err((why, false)) => {
             let retry = matches!(why, "TERMINAL_TYPED_TEXT_MISMATCH" | "draft_present")
                 && claimed.attempts < MAX_TYPING_ATTEMPTS;
-            let _ = update(paths, id, |x| {
+            let _ = Record::update(paths, id, |x| {
                 if x.phase != "starting" {
                     return false;
                 }
@@ -410,22 +407,22 @@ pub(super) fn settle(
     let since = r.started_at.unwrap_or(r.updated_at);
     let from = &["running"];
     if reported.is_some_and(|at| at >= since - 1) {
-        return finish(paths, &r.id, from, "complete", "compacted");
+        return Record::finish(paths, &r.id, from, "complete", "compacted");
     }
     match target_error.as_deref() {
         Some("generation_changed") => {
-            return finish(paths, &r.id, from, "failed", "generation_changed");
+            return Record::finish(paths, &r.id, from, "failed", "generation_changed");
         }
         Some("session_not_running") => {
-            return finish(paths, &r.id, from, "failed", "compaction_not_observed");
+            return Record::finish(paths, &r.id, from, "failed", "compaction_not_observed");
         }
         _ => {}
     }
     if now - since > RUN_LIMIT_SECONDS {
-        return finish(paths, &r.id, from, "failed", "compaction_timeout");
+        return Record::finish(paths, &r.id, from, "failed", "compaction_timeout");
     }
     if idle == Some(true) && now - since > IDLE_UNOBSERVED_SECONDS {
-        finish(paths, &r.id, from, "failed", "compaction_not_observed");
+        Record::finish(paths, &r.id, from, "failed", "compaction_not_observed");
     }
 }
 

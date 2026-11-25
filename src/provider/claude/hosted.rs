@@ -24,7 +24,7 @@ use crate::background::SpawnReaped as _;
 use crate::proc::identity::alive;
 use crate::{
     catalog,
-    paths::{Paths, atomic_write, lock_file, private_dir},
+    paths::{Paths, lock_file, private_dir},
     provider::{ProviderId, claude},
 };
 use anyhow::{Context, Result, ensure};
@@ -123,16 +123,11 @@ pub fn read(paths: &Paths, c: &str) -> Result<Option<Host>> {
 }
 fn save(paths: &Paths, h: &mut Host) -> Result<()> {
     h.updated_at = crate::daemon::now();
-    atomic_write(
-        &host_file(paths, &h.conversation_id)?,
-        &serde_json::to_vec(h)?,
-    )
+    crate::record::store(&host_file(paths, &h.conversation_id)?, h)
 }
 /// Read-modify-write under the per-host mutation lock.
 fn update<T>(paths: &Paths, c: &str, f: impl FnOnce(&mut Host) -> Result<T>) -> Result<T> {
-    private_dir(&dir(paths, c)?)?;
-    let lock = lock_file(&dir(paths, c)?.join("host.lock"))?;
-    lock.lock_exclusive()?;
+    let _lock = crate::record::lock_exclusive(&dir(paths, c)?.join("host.lock"))?;
     let mut h = read(paths, c)?.context("HOST_NOT_FOUND")?;
     let out = f(&mut h)?;
     save(paths, &mut h)?;

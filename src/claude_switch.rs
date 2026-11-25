@@ -515,20 +515,6 @@ async fn drive(paths: &Paths, r: &mut Record) -> Result<()> {
 
 // ------------------------------------------------------------------------ stop
 
-pub(crate) fn terminate(pid: u32, start: u64) -> Result<()> {
-    use crate::proc::identity::{SignalError, signal_exact};
-    // A pidfd names this process object even if the pid number is reused.
-    match signal_exact(pid, start, libc::SIGTERM) {
-        Ok(_) => Ok(()),
-        Err(SignalError::Open(e)) => {
-            bail!("STOP_UNAVAILABLE: could not open a stable handle on process {pid}: {e}")
-        }
-        Err(SignalError::Send(error)) => {
-            bail!("STOP_FAILED: could not signal process {pid}: {error}")
-        }
-    }
-}
-
 async fn stop(paths: &Paths, r: &mut Record) -> Result<()> {
     phase(
         paths,
@@ -551,7 +537,7 @@ async fn stop(paths: &Paths, r: &mut Record) -> Result<()> {
                     // tmux would close the pane with its process; HERDR keeps its shell.
                     crate::terminal::retain(pane, true)?;
                 }
-                terminate(p.pid, p.process_start)?;
+                crate::proc::identity::terminate(p.pid, p.process_start)?;
                 let deadline = std::time::Instant::now() + Duration::from_secs(STOP_SECONDS);
                 while !gone(p.pid, p.process_start) {
                     ensure!(

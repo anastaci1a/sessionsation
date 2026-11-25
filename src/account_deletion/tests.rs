@@ -7,7 +7,7 @@ fn orphaned_deletion_is_recoverable_but_live_worker_is_not() {
     private_dir(&paths.root.join(crate::layout::ACCOUNT_DELETIONS)).unwrap();
     let r = json!({"id":id,"account_id":"codex:fixture","kind":"account_delete","phase":"checking_active","detail":"checking","updated_at":0,"history_home":"/fixture","source_inode":null,"can_cancel":false,"history_preserved":true});
     atomic_write(
-        &record_file(&paths, &id).unwrap(),
+        &Record::file(&paths, &id).unwrap(),
         &serde_json::to_vec(&r).unwrap(),
     )
     .unwrap();
@@ -15,7 +15,7 @@ fn orphaned_deletion_is_recoverable_but_live_worker_is_not() {
     assert_eq!(orphan.phase, "failed");
     assert!(orphan.can_recover);
     let lock = lock_file(
-        &record_file(&paths, &id)
+        &Record::file(&paths, &id)
             .unwrap()
             .with_extension("worker.lock"),
     )
@@ -25,7 +25,7 @@ fn orphaned_deletion_is_recoverable_but_live_worker_is_not() {
     assert_eq!(live.phase, "checking_active");
     assert!(!live.can_recover);
     assert_eq!(
-        serde_json::from_slice::<Value>(&fs::read(record_file(&paths, &id).unwrap()).unwrap())
+        serde_json::from_slice::<Value>(&fs::read(Record::file(&paths, &id).unwrap()).unwrap())
             .unwrap(),
         r,
         "read projection never rewrites a receipt"
@@ -115,7 +115,7 @@ fn interrupted_history_move_retains_both_halves_and_recovers_without_credentials
     fs::write(home.join("archived_sessions/b.jsonl"), "archived").unwrap();
     fs::write(home.join("auth.json"), "secret").unwrap();
     fs::rename(home.join("sessions"), vault.join("sessions")).unwrap();
-    preserve(&home, &vault).unwrap();
+    move_history(&vault, &home, &vault, history_entry, true).unwrap();
     assert_eq!(fs::read(vault.join("sessions/a.jsonl")).unwrap(), b"saved");
     assert_eq!(
         fs::read(vault.join("archived_sessions/b.jsonl")).unwrap(),
@@ -141,7 +141,7 @@ fn history_move_preserves_native_data_and_excludes_credentials() {
         fs::write(home.join(p), b).unwrap();
     }
     let vault = d.path().join("vault/home");
-    preserve(&home, &vault).unwrap();
+    move_history(&vault, &home, &vault, history_entry, true).unwrap();
     assert!(!vault.join("auth.json").exists());
     assert_eq!(
         fs::read(vault.join("sessions/conversation.jsonl")).unwrap(),

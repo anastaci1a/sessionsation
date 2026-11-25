@@ -244,7 +244,7 @@ async fn a_claim_is_journaled_before_sending_and_a_retry_reuses_the_request_id()
         claims.contains(&format!("\\\"request_id\\\":\\\"{id}\\\"")),
         "{claims}"
     );
-    let record = super::super::read(&paths, &id).unwrap();
+    let record = super::super::Record::read(&paths, &id).unwrap();
     assert_eq!(
         (record.phase.as_str(), record.outcome.as_deref()),
         ("complete", Some("reset"))
@@ -269,7 +269,7 @@ async fn a_claim_is_journaled_before_sending_and_a_retry_reuses_the_request_id()
         .unwrap_err();
     assert!(e.to_string().starts_with("REQUEST_ID_CONFLICT"), "{e}");
     assert_eq!(f.calls("claim"), 2);
-    assert_eq!(super::super::list(&paths).unwrap().len(), 1);
+    assert_eq!(super::super::Record::list(&paths).unwrap().len(), 1);
     f.assert_argv_clean();
 }
 
@@ -288,7 +288,7 @@ async fn claim_failures_are_journaled_honestly() {
     assert!(e.to_string().starts_with("AUTH_STALE"), "{e}");
     assert_eq!(f.calls("claim"), 2);
     assert_eq!(f.calls("token"), 1);
-    let r = super::super::read(&paths, &id).unwrap();
+    let r = super::super::Record::read(&paths, &id).unwrap();
     assert_eq!(r.phase, "failed");
     // Unreadable 200: uncertain, retry with the same id.
     f.answer("claim", 200, "not json");
@@ -301,7 +301,10 @@ async fn claim_failures_are_journaled_honestly() {
         "{e}"
     );
     assert!(e.to_string().contains(&id));
-    assert_eq!(super::super::read(&paths, &id).unwrap().phase, "uncertain");
+    assert_eq!(
+        super::super::Record::read(&paths, &id).unwrap().phase,
+        "uncertain"
+    );
     // `unavailable`: the API could not confirm it.
     f.answer("claim", 200, &claim_ok("unavailable"));
     let id = uuid::Uuid::new_v4().to_string();
@@ -319,7 +322,10 @@ async fn claim_failures_are_journaled_honestly() {
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("RESET_CREDIT_FAILED"), "{e}");
-    assert_eq!(super::super::read(&paths, &id).unwrap().phase, "failed");
+    assert_eq!(
+        super::super::Record::read(&paths, &id).unwrap().phase,
+        "failed"
+    );
     // A timeout after sending: uncertain.
     f.set("claim-exit", "28");
     let id = uuid::Uuid::new_v4().to_string();
@@ -338,9 +344,9 @@ async fn claim_failures_are_journaled_honestly() {
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("AUTH_REQUIRED"), "{e}");
-    assert!(!super::super::exists(&paths, &id));
+    assert!(!super::super::Record::exists(&paths, &id));
     assert_eq!(f.calls("claim"), calls);
-    for line in super::super::list(&paths).unwrap() {
+    for line in super::super::Record::list(&paths).unwrap() {
         assert!(
             !json!(super::super::public(&line))
                 .to_string()
@@ -367,7 +373,7 @@ async fn no_usable_grant_sends_nothing() {
         (Some("noCredit"), Some(false))
     );
     assert_eq!(f.calls("claim"), 0);
-    assert!(!super::super::exists(&paths, &id));
+    assert!(!super::super::Record::exists(&paths, &id));
 }
 
 fn fs_remove(p: &Path) {

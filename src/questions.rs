@@ -416,17 +416,13 @@ fn receipt_path(paths: &Paths, session: &str, request: &str) -> PathBuf {
 }
 
 pub fn read_receipt(paths: &Paths, session: &str, request: &str) -> Option<AnswerReceipt> {
-    fs::read(receipt_path(paths, session, request))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
+    crate::record::load(&receipt_path(paths, session, request))
         .filter(|r: &AnswerReceipt| r.request_id == request && r.session_id == session)
 }
 
 fn save_receipt(paths: &Paths, r: &mut AnswerReceipt) -> Result<()> {
     r.updated_at = crate::daemon::now();
-    let path = receipt_path(paths, &r.session_id, &r.request_id);
-    crate::paths::private_dir(path.parent().context("receipt path")?)?;
-    crate::paths::atomic_write(&path, &serde_json::to_vec(r)?)?;
+    crate::record::store(&receipt_path(paths, &r.session_id, &r.request_id), r)?;
     event(paths, r);
     Ok(())
 }

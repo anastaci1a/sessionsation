@@ -40,7 +40,7 @@ fn retry_reuses_the_record_and_key_and_refuses_another_target() {
     let id = uuid::Uuid::new_v4().to_string();
     let mut r = admit(&paths, ProviderId::Codex, "codex:a", None, &id, "v").unwrap();
     assert_eq!((r.phase.as_str(), r.attempts), ("requesting", 1));
-    assert_eq!(read(&paths, &id).unwrap().idempotency_key, id);
+    assert_eq!(Record::read(&paths, &id).unwrap().idempotency_key, id);
     finish(&paths, &mut r, "uncertain", None, "x").unwrap();
     let again = admit(&paths, ProviderId::Codex, "codex:a", None, &id, "v").unwrap();
     assert_eq!((again.phase.as_str(), again.attempts), ("requesting", 2));
@@ -50,7 +50,7 @@ fn retry_reuses_the_record_and_key_and_refuses_another_target() {
         let e = admit(&paths, ProviderId::Codex, account, credit, &id, "v").unwrap_err();
         assert!(e.to_string().starts_with("REQUEST_ID_CONFLICT"), "{e}");
     }
-    assert_eq!(list(&paths).unwrap().len(), 1);
+    assert_eq!(Record::list(&paths).unwrap().len(), 1);
 }
 
 #[test]

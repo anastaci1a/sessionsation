@@ -29,13 +29,13 @@
 //!    receipt is `delivery_unknown`. Nothing is ever re-sent.
 pub(crate) use super::typing::{CONFIRM_SECONDS, Host};
 use super::{
-    Record, Request, abandon_unsent, all, change, dir, finish, is_terminal, read,
+    Record, Request, abandon_unsent, all, change, finish, is_terminal, pane_lock, read,
     typing::{self, ClearKeys, Draft, Leave, Prefix, Screen, ScreenProfile, Typing, is_main},
     worker_lock,
 };
 use crate::{
     catalog,
-    paths::{Paths, lock_file, private_dir},
+    paths::{Paths, lock_file},
     provider::{ProviderId, claude, claude::hosted},
 };
 use anyhow::Result;
@@ -736,13 +736,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         Err(e) => return abandon_unsent(paths, id, &reason(&e)),
     };
     // One delivery per pane at a time.
-    private_dir(&dir(paths))?;
-    let key: String = t
-        .target
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let pane_lock = lock_file(&dir(paths).join(format!("terminal-{key}.lock")))?;
+    let pane_lock = pane_lock(paths, &t.target)?;
     pane_lock.lock_exclusive()?;
     change(paths, id, |r| {
         r.terminal = Some(t.clone());
@@ -900,13 +894,7 @@ async fn cleanup_orphan(paths: &Paths, id: &str, r: &Record) -> Result<()> {
             });
         }
     };
-    private_dir(&dir(paths))?;
-    let key: String = t
-        .target
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let pane_lock = lock_file(&dir(paths).join(format!("terminal-{key}.lock")))?;
+    let pane_lock = pane_lock(paths, &t.target)?;
     pane_lock.lock_exclusive()?;
     let host = Host::for_agent(&t, Claude::AGENT)?;
     withdraw_orphan(paths, id, &host).await;

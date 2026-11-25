@@ -13,10 +13,9 @@
 use crate::{
     catalog, daemon, external,
     live_activity::{self, TurnFacts},
-    paths::{Paths, atomic_write, lock_file, private_dir},
+    paths::{Paths, atomic_write},
 };
 use anyhow::{Context, Result, ensure};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
@@ -90,9 +89,7 @@ fn load(paths: &Paths) -> Result<Store> {
     }
 }
 fn with_store<R>(paths: &Paths, f: impl FnOnce(&mut Store) -> Result<R>) -> Result<R> {
-    private_dir(&paths.root.join(crate::layout::REGISTRY))?;
-    let lock = lock_file(&paths.root.join(crate::layout::TURN_NOTIFY_LOCK))?;
-    lock.lock_exclusive()?;
+    let _lock = crate::record::lock_exclusive(&paths.root.join(crate::layout::TURN_NOTIFY_LOCK))?;
     let mut store = load(paths)?;
     let before = serde_json::to_vec(&store)?;
     let out = f(&mut store)?;

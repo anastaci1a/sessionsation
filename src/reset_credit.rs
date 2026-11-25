@@ -15,13 +15,13 @@
 //! ```
 use crate::{
     model::{ResetCredit, ResetCredits},
-    paths::{Paths, atomic_write, private_dir},
+    paths::Paths,
     provider::ProviderId,
+    record::Journal,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf};
 
 pub const METHOD: &str = "account/rateLimitResetCredit/consume";
 /// Every `ConsumeAccountRateLimitResetCreditOutcome` of Codex app-server 0.165.0.
@@ -53,12 +53,21 @@ pub struct Record {
     pub updated_at: i64,
 }
 
-fn dir(paths: &Paths) -> PathBuf {
-    paths.root.join(crate::layout::ACCOUNT_RESET_CREDITS)
-}
-fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
-    validate_request_id(id)?;
-    Ok(dir(paths).join(format!("{id}.json")))
+impl Journal for Record {
+    const DIR: &'static str = crate::layout::ACCOUNT_RESET_CREDITS;
+    const PLAIN_LIST: bool = true;
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn key(&self) -> (i64, &str) {
+        (self.created_at, &self.id)
+    }
+    fn touch(&mut self, now: i64) {
+        self.updated_at = now;
+    }
+    fn check_id(id: &str) -> Result<()> {
+        validate_request_id(id)
+    }
 }
 pub fn validate_request_id(id: &str) -> Result<()> {
     uuid::Uuid::parse_str(id)
@@ -67,34 +76,8 @@ pub fn validate_request_id(id: &str) -> Result<()> {
         .context("INVALID_REQUEST_ID: --request-id must be a lowercase hyphenated UUID")?;
     Ok(())
 }
-fn save(paths: &Paths, r: &mut Record) -> Result<()> {
-    r.updated_at = crate::daemon::now();
-    private_dir(&dir(paths))?;
-    atomic_write(&file(paths, &r.id)?, &serde_json::to_vec_pretty(r)?)
-}
-pub fn exists(paths: &Paths, id: &str) -> bool {
-    file(paths, id).is_ok_and(|f| f.is_file())
-}
-pub fn read(paths: &Paths, id: &str) -> Result<Record> {
-    let bytes = fs::read(file(paths, id)?).context("OPERATION_NOT_FOUND")?;
-    serde_json::from_slice(&bytes).context("UNREADABLE_OPERATION_RECORD")
-}
 pub fn list(paths: &Paths) -> Result<Vec<Record>> {
-    let mut all = vec![];
-    let Ok(entries) = fs::read_dir(dir(paths)) else {
-        return Ok(all);
-    };
-    for e in entries.flatten() {
-        let name = e.file_name();
-        let Some(id) = name.to_str().and_then(|n| n.strip_suffix(".json")) else {
-            continue;
-        };
-        if let Ok(r) = read(paths, id) {
-            all.push(r);
-        }
-    }
-    all.sort_by_key(|r| (r.created_at, r.id.clone()));
-    Ok(all)
+    Record::list(paths)
 }
 /// Operation row for `api operations`.
 pub fn public(r: &Record) -> Value {
@@ -121,8 +104,8 @@ pub fn admit(
     codex_version: &str,
 ) -> Result<Record> {
     validate_request_id(request_id)?;
-    let mut record = if exists(paths, request_id) {
-        let r = read(paths, request_id)?;
+    let mut record = if Record::exists(paths, request_id) {
+        let r = Record::read(paths, request_id)?;
         ensure!(
             r.account_id == account_id && r.credit_id.as_deref() == credit_id,
             "REQUEST_ID_CONFLICT: request {request_id} was used for {} (credit {}); use a new request id for a different attempt",
@@ -162,7 +145,7 @@ pub fn admit(
             updated_at: now,
         }
     };
-    save(paths, &mut record)?;
+    record.save(paths)?;
     Ok(record)
 }
 
@@ -178,7 +161,7 @@ pub fn finish(
         record.outcome = outcome.map(str::to_owned);
     }
     record.detail = detail.into();
-    save(paths, record)
+    record.save(paths)
 }
 
 /// The `outcome` of a consume response; anything else is not trusted.

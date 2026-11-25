@@ -267,6 +267,16 @@ pub(crate) async fn send_released(paths: &Paths, id: &str) -> Result<Value> {
 fn dir(paths: &Paths) -> PathBuf {
     paths.root.join(crate::layout::CLAUDE_STEER)
 }
+/// The lock file of one terminal procedure per pane (deliveries, set-model, compaction), opened
+/// and not yet locked.
+pub(crate) fn pane_lock(paths: &Paths, target: &str) -> Result<fs::File> {
+    private_dir(&dir(paths))?;
+    let key: String = target
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    lock_file(&dir(paths).join(format!("terminal-{key}.lock")))
+}
 fn file(paths: &Paths, id: &str) -> Result<PathBuf> {
     uuid::Uuid::parse_str(id).context("INVALID_REQUEST")?;
     Ok(dir(paths).join(format!("{id}.json")))
@@ -706,7 +716,7 @@ pub async fn send_planned(
     // Journal before any write to a provider. Contract 1.69.3: behind a pending compaction a
     // submit or queue is journaled held (no worker) under the compaction journal lock, so it
     // is journaled before the request (the start then sees it) or held.
-    let hold_lock = super::compaction::lock(paths)?;
+    let hold_lock = <super::compaction::Record as crate::record::Journal>::lock(paths)?;
     if matches!(record.request.mode.as_str(), "submit" | "queue")
         && super::compaction::hold_active(paths, &c)
     {

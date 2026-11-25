@@ -20,6 +20,7 @@
 //! result has the same keys.
 use super::*;
 use crate::provider::compact::Method;
+use crate::record::{IdleOp, Journal, release};
 use anyhow::{Context, ensure};
 use futures_util::FutureExt;
 use std::collections::BTreeMap;
@@ -47,14 +48,12 @@ const LOG_EVERY_SECONDS: i64 = 60;
 const MAX_RELEASE_PER_PASS: usize = 20;
 /// A just-released operation is re-swept this long for input that was held at the last moment.
 const STRAY_SWEEP_SECONDS: i64 = 60;
-/// A release claim older than this is taken over (its process died).
-const RELEASE_CLAIM_SECONDS: i64 = 120;
 pub const POLL_SECONDS: u64 = 2;
-
-const TERMINAL: &[&str] = &["complete", "failed", "cancelled", "expired"];
+/// The phases of a started compaction.
+const RUN: &[&str] = &["starting", "running"];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct Record {
+pub(crate) struct Record {
     schema_version: u32,
     id: String,
     session_id: String,
@@ -89,101 +88,113 @@ fn codex() -> String {
     "codex".into()
 }
 impl Record {
-    fn terminal(&self) -> bool {
-        TERMINAL.contains(&self.phase.as_str())
-    }
     fn method(&self) -> Method {
         crate::provider::compact::method_of(&self.provider)
     }
 }
 
-fn dir(paths: &Paths) -> PathBuf {
-    paths.root.join(crate::layout::COMPACTIONS)
-}
-fn file(paths: &Paths, id: &str) -> anyhow::Result<PathBuf> {
-    uuid::Uuid::parse_str(id).context("INVALID_OPERATION_ID")?;
-    Ok(dir(paths).join(format!("{id}.json")))
-}
-pub fn exists(paths: &Paths, id: &str) -> bool {
-    file(paths, id).is_ok_and(|f| f.is_file())
-}
-/// Parsed records by file version (see [`crate::file_cache`]): a settled record is parsed once.
-static RECORDS: crate::file_cache::FileCache<Record> = crate::file_cache::FileCache::new();
-fn read(paths: &Paths, id: &str) -> anyhow::Result<Record> {
-    use crate::file_cache::LoadError;
-    match RECORDS.load(&file(paths, id)?, |b| serde_json::from_slice::<Record>(b)) {
-        Ok(r) => Ok((*r).clone()),
-        Err(LoadError::Io(e)) => Err(anyhow::Error::new(e).context("OPERATION_NOT_FOUND")),
-        Err(LoadError::Parse(e)) => {
-            Err(anyhow::Error::new(e).context("UNREADABLE_OPERATION_RECORD"))
-        }
+crate::record::idle_op!(Record, COMPACTIONS, COMPACTIONS_LOCK);
+
+/// Admission shared by both idle-point operations: a valid `--operation` id and an expiry
+/// within `MAX_EXPIRY_SECONDS`.
+pub(super) fn admission(operation: Option<&str>, expires_at: i64, now: i64) -> anyhow::Result<()> {
+    if let Some(id) = operation {
+        uuid::Uuid::parse_str(id).context("INVALID_OPERATION_ID")?;
     }
+    ensure!(
+        expires_at > now && expires_at <= now + MAX_EXPIRY_SECONDS,
+        "INVALID_EXPIRY: expires_at must be within the next {MAX_EXPIRY_SECONDS} seconds"
+    );
+    Ok(())
 }
-fn save(paths: &Paths, r: &Record) -> anyhow::Result<()> {
-    crate::paths::atomic_write(&file(paths, &r.id)?, &serde_json::to_vec_pretty(r)?)
-}
-fn list(paths: &Paths) -> anyhow::Result<Vec<Record>> {
-    let mut all = vec![];
-    if !dir(paths).is_dir() {
-        return Ok(all);
-    }
-    let entries = crate::paths::journal_paths(&dir(paths))?;
-    RECORDS.retain_dir(&dir(paths), &entries.iter().map(|e| e.as_path()).collect());
-    for entry in entries {
-        if let Some(id) = entry
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_suffix(".json"))
-            && let Ok(r) = read(paths, id)
-        {
-            all.push(r);
-        }
-    }
-    all.sort_by_key(|r| (r.created_at, r.id.clone()));
-    Ok(all)
-}
-/// Short critical section around journal read-modify-write; never held across an await.
-pub(crate) fn lock(paths: &Paths) -> anyhow::Result<fs::File> {
-    private_dir(&paths.root.join(crate::layout::OPERATIONS))?;
-    let f = lock_file(&paths.root.join(crate::layout::COMPACTIONS_LOCK))?;
-    f.lock_exclusive()?;
-    Ok(f)
-}
-/// Apply `edit` to the stored record when it returns true; `None` when it declined. Every
-/// transition goes through this so a concurrent cancel or expiry is never overwritten.
-fn update(
+/// The running Codex app-server of a session: exactly the process (pid and start time) the
+/// catalog attachment names, else `STALE_TARGET`.
+pub(super) fn codex_target(
     paths: &Paths,
-    id: &str,
-    edit: impl FnOnce(&mut Record) -> bool,
-) -> anyhow::Result<Option<Record>> {
-    let _lock = lock(paths)?;
-    let mut r = read(paths, id)?;
-    if !edit(&mut r) {
-        return Ok(None);
+    s: &crate::catalog::Session,
+) -> anyhow::Result<Attachment> {
+    let attached = attachment(paths, &s.conversation_id).map_err(|e| match e.0 {
+        "unavailable" => anyhow::anyhow!("SESSION_NOT_RUNNING"),
+        other => anyhow::anyhow!("{}", other.to_uppercase()),
+    })?;
+    let same =
+        |a: &crate::catalog::Attachment| a.pid == attached.pid && a.process_start == attached.start;
+    ensure!(s.attachment.as_ref().is_some_and(same), "STALE_TARGET");
+    Ok(attached)
+}
+/// A pending (or the `--operation`) record returned again instead of a second one.
+pub(super) fn existing(mut v: Value, existing: bool) -> Value {
+    v["existing"] = json!(existing);
+    v
+}
+/// Owner switch and explicit stop: why a waiting Codex operation may not start now.
+pub(super) fn codex_blocked(paths: &Paths, conversation: &str) -> Option<&'static str> {
+    if !modes::queue::sending_enabled(paths).unwrap_or(false) {
+        return Some("native_sending_disabled");
     }
-    r.updated_at = crate::daemon::now();
-    save(paths, &r)?;
-    Ok(Some(r))
+    matches!(
+        external::messaging_stop_intent(paths, conversation),
+        Ok(Some(_))
+    )
+    .then_some("explicit_resume_required")
 }
-fn finish(paths: &Paths, id: &str, from: &[&str], phase: &str, reason: &str) {
-    let _ = update(paths, id, |r| {
-        if !from.contains(&r.phase.as_str()) {
-            return false;
-        }
-        r.phase = phase.into();
-        r.reason = Some(reason.into());
-        r.finished_at = Some(crate::daemon::now());
-        true
-    });
+/// The thread is at an idle point: no active turn (a failed or interrupted last turn leaves a
+/// live session; only a running turn or one waiting on the operator does not) and an empty
+/// native queue (input accepted before the request runs first; new input is held meanwhile, so
+/// the queue drains and this passes). `Err` is the waiting reason.
+pub(super) async fn codex_idle(
+    control: &mut Transport,
+    conversation: &str,
+) -> std::result::Result<(), &'static str> {
+    let observed = modes::session_status::observe_fresh_public(control, conversation)
+        .await
+        .map_err(|_| "provider_unavailable")?;
+    if let Some(reason) = observed.reason {
+        return Err(reason);
+    }
+    match observed.state.as_str() {
+        "idle" | "errored" | "interrupted" => {}
+        "working" => return Err("turn_active"),
+        "disconnected" => return Err("session_not_running"),
+        _ => return Err("state_unverified"),
+    }
+    let queue = json!({"threadId":conversation,"cursor":null,"limit":1});
+    match control
+        .request::<QueuePage>("thread/queue/list", queue)
+        .await
+    {
+        Ok(page) if page.data.is_empty() => Ok(()),
+        Ok(_) => Err("native_queue_not_empty"),
+        Err(_) => Err("provider_unavailable"),
+    }
 }
-fn waiting(paths: &Paths, id: &str, why: &str) {
-    let _ = update(paths, id, |r| {
-        if r.phase != "waiting" || r.reason.as_deref() == Some(why) {
-            return false;
-        }
-        r.reason = Some(why.into());
-        true
-    });
+/// A supervisor loop over `pass` every `env` seconds (default `POLL_SECONDS`; 0 disables).
+pub(super) async fn supervise<F: std::future::Future<Output = ()>>(
+    env: &str,
+    pass: impl Fn() -> F,
+) {
+    let every = std::env::var(env)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(POLL_SECONDS);
+    if every == 0 {
+        return;
+    }
+    loop {
+        pass().await;
+        tokio::time::sleep(crate::timing::secs(every)).await;
+    }
+}
+/// One supervisor pass; a panic in it is logged and must not end the loop for good.
+pub(super) async fn guarded(name: &str, pass: impl std::future::Future<Output = ()>) {
+    if let Err(panic) = std::panic::AssertUnwindSafe(pass).catch_unwind().await {
+        let text = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown");
+        eprintln!("{name} monitor: a pass panicked and will be retried: {text}");
+    }
 }
 
 /// True while new native input for this conversation must be held: a compaction is pending (not
@@ -191,7 +202,7 @@ fn waiting(paths: &Paths, id: &str, why: &str) {
 /// released yet (so a new send cannot overtake the held ones). Reads the journal only.
 pub fn hold_active(paths: &Paths, conversation: &str) -> bool {
     let now = crate::daemon::now();
-    list(paths).is_ok_and(|all| {
+    Record::list(paths).is_ok_and(|all| {
         all.iter().any(|r| {
             r.conversation_id == conversation
                 && r.method().holds_input()
@@ -200,24 +211,6 @@ pub fn hold_active(paths: &Paths, conversation: &str) -> bool {
                     "starting" | "running" => true,
                     _ => !r.hold_released,
                 }
-        })
-    })
-}
-
-/// Any non-terminal compaction of the conversation (contract 1.49.0 release precondition).
-pub(super) fn pending(paths: &Paths, conversation: &str) -> bool {
-    list(paths).is_ok_and(|all| {
-        all.iter()
-            .any(|r| !r.terminal() && r.conversation_id == conversation)
-    })
-}
-/// A non-terminal compaction of the conversation requested before `(created_at, id)`.
-pub(super) fn pending_before(paths: &Paths, conversation: &str, key: (i64, &str)) -> bool {
-    list(paths).is_ok_and(|all| {
-        all.iter().any(|r| {
-            !r.terminal()
-                && r.conversation_id == conversation
-                && (r.created_at, r.id.as_str()) < key
         })
     })
 }
@@ -273,9 +266,9 @@ fn public(r: &Record) -> Value {
         "already_compacted":r.reason.as_deref() == Some("already_compacted"),
         "nothing_to_compact":r.reason.as_deref() == Some("nothing_to_compact"),
         "session_id":r.session_id,"source_session_id":r.session_id,"accepted_generation":r.accepted_generation,
-        "provider_conversation_id":r.conversation_id,"phase":r.phase,"terminal":r.terminal(),
+        "provider_conversation_id":r.conversation_id,"phase":r.phase,"terminal":r.done(),
         "reason":r.reason,"detail":r.reason.as_deref().map(explain).filter(|s| !s.is_empty()),
-        "hold":{"active":holds && !r.terminal(),"released":r.hold_released,
+        "hold":{"active":holds && !r.done(),"released":r.hold_released,
             "scope":if holds {json!("new public submit and queue sends to this session")} else {Value::Null}},
         "created_at":r.created_at,"updated_at":r.updated_at,"expires_at":r.expires_at,
         "started_at":r.started_at,"finished_at":r.finished_at,"attempts":r.attempts,
@@ -300,33 +293,17 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
     if let Method::Unsupported(reason) = method {
         return Err(crate::provider::stop_shape::Unsupported(reason).into());
     }
-    if let Some(id) = req.operation {
-        uuid::Uuid::parse_str(id).context("INVALID_OPERATION_ID")?;
-    }
     let now = crate::daemon::now();
     let expires_at = req.expires_at.unwrap_or(now + DEFAULT_EXPIRY_SECONDS);
-    ensure!(
-        expires_at > now && expires_at <= now + MAX_EXPIRY_SECONDS,
-        "INVALID_EXPIRY: expires_at must be within the next {MAX_EXPIRY_SECONDS} seconds"
-    );
+    admission(req.operation, expires_at, now)?;
     let (runtime_generation, home) = if method == Method::Terminal {
         claude::admit(paths, &session)?
     } else {
-        let attached = attachment(paths, &session.conversation_id).map_err(|e| match e.0 {
-            "unavailable" => anyhow::anyhow!("SESSION_NOT_RUNNING"),
-            other => anyhow::anyhow!("{}", other.to_uppercase()),
-        })?;
-        ensure!(
-            session
-                .attachment
-                .as_ref()
-                .is_some_and(|a| a.pid == attached.pid && a.process_start == attached.start),
-            "STALE_TARGET"
-        );
+        let attached = codex_target(paths, &session)?;
         (attached.generation(), attached.home.clone())
     };
-    let _lock = lock(paths)?;
-    let all = list(paths)?;
+    let _lock = Record::lock(paths)?;
+    let all = Record::list(paths)?;
     if let Some(id) = req.operation
         && let Some(r) = all.iter().find(|r| r.id == id)
     {
@@ -334,17 +311,13 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
             r.conversation_id == session.conversation_id,
             "OPERATION_ID_CONFLICT"
         );
-        let mut v = public(r);
-        v["existing"] = json!(true);
-        return Ok(v);
+        return Ok(existing(public(r), true));
     }
     if let Some(r) = all
         .iter()
-        .find(|r| !r.terminal() && r.conversation_id == session.conversation_id)
+        .find(|r| !r.done() && r.conversation_id == session.conversation_id)
     {
-        let mut v = public(r);
-        v["existing"] = json!(true);
-        return Ok(v);
+        return Ok(existing(public(r), true));
     }
     // Contract 1.64.0: nothing (new) to compact completes at once; the session is not touched.
     let already = crate::provider::compact::already(provider, &home, &session.conversation_id);
@@ -377,10 +350,8 @@ pub fn request(paths: &Paths, req: Request) -> anyhow::Result<Value> {
         provider: session.provider.clone(),
         account: Some(session.account.clone()),
     };
-    save(paths, &r)?;
-    let mut v = public(&r);
-    v["existing"] = json!(false);
-    Ok(v)
+    r.write(paths)?;
+    Ok(existing(public(&r), false))
 }
 
 /// Held message ids of a conversation, in arrival order (best effort; `None` when the
@@ -403,22 +374,7 @@ pub async fn status(
     operation: Option<&str>,
     session: Option<&str>,
 ) -> anyhow::Result<Value> {
-    let r = match (operation, session) {
-        (Some(id), _) => read(paths, id)?,
-        (None, Some(session)) => {
-            let found = crate::catalog::find(paths, session)?;
-            let mut mine: Vec<Record> = list(paths)?
-                .into_iter()
-                .filter(|r| r.conversation_id == found.conversation_id)
-                .collect();
-            let pick = mine
-                .iter()
-                .rposition(|r| !r.terminal())
-                .or(mine.len().checked_sub(1));
-            mine.swap_remove(pick.context("OPERATION_NOT_FOUND")?)
-        }
-        _ => anyhow::bail!("INVALID_ARGUMENT: --operation or --session is required"),
-    };
+    let r = Record::find(paths, operation, session)?;
     let mut v = public(&r);
     v["held_messages"] = match held_ids(paths, &r.conversation_id).await {
         Some(ids) => json!(ids),
@@ -427,45 +383,23 @@ pub async fn status(
     Ok(v)
 }
 
-/// Cancel a compaction that has not started. Idempotent for a cancelled one; refused once the
-/// start was attempted (the app-server cannot take it back) or after it finished.
+/// Cancel a compaction that has not started; refused once the start was attempted (the
+/// app-server cannot take it back) or after it finished.
 pub async fn cancel(paths: &Paths, id: &str) -> anyhow::Result<Value> {
-    let r = read(paths, id)?;
-    match r.phase.as_str() {
-        "cancelled" => return Ok(public(&r)),
-        "waiting" => {}
-        "starting" | "running" => anyhow::bail!("COMPACTION_ALREADY_STARTED"),
-        _ => anyhow::bail!("COMPACTION_ALREADY_FINISHED"),
+    let started = "COMPACTION_ALREADY_STARTED";
+    let (r, requested) = Record::cancel(paths, id, started, "COMPACTION_ALREADY_FINISHED").await?;
+    let mut v = public(&r);
+    if requested {
+        v["cancellation_requested"] = json!(true);
     }
-    let done = update(paths, id, |r| {
-        if r.phase != "waiting" {
-            return false;
-        }
-        r.phase = "cancelled".into();
-        r.reason = Some("cancelled".into());
-        r.finished_at = Some(crate::daemon::now());
-        true
-    })?;
-    let Some(done) = done else {
-        // Lost a race with the start or the expiry: report what actually happened.
-        let now = read(paths, id)?;
-        anyhow::ensure!(now.phase == "cancelled", "COMPACTION_ALREADY_STARTED");
-        return Ok(public(&now));
-    };
-    release(paths, &done.id).await;
-    let mut v = public(&read(paths, id)?);
-    v["cancellation_requested"] = json!(true);
     Ok(v)
 }
 
-/// `api operations` rows: pending ones and those finished within the last hour.
+pub fn exists(paths: &Paths, id: &str) -> bool {
+    Record::exists(paths, id)
+}
 pub fn operations(paths: &Paths) -> anyhow::Result<Vec<Value>> {
-    let now = crate::daemon::now();
-    Ok(list(paths)?
-        .iter()
-        .filter(|r| !r.terminal() || now - r.updated_at < 3600)
-        .map(public)
-        .collect())
+    Ok(Record::rows(paths)?.iter().map(public).collect())
 }
 
 /// Deliver the input held for a finished compaction, once. Every message goes through the
@@ -492,10 +426,12 @@ async fn mark_retry(paths: &Paths, id: &str) {
 /// `pending_local` afterwards) stops the pass at that message, so later ones never overtake it,
 /// and returns false so the next tick re-queries and retries. A pass handles at most
 /// `MAX_RELEASE_PER_PASS` messages; input that arrived while releasing is picked up by the next round.
-pub(super) async fn deliver_held(paths: &Paths, conversation: &str) -> bool {
+pub(crate) async fn deliver_held(paths: &Paths, conversation: &str) -> bool {
     // Contract 1.49.0: held input is released once, after every idle-point operation of the
     // conversation (compactions and model changes) has ended.
-    if pending(paths, conversation) || super::model_change::pending(paths, conversation) {
+    if Record::pending_before(paths, conversation, None)
+        || super::model_change::Record::pending_before(paths, conversation, None)
+    {
         return false;
     }
     for _ in 0..3 {
@@ -520,32 +456,6 @@ pub(super) async fn deliver_held(paths: &Paths, conversation: &str) -> bool {
         }
     }
     false
-}
-
-/// Release the input held for a finished compaction. `hold_released` is set only after a pass
-/// found nothing left to deliver or retry; until then the hold stays in force, so a new send
-/// cannot overtake held ones, and the next tick tries again. A concurrent release (another
-/// process) is skipped by a claim that lapses after `RELEASE_CLAIM_SECONDS`.
-async fn release(paths: &Paths, id: &str) {
-    let claimed = update(paths, id, |r| {
-        let now = crate::daemon::now();
-        if !r.terminal()
-            || r.hold_released
-            || r.release_claimed_at
-                .is_some_and(|at| now - at < RELEASE_CLAIM_SECONDS)
-        {
-            return false;
-        }
-        r.release_claimed_at = Some(now);
-        true
-    });
-    let Ok(Some(r)) = claimed else { return };
-    let done = deliver_held(paths, &r.conversation_id).await;
-    let _ = update(paths, id, |r| {
-        r.hold_released |= done;
-        r.release_claimed_at = None;
-        true
-    });
 }
 
 #[derive(Deserialize)]
@@ -644,15 +554,15 @@ async fn recent_turns(control: &mut Transport, conversation: &str) -> Result<Vec
 
 /// One supervisor pass over every journaled compaction.
 pub async fn tick(paths: &Paths) {
-    let Ok(all) = list(paths) else { return };
+    let Ok(all) = Record::list(paths) else { return };
     // Starts and follow-ups first, so a release backlog cannot stall another pending compaction.
     prune(
         &all.iter()
-            .filter(|r| !r.terminal())
+            .filter(|r| !r.done())
             .map(|r| r.id.as_str())
             .collect::<Vec<_>>(),
     );
-    for r in all.iter().filter(|r| !r.terminal()) {
+    for r in all.iter().filter(|r| !r.done()) {
         if r.method() == Method::Terminal {
             claude::advance(paths, &r.id).await;
         } else {
@@ -660,13 +570,10 @@ pub async fn tick(paths: &Paths) {
         }
     }
     let now = crate::daemon::now();
-    let Ok(all) = list(paths) else { return };
-    for r in all
-        .iter()
-        .filter(|r| r.terminal() && r.method().holds_input())
-    {
+    let Ok(all) = Record::list(paths) else { return };
+    for r in all.iter().filter(|r| r.done() && r.method().holds_input()) {
         if !r.hold_released {
-            release(paths, &r.id).await;
+            release::<Record>(paths, &r.id).await;
         } else if r
             .finished_at
             .is_some_and(|at| now - at < STRAY_SWEEP_SECONDS)
@@ -678,10 +585,14 @@ pub async fn tick(paths: &Paths) {
 }
 
 async fn advance(paths: &Paths, id: &str) {
-    let Ok(r) = read(paths, id) else { return };
+    let Ok(r) = Record::read(paths, id) else {
+        return;
+    };
     let now = crate::daemon::now();
     match r.phase.as_str() {
-        "waiting" if now >= r.expires_at => finish(paths, id, &["waiting"], "expired", "expired"),
+        "waiting" if now >= r.expires_at => {
+            Record::finish(paths, id, &["waiting"], "expired", "expired")
+        }
         "waiting" => try_start(paths, r).await,
         "starting" | "running" => follow(paths, r).await,
         _ => {}
@@ -694,36 +605,33 @@ async fn try_start(paths: &Paths, r: Record) {
     let id = r.id.clone();
     let conversation = r.conversation_id.clone();
     // Contract 1.49.0: idle-point operations of one conversation run in request order.
-    if super::model_change::pending_before(paths, &conversation, (r.created_at, &r.id)) {
-        return waiting(paths, &id, "model_change_pending");
+    if super::model_change::Record::pending_before(
+        paths,
+        &conversation,
+        Some((r.created_at, &r.id)),
+    ) {
+        return Record::waiting(paths, &id, "model_change_pending");
     }
     let attached = match attachment(paths, &conversation) {
         Ok(a) => a,
-        Err(Fault("unavailable")) => return waiting(paths, &id, "session_not_running"),
-        Err(e) => return waiting(paths, &id, e.0),
+        Err(Fault("unavailable")) => return Record::waiting(paths, &id, "session_not_running"),
+        Err(e) => return Record::waiting(paths, &id, e.0),
     };
     if attached.generation() != r.runtime_generation {
-        return finish(paths, &id, &["waiting"], "failed", "generation_changed");
+        return Record::finish(paths, &id, &["waiting"], "failed", "generation_changed");
     }
-    match modes::queue::sending_enabled(paths) {
-        Ok(true) => {}
-        _ => return waiting(paths, &id, "native_sending_disabled"),
-    }
-    if matches!(
-        external::messaging_stop_intent(paths, &conversation),
-        Ok(Some(_))
-    ) {
-        return waiting(paths, &id, "explicit_resume_required");
+    if let Some(why) = codex_blocked(paths, &conversation) {
+        return Record::waiting(paths, &id, why);
     }
     let budget = std::time::Duration::from_secs(3);
     let _guard = match mutation_lock_waiting(paths, &conversation, budget).await {
         Ok(g) => g,
-        Err(_) => return waiting(paths, &id, "session_busy"),
+        Err(_) => return Record::waiting(paths, &id, "session_busy"),
     };
     let mut control = match attached.connect().await {
         Ok(c) => c,
         Err(Fault("unsupported_native_version" | "unsupported")) => {
-            return finish(
+            return Record::finish(
                 paths,
                 &id,
                 &["waiting"],
@@ -731,40 +639,14 @@ async fn try_start(paths: &Paths, r: Record) {
                 "unsupported_native_version",
             );
         }
-        Err(_) => return waiting(paths, &id, "provider_unavailable"),
+        Err(_) => return Record::waiting(paths, &id, "provider_unavailable"),
     };
-    let observed =
-        match modes::session_status::observe_fresh_public(&mut control, &conversation).await {
-            Ok(o) => o,
-            Err(_) => return waiting(paths, &id, "provider_unavailable"),
-        };
-    if let Some(reason) = observed.reason {
-        return waiting(paths, &id, reason);
-    }
-    match observed.state.as_str() {
-        // No active turn. A failed or interrupted last turn leaves a live session that can
-        // compact; only a running turn (or one waiting on the operator) cannot.
-        "idle" | "errored" | "interrupted" => {}
-        "working" => return waiting(paths, &id, "turn_active"),
-        "disconnected" => return waiting(paths, &id, "session_not_running"),
-        _ => return waiting(paths, &id, "state_unverified"),
-    }
-    // Input accepted into the native queue before the request runs first; a start now would
-    // overtake it. New input is held meanwhile, so the queue drains and this check passes.
-    let queued: Result<QueuePage> = control
-        .request(
-            "thread/queue/list",
-            json!({"threadId":conversation,"cursor":null,"limit":1}),
-        )
-        .await;
-    match queued {
-        Ok(page) if page.data.is_empty() => {}
-        Ok(_) => return waiting(paths, &id, "native_queue_not_empty"),
-        Err(_) => return waiting(paths, &id, "provider_unavailable"),
+    if let Err(why) = codex_idle(&mut control, &conversation).await {
+        return Record::waiting(paths, &id, why);
     }
     let baseline = match recent_turns(&mut control, &conversation).await {
         Ok(turns) => turns.into_iter().map(|t| t.id).collect::<Vec<_>>(),
-        Err(_) => return waiting(paths, &id, "provider_unavailable"),
+        Err(_) => return Record::waiting(paths, &id, "provider_unavailable"),
     };
     if attachment(paths, &conversation)
         .map(|a| a.generation())
@@ -772,10 +654,10 @@ async fn try_start(paths: &Paths, r: Record) {
         .as_deref()
         != Some(r.runtime_generation.as_str())
     {
-        return finish(paths, &id, &["waiting"], "failed", "generation_changed");
+        return Record::finish(paths, &id, &["waiting"], "failed", "generation_changed");
     }
     // Journal the intent before touching the app-server. Lost to a cancel or expiry: stop.
-    let started = update(paths, &id, |r| {
+    let started = Record::update(paths, &id, |r| {
         if r.phase != "waiting" || crate::daemon::now() >= r.expires_at {
             return false;
         }
@@ -788,7 +670,7 @@ async fn try_start(paths: &Paths, r: Record) {
     let Ok(Some(started)) = started else { return };
     match control.compact_start(&conversation).await {
         Ok(()) => {
-            let _ = update(paths, &id, |r| {
+            let _ = Record::update(paths, &id, |r| {
                 if r.phase != "starting" {
                     return false;
                 }
@@ -801,7 +683,7 @@ async fn try_start(paths: &Paths, r: Record) {
             // Definitively not started (the app-server answered with an error), for example
             // a task or background work that still counts as in progress. Wait and retry.
             let refused = started.attempts >= MAX_ATTEMPTS;
-            let _ = update(paths, &id, |r| {
+            let _ = Record::update(paths, &id, |r| {
                 if r.phase != "starting" {
                     return false;
                 }
@@ -923,36 +805,18 @@ async fn follow(paths: &Paths, r: Record) {
     let attached = match attachment(paths, &conversation) {
         Ok(a) if a.generation() == r.runtime_generation => Some(a),
         Ok(_) => {
-            return finish(
-                paths,
-                &id,
-                &["starting", "running"],
-                "failed",
-                "generation_changed",
-            );
+            return Record::finish(paths, &id, RUN, "failed", "generation_changed");
         }
         Err(_) => None,
     };
     let since = r.started_at.unwrap_or(r.updated_at);
     if now - since > RUN_LIMIT_SECONDS {
-        return finish(
-            paths,
-            &id,
-            &["starting", "running"],
-            "failed",
-            "compaction_timeout",
-        );
+        return Record::finish(paths, &id, RUN, "failed", "compaction_timeout");
     }
     let Some(attached) = attached else {
         // No attachment: the process is gone. A starting one never started; a running one
         // cannot be followed.
-        return finish(
-            paths,
-            &id,
-            &["starting", "running"],
-            "failed",
-            "compaction_not_observed",
-        );
+        return Record::finish(paths, &id, RUN, "failed", "compaction_not_observed");
     };
     let observed = match observe(&attached, &conversation, &r.baseline).await {
         Ok(o) => o,
@@ -967,7 +831,7 @@ async fn follow(paths: &Paths, r: Record) {
             let turn_id = turn.id.clone();
             match turn.status.as_str() {
                 "completed" => {
-                    let done = update(paths, &id, |r| {
+                    let done = Record::update(paths, &id, |r| {
                         if !matches!(r.phase.as_str(), "starting" | "running") {
                             return false;
                         }
@@ -996,7 +860,7 @@ async fn follow(paths: &Paths, r: Record) {
                     } else {
                         "compaction_interrupted"
                     };
-                    let _ = update(paths, &id, |r| {
+                    let _ = Record::update(paths, &id, |r| {
                         if !matches!(r.phase.as_str(), "starting" | "running") {
                             return false;
                         }
@@ -1008,7 +872,7 @@ async fn follow(paths: &Paths, r: Record) {
                     });
                 }
                 _ => {
-                    let _ = update(paths, &id, |r| {
+                    let _ = Record::update(paths, &id, |r| {
                         if !matches!(r.phase.as_str(), "starting" | "running") {
                             return false;
                         }
@@ -1032,13 +896,7 @@ async fn follow(paths: &Paths, r: Record) {
                 now,
                 since,
             );
-            finish(
-                paths,
-                &id,
-                &["starting", "running"],
-                "failed",
-                "compaction_not_observed",
-            );
+            Record::finish(paths, &id, RUN, "failed", "compaction_not_observed");
         }
         None if matches!(observed.activity, "idle" | "errored") || observed.compacting => {
             progressed(&id, now)
@@ -1070,39 +928,15 @@ fn give_up_if_unobserved(paths: &Paths, id: &str, now: i64, since: i64) {
         now - last,
         now - since
     );
-    finish(
-        paths,
-        id,
-        &["starting", "running"],
-        "failed",
-        "compaction_not_observed",
-    );
+    Record::finish(paths, id, RUN, "failed", "compaction_not_observed");
 }
 
 /// Supervisor loop (`SESSIONSATION_COMPACTION_SECONDS`, 0 disables).
 pub async fn monitor(paths: Paths) {
-    let every = std::env::var("SESSIONSATION_COMPACTION_SECONDS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(POLL_SECONDS);
-    if every == 0 {
-        return;
-    }
-    loop {
-        // A panic in one pass must not end the loop for good.
-        if let Err(panic) = std::panic::AssertUnwindSafe(tick(&paths))
-            .catch_unwind()
-            .await
-        {
-            let text = panic
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| panic.downcast_ref::<&str>().copied())
-                .unwrap_or("unknown");
-            eprintln!("compaction monitor: a pass panicked and will be retried: {text}");
-        }
-        tokio::time::sleep(crate::timing::secs(every)).await;
-    }
+    supervise("SESSIONSATION_COMPACTION_SECONDS", || {
+        guarded("compaction", tick(&paths))
+    })
+    .await
 }
 
 /// `api capabilities.session_compact`.

@@ -105,8 +105,8 @@ fn waiting_record(paths: &Paths) -> Record {
         provider: "claude".into(),
         account: Some("main".into()),
     };
-    private_dir(&dir(paths)).unwrap();
-    save(paths, &r).unwrap();
+    private_dir(&Record::dir(paths)).unwrap();
+    r.write(paths).unwrap();
     r
 }
 
@@ -139,7 +139,7 @@ async fn claude_compact_types_once_and_completes_when_claude_reports_it() {
     let r = waiting_record(&paths);
     let pane = FakePane::new("");
     procedure(&paths, &r.id, &pane).await;
-    let running = read(&paths, &r.id).unwrap();
+    let running = Record::read(&paths, &r.id).unwrap();
     assert_eq!(running.phase, "running", "{running:?}");
     assert_eq!(running.attempts, 1);
     {
@@ -150,13 +150,13 @@ async fn claude_compact_types_once_and_completes_when_claude_reports_it() {
     }
     // Not reported yet and still working: keeps running.
     settle(&paths, &running, None, Some(false), None);
-    assert_eq!(read(&paths, &r.id).unwrap().phase, "running");
+    assert_eq!(Record::read(&paths, &r.id).unwrap().phase, "running");
     // A compaction older than the start does not count.
     let since = running.started_at.unwrap();
     settle(&paths, &running, Some(since - 60), Some(false), None);
-    assert_eq!(read(&paths, &r.id).unwrap().phase, "running");
+    assert_eq!(Record::read(&paths, &r.id).unwrap().phase, "running");
     settle(&paths, &running, Some(since), Some(true), None);
-    let done = read(&paths, &r.id).unwrap();
+    let done = Record::read(&paths, &r.id).unwrap();
     assert_eq!(
         (done.phase.as_str(), done.reason.as_deref()),
         ("complete", Some("compacted"))
@@ -177,7 +177,7 @@ async fn a_draft_is_never_touched_and_an_ignored_enter_is_withdrawn_not_retyped(
     let r = waiting_record(&paths);
     let pane = FakePane::new("my half-written thought");
     procedure(&paths, &r.id, &pane).await;
-    let w = read(&paths, &r.id).unwrap();
+    let w = Record::read(&paths, &r.id).unwrap();
     assert_eq!(
         (w.phase.as_str(), w.reason.as_deref()),
         ("waiting", Some("draft_present"))
@@ -189,7 +189,7 @@ async fn a_draft_is_never_touched_and_an_ignored_enter_is_withdrawn_not_retyped(
     let pane = FakePane::new("");
     pane.0.lock().unwrap().enter_runs = false;
     procedure(&paths, &r.id, &pane).await;
-    let f = read(&paths, &r.id).unwrap();
+    let f = Record::read(&paths, &r.id).unwrap();
     assert_eq!(
         (f.phase.as_str(), f.reason.as_deref()),
         ("failed", Some("compaction_not_started"))
@@ -204,33 +204,33 @@ async fn a_draft_is_never_touched_and_an_ignored_enter_is_withdrawn_not_retyped(
 async fn an_idle_pane_without_a_reported_compaction_fails_after_the_window() {
     let (_d, paths) = paths();
     let r = waiting_record(&paths);
-    let _ = update(&paths, &r.id, |x| {
+    let _ = Record::update(&paths, &r.id, |x| {
         x.phase = "running".into();
         x.started_at = Some(crate::daemon::now() - IDLE_UNOBSERVED_SECONDS - 5);
         true
     });
-    let running = read(&paths, &r.id).unwrap();
+    let running = Record::read(&paths, &r.id).unwrap();
     settle(&paths, &running, None, Some(false), None);
-    assert_eq!(read(&paths, &r.id).unwrap().phase, "running");
+    assert_eq!(Record::read(&paths, &r.id).unwrap().phase, "running");
     settle(&paths, &running, None, Some(true), None);
-    let f = read(&paths, &r.id).unwrap();
+    let f = Record::read(&paths, &r.id).unwrap();
     assert_eq!(f.reason.as_deref(), Some("compaction_not_observed"));
     // A restarted session fails as generation_changed.
     let r2 = waiting_record(&paths);
-    let _ = update(&paths, &r2.id, |x| {
+    let _ = Record::update(&paths, &r2.id, |x| {
         x.phase = "running".into();
         x.started_at = Some(crate::daemon::now());
         true
     });
     settle(
         &paths,
-        &read(&paths, &r2.id).unwrap(),
+        &Record::read(&paths, &r2.id).unwrap(),
         None,
         None,
         Some("generation_changed".into()),
     );
     assert_eq!(
-        read(&paths, &r2.id).unwrap().reason.as_deref(),
+        Record::read(&paths, &r2.id).unwrap().reason.as_deref(),
         Some("generation_changed")
     );
 }

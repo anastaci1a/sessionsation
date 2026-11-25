@@ -137,12 +137,12 @@ impl Pane for Herdr {
 }
 
 pub async fn worker(paths: &Paths, id: &str) -> anyhow::Result<()> {
-    let lock = lock_file(&worker_lock(paths, id)?)?;
+    let lock = lock_file(&Record::worker_lock(paths, id)?)?;
     if lock.try_lock_exclusive().is_err() {
         return Ok(());
     }
-    let r = read(paths, id)?;
-    if r.terminal()
+    let r = Record::read(paths, id)?;
+    if r.done()
         || !crate::provider::ops::holds(&r.provider, |f| {
             f.model == crate::provider::ops::ModelGrammar::Claude
         })
@@ -150,23 +150,17 @@ pub async fn worker(paths: &Paths, id: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     if r.phase == "waiting" && crate::daemon::now() >= r.expires_at {
-        finish(paths, id, &["waiting"], "expired", "expired");
+        Record::finish(paths, id, &["waiting"], "expired", "expired");
         return Ok(());
     }
     let (t, home) = match target(paths, &r) {
         Ok(x) => x,
         Err(code) if code == "generation_changed" => {
-            finish(
-                paths,
-                id,
-                &["waiting", "applying"],
-                "failed",
-                "generation_changed",
-            );
+            Record::finish(paths, id, LIVE, "failed", "generation_changed");
             return Ok(());
         }
         Err(code) if r.phase == "waiting" => {
-            waiting(paths, id, &code);
+            Record::waiting(paths, id, &code);
             return Ok(());
         }
         Err(_) => {
@@ -175,17 +169,10 @@ pub async fn worker(paths: &Paths, id: &str) -> anyhow::Result<()> {
         }
     };
     // One terminal procedure per pane at a time (shared with message deliveries).
-    let steer = paths.root.join(crate::layout::CLAUDE_STEER);
-    private_dir(&steer)?;
-    let key: String = t
-        .target
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let pane_lock = lock_file(&steer.join(format!("terminal-{key}.lock")))?;
+    let pane_lock = crate::messaging::claude_steer::pane_lock(paths, &t.target)?;
     if pane_lock.try_lock_exclusive().is_err() {
         if r.phase == "waiting" {
-            waiting(paths, id, "session_busy");
+            Record::waiting(paths, id, "session_busy");
         }
         return Ok(());
     }
@@ -203,13 +190,13 @@ pub(crate) async fn procedure(
     home: &Path,
     target: &str,
 ) -> anyhow::Result<()> {
-    let r = read(paths, id)?;
+    let r = Record::read(paths, id)?;
     if r.phase == "waiting" {
         if let Err(why) = ready_twice(paths, &r, pane).await {
-            waiting(paths, id, why);
+            Record::waiting(paths, id, why);
             return Ok(());
         }
-        let started = update(paths, id, |x| {
+        let started = Record::update(paths, id, |x| {
             if x.phase != "waiting" || crate::daemon::now() >= x.expires_at {
                 return false;
             }
@@ -233,7 +220,7 @@ pub(crate) async fn procedure(
             return Ok(());
         }
     }
-    let r = read(paths, id)?;
+    let r = Record::read(paths, id)?;
     let outcome = apply(paths, &r, pane, home).await;
     let Err((reason, rows)) = outcome else {
         let Ok(done) = outcome else { unreachable!() };
@@ -254,7 +241,7 @@ pub(crate) async fn procedure(
         .as_ref()
         .and_then(Observed::from_hook);
     let layout = rows.map(|rows| term::layout(&rows));
-    let _ = update(paths, id, |x| {
+    let _ = Record::update(paths, id, |x| {
         if layout.is_some() {
             x.refusal_layout = layout;
         }
@@ -268,7 +255,7 @@ pub(crate) async fn procedure(
         "TERMINAL_TYPED_TEXT_MISMATCH" | "session_busy" | "terminal_delivery_active"
     ) && r.attempts < MAX_ATTEMPTS;
     if retry {
-        let _ = update(paths, id, |x| {
+        let _ = Record::update(paths, id, |x| {
             if x.phase != "applying" {
                 return false;
             }
@@ -284,7 +271,7 @@ pub(crate) async fn procedure(
 
 fn refuse(paths: &Paths, id: &str, reason: &str, rows: &[Vec<Cell>]) {
     let layout = term::layout(rows);
-    let _ = update(paths, id, |x| {
+    let _ = Record::update(paths, id, |x| {
         x.refusal_layout = Some(layout);
         true
     });
@@ -397,7 +384,7 @@ pub(crate) async fn apply(
     // 2. Effort, always after the model.
     let target = target_effort(r);
     let Some(effort) = target else {
-        let _ = update(paths, &r.id, |x| {
+        let _ = Record::update(paths, &r.id, |x| {
             x.effort_source = "model_default".into();
             true
         });

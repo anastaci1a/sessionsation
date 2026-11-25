@@ -177,7 +177,7 @@ impl World {
         .unwrap()
     }
     fn record(&self, id: &str) -> Record {
-        read(&self.paths, id).unwrap()
+        Record::read(&self.paths, id).unwrap()
     }
     fn phase(&self, id: &str) -> String {
         self.record(id).phase
@@ -292,7 +292,7 @@ async fn one_pending_compaction_per_session_and_a_repeat_returns_it() {
     )
     .unwrap();
     assert_eq!(other["id"], first["id"]);
-    assert_eq!(list(&w.paths).unwrap().len(), 1);
+    assert_eq!(Record::list(&w.paths).unwrap().len(), 1);
     // The caller's own id is honoured when nothing is pending.
     w.fake.lock().unwrap().compaction_status = Some("completed");
     tick(&w.paths).await;
@@ -431,7 +431,7 @@ async fn an_expired_compaction_never_starts_and_releases_held_input() {
     w.fake.lock().unwrap().busy = true;
     let id = w.compact()["id"].as_str().unwrap().to_owned();
     assert_eq!(w.send(M1).await["reason"], "compaction_hold");
-    update(&w.paths, &id, |r| {
+    Record::update(&w.paths, &id, |r| {
         r.expires_at = crate::daemon::now() - 1;
         true
     })
@@ -526,7 +526,7 @@ async fn a_restarted_session_fails_the_operation_and_releases_input() {
     w.fake.lock().unwrap().busy = true;
     let id = w.compact()["id"].as_str().unwrap().to_owned();
     assert_eq!(w.send(M1).await["reason"], "compaction_hold");
-    update(&w.paths, &id, |r| {
+    Record::update(&w.paths, &id, |r| {
         r.runtime_generation = "0".repeat(64);
         true
     })
@@ -591,7 +591,7 @@ async fn sessions_of_other_providers_are_refused_with_a_clear_code() {
         !text.contains("UNSUPPORTED") && !text.contains("COMPACT_UNSUPPORTED"),
         "{text}"
     );
-    assert!(list(&w.paths).unwrap().is_empty());
+    assert!(Record::list(&w.paths).unwrap().is_empty());
     assert!(!hold_active(&w.paths, &w.conversation));
 }
 
@@ -819,7 +819,7 @@ async fn an_unobserved_start_fails_without_being_issued_again_and_releases_the_h
     // Long past the window, idle, no compaction turn: failed, never started a second time.
     let mut r = w.record(&id);
     r.updated_at = crate::daemon::now() - 3 * OBSERVE_GRACE_SECONDS;
-    save(&w.paths, &r).unwrap();
+    r.write(&w.paths).unwrap();
     tick(&w.paths).await;
     let r = w.record(&id);
     assert_eq!(
@@ -877,7 +877,7 @@ async fn a_waiting_operation_past_its_expiry_no_longer_holds_input() {
     let id = w.compact()["id"].as_str().unwrap().to_owned();
     assert!(hold_active(&w.paths, &w.conversation));
     // The daemon is down: nobody marked it expired.
-    update(&w.paths, &id, |r| {
+    Record::update(&w.paths, &id, |r| {
         r.expires_at = crate::daemon::now() - 1;
         true
     })
@@ -909,7 +909,7 @@ fn backdate(w: &World, id: &str, seconds: i64) {
     let now = crate::daemon::now();
     r.started_at = r.started_at.map(|_| now - seconds);
     r.updated_at = now - seconds;
-    save(&w.paths, &r).unwrap();
+    r.write(&w.paths).unwrap();
 }
 
 /// Regression for operation 55e40f43 (contract 1.47.1): the compaction is a new turn whose summary
@@ -1196,7 +1196,7 @@ fn cached_records_list_like_fresh_reads_and_follow_the_files() {
         .unwrap()
     };
     let fresh = |paths: &Paths| -> Vec<Record> {
-        let mut all: Vec<Record> = fs::read_dir(dir(paths))
+        let mut all: Vec<Record> = fs::read_dir(Record::dir(paths))
             .unwrap()
             .filter_map(|e| serde_json::from_slice(&fs::read(e.unwrap().path()).ok()?).ok())
             .collect();
@@ -1204,33 +1204,35 @@ fn cached_records_list_like_fresh_reads_and_follow_the_files() {
         all
     };
     for (n, phase) in [(1, "complete"), (2, "waiting"), (3, "failed")] {
-        save(&paths, &record(n, phase)).unwrap();
+        record(n, phase).write(&paths).unwrap();
     }
     for _ in 0..2 {
-        assert_eq!(list(&paths).unwrap(), fresh(&paths));
+        assert_eq!(Record::list(&paths).unwrap(), fresh(&paths));
     }
     // Rewritten: the waiting record starts.
-    save(&paths, &record(2, "running_with_a_longer_phase_name")).unwrap();
-    assert_eq!(list(&paths).unwrap(), fresh(&paths));
+    record(2, "running_with_a_longer_phase_name")
+        .write(&paths)
+        .unwrap();
+    assert_eq!(Record::list(&paths).unwrap(), fresh(&paths));
     assert_eq!(
-        read(&paths, &record(2, "x").id).unwrap().phase,
+        Record::read(&paths, &record(2, "x").id).unwrap().phase,
         "running_with_a_longer_phase_name"
     );
     // Removed.
-    fs::remove_file(file(&paths, &record(1, "x").id).unwrap()).unwrap();
-    assert_eq!(list(&paths).unwrap().len(), 2);
+    fs::remove_file(Record::file(&paths, &record(1, "x").id).unwrap()).unwrap();
+    assert_eq!(Record::list(&paths).unwrap().len(), 2);
     assert!(
-        read(&paths, &record(1, "x").id)
+        Record::read(&paths, &record(1, "x").id)
             .unwrap_err()
             .to_string()
             .contains("OPERATION_NOT_FOUND")
     );
     // Corrupted: skipped by the list, named by a direct read.
-    fs::write(file(&paths, &record(3, "x").id).unwrap(), b"{").unwrap();
-    assert_eq!(list(&paths).unwrap(), fresh(&paths));
-    assert_eq!(list(&paths).unwrap().len(), 1);
+    fs::write(Record::file(&paths, &record(3, "x").id).unwrap(), b"{").unwrap();
+    assert_eq!(Record::list(&paths).unwrap(), fresh(&paths));
+    assert_eq!(Record::list(&paths).unwrap().len(), 1);
     assert!(
-        read(&paths, &record(3, "x").id)
+        Record::read(&paths, &record(3, "x").id)
             .unwrap_err()
             .to_string()
             .contains("UNREADABLE_OPERATION_RECORD")
