@@ -287,54 +287,6 @@ async fn activity_and_kind(control: &mut Transport, id: &str) -> Result<(&'stati
     };
     Ok((label, kind))
 }
-#[cfg_attr(not(test), allow(dead_code))]
-fn labels(
-    paths: &Paths,
-    id: &str,
-    home: Option<&std::path::Path>,
-) -> Result<(Option<String>, Option<String>)> {
-    let (name, account) =
-        external::messaging_labels(paths, id, home).map_err(|_| Fault("discovery_unavailable"))?;
-    let name = name.and_then(|s| {
-        let mut bounded = String::new();
-        for c in s.chars().filter(|c| !c.is_control()) {
-            if bounded.len() + c.len_utf8() > 128 {
-                break;
-            }
-            bounded.push(c);
-        }
-        (!bounded.trim().is_empty()).then_some(bounded)
-    });
-    Ok((name, account))
-}
-#[cfg_attr(not(test), allow(dead_code))]
-async fn resolve(paths: &Paths, id: &str) -> Result<Value> {
-    uuid(id)?;
-    let selected = match attachment(paths, id) {
-        Ok(a) => a,
-        Err(Fault("unavailable")) => {
-            let (name, account) = labels(paths, id, None)?;
-            return Ok(
-                json!({"session_id":id,"display_name":name,"account_name":account,"generation":null,"availability":"unavailable"}),
-            );
-        }
-        Err(e) => return Err(e),
-    };
-    let generation = selected.generation();
-    let availability = match mutation_lock(paths, id) {
-        Err(Fault("migrating")) => "migrating",
-        Err(error) => return Err(error),
-        Ok(_guard) => match selected.connect().await {
-            Ok(mut control) => activity(&mut control, id).await.unwrap_or("unavailable"),
-            Err(Fault("unsupported" | "unsupported_native_version")) => "unsupported",
-            Err(_) => "unavailable",
-        },
-    };
-    let (name, account) = labels(paths, id, Some(&selected.home))?;
-    Ok(
-        json!({"session_id":id,"display_name":name,"account_name":account,"generation":generation,"availability":availability}),
-    )
-}
 /// How long a public path waits for the root-wide ledger lease before it reports
 /// `adapter_busy`. Sends may wait longer than reads.
 #[derive(Clone, Copy)]
@@ -550,17 +502,6 @@ async fn submit(
     );
     Ok(())
 }
-#[cfg_attr(not(test), allow(dead_code))]
-async fn deliver(
-    paths: &Paths,
-    ledger: &mut Ledger,
-    receipt: &mut Receipt,
-    input: Option<&Enqueue>,
-) -> Result<()> {
-    deliver_with_policy(paths, ledger, receipt, input, None, false)
-        .await
-        .map(|_| ())
-}
 async fn deliver_with_policy(
     paths: &Paths,
     ledger: &mut Ledger,
@@ -738,21 +679,6 @@ fn changed_during_cancel(receipt: &Receipt) -> Result<()> {
         "unknown" => Err(Fault("unknown")),
         _ => Err(Fault("already_submitted")),
     }
-}
-/// The writer path of the retired `status`/`observe` commands: may expire, re-deliver an
-/// `unknown` receipt and observe it natively (kept for the ledger tests).
-#[cfg_attr(not(test), allow(dead_code))]
-async fn status_write(paths: &Paths, message: &str, budget: std::time::Duration) -> Result<Value> {
-    let mut ledger = ledger::open_write(paths, budget).await?;
-    let mut receipt = ledger.lookup(message)?;
-    if receipt.submit.is_some() {
-        return Err(Fault("mode_receipt_requires_modes_status"));
-    }
-    ledger.expire(&mut receipt, crate::daemon::now())?;
-    if receipt.state == "unknown" {
-        let _ = deliver(paths, &mut ledger, &mut receipt, None).await;
-    }
-    observe::result(paths, &mut ledger, &mut receipt).await
 }
 #[cfg(test)]
 mod tests;

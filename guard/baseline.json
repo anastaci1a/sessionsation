@@ -1,6 +1,6 @@
 {
   "roles_digest": "a1f92d442a9adaa9b5219be0240237eb215c62dc35ddd1c733c751b2f7700ce0",
-  "counters_digest": "a415b458ba983a295e37fb66b9096146bb7f44d5c3de6c522a4490fba499d726",
+  "counters_digest": "910c867c1b63c9ba1994c226342fa2ec4a608411fbba18701aee756147f23fdd",
   "counters": {
     "alive_fns": { "value": 0 },
     "apply_session_input_fns": { "value": 1 },
@@ -34,7 +34,7 @@
     "herdr_cli_callers": { "value": 41 },
     "identity_allow_markers": { "value": 0 },
     "inline_test_lines": { "value": 0 },
-    "json_parse_sites": { "value": 112 },
+    "json_parse_sites": { "value": 110 },
     "ledger_allow_markers": { "value": 0 },
     "ledger_opens": { "value": 0 },
     "locks_allow_markers": { "value": 0 },
@@ -57,11 +57,11 @@
     "module_lines:src/main": { "value": 1565 },
     "module_lines:src/messaging/codex_input": { "value": 0 },
     "module_lines:src/messaging/compaction": { "value": 1565 },
-    "module_lines:src/messaging/ledger": { "value": 816 },
+    "module_lines:src/messaging/ledger": { "value": 744 },
     "module_lines:src/messaging/model_change": { "value": 1882 },
     "module_lines:src/messaging/peer": { "value": 0 },
     "module_lines:src/messaging/send": { "value": 0 },
-    "module_lines:src/messaging/transport": { "value": 572 },
+    "module_lines:src/messaging/transport": { "value": 537 },
     "module_lines:src/messaging/typing": { "value": 0 },
     "module_lines:src/pane_reuse": { "value": 307 },
     "module_lines:src/paths": { "value": 374 },
@@ -99,14 +99,14 @@
     "save_fns": { "value": 24 },
     "settings_allow_markers": { "value": 0 },
     "settings_json_claude": { "value": 6 },
-    "sha256_digests": { "value": 20 },
+    "sha256_digests": { "value": 17 },
     "since_contract_literals": { "value": 43 },
     "since_revision_literals": { "value": 23 },
     "spawn_allow_markers": { "value": 0 },
     "spawn_sites": { "value": 54 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 4 },
-    "src_lines": { "value": 69551 },
+    "src_lines": { "value": 68714 },
     "stale_target_literals": { "value": 58 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -132,7 +132,7 @@
     "doc_bytes_total": { "value": 313300 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "inline_test_lines": { "value": 0 },
-    "src_lines": { "value": 69551 }
+    "src_lines": { "value": 68714 }
   },
   "ledger": [
     {
@@ -1955,7 +1955,7 @@
     },
     {
       "counter": "src_lines",
-      "by": -17507,
+      "by": -18344,
       "reason": "shrink-S1c: inline test modules moved to sibling test files (SHRINK 5.3 path rule); test-only seams moved into the tests modules",
       "considered": "n/a",
       "step": "shrink-S1c",
@@ -1963,7 +1963,7 @@
     },
     {
       "counter": "cap:src_lines",
-      "by": -17507,
+      "by": -18344,
       "reason": "shrink-S1c: the cap follows the counter down",
       "considered": "n/a",
       "step": "shrink-S1c",
@@ -1998,6 +1998,38 @@
       "by": 1,
       "reason": "review fixes: providers[gemini].auth_command restored as static data (SHRINK 3.5 rule 6)",
       "considered": "the key is Agent-DM-visible data kept until S8; there is no constant to derive it from before contract::FEATURES",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "json_parse_sites",
+      "by": -2,
+      "reason": "review fixes: production-dead messaging code removed",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/messaging/ledger",
+      "by": -72,
+      "reason": "review fixes: Reads::events, mode_record, lookup and open_read_blocking moved to test support",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "module_lines:src/messaging/transport",
+      "by": -35,
+      "reason": "review fixes: start_or_steer removed",
+      "considered": "n/a",
+      "step": "shrink-S1c",
+      "program": "shrink"
+    },
+    {
+      "counter": "sha256_digests",
+      "by": -3,
+      "reason": "review fixes: modes capability_id removed",
+      "considered": "n/a",
       "step": "shrink-S1c",
       "program": "shrink"
     }

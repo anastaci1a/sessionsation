@@ -1,5 +1,6 @@
 use super::*;
 use crate::messaging::tests::fixture;
+use serde_json::Value;
 use std::process::Command;
 
 fn user_version(paths: &Paths) -> i64 {
@@ -132,7 +133,6 @@ fn reader_connection_is_query_only() {
     assert!(reader.get(&input.message_id).unwrap().is_some());
     assert!(reader.retired(&input.message_id).unwrap().is_none());
     assert!(reader.binding(&input.message_id).unwrap().is_none());
-    assert!(!reader.mode_record(&input.message_id).unwrap());
     assert_eq!(reader.expiry(&input.message_id).unwrap(), input.expires_at);
     assert_eq!(
         reader.events(None).unwrap()["events"]
@@ -629,5 +629,73 @@ impl Ledger {
     #[track_caller]
     pub(in crate::messaging) fn open(paths: &Paths) -> Result<Self> {
         open_write_blocking(paths, Duration::ZERO)
+    }
+}
+
+/// A receipt by id; a retired id is `receipt_retired`, never `not_found` (the public readers
+/// build their own answers; this is the plain lookup the tests compare against).
+pub(in crate::messaging) trait Lookup: Reads {
+    fn lookup(&self, id: &str) -> Result<Receipt> {
+        match self.get(id)? {
+            Some(r) => Ok(r),
+            None if self.retired(id)?.is_some() => Err(Fault("receipt_retired")),
+            None => Err(Fault("receipt_not_found")),
+        }
+    }
+}
+impl<T: Reads> Lookup for T {}
+
+/// Blocking [`open_read`] for the synchronous tests.
+#[track_caller]
+pub(in crate::messaging) fn open_read_blocking(
+    paths: &Paths,
+    budget: Duration,
+) -> Result<LedgerRead> {
+    let (db, lease) = acquire_blocking(paths, Access::Read, budget, Location::caller())?;
+    Ok(LedgerRead { db, _lease: lease })
+}
+fn events_of(db: &Connection, cursor: Option<&str>) -> Result<Value> {
+    let epoch: String = db.query_row("SELECT epoch FROM metadata", [], |r| r.get(0))?;
+    let (min, max): (i64, i64) = db.query_row(
+        "SELECT coalesce(min(seq),1),coalesce(max(seq),0) FROM events",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let after = if let Some(cursor) = cursor {
+        let (given, seq) = cursor.split_once(':').ok_or(Fault("invalid_cursor"))?;
+        let seq: i64 = seq.parse().map_err(|_| Fault("invalid_cursor"))?;
+        if given != epoch || seq < min - 1 || seq > max {
+            return Err(Fault("cursor_gap"));
+        }
+        seq
+    } else {
+        min - 1
+    };
+    let mut statement =
+        db.prepare("SELECT seq,receipt FROM events WHERE seq>? ORDER BY seq LIMIT 100")?;
+    let rows = statement.query_map([after], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut events = Vec::new();
+    let mut last = after;
+    for row in rows {
+        let (seq, text) = row?;
+        last = seq;
+        let receipt: Receipt = serde_json::from_str(&text).map_err(|_| Fault("storage_error"))?;
+        events.push(json!({"cursor":format!("{epoch}:{seq}"),"receipt":receipt}));
+    }
+    Ok(
+        json!({"events":events,"cursor":format!("{epoch}:{last}"),"has_more":last<max,"public_replies":"correlated_terminal_summary"}),
+    )
+}
+
+impl Ledger {
+    pub(in crate::messaging) fn events(&self, cursor: Option<&str>) -> Result<Value> {
+        events_of(&self.db, cursor)
+    }
+}
+impl LedgerRead {
+    pub(in crate::messaging) fn events(&self, cursor: Option<&str>) -> Result<Value> {
+        events_of(&self.db, cursor)
     }
 }

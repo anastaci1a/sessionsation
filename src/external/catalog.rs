@@ -269,35 +269,6 @@ pub(super) fn messaging_owner(paths: &Paths, id: &str, home: &Path) -> Result<bo
             .is_none_or(|owner| crate::layout::same_home(&owner, home)))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-/// Inventory only switcher's own naming/ownership metadata; no history scan.
-pub(super) fn messaging_inventory(paths: &Paths) -> Result<Vec<String>> {
-    let dir = paths.root.join(crate::layout::CONVERSATIONS);
-    let mut ids = Vec::new();
-    if !dir.exists() {
-        return Ok(ids);
-    }
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|e| e != "json") {
-            continue;
-        }
-        let path = entry.path();
-        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if uuid::Uuid::parse_str(id).is_err() {
-            continue;
-        }
-        let r = read(paths, id)?;
-        if !r.deleted && !r.deleting && r.owner.is_some() {
-            ids.push(id.into());
-        }
-        ensure!(ids.len() <= 256, "discovery limit");
-    }
-    Ok(ids)
-}
-
 pub(super) fn stop_intent(paths: &Paths, id: &str) -> Result<Option<String>> {
     Ok(read(paths, id)?.stop_intent)
 }

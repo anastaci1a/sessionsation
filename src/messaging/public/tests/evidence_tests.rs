@@ -466,7 +466,7 @@ async fn receipt_shortcut_matches_the_writer_path_or_declines() {
         "expired",
     ];
     let short = |paths: &Paths, id: &str, cancelling: bool| {
-        let reader = ledger::open_read_blocking(paths, std::time::Duration::ZERO).unwrap();
+        let reader = ledger::tests::open_read_blocking(paths, std::time::Duration::ZERO).unwrap();
         settled_receipt(paths, &reader, id, cancelling)
     };
     let mut answered = 0;

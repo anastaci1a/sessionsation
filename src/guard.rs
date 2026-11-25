@@ -3030,6 +3030,22 @@ fn ratchet_tables_are_pinned() {
 }
 
 #[test]
+fn every_unlisted_ok_path_exists() {
+    let root = manifest_root();
+    for stem in UNLISTED_OK.iter().chain(
+        MODULES
+            .iter()
+            .map(|(p, _)| p)
+            .filter(|p| initial_of(&format!("{MODULE_LINES}{p}")).unwrap() > 0),
+    ) {
+        assert!(
+            root.join(format!("{stem}.rs")).is_file() || root.join(stem).is_dir(),
+            "{stem} is allowlisted or budgeted as existing but is gone"
+        );
+    }
+}
+
+#[test]
 fn every_production_file_is_listed() {
     fail_on(unlisted_problems(sources()));
 }

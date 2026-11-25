@@ -198,3 +198,153 @@ fn locked_account_reports_paused_monitoring_without_claiming_fresh_usage() {
     assert_eq!(report["accounts"][0]["usage_fresh"], false);
     FileExt::unlock(&lease).unwrap();
 }
+
+// ---- usage meters feeding eligibility (ported from the retired scheduling suite)
+
+fn meter_usage(short: f64, weekly: f64, at: i64) -> crate::model::Usage {
+    use crate::model::{Usage, Window};
+    Usage {
+        short: Some(Window {
+            used_percent: short,
+            duration_minutes: 300,
+            resets_at: 20000,
+        }),
+        weekly: Some(Window {
+            used_percent: weekly,
+            duration_minutes: 10080,
+            resets_at: 1_000_000,
+        }),
+        observed_at: at,
+        exhausted: false,
+        ..Default::default()
+    }
+}
+fn meter_account(short: f64, weekly: f64) -> Account {
+    let mut a = Account::new("a".into(), "a".into());
+    a.observe(meter_usage(short, weekly, 1000));
+    a
+}
+
+#[test]
+fn native_single_window_plans_follow_reported_limits() {
+    for (plan, duration) in [("pro", 300), ("prolite", 10080)] {
+        let response = json!({"rateLimits":{"planType":plan,"primary":{
+            "usedPercent":41,"windowDurationMins":duration,"resetsAt":20000
+        },"secondary":null}});
+        let mut a = Account::new("test".into(), "fixture".into());
+        a.observe(parse_usage(&response, 1000).unwrap());
+        let config = Config::default();
+        assert_eq!(a.usage.plan_type.as_deref(), Some(plan));
+        assert!(a.usage.fresh(1001, config.stale_seconds));
+        assert!(eligible(&a, &config, 1001));
+        assert!(pressure(&a, &config).is_finite());
+        let absent = if duration == 300 { 10080 } else { 300 };
+        assert!(a.usage.window_absent(absent));
+        assert!(!a.usage.window_absent(duration));
+        assert!(!eligible(&a, &config, 20001));
+        if let Some(w) = a.usage.short.as_mut().or(a.usage.weekly.as_mut()) {
+            w.used_percent = 100.;
+        }
+        assert!(!eligible(&a, &config, 1001));
+    }
+}
+
+#[test]
+fn missing_or_unrecognized_windows_do_not_imply_unlimited_capacity() {
+    for limits in [
+        json!({"planType":"pro","primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":20000}}),
+        json!({"planType":"pro","primary":null,"secondary":null}),
+        json!({"primary":{"usedPercent":10,"windowDurationMins":60,"resetsAt":20000},"secondary":null}),
+    ] {
+        let usage = parse_usage(&json!({"rateLimits":limits}), 1000).unwrap();
+        assert!(!usage.fresh(1001, 300));
+        assert!(!usage.window_absent(10080));
+    }
+    let mut a = meter_account(20., 100.);
+    a.usage.plan_type = Some("pro".into());
+    assert!(!eligible(&a, &Config::default(), 1001));
+    assert!(!a.usage.window_absent(10080));
+}
+
+#[test]
+fn window_order_is_not_assumed() {
+    let u = parse_usage(
+        &json!({"rateLimits":{"limitId":"codex","primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":100000},"secondary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":20000}}}),
+        1000,
+    )
+    .unwrap();
+    assert_eq!(u.short.unwrap().used_percent, 20.);
+    assert_eq!(u.weekly.unwrap().used_percent, 10.);
+}
+
+#[test]
+fn malformed_usage_is_not_zero_usage() {
+    assert!(parse_usage(&json!({}), 1000).is_err());
+    assert!(
+        parse_usage(
+            &json!({"rateLimits":{"primary":{"usedPercent":101,"windowDurationMins":300,"resetsAt":20000}}}),
+            1000
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn a_reset_timestamp_or_an_unknown_window_is_not_capacity() {
+    let mut a = meter_account(1., 1.);
+    a.usage.short.as_mut().unwrap().resets_at = 1000;
+    assert!(!eligible(&a, &Config::default(), 1000));
+    let mut a = meter_account(1., 1.);
+    a.usage.weekly = None;
+    assert!(!eligible(&a, &Config::default(), 1000));
+    let mut a = meter_account(1., 1.);
+    a.auth_required = true;
+    assert!(!eligible(&a, &Config::default(), 1000));
+    a.auth_required = false;
+    a.usage.exhausted = true;
+    assert!(!eligible(&a, &Config::default(), 1000));
+}
+
+#[test]
+fn purchased_credits_keep_plan_exhausted_account_eligible() {
+    let response = json!({"ordinaryUsageAllowed":false,"rateLimitsByLimitId":{"codex":{
+        "limitId":"codex","rateLimitReachedType":"rate_limit_reached",
+        "credits":{"hasCredits":true,"unlimited":false,"balance":"584.6591530000"},
+        "spendControlReached":false,
+        "primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":20000},
+        "secondary":{"usedPercent":16,"windowDurationMins":10080,"resetsAt":1000000}
+    }}});
+    let mut a = meter_account(20., 16.);
+    a.observe(parse_usage(&response, 1001).unwrap());
+    assert!(eligible(&a, &Config::default(), 1001));
+    assert_eq!(
+        a.usage.credits.as_ref().unwrap().balance.as_deref(),
+        Some("584.6591530000")
+    );
+    a.usage.spend_control_reached = Some(true);
+    assert!(!eligible(&a, &Config::default(), 1001));
+    a.usage.spend_control_reached = Some(false);
+    a.usage.reached_type = Some("workspace_member_credits_depleted".into());
+    assert!(!eligible(&a, &Config::default(), 1001));
+    a.usage.reached_type = Some("rate_limit_reached".into());
+    a.usage.credits.as_mut().unwrap().has_credits = false;
+    assert!(!eligible(&a, &Config::default(), 1001));
+}
+
+#[test]
+fn resets_do_not_count_as_consumption() {
+    let mut a = meter_account(80., 60.);
+    let mut next = meter_usage(0., 0., 1001);
+    next.short.as_mut().unwrap().resets_at += 18000;
+    next.weekly.as_mut().unwrap().resets_at += 604800;
+    a.observe(next);
+    assert_eq!(a.consumed_short, 0.);
+    assert_eq!(a.consumed_weekly, 0.);
+}
+
+#[test]
+fn out_of_order_observation_does_not_regress_usage() {
+    let mut a = meter_account(20., 20.);
+    a.observe(meter_usage(80., 80., 999));
+    assert_eq!(a.usage.short.unwrap().used_percent, 20.);
+}

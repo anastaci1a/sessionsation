@@ -41,7 +41,6 @@ pub(in crate::messaging) struct Observation {
     pub state: String,
     pub reason: Option<&'static str>,
     pub previous: Option<String>,
-    pub submit_supported: bool,
     pub summary_evidence: Option<Value>,
     /// Status of the latest finished turn (`completed`, `failed`, `interrupted`).
     pub last_turn_status: Option<String>,
@@ -65,12 +64,6 @@ async fn read(control: &mut Transport, id: &str) -> Result<Status> {
     let mut status = read.thread.status;
     status.history = read.thread.path;
     Ok(status)
-}
-pub(in crate::messaging) async fn observe(
-    control: &mut Transport,
-    id: &str,
-) -> Result<Observation> {
-    observe_inner(control, id, None, false).await
 }
 pub(in crate::messaging) async fn observe_cached(
     control: &mut Transport,
@@ -102,7 +95,6 @@ async fn observe_inner(
             state: "working".into(),
             reason: Some("approval_or_user_input_required"),
             previous: None,
-            submit_supported: false,
             summary_evidence: None,
             last_turn_status: None,
             last_turn_error: None,
@@ -190,7 +182,6 @@ async fn observe_inner(
         state: state.into(),
         reason: None,
         previous,
-        submit_supported: true,
         summary_evidence,
         last_turn_status,
         last_turn_error,
