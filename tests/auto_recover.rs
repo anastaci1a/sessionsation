@@ -387,7 +387,7 @@ fn cleanup(t: &Setup, id: &str) {
 async fn enabling_works_on_a_stopped_session_and_disable_is_always_allowed() {
     let t = Setup::new().await;
     let caps = t.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.67.0");
+    assert_eq!(caps["contract_version"], "1.67.1");
     for p in caps["providers"].as_array().unwrap() {
         assert_eq!(p["new_account_name_max"], 30);
         assert_eq!(p["account_display_name_max"], 64);
@@ -1323,4 +1323,81 @@ async fn claude_stop_with_disable_auto_start_disables_it_and_without_the_flag_ke
     assert_eq!(again["auto_start"]["mode"], "disabled");
     assert_eq!(t.session(&id)["auto_start"]["mode"], "disabled");
     cleanup(&t, &id);
+}
+
+/// Contract 1.67.1: a session-launch record admitted by a launcher that died before the launch
+/// receipt was written is admitted again by the repeated request, not failed "never admitted".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repeated_session_launch_readmits_an_admitted_record_without_a_receipt() {
+    let t = Setup::new().await;
+    let socket_dir = t.paths.root.parent().unwrap().join("host");
+    std::fs::create_dir_all(&socket_dir).unwrap();
+    let socket = socket_dir.join("host.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    t.list_tabs();
+    let brief = t.project.join("brief");
+    std::fs::write(&brief, "do the thing").unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let launch = || {
+        let out = t
+            .command(&[
+                "api",
+                "session",
+                "launch",
+                "--space",
+                "w1",
+                "--name",
+                "Retry",
+                "--account",
+                "claude:a",
+                "--model",
+                "claude-fable-5-2",
+                "--brief-file",
+                brief.to_str().unwrap(),
+                "--directory",
+                t.project.to_str().unwrap(),
+                "--herdr-session",
+                "fixture",
+                "--herdr-socket",
+                socket.to_str().unwrap(),
+                "--request-id",
+                &id,
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    launch();
+    let receipt = t
+        .paths
+        .root
+        .join(sessionsation::layout::LAUNCHES)
+        .join(format!("{id}.json"));
+    wait_for("first launch receipt", || receipt.is_file());
+    // The launcher died after saving the record, before the receipt: nothing else exists.
+    let record = t
+        .paths
+        .root
+        .join(sessionsation::layout::SESSION_LAUNCHES)
+        .join(format!("{id}.json"));
+    let mut r: Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    r["phase"] = json!("admitted");
+    r["reason"] = Value::Null;
+    r["detail"] = Value::Null;
+    std::fs::write(&record, serde_json::to_vec(&r).unwrap()).unwrap();
+    std::fs::remove_file(&receipt).unwrap();
+    let again = launch();
+    assert_eq!(again["result"]["existing"], true, "{again}");
+    assert!(receipt.is_file(), "the repeated request admitted again");
+    let phase = t.api(&["launch", "status", "--request-id", &id])["phase"].clone();
+    assert!(phase.is_string(), "{phase}");
+    let rec: Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    assert_ne!(rec["phase"], "failed", "{rec}");
+    assert_ne!(rec["reason"], "launch_failed", "{rec}");
 }

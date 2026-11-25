@@ -1263,7 +1263,10 @@ pub async fn ensure_started(paths: &Paths) -> Result<()> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(log_path)?;
-    let mut child = tokio::process::Command::new(executable)
+    let mut child = tokio::process::Command::new(executable);
+    // SAFETY: close_inherited_fds only makes raw async-signal-safe syscalls.
+    unsafe { child.pre_exec(crate::background::close_inherited_fds) };
+    child
         .arg("--data-dir")
         .arg(&paths.root)
         .args(["daemon", "serve"])
@@ -1274,8 +1277,8 @@ pub async fn ensure_started(paths: &Paths) -> Result<()> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log)
-        .process_group(0)
-        .spawn()?;
+        .process_group(0);
+    let mut child = child.spawn()?;
     for _ in 0..100 {
         if call(paths, "status", json!({})).await.is_ok() {
             tokio::spawn(async move {

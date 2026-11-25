@@ -732,12 +732,13 @@ impl Ledger {
         if input.expires_at <= now || input.expires_at > now + 86400 {
             return Err(Fault("invalid_expiry"));
         }
-        retention::maybe_run(self, now);
-        if self
-            .db
-            .query_row("SELECT count(*) FROM receipts", [], |r| r.get::<_, i64>(0))?
-            >= 10000
-        {
+        let count = |l: &Self| {
+            l.db.query_row("SELECT count(*) FROM receipts", [], |r| r.get::<_, i64>(0))
+        };
+        if count(self)? >= retention::NEAR_CAPACITY {
+            retention::maybe_run(self, now);
+        }
+        if count(self)? >= 10000 {
             return Err(Fault("receipt_capacity"));
         }
         let receipt = Receipt {

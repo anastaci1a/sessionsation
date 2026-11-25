@@ -337,10 +337,9 @@ pub(crate) fn ensure_unused_elsewhere(paths: &Paths, id: &str) -> Result<()> {
     );
     // Only an id check: wait briefly for a Codex observer instead of failing
     // a Claude/Gemini send with ADAPTER_BUSY.
-    let mut ledger = super::ledger::open_write_blocking(paths, std::time::Duration::from_secs(3))
+    let ledger = super::ledger::open_write_blocking(paths, std::time::Duration::from_secs(3))
         .map_err(anyhow::Error::from)?;
     super::retention::ensure_not_retired(&ledger, id)?;
-    super::retention::maybe_run(&mut ledger, crate::daemon::now());
     ensure!(
         super::public::get(&ledger, id)
             .map_err(anyhow::Error::from)?

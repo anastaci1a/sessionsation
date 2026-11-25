@@ -113,6 +113,8 @@ impl Rpc {
         .stderr(Stdio::null());
         // Owned workers have a separate process group; no interaction with the invoking agent.
         cmd.process_group(0);
+        // SAFETY: close_inherited_fds only makes raw async-signal-safe syscalls.
+        unsafe { cmd.pre_exec(crate::background::close_inherited_fds) };
         let mut child = cmd
             .spawn()
             .context("could not start isolated Codex app-server")?;

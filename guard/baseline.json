@@ -17,11 +17,11 @@
     "doc_bytes:agents/README.md": { "value": 9872 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 14000 },
+    "doc_bytes:docs/changelog.md": { "value": 13974 },
     "doc_bytes:docs/cli.md": { "value": 19046 },
-    "doc_bytes:docs/contract.md": { "value": 231484 },
+    "doc_bytes:docs/contract.md": { "value": 231501 },
     "doc_bytes:docs/operations.md": { "value": 23430 },
-    "doc_bytes_total": { "value": 308820 },
+    "doc_bytes_total": { "value": 308811 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 188 },
     "env_scrub_sites": { "value": 51 },
@@ -62,7 +62,7 @@
     "spawn_sites": { "value": 62 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 10 },
-    "src_lines": { "value": 103063 },
+    "src_lines": { "value": 103236 },
     "stale_target_literals": { "value": 62 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -1229,6 +1229,34 @@
       "reason": "1.67.0 fixes: stable current/ path helper, PATH normalization, Codex errored-thread compaction, SM10 window freshness",
       "considered": "n/a",
       "step": "1.67.0"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": -26,
+      "reason": "1.67.1 line, offset by tightening older entries to stay within the cap",
+      "considered": "n/a",
+      "step": "hotfix:1.67.1"
+    },
+    {
+      "counter": "doc_bytes:docs/contract.md",
+      "by": 17,
+      "reason": "1.67.1: receipt retention runs in a send only from 9,000 receipts",
+      "considered": "n/a",
+      "step": "hotfix:1.67.1"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": -9,
+      "reason": "1.67.1 changelog and contract text",
+      "considered": "n/a",
+      "step": "hotfix:1.67.1"
+    },
+    {
+      "counter": "src_lines",
+      "by": 173,
+      "reason": "1.67.1 hotfix: fd-inheritance close helper and tests, launch re-admission, send-path retention gating, regression tests",
+      "considered": "n/a",
+      "step": "hotfix:1.67.1"
     }
   ],
   "enforced"

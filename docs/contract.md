@@ -1800,9 +1800,9 @@ last_attempt_at, last_success_at, consecutive_failures, last_native_error}` from
 
 `api capabilities.receipt_retention` describes it. Each receipt store (Codex
 messaging ledger, native input journal, headless deliveries) holds at most 10,000
-receipts; a retention pass runs at most once per hour during send admission under
-the exclusive messaging lock (and in the supervisor's hourly
-[retention](operations.md#retention) pass), so sends never hit
+receipts; the supervisor's hourly [retention](operations.md#retention) pass keeps them
+far below it (since 1.67.1 a send runs a pass itself, under the exclusive messaging
+lock, only from 9,000 receipts), so sends never hit
 `RECEIPT_CAPACITY_REACHED` in normal use:
 
 - A certainly terminal receipt (`completed_with_reply`, `completed_without_reply`,

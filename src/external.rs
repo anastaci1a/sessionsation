@@ -2175,16 +2175,17 @@ fn enqueue_with_id(
             private_dir(&paths.root.join(crate::layout::LOGS))?;
             paths.root.join(crate::layout::HANDOFF_LOG)
         })?;
-    let child = Command::new(crate::self_executable::path()?)
-        .arg("--data-dir")
-        .arg(&paths.root)
-        .args(["handoff-worker", "--job", &job.id])
-        .current_dir(&paths.root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(log)
-        .process_group(0)
-        .spawn_reaped();
+    let child =
+        crate::background::no_inherited_fds(&mut Command::new(crate::self_executable::path()?))
+            .arg("--data-dir")
+            .arg(&paths.root)
+            .args(["handoff-worker", "--job", &job.id])
+            .current_dir(&paths.root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(log)
+            .process_group(0)
+            .spawn_reaped();
     if let Err(error) = child {
         let mut failed = job.clone();
         failed.phase = "failed".into();

@@ -317,11 +317,15 @@ pub(super) async fn send_planned(
             };
             // Bind the logical request before any native mutation. A crash here is
             // provably unsent; later retries retain the exact original native target.
-            super::retention::maybe_run(&mut ledger, now);
-            let count: i64 =
-                ledger
-                    .db
-                    .query_row("SELECT count(*) FROM public_messages", [], |r| r.get(0))?;
+            let count = |l: &Ledger| -> rusqlite::Result<i64> {
+                l.db.query_row("SELECT count(*) FROM public_messages", [], |r| r.get(0))
+            };
+            let mut count_now = count(&ledger)?;
+            if count_now >= super::retention::NEAR_CAPACITY {
+                super::retention::maybe_run(&mut ledger, now);
+                count_now = count(&ledger)?;
+            }
+            let count = count_now;
             anyhow::ensure!(count < 10000, "RECEIPT_CAPACITY_REACHED");
             ledger.db.execute(
                 "INSERT INTO public_messages VALUES(?,?)",

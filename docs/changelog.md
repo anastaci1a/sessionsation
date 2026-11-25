@@ -20,6 +20,8 @@ and package history are in Git.
 
 ## Versions
 
+- **1.67.1** Workers inherit no client lock fds; a repeated `session launch` re-admits;
+  sends skip hourly retention.
 - **1.67.0** A refused check before Enter withdraws the typed text. Launches use the
   stable `current/` executable; `/mnt/user` `PATH` entries map to `/mnt/disk1`; an
   errored Codex thread fails compaction after 30 s, not 180 s. Meter windows gain
@@ -36,8 +38,7 @@ and package history are in Git.
   [Contention](contract.md#admission-and-contention).
 - **1.66.0** Admitted launches stay listed (`availability:"launching"`) and rows carry
   `availability_reason`; stop and archive of an unknown session complete with
-  `not_found:true`; `resume-launch` for
-  Claude and Antigravity.
+  `not_found:true`; `resume-launch` for Claude and Antigravity.
   [State](contract.md#identity-and-snapshots), [stop](contract.md#stop-and-restart),
   [resume](contract.md#saved-session-popup-resume).
 - **1.65.0** (meter cycles) Usage windows gain `cycle`, `cycle_started_at`,
@@ -60,7 +61,7 @@ and package history are in Git.
   [stop](contract.md#stop-and-restart), [early exit](contract.md#early-provider-exit).
 - **1.62.1** Codex meters say why they are stale and read on demand; the supervisor
   rebuilds the active snapshot every 20 s (`snapshot.fresh` up to 30 s, was 15).
-  [Usage](contract.md#limits-plan-and-usage), [cached state](contract.md#cached-state).
+  [Usage](contract.md#limits-plan-and-usage).
 - **1.62.0** `usage.meter` for every account (Claude OAuth read without a session),
   `api usage` for every provider; session meters `context_pct`, `subagents_running`,
   `background_tasks`; `SESSIONSATION_SESSION_ID` in every provider child.
@@ -75,9 +76,9 @@ and package history are in Git.
 - **1.58.0** Claude `set-model` admission waits for the first hook record
   (`hook_not_recorded`); Codex `facts.native_error` and `input_delivery.health`.
   [Model](contract.md#session-model-and-one-pass-launch), [receipts](contract.md#receipt-evidence).
-- **1.57.0**, **1.57.1** Performance only.
+- **1.57.x** Performance only.
 - **1.56.0** `session resolve` fills cached facts; statusline replays never lower
-  usage; detached workers are reaped. [Observe](contract.md#observe-for-every-provider),
+  usage; detached workers are reaped.
   [Claude usage](contract.md#claude-usage-and-statusline).
 - **1.55.0** Archive workers wait for the account lock; `--wait` on archive, restore,
   delete; idempotent `api stop` (`already_stopped`).
@@ -111,8 +112,7 @@ and package history are in Git.
 - **1.46.7** `accounts[].plan`. [Plan](contract.md#limits-plan-and-usage).
 - **1.46.5** Codex steer and cancel wait for the ledger; `if_busy:"queue"` on submit.
   **1.46.4** Codex messaging waits for the ledger lease and releases it during
-  app-server I/O. [Contention](contract.md#admission-and-contention),
-  [messaging](contract.md#messaging).
+  app-server I/O. [Contention](contract.md#admission-and-contention).
 - **1.46.3** Codex callers detected by `CODEX_THREAD_ID`; every native frame carries the
   `cross-session-message` envelope; `native_sender_registration` is a no-op.
   [Peer messages](contract.md#native-peer-messages).

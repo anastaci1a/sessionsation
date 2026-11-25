@@ -915,3 +915,60 @@ fn mutating_operations_refuse_up_front_without_enough_free_disk() {
         String::from_utf8_lossy(&ok.stderr)
     );
 }
+
+/// Contract 1.67.1: a supervisor autostarted by a client running under `flock` does not keep
+/// that client's lock for its own lifetime.
+#[test]
+fn an_autostarted_supervisor_does_not_hold_the_clients_flock() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("state");
+    let paths = sessionsation::paths::Paths::new(Some(root.clone())).unwrap();
+    let c = sessionsation::config::Config {
+        codex_binary: "/bin/false".into(),
+        ..Default::default()
+    };
+    sessionsation::store::save_config(&paths, &c).unwrap();
+    let lock = tmp.path().join("lock");
+    let run = |args: &[&str]| {
+        Command::new("flock")
+            .arg(&lock)
+            .arg(binary())
+            .arg("--data-dir")
+            .arg(&root)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let started = run(&["daemon", "start"]);
+    let running = || {
+        let out = Command::new(binary())
+            .arg("--data-dir")
+            .arg(&root)
+            .args(["status", "--json"])
+            .output()
+            .unwrap();
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["daemon"]["running"] == true
+    };
+    let (running_after, free) = (
+        running(),
+        Command::new("flock")
+            .args(["-n"])
+            .arg(&lock)
+            .arg("true")
+            .status()
+            .unwrap()
+            .success(),
+    );
+    let _ = Command::new(binary())
+        .arg("--data-dir")
+        .arg(&root)
+        .args(["daemon", "stop"])
+        .output();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    assert!(running_after, "the client did not autostart the supervisor");
+    assert!(free, "the supervisor still holds the client's flock");
+}

@@ -411,6 +411,21 @@ pub async fn launch(paths: &Paths, args: Args) -> Result<Value> {
                 r.request == request && r.brief.sha256 == digest,
                 "REQUEST_ID_CONFLICT"
             );
+            // A record admitted by a launcher that died before `launch::admit` wrote its receipt
+            // is retried here; `admit` is idempotent under its lock and location check.
+            let r = if r.phase == "admitted" && launch::status(paths, &id).is_err() {
+                launch::admit(paths, request, false).await?;
+                let _ = update(paths, &id, |r| {
+                    if r.phase != "admitted" {
+                        return false;
+                    }
+                    r.phase = "launching".into();
+                    true
+                });
+                read(paths, &id)?
+            } else {
+                r
+            };
             let mut v = public(paths, &r);
             v["existing"] = json!(true);
             return finish_wait(paths, &id, v, wait).await;

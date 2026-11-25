@@ -83,6 +83,10 @@ pub(super) fn ensure_not_retired(ledger: &impl Reads, id: &str) -> anyhow::Resul
     Ok(())
 }
 
+/// Entries from which a send runs the pass itself: the supervisor's hourly sweep normally
+/// keeps the stores far below it, and a pass scans cold files under the admission lock.
+pub(super) const NEAR_CAPACITY: i64 = 9000;
+
 /// Throttled retention pass over every receipt store. Failures never block a
 /// send: retention is housekeeping and is retried on a later pass.
 pub(super) fn maybe_run(ledger: &mut Ledger, now: i64) {
@@ -179,14 +183,18 @@ fn codex(ledger: &mut Ledger, now: i64, policy: Policy) -> Result<usize> {
     tx.commit()?;
     let mut retired = retire.len();
     // Public bindings that never produced a receipt: provably undispatched.
-    let orphans: Vec<(String, String)> = {
+    // Ids first (a covering index scan); a binding is read by key only for an orphan.
+    let orphans: Vec<String> = {
         let mut s = ledger.db.prepare(
-            "SELECT id,binding FROM public_messages WHERE id NOT IN (SELECT id FROM receipts)",
+            "SELECT p.id FROM public_messages p WHERE NOT EXISTS (SELECT 1 FROM receipts r WHERE r.id=p.id)",
         )?;
-        s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        s.query_map([], |r| r.get(0))?
             .collect::<std::result::Result<_, _>>()?
     };
-    for (id, text) in orphans {
+    for id in orphans {
+        let Some(text) = ledger.binding(&id)? else {
+            continue;
+        };
         #[derive(Deserialize)]
         struct Orphan {
             cancelled: bool,
@@ -331,6 +339,48 @@ mod tests {
         terminal_seconds: 14 * DAY,
         horizon_seconds: 90 * DAY,
     };
+    fn plan(db: &Ledger, sql: &str) -> String {
+        let mut s = db.db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        s.query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+    /// Contract 1.67.1: a send never scans the large `public_messages` bindings, and runs no
+    /// retention pass while far from capacity.
+    #[test]
+    fn send_admission_reads_public_messages_by_key_and_runs_no_pass() {
+        let (_dir, paths, input, now) = fixture();
+        let mut db = Ledger::open(&paths).unwrap();
+        let big = format!("{{\"cancelled\":false,\"pad\":\"{}\"}}", "x".repeat(5600));
+        db.db
+            .execute(
+                "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<5000) INSERT INTO public_messages SELECT 'id'||x, ? FROM n",
+                [&big],
+            )
+            .unwrap();
+        for sql in [
+            "SELECT binding FROM public_messages WHERE id='id7'",
+            "SELECT count(*) FROM public_messages",
+            "SELECT p.id FROM public_messages p WHERE NOT EXISTS (SELECT 1 FROM receipts r WHERE r.id=p.id)",
+        ] {
+            let p = plan(&db, sql);
+            assert!(
+                !p.split(" | ")
+                    .any(|l| l.contains("SCAN public_messages") && !l.contains("COVERING INDEX")),
+                "{sql}: {p}"
+            );
+        }
+        db.accept(&input, now).unwrap();
+        let runs: i64 = db
+            .db
+            .query_row("SELECT count(*) FROM retention_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(runs, 0, "a send far from capacity ran a retention pass");
+        // The pass itself reads each orphan's binding by key.
+        assert_eq!(run(&mut db, now, POLICY).unwrap(), 0);
+    }
     fn admit(db: &mut Ledger, input: &Enqueue, now: i64, state: &str, age_days: i64) -> String {
         let mut i = input.clone();
         i.message_id = uuid::Uuid::new_v4().to_string();
