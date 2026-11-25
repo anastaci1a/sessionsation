@@ -82,7 +82,10 @@ fn the_replay_filter_ends_once_an_oauth_reading_is_back_at_the_prior_value() {
     // value of exactly 20 counts again.
     assert!(s.apply(&reading(&w(20.0, r), now + 30, false), now + 30, week));
     assert_eq!(s.cycle.as_ref().unwrap().prior_percent, None);
-    assert!(s.apply(&reading(&w(20.0, r), now + 40, true), now + 40, week));
+    // A statusline rise above the fresh OAuth reading waits for a second one 60 s later.
+    s.apply(&reading(&w(21.0, r), now + 40, true), now + 40, week);
+    assert_eq!(s.window["source"], "oauth");
+    assert!(s.apply(&reading(&w(21.0, r), now + 100, true), now + 100, week));
     assert_eq!(s.window["source"], "statusline");
 }
 
@@ -228,4 +231,42 @@ fn codex_cycles_change_on_new_resets_redeems_and_lowered_readings() {
         codex(Some(&next), None, None, five, at + 5, None),
         Some(next)
     );
+}
+
+const NOW: i64 = 1_000_000;
+const RESETS: i64 = NOW + 86_400;
+const WEEK: i64 = 10_080 * 60;
+
+#[test]
+fn a_stale_statusline_rise_does_not_undo_a_confirmed_oauth_zero() {
+    let mut s = Slot::default();
+    s.apply(&reading(&w(95.0, RESETS), NOW, true), NOW, WEEK);
+    s.apply(&reading(&w(0.0, RESETS), NOW + 10, false), NOW + 10, WEEK);
+    s.apply(&reading(&w(0.0, RESETS), NOW + 80, false), NOW + 80, WEEK);
+    assert_eq!(s.cycle.as_ref().unwrap().reason, PROVIDER_LOWERED);
+    s.apply(&reading(&w(95.0, RESETS), NOW + 100, true), NOW + 100, WEEK);
+    assert_eq!(s.window["used_percentage"], 0.0);
+}
+
+#[test]
+fn a_confirmed_statusline_rise_above_a_fresh_oauth_reading_is_real_growth() {
+    let mut s = Slot::default();
+    s.apply(&reading(&w(10.0, RESETS), NOW, false), NOW, WEEK);
+    s.apply(&reading(&w(30.0, RESETS), NOW + 20, true), NOW + 20, WEEK);
+    assert_eq!(s.window["used_percentage"], 10.0);
+    s.apply(
+        &reading(&w(30.0, RESETS), NOW + 20 + CONFIRM_SECONDS, true),
+        NOW + 80,
+        WEEK,
+    );
+    assert_eq!(s.window["used_percentage"], 30.0);
+}
+
+#[test]
+fn a_statusline_rise_above_an_old_oauth_reading_is_accepted() {
+    let mut s = Slot::default();
+    s.apply(&reading(&w(10.0, RESETS), NOW, false), NOW, WEEK);
+    let late = NOW + OAUTH_FRESH_SECONDS + 1;
+    s.apply(&reading(&w(30.0, RESETS), late, true), late, WEEK);
+    assert_eq!(s.window["used_percentage"], 30.0);
 }

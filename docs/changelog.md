@@ -20,7 +20,8 @@ and package history are in Git.
 
 ## Versions
 
-- **1.68.2** `api stop --interrupt` for every provider (Codex: `turn/interrupt`). [Stop](contract.md#stop-and-restart).
+- **1.68.3** Fresh OAuth usage outranks stale statusline.
+- **1.68.2** `api stop --interrupt`. [Stop](contract.md#stop-and-restart).
 - **1.68.1** A launch whose starter was killed before its worker ran is dispatched once
   more; a running recorded `worker` or a status probe never fails a launch; detached
   workers log stderr. [Launch](contract.md#new-session-launch).

@@ -32,6 +32,9 @@ pub const SAME_CYCLE_SECONDS: i64 = 300;
 /// A lower OAuth reading within one closed cycle is accepted (a reset no read saw) once a second
 /// OAuth read at least this much later reports the same or less.
 pub const CONFIRM_SECONDS: i64 = 60;
+/// An OAuth reading this recent (the meter refresh period) outranks the statusline: a rise above
+/// it needs two statusline readings [`CONFIRM_SECONDS`] apart (idle sessions replay).
+pub const OAUTH_FRESH_SECONDS: i64 = 600;
 pub const NATURAL: &str = "natural";
 pub const REDEEM: &str = "redeem";
 pub const EXTERNAL_REDEEM: &str = "external_redeem";
@@ -151,6 +154,9 @@ pub struct Slot {
     pub window: Value,
     #[serde(default)]
     pub cycle: Option<Cycle>,
+    /// A statusline reading above a fresh OAuth one, awaiting a second 60 s later: `(used, at)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_rise: Option<(f64, i64)>,
 }
 
 /// One reading of a window offered to a [`Slot`].
@@ -277,6 +283,7 @@ impl Slot {
                 // A current answer: no lower reading is waiting any more, and once usage is
                 // back at the pre-reset value the replay filter has nothing left to hide.
                 c.pending_lower = None;
+                self.pending_rise = None;
                 if c.prior_percent.is_some_and(|p| used >= p - 0.5) {
                     c.prior_percent = None;
                 }
@@ -303,6 +310,21 @@ impl Slot {
             // response can be older than the redeem).
             if replay || lower {
                 return Verdict::Keep;
+            }
+            let fresh = old.filter(|_| {
+                self.window["source"] == "oauth"
+                    && old_at.is_some_and(|t| r.at - t < OAUTH_FRESH_SECONDS)
+            });
+            if let Some(o) = fresh {
+                match self.pending_rise {
+                    _ if used <= o => return Verdict::Keep,
+                    Some((_, at)) if r.at - at >= CONFIRM_SECONDS => self.pending_rise = None,
+                    Some(_) => return Verdict::Keep,
+                    None => {
+                        self.pending_rise = Some((used, r.at));
+                        return Verdict::Keep;
+                    }
+                }
             }
         } else if cycle.open {
             // The first OAuth answer after a redeem is the post-reset value.

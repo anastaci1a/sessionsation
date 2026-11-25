@@ -233,6 +233,25 @@ printf '%s\n%s' "$(cat "$d/$k-body" 2>/dev/null)" "$(cat "$d/$k-status" 2>/dev/n
         fs::write(self.fake.join("claim-body"), claim.to_string()).unwrap();
         fs::write(self.fake.join("usage-after-body"), body.to_string()).unwrap();
     }
+    /// Backdate the recorded readings past the OAuth freshness window (10 minutes).
+    fn age_oauth(&self, home: &Path) {
+        for (name, nested) in [("usage.json", false), ("usage-cycles.json", true)] {
+            let path = home.join(".sessionsation").join(name);
+            let Ok(bytes) = fs::read(&path) else { continue };
+            let mut v: Value = serde_json::from_slice(&bytes).unwrap();
+            for k in ["five_hour", "seven_day"] {
+                let w = if nested {
+                    &mut v[k]["window"]
+                } else {
+                    &mut v[k]
+                };
+                if let Some(t) = w["observed_at"].as_i64() {
+                    w["observed_at"] = json!(t - 700);
+                }
+            }
+            fs::write(&path, v.to_string()).unwrap();
+        }
+    }
     fn statusline(&self, home: &Path, five: (f64, i64), week: (f64, i64)) {
         let mut child = Command::new(binary())
             .args(["provider-hook", "claude-statusline", "--record-only"])
@@ -332,6 +351,7 @@ async fn a_claude_redeem_starts_a_new_cycle_and_the_lower_reading_is_accepted() 
     assert_eq!(m["windows"]["seven_day"]["used_percent"], 10.0, "{m}");
     assert_eq!(m["windows"]["five_hour"]["used_percent"], 0.0, "{m}");
     assert_eq!(m["windows"]["five_hour"]["starts_on_first_use"], true);
+    f.age_oauth(&home);
     f.statusline(&home, (2.0, now + 60 + FIVE), (11.0, r7));
     let m = f.meter("claude:personal");
     assert_eq!(m["windows"]["seven_day"]["used_percent"], 11.0);
@@ -799,6 +819,7 @@ async fn an_older_recorder_writing_the_pre_redeem_value_after_the_cycle_closed_i
     assert_eq!(m["windows"]["seven_day"]["used_percent"], 10.0, "{m}");
     assert_eq!(m["windows"]["seven_day"]["cycle_reason"], "redeem");
     // The next write repairs the file.
+    f.age_oauth(&home);
     f.statusline(&home, (41.0, r5), (11.0, r7));
     let stored: Value =
         serde_json::from_slice(&fs::read(home.join(".sessionsation/usage.json")).unwrap()).unwrap();

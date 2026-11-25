@@ -198,6 +198,25 @@ printf '%s\n%s' "$(cat "$d/$k-body" 2>/dev/null)" "$(cat "$d/$k-status" 2>/dev/n
             .lines()
             .count()
     }
+    /// Backdate the recorded readings past the OAuth freshness window (10 minutes).
+    fn age_oauth(&self, home: &Path) {
+        for (name, nested) in [("usage.json", false), ("usage-cycles.json", true)] {
+            let path = home.join(".sessionsation").join(name);
+            let Ok(bytes) = fs::read(&path) else { continue };
+            let mut v: Value = serde_json::from_slice(&bytes).unwrap();
+            for k in ["five_hour", "seven_day"] {
+                let w = if nested {
+                    &mut v[k]["window"]
+                } else {
+                    &mut v[k]
+                };
+                if let Some(t) = w["observed_at"].as_i64() {
+                    w["observed_at"] = json!(t - 700);
+                }
+            }
+            fs::write(&path, v.to_string()).unwrap();
+        }
+    }
     fn statusline(&self, home: &Path, five: f64, week: f64, r5: i64, r7: i64) {
         let mut child = Command::new(binary())
             .args(["provider-hook", "claude-statusline", "--record-only"])
@@ -335,6 +354,7 @@ async fn idle_codex_and_claude_accounts_have_one_meter_shape_without_a_session()
     assert_eq!(m["windows"]["five_hour"]["used_percent"], 31.0);
     assert_eq!(m["windows"]["five_hour"]["source"], "oauth");
     assert_eq!(m["windows"]["seven_day"]["used_percent"], 55.0);
+    f.age_oauth(&home);
     f.statusline(&home, 33.5, 50.0, r5, r7);
     let v = ok(
         &root,

@@ -51,15 +51,18 @@ fn usage_answer_windows_become_oauth_readings_that_never_lower_a_cycle() {
     assert_eq!(usage["short"]["used_percent"], 31.0);
     assert_eq!(usage["short"]["source"], "oauth");
     assert_eq!(usage["short"]["observed_at"], now);
+    // A rise above a fresh OAuth reading needs a second statusline reading 60 s later.
+    super::super::record_statusline(home, &replay, now + 120).unwrap();
+    let (usage, _, _) = super::super::project_usage(home, now + 121);
     assert_eq!(
         usage["weekly"]["used_percent"], 56.5,
         "a higher reading wins"
     );
     assert_eq!(usage["weekly"]["source"], "statusline");
-    assert_eq!(usage["weekly"]["observed_at"], now + 60);
+    assert_eq!(usage["weekly"]["observed_at"], now + 120);
     // And an older OAuth answer never lowers what the statusline reported.
-    assert!(!record_answer(home, &body(30., 50.), now + 120).unwrap());
-    let (usage, _, _) = super::super::project_usage(home, now + 121);
+    assert!(!record_answer(home, &body(30., 50.), now + 180).unwrap());
+    let (usage, _, _) = super::super::project_usage(home, now + 181);
     assert_eq!(usage["weekly"]["used_percent"], 56.5);
     assert_eq!(usage["short"]["used_percent"], 31.0);
     // A new cycle (a reset hours later) replaces with a lower value.

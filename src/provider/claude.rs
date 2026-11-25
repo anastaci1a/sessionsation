@@ -1555,7 +1555,7 @@ fn load_recorded(
                         }),
                         _ => None,
                     };
-                    let mut slot = Slot { window, cycle };
+                    let mut slot = Slot { window, cycle, ..Default::default() };
                     slot.ensure_cycle(*duration);
                     slot
                 }
