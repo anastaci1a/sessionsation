@@ -16,11 +16,11 @@
     "doc_bytes:agents/README.md": { "value": 10289 },
     "doc_bytes:docs/README.md": { "value": 891 },
     "doc_bytes:docs/architecture.md": { "value": 7553 },
-    "doc_bytes:docs/changelog.md": { "value": 13960 },
+    "doc_bytes:docs/changelog.md": { "value": 13996 },
     "doc_bytes:docs/cli.md": { "value": 18334 },
     "doc_bytes:docs/contract.md": { "value": 223317 },
     "doc_bytes:docs/operations.md": { "value": 17623 },
-    "doc_bytes_total": { "value": 294511 },
+    "doc_bytes_total": { "value": 294547 },
     "doc_duplicate_paragraphs": { "value": 0 },
     "duration_literals": { "value": 172 },
     "env_scrub_sites": { "value": 50 },
@@ -106,7 +106,7 @@
     "spawn_sites": { "value": 59 },
     "sqlite_allow_markers": { "value": 0 },
     "sqlite_opens": { "value": 5 },
-    "src_lines": { "value": 95079 },
+    "src_lines": { "value": 95077 },
     "stale_target_literals": { "value": 58 },
     "state_view_allow_markers": { "value": 0 },
     "tmux_allow_markers": { "value": 0 },
@@ -131,7 +131,7 @@
     "doc_bytes:docs/operations.md": { "value": 24200 },
     "doc_bytes_total": { "value": 313300 },
     "doc_duplicate_paragraphs": { "value": 0 },
-    "src_lines": { "value": 95079 }
+    "src_lines": { "value": 95077 }
   },
   "ledger": [
     {
@@ -1458,7 +1458,7 @@
     },
     {
       "counter": "src_lines",
-      "by": -7984,
+      "by": -7986,
       "reason": "shrink-S1a: delete root_migrate (runtime.rs kept as alias/runtime.rs), layout/migrate.rs, shared_state/migrate.rs, their CLI verbs and tests; alias/gate.rs moves under tests/",
       "considered": "n/a",
       "step": "shrink-S1a",
@@ -1482,8 +1482,24 @@
     },
     {
       "counter": "cap:src_lines",
-      "by": -7984,
+      "by": -7986,
       "reason": "shrink-S1a: the cap follows the counter down",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes:docs/changelog.md",
+      "by": 36,
+      "reason": "shrink-S1a fixup: layout status loses in_use_now (noted in the 1.68.0 entry)",
+      "considered": "n/a",
+      "step": "shrink-S1a",
+      "program": "shrink"
+    },
+    {
+      "counter": "doc_bytes_total",
+      "by": 36,
+      "reason": "shrink-S1a fixup: changelog note",
       "considered": "n/a",
       "step": "shrink-S1a",
       "program": "shrink"

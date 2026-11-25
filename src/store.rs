@@ -118,15 +118,13 @@ pub fn migrate_legacy_codex_provider(state: &mut Value) -> Vec<String> {
 }
 pub fn load_config(paths: &Paths) -> Result<Config> {
     let path = paths.root.join("config.json");
-    let mut config = Config::default();
-    if path.exists() {
-        let ignored;
-        (config, ignored) = Config::parse(serde_json::from_slice(&std::fs::read(path)?)?)?;
-        static WARNED: std::sync::Once = std::sync::Once::new();
-        if !ignored.is_empty() {
-            WARNED.call_once(|| eprintln!("sessionsation: warning: config.json keys {ignored:?} are ignored by this release"));
-        }
-    }
+    // Retired keys are accepted and ignored silently: a stderr line would corrupt the CLI
+    // error envelope that clients parse.
+    let mut config = if path.exists() {
+        Config::parse(serde_json::from_slice(&std::fs::read(path)?)?)?.0
+    } else {
+        Config::default()
+    };
     // Older configurations could expire a reading before the next routine
     // poll. Migrate that interval in memory so existing installs still load.
     if config.stale_seconds < config.idle_poll_seconds.saturating_add(90) {

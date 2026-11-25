@@ -66,3 +66,43 @@ fn an_unknown_key_is_still_refused() {
     assert!(Config::parse(json!({"not_a_setting": 1})).is_err());
     assert!(Config::parse(json!({"idle_poll_seconds": "soon"})).is_err());
 }
+
+/// A retired key in `config.json` never reaches stderr: clients parse all of a failing CLI's
+/// stderr as one JSON error envelope.
+#[test]
+fn a_config_with_ignored_keys_keeps_stderr_a_single_envelope() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = sessionsation::paths::Paths::new(Some(dir.path().join("root"))).unwrap();
+    std::fs::write(
+        paths.root.join("config.json"),
+        serde_json::to_vec(&live_document()).unwrap(),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_sessionsation"))
+            .arg("--data-dir")
+            .arg(&paths.root)
+            .args(args)
+            .env_remove("SESSIONSATION_HOME")
+            .output()
+            .unwrap()
+    };
+    let ok = run(&["api", "--api-version", "1", "version"]);
+    assert!(ok.status.success());
+    assert!(
+        ok.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let v: Value = serde_json::from_slice(&ok.stdout).unwrap();
+    assert!(v["result"]["contract_version"].is_string() || v["contract_version"].is_string());
+    let failing = run(&["api", "receipt", "no-such-message"]);
+    assert!(!failing.status.success());
+    let envelope: Value = serde_json::from_slice(&failing.stderr).unwrap_or_else(|e| {
+        panic!(
+            "stderr is not one JSON envelope ({e}): {}",
+            String::from_utf8_lossy(&failing.stderr)
+        )
+    });
+    assert!(envelope["error"]["code"].is_string(), "{envelope}");
+}

@@ -21,8 +21,8 @@ and package history are in Git.
 ## Versions
 
 - **1.68.0** Removed `root status|migrate|rollback|finalize` (capability `root_alias`),
-  `layout migrate|rollback` and `shared migrate`; a dropped config key is ignored, not
-  refused. [Root alias](contract.md#root-alias).
+  `layout migrate|rollback` and `shared migrate`; `layout status` loses `in_use_now`; a dropped
+  config key is ignored, not refused. [Root alias](contract.md#root-alias).
 - **1.67.1** Workers inherit no client lock fds; a repeated `session launch` re-admits;
   sends skip hourly retention.
 - **1.67.0** A refused check before Enter withdraws the typed text. Launches use the

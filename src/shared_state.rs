@@ -433,7 +433,7 @@ pub fn capability() -> Value {
         "per_account":["settings.json","credentials","sessions"],"store":"<root>/shared/claude/<name>",
         "link":"<account home>/<name> -> <root>/shared/claude/<name>",
         "scope":"managed_claude_homes","adopted_config_dir":"never_linked",
-        "enable":"shared enable | shared migrate","commands":["shared status","shared enable"],
+        "enable":"shared enable","commands":["shared status","shared enable"],
         "trusted_link":"symlink at exactly <account home>/<name>, owned by this user, stored target exactly <root>/shared/claude/<name>, resolving to a real private directory",
         "account_switch":"nothing_copied_or_deleted_when_both_accounts_linked",
         "account_deletion":"removes_the_links_only",
