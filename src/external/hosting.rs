@@ -271,6 +271,7 @@ fn instances_with_state(
             detail: activity_detail(activity).into(),
             warnings: vec![],
             shared_server: true,
+            server: None,
             move_id: None,
             pane: record.target.clone(),
             tmux_session: target(&record.target)?.0.into(),

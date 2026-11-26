@@ -22,8 +22,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 71;
-pub const CONTRACT_PATCH: u32 = 2;
-pub const CONTRACT_VERSION: &str = "1.71.2";
+pub const CONTRACT_PATCH: u32 = 3;
+pub const CONTRACT_VERSION: &str = "1.71.3";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -2174,6 +2174,10 @@ pub fn capabilities() -> Value {
     value["session_lifecycle"] = json!({"since_contract":"1.66.0","resume_launch":resume_launch,
         "unknown_session":unknown_session,"launch_listing":launching,
         "archived_stop":"already_stopped:true, archived:true (any generation)","archive_repeat":"already_archived:true (any generation)","restore_active":"already_active:true (any generation)","pane_settle_seconds":external::hosting::PANE_SETTLE_SECONDS});
+    value["caller_binding"] = json!({"since_contract":"1.71.3","field":"sessions[].caller_binding","shape":{"process":["pid","process_start"],"env":["name","value"]},
+        "process_start":"/proc/<pid>/stat field 22","codex":{"process":"the shared app-server serving the conversation (socket peer), else the TUI","env":"CODEX_THREAD_ID = conversation_id"},
+        "claude_gemini_antigravity":{"process":"the native process","env":null},"not_running":null,"reason_field":"caller_binding_reason","reasons":["NOT_RUNNING","APP_SERVER_UNKNOWN","PROCESS_UNKNOWN"],
+        "verification":"the caller must find process among its ancestors by pid and process_start; when env is set its own environment must also carry name=value; env alone is never trusted","cached_state":true});
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
     value["launch_model"] = json!({"since_revision":38,"request_fields":["model","reasoning_effort"],"requests":["launch"],"providers":["codex"],"reasoning_efforts":crate::launch::REASONING_EFFORTS,"errors":["INVALID_MODEL","INVALID_REASONING_EFFORT",ops::UNSUPPORTED],"model_not_checked_against_account":true});
     value["turn_notify"] = crate::turn_notify::capability();
@@ -2281,6 +2285,47 @@ fn public_session(s: catalog::Session) -> Value {
     value
 }
 
+/// Contract 1.71.3: a running Codex row's top-level `pid`/`process_start` (its attachment, as
+/// Claude rows carry their process) and `caller_binding`: the shared app-server that runs its
+/// tool commands (or the TUI when it serves itself) plus `CODEX_THREAD_ID`.
+fn codex_caller_binding(value: &mut Value, live: Option<&external::Instance>) {
+    let attached = live.and(value["attachment"].as_object()).cloned();
+    value["pid"] = attached.as_ref().map_or(Value::Null, |a| a["pid"].clone());
+    value["process_start"] = attached
+        .as_ref()
+        .map_or(Value::Null, |a| a["process_start"].clone());
+    let process = live.and_then(|s| {
+        if s.shared_server {
+            s.server
+        } else {
+            Some((s.pid, s.start_time))
+        }
+    });
+    let env = json!({"name":"CODEX_THREAD_ID","value":value["conversation_id"]});
+    caller_binding(
+        value,
+        process,
+        env,
+        live.is_some().then_some("APP_SERVER_UNKNOWN"),
+    );
+}
+/// `caller_binding` and `caller_binding_reason` (contract 1.71.3); `reason` when running unbound.
+fn caller_binding(
+    value: &mut Value,
+    process: Option<(u32, u64)>,
+    env: Value,
+    reason: Option<&str>,
+) {
+    value["caller_binding"] = process.map_or(
+        Value::Null,
+        |(pid, start)| json!({"process":{"pid":pid,"process_start":start},"env":env}),
+    );
+    value["caller_binding_reason"] = json!(match process {
+        Some(_) => None,
+        None => Some(reason.unwrap_or("NOT_RUNNING")),
+    });
+}
+
 /// Native-provider (Claude or Gemini) session projection. Sessionsation metadata (`name`, `name_source`,
 /// catalog `directory`) stays distinct from native facts (`native_*`, pid).
 /// Availability is running/stopped/stale/unknown; never derived from a title.
@@ -2325,6 +2370,16 @@ fn native_public(
     value["forked_from_conversation_id"] = json!(observed.and_then(|o| o.forked_from.clone()));
     value["pid"] = json!(observed.and_then(|o| o.pid));
     value["process_start"] = json!(observed.and_then(|o| o.process_start));
+    // Contract 1.71.3: tool commands run under the native process itself.
+    let process = observed
+        .filter(|_| running)
+        .and_then(|o| o.pid.zip(o.process_start));
+    caller_binding(
+        &mut value,
+        process,
+        Value::Null,
+        running.then_some("PROCESS_UNKNOWN"),
+    );
     value["host_known"] = json!(attached);
     value["directory"] = json!(directory);
     value["conversation_created_at"] = json!(observed.and_then(|o| o.started_at.clone()));
@@ -2776,6 +2831,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["history_file_bytes"]=facts["history_file_bytes"].clone();
         value["activity"]=source.map(|s|json!(s.activity)).unwrap_or(Value::Null);
         value["live_activity"]=source.filter(|s|!s.inactive).map_or(Value::Null,|s|crate::live_activity::public(Some(&s.turn_facts.clone().unwrap_or_default()),now));
+        codex_caller_binding(&mut value, source.filter(|_| running && !archived));
         if let Some(s) = source.filter(|s| !s.inactive) && let Some(facts) = s.turn_facts.clone() {
             turns.push(crate::provider::events::Turns { session_id: value["id"].as_str().unwrap_or_default().to_owned(), provider: crate::provider::ProviderId::Codex, conversation_id: value["conversation_id"].as_str().unwrap_or_default().to_owned(), runtime: Some(i64::from(s.pid)), facts });
         }

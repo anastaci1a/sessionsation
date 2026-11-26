@@ -136,6 +136,18 @@ Native sessions (Claude, Gemini, Antigravity) add `native_status`, `native_name`
 registered or written a transcript (for example on its trust prompt) reports
 `availability:"running"` with the discovery warning `NO_CONVERSATION_YET`.
 
+**Caller binding** (1.71.3, `capabilities.caller_binding`). Running Codex rows also carry top-level
+`pid`/`process_start` (their attachment). Every row has `caller_binding`
+`{process:{pid, process_start}, env:{name, value}|null}` and `caller_binding_reason`:
+the process under which the session's tool commands run (`process_start` is `/proc/<pid>/stat`
+field 22). Codex: the shared app-server serving the conversation (its socket peer; the TUI when
+it serves itself) with `env` `CODEX_THREAD_ID` = `conversation_id`. Claude, Gemini and
+Antigravity: the native process, `env:null`. A row that is not running, or whose process is
+unknown, has `caller_binding:null` with reason `NOT_RUNNING`, `APP_SERVER_UNKNOWN` or
+`PROCESS_UNKNOWN`. A caller proves it is the session by finding `process` among its own ancestors
+(pid and start time) and, when `env` is set, carrying that variable with that value; `env` alone
+is never trusted.
+
 A session admitted by `api launch start` never leaves `state` before its process
 verifiably ends (`capabilities.session_lifecycle.launch_listing`). Until the launch has a
 catalog entry (phases `admitted` to `starting_provider`, or `uncertain`) the Active and

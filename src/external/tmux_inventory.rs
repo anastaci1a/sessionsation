@@ -31,7 +31,7 @@ fn supplement(paths: &Paths, items: &mut Vec<Instance>, exclude: Option<&str>) -
             archived: false, inactive: false, account: String::new(), display_account: None,
             block_reason: None, activity: Activity::Unknown, turn_facts: None,
             detail: if dead { "This tmux pane has exited and retains its output. Open it to inspect diagnostics. It has no running Codex instance; saved conversation history is separate." } else { "An ordinary tmux pane; no Codex process was detected. You can open it, but account switching and conversation actions do not apply." }.into(),
-            warnings: vec![], shared_server: false, move_id: None, pane: f[1].into(),
+            warnings: vec![], shared_server: false, server: None, move_id: None, pane: f[1].into(),
             tmux_session: f[0].into(), pid: f[2].parse().unwrap_or(0), start_time: 0,
             cwd: f[4].into(), thread_id: String::new(), rollout: PathBuf::new(), home: PathBuf::new(),
             binary: f[5].into(), resume_options: vec![],

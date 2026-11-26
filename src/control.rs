@@ -100,6 +100,11 @@ fn verify_permissions(result: &Value, approval: Option<&str>, sandbox: Option<&s
 }
 
 impl Control {
+    /// Contract 1.71.3: the server process (pid, /proc start time) by its socket peer credentials.
+    pub fn server(&self) -> Option<(u32, u64)> {
+        let pid = u32::try_from(self.socket.get_ref().peer_cred().ok()?.pid()?).ok()?;
+        Some((pid, crate::proc::identity::start_time(pid).ok()?))
+    }
     pub async fn connect(home: &Path) -> Result<Self> {
         Self::connect_socket(&home.join("app-server-control/app-server-control.sock")).await
     }

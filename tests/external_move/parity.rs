@@ -579,3 +579,49 @@ async fn codex_discarding_stop_passes_a_pending_plain_stop_of_the_same_session()
         assert_eq!(v["result"]["state"], "cancelled", "{v}");
     }
 }
+
+/// Contract 1.71.3: a running Codex row carries top-level `pid`/`process_start` (its attachment)
+/// and `caller_binding`: the app-server serving it (the fixture's, in this test process) with
+/// CODEX_THREAD_ID; `state --cached` keeps it; a stopped row has none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_rows_bind_callers_to_the_serving_app_server_and_thread_id() {
+    let f = Fixture::new().await;
+    f.live(ID, false);
+    let s = session(&f);
+    assert_eq!(s["availability"], "running", "{s}");
+    assert_eq!(s["pid"], s["attachment"]["pid"], "{s}");
+    assert_eq!(s["process_start"], s["attachment"]["process_start"], "{s}");
+    let me = std::process::id();
+    let stat = fs::read_to_string(format!("/proc/{me}/stat")).unwrap();
+    let start: u64 = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let binding = json!({"process":{"pid":me,"process_start":start},
+        "env":{"name":"CODEX_THREAD_ID","value":ID}});
+    assert_eq!(s["caller_binding"], binding, "{s}");
+    assert_eq!(s["caller_binding_reason"], Value::Null);
+    let cached = f.invoke(&["api", "state", "--cached"]);
+    let row = cached["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["conversation_id"] == ID)
+        .unwrap()
+        .clone();
+    assert_eq!(row["caller_binding"], binding, "{row}");
+    let caps = f.invoke(&["api", "capabilities"]);
+    assert_eq!(caps["result"]["caller_binding"]["since_contract"], "1.71.3");
+    let (ok, v) = stop(&f, &["--wait"], &[]);
+    assert!(ok, "{v}");
+    let gone = session(&f);
+    assert_ne!(gone["availability"], "running", "{gone}");
+    assert_eq!(gone["caller_binding"], Value::Null, "{gone}");
+    assert_eq!(gone["caller_binding_reason"], "NOT_RUNNING", "{gone}");
+    assert_eq!(gone["pid"], Value::Null, "{gone}");
+}

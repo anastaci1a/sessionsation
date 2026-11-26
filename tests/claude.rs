@@ -475,6 +475,13 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
     assert_eq!(s["native_status"], "busy");
     assert_eq!(s["native_name"], s["name"]);
     assert_eq!(s["pid"], child.id());
+    // Contract 1.71.3: tool commands run under the native process; no env binding.
+    assert_eq!(
+        s["caller_binding"],
+        json!({"process":{"pid":child.id(),"process_start":s["process_start"]},"env":null})
+    );
+    assert!(s["process_start"].as_u64().is_some());
+    assert_eq!(s["caller_binding_reason"], Value::Null);
     assert_eq!(s["directory"], json!(f.project));
     assert_eq!(s["capabilities"]["resume"], false);
     assert_eq!(s["capabilities"]["submit"], false);
@@ -529,6 +536,8 @@ async fn claude_sessions_launch_track_live_identity_rename_and_resume() {
     // Exited process with a leftover registry entry: stopped, not live.
     let s = f.session(&id);
     assert_eq!(s["availability"], "stopped");
+    assert_eq!(s["caller_binding"], Value::Null);
+    assert_eq!(s["caller_binding_reason"], "NOT_RUNNING");
     assert_eq!(s["capabilities"]["resume"], true);
     // Without a usable saved directory, resume is declared unavailable up front.
     let away = f.project.with_extension("away");

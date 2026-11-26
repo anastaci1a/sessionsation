@@ -20,6 +20,7 @@ and package history are in Git.
 
 ## Versions
 
+- **1.71.3** Rows add `caller_binding` (and Codex top-level `pid`/`process_start`).
 - **1.71.2** Receipts add `facts.readiness_ms`, `ledger_wait_ms`, `ledger_hold_ms` and `provider_ms`. A `--discard-queued` stop is no longer refused by a pending plain stop.
 - **1.71.1** Internal: the hourly receipt retention holds the ledger in short batches; no change.
 - **1.71.0** Internal: one record engine; no change.

@@ -405,6 +405,37 @@
     },
     "version": 1
   },
+  "caller_binding": {
+    "cached_state": true,
+    "claude_gemini_antigravity": {
+      "env": null,
+      "process": "the native process"
+    },
+    "codex": {
+      "env": "CODEX_THREAD_ID = conversation_id",
+      "process": "the shared app-server serving the conversation (socket peer), else the TUI"
+    },
+    "field": "sessions[].caller_binding",
+    "not_running": null,
+    "process_start": "/proc/<pid>/stat field 22",
+    "reason_field": "caller_binding_reason",
+    "reasons": [
+      "NOT_RUNNING",
+      "APP_SERVER_UNKNOWN",
+      "PROCESS_UNKNOWN"
+    ],
+    "shape": {
+      "env": [
+        "name",
+        "value"
+      ],
+      "process": [
+        "pid",
+        "process_start"
+      ]
+    },
+    "verification": "the caller must find process among its ancestors by pid and process_start; when env is set its own environment must also carry name=value; env alone is never trusted"
+  },
   "claude_idle_notify": {
     "args": [
       "--session",
@@ -2361,7 +2392,6 @@
   "session_lifecycle": {
     "archive_repeat": "already_archived:true (any generation)",
     "archived_stop": "already_stopped:true, archived:true (any generation)",
-    "restore_active": "already_active:true (any generation)",
     "launch_listing": {
       "availability": "launching",
       "field": "availability_reason",
@@ -2372,6 +2402,7 @@
       ]
     },
     "pane_settle_seconds": 3,
+    "restore_active": "already_active:true (any generation)",
     "resume_launch": {
       "account_change": [
         "codex"

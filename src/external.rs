@@ -54,6 +54,10 @@ pub struct Instance {
     pub warnings: Vec<String>,
     #[serde(default)]
     pub shared_server: bool,
+    /// Contract 1.71.3: the shared app-server serving this conversation (pid, /proc start time),
+    /// from the control socket's peer credentials; observed, never persisted.
+    #[serde(skip)]
+    pub server: Option<(u32, u64)>,
     #[serde(default)]
     pub move_id: Option<String>,
     pub pane: String,
@@ -351,6 +355,7 @@ async fn enrich_native(paths: &Paths, result: &mut [Instance]) {
             .iter()
             .all(|i| !i.thread_id.is_empty())
             .then(|| candidates.iter().map(|i| i.thread_id.clone()).collect());
+        let server = control.server();
         let threads = match control.loaded_matching(selected.as_ref()).await {
             Ok(threads) => {
                 // Contract 1.49.0: the loaded threads carry their model and effort.
@@ -378,6 +383,7 @@ async fn enrich_native(paths: &Paths, result: &mut [Instance]) {
             source.thread_id = id.into();
             source.rollout = path;
             source.shared_server = true;
+            source.server = server;
             if let Some(cwd) = thread["cwd"].as_str() {
                 source.cwd = cwd.into();
             }
@@ -885,6 +891,7 @@ pub fn instances() -> Result<Vec<Instance>> {
             detail: if reason.is_some() { "Identifying the conversation in this pane. You can queue a move while identification completes.".into() } else { activity_detail(activity).into() },
             warnings,
             shared_server: false,
+            server: None,
             move_id: None,
             pane: fields[1].into(),
             tmux_session: fields[0].into(),
@@ -1078,6 +1085,7 @@ fn inventory_complete(
                 detail: reason_detail(block_reason.as_deref()).into(),
                 warnings: Vec::new(),
                 shared_server: false,
+                server: None,
                 move_id: None,
                 block_reason,
                 pane: String::new(),

@@ -331,7 +331,7 @@ async fn advertised_capability_and_a_stopped_session_switches_with_memory_left_b
         .unwrap();
     assert_eq!(claude["account_switch"], true);
     assert_eq!(claude["operations"]["account_switch"]["supported"], true);
-    assert_eq!(caps["contract_version"], "1.71.2");
+    assert_eq!(caps["contract_version"], "1.71.3");
     // 1.69.2: Agent-DM requires Codex force_interrupt false; stop --interrupt is a lifecycle op, not send semantics.
     assert_eq!(
         caps["providers"]
