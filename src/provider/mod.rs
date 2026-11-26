@@ -257,7 +257,7 @@ pub fn session_tmp_of(
 }
 pub fn session_tmp_capability() -> serde_json::Value {
     let since = "1.72.1";
-    serde_json::json!({"since_contract":since,"env":["TMPDIR","TMP","TEMP","CLAUDE_CODE_TMPDIR"],"default_root":"<data_root>/tmp/<provider>/<account>","configurable_by":"session_tmp_root"})
+    serde_json::json!({"since_contract":since,"env":["TMPDIR","TMP","TEMP","CLAUDE_CODE_TMPDIR"],"default_root":"<data_root>/tmp/<provider>/<account>","configurable_by":"session_tmp_root","codex_app_server":true,"applies_at":"next app-server start or restart"})
 }
 /// `NAME=value` for the `env` prefix of a Codex pane command.
 pub fn session_env_assignment(session_id: &str) -> String {

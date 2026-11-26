@@ -2203,6 +2203,14 @@ providers) gets `TMPDIR`, `TMP` and `TEMP`, and Claude also `CLAUDE_CODE_TMPDIR`
 missing). A symlink or a directory of another owner is refused (`SESSION_TMP_UNSAFE`).
 Setting `session_tmp_root` to `"none"` or `""` keeps the inherited environment. Running
 sessions keep their old temp directory until relaunched; the daemon and workers are unchanged.
+From 1.72.2 the same variables are set on `codex app-server daemon start|restart`, the command
+that starts an account's shared Codex app-server (the parent of Codex tool commands); the managed
+daemon inherits it. `capabilities.session_tmp` carries `codex_app_server: true` and `applies_at:
+"next app-server start or restart"`: a running server keeps its old environment, and it is
+replaced only when the supervisor finds no server (`account/prepare`, the first Codex launch
+after the server exited or was stopped), on `account/restart-server`, or after the server exits.
+A supervisor restart adopts a running server and does not restart it. An unsafe directory
+fails that start with `SESSION_TMP_UNSAFE`; the supervisor keeps running. `"none"` passes nothing.
 
 ### Move a running session between Spaces
 

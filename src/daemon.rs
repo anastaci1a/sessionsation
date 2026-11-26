@@ -1091,9 +1091,10 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             if let Some(helper) = helpers.remove(name) { helper.stop_idle().await?; }
                             if let Err(e) = crate::provider::codex::pin_daemon_release(&home) { eprintln!("codex daemon release not pinned for {name}: {e:#}"); }
                             if restarting || !shared_ready {
+                                let tmp = crate::provider::session_tmp_env(&paths, crate::provider::ProviderId::Codex, name)?;
                                 let result = tokio::time::timeout(Duration::from_secs(15), tokio::process::Command::new(&config.codex_binary)
                                     .args(["app-server","daemon",if restarting {"restart"} else {"start"}])
-                                    .env("CODEX_HOME", &home)
+                                    .env("CODEX_HOME", &home).envs(tmp)
                                     .current_dir(&home)
                                     .env_remove("OPENAI_API_KEY").env_remove("CODEX_API_KEY").env_remove("CODEX_ACCESS_TOKEN")
                                     .output()).await.context("Codex server startup timed out")??;

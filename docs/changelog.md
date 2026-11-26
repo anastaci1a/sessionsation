@@ -21,6 +21,7 @@ and package history are in Git.
 ## Versions
 
 - **1.72.1** Session processes get a private per-account `TMPDIR`/`TMP`/`TEMP` (and `CLAUDE_CODE_TMPDIR`) under `<data_root>/tmp`; `capabilities.session_tmp`, setting `session_tmp_root`.
+- **1.72.2** The Codex account app-server (whose tool commands run as its children) is started with the same temp variables; `capabilities.session_tmp.codex_app_server`, applies at its next start or restart.
 - **1.72.0** Internal: shared API dispatch helpers, shared clones, one job engine; no change.
 - **1.71.3** Rows add `caller_binding` (and Codex top-level `pid`/`process_start`).
 - **1.71.2** Receipts add `facts.readiness_ms`, `ledger_wait_ms`, `ledger_hold_ms` and `provider_ms`. A `--discard-queued` stop is no longer refused by a pending plain stop.

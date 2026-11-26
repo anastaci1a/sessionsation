@@ -92,7 +92,8 @@ non-steering v1 Submit/Queue.
 
 Check the [changelog](changelog.md) for every version you roll back over. Before
 rolling back below 1.72.1, remove `session_tmp_root` from `config.json` if it is set
-(`config set session_tmp_root null`): older releases refuse an unknown key. Unset, the key is never written. From 1.66.1
+(`config set session_tmp_root null`): older releases refuse an unknown key. A Codex account's app-server takes the temp directory only at its next start or restart
+(`account/restart-server`, or a start after it exited); a supervisor restart adopts a running one. Unset, the key is never written. From 1.66.1
 `messaging/receipts.db` carries `PRAGMA user_version` 1, stamped when the supervisor
 starts; older releases ignore it. A release older than 1.54.0 refuses a layout
 version 3 root: run `root rollback` first.
