@@ -20,6 +20,7 @@ and package history are in Git.
 
 ## Versions
 
+- **1.71.1** Internal: the hourly receipt retention holds the ledger in short batches; no change.
 - **1.71.0** Internal: one record engine; no change.
 - **1.70.1** Contract change: archive/restore repeats now succeed with `already_archived` / `already_active`; previously `SESSION_ALREADY_ARCHIVED` / `SESSION_NOT_ARCHIVED`.
 - **1.70.0** Restores everything removed in 1.68.0 and 1.69.0.

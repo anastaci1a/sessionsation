@@ -242,3 +242,220 @@ fn delivered_journal_records_retire_after_the_terminal_window_with_their_state()
     assert_eq!(run(&mut db, now, POLICY).unwrap(), 1);
     assert_eq!(retired(&db, &busy).unwrap().unwrap().0, "execution_started");
 }
+
+thread_local! {
+    /// Test-only time spent per receipt a batch settles (`pace`).
+    static PACE: std::cell::Cell<std::time::Duration> = const { std::cell::Cell::new(std::time::Duration::ZERO) };
+}
+pub(super) fn pace() {
+    std::thread::sleep(PACE.with(std::cell::Cell::get));
+}
+/// A fixed mix of every retention case, with fixed ids: receipts (old and young, certain
+/// and uncertain, unreadable), orphan bindings (cancelled, expired, young) and journals.
+fn mixed(paths: &Paths, input: &Enqueue, now: i64, receipts: usize) {
+    let mut db = Ledger::open(paths).unwrap();
+    let id = |n: usize| format!("00000000-0000-4000-8000-{n:012}");
+    let states = [
+        ("completed_with_reply", 15),
+        ("failed", 13),
+        ("unknown", 60),
+        ("native_accepted", 89),
+        ("execution_started", 91),
+        ("pending_local", 91),
+        ("rejected", 400),
+    ];
+    for n in 0..receipts {
+        let (state, age) = states[n % states.len()];
+        let mut i = input.clone();
+        i.message_id = id(n);
+        let mut r = db.accept(&i, now).unwrap();
+        r.state = state.into();
+        db.save(&r).unwrap();
+        db.db
+            .execute(
+                "UPDATE receipts SET expiry=? WHERE id=?",
+                params![now - age * DAY - n as i64, i.message_id],
+            )
+            .unwrap();
+        db.db
+            .execute(
+                "INSERT INTO public_messages VALUES (?,'{}')",
+                [&i.message_id],
+            )
+            .unwrap();
+    }
+    db.db
+        .execute(
+            "INSERT INTO receipts VALUES (?,?,?,?)",
+            params![id(900_000), "h", now - 400 * DAY, "{"],
+        )
+        .unwrap();
+    for n in 0..30 {
+        let (cancelled, age) = [(true, 20), (false, 20), (false, 100)][n % 3];
+        let binding =
+            serde_json::json!({"cancelled":cancelled,"request":{"expires_at":now - age * DAY}});
+        db.db
+            .execute(
+                "INSERT INTO public_messages VALUES (?,?)",
+                params![id(500_000 + n), binding.to_string()],
+            )
+            .unwrap();
+    }
+    let dir = paths.root.join(crate::layout::CLAUDE_STEER);
+    fs::create_dir_all(&dir).unwrap();
+    for n in 0..30 {
+        let (phase, state, age) = [
+            ("complete", "completed_with_reply", 20),
+            ("complete", "rejected", 2),
+            ("complete", "delivery_unknown", 30),
+            ("written", "execution_started", 20),
+            ("complete", "delivery_unknown", 100),
+        ][n % 5];
+        let id = id(700_000 + n);
+        fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::json!({"phase":phase,"state":state,"reason":null,
+                "updated_at":now - age * DAY,"request":{"message_id":id}})
+            .to_string(),
+        )
+        .unwrap();
+    }
+}
+/// Every table (rows in key order, events in sequence order) and the journal file names.
+fn dump(paths: &Paths) -> Vec<String> {
+    let db = Ledger::open(paths).unwrap();
+    let mut out = Vec::new();
+    for sql in [
+        "SELECT id||hash||expiry||receipt FROM receipts ORDER BY id",
+        "SELECT receipt FROM events ORDER BY seq",
+        "SELECT id||binding FROM public_messages ORDER BY id",
+        "SELECT id||mode FROM mode_requests ORDER BY id",
+        "SELECT id||state||coalesce(reason,'-')||retired_at FROM retired_messages ORDER BY id",
+        "SELECT store||last_run FROM retention_runs ORDER BY store",
+    ] {
+        let mut s = db.db.prepare(sql).unwrap();
+        out.extend(
+            s.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .flatten(),
+        );
+        out.push(String::new());
+    }
+    let mut files: Vec<String> = fs::read_dir(paths.root.join(crate::layout::CLAUDE_STEER))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    out.extend(files);
+    out
+}
+/// Hold times (ms) of the writer opens a pass made from this module (`ledger-stats.jsonl`).
+fn holds(paths: &Paths) -> Vec<f64> {
+    fs::read_to_string(paths.root.join(crate::layout::LEDGER_STATS))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| {
+            v["caller"]
+                .as_str()
+                .is_some_and(|c| c.contains("retention.rs"))
+        })
+        .filter_map(|v| v["hold_ms"].as_f64())
+        .collect()
+}
+/// 1.71.1: the batched hourly pass leaves exactly what one pass under a single hold leaves.
+#[test]
+fn batched_pass_leaves_the_same_ledger_and_journals_as_a_single_hold() {
+    let (_a, single, input, now) = fixture();
+    let (_b, batched, _, _) = fixture();
+    mixed(&single, &input, now, 140);
+    mixed(&batched, &input, now, 140);
+    let mut db = Ledger::open(&single).unwrap();
+    let single_hold = std::time::Instant::now();
+    let one = run(&mut db, now, POLICY).unwrap();
+    let single_hold = single_hold.elapsed();
+    drop(db);
+    let many = run_batched(&batched, now, POLICY, std::time::Duration::from_secs(5), 7).unwrap();
+    assert_eq!(one, many);
+    assert!(one > 100, "{one}");
+    assert_eq!(dump(&single), dump(&batched));
+    let h = holds(&batched);
+    assert!(h.len() > 20, "{h:?}");
+    eprintln!(
+        "retention: single hold {single_hold:?}; batched {} holds of 7, max {:.1} ms",
+        h.len(),
+        h.iter().copied().fold(0.0, f64::max)
+    );
+    // Idempotent in batches too.
+    assert_eq!(
+        run_batched(&batched, now, POLICY, std::time::Duration::from_secs(5), 7).unwrap(),
+        0
+    );
+    assert_eq!(dump(&batched).len(), dump(&single).len());
+}
+/// 1.71.1: an admission during the hourly pass waits for one batch at most, not the pass.
+#[test]
+fn an_admission_during_a_batched_pass_waits_for_one_batch_at_most() {
+    let (_dir, paths, input, now) = fixture();
+    mixed(&paths, &input, now, 280);
+    let batch = 8;
+    let per_receipt = std::time::Duration::from_millis(10);
+    let pass = {
+        let paths = paths.clone();
+        std::thread::spawn(move || {
+            PACE.with(|p| p.set(per_receipt));
+            let started = std::time::Instant::now();
+            let n = run_batched(
+                &paths,
+                now,
+                POLICY,
+                std::time::Duration::from_secs(5),
+                batch,
+            );
+            (n, started.elapsed())
+        })
+    };
+    // Admissions while the pass settles receipts (well over one batch of pace each).
+    std::thread::sleep(per_receipt * 30);
+    let mut waits = Vec::new();
+    for _ in 0..5 {
+        let asked = std::time::Instant::now();
+        let mut db =
+            super::super::ledger::open_write_blocking(&paths, std::time::Duration::from_secs(30))
+                .unwrap();
+        waits.push(asked.elapsed());
+        let mut i = input.clone();
+        i.message_id = uuid::Uuid::new_v4().to_string();
+        db.accept(&i, now).unwrap();
+        drop(db);
+        std::thread::sleep(per_receipt * 5);
+    }
+    let (n, took) = pass.join().unwrap();
+    assert!(n.unwrap() > 100);
+    let one_batch = per_receipt * u32::try_from(batch).unwrap();
+    let worst = waits.iter().max().copied().unwrap();
+    eprintln!("pass {took:?}; admission waits {waits:?}; one batch {one_batch:?}");
+    assert!(took > one_batch * 10, "{took:?}");
+    assert!(worst < one_batch * 3, "{waits:?}");
+    let h = holds(&paths);
+    assert!(
+        h.iter().all(|&ms| ms < (one_batch * 3).as_secs_f64() * 1e3),
+        "{h:?}"
+    );
+}
+/// The pass pages both tables by key: no full read of `public_messages` bindings.
+#[test]
+fn batched_scans_read_public_messages_through_the_key_index() {
+    let (_dir, paths, _input, _now) = fixture();
+    let db = Ledger::open(&paths).unwrap();
+    let p = plan(
+        &db,
+        "SELECT p.id,EXISTS(SELECT 1 FROM receipts r WHERE r.id=p.id) FROM public_messages p WHERE p.id>'' ORDER BY p.id LIMIT 9",
+    );
+    assert!(
+        !p.split(" | ")
+            .any(|l| l.contains("SCAN p") && !l.contains("COVERING INDEX")),
+        "{p}"
+    );
+}

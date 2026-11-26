@@ -360,13 +360,10 @@ pub(super) async fn held_ids(paths: &Paths, c: &str) -> Option<Vec<String>> {
     let ledger = ledger::open_read(paths, wait_budget(paths, Wait::Read))
         .await
         .ok()?;
-    Some(
-        [
-            ledger.held_ids(c, false).ok()?,
-            claude_steer::held_ids(paths, c, false),
-        ]
-        .concat(),
-    )
+    let ids = ledger.held_ids(c, false).ok()?;
+    // 1.71.1: released before the journal directory is read.
+    drop(ledger);
+    Some([ids, claude_steer::held_ids(paths, c, false)].concat())
 }
 
 pub async fn status(

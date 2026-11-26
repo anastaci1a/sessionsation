@@ -39,7 +39,7 @@ pub(super) const SCHEMA_VERSION: i64 = 1;
 /// Every table of the receipts database, including the public-send bindings and the
 /// retention tombstones that used to be created on each use.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS metadata(epoch TEXT NOT NULL); CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, hash TEXT NOT NULL, expiry INTEGER NOT NULL, receipt TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, receipt TEXT NOT NULL); CREATE TABLE IF NOT EXISTS mode_requests(id TEXT PRIMARY KEY, mode TEXT NOT NULL); CREATE TABLE IF NOT EXISTS public_messages(id TEXT PRIMARY KEY, binding TEXT NOT NULL); CREATE TABLE IF NOT EXISTS retired_messages(id TEXT PRIMARY KEY, state TEXT NOT NULL, reason TEXT, retired_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS retention_runs(store TEXT PRIMARY KEY, last_run INTEGER NOT NULL);";
-const RETRY: Duration = Duration::from_millis(25);
+pub(super) const RETRY: Duration = Duration::from_millis(25);
 /// `ledger-stats.jsonl` is trimmed above this size to its last [`STATS_KEEP`] bytes.
 pub(super) const STATS_MAX: u64 = 10 * 1024 * 1024;
 pub(super) const STATS_KEEP: u64 = 1024 * 1024;

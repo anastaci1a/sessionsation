@@ -419,10 +419,14 @@ async fn mutation_lock_waiting(
 /// Unthrottled receipt-retention pass (part of the data-root retention sweep);
 /// returns the number of retired message ids.
 pub fn run_receipt_retention(paths: &Paths, now: i64) -> anyhow::Result<usize> {
-    let retired = (|| {
-        let mut ledger = ledger::open_write_blocking(paths, std::time::Duration::from_secs(5))?;
-        retention::run(&mut ledger, now, retention::Policy::load(paths))
-    })();
+    // 1.71.1: short writer holds, released between batches (`retention::Hold`).
+    let retired = retention::run_batched(
+        paths,
+        now,
+        retention::Policy::load(paths),
+        std::time::Duration::from_secs(5),
+        retention::BATCH,
+    );
     // However the pass ended (a busy ledger included): the stats file is bounded
     // independently, best effort, and never a reason to fail the sweep.
     let _ = ledger::trim_stats(paths);

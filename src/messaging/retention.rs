@@ -20,10 +20,15 @@
 //!   every retired id in `retired_messages`. A retired id is never accepted
 //!   again: send and receipt both return `RECEIPT_RETIRED` with the final state.
 //!   Tombstones are not counted against capacity and are not pruned.
+//!
+//! Since 1.71.1 the hourly sweep reads journals without the ledger and settles candidates
+//! in batches, each under a short writer hold ([`Hold`]); a send near capacity still runs
+//! the pass inside its own hold.
 use super::{Fault, Ledger, Reads, Result, ledger::Tombstone};
+use crate::paths::Paths;
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
 
 pub(super) const HORIZON_REASON: &str = "outcome_unknown_at_retention_horizon";
 const INTERVAL_SECONDS: i64 = 3600;
@@ -108,20 +113,92 @@ pub(super) fn maybe_run(ledger: &mut Ledger, now: i64) {
     let _ = run(ledger, now, policy);
 }
 
+/// Rows or journal files settled under one writer hold of the hourly pass (1.71.1).
+pub(super) const BATCH: usize = 64;
+/// Receipt or binding keys read under one hold while a pass looks for candidates.
+const SCAN: i64 = 2000;
+
+/// How a pass reaches the ledger (1.71.1). A send near capacity runs it inside its own
+/// writer (`Held`: one hold, as before). The hourly sweep takes a short writer per batch
+/// (`Batches`) and pauses between batches longer than a waiter's retry interval, so an
+/// admission waits for one batch at most. Every decision is made again under the hold that
+/// applies it, from the record as it is then; results are those of a single pass.
+pub(super) enum Hold<'a> {
+    Held(&'a mut Ledger),
+    Batches {
+        paths: &'a Paths,
+        budget: Duration,
+        size: usize,
+        opened: bool,
+    },
+}
+impl Hold<'_> {
+    fn with<T>(&mut self, f: impl FnOnce(&mut Ledger) -> Result<T>) -> Result<T> {
+        match self {
+            Self::Held(ledger) => f(ledger),
+            Self::Batches {
+                paths,
+                budget,
+                opened,
+                ..
+            } => {
+                if std::mem::replace(opened, true) {
+                    std::thread::sleep(super::ledger::RETRY * 3);
+                }
+                f(&mut super::ledger::open_write_blocking(paths, *budget)?)
+            }
+        }
+    }
+    fn size(&self) -> usize {
+        match self {
+            Self::Held(_) => usize::MAX,
+            Self::Batches { size, .. } => (*size).max(1),
+        }
+    }
+    fn paths(&self) -> Paths {
+        match self {
+            Self::Held(ledger) => ledger.paths.clone(),
+            Self::Batches { paths, .. } => (*paths).clone(),
+        }
+    }
+}
+
 /// One unthrottled pass; returns the number of retired ids.
 pub(super) fn run(ledger: &mut Ledger, now: i64, policy: Policy) -> Result<usize> {
-    let mut retired = codex(ledger, now, policy)?;
-    let root = ledger.paths.root.clone();
+    pass(&mut Hold::Held(ledger), now, policy)
+}
+/// The same pass in batches of `size`, each under its own writer (waiting up to `budget`).
+pub(super) fn run_batched(
+    paths: &Paths,
+    now: i64,
+    policy: Policy,
+    budget: Duration,
+    size: usize,
+) -> Result<usize> {
+    let mut hold = Hold::Batches {
+        paths,
+        budget,
+        size,
+        opened: false,
+    };
+    pass(&mut hold, now, policy)
+}
+fn pass(hold: &mut Hold<'_>, now: i64, policy: Policy) -> Result<usize> {
+    let mut retired = codex(hold, now, policy)?;
+    let root = hold.paths().root;
     for store in [
         crate::layout::CLAUDE_STEER,
         crate::layout::CLAUDE_DELIVERIES,
     ] {
-        retired += files(ledger, &root.join(store), now, policy)?;
+        retired += files(hold, &root.join(store), now, policy)?;
     }
-    ledger.db.execute(
-        "INSERT INTO retention_runs(store,last_run) VALUES('all',?) ON CONFLICT(store) DO UPDATE SET last_run=excluded.last_run",
-        [now],
-    )?;
+    hold.with(|ledger| {
+        ledger.db.execute(
+            "INSERT INTO retention_runs(store,last_run) VALUES('all',?) ON CONFLICT(store) DO UPDATE SET last_run=excluded.last_run",
+            [now],
+        )?;
+        Ok(())
+    })?;
     Ok(retired)
 }
 
@@ -139,94 +216,151 @@ fn tombstone(
     Ok(())
 }
 
-fn codex(ledger: &mut Ledger, now: i64, policy: Policy) -> Result<usize> {
-    let old: Vec<(String, String, i64)> = {
-        let mut s = ledger
-            .db
-            .prepare("SELECT id,receipt,expiry FROM receipts WHERE expiry < ? ORDER BY expiry")?;
-        s.query_map(
-            [now - policy.terminal_seconds.min(policy.horizon_seconds)],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?
-        .collect::<std::result::Result<_, _>>()?
-    };
-    let mut retire = Vec::new();
-    for (id, text, expiry) in old {
-        let Some(mut receipt) = serde_json::from_str::<super::Receipt>(&text).ok() else {
-            continue; // Unreadable evidence is kept, never discarded.
-        };
-        if !certain_terminal(&receipt.state) {
-            if expiry >= now - policy.horizon_seconds {
-                continue;
-            }
-            // Honest terminal state first, durably and as an event.
-            if receipt.state == "pending_local" {
-                receipt.reason = None; // Provably never dispatched.
-            } else {
-                receipt.reason = Some(HORIZON_REASON.into());
-            }
-            receipt.state = "expired".into();
-            ledger.save(&receipt)?;
-        } else if expiry >= now - policy.terminal_seconds {
-            continue;
+/// Every row of `sql` (`id` first, keyset `id > ?1`, `LIMIT ?2`), `SCAN` rows per hold.
+fn keys<T>(
+    hold: &mut Hold<'_>,
+    sql: &str,
+    row: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<(String, T)>,
+) -> Result<Vec<(String, T)>> {
+    let mut out: Vec<(String, T)> = Vec::new();
+    loop {
+        let after = out.last().map_or_else(String::new, |k| k.0.clone());
+        let chunk = hold.with(|ledger| {
+            let mut s = ledger.db.prepare(sql)?;
+            let rows = s
+                .query_map(params![after, SCAN], &row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })?;
+        let more = chunk.len() == SCAN as usize;
+        out.extend(chunk);
+        if !more {
+            return Ok(out);
         }
-        retire.push((id, receipt.state, receipt.reason));
     }
-    // One durable transaction: tombstones and deletions land together.
-    let tx = ledger.db.transaction()?;
-    for (id, state, reason) in &retire {
-        tombstone(&tx, id, state, reason.as_deref(), now)?;
-        tx.execute("DELETE FROM receipts WHERE id=?", [id])?;
-        tx.execute("DELETE FROM public_messages WHERE id=?", [id])?;
-        tx.execute("DELETE FROM mode_requests WHERE id=?", [id])?;
+}
+
+fn codex(hold: &mut Hold<'_>, now: i64, policy: Policy) -> Result<usize> {
+    let cutoff = now - policy.terminal_seconds.min(policy.horizon_seconds);
+    let mut old = keys(
+        hold,
+        "SELECT id,expiry FROM receipts WHERE id>?1 ORDER BY id LIMIT ?2",
+        |r| Ok((r.get(0)?, r.get::<_, i64>(1)?)),
+    )?;
+    old.retain(|(_, expiry)| *expiry < cutoff);
+    old.sort_by_key(|(_, expiry)| *expiry);
+    let size = hold.size();
+    let mut retired = 0;
+    for batch in old.chunks(size) {
+        retired += hold.with(|ledger| {
+            let mut retire = Vec::new();
+            for (id, _) in batch {
+                #[cfg(test)]
+                tests::pace();
+                // As it is now: another writer may have changed or retired it since the scan.
+                let Some((text, expiry)) = ledger
+                    .db
+                    .query_row(
+                        "SELECT receipt,expiry FROM receipts WHERE id=?",
+                        [id],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                    )
+                    .optional()?
+                else {
+                    continue;
+                };
+                if expiry >= cutoff {
+                    continue;
+                }
+                let Some(mut receipt) = serde_json::from_str::<super::Receipt>(&text).ok() else {
+                    continue; // Unreadable evidence is kept, never discarded.
+                };
+                if !certain_terminal(&receipt.state) {
+                    if expiry >= now - policy.horizon_seconds {
+                        continue;
+                    }
+                    // Honest terminal state first, durably and as an event.
+                    if receipt.state == "pending_local" {
+                        receipt.reason = None; // Provably never dispatched.
+                    } else {
+                        receipt.reason = Some(HORIZON_REASON.into());
+                    }
+                    receipt.state = "expired".into();
+                    ledger.save(&receipt)?;
+                } else if expiry >= now - policy.terminal_seconds {
+                    continue;
+                }
+                retire.push((id, receipt.state, receipt.reason));
+            }
+            // One durable transaction: tombstones and deletions land together.
+            let tx = ledger.db.transaction()?;
+            for (id, state, reason) in &retire {
+                tombstone(&tx, id, state, reason.as_deref(), now)?;
+                tx.execute("DELETE FROM receipts WHERE id=?", [id])?;
+                tx.execute("DELETE FROM public_messages WHERE id=?", [id])?;
+                tx.execute("DELETE FROM mode_requests WHERE id=?", [id])?;
+            }
+            tx.commit()?;
+            Ok(retire.len())
+        })?;
     }
-    tx.commit()?;
-    let mut retired = retire.len();
     // Public bindings that never produced a receipt: provably undispatched.
     // Ids first (a covering index scan); a binding is read by key only for an orphan.
-    let orphans: Vec<String> = {
-        let mut s = ledger.db.prepare(
-            "SELECT p.id FROM public_messages p WHERE NOT EXISTS (SELECT 1 FROM receipts r WHERE r.id=p.id)",
-        )?;
-        s.query_map([], |r| r.get(0))?
-            .collect::<std::result::Result<_, _>>()?
-    };
-    for id in orphans {
-        let Some(text) = ledger.binding(&id)? else {
-            continue;
-        };
-        #[derive(Deserialize)]
-        struct Orphan {
-            cancelled: bool,
-            request: OrphanRequest,
-        }
-        #[derive(Deserialize)]
-        struct OrphanRequest {
-            expires_at: i64,
-        }
-        let Ok(b) = serde_json::from_str::<Orphan>(&text) else {
-            continue;
-        };
-        let limit = if b.cancelled {
-            policy.terminal_seconds
-        } else {
-            policy.horizon_seconds
-        };
-        // A resume binding is owned by its recovery journal until it binds.
-        if b.request.expires_at >= now - limit || super::recovery::exists(&ledger.paths, &id) {
-            continue;
-        }
-        let tx = ledger.db.transaction()?;
-        tombstone(
-            &tx,
-            &id,
-            if b.cancelled { "cancelled" } else { "expired" },
-            None,
-            now,
-        )?;
-        tx.execute("DELETE FROM public_messages WHERE id=?", [&id])?;
-        tx.commit()?;
-        retired += 1;
+    let orphans: Vec<String> = keys(
+        hold,
+        "SELECT p.id,EXISTS(SELECT 1 FROM receipts r WHERE r.id=p.id) FROM public_messages p WHERE p.id>?1 ORDER BY p.id LIMIT ?2",
+        |r| Ok((r.get(0)?, r.get::<_, bool>(1)?)),
+    )?
+    .into_iter()
+    .filter_map(|(id, bound)| (!bound).then_some(id))
+    .collect();
+    for batch in orphans.chunks(size) {
+        retired += hold.with(|ledger| {
+            let mut retire = Vec::new();
+            for id in batch {
+                let bound: bool = ledger.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM receipts WHERE id=?)",
+                    [id],
+                    |r| r.get(0),
+                )?;
+                if bound {
+                    continue;
+                }
+                let Some(text) = ledger.binding(id)? else {
+                    continue;
+                };
+                #[derive(Deserialize)]
+                struct Orphan {
+                    cancelled: bool,
+                    request: OrphanRequest,
+                }
+                #[derive(Deserialize)]
+                struct OrphanRequest {
+                    expires_at: i64,
+                }
+                let Ok(b) = serde_json::from_str::<Orphan>(&text) else {
+                    continue;
+                };
+                let limit = if b.cancelled {
+                    policy.terminal_seconds
+                } else {
+                    policy.horizon_seconds
+                };
+                // A resume binding is owned by its recovery journal until it binds.
+                if b.request.expires_at >= now - limit || super::recovery::exists(&ledger.paths, id)
+                {
+                    continue;
+                }
+                retire.push((id, if b.cancelled { "cancelled" } else { "expired" }));
+            }
+            let tx = ledger.db.transaction()?;
+            for (id, state) in &retire {
+                tombstone(&tx, id, state, None, now)?;
+                tx.execute("DELETE FROM public_messages WHERE id=?", [id])?;
+            }
+            tx.commit()?;
+            Ok(retire.len())
+        })?;
     }
     Ok(retired)
 }
@@ -262,61 +396,78 @@ struct JournalRequest {
     message_id: String,
 }
 
-fn files(ledger: &mut Ledger, dir: &Path, now: i64, policy: Policy) -> Result<usize> {
+/// The retirement of one journal file as it is now: `(id, state, reason)`, or `None` to
+/// keep it.
+fn journal(path: &Path, now: i64, policy: Policy) -> Option<(String, String, Option<String>)> {
+    let stem = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_suffix(".json"))?;
+    if uuid::Uuid::parse_str(stem).is_err()
+        || !fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+    {
+        return None;
+    }
+    let j = fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Journal>(&b).ok())?;
+    if j.request.message_id != stem {
+        return None;
+    }
+    let certain =
+        j.phase == "complete" && !matches!(j.state.as_str(), "delivery_unknown" | "unknown");
+    // A worker still holding its lock is never retired, and its record is not final.
+    let lock = path.with_extension("worker.lock");
+    let worker_live =
+        || lock.exists() && !crate::background::worker_stopped(&lock).unwrap_or(false);
+    let terminal_window = j.updated_at < now - policy.terminal_seconds;
+    let (state, reason) = if certain {
+        if !terminal_window {
+            return None;
+        }
+        (j.state, j.reason)
+    } else if terminal_window && j.delivered() && !worker_live() {
+        // Delivered (1.52.0): its real state, never the horizon's `expired`.
+        (j.state, j.reason)
+    } else {
+        if j.updated_at >= now - policy.horizon_seconds || worker_live() {
+            return None;
+        }
+        ("expired".to_owned(), Some(HORIZON_REASON.to_owned()))
+    };
+    Some((stem.to_owned(), state, reason))
+}
+
+fn files(hold: &mut Hold<'_>, dir: &Path, now: i64, policy: Policy) -> Result<usize> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Ok(0);
     };
+    // Every journal is read and judged without the ledger; candidates again under it.
+    let found: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| journal(p, now, policy).is_some())
+        .collect();
     let mut retired = 0;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(stem) = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_suffix(".json"))
-        else {
-            continue;
-        };
-        if uuid::Uuid::parse_str(stem).is_err() || !entry.file_type().is_ok_and(|t| t.is_file()) {
-            continue;
-        }
-        let Some(j) = fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Journal>(&b).ok())
-        else {
-            continue;
-        };
-        if j.request.message_id != stem {
-            continue;
-        }
-        let certain =
-            j.phase == "complete" && !matches!(j.state.as_str(), "delivery_unknown" | "unknown");
-        // A worker still holding its lock is never retired, and its record is not final.
-        let lock = path.with_extension("worker.lock");
-        let worker_live =
-            || lock.exists() && !crate::background::worker_stopped(&lock).unwrap_or(false);
-        let terminal_window = j.updated_at < now - policy.terminal_seconds;
-        let (state, reason) = if certain {
-            if !terminal_window {
-                continue;
+    for batch in found.chunks(hold.size()) {
+        retired += hold.with(|ledger| {
+            let settle: Vec<_> = batch
+                .iter()
+                .filter_map(|p| journal(p, now, policy).map(|d| (p, d)))
+                .collect();
+            let tx = ledger.db.transaction()?;
+            for (_, (id, state, reason)) in &settle {
+                tombstone(&tx, id, state, reason.as_deref(), now)?;
             }
-            (j.state, j.reason)
-        } else if terminal_window && j.delivered() && !worker_live() {
-            // Delivered (1.52.0): its real state, never the horizon's `expired`.
-            (j.state, j.reason)
-        } else {
-            if j.updated_at >= now - policy.horizon_seconds || worker_live() {
-                continue;
+            tx.commit()?;
+            // Tombstone first: an interrupted pass leaves the id blocked either way.
+            for (path, _) in &settle {
+                fs::remove_file(path).map_err(|_| Fault("local_io_error"))?;
+                let _ = fs::remove_file(path.with_extension("worker.lock"));
+                let _ = fs::remove_file(path.with_extension("worker.log"));
             }
-            ("expired".to_owned(), Some(HORIZON_REASON.to_owned()))
-        };
-        let tx = ledger.db.transaction()?;
-        tombstone(&tx, stem, &state, reason.as_deref(), now)?;
-        tx.commit()?;
-        // Tombstone first: an interrupted pass leaves the id blocked either way.
-        fs::remove_file(&path).map_err(|_| Fault("local_io_error"))?;
-        let _ = fs::remove_file(path.with_extension("worker.lock"));
-        let _ = fs::remove_file(path.with_extension("worker.log"));
-        retired += 1;
+            Ok(settle.len())
+        })?;
     }
     Ok(retired)
 }
