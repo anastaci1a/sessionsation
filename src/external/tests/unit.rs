@@ -490,3 +490,31 @@ fn repeated_handoff_advances_only_from_an_older_prefix() {
     assert!(copy_rollout(&source.join(relative), &source, &dest).is_err());
     assert_eq!(fs::read(dest.join(relative)).unwrap(), newer);
 }
+
+#[test]
+fn codex_pane_commands_carry_the_private_temp_directory() {
+    // Contract 1.72.1.
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(tmp.path().join("root"))).unwrap();
+    let home = paths.account("work").unwrap();
+    let plain = "exec env -u X CODEX_HOME=/h codex".to_owned();
+    let dir = paths.root.join("tmp/codex/work");
+    let got = with_tmp_env(&paths, &home, plain.clone()).unwrap();
+    let words = ["TMPDIR", "TMP", "TEMP"].map(|n| format!(" {n}='{}'", dir.display()));
+    assert_eq!(
+        got,
+        format!("exec env -u X{} CODEX_HOME=/h codex", words.concat())
+    );
+    assert!(dir.is_dir());
+    std::fs::write(
+        paths.root.join("config.json"),
+        r#"{"session_tmp_root":"none"}"#,
+    )
+    .unwrap();
+    assert_eq!(with_tmp_env(&paths, &home, plain.clone()).unwrap(), plain);
+    std::fs::write(paths.root.join("config.json"), "{}").unwrap();
+    std::fs::remove_dir(&dir).unwrap();
+    std::os::unix::fs::symlink(tmp.path(), &dir).unwrap();
+    let err = format!("{:#}", with_tmp_env(&paths, &home, plain).unwrap_err());
+    assert!(err.contains("SESSION_TMP_UNSAFE"), "{err}");
+}

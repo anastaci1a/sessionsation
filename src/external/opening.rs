@@ -202,7 +202,11 @@ pub async fn open(paths: &Paths, key: &str, name: Option<&str>) -> Result<Value>
             mode,
         )
     };
-    let command = with_session_env(paths, &source.thread_id, command);
+    let command = with_tmp_env(
+        paths,
+        &source.home,
+        with_session_env(paths, &source.thread_id, command),
+    )?;
     // Keep startup diagnostics, while a normal /exit still removes the pane.
     let command = format!(
         "tmux set-option -p remain-on-exit failed; {command} -C {}",

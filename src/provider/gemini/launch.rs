@@ -71,10 +71,12 @@ pub fn resume_argv(config: &Config, session_id: &str, mode: LaunchPermissions) -
     argv
 }
 
-fn exec(config: &Config, home: &Path, cwd: &Path, argv: &[String], session: &str) -> Result<()> {
+fn exec(p: &Paths, home: &Path, cwd: &Path, argv: &[String], s: &catalog::Session) -> Result<()> {
+    let config = &crate::store::load_config(p)?;
     let mut command = gemini::command(config, home);
     // Contract 1.62.0 (SM7).
-    crate::provider::set_session_env(&mut command, session);
+    crate::provider::set_session_env(&mut command, &s.id);
+    command.envs(crate::provider::session_tmp_of(p, s)?);
     command.args(&argv[1..]).current_dir(cwd);
     Err(command.exec()).context("could not launch Gemini")
 }
@@ -109,11 +111,11 @@ pub async fn exec_new(
         )?,
     };
     exec(
-        &config,
+        paths,
         &account.home,
         &cwd,
         &new_argv(&config, &id, config.effective_launch_permissions()),
-        &session.id,
+        &session,
     )
 }
 
@@ -140,7 +142,7 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
     let current = catalog::move_attachment(paths, &session, attachment, None)?;
     crate::inline::mark_attached(paths);
     exec(
-        &config,
+        paths,
         &account.home,
         Path::new(&directory),
         &resume_argv(
@@ -148,7 +150,7 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
             &current.conversation_id,
             config.effective_launch_permissions(),
         ),
-        &current.id,
+        &current,
     )
 }
 

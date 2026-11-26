@@ -48,7 +48,7 @@ copy credentials or move account homes against live data. An unrelated default C
 home or unmanaged terminal is not adopted.
 
 Config keys (`config.json`): `codex_binary`, `claude_binary`, `gemini_binary`,
-`antigravity_binary`, `claude_session_home`, `curl_binary`, monitoring thresholds,
+`antigravity_binary`, `claude_session_home`, `curl_binary`, `session_tmp_root`, monitoring thresholds,
 [`launch_permissions`](contract.md#launch-permissions),
 [`claude_pretrust_folders`, `antigravity_pretrust_folders`](contract.md#folder-pre-trust),
 [`claude_default_statusline_command`](contract.md#claude-account-settings),

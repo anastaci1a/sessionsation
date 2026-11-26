@@ -28,7 +28,7 @@ use crate::{
     model::Account,
     paths::{Paths, validate_name},
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf, str::FromStr};
 
@@ -221,6 +221,43 @@ pub fn set_session_env(command: &mut std::process::Command, session_id: &str) {
 /// session must not hand that session's id to unrelated children.
 pub fn scrub_session_env(command: &mut std::process::Command) {
     command.env_remove(SESSION_ENV);
+}
+/// Contract 1.72.1: the private temp directory of an account's sessions (`session_tmp_root`).
+pub fn session_tmp_env(
+    paths: &Paths,
+    provider: ProviderId,
+    account: &str,
+) -> Result<Vec<(&'static str, PathBuf)>> {
+    let mut dir = match crate::store::load_config(paths)?
+        .session_tmp_root
+        .as_deref()
+    {
+        Some("" | "none") => return Ok(vec![]),
+        Some(root) => PathBuf::from(root),
+        None => paths.root.join("tmp"),
+    };
+    validate_name(account)?;
+    for part in ["", provider.as_str(), account] {
+        dir.push(part);
+        crate::paths::private_dir(&dir)
+            .with_context(|| format!("SESSION_TMP_UNSAFE: {}", dir.display()))?;
+    }
+    let claude = (provider == ProviderId::Claude).then_some("CLAUDE_CODE_TMPDIR");
+    Ok(["TMPDIR", "TMP", "TEMP"]
+        .into_iter()
+        .chain(claude)
+        .map(|n| (n, dir.clone()))
+        .collect())
+}
+pub fn session_tmp_of(
+    p: &Paths,
+    s: &crate::catalog::Session,
+) -> Result<Vec<(&'static str, PathBuf)>> {
+    session_tmp_env(p, ProviderId::parse(&s.provider)?, &s.account)
+}
+pub fn session_tmp_capability() -> serde_json::Value {
+    let since = "1.72.1";
+    serde_json::json!({"since_contract":since,"env":["TMPDIR","TMP","TEMP","CLAUDE_CODE_TMPDIR"],"default_root":"<data_root>/tmp/<provider>/<account>","configurable_by":"session_tmp_root"})
 }
 /// `NAME=value` for the `env` prefix of a Codex pane command.
 pub fn session_env_assignment(session_id: &str) -> String {

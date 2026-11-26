@@ -77,6 +77,9 @@ pub struct Config {
     /// Contract 1.60.0: the curl that sends the two Claude limit-reset requests (and, when
     /// due, Claude Code's token renewal). Requests go on its stdin (`-K -`), never argv.
     pub curl_binary: String,
+    /// Contract 1.72.1: root of per-account session temp dirs; unset = `<data_root>/tmp`, "none" or empty = inherit. Never written unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_tmp_root: Option<String>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -112,6 +115,7 @@ impl Default for Config {
             native_sender_registration: false,
             reuse_idle_tabs: true,
             curl_binary: "/usr/bin/curl".into(),
+            session_tmp_root: None,
         }
     }
 }
@@ -153,6 +157,16 @@ impl Config {
             "invalid poll intervals"
         );
         ensure!(!self.curl_binary.trim().is_empty(), "curl_binary is empty");
+        if let Some(root) = self
+            .session_tmp_root
+            .as_deref()
+            .filter(|r| !r.is_empty() && *r != "none")
+        {
+            ensure!(
+                std::path::Path::new(root).is_absolute(),
+                "session_tmp_root must be absolute, \"none\" or empty"
+            );
+        }
         ensure!(
             !self.codex_binary.trim().is_empty(),
             "codex_binary is empty"

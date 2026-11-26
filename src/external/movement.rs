@@ -847,7 +847,7 @@ pub(super) async fn launch_target(
         target.is_some(),
     );
     let s = &job.source;
-    let command = resume_command(paths, s, target_home, &binary, root_target, mode, remote);
+    let command = resume_command(paths, s, target_home, &binary, root_target, mode, remote)?;
     let command = format!("{command} -C {}", shell_quote(&cwd));
     phase(
         paths,
@@ -1329,7 +1329,7 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
         &s.rollout,
         mode,
         s.shared_server,
-    );
+    )?;
     hosting::relaunch(paths, &job.source.pane, &job.source.cwd, &command)?;
     confirm_runtime(
         paths,
@@ -1366,14 +1366,14 @@ fn resume_command(
     rollout: &Path,
     mode: LaunchPermissions,
     remote: bool,
-) -> String {
+) -> Result<String> {
     let (options, thread) = (&source.resume_options, &source.thread_id);
     let command = if remote {
         remote_resume_shell(home, binary, options, thread)
     } else {
         resume_shell(home, binary, options, thread, rollout, mode)
     };
-    with_session_env(paths, thread, command)
+    with_tmp_env(paths, home, with_session_env(paths, thread, command))
 }
 pub(super) fn remote_resume_shell(
     home: &Path,

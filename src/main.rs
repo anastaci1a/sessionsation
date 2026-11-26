@@ -1142,7 +1142,10 @@ async fn run(cli: Cli) -> Result<()> {
             daemon::ensure_started(&paths).await?;
             let mut config = daemon::call(&paths, "config/get", json!({})).await?;
             if let Some(ConfigCommand::Set { key, value }) = command {
-                anyhow::ensure!(config.get(&key).is_some(), "unknown setting {key}");
+                anyhow::ensure!(
+                    config.get(&key).is_some() || key == "session_tmp_root",
+                    "unknown setting {key}"
+                );
                 config[&key] = serde_json::from_str(&value).unwrap_or(Value::String(value));
                 let validated: Config = serde_json::from_value(config.clone())?;
                 validated.validate()?;

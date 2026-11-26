@@ -1685,6 +1685,8 @@ async fn run_account_thread_inner(
         }
     }
     let socket = home.join("app-server-control/app-server-control.sock");
+    let name = home.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = crate::provider::session_tmp_env(paths, crate::provider::ProviderId::Codex, &name)?;
     let error = Command::new(&config.codex_binary)
         .args(["resume", id, "--remote"])
         .arg(format!("unix://{}", socket.display()))
@@ -1696,6 +1698,7 @@ async fn run_account_thread_inner(
         .env_remove("CODEX_API_KEY")
         .env_remove("CODEX_ACCESS_TOKEN")
         .env(crate::provider::SESSION_ENV, &session_id)
+        .envs(tmp)
         .exec();
     Err(error).context("could not launch Codex")
 }
@@ -2803,6 +2806,15 @@ pub(crate) fn set_known_thread_session_env(paths: &Paths, params: &mut Value, th
     {
         set_thread_session_env(params, &id);
     }
+}
+pub(crate) fn with_tmp_env(paths: &Paths, home: &Path, command: String) -> Result<String> {
+    let name = home.file_name().unwrap_or_default().to_string_lossy();
+    let words: String =
+        crate::provider::session_tmp_env(paths, crate::provider::ProviderId::Codex, &name)?
+            .iter()
+            .map(|(n, d)| format!(" {n}={}", shell_quote(&d.to_string_lossy())))
+            .collect();
+    Ok(command.replacen(" CODEX_HOME=", &format!("{words} CODEX_HOME="), 1))
 }
 /// The session id in a Codex pane command's `env` prefix (`exec env -u ... CODEX_HOME=...`),
 /// for a conversation that has a catalog entry (contract 1.62.0).

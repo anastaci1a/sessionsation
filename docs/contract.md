@@ -2196,6 +2196,14 @@ new tab opens) and claimed for two minutes (`registry/pane-claims.json`). Any
 uncertainty means a new tab. Receipts and the `api resume` result gain
 `pane_reused:true` and a `detail`. `session add-to-herdr` does not reuse panes.
 
+**Session temp directory** (`capabilities.session_tmp`, setting `session_tmp_root`). Every
+session process Sessionsation starts (launch, resume, restart, account switch; all
+providers) gets `TMPDIR`, `TMP` and `TEMP`, and Claude also `CLAUDE_CODE_TMPDIR`, set to
+`<root>/<provider>/<account>` (default root `<data_root>/tmp`; mode 0700, created if
+missing). A symlink or a directory of another owner is refused (`SESSION_TMP_UNSAFE`).
+Setting `session_tmp_root` to `"none"` or `""` keeps the inherited environment. Running
+sessions keep their old temp directory until relaunched; the daemon and workers are unchanged.
+
 ### Move a running session between Spaces
 
 `capabilities.space_move.version == 1` advertises it; `session.capabilities.move_space`

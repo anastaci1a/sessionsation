@@ -90,7 +90,9 @@ non-steering v1 Submit/Queue.
 
 ### Rolling back a release
 
-Check the [changelog](changelog.md) for every version you roll back over. From 1.66.1
+Check the [changelog](changelog.md) for every version you roll back over. Before
+rolling back below 1.72.1, remove `session_tmp_root` from `config.json` if it is set
+(`config set session_tmp_root null`): older releases refuse an unknown key. Unset, the key is never written. From 1.66.1
 `messaging/receipts.db` carries `PRAGMA user_version` 1, stamped when the supervisor
 starts; older releases ignore it. A release older than 1.54.0 refuses a layout
 version 3 root: run `root rollback` first.

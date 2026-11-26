@@ -105,3 +105,45 @@ fn the_live_config_keeps_stderr_a_single_envelope() {
     });
     assert!(envelope["error"]["code"].is_string(), "{envelope}");
 }
+
+#[test]
+fn session_tmp_root_is_optional_never_written_unset_and_the_live_key_set_still_loads() {
+    // Contract 1.72.1: 1.72.0 refuses unknown keys, so the key is written only when set.
+    let default = serde_json::to_value(Config::default()).unwrap();
+    assert!(default.get("session_tmp_root").is_none());
+    let mut doc = live_document();
+    let config: Config = serde_json::from_value(doc.clone()).unwrap();
+    assert_eq!(config.session_tmp_root, None);
+    for (value, ok) in [
+        ("none", true),
+        ("", true),
+        ("/mnt/disk1/tmp", true),
+        ("tmp", false),
+    ] {
+        doc["session_tmp_root"] = json!(value);
+        let config: Config = serde_json::from_value(doc.clone()).unwrap();
+        assert_eq!(config.validate().is_ok(), ok, "{value}");
+    }
+    doc["session_tmp_root"] = Value::Null;
+    assert!(
+        serde_json::from_value::<Config>(doc)
+            .unwrap()
+            .session_tmp_root
+            .is_none()
+    );
+}
+
+#[test]
+fn a_foreign_owned_session_temp_directory_is_refused() {
+    use sessionsation::provider::{ProviderId, session_tmp_env};
+    let dir = tempfile::tempdir().unwrap();
+    let paths = sessionsation::paths::Paths::new(Some(dir.path().join("root"))).unwrap();
+    let env = session_tmp_env(&paths, ProviderId::Codex, "a").unwrap();
+    assert_eq!(env.len(), 3, "{env:?}");
+    let target = paths.root.join("tmp/codex/a");
+    if std::os::unix::fs::chown(&target, Some(12345), None).is_err() {
+        return; // not root: cannot make a foreign directory
+    }
+    let err = session_tmp_env(&paths, ProviderId::Codex, "a").unwrap_err();
+    assert!(format!("{err:#}").contains("SESSION_TMP_UNSAFE"), "{err:#}");
+}

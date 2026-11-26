@@ -23,8 +23,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 72;
-pub const CONTRACT_PATCH: u32 = 0;
-pub const CONTRACT_VERSION: &str = "1.72.0";
+pub const CONTRACT_PATCH: u32 = 1;
+pub const CONTRACT_VERSION: &str = "1.72.1";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -2116,6 +2116,7 @@ pub fn capabilities() -> Value {
     value["add_to_herdr"] = json!({"version":1,"command":"session add-to-herdr","requires":["session","expected_generation","herdr_session"],"requires_one_of":["space","new_space"],"optional":["name","herdr_socket"],"spaces_command":"spaces --herdr-session","providers":["claude"],"unsupported":{"gemini":"NO_NATIVE_ATTACH","antigravity":"NO_NATIVE_ATTACH","codex":"CODEX_TERMINAL_NOT_MOVABLE"},"claude_mechanism":"claude_attach_background_session","starts_agent":false,"verified_attachment":true,"automatic_replay":false});
     // Revision 20: create a new Space by label on resume, add-to-HERDR and move.
     value["pane_reuse"] = crate::pane_reuse::capability();
+    value["session_tmp"] = crate::provider::session_tmp_capability();
     // Contract 1.53.0: redeem a stored Codex rate-limit reset credit.
     value["account_reset_credit"] = reset_credit::capability();
     // Contract 1.54.0: root alias and re-key (`root status|migrate|rollback|finalize`).

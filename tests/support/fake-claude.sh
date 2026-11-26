@@ -130,6 +130,7 @@ fi
   printf 'bypass=%s\nis_sandbox=%s\n' "$bypass" "${IS_SANDBOX:-}"
   printf 'autoupdater=%s\nconfig_dir=%s\n' "$DISABLE_AUTOUPDATER" "$CLAUDE_CONFIG_DIR"
   printf 'session_env=%s\n' "${SESSIONSATION_SESSION_ID:-}"
+  printf 'tmp=%s,%s,%s,%s\n' "${TMPDIR:-}" "${TMP:-}" "${TEMP:-}" "${CLAUDE_CODE_TMPDIR:-}"
 } > "$home/fake-launch-$mode"
 printf '{"pid":%s,"sessionId":"%s","cwd":"%s","startedAt":%s,"procStart":"%s","version":"2.1.312","kind":"interactive","name":"%s","nameSource":"flag","status":"busy","updatedAt":%s}\n' \
   "$$" "$session" "$PWD" "$(now_ms)" "$start" "$name" "$(now_ms)" > "$home/sessions/$$.json"

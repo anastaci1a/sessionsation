@@ -232,7 +232,7 @@ fn kill_ref(child: &mut Child) {
 async fn capabilities_advertise_named_journaled_inline_launches() {
     let f = fixture().await;
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.72.0");
+    assert_eq!(caps["contract_version"], "1.72.1");
     assert_eq!(caps["session_compact"]["command"], "session compact");
     assert_eq!(
         caps["session_compact"]["provider"],
@@ -667,4 +667,59 @@ async fn an_inline_process_that_dies_before_attaching_settles_failed() {
     assert_eq!(op["phase"], "failed", "{op}");
     let receipt = f.api(&["resume-launch", "status", "--request-id", &rid]);
     assert_eq!(receipt["phase"], "failed");
+}
+
+fn tmp_line(home: &Path) -> String {
+    read(&home.join("fake-launch-new"))
+        .lines()
+        .find_map(|l| l.strip_prefix("tmp=").map(str::to_owned))
+        .unwrap()
+}
+fn launch_claude(f: &Fixture, name: &str) -> String {
+    let home = f.home("personal");
+    let child = f
+        .command(&["run", "--account", "personal", "--name", name])
+        .current_dir(&f.project)
+        .spawn()
+        .unwrap();
+    wait_for("fake claude launch", || {
+        home.join("fake-launch-new").exists()
+    });
+    let line = tmp_line(&home);
+    reap(child);
+    line
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launch_gets_a_private_per_account_temp_directory_unless_none() {
+    // Contract 1.72.1: TMPDIR, TMP, TEMP and CLAUDE_CODE_TMPDIR; "none" keeps the environment.
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let dir = f.paths.root.join("tmp/claude/personal");
+    let d = dir.display();
+    assert_eq!(launch_claude(&f, "one"), format!("{d},{d},{d},{d}"));
+    assert_eq!(
+        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    std::fs::remove_file(f.home("personal").join("fake-launch-new")).unwrap();
+    let path = f.paths.root.join("config.json");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    config["session_tmp_root"] = json!("none");
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    assert_eq!(launch_claude(&f, "two"), ",,,");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_symlinked_temp_directory_refuses_the_launch() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let elsewhere = f._tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir_all(f.paths.root.join("tmp/claude")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, f.paths.root.join("tmp/claude/personal")).unwrap();
+    let out = f.run(&["run", "--account", "personal"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("SESSION_TMP_UNSAFE"));
+    assert!(!f.home("personal").join("fake-launch-new").exists());
 }

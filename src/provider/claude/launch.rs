@@ -83,10 +83,12 @@ pub fn resume_directory(session: &catalog::Session, observation: &Observation) -
     Ok(directory)
 }
 
-fn exec(config: &Config, home: &Path, cwd: &Path, argv: &[String], session: &str) -> Result<()> {
+fn exec(p: &Paths, home: &Path, cwd: &Path, argv: &[String], s: &catalog::Session) -> Result<()> {
+    let config = &crate::store::load_config(p)?;
     let mut command = claude::command(config, home);
     // Contract 1.62.0 (SM7).
-    crate::provider::set_session_env(&mut command, session);
+    crate::provider::set_session_env(&mut command, &s.id);
+    command.envs(crate::provider::session_tmp_of(p, s)?);
     if argv.iter().any(|a| a == claude::YOLO_FLAG) {
         claude::allow_bypass(&mut command);
         if config.claude_pretrust_folders {
@@ -150,7 +152,7 @@ pub async fn exec_new(
             .flatten();
     }
     let argv = claude::new_argv_with(&config, &id, &session.name, &settings, mode, &options);
-    exec(&config, &account.home, &cwd, &argv, &session.id)
+    exec(paths, &account.home, &cwd, &argv, &session)
 }
 
 /// Resume a stopped Claude session in its recorded directory, in this terminal.
@@ -214,11 +216,5 @@ pub async fn exec_resume(paths: &Paths, id: &str, generation: &str) -> Result<()
         crate::session_model::current(paths, &current.conversation_id, Some(&account.home))
             .as_ref(),
     ));
-    exec(
-        &config,
-        &account.home,
-        Path::new(&directory),
-        &argv,
-        &current.id,
-    )
+    exec(paths, &account.home, Path::new(&directory), &argv, &current)
 }
