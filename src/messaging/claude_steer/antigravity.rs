@@ -43,12 +43,7 @@ use anyhow::{Result, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    io::{BufRead, Read, Seek},
-    path::Path,
-    time::Duration,
-};
+use std::{fs, path::Path, time::Duration};
 
 /// HERDR's agent kind for agy panes.
 pub const AGENT: &str = "agy";
@@ -64,7 +59,6 @@ pub const MAX_LINES: usize = 200;
 const DRAFT_ROWS: usize = 9;
 /// Rows of the (tail-only) input box read back from a typed message.
 const TYPED_ROWS: usize = 120;
-const MAX_SCAN: u64 = 16 * 1024 * 1024;
 pub const QUEUE_MODE_UNKNOWN: &str = "ANTIGRAVITY_QUEUE_MODE_UNKNOWN: the session's queuedMessages setting cannot be determined (a --settings file, or an unreadable settings.json), so the key that queues or sends immediately is unknown";
 
 pub const REASONS: &[&str] = &[
@@ -574,17 +568,9 @@ pub(crate) struct Found {
 /// `offset`) whose request contains the typed text, then collect agy's
 /// responses until the next explicit user input.
 pub(crate) fn find(path: &Path, offset: u64, text: &str, since_ms: i64) -> Result<Found> {
-    let mut f = fs::File::open(path)?;
-    let len = f.metadata()?.len();
-    f.seek(std::io::SeekFrom::Start(if offset <= len {
-        offset
-    } else {
-        0
-    }))?;
-    let reader = std::io::BufReader::new(f.take(MAX_SCAN));
     let mut out = Found::default();
     let typed = spaced(text.trim());
-    for line in reader.split(b'\n') {
+    for line in super::transcript_lines(path, offset)? {
         let Ok(v) = serde_json::from_slice::<Value>(&line?) else {
             continue;
         };

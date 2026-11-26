@@ -1,5 +1,8 @@
 use super::*;
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    time::{Duration, Instant},
+};
 /// The engine's re-read before the first clearing key (`ScreenProfile::REREAD_DRAFT`).
 fn draft_unchanged(rows: &[Vec<Cell>], draft: &str) -> bool {
     is_main(&Claude::classify(rows, true), |d| d == draft)

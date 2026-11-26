@@ -11,6 +11,7 @@
 use super::{
     Capability, ProviderCapabilities, ProviderId,
     claude::{Enrolled, Live, Observation, Transcript, environ, proc_start, regular_file},
+    native::arguments,
     no, yes,
 };
 use crate::{
@@ -143,28 +144,9 @@ pub fn home(paths: &Paths, name: &str) -> Result<PathBuf> {
 /// re-permissioned: it must already be a private (0700) directory owned by this
 /// user and not a symlink. Settings are seeded either way. Returns (home, existed).
 pub fn create_home(paths: &Paths, name: &str) -> Result<(PathBuf, bool)> {
-    use std::os::unix::fs::MetadataExt;
     // A new account never inherits an earlier same-named account's recorded failure.
     let fresh = !home(paths, name).is_ok_and(|h| h.exists());
-    let home = home(paths, name)?;
-    private_dir(home.parent().context("missing parent")?)?;
-    let existed = match fs::symlink_metadata(&home) {
-        Ok(m) => {
-            ensure!(
-                m.file_type().is_dir()
-                    && m.uid() == unsafe { libc::geteuid() }
-                    && m.mode() & 0o777 == 0o700,
-                "UNSAFE_ACCOUNT_HOME: existing {} must be a 0700 directory owned by this user and not a symlink; it was left unchanged",
-                home.display()
-            );
-            true
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            private_dir(&home)?;
-            false
-        }
-        Err(e) => return Err(e.into()),
-    };
+    let (home, existed) = super::native::create_private_home(home(paths, name)?)?;
     if fresh {
         auth_failure::clear(paths, name);
     }
@@ -568,21 +550,6 @@ pub fn find_transcript(home: &Path, session_id: &str) -> Option<PathBuf> {
 
 // ------------------------------------------------------------ live identity
 
-fn arguments(pid: u32) -> Option<Vec<String>> {
-    let mut bytes = vec![];
-    fs::File::open(format!("/proc/{pid}/cmdline"))
-        .ok()?
-        .take(64 * 1024)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    Some(
-        bytes
-            .split(|b| *b == 0)
-            .filter(|a| !a.is_empty())
-            .map(|a| String::from_utf8_lossy(a).into_owned())
-            .collect(),
-    )
-}
 /// A Gemini CLI process: `node .../gemini.js ...` or a `gemini` executable among
 /// the leading arguments (interpreter and script).
 fn is_gemini_arguments(args: &[String]) -> bool {
@@ -663,22 +630,7 @@ pub fn live_sessions_in(snapshot: &ProcessSnapshot, home: &Path) -> Result<Vec<L
         if !home_matches(pid, home) {
             continue;
         }
-        result.push(Live {
-            pid,
-            process_start: start,
-            session_id,
-            cwd: fs::read_link(format!("/proc/{pid}/cwd"))
-                .ok()
-                .and_then(|p| p.to_str().map(str::to_owned)),
-            status: None,
-            name: None,
-            kind: None,
-            job_id: None,
-            registry_started_ms: None,
-            spare: false,
-            parked_job_id: None,
-            name_source: None,
-        });
+        result.push(Live::native(pid, start, session_id));
     }
     result.sort_by_key(|l| l.pid);
     Ok(result)
@@ -714,46 +666,8 @@ fn observation(
     chat: Option<(Chat, Option<String>)>,
     live: &std::result::Result<Vec<Live>, String>,
 ) -> Observation {
-    let (transcript, cwd, started_at, bytes) = match chat {
-        Some((c, cwd)) => (Some(c.path), cwd, c.started_at, Some(c.bytes)),
-        None => (None, None, None, None),
-    };
-    let mut o = Observation {
-        availability: "unknown",
-        native_status: None,
-        native_name: None,
-        pid: None,
-        process_start: None,
-        directory: cwd,
-        transcript,
-        transcript_bytes: bytes,
-        started_at,
-        attachment: None,
-        detail: None,
-        native_kind: None,
-        job_id: None,
-        attachment_switched: false,
-        forked_from: None,
-        active_since: None,
-    };
-    match live {
-        Err(e) => o.detail = Some(format!("PROBE_FAILED: {e}")),
-        Ok(live) => match live.iter().find(|l| l.session_id == session_id) {
-            Some(l) => {
-                o.availability = "running";
-                o.attachment = super::claude::host_attachment(l, recorded);
-                o.pid = Some(l.pid);
-                o.process_start = Some(l.process_start);
-                o.active_since = super::claude::process_started_at(l.process_start);
-                if l.cwd.is_some() {
-                    o.directory = l.cwd.clone();
-                }
-            }
-            None if o.transcript.is_some() => o.availability = "stopped",
-            None => o.availability = "stale",
-        },
-    }
-    o
+    let found = chat.map(|(c, cwd)| (c.path, cwd, c.started_at, c.bytes));
+    super::native::native_observation(recorded, session_id, found, live, false)
 }
 pub fn observe(
     home: &Path,
@@ -771,42 +685,11 @@ pub fn observe(
 
 // ----------------------------------------------------------------- accounts
 
-/// Gemini accounts from a read-only registry snapshot (daemon need not run).
 pub fn enrolled(paths: &Paths) -> Result<Vec<Enrolled>> {
-    if !paths.root.join(crate::layout::REGISTRY_DB).exists() {
-        return Ok(vec![]);
-    }
-    let state = crate::store::load_state_snapshot(paths)?;
-    state
-        .accounts
-        .values()
-        .filter(|a| a.provider == ProviderId::Gemini)
-        .map(|a| {
-            Ok(Enrolled {
-                name: a.name.clone(),
-                home: home(paths, &a.name)?,
-                enabled: a.enabled,
-                auth_required: a.auth_required,
-            })
-        })
-        .collect()
+    super::native::enrolled_in(paths, ProviderId::Gemini, |a| home(paths, &a.name))
 }
 pub fn account(paths: &Paths, name: &str) -> Result<Enrolled> {
-    if let Some(a) = enrolled(paths)?.into_iter().find(|a| a.name == name) {
-        return Ok(a);
-    }
-    ensure!(
-        !deleted(paths, name)?,
-        "ACCOUNT_DELETED: gemini:{name} was deleted locally; its conversation history is preserved but it cannot be resumed through this account"
-    );
-    bail!("ACCOUNT_NOT_FOUND: no enrolled Gemini account with this name")
-}
-/// True when a completed local deletion removed this (no longer enrolled) Gemini account.
-pub fn deleted(paths: &Paths, name: &str) -> Result<bool> {
-    let id = format!("gemini:{name}");
-    Ok(crate::account_deletion::list(paths)?
-        .iter()
-        .any(|r| r.account_id == id && r.phase == "complete"))
+    super::native::account(paths, ProviderId::Gemini, name)
 }
 
 /// Register discovered chats and refresh live attachments for every Gemini

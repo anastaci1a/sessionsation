@@ -272,6 +272,22 @@ fn dir(paths: &Paths) -> PathBuf {
 }
 /// The lock file of one terminal procedure per pane (deliveries, set-model, compaction), opened
 /// and not yet locked.
+const MAX_SCAN: u64 = 16 * 1024 * 1024;
+/// The transcript's lines from `offset` (from the start when the file is shorter), at most
+/// `MAX_SCAN` bytes.
+fn transcript_lines(
+    path: &Path,
+    offset: u64,
+) -> Result<std::io::Split<std::io::BufReader<std::io::Take<fs::File>>>> {
+    let mut f = fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    f.seek(std::io::SeekFrom::Start(if offset <= len {
+        offset
+    } else {
+        0
+    }))?;
+    Ok(std::io::BufReader::new(f.take(MAX_SCAN)).split(b'\n'))
+}
 pub(crate) fn pane_lock(paths: &Paths, target: &str) -> Result<fs::File> {
     private_dir(&dir(paths))?;
     let key: String = target

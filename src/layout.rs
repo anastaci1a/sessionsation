@@ -566,3 +566,11 @@ pub(crate) fn now() -> i64 {
 
 #[cfg(test)]
 mod tests;
+/// Open an existing file for reading, refusing a symlink.
+pub fn open_nofollow(path: impl AsRef<Path>) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}

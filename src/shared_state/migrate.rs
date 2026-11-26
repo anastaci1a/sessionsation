@@ -325,10 +325,7 @@ pub(crate) fn copy_tree(
             fs::Permissions::from_mode(meta.mode() & 0o7777 | 0o700),
         );
     } else if meta.is_file() {
-        let input = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(src)?;
+        let input = crate::layout::open_nofollow(src)?;
         let mut out = fs::OpenOptions::new()
             .write(true)
             .create_new(true)

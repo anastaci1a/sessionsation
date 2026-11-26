@@ -384,27 +384,10 @@ fn save_bases(paths: &Paths, b: &keys::Bases) -> Result<()> {
 
 // -------------------------------------------------------------------- locks
 
-struct Locks {
-    _layout: fs::File,
-    _daemon: Option<fs::File>,
-}
-fn lock(paths: &Paths, change: bool) -> Result<Locks> {
-    let layout = lock_file(&paths.root.join(layout::LAYOUT_LOCK))?;
-    crate::paths::try_lock_brief(&layout)
-        .context("LAYOUT_BUSY: another layout or root command is running")?;
-    let daemon = if change {
-        let daemon = lock_file(&paths.root.join("daemon.lock"))?;
-        crate::paths::try_lock_brief(&daemon).context(
-            "DAEMON_RUNNING: stop the supervisor (`sessionsation daemon stop`) before `root migrate` or `root rollback`",
-        )?;
-        Some(daemon)
-    } else {
-        None
-    };
-    Ok(Locks {
-        _layout: layout,
-        _daemon: daemon,
-    })
+const LOCK_BUSY: &str = "LAYOUT_BUSY: another layout or root command is running";
+const LOCK_RUNNING: &str = "DAEMON_RUNNING: stop the supervisor (`sessionsation daemon stop`) before `root migrate` or `root rollback`";
+fn lock(paths: &Paths, change: bool) -> Result<layout::migrate::Locks> {
+    layout::migrate::lock(&paths.root, change, LOCK_BUSY, LOCK_RUNNING)
 }
 
 // -------------------------------------------------------------------- alias

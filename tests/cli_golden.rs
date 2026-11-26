@@ -2,8 +2,16 @@
 //! table-driven dispatch must not change a byte of `api capabilities`, `api state`, any
 //! `-h`/`--help` page (hidden verbs included), any argument-parse error or the refusals
 //! below. Recorded on main before the change with
-//! `SESSIONSATION_GOLDEN_RECORD=1 cargo test --test cli_golden`; only the contract
-//! version fields are normalized (they move with every release).
+//! `SESSIONSATION_GOLDEN_RECORD=1 cargo test --test cli_golden`. Besides the contract
+//! version fields (they move with every release) and the fixture paths and session ids
+//! (placeholders), the test masks exactly this much:
+//! `devolatilize` replaces the values under keys that end in at, time, seconds, age,
+//! observed, updated, checked, ms, until, since, expires, pid, start, started, epoch,
+//! deadline, elapsed, stale, fresh, revision_seen or accessed with `<v>`, and every 10- or
+//! 13-digit number that starts with 1 (an epoch) with `<t>`; `stable_state` re-sorts the
+//! `sessions` and `accounts` rows of an `api state` read; `resorted` re-serializes the
+//! refusal JSON lines (random-id map keys sort by their placeholders). Every other byte,
+//! key order included, is compared as recorded.
 #![allow(
     clippy::disallowed_methods,
     reason = "integration tests are exempt from owned roles (src/guard.rs)"

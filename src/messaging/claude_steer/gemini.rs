@@ -46,12 +46,7 @@ use anyhow::{Result, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    io::{BufRead, Read, Seek},
-    path::Path,
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 pub const AGENT: &str = "gemini";
 pub const LABEL: &str = "Typed into the session's HERDR terminal as the user's own input: Gemini records a user turn when idle; mid-turn Enter queues it (model steering off) or adds a user steering update (model steering on)";
@@ -64,7 +59,6 @@ pub const MAX_LINES: usize = 8;
 const DRAFT_ROWS: usize = 9;
 /// Text Gemini puts before a steering update (`buildUserSteeringHintPrompt`).
 const STEERING_PREFIX: &str = "User steering update:";
-const MAX_SCAN: u64 = 16 * 1024 * 1024;
 const PLACEHOLDERS: &[&str] = &[
     "Type your message or @path/to/file",
     "Type your message or hold space to talk (Esc to exit)",
@@ -615,18 +609,10 @@ pub(crate) struct Found {
 /// whose text contains the typed text, then collect Gemini's text until the
 /// next real user prompt. Only that record anchors a reply.
 pub(crate) fn find(path: &Path, offset: u64, text: &str, since_ms: i64) -> Result<Found> {
-    let mut f = fs::File::open(path)?;
-    let len = f.metadata()?.len();
-    f.seek(std::io::SeekFrom::Start(if offset <= len {
-        offset
-    } else {
-        0
-    }))?;
-    let reader = std::io::BufReader::new(f.take(MAX_SCAN));
     let mut out = Found::default();
     let mut replies: Vec<(Option<String>, String)> = vec![];
     let typed = text.trim();
-    for line in reader.split(b'\n') {
+    for line in super::transcript_lines(path, offset)? {
         let Ok(v) = serde_json::from_slice::<Value>(&line?) else {
             continue;
         };

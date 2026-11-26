@@ -287,20 +287,7 @@ pub fn head(path: &Path) -> Head {
     let digest = digest_of(path, prefix);
     let mut s = store();
     if let Some(digest) = digest {
-        let entry = s.entries.entry(id.key.clone()).or_insert_with(|| Entry {
-            stem: stem.clone(),
-            head: None,
-            tail: None,
-            unsaved: false,
-        });
-        if entry.stem != stem {
-            *entry = Entry {
-                stem,
-                head: None,
-                tail: None,
-                unsaved: false,
-            };
-        }
+        let entry = entry_of(&mut s, &id, stem);
         entry.head = Some(HeadEntry {
             head: head.clone(),
             settled,
@@ -313,6 +300,25 @@ pub fn head(path: &Path) -> Head {
         settle(&mut s, &id);
     }
     head
+}
+
+/// The entry of a transcript, started afresh when its stem changed.
+fn entry_of<'a>(s: &'a mut Store, id: &Identity, stem: String) -> &'a mut Entry {
+    let entry = s.entries.entry(id.key.clone()).or_insert_with(|| Entry {
+        stem: stem.clone(),
+        head: None,
+        tail: None,
+        unsaved: false,
+    });
+    if entry.stem != stem {
+        *entry = Entry {
+            stem,
+            head: None,
+            tail: None,
+            unsaved: false,
+        };
+    }
+    entry
 }
 
 /// An entry that changed while its transcript was still being written is
@@ -433,20 +439,7 @@ pub fn tail(path: &Path) -> Option<Tail> {
         });
     };
     let mut s = store();
-    let entry = s.entries.entry(id.key.clone()).or_insert_with(|| Entry {
-        stem: stem.clone(),
-        head: None,
-        tail: None,
-        unsaved: false,
-    });
-    if entry.stem != stem {
-        *entry = Entry {
-            stem,
-            head: None,
-            tail: None,
-            unsaved: false,
-        };
-    }
+    let entry = entry_of(&mut s, &id, stem);
     entry.tail = Some(TailEntry {
         size: id.size,
         mtime_ns: id.mtime_ns,

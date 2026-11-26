@@ -18,10 +18,7 @@ pub fn key(directory: &str) -> String {
 pub const KEY_MAX: usize = 200;
 
 pub(super) fn sha256_file(path: &Path) -> Result<(u64, String)> {
-    let mut f = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    let mut f = crate::layout::open_nofollow(path)?;
     ensure!(
         f.metadata()?.is_file(),
         "HISTORY_NOT_REGULAR: {}",
@@ -42,10 +39,7 @@ pub(super) fn sha256_file(path: &Path) -> Result<(u64, String)> {
 }
 /// sha256 of the first `bytes` bytes (the pre-move transcript as a prefix of the live one).
 pub(super) fn sha256_prefix(path: &Path, bytes: u64) -> Result<Option<String>> {
-    let mut f = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    let mut f = crate::layout::open_nofollow(path)?;
     if f.metadata()?.len() < bytes {
         return Ok(None);
     }

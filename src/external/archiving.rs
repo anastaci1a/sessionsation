@@ -382,10 +382,7 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
     Ok(o.public())
 }
 fn digest(p: &Path) -> Result<String> {
-    let mut f = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(p)?;
+    let mut f = crate::layout::open_nofollow(p)?;
     ensure!(f.metadata()?.is_file(), "ARCHIVE_NOT_REGULAR");
     let mut hash = Sha256::new();
     let mut buf = [0; 65536];
@@ -403,10 +400,7 @@ fn gzip(input: &Path, output: &Path, decode: bool) -> Result<()> {
         !fs::symlink_metadata(input)?.file_type().is_symlink(),
         "ARCHIVE_SYMLINK"
     );
-    let input = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(input)?;
+    let input = crate::layout::open_nofollow(input)?;
     let out = OpenOptions::new()
         .write(true)
         .create_new(true)

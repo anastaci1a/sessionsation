@@ -852,7 +852,7 @@ async fn admit_running(
             pre.conflicts.join(", ")
         );
     }
-    let args = crate::claude_switch::read_cmdline(l.pid);
+    let args = crate::provider::claude::cmdline(l.pid);
     r.permissions = Some(
         if args.iter().any(|a| a == claude::YOLO_FLAG) {
             "yolo"

@@ -18,12 +18,13 @@
 use super::{
     Capability, ProviderCapabilities, ProviderId,
     claude::{Enrolled, Live, Observation, Transcript, environ, proc_start, regular_file},
+    native::arguments,
     no, yes,
 };
 use crate::{
     catalog,
     config::{Config, LaunchPermissions},
-    paths::{Paths, private_dir, validate_name},
+    paths::{Paths, validate_name},
     proc::identity::{Pidfd, gone},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -162,27 +163,7 @@ pub fn home(paths: &Paths, name: &str) -> Result<PathBuf> {
 /// there; an existing home must be a private (0700) directory owned by this
 /// user and not a symlink, and is never wiped. Returns (home, existed).
 pub fn create_home(paths: &Paths, name: &str) -> Result<(PathBuf, bool)> {
-    use std::os::unix::fs::MetadataExt;
-    private_dir(home(paths, name)?.parent().context("missing parent")?)?;
-    let home = home(paths, name)?;
-    let existed = match fs::symlink_metadata(&home) {
-        Ok(m) => {
-            ensure!(
-                m.file_type().is_dir()
-                    && m.uid() == unsafe { libc::geteuid() }
-                    && m.mode() & 0o777 == 0o700,
-                "UNSAFE_ACCOUNT_HOME: existing {} must be a 0700 directory owned by this user and not a symlink; it was left unchanged",
-                home.display()
-            );
-            true
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            private_dir(&home)?;
-            false
-        }
-        Err(e) => return Err(e.into()),
-    };
-    Ok((home, existed))
+    super::native::create_private_home(home(paths, name)?)
 }
 /// `<home>/.gemini/antigravity-cli`
 pub fn state_dir(home: &Path) -> PathBuf {
@@ -392,21 +373,6 @@ fn summary(home: &Path, id: &str) -> Option<Summary> {
 
 // ------------------------------------------------------------ live identity
 
-fn arguments(pid: u32) -> Option<Vec<String>> {
-    let mut bytes = vec![];
-    fs::File::open(format!("/proc/{pid}/cmdline"))
-        .ok()?
-        .take(64 * 1024)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    Some(
-        bytes
-            .split(|b| *b == 0)
-            .filter(|a| !a.is_empty())
-            .map(|a| String::from_utf8_lossy(a).into_owned())
-            .collect(),
-    )
-}
 /// An agy process: its executable (first argument) is named `agy`.
 pub(crate) fn is_agy_arguments(args: &[String]) -> bool {
     let name = |i: usize| {
@@ -530,22 +496,7 @@ pub fn live_sessions_in(snapshot: &ProcessSnapshot, home: &Path) -> Result<Vec<L
         else {
             continue;
         };
-        result.push(Live {
-            pid: *pid,
-            process_start: *start,
-            session_id,
-            cwd: fs::read_link(format!("/proc/{pid}/cwd"))
-                .ok()
-                .and_then(|p| p.to_str().map(str::to_owned)),
-            status: None,
-            name: None,
-            kind: None,
-            job_id: None,
-            registry_started_ms: None,
-            spare: false,
-            parked_job_id: None,
-            name_source: None,
-        });
+        result.push(Live::native(*pid, *start, session_id));
     }
     result.sort_by_key(|l| l.pid);
     Ok(result)
@@ -687,59 +638,7 @@ fn observation(
     found: Option<(PathBuf, Option<String>, Option<String>, u64)>,
     live: &std::result::Result<Vec<Live>, String>,
 ) -> Observation {
-    let (transcript, directory, started_at, bytes) = match found {
-        Some((p, cwd, started, bytes)) => (Some(p), cwd, started, Some(bytes)),
-        None => (None, None, None, None),
-    };
-    let mut o = Observation {
-        availability: "unknown",
-        native_status: None,
-        native_name: None,
-        pid: None,
-        process_start: None,
-        directory,
-        transcript,
-        transcript_bytes: bytes,
-        started_at,
-        attachment: None,
-        detail: None,
-        native_kind: None,
-        job_id: None,
-        attachment_switched: false,
-        forked_from: None,
-        active_since: None,
-    };
-    match live {
-        Err(e) => o.detail = Some(format!("PROBE_FAILED: {e}")),
-        Ok(live) => match live.iter().find(|l| l.session_id == session_id) {
-            Some(l) => {
-                o.availability = "running";
-                o.attachment = super::claude::host_attachment(l, recorded);
-                o.pid = Some(l.pid);
-                o.process_start = Some(l.process_start);
-                o.active_since = super::claude::process_started_at(l.process_start);
-                if l.cwd.is_some() {
-                    o.directory = l.cwd.clone();
-                }
-            }
-            None => {
-                // The recorded process is alive but now holds another conversation.
-                o.attachment_switched = recorded.is_some_and(|r| {
-                    live.iter().any(|l| {
-                        l.pid == r.pid
-                            && l.process_start == r.process_start
-                            && l.session_id != session_id
-                    })
-                });
-                o.availability = if o.transcript.is_some() {
-                    "stopped"
-                } else {
-                    "stale"
-                };
-            }
-        },
-    }
-    o
+    super::native::native_observation(recorded, session_id, found, live, true)
 }
 pub fn observe(
     home: &Path,
@@ -935,39 +834,10 @@ pub fn process_arguments(pid: u32) -> Option<Vec<String>> {
 // ----------------------------------------------------------------- accounts
 
 pub fn enrolled(paths: &Paths) -> Result<Vec<Enrolled>> {
-    if !paths.root.join(crate::layout::REGISTRY_DB).exists() {
-        return Ok(vec![]);
-    }
-    let state = crate::store::load_state_snapshot(paths)?;
-    state
-        .accounts
-        .values()
-        .filter(|a| a.provider == ProviderId::Antigravity)
-        .map(|a| {
-            Ok(Enrolled {
-                name: a.name.clone(),
-                home: home(paths, &a.name)?,
-                enabled: a.enabled,
-                auth_required: a.auth_required,
-            })
-        })
-        .collect()
+    super::native::enrolled_in(paths, ProviderId::Antigravity, |a| home(paths, &a.name))
 }
 pub fn account(paths: &Paths, name: &str) -> Result<Enrolled> {
-    if let Some(a) = enrolled(paths)?.into_iter().find(|a| a.name == name) {
-        return Ok(a);
-    }
-    ensure!(
-        !deleted(paths, name)?,
-        "ACCOUNT_DELETED: antigravity:{name} was deleted locally; its conversation history is preserved but it cannot be resumed through this account"
-    );
-    bail!("ACCOUNT_NOT_FOUND: no enrolled Antigravity account with this name")
-}
-pub fn deleted(paths: &Paths, name: &str) -> Result<bool> {
-    let id = format!("antigravity:{name}");
-    Ok(crate::account_deletion::list(paths)?
-        .iter()
-        .any(|r| r.account_id == id && r.phase == "complete"))
+    super::native::account(paths, ProviderId::Antigravity, name)
 }
 
 /// Register discovered conversations and refresh live attachments for every

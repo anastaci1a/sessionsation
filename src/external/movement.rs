@@ -671,14 +671,7 @@ async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
     );
     let mut target = prepare_destination(paths, job).await?;
     let target_home = paths.account(&job.target)?;
-    let target_lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(target_home.join(".switcher-move"))?;
+    let target_lock = crate::paths::lock_file(&target_home.join(".switcher-move"))?;
     while target_lock.try_lock_exclusive().is_err() {
         phase(
             paths,
@@ -1096,14 +1089,7 @@ pub(super) async fn stop_source(
 
 pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     validate_name(id)?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(jobs_dir(paths)?.join(format!("{id}.worker-lock")))?;
+    let lock = crate::paths::lock_file(&jobs_dir(paths)?.join(format!("{id}.worker-lock")))?;
     lock.try_lock_exclusive()
         .context("this move already has a worker")?;
     let mut job: Job = serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?;

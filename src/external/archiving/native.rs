@@ -340,10 +340,7 @@ pub(crate) fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
         }
         return Ok(());
     }
-    let mut input = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(src)?;
+    let mut input = crate::layout::open_nofollow(src)?;
     let mut out = OpenOptions::new()
         .write(true)
         .create_new(true)

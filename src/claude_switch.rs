@@ -218,15 +218,6 @@ fn account_ref(to: &str) -> Result<String> {
     );
     Ok(account.name)
 }
-pub(crate) fn read_cmdline(pid: u32) -> Vec<String> {
-    fs::read(format!("/proc/{pid}/cmdline"))
-        .map(|b| {
-            b.split(|c| *c == 0)
-                .map(|a| String::from_utf8_lossy(a).into_owned())
-                .collect()
-        })
-        .unwrap_or_default()
-}
 
 pub async fn start(
     paths: &Paths,
@@ -315,7 +306,7 @@ pub async fn start(
                 .filter(|a| a.pid == l.pid && a.process_start == l.process_start)
                 .context("SESSION_PANE_UNKNOWN: the running process is not in a pane Sessionsation recorded, so it cannot be resumed after the switch; end it first")?;
             pane = Some(attached.target.clone());
-            let args = read_cmdline(l.pid);
+            let args = crate::provider::claude::cmdline(l.pid);
             permissions = Some(
                 if args.iter().any(|a| a == claude::YOLO_FLAG) {
                     "yolo"

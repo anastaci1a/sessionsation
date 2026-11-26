@@ -711,18 +711,33 @@ async fn prepare(paths: &Paths, receipt: &Receipt) -> Result<()> {
     }
     Ok(())
 }
+/// The worker runs in the pane and HERDR session its record names.
+pub(crate) fn ensure_host_pane(pane_id: Option<&String>, session: &str) -> Result<()> {
+    ensure!(
+        std::env::var("HERDR_PANE_ID").ok().as_ref() == pane_id,
+        "HOST_WRONG_PANE"
+    );
+    ensure!(
+        std::env::var("SESSIONSATION_HERDR_SESSION").ok().as_deref() == Some(session),
+        "HOST_WRONG_SESSION"
+    );
+    Ok(())
+}
+/// An operation still open: not running, complete, failed, recovered or abandoned.
+pub(crate) fn ensure_unsettled(phase: &str) -> Result<()> {
+    ensure!(
+        !matches!(
+            phase,
+            "running" | "complete" | "failed" | "recovered" | "abandoned"
+        ),
+        "OPERATION_ALREADY_TERMINAL"
+    );
+    Ok(())
+}
 pub async fn run(paths: &Paths, id: &str) -> Result<()> {
     let r = change(paths, id, |r| {
         ensure!(r.phase == "dispatching", "RESUME_ALREADY_DISPATCHED");
-        ensure!(
-            std::env::var("HERDR_PANE_ID").ok().as_ref() == r.pane_id.as_ref(),
-            "HOST_WRONG_PANE"
-        );
-        ensure!(
-            std::env::var("SESSIONSATION_HERDR_SESSION").ok().as_deref()
-                == Some(&r.request.host.session),
-            "HOST_WRONG_SESSION"
-        );
+        ensure_host_pane(r.pane_id.as_ref(), &r.request.host.session)?;
         r.phase = "starting_provider".into();
         Ok(())
     })?;
@@ -767,13 +782,7 @@ pub(crate) fn attached(paths: &Paths, id: &str, session: &catalog::Session) -> R
 pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
     ensure!(id == confirm, "CONFIRMATION_MISMATCH");
     let r = read(paths, id)?;
-    ensure!(
-        !matches!(
-            r.phase.as_str(),
-            "running" | "complete" | "failed" | "recovered" | "abandoned"
-        ),
-        "OPERATION_ALREADY_TERMINAL"
-    );
+    ensure_unsettled(&r.phase)?;
     ensure!(
         crate::background::worker_stopped(&file(paths, id)?.with_extension("worker.lock"))?,
         "OPERATION_WORKER_ACTIVE"
@@ -816,13 +825,7 @@ pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
         );
     }
     let done = change(paths, id, |r| {
-        ensure!(
-            !matches!(
-                r.phase.as_str(),
-                "running" | "complete" | "failed" | "recovered" | "abandoned"
-            ),
-            "OPERATION_ALREADY_TERMINAL"
-        );
+        ensure_unsettled(&r.phase)?;
         r.abandoned_from = Some(r.phase.clone());
         r.abandoned_at = Some(daemon::now());
         r.detail = Some(format!(

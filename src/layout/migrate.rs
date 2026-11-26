@@ -42,27 +42,32 @@ use std::{
 /// instead of creating an empty shadow registry.
 pub const TRIPWIRE: &str = "SESSIONSATION LAYOUT 2: this data root was migrated; the registry is registry/registry.db. Older builds must not use it (run `sessionsation layout rollback` with the newer build first).\n";
 
+const LOCK_BUSY: &str = "LAYOUT_BUSY: another layout command is running";
+const LOCK_RUNNING: &str = "DAEMON_RUNNING: stop the supervisor (`sessionsation daemon stop`) before changing the data-root layout";
+
 #[derive(Clone, Debug, Default)]
 pub struct Options {
     pub backup: Option<PathBuf>,
     pub dry_run: bool,
 }
 
-struct Locks {
+pub(crate) struct Locks {
     _layout: fs::File,
     _daemon: Option<fs::File>,
 }
 /// `layout.lock` always; `daemon.lock` unless only planning (a dry run reads
 /// and never changes anything, so it may run beside a live supervisor).
-fn lock(root: &Path, change: bool) -> Result<Locks> {
+pub(crate) fn lock(
+    root: &Path,
+    change: bool,
+    busy: &'static str,
+    running: &'static str,
+) -> Result<Locks> {
     let layout = lock_file(&root.join(LAYOUT_LOCK))?;
-    crate::paths::try_lock_brief(&layout)
-        .context("LAYOUT_BUSY: another layout command is running")?;
+    crate::paths::try_lock_brief(&layout).context(busy)?;
     let daemon = if change {
         let daemon = lock_file(&root.join("daemon.lock"))?;
-        crate::paths::try_lock_brief(&daemon).context(
-            "DAEMON_RUNNING: stop the supervisor (`sessionsation daemon stop`) before changing the data-root layout",
-        )?;
+        crate::paths::try_lock_brief(&daemon).context(running)?;
         Some(daemon)
     } else {
         None
@@ -439,7 +444,7 @@ fn checkpoint(db: &Path) -> Result<()> {
 // ---------------------------------------------------------------- migrate
 
 pub fn migrate(root: &Path, options: &Options) -> Result<Value> {
-    let _locks = lock(root, !options.dry_run)?;
+    let _locks = lock(root, !options.dry_run, LOCK_BUSY, LOCK_RUNNING)?;
     let mut record = read_record(root)?.unwrap_or(Record {
         version: 1,
         ..Record::default()
@@ -603,7 +608,7 @@ fn verify(root: &Path) -> Result<()> {
 // --------------------------------------------------------------- rollback
 
 pub fn rollback(root: &Path, dry_run: bool) -> Result<Value> {
-    let _locks = lock(root, !dry_run)?;
+    let _locks = lock(root, !dry_run, LOCK_BUSY, LOCK_RUNNING)?;
     let Some(mut record) = read_record(root)? else {
         return Ok(
             json!({"rolled_back":false,"detail":"no layout record: the root already uses the legacy layout"}),

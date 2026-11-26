@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail, ensure};
 use std::{
     fmt, fs,
     io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -139,10 +139,7 @@ pub fn key_stamp(home: &Path) -> Option<(i64, u64)> {
 pub fn read_key(home: &Path) -> Option<ApiKey> {
     safe_key_metadata(home)?;
     let mut text = String::new();
-    fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(key_path(home))
+    crate::layout::open_nofollow(key_path(home))
         .ok()?
         .take(MAX_KEY as u64 + 2)
         .read_to_string(&mut text)

@@ -7,11 +7,17 @@ use super::{
     claude::{self, Enrolled, Live, Observation, Transcript},
     gemini,
 };
-use crate::{catalog, config::Config, paths::Paths};
-use anyhow::{Result, bail};
+use crate::{
+    catalog,
+    config::Config,
+    paths::{Paths, private_dir},
+};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -72,19 +78,64 @@ pub fn default_home(paths: &Paths, provider: ProviderId, name: &str) -> Result<P
     }
 }
 
-pub fn account(paths: &Paths, provider: ProviderId, name: &str) -> Result<Enrolled> {
-    match provider {
-        ProviderId::Gemini => gemini::account(paths, name),
-        ProviderId::Antigravity => antigravity::account(paths, name),
-        ProviderId::Claude | ProviderId::Codex => claude::account(paths, name),
+/// Accounts of one native provider from a read-only registry snapshot (daemon need
+/// not run); `home` resolves each account's home.
+pub(crate) fn enrolled_in(
+    paths: &Paths,
+    provider: ProviderId,
+    home: impl Fn(&crate::model::Account) -> Result<PathBuf>,
+) -> Result<Vec<Enrolled>> {
+    if !paths.root.join(crate::layout::REGISTRY_DB).exists() {
+        return Ok(vec![]);
+    }
+    crate::store::load_state_snapshot(paths)?
+        .accounts
+        .values()
+        .filter(|a| a.provider == provider)
+        .map(|a| {
+            Ok(Enrolled {
+                name: a.name.clone(),
+                home: home(a)?,
+                enabled: a.enabled,
+                auth_required: a.auth_required,
+            })
+        })
+        .collect()
+}
+/// Codex accounts are answered by Claude's tables.
+fn table_provider(provider: ProviderId) -> ProviderId {
+    if provider == ProviderId::Codex {
+        ProviderId::Claude
+    } else {
+        provider
     }
 }
-pub fn deleted(paths: &Paths, provider: ProviderId, name: &str) -> Result<bool> {
-    match provider {
-        ProviderId::Gemini => gemini::deleted(paths, name),
-        ProviderId::Antigravity => antigravity::deleted(paths, name),
-        ProviderId::Claude | ProviderId::Codex => claude::deleted(paths, name),
+pub fn account(paths: &Paths, provider: ProviderId, name: &str) -> Result<Enrolled> {
+    let provider = table_provider(provider);
+    let enrolled = match provider {
+        ProviderId::Gemini => gemini::enrolled(paths),
+        ProviderId::Antigravity => antigravity::enrolled(paths),
+        _ => claude::enrolled(paths),
+    }?;
+    if let Some(a) = enrolled.into_iter().find(|a| a.name == name) {
+        return Ok(a);
     }
+    ensure!(
+        !deleted(paths, provider, name)?,
+        "ACCOUNT_DELETED: {provider}:{name} was deleted locally; its conversation history is preserved but it cannot be resumed through this account"
+    );
+    let (initial, rest) = provider.as_str().split_at(1);
+    bail!(
+        "ACCOUNT_NOT_FOUND: no enrolled {}{rest} account with this name",
+        initial.to_uppercase()
+    )
+}
+/// True when a completed local deletion removed this (no longer enrolled) account.
+pub fn deleted(paths: &Paths, provider: ProviderId, name: &str) -> Result<bool> {
+    let id = format!("{}:{name}", table_provider(provider));
+    Ok(crate::account_deletion::list(paths)?
+        .iter()
+        .any(|r| r.account_id == id && r.phase == "complete"))
 }
 pub fn command(provider: ProviderId, config: &Config, home: &Path) -> std::process::Command {
     match provider {
@@ -293,6 +344,133 @@ pub fn reconcile(paths: &Paths) -> Result<BTreeMap<String, (Observation, PathBuf
     all.extend(gemini::reconcile(paths).unwrap_or_default());
     all.extend(antigravity::reconcile(paths).unwrap_or_default());
     Ok(all)
+}
+
+/// Create a private (0700) home under its already private parent, or accept an existing
+/// one that is a 0700 directory owned by this user and not a symlink (never wiped).
+/// Returns (home, existed).
+pub(crate) fn create_private_home(home: PathBuf) -> Result<(PathBuf, bool)> {
+    use std::os::unix::fs::MetadataExt;
+    private_dir(home.parent().context("missing parent")?)?;
+    match fs::symlink_metadata(&home) {
+        Ok(m) => {
+            ensure!(
+                m.file_type().is_dir()
+                    && m.uid() == unsafe { libc::geteuid() }
+                    && m.mode() & 0o777 == 0o700,
+                "UNSAFE_ACCOUNT_HOME: existing {} must be a 0700 directory owned by this user and not a symlink; it was left unchanged",
+                home.display()
+            );
+            Ok((home, true))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            private_dir(&home)?;
+            Ok((home, false))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+/// The observation of a Gemini or Antigravity session from its transcript facts
+/// (`found`: path, directory, start, bytes) and the live process probe;
+/// `detect_switch` reports a recorded process that now holds another conversation.
+pub(crate) fn native_observation(
+    recorded: Option<&catalog::Attachment>,
+    session_id: &str,
+    found: Option<(PathBuf, Option<String>, Option<String>, u64)>,
+    live: &std::result::Result<Vec<Live>, String>,
+    detect_switch: bool,
+) -> Observation {
+    let (transcript, directory, started_at, bytes) = match found {
+        Some((p, cwd, started, bytes)) => (Some(p), cwd, started, Some(bytes)),
+        None => (None, None, None, None),
+    };
+    let mut o = Observation {
+        availability: "unknown",
+        native_status: None,
+        native_name: None,
+        pid: None,
+        process_start: None,
+        directory,
+        transcript,
+        transcript_bytes: bytes,
+        started_at,
+        attachment: None,
+        detail: None,
+        native_kind: None,
+        job_id: None,
+        attachment_switched: false,
+        forked_from: None,
+        active_since: None,
+    };
+    match live {
+        Err(e) => o.detail = Some(format!("PROBE_FAILED: {e}")),
+        Ok(live) => match live.iter().find(|l| l.session_id == session_id) {
+            Some(l) => {
+                o.availability = "running";
+                o.attachment = claude::host_attachment(l, recorded);
+                o.pid = Some(l.pid);
+                o.process_start = Some(l.process_start);
+                o.active_since = claude::process_started_at(l.process_start);
+                if l.cwd.is_some() {
+                    o.directory = l.cwd.clone();
+                }
+            }
+            None => {
+                // The recorded process is alive but now holds another conversation.
+                o.attachment_switched = detect_switch
+                    && recorded.is_some_and(|r| {
+                        live.iter().any(|l| {
+                            l.pid == r.pid
+                                && l.process_start == r.process_start
+                                && l.session_id != session_id
+                        })
+                    });
+                o.availability = if o.transcript.is_some() {
+                    "stopped"
+                } else {
+                    "stale"
+                };
+            }
+        },
+    }
+    o
+}
+/// The non-empty arguments of a process (its command line, at most 64 KiB).
+pub(crate) fn arguments(pid: u32) -> Option<Vec<String>> {
+    let mut bytes = vec![];
+    fs::File::open(format!("/proc/{pid}/cmdline"))
+        .ok()?
+        .take(64 * 1024)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(
+        bytes
+            .split(|b| *b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
+}
+impl Live {
+    /// A verified native process of Gemini or Antigravity: only its identity and cwd.
+    pub(crate) fn native(pid: u32, process_start: u64, session_id: String) -> Self {
+        Live {
+            pid,
+            process_start,
+            session_id,
+            cwd: fs::read_link(format!("/proc/{pid}/cwd"))
+                .ok()
+                .and_then(|p| p.to_str().map(str::to_owned)),
+            status: None,
+            name: None,
+            kind: None,
+            job_id: None,
+            registry_started_ms: None,
+            spare: false,
+            parked_job_id: None,
+            name_source: None,
+        }
+    }
 }
 
 #[cfg(test)]

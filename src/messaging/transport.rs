@@ -495,16 +495,7 @@ impl Transport {
         id: &str,
         cursor: Option<&str>,
     ) -> Result<T> {
-        super::uuid(id)?;
-        if !self.verified_profile || cursor.is_some_and(|s| s.is_empty() || s.len() > 4096) {
-            return Err(Fault("unsupported"));
-        }
-        self.rpc_budget(
-            "thread/turns/list",
-            json!({"threadId":id,"itemsView":"full","sortDirection":"desc","limit":1,"cursor":cursor}),
-            frame_budget(Duration::from_secs(3), self.max_bytes),
-        )
-        .await
+        self.steer_turn_page(id, cursor).await
     }
     /// Only the checkpoint projection may request one full latest legacy turn.
     /// The caller verifies its exact turn ID and discards non-public items.

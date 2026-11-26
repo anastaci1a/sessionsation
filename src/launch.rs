@@ -879,15 +879,7 @@ pub async fn run(paths: &Paths, id: &str) -> Result<()> {
             );
         }
         ensure!(r.phase == "dispatching", "LAUNCH_ALREADY_DISPATCHED");
-        ensure!(
-            std::env::var("HERDR_PANE_ID").ok().as_ref() == r.pane_id.as_ref(),
-            "HOST_WRONG_PANE"
-        );
-        ensure!(
-            std::env::var("SESSIONSATION_HERDR_SESSION").ok().as_deref()
-                == Some(&r.request.host.session),
-            "HOST_WRONG_SESSION"
-        );
+        crate::resume::ensure_host_pane(r.pane_id.as_ref(), &r.request.host.session)?;
         r.phase = "starting_provider".into();
         Ok(())
     })?;
@@ -980,13 +972,7 @@ pub fn attached(
 pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
     ensure!(id == confirm, "CONFIRMATION_MISMATCH");
     let r = status(paths, id)?;
-    ensure!(
-        !matches!(
-            r.phase.as_str(),
-            "running" | "complete" | "failed" | "recovered" | "abandoned"
-        ),
-        "OPERATION_ALREADY_TERMINAL"
-    );
+    crate::resume::ensure_unsettled(&r.phase)?;
     ensure!(r.phase == "uncertain", "OPERATION_NOT_STUCK");
     ensure!(
         crate::background::worker_stopped(&location(paths, id)?.with_extension("worker.lock"))?,

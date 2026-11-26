@@ -158,26 +158,7 @@ pub fn home(paths: &Paths, name: &str, config_home: Option<&Path>) -> Result<Pat
 /// re-initialised or re-permissioned: it must already be a private (0700)
 /// directory owned by this user and not a symlink. Returns (home, existed).
 pub fn create_home(paths: &Paths, name: &str) -> Result<(PathBuf, bool)> {
-    use std::os::unix::fs::MetadataExt;
-    let home = default_home(paths, name)?;
-    private_dir(home.parent().context("missing parent")?)?;
-    match fs::symlink_metadata(&home) {
-        Ok(m) => {
-            ensure!(
-                m.file_type().is_dir()
-                    && m.uid() == unsafe { libc::geteuid() }
-                    && m.mode() & 0o777 == 0o700,
-                "UNSAFE_ACCOUNT_HOME: existing {} must be a 0700 directory owned by this user and not a symlink; it was left unchanged",
-                home.display()
-            );
-            Ok((home, true))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            private_dir(&home)?;
-            Ok((home, false))
-        }
-        Err(e) => Err(e.into()),
-    }
+    super::native::create_private_home(default_home(paths, name)?)
 }
 /// The managed home must already be an operator-populated private directory.
 /// Never created, copied, moved or re-permissioned here.
@@ -1132,7 +1113,7 @@ pub fn observe_in(
     }
     o
 }
-fn cmdline(pid: u32) -> Vec<String> {
+pub(crate) fn cmdline(pid: u32) -> Vec<String> {
     fs::read(format!("/proc/{pid}/cmdline"))
         .map(|c| {
             c.split(|b| *b == 0)
@@ -1251,40 +1232,12 @@ pub struct Enrolled {
 }
 /// Claude accounts from a read-only registry snapshot (daemon need not run).
 pub fn enrolled(paths: &Paths) -> Result<Vec<Enrolled>> {
-    if !paths.root.join(crate::layout::REGISTRY_DB).exists() {
-        return Ok(vec![]);
-    }
-    let state = crate::store::load_state_snapshot(paths)?;
-    state
-        .accounts
-        .values()
-        .filter(|a| a.provider == ProviderId::Claude)
-        .map(|a| {
-            Ok(Enrolled {
-                name: a.name.clone(),
-                home: home(paths, &a.name, a.config_home.as_deref())?,
-                enabled: a.enabled,
-                auth_required: a.auth_required,
-            })
-        })
-        .collect()
+    super::native::enrolled_in(paths, ProviderId::Claude, |a| {
+        home(paths, &a.name, a.config_home.as_deref())
+    })
 }
 pub fn account(paths: &Paths, name: &str) -> Result<Enrolled> {
-    if let Some(a) = enrolled(paths)?.into_iter().find(|a| a.name == name) {
-        return Ok(a);
-    }
-    ensure!(
-        !deleted(paths, name)?,
-        "ACCOUNT_DELETED: claude:{name} was deleted locally; its conversation history is preserved but it cannot be resumed through this account"
-    );
-    bail!("ACCOUNT_NOT_FOUND: no enrolled Claude account with this name")
-}
-/// True when a completed local deletion removed this (no longer enrolled) Claude account.
-pub fn deleted(paths: &Paths, name: &str) -> Result<bool> {
-    let id = format!("claude:{name}");
-    Ok(crate::account_deletion::list(paths)?
-        .iter()
-        .any(|r| r.account_id == id && r.phase == "complete"))
+    super::native::account(paths, ProviderId::Claude, name)
 }
 
 /// Register discovered transcripts, link verified continuations and refresh live

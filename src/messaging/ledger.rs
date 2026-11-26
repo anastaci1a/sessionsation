@@ -529,11 +529,7 @@ fn acquire_blocking(
 pub(super) fn trim_stats(paths: &Paths) -> std::io::Result<bool> {
     use std::io::{Read, Seek, SeekFrom};
     let path = paths.root.join(layout::LEDGER_STATS);
-    let mut file = match fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)
-    {
+    let mut file = match crate::layout::open_nofollow(&path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),

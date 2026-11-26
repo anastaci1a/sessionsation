@@ -42,11 +42,7 @@ use anyhow::Result;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    io::{BufRead, Read, Seek},
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 pub const SEMANTICS: &str = "terminal_input";
 pub const LABEL: &str = "Typed into the session's HERDR terminal as the user's own input: Claude records it as a human message (queued mid-turn, or a new turn when idle)";
@@ -56,7 +52,6 @@ pub const MAX_TEXT: usize = 8192;
 const MAX_DRAFT_ROWS: usize = 12;
 /// Rows a typed message may occupy and still be verified.
 const MAX_TYPED_ROWS: usize = 200;
-const MAX_SCAN: u64 = 16 * 1024 * 1024;
 
 pub const DISABLED: &str = "TERMINAL_INPUT_DISABLED: terminal input is turned off by the operator (config terminal_input_enabled)";
 
@@ -964,16 +959,8 @@ pub(crate) struct Found {
 /// after `since_ms` and after `offset`; then collect assistant text until the
 /// next real input. Only that record anchors a reply.
 pub(crate) fn find(path: &Path, offset: u64, text: &str, since_ms: i64) -> Result<Found> {
-    let mut f = fs::File::open(path)?;
-    let len = f.metadata()?.len();
-    f.seek(std::io::SeekFrom::Start(if offset <= len {
-        offset
-    } else {
-        0
-    }))?;
-    let reader = std::io::BufReader::new(f.take(MAX_SCAN));
     let mut out = Found::default();
-    for line in reader.split(b'\n') {
+    for line in super::transcript_lines(path, offset)? {
         let Ok(v) = serde_json::from_slice::<Value>(&line?) else {
             continue;
         };

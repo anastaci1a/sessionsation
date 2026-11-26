@@ -2042,14 +2042,7 @@ fn enqueue_with_id(
     policy: EnqueuePolicy<'_>,
 ) -> Result<Job> {
     let automatic_id = policy.automatic_id;
-    let queue_lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(jobs_dir(paths)?.join("queue.lock"))?;
+    let queue_lock = crate::paths::lock_file(&jobs_dir(paths)?.join("queue.lock"))?;
     queue_lock.lock_exclusive()?;
     let _admission = if source.thread_id.is_empty() {
         None

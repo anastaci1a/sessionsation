@@ -433,24 +433,7 @@ pub fn record_provider_launch_as(
             }
             return Ok(s.clone());
         }
-        let base = label
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(crate::model::SESSION_NAME_MAX)
-            .collect::<String>();
-        let base = base.trim();
-        let base = if base.is_empty() { "session" } else { base };
-        let mut name = base.to_owned();
-        let mut suffix = 2;
-        while scope::taken_anywhere(c, &name) {
-            let tail = format!("-{suffix}");
-            let prefix: String = base
-                .chars()
-                .take(crate::model::SESSION_NAME_MAX.saturating_sub(tail.len()))
-                .collect();
-            name = format!("{prefix}{tail}");
-            suffix += 1;
-        }
+        let name = unique_name(label, |name| scope::taken_anywhere(c, name));
         let s = Session {
             id: preferred_id
                 .filter(|id| !c.sessions.contains_key(*id))
@@ -494,25 +477,7 @@ pub fn register_discovered(
             }) {
                 continue;
             }
-            let base = d
-                .label
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(crate::model::SESSION_NAME_MAX)
-                .collect::<String>();
-            let base = base.trim();
-            let base = if base.is_empty() { "session" } else { base };
-            let mut name = base.to_owned();
-            let mut suffix = 2;
-            while scope::taken_anywhere(c, &name) {
-                let tail = format!("-{suffix}");
-                let prefix: String = base
-                    .chars()
-                    .take(crate::model::SESSION_NAME_MAX.saturating_sub(tail.len()))
-                    .collect();
-                name = format!("{prefix}{tail}");
-                suffix += 1;
-            }
+            let name = unique_name(&d.label, |name| scope::taken_anywhere(c, name));
             let s = Session {
                 id: uuid::Uuid::new_v4().to_string(),
                 name,
@@ -1197,28 +1162,34 @@ pub fn complete_reserved(
     })
 }
 
+/// The first free name for `label`: control characters dropped, at most
+/// `SESSION_NAME_MAX` characters, BASE, else BASE-2, BASE-3 ... while `taken`.
+fn unique_name(label: &str, taken: impl Fn(&str) -> bool) -> String {
+    let base: String = label
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(crate::model::SESSION_NAME_MAX)
+        .collect();
+    let base = base.trim();
+    let base = if base.is_empty() { "session" } else { base };
+    let mut name = base.to_owned();
+    let mut suffix = 2;
+    while taken(&name) {
+        let tail = format!("-{suffix}");
+        let prefix: String = base
+            .chars()
+            .take(crate::model::SESSION_NAME_MAX.saturating_sub(tail.len()))
+            .collect();
+        name = format!("{prefix}{tail}");
+        suffix += 1;
+    }
+    name
+}
 /// First free session name in `space`: BASE, else BASE-2, BASE-3 ... (as unnamed
 /// launches record).
 pub fn free_name(paths: &Paths, space: Option<&str>, label: &str) -> Result<String> {
     transaction(paths, |c| {
-        let base: String = label
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(crate::model::SESSION_NAME_MAX)
-            .collect();
-        let base = base.trim();
-        let base = if base.is_empty() { "session" } else { base };
-        let mut name = base.to_owned();
-        let mut suffix = 2;
-        while scope::taken(c, space, &name, None, None) {
-            let tail = format!("-{suffix}");
-            let prefix: String = base
-                .chars()
-                .take(crate::model::SESSION_NAME_MAX.saturating_sub(tail.len()))
-                .collect();
-            name = format!("{prefix}{tail}");
-            suffix += 1;
-        }
+        let name = unique_name(label, |name| scope::taken(c, space, name, None, None));
         Ok(name)
     })
 }
