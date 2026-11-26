@@ -926,6 +926,15 @@ async fn peer_messages_need_opt_in_and_claim_replies_only_with_transcript_proof(
     assert!(pid.parse::<u32>().is_ok() && hex.len() == 8, "{name}");
     assert_eq!(r["peer_message"]["reply_socket"], "namespaced");
     assert_eq!(r["peer_message"]["evidence"], "transcript_anchor");
+    // Contract 1.71.2: timing facts, non-negative; provider_ms is the peer frame write.
+    for key in [
+        "readiness_ms",
+        "ledger_wait_ms",
+        "ledger_hold_ms",
+        "provider_ms",
+    ] {
+        assert!(r["facts"][key].as_u64().is_some(), "{key}: {r}");
+    }
     assert_eq!(r["origin"], "operator");
     assert!(
         !r.to_string().contains("private operator prompt"),

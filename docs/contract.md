@@ -1031,6 +1031,9 @@ or the error of a stop that failed afterwards, adds `discarded_messages`, `not_d
 A message still queued behind an interrupted Codex turn reports `reason:"queued_after_interrupted_turn"`. While a stop
 job's worker runs, `api cancel` is retryable `OPERATION_BUSY`; a stop whose worker died before archiving anything is
 settled after 10 s, one that died later is `MIGRATION_STATE_UNKNOWN` until `recover`.
+Since 1.71.2 the cancels of a `--discard-queued` stop pass a pending stop job of the same session that
+has not begun stopping (`queued`, `waiting_for_idle` or `waiting_for_pause`: no `stopping_source`, nothing
+archived; it may already have paused the goal or ended background terminals); the stop then joins that job.
 Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
 `session_id`, `source_session_id` (both name the catalog session), `provider`,
 `phase`, `detail`, `already_stopped`, `pid`, `process_start`, `signal`, `pane_closed`,
@@ -1812,6 +1815,17 @@ with a new id); a held-input release keeps its retry loop. Codex rows carry
 `input_delivery.health` `{last_outcome: accepted|not_delivered|uncertain|null,
 last_attempt_at, last_success_at, consecutive_failures, last_native_error}` from
 `messaging/input-health/<conversation>.json`, written by submit attempts only.
+
+**Send timings** (1.71.2). Every submit/queue/steer receipt (Codex, Claude, Gemini,
+Antigravity) adds `facts.readiness_ms`, `ledger_wait_ms`, `ledger_hold_ms` and
+`provider_ms`, integer milliseconds recorded once by the admitting send (a resend never
+changes them): the readiness wait before admission (Codex `await_ready`, excluding its
+busy-ledger pre-check open; Claude the peer endpoint wait; 0 when none ran), the admission's
+ledger wait and its hold until just before the receipt is created (`accept_timed`; Claude: the
+message-id check, excluding the `admission.lock` wait), and the provider call (Codex
+`thread/queue/add`, Claude peer frame write). Each is `null` when not recorded: older
+receipts, and `provider_ms` until a provider call was recorded (steer, typed and
+hosted input never record it).
 
 ### Receipt retention
 

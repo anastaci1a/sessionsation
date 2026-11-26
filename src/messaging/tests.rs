@@ -977,8 +977,23 @@ async fn public_requests_deduplicate_without_retargeting_or_steering() {
             assert_eq!(first["state"], "native_accepted");
         }
         // A new backend generation cannot turn a retry into new delivery.
+        // Contract 1.71.2: timing facts, non-negative, recorded once (a resend keeps them).
+        let keys = [
+            "readiness_ms",
+            "ledger_wait_ms",
+            "ledger_hold_ms",
+            "provider_ms",
+        ];
+        for key in keys {
+            let measured = first["facts"][key].as_u64().is_some();
+            let unsent = key == "provider_ms" && (lost || first["state"] == "rejected");
+            assert!(measured || unsent, "{key}: {first}");
+        }
         crate::catalog::rename(&paths, &session.id, &session.generation(), "changed").unwrap();
-        send_public(&paths, request.clone()).await.unwrap();
+        let again = send_public(&paths, request.clone()).await.unwrap();
+        for key in &keys[..3] {
+            assert_eq!(again["facts"][key], first["facts"][key], "{key}");
+        }
         let mut changed = request;
         changed.text = "changed".into();
         assert!(

@@ -179,7 +179,7 @@ async fn explicit_steering_is_exact_turn_correlated_and_never_replayed() {
                     "legacy must not adopt a bound public intent"
                 );
                 if scenario == "restart_after_intent" {
-                    let mut r = accept(&mut db, &b).unwrap();
+                    let mut r = accept(&mut db, &b, Default::default()).unwrap();
                     r.state = "unknown".into();
                     r.submit = Some(SubmitEvidence {
                         expected_turn_id: "turn-active".into(),
@@ -606,7 +606,7 @@ async fn steer_waits_releases_the_lease_and_never_steers_twice() {
             let mut db = ledger::open_write(&paths, Duration::from_secs(10))
                 .await
                 .unwrap();
-            let mut r = accept(&mut db, &binding).unwrap();
+            let mut r = accept(&mut db, &binding, Default::default()).unwrap();
             let outcome = deliver(&paths, &binding, &mut db, &mut r).await;
             (r, outcome.map_err(|e| e.to_string()))
         })

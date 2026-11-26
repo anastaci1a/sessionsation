@@ -136,6 +136,9 @@ pub struct Facts {
     /// `sessionsation:<component>` instead of bare (`collides_with_session`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_component_prefixed: Option<String>,
+    /// Contract 1.71.2: send timings (`provider_ms`: the peer frame write).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<super::Timing>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -480,7 +483,8 @@ pub async fn send_planned(
         return receipt(paths, &id, false).await;
     }
     ensure!(!super::headless::exists(paths, &id), "MESSAGE_ID_CONFLICT");
-    super::headless::ensure_unused_elsewhere(paths, &id)?;
+    let (ledger_wait, ledger_hold) = super::headless::ensure_unused_elsewhere(paths, &id)?;
+    let mut readiness = Duration::ZERO;
     let now = crate::daemon::now();
     ensure!(
         request.expires_at > now && request.expires_at <= now + 86400,
@@ -562,6 +566,7 @@ pub async fn send_planned(
         // the endpoint to be published, e.g. right after a start; type only when native
         // is truly unavailable.
         if wanted == "auto" && !peer_on {
+            let started = std::time::Instant::now();
             let until = std::time::Instant::now()
                 + Duration::from_secs(
                     std::env::var("SESSIONSATION_NATIVE_WAIT_SECONDS")
@@ -577,6 +582,7 @@ pub async fn send_planned(
                         && claude::peer::endpoint(&account.home, l).is_ok()
                 });
             }
+            readiness = started.elapsed();
         }
         // Agent-originated sends (and `delivery: native`) try the native peer message
         // first and fall back to typing only when nothing was sent natively.
@@ -681,6 +687,12 @@ pub async fn send_planned(
             interrupt_requested: interrupt,
             from_component_ignored: chosen.ignored.map(str::to_owned),
             from_component_prefixed: chosen.prefixed.map(str::to_owned),
+            timing: Some(super::Timing {
+                readiness_ms: super::Timing::ms(readiness),
+                ledger_wait_ms: super::Timing::ms(ledger_wait),
+                ledger_hold_ms: super::Timing::ms(ledger_hold),
+                provider_ms: None,
+            }),
             ..Default::default()
         },
         reply_text: String::new(),
@@ -1179,12 +1191,19 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
         frames.push(native_peer::notify_idle_frame(&from, &peer.notify_msg_id));
     }
     let bytes = native_peer::encode(&frames)?;
+    let started = std::time::Instant::now();
     let wrote = async {
         write_half.write_all(&bytes).await?;
         write_half.flush().await
     }
     .await;
+    let took = started.elapsed();
     change(paths, id, |r| {
+        if let Some(t) = r.facts.timing.as_mut()
+            && t.provider_ms.is_none()
+        {
+            t.provider_ms = Some(super::Timing::ms(took));
+        }
         if wrote.is_ok() {
             r.phase = "written".into();
             r.facts.written = true;
@@ -1899,6 +1918,7 @@ pub fn receipt_value(r: &Record) -> Value {
     if held(r) {
         v["reason_detail"] = json!(super::public::HOLD_DETAIL);
     }
+    super::Timing::facts(r.facts.timing.as_ref(), &mut v["facts"]);
     if let Some(why) = &r.facts.from_component_ignored {
         v["facts"]["from_component_ignored"] = json!(why);
     }

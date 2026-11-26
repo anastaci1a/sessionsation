@@ -328,8 +328,12 @@ fn shape(request: &Request) -> Result<u64> {
     Ok(timeout)
 }
 
-/// Codex delivery stores share the message-id namespace.
-pub(crate) fn ensure_unused_elsewhere(paths: &Paths, id: &str) -> Result<()> {
+/// Codex delivery stores share the message-id namespace. Returns the ledger wait and hold
+/// (contract 1.71.2 receipt timings).
+pub(crate) fn ensure_unused_elsewhere(
+    paths: &Paths,
+    id: &str,
+) -> Result<(std::time::Duration, std::time::Duration)> {
     ensure!(!super::recovery::exists(paths, id), "MESSAGE_ID_CONFLICT");
     ensure!(
         !super::claude_steer::exists(paths, id),
@@ -337,8 +341,10 @@ pub(crate) fn ensure_unused_elsewhere(paths: &Paths, id: &str) -> Result<()> {
     );
     // Only an id check: wait briefly for a Codex observer instead of failing
     // a Claude/Gemini send with ADAPTER_BUSY.
+    let asked = std::time::Instant::now();
     let ledger = super::ledger::open_write_blocking(paths, std::time::Duration::from_secs(3))
         .map_err(anyhow::Error::from)?;
+    let acquired = std::time::Instant::now();
     super::retention::ensure_not_retired(&ledger, id)?;
     ensure!(
         super::public::get(&ledger, id)
@@ -347,7 +353,8 @@ pub(crate) fn ensure_unused_elsewhere(paths: &Paths, id: &str) -> Result<()> {
             && ledger.get(id).map_err(anyhow::Error::from)?.is_none(),
         "MESSAGE_ID_CONFLICT"
     );
-    Ok(())
+    drop(ledger);
+    Ok((acquired - asked, acquired.elapsed()))
 }
 
 pub async fn send(paths: &Paths, request: Request) -> Result<Value> {

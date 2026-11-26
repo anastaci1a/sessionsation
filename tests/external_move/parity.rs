@@ -500,3 +500,82 @@ async fn codex_plain_stop_queues_once_and_refuses_only_a_paused_queue() {
     }
     assert_eq!(f.invoke(&["moves"]).as_array().unwrap().len(), 0);
 }
+
+/// Contract 1.71.2 (LEAD p-1125-153509-9488): a plain stop waiting for idle no longer blocks a
+/// later `stop --interrupt --discard-queued`: its cancels pass the pending stop job (which has
+/// had no side effect), the turn is interrupted and the session stops through that job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_discarding_stop_passes_a_pending_plain_stop_of_the_same_session() {
+    let f = Fixture::new().await;
+    let pane = f.live(ID, true);
+    {
+        let mut a = f.a.lock().unwrap();
+        a.messaging_profile = true;
+        a.hold_busy = true;
+    }
+    // A kernel-validated launcher record makes the tmux-hosted fixture a messaging target.
+    let pid: u32 = tmux(
+        &f.socket,
+        &["display-message", "-p", "-t", &pane, "#{pane_pid}"],
+    )
+    .parse()
+    .unwrap();
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let start: u64 = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let panes = f.paths.root.join(sessionsation::layout::MANAGED_PANES);
+    fs::create_dir_all(&panes).unwrap();
+    let home = f.paths.account("personal").unwrap();
+    fs::write(
+        panes.join("1.json"),
+        json!({"pid":pid,"start_time":start,"home":home,"thread":ID}).to_string(),
+    )
+    .unwrap();
+    let s = session(&f);
+    let mut ids = vec![];
+    for _ in 0..2 {
+        let id = uuid::Uuid::new_v4().to_string();
+        let req = json!({"api_version":1,"message_id":id,"session_id":s["id"],
+            "expected_generation":s["generation"],"mode":"queue","text":"queued fixture input",
+            "expires_at":daemon::now()+300});
+        let out = super::launch::api(&f, &["send"], Some(&req));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["result"]["state"], "native_accepted", "{v}");
+        ids.push(id);
+    }
+    assert_eq!(f.a.lock().unwrap().native_messages.len(), 2);
+    let (ok, plain) = stop(&f, &[], &[]);
+    assert!(ok, "{plain}");
+    let job = plain["result"]["id"].as_str().unwrap().to_owned();
+    f.wait(&job, "waiting_for_idle").await;
+    let (ok, v) = stop(&f, &["--interrupt", "--discard-queued", "--wait"], &[]);
+    assert!(ok, "{v}");
+    let r = &v["result"];
+    assert_eq!(r["id"], job.as_str(), "{v}");
+    assert_eq!(r["phase"], "complete", "{v}");
+    assert_eq!(r["interrupted_turn"], true, "{v}");
+    let mut discarded: Vec<String> =
+        serde_json::from_value(r["discarded_messages"].clone()).unwrap();
+    discarded.sort();
+    ids.sort();
+    assert_eq!(discarded, ids, "{v}");
+    assert_eq!(r["not_discarded"], json!([]), "{v}");
+    assert!(f.a.lock().unwrap().native_messages.is_empty());
+    for id in &ids {
+        let out = super::launch::api(&f, &["receipt", id], None);
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["result"]["state"], "cancelled", "{v}");
+    }
+}

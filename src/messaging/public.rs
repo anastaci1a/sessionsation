@@ -121,6 +121,8 @@ fn wrap(binding: &Binding, value: Value) -> Value {
         "reply":if reply.is_null() {Value::Null} else {json!({"item_id":reply["item_id"],"text":reply["text"],"phase":reply["phase"]})}});
     // Contract 1.58.0: the native transport error of a failed submit, and whether the input
     // provably never reached the app-server (state `rejected`: safe to send again).
+    let timing = serde_json::from_value::<Timing>(value["timing"].clone()).ok();
+    Timing::facts(timing.as_ref(), &mut out["facts"]);
     if !value["native_error"].is_null() {
         out["facts"]["native_error"] = value["native_error"].clone();
         out["facts"]["retryable"] = json!(value["state"] == "rejected");
@@ -323,6 +325,7 @@ pub(super) async fn send_planned(
     uuid(&request.session_id)?;
     // Real input readiness first (bounded, no ledger lock held): a session launched
     // moments ago can acknowledge input it is not yet reading.
+    let mut readiness = std::time::Duration::ZERO;
     if !delivery::timing(paths).ready.is_zero() && request.mode != PublicMode::Steer {
         // A busy ledger refuses before any catalog or native work.
         drop(ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?);
@@ -330,11 +333,15 @@ pub(super) async fn send_planned(
             crate::catalog::resolve(paths, &request.session_id, &request.expected_generation)
         {
             if crate::provider::ops::supervised(&session.provider) {
+                let started = std::time::Instant::now();
                 delivery::await_ready(paths, &session.conversation_id).await;
+                readiness = started.elapsed();
             }
         }
     }
+    let asked = std::time::Instant::now();
     let mut ledger = ledger::open_write(paths, wait_budget(paths, Wait::Send)).await?;
+    let acquired = std::time::Instant::now();
     let binding =
         if let Some(b) = get(&ledger, &request.message_id)? {
             anyhow::ensure!(b.request == request, "MESSAGE_ID_CONFLICT");
@@ -400,10 +407,17 @@ pub(super) async fn send_planned(
     if binding.cancelled {
         return Ok(wrap(&binding, json!({"state":"cancelled"})));
     }
+    // Contract 1.71.2: recorded with the receipt this admission creates (never on a resend).
+    let timing = Timing {
+        readiness_ms: Timing::ms(readiness),
+        ledger_wait_ms: Timing::ms(acquired - asked),
+        ledger_hold_ms: Timing::ms(acquired.elapsed()),
+        provider_ms: None,
+    };
     let mut receipt = if binding.request.mode == PublicMode::Steer {
-        steering::accept(&mut ledger, &binding)?
+        steering::accept(&mut ledger, &binding, timing)?
     } else {
-        ledger.accept(&binding.native, crate::daemon::now())?
+        ledger.accept_timed(&binding.native, crate::daemon::now(), None, Some(timing))?
     };
     ledger.expire(&mut receipt, crate::daemon::now())?;
     if binding.request.mode == PublicMode::Steer {

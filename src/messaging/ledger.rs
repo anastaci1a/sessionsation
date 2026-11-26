@@ -15,7 +15,7 @@
 //! - Every open appends one JSON line (< 512 bytes, `O_APPEND`, no lock) to
 //!   `messaging/ledger-stats.jsonl` after its lock is released (or the wait gave up);
 //!   [`trim_stats`] keeps that file bounded.
-use super::{Enqueue, Fault, Receipt, Result, SubmitEvidence, retention, uuid};
+use super::{Enqueue, Fault, Receipt, Result, SubmitEvidence, Timing, retention, uuid};
 use crate::{
     layout,
     paths::{Paths, private_dir},
@@ -652,6 +652,16 @@ impl Ledger {
         now: i64,
         binding: Option<(&str, &str, Option<SubmitEvidence>)>,
     ) -> Result<Receipt> {
+        self.accept_timed(input, now, binding, None)
+    }
+    /// [`Self::accept_bound`]; a receipt it creates records `timing` (contract 1.71.2).
+    pub(super) fn accept_timed(
+        &mut self,
+        input: &Enqueue,
+        now: i64,
+        binding: Option<(&str, &str, Option<SubmitEvidence>)>,
+        timing: Option<Timing>,
+    ) -> Result<Receipt> {
         // A public steering intent reserves its UUID even before receipt creation.
         let has_public: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_messages')", [], |r|r.get(0))?;
         if has_public {
@@ -734,6 +744,7 @@ impl Ledger {
             submit: binding.as_ref().and_then(|b| b.2.clone()),
             steer: None,
             native_error: None,
+            timing,
         };
         let data = serde_json::to_string(&receipt).map_err(|_| Fault("storage_error"))?;
         let tx = self.db.transaction()?;

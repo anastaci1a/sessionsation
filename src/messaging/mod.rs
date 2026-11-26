@@ -129,6 +129,33 @@ pub struct Receipt {
     /// Contract 1.58.0: the newest native transport error of a submit (bounded, no message text).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_error: Option<NativeError>,
+    /// Contract 1.71.2: public-send timings, recorded once when they happen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<Timing>,
+}
+/// Contract 1.71.2: per-send timings in milliseconds, recorded once when they happen: the
+/// readiness wait before admission, the admission's ledger wait and hold, and the provider
+/// call (Codex `thread/queue/add`, Claude peer frame write; `None` until one ran).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Timing {
+    pub readiness_ms: u64,
+    pub ledger_wait_ms: u64,
+    pub ledger_hold_ms: u64,
+    #[serde(default)]
+    pub provider_ms: Option<u64>,
+}
+impl Timing {
+    pub(crate) fn ms(d: std::time::Duration) -> u64 {
+        u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+    }
+    /// The four receipt fact keys; `null` when not recorded (older or unmeasured sends).
+    pub(crate) fn facts(timing: Option<&Self>, facts: &mut Value) {
+        let t = timing.map(|t| (t.readiness_ms, t.ledger_wait_ms, t.ledger_hold_ms));
+        facts["readiness_ms"] = json!(t.map(|t| t.0));
+        facts["ledger_wait_ms"] = json!(t.map(|t| t.1));
+        facts["ledger_hold_ms"] = json!(t.map(|t| t.2));
+        facts["provider_ms"] = json!(timing.and_then(|t| t.provider_ms));
+    }
 }
 /// Native item positions recorded immediately before a steer and re-verified on
 /// every observation. Contains item identifiers only, never input text.
@@ -538,7 +565,19 @@ async fn submit(
     receipt.reason = Some("submission_uncertain".into());
     ledger.save(receipt)?;
     let budget = wait_budget(&ledger.paths, Wait::Send);
-    let result:Result<Added>=ledger.during(budget, control.request("thread/queue/add",json!({"threadId":receipt.session_id,"clientUserMessageId":receipt.message_id,"input":[{"type":"text","text":input.text,"text_elements":[]}]}))).await?;
+    let (result, took): (Result<Added>, _) = ledger.during(budget, async {
+        let started = std::time::Instant::now();
+        let result = control.request("thread/queue/add",json!({"threadId":receipt.session_id,"clientUserMessageId":receipt.message_id,"input":[{"type":"text","text":input.text,"text_elements":[]}]})).await;
+        (result, started.elapsed())
+    }).await?;
+    // Contract 1.71.2: the provider call's time, recorded once with the save that follows it.
+    let provider = |r: &mut Receipt| {
+        if let Some(t) = r.timing.as_mut()
+            && t.provider_ms.is_none()
+        {
+            t.provider_ms = Some(Timing::ms(took));
+        }
+    };
     let outcome = match result {
         Ok(response) => {
             if response.item.client_id == receipt.message_id
@@ -550,6 +589,7 @@ async fn submit(
                     receipt.state = "native_accepted".into();
                     receipt.native_queue_id = Some(response.item.id);
                     receipt.reason = None;
+                    provider(receipt);
                     ledger.save(receipt)?;
                 }
                 "accepted"
@@ -568,6 +608,7 @@ async fn submit(
                 && ledger.unchanged(receipt)?
             {
                 receipt.native_error = Some(error);
+                provider(receipt);
                 ledger.save(receipt)?;
             }
             let _ = reconcile(control, ledger, receipt).await;

@@ -151,12 +151,12 @@ pub async fn target(paths: &Paths, id: &str, generation: &str) -> anyhow::Result
     )
 }
 
-pub(super) fn accept(db: &mut Ledger, b: &Binding) -> Result<Receipt> {
+pub(super) fn accept(db: &mut Ledger, b: &Binding, timing: super::Timing) -> Result<Receipt> {
     let hash = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&b.request).map_err(|_| Fault("invalid_request"))?)
     );
-    db.accept_bound(
+    db.accept_timed(
         &b.native,
         crate::daemon::now(),
         Some((
@@ -175,6 +175,7 @@ pub(super) fn accept(db: &mut Ledger, b: &Binding) -> Result<Receipt> {
                 resume: false,
             }),
         )),
+        Some(timing),
     )
 }
 pub(super) async fn deliver(
@@ -300,6 +301,7 @@ pub(super) fn unsubmitted(b: &Binding, state: &str) -> Value {
         submit: None,
         steer: None,
         native_error: None,
+        timing: None,
     };
     receipt(b, &r)
 }
@@ -369,6 +371,7 @@ fn project(b: &Binding, r: &Receipt, observation: Value) -> Value {
             "native_attempted_at":if matches!(obs,"observed"|"uncorrelated"|"unavailable") {Some(now)} else {None},
             "error_code":observation["code"],"freshness":if obs=="acceptance_only" {"unknown"} else {freshness},
             "evidence_observed_at":b.evidence_observed_at}});
+    super::Timing::facts(r.timing.as_ref(), &mut out["facts"]);
     super::uniform(b, &mut out);
     out
 }

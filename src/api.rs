@@ -22,8 +22,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 71;
-pub const CONTRACT_PATCH: u32 = 1;
-pub const CONTRACT_VERSION: &str = "1.71.1";
+pub const CONTRACT_PATCH: u32 = 2;
+pub const CONTRACT_VERSION: &str = "1.71.2";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -3302,7 +3302,9 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
         *discarded =
             Some(json!({"discarded_messages":[],"not_discarded":[],"discarded_native_items":[]}));
         if let Ok(s) = catalog::resolve(paths, session, expected_generation) {
-            *discarded = Some(crate::messaging::discard_queued(paths, &s.conversation_id).await?);
+            let discard = crate::messaging::discard_queued(paths, &s.conversation_id);
+            let scope = external::STOP_DISCARD.scope(s.conversation_id.clone(), discard);
+            *discarded = Some(scope.await?);
         }
     }
     let mut result = match command {
@@ -3938,7 +3940,16 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
                 Ok((s, source)) => {
                     let (pid, start) = (source.pid, source.start_time);
                     let interrupted = source.shared_server
-                        && stop_preflight(paths, &source, interrupt, discarded.as_mut()).await?;
+                        && if discarded.is_some() {
+                            // 1.71.2: only a discarding stop's cancels pass a pending stop
+                            // (see STOP_DISCARD).
+                            let thread = source.thread_id.clone();
+                            let preflight =
+                                stop_preflight(paths, &source, interrupt, discarded.as_mut());
+                            external::STOP_DISCARD.scope(thread, preflight).await?
+                        } else {
+                            stop_preflight(paths, &source, interrupt, None).await?
+                        };
                     let queued = operation(
                         paths,
                         external::queue_snapshot(

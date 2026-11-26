@@ -2892,11 +2892,18 @@ pub(crate) fn messaging_recorded_bindings(
     Ok(result)
 }
 
+tokio::task_local! {
+    /// Contract 1.71.2: the conversation whose `api stop --discard-queued` runs in this task;
+    /// set only around that stop's discard.
+    pub(crate) static STOP_DISCARD: String;
+}
+
 /// Same lock order as enqueue_with_id. Hold both across the actual native mutation.
 pub(crate) fn messaging_lock(
     paths: &Paths,
     id: &str,
 ) -> std::result::Result<(File, File), &'static str> {
+    let discarding = STOP_DISCARD.try_with(|c| c == id).unwrap_or(false);
     let dir = jobs_dir(paths).map_err(|_| "local_io_error")?;
     let queue = crate::paths::lock_file(&dir.join("queue.lock")).map_err(|_| "local_io_error")?;
     queue.try_lock_exclusive().map_err(|_| "operation_busy")?;
@@ -2928,6 +2935,16 @@ pub(crate) fn messaging_lock(
                 "queued" | "waiting_for_idle" | "waiting_for_pause"
             ) && !job.source_archived;
             let young = daemon::now() - job.created_at <= 10;
+            // 1.71.2: the discard of a new stop of this session passes a pending stop that has
+            // not begun stopping (no `stopping_source`, nothing archived; its worker may
+            // already have paused the goal or ended background terminals); the new stop then
+            // joins that job. Safe only because the worker's idle wait refuses while the native
+            // queue has items (external/movement.rs, wait_idle's `thread/queue/list` check): it
+            // cannot archive between a cancel's phase check and its `thread/queue/delete`.
+            // Keep that check.
+            if stop && unstarted && discarding {
+                continue;
+            }
             if stop && (running || open && unstarted && young) {
                 return Err("operation_busy");
             }

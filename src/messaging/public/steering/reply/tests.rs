@@ -124,6 +124,7 @@ fn receipt(state: &str, anchor: Option<SteerAnchor>) -> Receipt {
         correlation: None,
         reply: None,
         native_error: None,
+        timing: None,
         submit: Some(SubmitEvidence {
             expected_turn_id: "turn-1".into(),
             acknowledged_turn_id: Some("turn-1".into()),
