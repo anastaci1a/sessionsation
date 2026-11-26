@@ -322,10 +322,7 @@ pub(crate) async fn idle(paths: &Paths, home: &Path) -> Result<()> {
                     .account(&j.target)
                     .ok()
                     .is_some_and(|t| crate::layout::same_home(&t, home)))
-                && !matches!(
-                    j.phase.as_str(),
-                    "complete" | "failed" | "cancelled" | "recovered"
-                )),
+                && j.pending()),
         "ACCOUNT_HAS_PENDING_OPERATIONS"
     );
     Ok(())

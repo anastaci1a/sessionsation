@@ -1,5 +1,5 @@
 //! Pause or end a live session without transferring or reopening its history.
-use super::movement::{identify, phase, risks, stop_source, wait_idle};
+use super::movement::{file_threads, identify, listed_path, phase, risks, stop_source, wait_idle};
 use super::*;
 use crate::control::Control;
 
@@ -55,15 +55,7 @@ pub(super) async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
             "Work paused and background terminals stopped. The session remains open; no new turn was started.",
         );
     }
-    job.termination_threads = files
-        .iter()
-        .map(|file| {
-            Ok(session_meta(file)?["id"]
-                .as_str()
-                .context("missing thread identity")?
-                .to_owned())
-        })
-        .collect::<Result<_>>()?;
+    job.termination_threads = file_threads(&files)?;
     save_job(paths, job)?;
     stop_source(paths, job, files).await?;
     restore_histories(paths, job).await?;
@@ -104,23 +96,11 @@ async fn restore_histories(paths: &Paths, job: &mut Job) -> Result<()> {
     // Read before each request: recovery after an uncertain reply must not repeat
     // unarchive blindly, nor load/stop a conversation the user has already resumed.
     for id in job.termination_threads.clone() {
-        let mut thread = control.thread(&id, false).await?;
-        let mut path = PathBuf::from(
-            thread["path"]
-                .as_str()
-                .context("saved history path missing")?,
-        );
-        if crate::alias::starts_with(&path, &job.source.home.join("archived_sessions")) {
-            control
-                .request("thread/unarchive", json!({"threadId":id}))
-                .await?;
-            thread = control.thread(&id, false).await?;
-            path = PathBuf::from(
-                thread["path"]
-                    .as_str()
-                    .context("unarchived history path missing")?,
-            );
-        }
+        let missing = [
+            "saved history path missing",
+            "unarchived history path missing",
+        ];
+        let path = listed_path(&mut control, &id, &job.source.home, missing).await?;
         ensure!(
             crate::alias::starts_with(&path, &job.source.home.join("sessions")) && path.is_file(),
             "conversation is not yet back in the resume list; retry recover"
@@ -134,13 +114,7 @@ async fn restore_histories(paths: &Paths, job: &mut Job) -> Result<()> {
 }
 
 pub(super) async fn recover(paths: &Paths, mut job: Job) -> Result<Job> {
-    ensure!(
-        job.phase == "failed"
-            || (!matches!(job.phase.as_str(), "complete" | "cancelled" | "recovered")
-                && !handoff_worker_alive(&job.id)
-                && daemon::now() - job.created_at > 10),
-        "only failed or interrupted session endings need recovery"
-    );
+    job.ensure_recoverable(false, "session endings")?;
     let failure = job.detail.clone();
     if job.kind == "pause" {
         phase(

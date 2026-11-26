@@ -1,6 +1,7 @@
 //! Project relocation shares account-move quiescence, confirmation and restart logic.
 use super::movement::{
-    identify, launch_target, phase, restore_source, risks, stop_source, tick, wait_idle,
+    identify, launch_target, phase, restore_source, risks, stop_source, tick, unarchive, wait_idle,
+    wait_lock,
 };
 use super::*;
 use crate::control::Control;
@@ -166,18 +167,14 @@ fn plan_for(
     })
 }
 async fn selected(paths: &Paths, pane: Option<&str>, thread: Option<&str>) -> Result<Instance> {
-    ensure!(
-        pane.is_some() != thread.is_some(),
-        "specify exactly one of --pane or --thread"
-    );
-    discover(paths)
-        .await?
-        .into_iter()
-        .find(|i| {
-            pane.is_some_and(|p| !i.inactive && i.pane == p)
-                || thread.is_some_and(|t| i.inactive && i.thread_id == t)
-        })
-        .context("selected conversation is no longer available")
+    select(
+        paths,
+        pane,
+        thread,
+        true,
+        "selected conversation is no longer available",
+    )
+    .await
 }
 pub async fn preview(
     paths: &Paths,
@@ -554,15 +551,8 @@ pub(super) async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
     }
     // Serialize project changes, including ancestor/descendant paths.
     let lock = crate::paths::lock_file(&paths.root.join(crate::layout::PROJECT_RELOCATION_LOCK))?;
-    while lock.try_lock_exclusive().is_err() {
-        phase(
-            paths,
-            job,
-            "waiting_for_project",
-            "Another project relocation is in progress. Waiting without changing this session.",
-        )?;
-        tick(paths, job).await?;
-    }
+    let busy = "Another project relocation is in progress. Waiting without changing this session.";
+    wait_lock(paths, job, &lock, "waiting_for_project", busy).await?;
     loop {
         let others = other_sessions(paths, &job.source, &r).await?;
         if others.is_empty() {
@@ -630,13 +620,8 @@ pub(super) async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
     };
     if job.source_archived {
         let c = control.as_mut().context("source control missing")?;
-        c.request("thread/unarchive", json!({"threadId":job.source.thread_id}))
-            .await?;
-        job.source.rollout = PathBuf::from(
-            c.thread(&job.source.thread_id, false).await?["path"]
-                .as_str()
-                .context("unarchived history missing")?,
-        );
+        let id = &job.source.thread_id;
+        job.source.rollout = unarchive(c, id, "unarchived history missing").await?;
         job.source_archived = false;
         save_job(paths, job)?;
     }
@@ -674,12 +659,7 @@ pub(crate) fn saved_location(paths: &Paths, thread: &str) -> Option<String> {
     v["cwd"].as_str().map(str::to_owned)
 }
 pub(super) async fn recover(paths: &Paths, mut job: Job) -> Result<Job> {
-    ensure!(
-        job.phase == "failed"
-            || (!handoff_worker_alive(&job.id)
-                && !matches!(job.phase.as_str(), "complete" | "cancelled" | "recovered")),
-        "only failed or interrupted moves need recovery"
-    );
+    job.ensure_recoverable(true, "moves")?;
     if !job.source.pane.is_empty() {
         ensure!(
             pane_state(paths, &job.source.pane).map_or(true, |(dead, _)| dead),

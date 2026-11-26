@@ -244,12 +244,10 @@ pub async fn tick(paths: &Paths) -> Result<()> {
             .iter()
             .filter(|j| j.source.thread_id == *thread)
             .collect();
-        if related.iter().any(|j| {
-            !matches!(
-                j.phase.as_str(),
-                "complete" | "failed" | "cancelled" | "recovered"
-            ) || external::handoff_worker_alive(&j.id)
-        }) {
+        if related
+            .iter()
+            .any(|j| j.pending() || external::handoff_worker_alive(&j.id))
+        {
             continue;
         }
         if live.len() != 1 {

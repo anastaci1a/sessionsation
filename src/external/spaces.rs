@@ -330,21 +330,34 @@ fn check_destination(request: &Target, available: &Value) -> Result<()> {
     }
     Ok(())
 }
-pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
-    let record = file(paths, &request.request_id)?;
-    if record.exists() {
-        let op = read(paths, &request.request_id)?;
-        ensure!(op.request == admitted(&request), "REQUEST_ID_CONFLICT");
-        return public(paths, &op);
+/// The journaled answer to a repeated request id (the same request only).
+fn replay(paths: &Paths, request: &Target) -> Result<Option<Value>> {
+    if !file(paths, &request.request_id)?.exists() {
+        return Ok(None);
     }
+    let op = read(paths, &request.request_id)?;
+    ensure!(op.request == admitted(request), "REQUEST_ID_CONFLICT");
+    public(paths, &op).map(Some)
+}
+/// Admission, no handoff of this conversation and its runtime lock (released first).
+fn exclusive(paths: &Paths, thread: &str, own: &str) -> Result<((File, File), File)> {
+    let admission = crate::lifecycle::admit(paths, thread, Some(own))?;
+    crate::lifecycle::ensure_no_handoff(paths, thread, None)?;
+    let runtime = messaging_lock(paths, thread)
+        .map_err(|_| anyhow::anyhow!("SESSION_OPERATION_IN_PROGRESS"))?;
+    Ok((runtime, admission))
+}
+pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
+    if let Some(done) = replay(paths, &request)? {
+        return Ok(done);
+    }
+    let record = file(paths, &request.request_id)?;
     let request_lock = crate::paths::lock_file(&record.with_extension("lock"))?;
     request_lock
         .try_lock_exclusive()
         .context("SESSION_OPERATION_IN_PROGRESS")?;
-    if record.exists() {
-        let op = read(paths, &request.request_id)?;
-        ensure!(op.request == admitted(&request), "REQUEST_ID_CONFLICT");
-        return public(paths, &op);
+    if let Some(done) = replay(paths, &request)? {
+        return Ok(done);
     }
     let (session, source) =
         crate::api::selected(paths, &request.session, &request.expected_generation).await?;
@@ -352,10 +365,7 @@ pub async fn start(paths: &Paths, request: Target) -> Result<Value> {
         !source.inactive && source.pane.starts_with("herdr/"),
         "SESSION_NOT_IN_HERDR"
     );
-    let _admission = crate::lifecycle::admit(paths, &source.thread_id, Some(&request.request_id))?;
-    crate::lifecycle::ensure_no_handoff(paths, &source.thread_id, None)?;
-    let _runtime = messaging_lock(paths, &source.thread_id)
-        .map_err(|_| anyhow::anyhow!("SESSION_OPERATION_IN_PROGRESS"))?;
+    let _held = exclusive(paths, &source.thread_id, &request.request_id)?;
     let socket = hosting::socket_for(paths, &source.pane)?.context("MISSING_HOST_SOCKET")?;
     let available = choices(&session, &source, &socket)?;
     let mut request = request;
@@ -465,11 +475,7 @@ pub fn worker(paths: &Paths, id: &str) -> Result<()> {
 }
 
 fn execute(paths: &Paths, op: &mut Operation) -> Result<()> {
-    let _admission =
-        crate::lifecycle::admit(paths, &op.source.thread_id, Some(&op.request.request_id))?;
-    crate::lifecycle::ensure_no_handoff(paths, &op.source.thread_id, None)?;
-    let _runtime = messaging_lock(paths, &op.source.thread_id)
-        .map_err(|_| anyhow::anyhow!("SESSION_OPERATION_IN_PROGRESS"))?;
+    let _held = exclusive(paths, &op.source.thread_id, &op.request.request_id)?;
     crate::catalog::resolve(paths, &op.request.session, &op.request.expected_generation)?;
     let available = choices(&op.session, &op.source, &op.socket)?;
     ensure!(
@@ -547,10 +553,7 @@ pub fn recover(paths: &Paths, id: &str) -> Result<Value> {
     if matches!(op.phase.as_str(), "complete" | "failed") {
         return public(paths, &op);
     }
-    let _admission = crate::lifecycle::admit(paths, &op.source.thread_id, Some(id))?;
-    crate::lifecycle::ensure_no_handoff(paths, &op.source.thread_id, None)?;
-    let _runtime = messaging_lock(paths, &op.source.thread_id)
-        .map_err(|_| anyhow::anyhow!("SESSION_OPERATION_IN_PROGRESS"))?;
+    let _held = exclusive(paths, &op.source.thread_id, id)?;
     if op.phase == "admitted" {
         save(
             paths,

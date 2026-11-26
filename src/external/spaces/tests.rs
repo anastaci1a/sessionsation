@@ -269,3 +269,33 @@ fn saved_location_follows_verified_moves_without_rewriting_launch_receipts() {
         unrelated
     );
 }
+
+/// Space-move journals written by the 1.72.0 base (shrink-C3) load and re-save byte for byte.
+#[test]
+fn base_space_move_journals_resave_byte_for_byte() {
+    let d = tempfile::tempdir().unwrap();
+    let paths = Paths::new(Some(d.path().join("state"))).unwrap();
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/handoff-jobs");
+    for phase in ["admitted", "uncertain", "complete"] {
+        let bytes = fs::read(format!("{fixtures}/space-move-{phase}.json")).unwrap();
+        let id = serde_json::from_slice::<Value>(&bytes).unwrap()["request"]["request_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        atomic_write(&file(&paths, &id).unwrap(), &bytes).unwrap();
+        let mut op = read(&paths, &id).unwrap();
+        assert_eq!(op.phase, phase);
+        assert_eq!(serde_json::to_vec(&op).unwrap(), bytes, "{phase}");
+        let detail = op.detail.clone();
+        save(&paths, &mut op, phase, &detail).unwrap();
+        let mut saved: Value =
+            serde_json::from_slice(&fs::read(file(&paths, &id).unwrap()).unwrap()).unwrap();
+        let mut expected: Value = serde_json::from_slice(&bytes).unwrap();
+        // Only the stamp moves.
+        saved["updated_at"] = Value::Null;
+        expected["updated_at"] = Value::Null;
+        assert_eq!(saved, expected);
+        assert_eq!(operations(&paths).unwrap().len(), 1);
+        fs::remove_file(file(&paths, &id).unwrap()).unwrap();
+    }
+}

@@ -32,17 +32,76 @@ pub(super) async fn tick(paths: &Paths, job: &Job) -> Result<()> {
     );
     if job.phase.starts_with("waiting_") && job.expires_at().is_some_and(|at| daemon::now() > at) {
         // Nothing was stopped, so the stop gate recorded for this request goes too.
-        let _ = super::catalog::clear_stop_intent_if_matches(
-            paths,
-            &job.source.thread_id,
-            Some(&job.id),
-        );
+        clear_stop_gate(paths, job);
         bail!(
             "the stop request expired while waiting for the session to become idle; nothing was stopped"
         );
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
     Ok(())
+}
+/// Drop the stop gate recorded at admission for this job (contract 1.40.1).
+fn clear_stop_gate(paths: &Paths, job: &Job) {
+    let thread = &job.source.thread_id;
+    let _ = super::catalog::clear_stop_intent_if_matches(paths, thread, Some(&job.id));
+}
+/// Wait for an exclusive `lock`, journaling the wait; cancel and expiry still apply.
+pub(super) async fn wait_lock(
+    paths: &Paths,
+    job: &mut Job,
+    lock: &File,
+    name: &str,
+    detail: &str,
+) -> Result<()> {
+    while lock.try_lock_exclusive().is_err() {
+        phase(paths, job, name, detail)?;
+        tick(paths, job).await?;
+    }
+    Ok(())
+}
+/// The conversation id recorded in a history file.
+fn file_thread(file: &Path, missing: &'static str) -> Result<String> {
+    Ok(session_meta(file)?["id"]
+        .as_str()
+        .context(missing)?
+        .to_owned())
+}
+pub(super) fn file_threads(files: &[PathBuf]) -> Result<Vec<String>> {
+    files
+        .iter()
+        .map(|file| file_thread(file, "missing thread identity"))
+        .collect()
+}
+/// Unarchive `id` and return the history path Codex then reports.
+pub(super) async fn unarchive(
+    control: &mut Control,
+    id: &str,
+    missing: &'static str,
+) -> Result<PathBuf> {
+    control
+        .request("thread/unarchive", json!({"threadId":id}))
+        .await?;
+    let path = control.thread(id, false).await?["path"]
+        .as_str()
+        .map(PathBuf::from);
+    path.context(missing)
+}
+/// The history path of `id` back in the resume list of `home`: unarchived first when Codex
+/// reports it archived. Read before each request, so a retry never unarchives blindly.
+pub(super) async fn listed_path(
+    control: &mut Control,
+    id: &str,
+    home: &Path,
+    missing: [&'static str; 2],
+) -> Result<PathBuf> {
+    let path = control.thread(id, false).await?["path"]
+        .as_str()
+        .map(PathBuf::from);
+    let path = path.context(missing[0])?;
+    if !crate::alias::starts_with(&path, &home.join("archived_sessions")) {
+        return Ok(path);
+    }
+    unarchive(control, id, missing[1]).await
 }
 
 pub(super) async fn confirm(
@@ -125,10 +184,7 @@ async fn pause(paths: &Paths, job: &mut Job, control: Option<&mut Control>) -> R
     let message = pause_message(job);
     if let Some(control) = control {
         for file in descendants(&job.source.home, &job.source.thread_id)? {
-            let id = session_meta(&file)?["id"]
-                .as_str()
-                .context("missing thread ID")?
-                .to_owned();
+            let id = file_thread(&file, "missing thread ID")?;
             let thread = control.thread(&id, true).await?;
             if thread["status"]["type"] != "active" {
                 continue;
@@ -251,17 +307,8 @@ async fn prepare_destination(paths: &Paths, job: &mut Job) -> Result<Control> {
     loop {
         tick(paths, job).await?;
         let status = daemon::call(paths, "status", json!({})).await?;
-        let account = status["accounts"]
-            .as_array()
-            .and_then(|a| {
-                a.iter().find(|a| {
-                    a["name"] == job.target
-                        && crate::provider::ops::supervised(
-                            a["provider"].as_str().unwrap_or("codex"),
-                        )
-                })
-            })
-            .context("destination account was removed")?;
+        let account =
+            supervised_account(&status, &job.target).context("destination account was removed")?;
         if account["enabled"] != true || account["auth_required"] == true {
             phase(
                 paths,
@@ -341,17 +388,16 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
         let mut working = false;
         if let Some(control) = control.as_mut() {
             for file in &files {
-                let meta = session_meta(file)?;
-                let id = meta["id"].as_str().context("missing thread ID")?;
+                let id = &file_thread(file, "missing thread ID")?;
                 let thread = control.thread_for_state(id).await?;
-                if id == job.source.thread_id
+                if *id == job.source.thread_id
                     && !job.source.inactive
                     && thread["status"]["type"] == "notLoaded"
                 {
                     provider_startup = true;
                     continue;
                 }
-                if id == job.source.thread_id
+                if *id == job.source.thread_id
                     && job.kind == "account"
                     && !job.source.inactive
                     && !job.resume_after_move
@@ -492,10 +538,7 @@ pub(super) async fn wait_idle(paths: &Paths, job: &mut Job) -> Result<Vec<PathBu
         if let Some(control) = control.as_mut() {
             let mut terminals = Vec::new();
             for file in &files {
-                let id = session_meta(file)?["id"]
-                    .as_str()
-                    .context("missing thread ID")?
-                    .to_owned();
+                let id = file_thread(file, "missing thread ID")?;
                 let goal = control
                     .request("thread/goal/get", json!({"threadId":id}))
                     .await?;
@@ -672,24 +715,14 @@ async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
     let mut target = prepare_destination(paths, job).await?;
     let target_home = paths.account(&job.target)?;
     let target_lock = crate::paths::lock_file(&target_home.join(".switcher-move"))?;
-    while target_lock.try_lock_exclusive().is_err() {
-        phase(
-            paths,
-            job,
-            "waiting_for_account",
-            "Another move is preparing this account. Waiting; the source stays running.",
-        )?;
-        tick(paths, job).await?;
-    }
+    let busy = "Another move is preparing this account. Waiting; the source stays running.";
+    wait_lock(paths, job, &target_lock, "waiting_for_account", busy).await?;
     let mut files = wait_idle(paths, job).await?;
     let mut destinations = std::collections::BTreeMap::new();
     // Check destination conflicts before stopping the source.
     for file in &files {
         let mut target_file = target_path(file, &job.source.home, &target_home)?;
-        let id = session_meta(file)?["id"]
-            .as_str()
-            .context("missing thread identity")?
-            .to_owned();
+        let id = file_thread(file, "missing thread identity")?;
         if let Ok(thread) = target.thread(&id, false).await {
             ensure!(
                 thread["status"]["type"] == "notLoaded",
@@ -725,8 +758,7 @@ async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
             !rollout_still_open(file)?,
             "source history still has an open writer"
         );
-        let meta = session_meta(file)?;
-        let id = meta["id"].as_str().context("missing thread identity")?;
+        let id = &file_thread(file, "missing thread identity")?;
         let mut destination = destinations[id].clone();
         if let Ok(thread) = target.thread(id, false).await {
             ensure!(
@@ -740,14 +772,8 @@ async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
             // A previous visit left a native archived identity. Restore that
             // identity first, then replace its canonical rollout; a newly chosen
             // filename is rejected by Codex as a stale path for paginated history.
-            target
-                .request("thread/unarchive", json!({"threadId":id}))
-                .await?;
-            destination = crate::layout::resolve_path(Path::new(
-                target.thread(id, false).await?["path"]
-                    .as_str()
-                    .context("destination history path missing")?,
-            ));
+            let path = unarchive(&mut target, id, "destination history path missing").await?;
+            destination = crate::layout::resolve_path(&path);
             ensure!(
                 destination.starts_with(crate::layout::resolve_path(&target_home).join("sessions")),
                 "restored history path is outside destination sessions"
@@ -755,7 +781,7 @@ async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
         }
         let copied = transfer(paths, job, file, destination)?;
         destinations.insert(id.to_owned(), copied.clone());
-        if id == job.source.thread_id {
+        if *id == job.source.thread_id {
             root_target = Some(copied);
         }
     }
@@ -775,11 +801,6 @@ pub(super) async fn launch_target(
         return rehome_saved(paths, job, target_home, root_target).await;
     }
     let mode = crate::store::load_config(paths)?.effective_launch_permissions();
-    let permissions = start_permissions(
-        mode,
-        recorded_permissions(&job.source.rollout)
-            .or_else(|| launch_permissions(&job.source.resume_options)),
-    );
     let cwd = job
         .relocation
         .as_ref()
@@ -793,9 +814,7 @@ pub(super) async fn launch_target(
     if let Some(target) = target.as_mut() {
         job.target_loaded = true;
         save_job(paths, job)?;
-        let mut params = json!({"threadId":job.source.thread_id,"cwd":cwd,"excludeTurns":true});
-        set_permissions(&mut params, permissions);
-        set_known_thread_session_env(paths, &mut params, &job.source.thread_id);
+        let mut params = resume_params(paths, &job.source, &cwd, mode);
         // Native resume reconstructs the destination's index from the unchanged
         // rollout. Same-home actions use their existing native identity/index.
         if job.relocation.is_none() {
@@ -823,25 +842,12 @@ pub(super) async fn launch_target(
             super::history::verify(target, &check).await?;
         }
     }
-    let config = crate::store::load_config(paths)?;
-    let command = if target.is_some() {
-        remote_resume_shell(
-            target_home,
-            &config.codex_binary,
-            &job.source.resume_options,
-            &job.source.thread_id,
-        )
-    } else {
-        resume_shell(
-            target_home,
-            &config.codex_binary,
-            &job.source.resume_options,
-            &job.source.thread_id,
-            root_target,
-            mode,
-        )
-    };
-    let command = with_session_env(paths, &job.source.thread_id, command);
+    let (binary, remote) = (
+        crate::store::load_config(paths)?.codex_binary,
+        target.is_some(),
+    );
+    let s = &job.source;
+    let command = resume_command(paths, s, target_home, &binary, root_target, mode, remote);
     let command = format!("{command} -C {}", shell_quote(&cwd));
     phase(
         paths,
@@ -883,7 +889,7 @@ pub(super) async fn launch_target(
     job.source_lease_released = true;
     super::catalog::remember(paths, &job.source)?;
     super::relocation::record_location(paths, job)?;
-    let mut detail = if let Some(r) = &job.relocation {
+    let detail = if let Some(r) = &job.relocation {
         if r.restart {
             format!(
                 "Restarted Codex in {} using the installed binary. {}",
@@ -908,14 +914,17 @@ pub(super) async fn launch_target(
             job.target, job.source.tmux_session
         )
     };
-    if job.kind == "account" {
-        if let Some(note) = super::catalog::moved(paths, job, target_home).await? {
-            detail.push(' ');
-            detail.push_str(&note);
-        }
+    complete(paths, job, target_home, detail).await
+}
+/// Finish with `detail`; an account move first retires the old copy and adds its note.
+async fn complete(paths: &Paths, job: &mut Job, home: &Path, mut detail: String) -> Result<()> {
+    if job.kind == "account"
+        && let Some(note) = super::catalog::moved(paths, job, home).await?
+    {
+        detail.push(' ');
+        detail.push_str(&note);
     }
-    phase(paths, job, "complete", detail)?;
-    Ok(())
+    phase(paths, job, "complete", detail)
 }
 
 /// Switching a stopped (saved) session only re-homes it: the verified history is already in the
@@ -943,15 +952,11 @@ async fn rehome_saved(
     job.source_lease_released = true;
     save_job(paths, job)?;
     super::catalog::remember(paths, &job.source)?;
-    let mut detail = format!(
+    let detail = format!(
         "Re-homed to {}. The session stays saved; resume it normally to start it there.",
         job.target
     );
-    if let Some(note) = super::catalog::moved(paths, job, target_home).await? {
-        detail.push(' ');
-        detail.push_str(&note);
-    }
-    phase(paths, job, "complete", detail)
+    complete(paths, job, target_home, detail).await
 }
 
 pub(super) async fn stop_source(
@@ -975,15 +980,7 @@ pub(super) async fn stop_source(
     drop(boundary);
     if job.source.shared_server {
         let mut source = Control::connect(&job.source.home).await?;
-        let ids = files
-            .iter()
-            .map(|file| {
-                Ok(session_meta(file)?["id"]
-                    .as_str()
-                    .context("missing thread identity")?
-                    .to_owned())
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let ids = file_threads(&files)?;
         for id in &ids {
             source.verify_unloadable(id, true).await?;
         }
@@ -1053,26 +1050,22 @@ pub(super) async fn stop_source(
         }
         stop_exact_process(info)?;
         wait_stopped(info).await?;
-        for _ in 0..30 {
+        // The host saw the stop: a terminated pane is gone, or it is dead, or its process is
+        // no longer the source and runs nothing.
+        let observed = || -> Result<bool> {
             if job.kind == "terminate" && pane_state(paths, &job.source.pane).is_err() {
-                break;
+                return Ok(true);
             }
-            if pane_state(paths, &job.source.pane)?.0 {
-                break;
-            }
-            let wrapper = pane_state(paths, &job.source.pane)?.1;
-            if wrapper != job.source.pid && child_processes(wrapper)?.is_empty() {
+            let (dead, wrapper) = pane_state(paths, &job.source.pane)?;
+            Ok(dead || wrapper != job.source.pid && child_processes(wrapper)?.is_empty())
+        };
+        for _ in 0..30 {
+            if observed()? {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        ensure!(
-            (job.kind == "terminate" && pane_state(paths, &job.source.pane).is_err())
-                || pane_state(paths, &job.source.pane)?.0
-                || (pane_state(paths, &job.source.pane)?.1 != job.source.pid
-                    && child_processes(pane_state(paths, &job.source.pane)?.1)?.is_empty()),
-            "tmux has not observed the stopped source yet"
-        );
+        ensure!(observed()?, "tmux has not observed the stopped source yet");
     }
     phase(
         paths,
@@ -1088,11 +1081,10 @@ pub(super) async fn stop_source(
 }
 
 pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
-    validate_name(id)?;
-    let lock = crate::paths::lock_file(&jobs_dir(paths)?.join(format!("{id}.worker-lock")))?;
+    let lock = worker_lock(paths, id)?;
     lock.try_lock_exclusive()
         .context("this move already has a worker")?;
-    let mut job: Job = serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?;
+    let mut job = load_job(paths, id)?;
     if let Some(mode) = job.permissions {
         crate::config::override_launch_permissions(mode);
     }
@@ -1113,19 +1105,9 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         // Cancelled or failed with the source still running: nothing was stopped, so the
         // stop gate recorded at admission must not outlive the job (contract 1.40.1).
         if super::source_still_running(&job) {
-            let _ = super::catalog::clear_stop_intent_if_matches(
-                paths,
-                &job.source.thread_id,
-                Some(&job.id),
-            );
+            clear_stop_gate(paths, &job);
         }
-        if job.source_archived
-            || job.target_loaded
-            || !job.prepared_threads.is_empty()
-            || job
-                .relocation
-                .as_ref()
-                .is_some_and(|r| r.state != "prepared")
+        if job.needs_rollback()
             || (!job.source.inactive
                 && pane_state(paths, &job.source.pane).is_ok_and(|(dead, _)| dead))
         {
@@ -1133,7 +1115,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
                 // Recovery can persist partial progress before failing. Keep
                 // those flags instead of overwriting them with the worker's
                 // older in-memory journal.
-                let mut retained: Job = serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?;
+                let mut retained = load_job(paths, id)?;
                 retained.detail = format!(
                     "{}. Automatic recovery could not finish: {recovery_error:#}. Use Recover in Activity to continue restoring the saved conversation.",
                     retained.detail
@@ -1265,32 +1247,20 @@ fn continuation_observation<'a>(page: &'a Value, client: &str, turn: &str) -> Op
 }
 
 pub async fn recover(paths: &Paths, id: &str) -> Result<Job> {
-    let lock = crate::paths::lock_file(
-        &jobs_dir(paths)?.join(format!("{}.worker-lock", validate_job_id(id)?)),
-    )?;
+    let lock = worker_lock(paths, id)?;
     lock.try_lock_exclusive()
         .context("the move worker is still reconciling this job; retry when it stops")?;
     recover_inner(paths, id).await
 }
-fn validate_job_id(id: &str) -> Result<&str> {
-    validate_name(id)?;
-    Ok(id)
-}
 async fn recover_inner(paths: &Paths, id: &str) -> Result<Job> {
-    let mut job: Job = serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?;
+    let mut job = load_job(paths, id)?;
     if matches!(job.kind.as_str(), "terminate" | "pause") {
         return super::session_control::recover(paths, job).await;
     }
     if job.relocation.is_some() {
         return super::relocation::recover(paths, job).await;
     }
-    ensure!(
-        job.phase == "failed"
-            || (!matches!(job.phase.as_str(), "complete" | "cancelled" | "recovered")
-                && !handoff_worker_alive(id)
-                && daemon::now() - job.created_at > 10),
-        "only failed or interrupted moves need recovery"
-    );
+    job.ensure_recoverable(false, "moves")?;
     if job.target_loaded || !job.prepared_threads.is_empty() {
         let target_home = paths.account(&job.target)?;
         let mut target = Control::connect(&target_home).await?;
@@ -1322,20 +1292,9 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
     let failure = job.detail.clone();
     if job.source_archived {
         let mut control = Control::connect(&job.source.home).await?;
-        let mut thread = control.thread(&job.source.thread_id, false).await?;
-        if thread["path"].as_str().is_some_and(|path| {
-            crate::alias::starts_with(Path::new(path), &job.source.home.join("archived_sessions"))
-        }) {
-            control
-                .request("thread/unarchive", json!({"threadId":job.source.thread_id}))
-                .await?;
-            thread = control.thread(&job.source.thread_id, false).await?;
-        }
-        job.source.rollout = PathBuf::from(
-            thread["path"]
-                .as_str()
-                .context("source history path missing")?,
-        );
+        let (id, home) = (&job.source.thread_id, &job.source.home);
+        let missing = ["source history path missing"; 2];
+        job.source.rollout = listed_path(&mut control, id, home, missing).await?;
         ensure!(
             crate::alias::starts_with(&job.source.rollout, &job.source.home.join("sessions"))
                 && job.source.rollout.is_file(),
@@ -1354,39 +1313,23 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
         return Ok(job);
     }
     let mode = crate::store::load_config(paths)?.effective_launch_permissions();
-    let command = if job.source.shared_server {
-        let mut params =
-            json!({"threadId":job.source.thread_id,"cwd":job.source.cwd,"excludeTurns":true});
-        set_permissions(
-            &mut params,
-            start_permissions(
-                mode,
-                recorded_permissions(&job.source.rollout)
-                    .or_else(|| launch_permissions(&job.source.resume_options)),
-            ),
-        );
-        set_known_thread_session_env(paths, &mut params, &job.source.thread_id);
-        Control::connect(&job.source.home)
+    let s = &job.source;
+    if s.shared_server {
+        let params = resume_params(paths, s, &s.cwd, mode);
+        Control::connect(&s.home)
             .await?
             .resume_with_permissions(params)
             .await?;
-        remote_resume_shell(
-            &job.source.home,
-            &job.source.binary,
-            &job.source.resume_options,
-            &job.source.thread_id,
-        )
-    } else {
-        resume_shell(
-            &job.source.home,
-            &job.source.binary,
-            &job.source.resume_options,
-            &job.source.thread_id,
-            &job.source.rollout,
-            mode,
-        )
-    };
-    let command = with_session_env(paths, &job.source.thread_id, command);
+    }
+    let command = resume_command(
+        paths,
+        s,
+        &s.home,
+        &s.binary,
+        &s.rollout,
+        mode,
+        s.shared_server,
+    );
     hosting::relaunch(paths, &job.source.pane, &job.source.cwd, &command)?;
     confirm_runtime(
         paths,
@@ -1404,6 +1347,34 @@ pub(super) async fn restore_source(paths: &Paths, mut job: Job) -> Result<Job> {
     Ok(job)
 }
 
+/// `thread/resume` parameters in `cwd`, keeping the conversation's recorded permissions.
+fn resume_params(paths: &Paths, source: &Instance, cwd: &str, mode: LaunchPermissions) -> Value {
+    let mut params = json!({"threadId":source.thread_id,"cwd":cwd,"excludeTurns":true});
+    let recorded = recorded_permissions(&source.rollout)
+        .or_else(|| launch_permissions(&source.resume_options));
+    set_permissions(&mut params, start_permissions(mode, recorded));
+    set_known_thread_session_env(paths, &mut params, &source.thread_id);
+    params
+}
+/// The terminal command resuming the conversation on `home`: a remote TUI of the shared
+/// server, or a local resume of `rollout`.
+fn resume_command(
+    paths: &Paths,
+    source: &Instance,
+    home: &Path,
+    binary: &str,
+    rollout: &Path,
+    mode: LaunchPermissions,
+    remote: bool,
+) -> String {
+    let (options, thread) = (&source.resume_options, &source.thread_id);
+    let command = if remote {
+        remote_resume_shell(home, binary, options, thread)
+    } else {
+        resume_shell(home, binary, options, thread, rollout, mode)
+    };
+    with_session_env(paths, thread, command)
+}
 pub(super) fn remote_resume_shell(
     home: &Path,
     binary: &str,

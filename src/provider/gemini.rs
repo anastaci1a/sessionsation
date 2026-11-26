@@ -685,6 +685,7 @@ pub fn observe(
 
 // ----------------------------------------------------------------- accounts
 
+/// Gemini accounts from a read-only registry snapshot (daemon need not run).
 pub fn enrolled(paths: &Paths) -> Result<Vec<Enrolled>> {
     super::native::enrolled_in(paths, ProviderId::Gemini, |a| home(paths, &a.name))
 }

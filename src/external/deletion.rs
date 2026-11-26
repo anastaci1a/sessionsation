@@ -207,11 +207,7 @@ pub(super) async fn inactive(
     );
     for job in jobs(paths)? {
         ensure!(
-            !ids.contains(&job.source.thread_id)
-                || matches!(
-                    job.phase.as_str(),
-                    "complete" | "failed" | "cancelled" | "recovered"
-                ),
+            !ids.contains(&job.source.thread_id) || !job.pending(),
             "a session operation is still pending; finish or cancel it before deleting"
         );
     }

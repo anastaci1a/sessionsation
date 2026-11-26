@@ -1,5 +1,6 @@
 use super::*;
 mod job_cache_tests;
+mod job_records;
 mod unit;
 
 pub(super) fn copy_rollout(source: &Path, home: &Path, target_home: &Path) -> Result<()> {

@@ -788,13 +788,9 @@ pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
         "OPERATION_WORKER_ACTIVE"
     );
     if let Some(job_id) = &r.operation_id
-        && external::jobs(paths)?.into_iter().any(|j| {
-            j.id == *job_id
-                && !matches!(
-                    j.phase.as_str(),
-                    "complete" | "failed" | "cancelled" | "recovered"
-                )
-        })
+        && external::jobs(paths)?
+            .into_iter()
+            .any(|j| j.id == *job_id && j.pending())
     {
         anyhow::bail!("OPERATION_STILL_ACTIVE");
     }
@@ -867,10 +863,7 @@ pub async fn status(paths: &Paths, id: &str) -> Result<Receipt> {
     }
     if let Some(job_id) = &r.operation_id {
         if let Some(job) = external::jobs(paths)?.into_iter().find(|j| j.id == *job_id) {
-            if matches!(
-                job.phase.as_str(),
-                "complete" | "failed" | "cancelled" | "recovered"
-            ) {
+            if !job.pending() {
                 let items = external::discover(paths).await?;
                 catalog::reconcile(paths, &items)?;
             }

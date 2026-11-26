@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Instance {
     /// Presentation-only tmux row; never accepted by Codex lifecycle workers.
     #[serde(default)]
@@ -474,7 +474,7 @@ fn snapshot(items: Vec<Instance>) -> Value {
 /// interrupted client must not leave a stop that fires at some much later idle moment.
 pub const TERMINATE_WAIT_SECONDS: i64 = 1800;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Job {
     /// Explicit new HERDR terminal for a saved-session transfer. Older jobs have none.
     #[serde(default)]
@@ -1711,6 +1711,24 @@ fn job_path(paths: &Paths, id: &str) -> Result<PathBuf> {
 fn save_job(paths: &Paths, job: &Job) -> Result<()> {
     atomic_write(&job_path(paths, &job.id)?, &serde_json::to_vec_pretty(job)?)
 }
+fn load_job(paths: &Paths, id: &str) -> Result<Job> {
+    Ok(serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?)
+}
+/// The admitted journal marked failed: its worker never ran.
+fn fail_queued(paths: &Paths, job: &Job, detail: &str) -> Result<()> {
+    let mut failed = job.clone();
+    (failed.phase, failed.detail) = ("failed".into(), detail.into());
+    save_job(paths, &failed)
+}
+/// `<id>.worker-lock`: held by the job's one worker, and by recover while it runs.
+fn worker_lock(paths: &Paths, id: &str) -> Result<File> {
+    validate_name(id)?;
+    crate::paths::lock_file(&jobs_dir(paths)?.join(format!("{id}.worker-lock")))
+}
+/// The phases that end a handoff job.
+pub(crate) fn job_settled(phase: &str) -> bool {
+    matches!(phase, "complete" | "failed" | "cancelled" | "recovered")
+}
 /// Parsed job records by file version (see [`crate::file_cache`]); the worker-liveness
 /// inference below is applied to a copy on every call, never cached.
 static JOB_RECORDS: crate::file_cache::FileCache<Job> = crate::file_cache::FileCache::new();
@@ -1728,12 +1746,7 @@ pub fn jobs(paths: &Paths) -> Result<Vec<Job>> {
                 Err(LoadError::Parse(_)) => None,
             };
             if let Some(mut job) = loaded {
-                if !matches!(
-                    job.phase.as_str(),
-                    "complete" | "failed" | "cancelled" | "recovered"
-                ) && daemon::now() - job.created_at > 10
-                    && !handoff_worker_alive(&job.id)
-                {
+                if job.worker_stopped() {
                     job.phase = "failed".into();
                     job.detail = "The move worker stopped. The original history is preserved; requeue a running session or use recover for a stopped pane.".into();
                 }
@@ -1758,10 +1771,7 @@ pub fn destination_tui_may_be_active(paths: &Paths, account: &str) -> bool {
     })
 }
 pub fn inactive_source_only_lease(paths: &Paths, account: &str) -> bool {
-    let Ok(home) = paths
-        .account(account)
-        .and_then(|p| Ok(crate::alias::canonical(&p)?))
-    else {
+    let Ok(home) = account_home(paths, account) else {
         return false;
     };
     let Ok(live) = instances() else {
@@ -1777,10 +1787,7 @@ pub fn inactive_source_only_lease(paths: &Paths, account: &str) -> bool {
             {
                 return false;
             }
-            let Ok(target) = paths
-                .account(&job.target)
-                .and_then(|p| Ok(crate::alias::canonical(&p)?))
-            else {
+            let Ok(target) = account_home(paths, &job.target) else {
                 return false;
             };
             handoff_worker_alive(&job.id)
@@ -1790,6 +1797,10 @@ pub fn inactive_source_only_lease(paths: &Paths, account: &str) -> bool {
                 })
         })
     })
+}
+/// The canonical home of enrolled account `name`.
+fn account_home(paths: &Paths, name: &str) -> Result<PathBuf> {
+    Ok(crate::alias::canonical(&paths.account(name)?)?)
 }
 pub(crate) fn handoff_worker_alive(id: &str) -> bool {
     let Ok(entries) = fs::read_dir("/proc") else {
@@ -1818,9 +1829,7 @@ pub(crate) fn handoff_worker_alive(id: &str) -> bool {
 pub fn is_current_account(paths: &Paths, source: &Instance, name: &str) -> bool {
     match (
         crate::alias::canonical(&source.home),
-        paths
-            .account(name)
-            .and_then(|path| Ok(crate::alias::canonical(&path)?)),
+        account_home(paths, name),
     ) {
         (Ok(source), Ok(account)) => source == account,
         _ => false,
@@ -1829,19 +1838,12 @@ pub fn is_current_account(paths: &Paths, source: &Instance, name: &str) -> bool 
 fn job_conflicts_with_source(paths: &Paths, job: &Job, source: &Instance) -> bool {
     let same = (!source.inactive && !job.source.inactive && job.source.pane == source.pane)
         || (!source.thread_id.is_empty() && job.source.thread_id == source.thread_id);
-    if !same
-        || matches!(
-            job.phase.as_str(),
-            "failed" | "complete" | "recovered" | "cancelled"
-        )
-    {
+    if !same || !job.pending() {
         return false;
     }
     if job.phase == "running_on_target" && !source.inactive && job.source.pane == source.pane {
         if let (Ok(target), Ok(current)) = (
-            paths
-                .account(&job.target)
-                .and_then(|p| Ok(crate::alias::canonical(&p)?)),
+            account_home(paths, &job.target),
             crate::alias::canonical(&source.home),
         ) {
             if target == current {
@@ -1862,6 +1864,27 @@ pub async fn queue_selected(
 ) -> Result<Job> {
     queue_move(paths, pane, thread, target, MoveOptions::default()).await
 }
+/// The one conversation `--pane` (live) or `--thread` (saved) selects.
+async fn select(
+    paths: &Paths,
+    pane: Option<&str>,
+    thread: Option<&str>,
+    include_inactive: bool,
+    missing: &'static str,
+) -> Result<Instance> {
+    ensure!(
+        pane.is_some() != thread.is_some(),
+        "specify exactly one of --pane or --thread"
+    );
+    discover_filtered(paths, include_inactive)
+        .await?
+        .into_iter()
+        .find(|i| {
+            pane.is_some_and(|p| !i.inactive && i.pane == p)
+                || thread.is_some_and(|t| i.inactive && i.thread_id == t)
+        })
+        .context(missing)
+}
 pub async fn queue_move(
     paths: &Paths,
     pane: Option<&str>,
@@ -1870,34 +1893,23 @@ pub async fn queue_move(
     options: MoveOptions,
 ) -> Result<Job> {
     validate_name(target)?;
+    let missing = "selected Codex conversation is no longer available";
+    let source = select(paths, pane, thread, thread.is_some(), missing).await?;
     ensure!(
-        pane.is_some() != thread.is_some(),
-        "specify exactly one of --pane or --thread"
-    );
-    let source = discover_filtered(paths, thread.is_some())
-        .await?
-        .into_iter()
-        .find(|i| {
-            pane.is_some_and(|p| !i.inactive && i.pane == p)
-                || thread.is_some_and(|t| i.inactive && i.thread_id == t)
-        })
-        .context("selected Codex conversation is no longer available")?;
-    ensure!(
-        crate::alias::canonical(&source.home)? != crate::alias::canonical(&paths.account(target)?)?,
+        crate::alias::canonical(&source.home)? != account_home(paths, target)?,
         "conversation is already using that account home"
     );
     let status = daemon::call(paths, "status", json!({})).await?;
-    let account = status["accounts"]
-        .as_array()
-        .and_then(|a| {
-            a.iter().find(|a| {
-                a["name"] == target
-                    && crate::provider::ops::supervised(a["provider"].as_str().unwrap_or("codex"))
-            })
-        })
-        .context("unknown destination account")?;
-    let _ = account;
+    supervised_account(&status, target).context("unknown destination account")?;
     enqueue(paths, source, target, options, None, "account")
+}
+/// The supervised (Codex-like) account `name` of a daemon `status` reply.
+fn supervised_account<'a>(status: &'a Value, name: &str) -> Option<&'a Value> {
+    let supervised = |a: &&Value| {
+        a["name"] == name
+            && crate::provider::ops::supervised(a["provider"].as_str().unwrap_or("codex"))
+    };
+    status["accounts"].as_array()?.iter().find(supervised)
 }
 
 /// Retry the intent against fresh discovery; old consent and process IDs never carry over.
@@ -1914,14 +1926,7 @@ pub async fn retry(paths: &Paths, id: &str) -> Result<Job> {
         !handoff_worker_alive(id),
         "the job is still finishing recovery; retry shortly"
     );
-    if job.source_archived
-        || job.target_loaded
-        || !job.prepared_threads.is_empty()
-        || job
-            .relocation
-            .as_ref()
-            .is_some_and(|r| r.state != "prepared" && job.phase != "recovered")
-    {
+    if job.needs_rollback() {
         recover(paths, id).await?;
     }
     let source = discover(paths).await?.into_iter().find(|s| s.thread_id == job.source.thread_id && crate::layout::same_home(&s.home, &job.source.home)).context("The original session is no longer in its original home. Open Sessions to choose its current copy.")?;
@@ -2112,7 +2117,7 @@ fn enqueue_with_id(
     let records_stop = matches!(kind, "pause" | "terminate")
         && automatic_id.is_none()
         && !source.thread_id.is_empty();
-    let phase = "queued";
+    // Every other field starts empty (the journal's serde defaults).
     let job = Job {
         resume_destination: policy.resume_destination.map(str::to_owned),
         resume_directory: policy.resume_directory.map(Path::to_path_buf),
@@ -2125,52 +2130,34 @@ fn enqueue_with_id(
             && kind == "account"
             && !source.inactive
             && source.activity == Activity::Busy,
-        continuation_delivery: String::new(),
-        continuation_turn_id: None,
-        continuation_observation: String::new(),
         source,
         target: target.into(),
-        phase: phase.into(),
+        phase: "queued".into(),
         detail: "Verifying the selected conversation before handoff.".into(),
-        source_lease_released: false,
         pause_approved: options.pause,
         risks_approved: options.accept_risks,
         unfinished_history_confirmed: policy.unfinished_history_confirmed,
-        pause_delivery: String::new(),
-        source_archived: false,
         created_at: daemon::now(),
         expires_at: if kind == "terminate" {
             daemon::now() + TERMINATE_WAIT_SECONDS
         } else {
             0
         },
-        confirmation_seq: 0,
-        acknowledged_risks: Vec::new(),
-        target_loaded: false,
-        steered_turns: Default::default(),
         relocation,
-        termination_threads: Vec::new(),
-        history_checks: Vec::new(),
-        prepared_threads: Vec::new(),
         permissions: crate::config::launch_permissions_override(),
         close_pane: kind == "terminate" && options.close_pane,
-        pane_closed: None,
-        pane_close_reason: None,
+        ..Default::default()
     };
     save_job(paths, &job)?;
-    if records_stop {
-        // Persist provenance before publishing its permission gate. Admission
-        // locks plus the queued journal block delivery across this boundary.
-        if let Err(error) =
+    // Persist provenance before publishing its permission gate. Admission
+    // locks plus the queued journal block delivery across this boundary.
+    if records_stop
+        && let Err(error) =
             catalog::set_stop_intent(paths, &job.source.thread_id, Some(job.id.clone()))
-        {
-            let mut failed = job.clone();
-            failed.phase = "failed".into();
-            failed.detail =
-                "Stop intent could not be recorded; no provider action was attempted.".into();
-            save_job(paths, &failed)?;
-            return Err(error);
-        }
+    {
+        let unrecorded = "Stop intent could not be recorded; no provider action was attempted.";
+        fail_queued(paths, &job, unrecorded)?;
+        return Err(error);
     }
     let log = OpenOptions::new()
         .append(true)
@@ -2193,10 +2180,7 @@ fn enqueue_with_id(
             .process_group(0)
             .spawn_reaped();
     if let Err(error) = child {
-        let mut failed = job.clone();
-        failed.phase = "failed".into();
-        failed.detail = "handoff worker could not start".into();
-        save_job(paths, &failed)?;
+        fail_queued(paths, &job, "handoff worker could not start")?;
         return Err(error)
             .context("could not launch handoff worker from the running switcher executable");
     }
@@ -2305,7 +2289,7 @@ pub fn respond_move_sequence(
     approve: bool,
     sequence: Option<u64>,
 ) -> Result<()> {
-    let job: Job = serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?;
+    let job = load_job(paths, id)?;
     ensure!(
         job.phase.starts_with("awaiting_"),
         "this move is not waiting for confirmation"
@@ -2335,17 +2319,47 @@ impl Job {
     }
     /// Not yet finished: queued, waiting, confirming or running.
     pub fn pending(&self) -> bool {
-        !matches!(
-            self.phase.as_str(),
-            "complete" | "failed" | "cancelled" | "recovered"
-        )
+        !job_settled(&self.phase)
+    }
+    /// Past the 10 s start grace of its worker (the dead-worker settle rule).
+    pub(crate) fn past_start_grace(&self) -> bool {
+        daemon::now() - self.created_at > 10
+    }
+    /// Unfinished, past the start grace, and no handoff worker runs it: `jobs` reads it as
+    /// failed and recover may take it.
+    pub(crate) fn worker_stopped(&self) -> bool {
+        self.pending() && self.past_start_grace() && !handoff_worker_alive(&self.id)
+    }
+    /// A side effect recover must undo before a retry (or after a failed worker).
+    fn needs_rollback(&self) -> bool {
+        self.source_archived
+            || self.target_loaded
+            || !self.prepared_threads.is_empty()
+            || self
+                .relocation
+                .as_ref()
+                .is_some_and(|r| r.state != "prepared" && self.phase != "recovered")
+    }
+    /// Recover's admission: failed, or (unless `graceless`, as relocation's own) unfinished
+    /// past the start grace with its worker gone.
+    fn ensure_recoverable(&self, graceless: bool, what: &str) -> Result<()> {
+        ensure!(
+            self.phase == "failed"
+                || if graceless {
+                    !handoff_worker_alive(&self.id) && self.pending()
+                } else {
+                    self.worker_stopped()
+                },
+            "only failed or interrupted {what} need recovery"
+        );
+        Ok(())
     }
 }
 pub fn cancel_move(paths: &Paths, id: &str) -> Result<()> {
     validate_name(id)?;
     let lock = crate::paths::lock_file(&jobs_dir(paths)?.join(format!("{id}.transition-lock")))?;
     lock.lock_exclusive()?;
-    let job: Job = serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?;
+    let job = load_job(paths, id)?;
     ensure!(
         can_cancel_move(&job),
         "the move has already crossed the restart boundary; wait for completion or use recover if it fails"
@@ -2368,7 +2382,7 @@ pub(crate) fn can_cancel_move(job: &Job) -> bool {
     )
 }
 pub fn respond_background(paths: &Paths, id: &str, approve: bool) -> Result<()> {
-    let job: Job = serde_json::from_slice(&fs::read(job_path(paths, id)?)?)?;
+    let job = load_job(paths, id)?;
     ensure!(
         job.phase == "awaiting_background_approval",
         "move is not awaiting background-process approval"
@@ -2927,10 +2941,7 @@ pub(crate) fn messaging_lock(
             let running =
                 !crate::background::worker_stopped(&entry.path().with_extension("worker-lock"))
                     .map_err(|_| "migration_state_unknown")?;
-            let open = !matches!(
-                job.phase.as_str(),
-                "complete" | "failed" | "cancelled" | "recovered"
-            );
+            let open = job.pending();
             // 1.69.3: a running stop is busy (retryable); MIGRATING is for real moves. A stop
             // whose worker died before any side effect (still waiting for idle, nothing
             // archived) is settled after 10 s, as `api operations` infers; one that died later

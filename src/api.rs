@@ -4785,7 +4785,7 @@ fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
         "target_account_id":format!("codex:{}",j.target),"provider_conversation_id":j.source.thread_id,
         "created_at":j.created_at,
         "can_cancel":external::can_cancel_move(&j),
-        "can_recover": crate::background::worker_stopped(&paths.root.join(layout::HANDOFF_JOBS).join(format!("{}.worker-lock", j.id)))? && (j.phase == "failed" || (!matches!(j.phase.as_str(), "complete" | "cancelled" | "recovered") && daemon::now() - j.created_at > 10)),
+        "can_recover": crate::background::worker_stopped(&paths.root.join(layout::HANDOFF_JOBS).join(format!("{}.worker-lock", j.id)))? && (j.phase == "failed" || j.pending() && j.past_start_grace()),
         "can_respond":j.phase.starts_with("awaiting_"),
         "non_steering":j.non_steering,
         "pane_closed":j.pane_closed.unwrap_or(false),"pane_close_reason":j.pane_close_reason}),

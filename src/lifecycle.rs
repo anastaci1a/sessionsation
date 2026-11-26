@@ -207,10 +207,9 @@ fn judge(
     // raw-path: a journal directory constant, not a filesystem path
     if directory == crate::layout::HANDOFF_JOBS {
         if id != own
-            && matches!(
-                r["phase"].as_str(),
-                Some("complete" | "failed" | "cancelled" | "recovered")
-            )
+            && r["phase"]
+                .as_str()
+                .is_some_and(crate::external::job_settled)
         {
             return match crate::background::worker_stopped(&entry.with_extension("worker-lock")) {
                 Ok(true) => None,
@@ -305,10 +304,9 @@ pub(crate) fn ensure_no_handoff(paths: &Paths, thread: &str, own: Option<&str>) 
         };
         if r["source"]["thread_id"] == thread && r["id"].as_str() != own {
             ensure!(
-                matches!(
-                    r["phase"].as_str(),
-                    Some("complete" | "failed" | "cancelled" | "recovered")
-                ),
+                r["phase"]
+                    .as_str()
+                    .is_some_and(crate::external::job_settled),
                 "SESSION_OPERATION_IN_PROGRESS"
             );
         }

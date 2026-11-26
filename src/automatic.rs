@@ -209,9 +209,9 @@ pub fn request(
                     .automatic_switching
                     .values()
                     .any(|p| p.pending_job.is_some()
-                        || p.last_job.as_ref().is_some_and(|id| jobs
-                            .iter()
-                            .any(|j| j.id == *id && !terminal(&j.phase)))),
+                        || p.last_job
+                            .as_ref()
+                            .is_some_and(|id| jobs.iter().any(|j| j.id == *id && j.pending()))),
                 "SESSION_OPERATION_IN_PROGRESS: an automatic operation is already in progress"
             );
             let current = params["current_account"]
@@ -286,10 +286,7 @@ pub fn request(
 }
 
 fn operation_running(job: &crate::external::Job) -> bool {
-    !terminal(&job.phase) || crate::external::handoff_worker_alive(&job.id)
-}
-fn terminal(phase: &str) -> bool {
-    matches!(phase, "complete" | "failed" | "cancelled" | "recovered")
+    job.pending() || crate::external::handoff_worker_alive(&job.id)
 }
 
 /// A crash may have happened on either side of spawning the worker. Never replay
