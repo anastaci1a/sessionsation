@@ -90,6 +90,7 @@ sessionsation api account rename codex:example --display-name Office [--expected
 sessionsation api account rename-backend codex:example [NEW] --expected-generation G [--request-id UUID]
 sessionsation api account reorder codex:example --position N
 sessionsation api account managed-home claude:NAME
+sessionsation api account restart-server codex:NAME
 sessionsation api account live-steering claude:NAME [--enable|--disable]
 sessionsation api account bypass-warning claude:NAME [--skip|--show]
 sessionsation api account auth gemini:NAME [--mode google|api-key [--key-stdin]]

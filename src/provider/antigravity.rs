@@ -138,6 +138,7 @@ pub fn capabilities() -> ProviderCapabilities {
         },
         account_rename: yes(),
         account_logout: no(NO_LOGOUT),
+        account_restart_server: no(super::NO_SERVER),
         headless_delivery: Capability {
             supported: true,
             reason: Some(

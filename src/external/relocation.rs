@@ -591,23 +591,8 @@ pub(super) async fn perform(paths: &Paths, job: &mut Job) -> Result<()> {
         } else if matches!(job.source.account.as_str(), "external" | "unknown") {
             "The external shared backend stays running; its lifecycle is not owned by this switcher."
         } else {
-            for attempt in 0..50 {
-                match daemon::call(
-                    paths,
-                    "account/restart-server",
-                    json!({"name":job.source.account}),
-                )
-                .await
-                {
-                    Ok(_) => break,
-                    Err(error)
-                        if error.to_string().contains("poll in progress") && attempt < 49 =>
-                    {
-                        tokio::time::sleep(Duration::from_millis(200)).await
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
+            let params = json!({"name":job.source.account});
+            daemon::call_retry(paths, "account/restart-server", params).await?;
             "The unused account backend was restarted too."
         };
         job.relocation.as_mut().unwrap().backend_note = Some(note.into());

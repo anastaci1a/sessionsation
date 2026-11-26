@@ -1268,16 +1268,13 @@ pub async fn run_account(paths: &Paths, account: &str, options: &[String]) -> Re
 }
 pub async fn account_control(paths: &Paths, account: &str) -> Result<crate::control::Control> {
     crate::accounts::ensure_available(paths, crate::provider::ProviderId::Codex, account)?;
-    for _ in 0..50 {
-        match daemon::call(paths, "account/prepare", json!({"name":account})).await {
-            Ok(_) => return crate::control::Control::connect(&paths.account(account)?).await,
-            Err(error) if error.to_string().contains("poll in progress") => {
-                tokio::time::sleep(Duration::from_millis(200)).await
-            }
-            Err(error) => return Err(error),
+    match daemon::call_retry(paths, "account/prepare", json!({"name":account})).await {
+        Ok(_) => crate::control::Control::connect(&paths.account(account)?).await,
+        Err(error) if error.to_string().contains("poll in progress") => {
+            bail!("account metadata poll is still finishing; retry shortly")
         }
+        Err(error) => Err(error),
     }
-    bail!("account metadata poll is still finishing; retry shortly")
 }
 pub async fn run_account_thread(
     paths: &Paths,

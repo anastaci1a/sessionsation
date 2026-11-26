@@ -48,6 +48,7 @@ pub fn capabilities() -> ProviderCapabilities {
             supported: true,
             reason: Some(crate::logout::CODEX_METHOD),
         },
+        account_restart_server: yes(),
         headless_delivery: no(
             "Codex delivery uses the verified native queue (submit/queue/steer/resume)",
         ),

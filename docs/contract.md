@@ -2479,6 +2479,16 @@ and returns `{account_id,provider,home,previous_home,relocated,already_managed}`
 `AUTH_IDENTITY_MISMATCH` (a hash of the `auth status` identity differs; identity
 values are never printed). Event `account.claude_home_relocated`.
 
+`api account restart-server ID` (contract 1.72.3, capability
+`operations.account_restart_server`, Codex) restarts the account's shared app-server with
+`codex app-server daemon restart` (the same supervisor method relocation uses, retried while an
+account poll runs; the 1.72.2 temp variables apply) and returns `{account_id, restarted:true, pid,
+process_start}` of the new server, read from its control socket's peer credentials. Refusals,
+nothing restarted: `SESSION_OPERATION_IN_PROGRESS` while the server has loaded conversations,
+`ACCOUNT_BUSY` while another Codex terminal uses it or a direct launcher holds the account lease,
+`ACCOUNT_POLL_IN_PROGRESS` if a poll outlasts the retries, and for a Claude, Gemini or Antigravity
+account (no shared server) `UNSUPPORTED_PROVIDER_OPERATION` with `supported:false`.
+
 `api account logout ID` signs out with the provider's own mechanism and leaves the
 account enrolled with `auth_required:true`, `selectable:false`:
 
@@ -2710,7 +2720,7 @@ contacts a provider) carry `usage.meter`:
 (`implemented:true`, `operations` with `{supported, reason}`, and flat booleans and
 fields such as `adopt_config_dir`, `account_switch` (with `operations.account_switch`),
 `account_removal`, `account_deletion`, `account_rename`, `account_refresh`,
-`account_limits`, `account_logout`, `usage`, `usage_state` and `usage_source`, for
+`account_limits`, `account_logout`, `account_restart_server`, `usage`, `usage_state` and `usage_source`, for
 example `codex-app-server-rate-limits`, `claude-code-statusline`,
 `gemini-cli-unsupported`, `antigravity-cli-unsupported`). The
 `operations` table is the source of truth; this section lists provider-specific

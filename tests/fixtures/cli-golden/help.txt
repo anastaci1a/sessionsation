@@ -1,4 +1,4 @@
-216 command paths
+217 command paths
 ### -h
 exit 0
 --- stdout
@@ -859,6 +859,7 @@ Commands:
   rename-backend  "Rename & update backend": rename the display name, the account folder and the account id (`codex:old` -> `codex:NEW`). Without NEW_NAME the backend is renamed to match the existing display name ("Update backend"). Refused while any session of the account runs; journaled, never replayed
   reset-credit    Codex or Claude: spend one stored rate-limit reset credit (not reversible). Journaled; the request id is the idempotency key, so a retry with the same --request-id can never spend a second credit. Never retried automatically
   managed-home    Claude: switch an adopted account to its managed home (no files are moved)
+  restart-server  Codex: restart the account's shared app-server (refused while it serves conversations)
   live-steering   Claude: show, enable or disable live steering (peer messages) for this account. Gemini: show, set or remove experimental.modelSteering (restart sessions to apply)
   bypass-warning  Claude: show, skip or show-again the bypass-permissions (YOLO) startup warning
   enable          
@@ -895,6 +896,7 @@ Commands:
   rename-backend  "Rename & update backend": rename the display name, the account folder and the account id (`codex:old` -> `codex:NEW`). Without NEW_NAME the backend is renamed to match the existing display name ("Update backend"). Refused while any session of the account runs; journaled, never replayed
   reset-credit    Codex or Claude: spend one stored rate-limit reset credit (not reversible). Journaled; the request id is the idempotency key, so a retry with the same --request-id can never spend a second credit. Never retried automatically
   managed-home    Claude: switch an adopted account to its managed home (no files are moved)
+  restart-server  Codex: restart the account's shared app-server (refused while it serves conversations)
   live-steering   Claude: show, enable or disable live steering (peer messages) for this account. Gemini: show, set or remove experimental.modelSteering (restart sessions to apply)
   bypass-warning  Claude: show, skip or show-again the bypass-permissions (YOLO) startup warning
   enable          
@@ -1315,6 +1317,40 @@ exit 0
 Claude: switch an adopted account to its managed home (no files are moved)
 
 Usage: sessionsation api account managed-home [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation
+      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]
+  -h, --help                       Print help
+
+--- stderr
+
+### api account restart-server -h
+exit 0
+--- stdout
+Codex: restart the account's shared app-server (refused while it serves conversations)
+
+Usage: sessionsation api account restart-server [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation
+      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]
+  -h, --help                       Print help
+
+--- stderr
+
+### api account restart-server --help
+exit 0
+--- stdout
+Codex: restart the account's shared app-server (refused while it serves conversations)
+
+Usage: sessionsation api account restart-server [OPTIONS] <ID>
 
 Arguments:
   <ID>  

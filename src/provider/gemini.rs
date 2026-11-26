@@ -118,6 +118,7 @@ pub fn capabilities() -> ProviderCapabilities {
             supported: true,
             reason: Some(crate::logout::GEMINI_METHOD),
         },
+        account_restart_server: no(super::NO_SERVER),
         headless_delivery: Capability {
             supported: true,
             reason: Some(

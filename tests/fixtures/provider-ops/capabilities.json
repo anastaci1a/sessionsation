@@ -1025,6 +1025,9 @@
         "account_rename": {
           "supported": true
         },
+        "account_restart_server": {
+          "supported": true
+        },
         "account_switch": {
           "supported": true
         },
@@ -1322,6 +1325,10 @@
         "account_rename": {
           "supported": true
         },
+        "account_restart_server": {
+          "reason": "only Codex accounts run a shared app-server",
+          "supported": false
+        },
         "account_switch": {
           "reason": "moves the conversation files (transcript and sidecars) to another claude account home and resumes it there; account memory and settings stay with the source account; hosted and background sessions are refused",
           "supported": true
@@ -1610,6 +1617,10 @@
         "account_rename": {
           "supported": true
         },
+        "account_restart_server": {
+          "reason": "only Codex accounts run a shared app-server",
+          "supported": false
+        },
         "account_switch": {
           "reason": "native session is bound to its account home",
           "supported": false
@@ -1870,6 +1881,10 @@
         },
         "account_rename": {
           "supported": true
+        },
+        "account_restart_server": {
+          "reason": "only Codex accounts run a shared app-server",
+          "supported": false
         },
         "account_switch": {
           "reason": "native session is bound to its account home",

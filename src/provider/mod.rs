@@ -283,6 +283,9 @@ pub const fn no(reason: &'static str) -> Capability {
     }
 }
 
+/// Why a provider has no shared app-server to restart.
+pub const NO_SERVER: &str = "only Codex accounts run a shared app-server";
+
 /// Explicit per-operation support. Never infer support from a provider name.
 #[derive(Clone, Debug, Serialize)]
 pub struct ProviderCapabilities {
@@ -310,6 +313,7 @@ pub struct ProviderCapabilities {
     pub account_rename: Capability,
     /// Official sign-out of the stored login (reason names the mechanism).
     pub account_logout: Capability,
+    pub account_restart_server: Capability,
     /// Bounded headless execution through `api send` (Claude `claude -p`).
     pub headless_delivery: Capability,
     pub account_limits: Capability,

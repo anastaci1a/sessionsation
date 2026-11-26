@@ -1617,13 +1617,10 @@ async fn account(paths: Paths, command: AccountCommand) -> Result<()> {
                 config_dir.is_none() || ops::facts(platform).adopts_config_dir,
                 "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
             );
-            daemon::ensure_started(&paths).await?;
             let adopted = config_dir.is_some();
-            let mut params = json!({"name":name,"provider":platform});
-            if let Some(dir) = config_dir {
-                params["config_dir"] = json!(dir);
-            }
-            let value = daemon::call(&paths, "account/add", params).await?;
+            let id = AccountRef::parse(&format!("{platform}:{name}"))?;
+            let extra = json!({"config_dir":config_dir});
+            let value = account_call(&paths, &id, "account/add", extra).await?;
             let auth = match value["auth"]["problem"].as_str() {
                 None => ops::facts(platform)
                     .logged_in
@@ -1706,6 +1703,7 @@ async fn account(paths: Paths, command: AccountCommand) -> Result<()> {
         }
         command => {
             daemon::ensure_started(&paths).await?;
+            let find = |name: &str| resolve_account(&paths, name);
             let (method, name, config_dir) = match command {
                 // Native providers enroll through the arm above; the supervised one here.
                 AccountCommand::Add {
@@ -1721,20 +1719,12 @@ async fn account(paths: Paths, command: AccountCommand) -> Result<()> {
                     },
                     config_dir,
                 ),
-                AccountCommand::Login { name } => {
-                    ("account/login", resolve_account(&paths, &name)?, None)
+                AccountCommand::Login { name } => ("account/login", find(&name)?, None),
+                AccountCommand::ManagedHome { name } => {
+                    ("account/managed-home", find(&name)?, None)
                 }
-                AccountCommand::ManagedHome { name } => (
-                    "account/managed-home",
-                    resolve_account(&paths, &name)?,
-                    None,
-                ),
-                AccountCommand::Enable { name } => {
-                    ("account/enable", resolve_account(&paths, &name)?, None)
-                }
-                AccountCommand::Disable { name } => {
-                    ("account/disable", resolve_account(&paths, &name)?, None)
-                }
+                AccountCommand::Enable { name } => ("account/enable", find(&name)?, None),
+                AccountCommand::Disable { name } => ("account/disable", find(&name)?, None),
                 AccountCommand::Add { .. }
                 | AccountCommand::List { .. }
                 | AccountCommand::Rename { .. }
@@ -1753,12 +1743,7 @@ async fn account(paths: Paths, command: AccountCommand) -> Result<()> {
                 "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
             );
             accounts::ensure_available(&paths, name.provider, &name.name)?;
-            let value = daemon::call(
-                &paths,
-                method,
-                json!({"name":name.name,"provider":name.provider}),
-            )
-            .await?;
+            let value = account_call(&paths, &name, method, json!({})).await?;
             if method == "account/managed-home" {
                 print_json(&value)?;
             } else if method == "account/add" || method == "account/login" {

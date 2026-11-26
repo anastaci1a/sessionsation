@@ -23,8 +23,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 72;
-pub const CONTRACT_PATCH: u32 = 2;
-pub const CONTRACT_VERSION: &str = "1.72.2";
+pub const CONTRACT_PATCH: u32 = 3;
+pub const CONTRACT_VERSION: &str = "1.72.3";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -989,6 +989,10 @@ pub enum AccountCommand {
     ManagedHome {
         id: String,
     },
+    /// Codex: restart the account's shared app-server (refused while it serves conversations).
+    RestartServer {
+        id: String,
+    },
     /// Claude: show, enable or disable live steering (peer messages) for this account.
     /// Gemini: show, set or remove experimental.modelSteering (restart sessions to apply).
     LiveSteering {
@@ -1465,13 +1469,7 @@ pub async fn gemini_auth(
         }
     }
     // Let the supervisor observe the new state (auth_required) at once.
-    daemon::ensure_started(paths).await?;
-    let refreshed = daemon::call(
-        paths,
-        "account/refresh",
-        json!({"name":account.name,"provider":account.provider}),
-    )
-    .await?;
+    let refreshed = account_call(paths, account, "account/refresh", json!({})).await?;
     let current = auth_mode::mode(&home);
     let failure = auth_failure::current(paths, &account.name, &home);
     let running = gemini::live_sessions(&home).map(|l| l.len()).unwrap_or(0);
@@ -1698,12 +1696,8 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 "INVALID_ARGUMENT: --config-dir is only supported for claude accounts"
             );
             accounts::ensure_available(paths, account.provider, &account.name)?;
-            daemon::ensure_started(paths).await?;
-            let mut params = json!({"name":account.name,"provider":account.provider});
-            if let Some(dir) = config_dir {
-                params["config_dir"] = json!(dir);
-            }
-            let mut value = daemon::call(paths, "account/add", params).await?;
+            let extra = json!({"config_dir":config_dir});
+            let mut value = account_call(paths, &account, "account/add", extra).await?;
             if native::is_native(account.provider) {
                 // The same plan `account login` returns, so a client can go
                 // straight into the interactive login when it is required.
@@ -1718,7 +1712,6 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             clear,
             expected_generation,
         } => {
-            let account = account_ref(paths, &id)?;
             ensure!(
                 clear || display_name.is_some(),
                 "INVALID_ARGUMENT: pass --display-name NAME or --clear"
@@ -1726,7 +1719,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             let display_name = if clear { None } else { display_name };
             let extra =
                 json!({"display_name":display_name,"expected_generation":expected_generation});
-            account_call(paths, &account, "account/rename", extra).await
+            id_call(paths, &id, "account/rename", extra).await
         }
         AccountCommand::RenameBackend {
             id,
@@ -1734,10 +1727,9 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             expected_generation,
             request_id,
         } => {
-            let account = account_ref(paths, &id)?;
             let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let extra = json!({"new_name":new_name,"expected_generation":expected_generation,"request_id":request_id});
-            account_call(paths, &account, "account/rename-backend", extra).await
+            id_call(paths, &id, "account/rename-backend", extra).await
         }
         AccountCommand::ResetCredit {
             id,
@@ -1791,11 +1783,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             let extra = json!({"credit_id":credit_id,"request_id":request_id});
             account_call(paths, &account, "account/reset-credit", extra)
                 .await
-                // The supervisor's own code (UNSUPPORTED_PROVIDER_OPERATION, ...), not REQUEST_FAILED.
-                .map_err(|e| {
-                    let text = e.to_string();
-                    anyhow::anyhow!("{}", text.strip_prefix("REQUEST_FAILED: ").unwrap_or(&text))
-                })
+                .map_err(supervisor_code)
         }
         AccountCommand::LiveSteering {
             id,
@@ -1803,35 +1791,19 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             disable,
         } => {
             let enable = json!({"enable":switch(enable, disable)});
-            account_call(
-                paths,
-                &account_ref(paths, &id)?,
-                "account/live-steering",
-                enable,
-            )
-            .await
+            id_call(paths, &id, "account/live-steering", enable).await
         }
         AccountCommand::BypassWarning { id, skip, show } => {
             let skip = json!({"skip":switch(skip, show)});
-            account_call(
-                paths,
-                &account_ref(paths, &id)?,
-                "account/bypass-warning",
-                skip,
-            )
-            .await
+            id_call(paths, &id, "account/bypass-warning", skip).await
         }
         AccountCommand::Reorder { id, position } => {
             let account = account_ref(paths, &id)?;
             accounts::ensure_available(paths, account.provider, &account.name)?;
-            account_call(
-                paths,
-                &account,
-                "account/reorder",
-                json!({"position":position}),
-            )
-            .await
+            let position = json!({"position":position});
+            account_call(paths, &account, "account/reorder", position).await
         }
+        AccountCommand::RestartServer { id } => restart_server(paths, &id).await,
         AccountCommand::Auth {
             id,
             mode,
@@ -1892,6 +1864,46 @@ pub fn switch(on: bool, off: bool) -> Option<bool> {
     } else {
         None
     }
+}
+
+/// The supervisor's own code (UNSUPPORTED_PROVIDER_OPERATION, ...), not REQUEST_FAILED.
+fn supervisor_code(e: anyhow::Error) -> anyhow::Error {
+    let text = e.to_string();
+    anyhow::anyhow!("{}", text.strip_prefix("REQUEST_FAILED: ").unwrap_or(&text))
+}
+
+/// [`account_call`] on the account an `ID` argument names.
+async fn id_call(paths: &Paths, id: &str, method: &str, extra: Value) -> Result<Value> {
+    account_call(paths, &account_ref(paths, id)?, method, extra).await
+}
+
+/// The supervisor's refusal texts of `account/restart-server` and the codes they get here.
+const RESTART_CODES: [(&str, &str); 4] = [
+    ("poll in progress", "ACCOUNT_POLL_IN_PROGRESS"),
+    ("still serving", "SESSION_OPERATION_IN_PROGRESS"),
+    ("another Codex terminal", "ACCOUNT_BUSY"),
+    ("legacy direct", "ACCOUNT_BUSY"),
+];
+
+/// `account restart-server` (1.72.3): the supervisor restart (retried while a poll runs), then the process.
+async fn restart_server(paths: &Paths, id: &str) -> Result<Value> {
+    let account = account_ref(paths, id)?;
+    if !ops::facts(account.provider).supervised {
+        return Err(provider::stop_shape::Unsupported(provider::NO_SERVER).into());
+    }
+    daemon::ensure_started(paths).await?;
+    let params = json!({"name":account.name,"provider":account.provider});
+    let restart = daemon::call_retry(paths, "account/restart-server", params).await;
+    restart.map_err(|e| {
+        let text = supervisor_code(e).to_string();
+        let code = RESTART_CODES.iter().find(|(m, _)| text.contains(m));
+        let code = code.map_or(String::new(), |(_, c)| format!("{c}: "));
+        anyhow::anyhow!("{code}{text}")
+    })?;
+    let home = paths.account(&account.name)?;
+    let server = crate::control::Control::connect(&home).await?.server();
+    let (pid, process_start) = server.context("the restarted server's process is unknown")?;
+    Ok(json!({"account_id":account.id(),"restarted":true,"pid":pid,"process_start":process_start}))
 }
 
 /// One supervisor call about an account (`name`, `provider` and the `extra` fields), after

@@ -1250,6 +1250,19 @@ pub async fn call(paths: &Paths, method: &str, params: Value) -> Result<Value> {
     Ok(value["result"].clone())
 }
 
+/// [`call`] again every 200 ms (at most 50 attempts) while an account poll holds the account.
+pub async fn call_retry(paths: &Paths, method: &str, params: Value) -> Result<Value> {
+    for _ in 1..50 {
+        match call(paths, method, params.clone()).await {
+            Err(e) if e.to_string().contains("poll in progress") => {
+                tokio::time::sleep(Duration::from_millis(200)).await
+            }
+            result => return result,
+        }
+    }
+    call(paths, method, params).await
+}
+
 pub async fn ensure_started(paths: &Paths) -> Result<()> {
     if call(paths, "status", json!({})).await.is_ok() {
         return Ok(());

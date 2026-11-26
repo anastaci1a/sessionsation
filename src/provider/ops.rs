@@ -70,13 +70,14 @@ pub enum Op {
     AccountDeletion,
     AccountRename,
     AccountLogout,
+    AccountRestartServer,
     HeadlessDelivery,
     AccountLimits,
     CrossProviderConversion,
 }
 
 /// Each [`Op`] and its key in `api capabilities` (`providers[].<key>`).
-pub const OP_KEYS: [(Op, &str); 26] = [
+pub const OP_KEYS: [(Op, &str); 27] = [
     (Op::Enrollment, "enrollment"),
     (Op::AdoptConfigDir, "adopt_config_dir"),
     (Op::Login, "login"),
@@ -100,14 +101,15 @@ pub const OP_KEYS: [(Op, &str); 26] = [
     (Op::AccountDeletion, "account_deletion"),
     (Op::AccountRename, "account_rename"),
     (Op::AccountLogout, "account_logout"),
+    (Op::AccountRestartServer, "account_restart_server"),
     (Op::HeadlessDelivery, "headless_delivery"),
     (Op::AccountLimits, "account_limits"),
     (Op::CrossProviderConversion, "cross_provider_conversion"),
 ];
 
 impl Op {
-    pub const ALL: [Op; 26] = {
-        let mut all = [Op::Enrollment; 26];
+    pub const ALL: [Op; 27] = {
+        let mut all = [Op::Enrollment; 27];
         let mut i = 0;
         while i < OP_KEYS.len() {
             all[i] = OP_KEYS[i].0;
@@ -152,6 +154,7 @@ impl ProviderCapabilities {
             Op::AccountDeletion => &self.account_deletion,
             Op::AccountRename => &self.account_rename,
             Op::AccountLogout => &self.account_logout,
+            Op::AccountRestartServer => &self.account_restart_server,
             Op::HeadlessDelivery => &self.headless_delivery,
             Op::AccountLimits => &self.account_limits,
             Op::CrossProviderConversion => &self.cross_provider_conversion,
