@@ -559,6 +559,15 @@ pub struct MoveOptions {
     /// Terminate only: close the session's HERDR pane once the stop is verified.
     pub close_pane: bool,
 }
+impl MoveOptions {
+    pub fn new(pause: bool, accept_risks: bool, close_pane: bool) -> Self {
+        Self {
+            pause,
+            accept_risks,
+            close_pane,
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct Binding {
@@ -2002,11 +2011,7 @@ pub async fn queue_automatic(
         paths,
         source,
         target,
-        MoveOptions {
-            pause: true,
-            accept_risks: false,
-            ..Default::default()
-        },
+        MoveOptions::new(true, false, false),
         None,
         if target == from { "pause" } else { "account" },
         EnqueuePolicy {

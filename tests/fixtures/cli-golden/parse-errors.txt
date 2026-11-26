@@ -1,0 +1,2527 @@
+### --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"CLI-first account and session manager\n\nUsage: sessionsation [OPTIONS] <COMMAND>\n\nCommands:\n  view       Render a Sessionsation-hosted Claude session live (t + Enter takes it over)\n  take-over  Stop a hosted Claude worker cleanly, then resume the conversation interactively here\n  api        Versioned machine-readable backend contract (JSON/NDJSON)\n  setup      Initialize private state and start the metadata-only supervisor\n  daemon     \n  account    \n  status     \n  doctor     Report native compatibility; --probe starts only isolated, unauthenticated workers\n  run        Start a session with a selected enrolled account (Codex, Claude Code or Gemini CLI); managed switching remains gated\n  resume     Resume a saved stable backend ID on its recorded account in this terminal\n  shell      Open a plain interactive shell; never re-enter the terminal launcher\n  layout     Data-root layout: report it, migrate a legacy (version 1) root to version 2, or roll back. Migrate and rollback need the supervisor stopped\n  retention  Retention for logs, cache, operations history and receipts\n  shared     Shared Claude conversation state (projects, file-history, todos, session-env) in one store for every account\n  root       Root alias and re-key (contract 1.54.0): move the data root and its sessions from one spelling of a bind-mounted tree (/mnt/user/...) to the other (/mnt/disk1/...)\n  help       Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help (see more with '--help')\n  -V, --version                    Print version\n","retryable":false},"ok":false}
+
+### view --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation view [OPTIONS] <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### view
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <SESSION>\n\nUsage: sessionsation view <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### take-over --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation take-over [OPTIONS] <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### take-over
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <SESSION>\n\nUsage: sessionsation take-over <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Versioned machine-readable backend contract (JSON/NDJSON)\n\nUsage: sessionsation api [OPTIONS] <COMMAND>\n\nCommands:\n  capabilities        \n  placements          Batch host-scoped placement; no per-session host lookup required\n  version             Discover the exact executable and contract without contacting a provider\n  disk-space          Free space on the data root's filesystem against the `min_free_disk_mb` floor (read-only)\n  archives            \n  archive             \n  restore-session     \n  delete-session      \n  launch              \n  resume-launch       \n  account             \n  launcher            Return an opaque argv plan for a terminal client to exec\n  state               \n  session             Resolve public session details against its current catalog generation, or run a session action (`session add-to-herdr ...`)\n  attachment          Resolve a current runtime attachment without provider or session discovery\n  observe             Bounded read-only native readiness; never sends input or starts a process\n  observations        Bounded batch readiness from stdin; optional cached-only reads never contact a provider\n  checkpoints         Read public assistant snapshots for an exact turn from a versioned stdin request\n  turn-target         Read the latest native turn identity/status; no sending permission required\n  steer-target        Resolve the active turn for explicit in-turn steering; never sends input\n  recovery-plan       Read a target/host request from stdin and validate an exited-process recovery plan\n  recovery-reconcile  Reconcile an interrupted recovery without launching or delivering input\n  rename              \n  switch              \n  auto-start          Per-session Auto Start (1.43.0, revised 1.44.0): start a session after a host boot or a crash; works on stopped sessions too\n  auto-recover        Deprecated (1.43.0, use auto-start): per-session auto-recover; --enable is start_prompt\n  turn-notify         Per-session turn-end notification (opt-in): journal an event, optionally message a session\n  idle-notify         Ask a live Claude session for one native notice when it next goes idle or exits\n  usage               Usage windows of every account with age, source and the one meter shape (1.62.0)\n  turn-events         Turn-end events of notifying sessions after a cursor; --wait blocks for the next one\n  events              Session events of every provider in one shape after a cursor (1.64.0); --wait blocks for the next one, `gap` says when events after the cursor were already dropped\n  hooks               Hook health per account and session (1.64.0); `hooks install` installs or repairs them\n  relocate            Preview or request a generation-checked directory change or project-folder move\n  restart             \n  stop                \n  resume              \n  spaces              Read existing Spaces from this session's own HERDR host, or from the named HERDR server (`--herdr-session`) for a session that is not in HERDR yet\n  move-space          Move only the selected terminal into a new tab in an existing Space\n  operations          \n  respond             \n  cancel-operation    \n  recover             \n  abandon-operation   Operator-only: abandon an uncertain or stuck resume-launch or an uncertain new launch (terminal; sends nothing)\n  hosted              Sessionsation-hosted Claude sessions (stream-json worker, viewer, permission prompts)\n  answer              Answer an agent's pending question (`pending_questions` in state); answers JSON from --answers or stdin. Idempotent; an attempted answer is never resent\n  send                Read a versioned Submit/Queue/Resume/explicit Steer request from stdin\n  receipt             \n  cancel              \n  help                Print this message or the help of the given subcommand(s)\n\nOptions:\n      --api-version <API_VERSION>  [default: 1]\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### api capabilities --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api capabilities [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api placements --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api placements [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api version --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api version [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api disk-space --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api disk-space [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api archives --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api archives [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api archive --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api archive [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api archive
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api archive --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restore-session --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api restore-session [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restore-session
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api restore-session --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api delete-session --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api delete-session [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api delete-session
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api delete-session --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launch --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api launch [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launch
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Usage: sessionsation api launch [OPTIONS] <COMMAND>\n\nCommands:\n  list      List retained receipts without starting or retrying a launch\n  validate  Validate a JSON creation request from stdin without creating resources\n  start     Admit a JSON creation request exactly once; reconcile using status\n  status    \n  help      Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### api launch list --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api launch list [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launch validate --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api launch validate [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launch start --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api launch start [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launch status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api launch status [OPTIONS] --request-id <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launch status
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n\nUsage: sessionsation api launch status --request-id <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api resume-launch --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api resume-launch [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api resume-launch
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Usage: sessionsation api resume-launch [OPTIONS] <COMMAND>\n\nCommands:\n  validate  \n  start     \n  status    \n  list      \n  help      Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### api resume-launch validate --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api resume-launch validate [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api resume-launch start --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api resume-launch start [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api resume-launch status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api resume-launch status [OPTIONS] --request-id <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api resume-launch status
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n\nUsage: sessionsation api resume-launch status --request-id <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api resume-launch list --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api resume-launch list [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api account [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Usage: sessionsation api account [OPTIONS] <COMMAND>\n\nCommands:\n  list            \n  add             Enroll `codex:<name>` or `claude:<name>`; names are unique across providers\n  login           \n  logout          Sign out with the provider's own mechanism; refused while the account is in use\n  auth            Gemini: show or set the authentication mode. `--mode google` selects Login with Google (Workspace) and returns the login plan; `--mode api-key --key-stdin` reads `{\"api_key\":\"...\"}` from stdin, stores it privately and validates it\n  reorder         Move an account to a 0-based position in the shared account order\n  refresh         Claude: probe `claude auth status` now and update the account auth state\n  rename          \"Rename only\": change just the display name (id, folder and home never change; allowed while sessions run)\n  rename-backend  \"Rename & update backend\": rename the display name, the account folder and the account id (`codex:old` -> `codex:NEW`). Without NEW_NAME the backend is renamed to match the existing display name (\"Update backend\"). Refused while any session of the account runs; journaled, never replayed\n  reset-credit    Codex or Claude: spend one stored rate-limit reset credit (not reversible). Journaled; the request id is the idempotency key, so a retry with the same --request-id can never spend a second credit. Never retried automatically\n  managed-home    Claude: switch an adopted account to its managed home (no files are moved)\n  live-steering   Claude: show, enable or disable live steering (peer messages) for this account. Gemini: show, set or remove experimental.modelSteering (restart sessions to apply)\n  bypass-warning  Claude: show, skip or show-again the bypass-permissions (YOLO) startup warning\n  enable          \n  disable         \n  remove          \n  delete          \n  deletions       \n  restore         \n  usage           \n  limits          Read limits, or explicitly save both used-percentage limits via the owner\n  help            Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### api account list --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api account list [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account add --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account add [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account add
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account add <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account login --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account login [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account login
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account login <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account logout --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account logout [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account logout
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account logout <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account auth --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account auth [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account auth
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account auth <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account reorder --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account reorder [OPTIONS] --position <POSITION> <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account reorder
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --position <POSITION>\n  <ID>\n\nUsage: sessionsation api account reorder --position <POSITION> <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account refresh --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account refresh [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account refresh
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account refresh <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account rename --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account rename [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account rename
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account rename <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account rename-backend --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account rename-backend [OPTIONS] --expected-generation <EXPECTED_GENERATION> <ID> [NEW_NAME]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account rename-backend
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --expected-generation <EXPECTED_GENERATION>\n  <ID>\n\nUsage: sessionsation api account rename-backend --expected-generation <EXPECTED_GENERATION> <ID> [NEW_NAME]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account reset-credit --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account reset-credit [OPTIONS] [ID]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account managed-home --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account managed-home [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account managed-home
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account managed-home <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account live-steering --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account live-steering [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account live-steering
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account live-steering <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account bypass-warning --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account bypass-warning [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account bypass-warning
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account bypass-warning <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account enable --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account enable [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account enable
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account enable <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account disable --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account disable [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account disable
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account disable <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account remove --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account remove [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account remove
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account remove <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account delete --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account delete [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account delete
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account delete <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account deletions --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api account deletions [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account restore --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account restore [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account restore
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account restore <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account usage --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account usage [OPTIONS] --start <START> --end <END> <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account usage
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --start <START>\n  --end <END>\n  <ID>\n\nUsage: sessionsation api account usage --start <START> --end <END> <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account limits --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api account limits [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api account limits
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation api account limits <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launcher --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api launcher [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launcher
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Return an opaque argv plan for a terminal client to exec\n\nUsage: sessionsation api launcher [OPTIONS] <COMMAND>\n\nCommands:\n  new     \n  resume  \n  shell   \n  help    Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### api launcher new --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api launcher new [OPTIONS] --account <ACCOUNT>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launcher new
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --account <ACCOUNT>\n\nUsage: sessionsation api launcher new --account <ACCOUNT>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launcher resume --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api launcher resume [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launcher resume
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api launcher resume --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launcher shell --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api launcher shell [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api state --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api state [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session [OPTIONS]\n       sessionsation api session <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session add-to-herdr --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session add-to-herdr [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --herdr-session <HERDR_SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session add-to-herdr
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --herdr-session <HERDR_SESSION>\n  --space <SPACE>\n  --new-space <NEW_SPACE>\n\nUsage: sessionsation api session add-to-herdr --session <SESSION> --expected-generation <EXPECTED_GENERATION> --herdr-session <HERDR_SESSION> --space <SPACE> --new-space <NEW_SPACE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session resolve --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session resolve [OPTIONS] --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session resolve
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n\nUsage: sessionsation api session resolve --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session set-space --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session set-space [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session set-space
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --space <SPACE>\n\nUsage: sessionsation api session set-space --session <SESSION> --expected-generation <EXPECTED_GENERATION> --space <SPACE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session repair-identity --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session repair-identity [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session compact --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session compact [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session compact
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session compact-status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session compact-status [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session compact-cancel --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session compact-cancel [OPTIONS] --operation <OPERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session compact-cancel
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --operation <OPERATION>\n\nUsage: sessionsation api session compact-cancel --operation <OPERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session set-model --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session set-model [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --model <MODEL>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session set-model
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --model <MODEL>\n\nUsage: sessionsation api session set-model --session <SESSION> --expected-generation <EXPECTED_GENERATION> --model <MODEL>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session set-model-status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session set-model-status [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session set-model-cancel --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session set-model-cancel [OPTIONS] --operation <OPERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session set-model-cancel
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --operation <OPERATION>\n\nUsage: sessionsation api session set-model-cancel --operation <OPERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session launch --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session launch [OPTIONS] --space <SPACE> --name <NAME> --account <ACCOUNT> --model <MODEL> --brief-file <BRIEF_FILE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session launch
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --space <SPACE>\n  --name <NAME>\n  --account <ACCOUNT>\n  --model <MODEL>\n  --brief-file <BRIEF_FILE>\n\nUsage: sessionsation api session launch --space <SPACE> --name <NAME> --account <ACCOUNT> --model <MODEL> --brief-file <BRIEF_FILE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session launch-status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api session launch-status [OPTIONS] --request-id <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session launch-status
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n\nUsage: sessionsation api session launch-status --request-id <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api attachment --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api attachment [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api attachment
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api attachment --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api observe --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api observe [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api observe
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api observe --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api observations --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api observations [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api checkpoints --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api checkpoints [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api turn-target --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api turn-target [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api turn-target
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api turn-target --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api steer-target --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api steer-target [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api steer-target
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api steer-target --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api recovery-plan --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api recovery-plan [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api recovery-reconcile --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api recovery-reconcile [OPTIONS] <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api recovery-reconcile
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <MESSAGE>\n\nUsage: sessionsation api recovery-reconcile <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api rename --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api rename [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --name <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api rename
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --name <NAME>\n\nUsage: sessionsation api rename --session <SESSION> --expected-generation <EXPECTED_GENERATION> --name <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api switch --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api switch [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --to <TO>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api switch
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --to <TO>\n\nUsage: sessionsation api switch --session <SESSION> --expected-generation <EXPECTED_GENERATION> --to <TO>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-start --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api auto-start [OPTIONS] --mode <MODE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-start
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --mode <MODE>\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api auto-start --mode <MODE> --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-recover --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api auto-recover [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-recover
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api auto-recover --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api turn-notify --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api turn-notify [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api turn-notify
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api turn-notify --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api idle-notify --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api idle-notify [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api idle-notify
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api idle-notify --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api usage --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api usage [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api turn-events --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api turn-events [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api events --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api events [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hooks --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api hooks [OPTIONS] [COMMAND]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hooks install --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api hooks install [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api relocate --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api relocate [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --to <TO>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api relocate
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --to <TO>\n\nUsage: sessionsation api relocate --session <SESSION> --expected-generation <EXPECTED_GENERATION> --to <TO>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restart --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api restart [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restart
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api restart --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api stop --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api stop [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api stop
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api stop --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api resume --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api resume [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --herdr-session <HERDR_SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api resume
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --herdr-session <HERDR_SESSION>\n\nUsage: sessionsation api resume --session <SESSION> --expected-generation <EXPECTED_GENERATION> --herdr-session <HERDR_SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api spaces --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api spaces [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api spaces
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api spaces --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api move-space --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api move-space [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api move-space
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --request-id <REQUEST_ID>\n  --space <SPACE>\n  --new-space <NEW_SPACE>\n\nUsage: sessionsation api move-space --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --space <SPACE> --new-space <NEW_SPACE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api operations --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api operations [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api respond --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api respond [OPTIONS] --sequence <SEQUENCE> <OPERATION> <ANSWER>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api respond
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --sequence <SEQUENCE>\n  <OPERATION>\n  <ANSWER>\n\nUsage: sessionsation api respond --sequence <SEQUENCE> <OPERATION> <ANSWER>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api cancel-operation --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api cancel-operation [OPTIONS] <OPERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api cancel-operation
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <OPERATION>\n\nUsage: sessionsation api cancel-operation <OPERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api recover --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api recover [OPTIONS] <OPERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api recover
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <OPERATION>\n\nUsage: sessionsation api recover <OPERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api abandon-operation --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api abandon-operation [OPTIONS] --operation <OPERATION> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api abandon-operation
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --operation <OPERATION>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api abandon-operation --operation <OPERATION> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hosted --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api hosted [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hosted
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Sessionsation-hosted Claude sessions (stream-json worker, viewer, permission prompts)\n\nUsage: sessionsation api hosted [OPTIONS] <COMMAND>\n\nCommands:\n  start    Start a hosted worker: a new conversation (--account, --directory) or a stopped one (--session, --expected-generation)\n  status   Host record, liveness and pending permission prompts\n  stop     Stop the worker cleanly (close input; optionally interrupt the turn first)\n  respond  Answer a pending permission prompt\n  events   Normalized events (newest last), for clients without a viewer pane\n  help     Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### api hosted start --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api hosted start [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hosted status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api hosted status [OPTIONS] --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hosted status
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n\nUsage: sessionsation api hosted status --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hosted stop --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api hosted stop [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hosted stop
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n\nUsage: sessionsation api hosted stop --session <SESSION> --expected-generation <EXPECTED_GENERATION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hosted respond --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api hosted respond [OPTIONS] --session <SESSION> --request-id <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hosted respond
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --request-id <REQUEST_ID>\n  --allow\n\nUsage: sessionsation api hosted respond --session <SESSION> --request-id <REQUEST_ID> --allow\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hosted events --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api hosted events [OPTIONS] --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api hosted events
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n\nUsage: sessionsation api hosted events --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api answer --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api answer [OPTIONS] --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api answer
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --expected-generation <EXPECTED_GENERATION>\n  --request-id <REQUEST_ID>\n\nUsage: sessionsation api answer --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api send --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation api send [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api receipt --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api receipt [OPTIONS] <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api receipt
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <MESSAGE>\n\nUsage: sessionsation api receipt <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api cancel --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation api cancel [OPTIONS] <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api cancel
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <MESSAGE>\n\nUsage: sessionsation api cancel <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### setup --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation setup [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### daemon --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation daemon [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### daemon
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Usage: sessionsation daemon [OPTIONS] <COMMAND>\n\nCommands:\n  start  \n  serve  \n  stop   \n  help   Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### daemon start --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation daemon start [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### daemon serve --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation daemon serve [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### daemon stop --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation daemon stop [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation account [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Usage: sessionsation account [OPTIONS] <COMMAND>\n\nCommands:\n  add             Enroll an account. Names are unique across providers\n  login           Log in: Codex prints a device code; Claude runs `claude auth login --claudeai` here; Gemini runs `gemini` with NO_BROWSER=true here (choose Login with Google)\n  auth            Gemini: show or set the authentication mode. `--mode google` selects Login with Google (Workspace accounts; then run `account login`). `--mode api-key --key-stdin` reads a Gemini API key (aistudio.google.com/apikey) from stdin only, stores it in GEMINI_CLI_HOME/secrets/gemini-api-key (0600) and runs one headless validation. Without --mode, shows the mode and whether a key is stored (never the key)\n  reorder         Move an account to a 0-based position in the shared account order (list and UI)\n  logout          Sign out: Codex app-server account/logout (or `codex logout`), `claude auth logout`, or Gemini's own credential clearing. Refused while the account is in use; log in again afterwards\n  rename          Set a display name (the stable name, id and home never change); --clear resets it\n  live-steering   Claude: let live sessions of this account accept Sessionsation steering as peer messages (sets `crossSessionInbound: accept` in its settings.json), or stop. Gemini: turn Gemini CLI model steering on or off (sets or removes `experimental.modelSteering` in GEMINI_CLI_HOME/.gemini/settings.json); running sessions keep their value until restarted. Without a flag, shows the current setting\n  bypass-warning  Claude: skip or show Claude Code's bypass-permissions (YOLO) startup warning (sets `skipDangerousModePermissionPrompt` in the account's settings.json). Without a flag, shows the current setting\n  managed-home    Claude: switch an adopted account to its managed home <root>/accounts/claude/NAME. The directory must already exist (0700, yours, no symlink) and hold the same login; nothing is copied. Refused while Claude is running on either home\n  list            List accounts of every provider (table; --json for machine output)\n  enable          \n  disable         \n  show            Read account details, plan, limits and remaining percentages without starting a monitor\n  history         Export the same usage/activity bins shown by the account history UI (JSON)\n  help            Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### account add --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account add [OPTIONS] --platform <codex|claude|gemini> <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account add
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --platform <codex|claude|gemini>\n  <NAME>\n\nUsage: sessionsation account add --platform <codex|claude|gemini> <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account login --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account login [OPTIONS] <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account login
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n\nUsage: sessionsation account login <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account auth --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account auth [OPTIONS] <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account auth
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n\nUsage: sessionsation account auth <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account reorder --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account reorder [OPTIONS] --position <POSITION> <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account reorder
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --position <POSITION>\n  <NAME>\n\nUsage: sessionsation account reorder --position <POSITION> <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account logout --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account logout [OPTIONS] <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account logout
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n\nUsage: sessionsation account logout <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account rename --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account rename [OPTIONS] <NAME> [DISPLAY_NAME]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account rename
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n  <DISPLAY_NAME>\n\nUsage: sessionsation account rename <NAME> <DISPLAY_NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account live-steering --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account live-steering [OPTIONS] <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account live-steering
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n\nUsage: sessionsation account live-steering <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account bypass-warning --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account bypass-warning [OPTIONS] <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account bypass-warning
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n\nUsage: sessionsation account bypass-warning <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account managed-home --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account managed-home [OPTIONS] <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account managed-home
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n\nUsage: sessionsation account managed-home <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account list --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation account list [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account enable --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account enable [OPTIONS] <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account enable
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n\nUsage: sessionsation account enable <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account disable --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account disable [OPTIONS] <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account disable
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n\nUsage: sessionsation account disable <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account show --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account show [OPTIONS] <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account show
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n\nUsage: sessionsation account show <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account history --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account history [OPTIONS] <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account history
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <NAME>\n\nUsage: sessionsation account history <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation status [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### doctor --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation doctor [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### run --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation run [OPTIONS] [-- <CODEX_OPTIONS>...]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### resume --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation resume [OPTIONS] --expected-generation <EXPECTED_GENERATION> <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### resume
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --expected-generation <EXPECTED_GENERATION>\n  <SESSION>\n\nUsage: sessionsation resume --expected-generation <EXPECTED_GENERATION> <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### shell --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation shell [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### layout --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation layout [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### layout
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Data-root layout: report it, migrate a legacy (version 1) root to version 2, or roll back. Migrate and rollback need the supervisor stopped\n\nUsage: sessionsation layout [OPTIONS] <COMMAND>\n\nCommands:\n  status    Layout version, deferred account homes (with reasons) and legacy entries\n  migrate   Migrate to layout version 2 (idempotent; also moves deferred homes that are now idle)\n  rollback  Move everything back to the legacy (version 1) layout\n  help      Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### layout status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation layout status [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### layout migrate --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation layout migrate [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### layout rollback --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation layout rollback [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### retention --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation retention [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### retention
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Retention for logs, cache, operations history and receipts\n\nUsage: sessionsation retention [OPTIONS] <COMMAND>\n\nCommands:\n  run   Run one retention pass now\n  help  Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### retention run --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation retention run [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### shared --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation shared [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### shared
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Shared Claude conversation state (projects, file-history, todos, session-env) in one store for every account\n\nUsage: sessionsation shared [OPTIONS] <COMMAND>\n\nCommands:\n  status   Store state and each Claude account's link state\n  enable   Turn the feature on for this root (creates the store; new and empty homes are then linked)\n  migrate  Move one account's directories into the shared store and link them (journaled, idempotent, resumable)\n  help     Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### shared status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation shared status [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### shared enable --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation shared enable [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### shared migrate --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation shared migrate [OPTIONS] --account <ACCOUNT>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### shared migrate
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --account <ACCOUNT>\n\nUsage: sessionsation shared migrate --account <ACCOUNT>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### root --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation root [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### root
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Root alias and re-key (contract 1.54.0): move the data root and its sessions from one spelling of a bind-mounted tree (/mnt/user/...) to the other (/mnt/disk1/...)\n\nUsage: sessionsation root [OPTIONS] <COMMAND>\n\nCommands:\n  status    Alias, run, per-session states, sessions left behind and the rollback gate (`gate: pass|fail`)\n  migrate   Tier R (`--from --to --backup`, supervisor stopped) or Tier S (`--session`, supervisor running)\n  rollback  Whole root back to layout version 2 (supervisor stopped), or one session (`--session`)\n  finalize  Remove empty old project-key directories (rmdir only). Retained copies are never deleted\n  help      Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### root status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation root status [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### root migrate --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation root migrate [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### root rollback --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation root rollback [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### root finalize --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation root finalize [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account-delete-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation account-delete-worker [OPTIONS] <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account-delete-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <REQUEST_ID>\n\nUsage: sessionsation account-delete-worker <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### antigravity-terminal-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation antigravity-terminal-worker [OPTIONS] <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### antigravity-terminal-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <MESSAGE_ID>\n\nUsage: sessionsation antigravity-terminal-worker <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### archives --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation archives [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### auto-recover-tick --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation auto-recover-tick [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### auto-start --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation auto-start [OPTIONS] --thread <THREAD>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### auto-start
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --thread <THREAD>\n\nUsage: sessionsation auto-start --thread <THREAD>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### auto-switch --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation auto-switch [OPTIONS] --thread <THREAD>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### auto-switch
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --thread <THREAD>\n\nUsage: sessionsation auto-switch --thread <THREAD>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### background-response --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation background-response [OPTIONS] <JOB> <ANSWER>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### background-response
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <JOB>\n  <ANSWER>\n\nUsage: sessionsation background-response <JOB> <ANSWER>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### cancel-move --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation cancel-move [OPTIONS] <JOB>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### cancel-move
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <JOB>\n\nUsage: sessionsation cancel-move <JOB>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-attach --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation claude-attach [OPTIONS] --expected-generation <EXPECTED_GENERATION> <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-attach
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --expected-generation <EXPECTED_GENERATION>\n  <SESSION>\n\nUsage: sessionsation claude-attach --expected-generation <EXPECTED_GENERATION> <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-delivery-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation claude-delivery-worker [OPTIONS] <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-delivery-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <MESSAGE_ID>\n\nUsage: sessionsation claude-delivery-worker <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-host-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation claude-host-worker [OPTIONS] <CONVERSATION_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-host-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <CONVERSATION_ID>\n\nUsage: sessionsation claude-host-worker <CONVERSATION_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-idle-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation claude-idle-worker [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-idle-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation claude-idle-worker <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-peer-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation claude-peer-worker [OPTIONS] <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-peer-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <MESSAGE_ID>\n\nUsage: sessionsation claude-peer-worker <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-switch-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation claude-switch-worker [OPTIONS] <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-switch-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <REQUEST_ID>\n\nUsage: sessionsation claude-switch-worker <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-terminal-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation claude-terminal-worker [OPTIONS] <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### claude-terminal-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <MESSAGE_ID>\n\nUsage: sessionsation claude-terminal-worker <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### config --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation config [OPTIONS] [COMMAND]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### config get --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation config get [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### config set --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation config set [OPTIONS] <KEY> <VALUE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### config set
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <KEY>\n  <VALUE>\n\nUsage: sessionsation config set <KEY> <VALUE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### conversation-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation conversation-worker [OPTIONS] <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### conversation-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <REQUEST_ID>\n\nUsage: sessionsation conversation-worker <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### delete-session --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation delete-session [OPTIONS] --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### delete-session
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n\nUsage: sessionsation delete-session --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### gemini-terminal-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation gemini-terminal-worker [OPTIONS] <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### gemini-terminal-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <MESSAGE_ID>\n\nUsage: sessionsation gemini-terminal-worker <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### handoff-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation handoff-worker [OPTIONS] --job <JOB>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### handoff-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --job <JOB>\n\nUsage: sessionsation handoff-worker --job <JOB>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### import --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation import [OPTIONS] --thread <THREAD> --from <FROM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### import
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --thread <THREAD>\n  --from <FROM>\n\nUsage: sessionsation import --thread <THREAD> --from <FROM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### instances --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation instances [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### launch-run --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation launch-run [OPTIONS] <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### launch-run
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <REQUEST_ID>\n\nUsage: sessionsation launch-run <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### launch-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation launch-worker [OPTIONS] <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### launch-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <REQUEST_ID>\n\nUsage: sessionsation launch-worker <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Transport-neutral, attach-only messaging API (JSON)\n\nUsage: sessionsation message [OPTIONS] <COMMAND>\n\nCommands:\n  modes         Versioned message modes: native Queue and read-only Submit preparation\n  capabilities  \n  sessions      \n  resolve       \n  enqueue       Read the immutable enqueue request as JSON from stdin\n  status        \n  observe       Refresh correlated public terminal replies without sending input\n  events        \n  cancel        \n  help          Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### message modes --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Versioned message modes: native Queue and read-only Submit preparation\n\nUsage: sessionsation message modes [OPTIONS] <COMMAND>\n\nCommands:\n  capabilities  \n  request       \n  status        \n  events        \n  cancel        \n  sending       Owner-controlled emergency switch; never dispatches a message\n  submit-check  Read-only native turn precondition assessment; does not send input\n  sessions      Discover existing owner-managed targets; never starts a worker\n  target        Read-only managed target state; never starts a worker\n  fixture       Run the deterministic isolated fixture from JSON stdin. No native connection\n  help          Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### message modes capabilities --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes capabilities [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes request --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes request [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes status [OPTIONS] --request <REQUEST>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes status
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request <REQUEST>\n\nUsage: sessionsation message modes status --request <REQUEST>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes events --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes events [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes cancel --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes cancel [OPTIONS] --request <REQUEST>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes cancel
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request <REQUEST>\n\nUsage: sessionsation message modes cancel --request <REQUEST>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes sending --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes sending [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes submit-check --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes submit-check [OPTIONS] --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes submit-check
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n\nUsage: sessionsation message modes submit-check --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes sessions --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes sessions [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes target --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes target [OPTIONS] --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes target
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n\nUsage: sessionsation message modes target --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message modes fixture --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message modes fixture [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message capabilities --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message capabilities [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message sessions --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message sessions [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message resolve --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message resolve [OPTIONS] --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message resolve
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n\nUsage: sessionsation message resolve --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message enqueue --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message enqueue [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message status --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message status [OPTIONS] --message <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message status
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --message <MESSAGE>\n\nUsage: sessionsation message status --message <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message observe --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message observe [OPTIONS] --message <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message observe
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --message <MESSAGE>\n\nUsage: sessionsation message observe --message <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message events --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message events [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message cancel --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation message cancel [OPTIONS] --message <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message cancel
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --message <MESSAGE>\n\nUsage: sessionsation message cancel --message <MESSAGE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message-recovery-run --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation message-recovery-run [OPTIONS] <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message-recovery-run
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <MESSAGE_ID>\n\nUsage: sessionsation message-recovery-run <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message-recovery-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation message-recovery-worker [OPTIONS] <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### message-recovery-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <MESSAGE_ID>\n\nUsage: sessionsation message-recovery-worker <MESSAGE_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### model-change-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation model-change-worker [OPTIONS] <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### model-change-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ID>\n\nUsage: sessionsation model-change-worker <ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### move --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation move [OPTIONS] --to <TO>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### move
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --to <TO>\n\nUsage: sessionsation move --to <TO>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### move-response --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation move-response [OPTIONS] <JOB> <ANSWER>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### move-response
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <JOB>\n  <ANSWER>\n\nUsage: sessionsation move-response <JOB> <ANSWER>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### moves --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation moves [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### open --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation open [OPTIONS] --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### open
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n\nUsage: sessionsation open --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### pause --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation pause [OPTIONS] <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### pause
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <SESSION>\n\nUsage: sessionsation pause <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### pause-session --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation pause-session [OPTIONS] --pane <PANE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### pause-session
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --pane <PANE>\n\nUsage: sessionsation pause-session --pane <PANE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### provider-hook --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation provider-hook [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### provider-hook
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"Provider integration hooks (invoked by provider processes, not people)\n\nUsage: sessionsation provider-hook [OPTIONS] <COMMAND>\n\nCommands:\n  claude-statusline  Record Claude statusline rate limits, then chain the account's own statusline\n  claude-event       Record one Claude Code hook event (content-free fields only) for `api events`\n  help               Print this message or the help of the given subcommand(s)\n\nOptions:\n      --data-dir <DATA_DIR>        Private state directory; defaults to SESSIONSATION_HOME or ~/.local/share/sessionsation\n      --permissions <PERMISSIONS>  Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting [possible values: yolo, default]\n  -h, --help                       Print help\n","retryable":false},"ok":false}
+
+### provider-hook claude-statusline --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation provider-hook claude-statusline [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### provider-hook claude-event --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation provider-hook claude-event [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### ready --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation ready [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### recover --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation recover [OPTIONS] <JOB>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### recover
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <JOB>\n\nUsage: sessionsation recover <JOB>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### relocate --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation relocate [OPTIONS] --to <TO>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### relocate
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --to <TO>\n\nUsage: sessionsation relocate --to <TO>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### rename --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation rename [OPTIONS] --session <SESSION> --name <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### rename
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n  --name <NAME>\n\nUsage: sessionsation rename --session <SESSION> --name <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### restart --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation restart [OPTIONS] --pane <PANE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### restart
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --pane <PANE>\n\nUsage: sessionsation restart --pane <PANE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### resume-run --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation resume-run [OPTIONS] <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### resume-run
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <REQUEST_ID>\n\nUsage: sessionsation resume-run <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### resume-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation resume-worker [OPTIONS] <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### resume-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <REQUEST_ID>\n\nUsage: sessionsation resume-worker <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### retry --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation retry [OPTIONS] <JOB>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### retry
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <JOB>\n\nUsage: sessionsation retry <JOB>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### root-rekey-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation root-rekey-worker [OPTIONS] <SESSION_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### root-rekey-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <SESSION_ID>\n\nUsage: sessionsation root-rekey-worker <SESSION_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### session --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation session [OPTIONS] --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### session
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --session <SESSION>\n\nUsage: sessionsation session --session <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### sessions --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation sessions [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### simulate --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation simulate [OPTIONS] <SCENARIO>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### simulate
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <SCENARIO>\n\nUsage: sessionsation simulate <SCENARIO>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### snapshot-refresh --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation snapshot-refresh [OPTIONS]\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### space-move-worker --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation space-move-worker [OPTIONS] <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### space-move-worker
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <REQUEST_ID>\n\nUsage: sessionsation space-move-worker <REQUEST_ID>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### terminate --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\nUsage: sessionsation terminate [OPTIONS] --pane <PANE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### terminate
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --pane <PANE>\n\nUsage: sessionsation terminate --pane <PANE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### thresholds --zz-golden-unknown
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--zz-golden-unknown' found\n\n  tip: to pass '--zz-golden-unknown' as a value, use '-- --zz-golden-unknown'\n\nUsage: sessionsation thresholds [OPTIONS] <ACCOUNT>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### thresholds
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  <ACCOUNT>\n\nUsage: sessionsation thresholds <ACCOUNT>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+

@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::Read,
     os::unix::fs::FileTypeExt,
     path::{Component, Path, PathBuf},
     process::Stdio,
@@ -531,8 +530,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
     if let Command::Status { request_id } = command {
         return Ok(serde_json::to_value(reconcile_status(paths, &request_id)?)?);
     }
-    let mut bytes = Vec::new();
-    std::io::stdin().take(65537).read_to_end(&mut bytes)?;
+    let bytes = crate::api::stdin_take(65537)?;
     ensure!(bytes.len() <= 65536, "REQUEST_TOO_LARGE");
     let r: Request = serde_json::from_slice(&bytes).context("INVALID_LAUNCH_REQUEST")?;
     let validate_only = matches!(command, Command::Validate);

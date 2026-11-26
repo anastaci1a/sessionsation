@@ -12,7 +12,7 @@ use clap::Subcommand;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{fs, io::Read, path::PathBuf};
+use std::{fs, path::PathBuf};
 #[derive(Subcommand)]
 pub enum Command {
     Validate,
@@ -369,8 +369,7 @@ pub async fn api(paths: &Paths, command: Command) -> Result<Value> {
         }
         _ => {}
     }
-    let mut bytes = vec![];
-    std::io::stdin().take(65537).read_to_end(&mut bytes)?;
+    let bytes = crate::api::stdin_take(65537)?;
     ensure!(bytes.len() <= 65536, "REQUEST_TOO_LARGE");
     let mut r: Request = serde_json::from_slice(&bytes).context("INVALID_RESUME_REQUEST")?;
     if let Some(d) = r.directory.as_mut() {

@@ -2,13 +2,14 @@
 //! implementation details; consumers use stable catalog IDs and generations.
 use crate::background::SpawnReaped as _;
 use crate::{
-    catalog, daemon, external,
+    account_deletion, account_rename, accounts, auto_recover, catalog, claude_switch, config,
+    daemon, disk_space, external, inline, launch, layout, messaging,
     paths::Paths,
     provider::{
-        AccountRef, ProviderId, claude, native,
+        self, AccountRef, ProviderId, claude, native,
         ops::{self, Reader, StopMethod},
     },
-    store,
+    questions, reset_credit, resume, session_launch, store, turn_notify,
 };
 use anyhow::{Context, Result, bail, ensure};
 use clap::Subcommand;
@@ -21,9 +22,9 @@ use std::{
 pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
-pub const CONTRACT_MINOR: u32 = 71;
-pub const CONTRACT_PATCH: u32 = 3;
-pub const CONTRACT_VERSION: &str = "1.71.3";
+pub const CONTRACT_MINOR: u32 = 72;
+pub const CONTRACT_PATCH: u32 = 0;
+pub const CONTRACT_VERSION: &str = "1.72.0";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -79,29 +80,21 @@ pub fn operations_list(paths: &Paths) -> Result<Vec<Value>> {
         .filter(|j| j.non_steering)
         .map(|j| operation(paths, j))
         .collect::<Result<Vec<_>>>()?;
+    ops.extend(account_deletion::list(paths)?.into_iter().map(|r| json!(r)));
     ops.extend(
-        crate::account_deletion::list(paths)?
-            .into_iter()
-            .map(|r| json!(r)),
-    );
-    ops.extend(
-        crate::account_rename::list(paths)?
+        account_rename::list(paths)?
             .iter()
-            .map(crate::account_rename::public),
+            .map(account_rename::public),
     );
-    ops.extend(
-        crate::reset_credit::list(paths)?
-            .iter()
-            .map(crate::reset_credit::public),
-    );
-    ops.extend(crate::claude_switch::operations(paths)?);
-    ops.extend(crate::auto_recover::operations(paths)?);
+    ops.extend(reset_credit::list(paths)?.iter().map(reset_credit::public));
+    ops.extend(claude_switch::operations(paths)?);
+    ops.extend(auto_recover::operations(paths)?);
     ops.extend(external::archiving::operations(paths)?);
     ops.extend(external::spaces::operations(paths)?);
-    ops.extend(crate::inline::operations(paths)?);
-    ops.extend(crate::messaging::compaction::operations(paths)?);
-    ops.extend(crate::messaging::model_change::operations(paths)?);
-    ops.extend(crate::session_launch::operations(paths)?);
+    ops.extend(inline::operations(paths)?);
+    ops.extend(messaging::compaction::operations(paths)?);
+    ops.extend(messaging::model_change::operations(paths)?);
+    ops.extend(session_launch::operations(paths)?);
     // Contract 1.54.0: per-session root re-keys in flight.
     ops.extend(crate::root_migrate::operations(paths));
     Ok(ops)
@@ -133,11 +126,11 @@ pub enum Command {
     },
     Launch {
         #[command(subcommand)]
-        command: crate::launch::Command,
+        command: launch::Command,
     },
     ResumeLaunch {
         #[command(subcommand)]
-        command: crate::resume::Command,
+        command: resume::Command,
     },
     Account {
         #[command(subcommand)]
@@ -429,7 +422,7 @@ pub enum Command {
     /// Sessionsation-hosted Claude sessions (stream-json worker, viewer, permission prompts).
     Hosted {
         #[command(subcommand)]
-        command: crate::provider::claude::hosted::Command,
+        command: provider::claude::hosted::Command,
     },
     /// Answer an agent's pending question (`pending_questions` in state); answers
     /// JSON from --answers or stdin. Idempotent; an attempted answer is never resent.
@@ -626,7 +619,7 @@ pub enum SessionAction {
         #[arg(long)]
         create_directory: bool,
         #[arg(long)]
-        permissions: Option<crate::config::LaunchPermissions>,
+        permissions: Option<config::LaunchPermissions>,
         #[arg(long)]
         herdr_session: Option<String>,
         #[arg(long)]
@@ -720,9 +713,9 @@ pub async fn resume_current(
     name: Option<&str>,
 ) -> Result<()> {
     // Contract 1.48.0: inside a HERDR pane the session resumes into the pane's Space.
-    let pane_space = crate::inline::pane_space();
+    let pane_space = inline::pane_space();
     let name = name
-        .map(|n| crate::inline::bare_name(n, pane_space.as_deref()))
+        .map(|n| inline::bare_name(n, pane_space.as_deref()))
         .transpose()?;
     let native = catalog::resolve(paths, id, generation)
         .ok()
@@ -732,12 +725,12 @@ pub async fn resume_current(
         let (s, observation) = native_selected(paths, id, generation)?;
         // Contract 1.66.2: only the resume-launch that admitted it without history starts
         // such a session again; every other resume keeps refusing it.
-        if crate::inline::fresh_start_owned(paths, &s.id) {
+        if inline::fresh_start_owned(paths, &s.id) {
             native::ensure_fresh_start(&s, &observation)?;
         } else {
             native::ensure_resumable(&s, &observation)?;
         }
-        crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
+        messaging::headless::ensure_idle(paths, &s.conversation_id)?;
         (s, std::env::current_dir()?)
     } else {
         let (s, source) = selected(paths, id, generation).await?;
@@ -761,12 +754,12 @@ pub async fn resume_current(
             "SESSION_NAME_EXISTS: \"{wanted}\" is already used in this Space"
         );
     }
-    let request = crate::inline::begin_resume(paths, &s, wanted, confirm_unfinished, &cwd)?;
+    let request = inline::begin_resume(paths, &s, wanted, confirm_unfinished, &cwd)?;
     let result = async {
         let s = named(paths, s, generation, name, pane_space.as_deref())?;
-        crate::inline::renamed(paths, &request, &s);
+        inline::renamed(paths, &request, &s);
         if name.is_some() {
-            crate::inline::label_tab(&s.name);
+            inline::label_tab(&s.name);
         }
         match native {
             Some(_) => native::exec_resume_session(paths, id, &s.generation()).await,
@@ -785,7 +778,7 @@ pub async fn resume_current(
     }
     .await;
     if let Err(error) = &result {
-        crate::inline::fail_resume(paths, &request, error);
+        inline::fail_resume(paths, &request, error);
     }
     result
 }
@@ -801,7 +794,7 @@ fn hosted_flags(argv: &mut Vec<String>, hosted: bool, permission_mode: Option<St
 
 async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
     let mut argv = vec![
-        crate::provider::claude::hooks::executable()?
+        provider::claude::hooks::executable()?
             .to_string_lossy()
             .into_owned(),
         "--data-dir".into(),
@@ -820,7 +813,7 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
                 ops::HOSTED_CLAUDE_ONLY,
             )?;
             let name = account.name.as_str();
-            crate::accounts::ensure_available(paths, account.provider, name)?;
+            accounts::ensure_available(paths, account.provider, name)?;
             let status = daemon::call(paths, "status", json!({})).await?;
             ensure!(
                 status["accounts"]
@@ -850,7 +843,7 @@ async fn launcher(paths: &Paths, command: Launcher) -> Result<Value> {
         {
             let (s, observation) = native_selected(paths, &session, &expected_generation)?;
             native::ensure_resumable(&s, &observation)?;
-            crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
+            messaging::headless::ensure_idle(paths, &s.conversation_id)?;
             cwd = Some(native::resume_directory(&s, &observation)?);
             if hosted {
                 ops::require(
@@ -1063,7 +1056,7 @@ pub enum AccountCommand {
 /// provider, so enrolling (`account add`) skips this check.
 fn account_ref(paths: &Paths, id: &str) -> Result<AccountRef> {
     let account = AccountRef::parse(id)?;
-    if paths.root.join(crate::layout::REGISTRY_DB).exists()
+    if paths.root.join(layout::REGISTRY_DB).exists()
         && let Ok(state) = store::load_state_snapshot(paths)
         && state.account(account.provider, &account.name).is_none()
         && let Some(other) = state.accounts_named(&account.name).first()
@@ -1144,7 +1137,7 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
     // Claude reads run concurrently, each at most once per cache period.
     let mut reads = std::collections::HashMap::new();
     if !cached {
-        let client = crate::reset_credit::claude::client(paths)?;
+        let client = reset_credit::claude::client(paths)?;
         let mut tasks = tokio::task::JoinSet::new();
         for a in &selected {
             if ops::facts(a.provider).meter != Reader::OAuth
@@ -1153,7 +1146,7 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
             {
                 continue;
             }
-            let home = crate::provider::account_home(paths, a)?;
+            let home = provider::account_home(paths, a)?;
             let now = daemon::now();
             if claude::meter::newest_observation(&home, now)
                 .is_some_and(|t| now - t < claude::meter::CACHE_SECONDS)
@@ -1179,8 +1172,7 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
     let mut rows = vec![];
     for a in selected {
         let (mut usage, fresh, usage_state) = daemon::account_usage(paths, a, &config, now);
-        let mut meter =
-            crate::provider::usage_meter::of(a.provider, &usage, now, config.stale_seconds);
+        let mut meter = provider::usage_meter::of(a.provider, &usage, now, config.stale_seconds);
         if ops::facts(a.provider).meter == Reader::Supervisor && meter["fresh"] == false {
             let reason = codex_reads
                 .get(&a.name)
@@ -1228,12 +1220,12 @@ fn account_selectable(a: &Value, removed: bool) -> bool {
 /// recorded failure marks it `auth_failed` and in need of a login; once cleared (a
 /// successful run or login, or newer credentials) a failure-only marking is lifted.
 fn project_gemini_auth_failure(paths: &Paths, name: &str, a: &mut Value) {
-    use crate::provider::gemini::{auth_failure, auth_mode};
+    use provider::gemini::{auth_failure, auth_mode};
     let home = a["config_home"]
         .as_str()
         .filter(|h| !h.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| crate::provider::native::default_home(paths, ProviderId::Gemini, name).ok());
+        .or_else(|| provider::native::default_home(paths, ProviderId::Gemini, name).ok());
     // Mode and key presence only (stat); the key itself is never read here.
     a["auth_mode"] = json!(home.as_deref().map(|h| auth_mode::mode(h).as_str()));
     a["api_key_present"] = json!(home.as_deref().map(auth_mode::key_present));
@@ -1264,9 +1256,7 @@ fn refresh_cached_accounts(paths: &Paths, value: &mut Value) {
     let Some(accounts) = value["accounts"].as_array_mut() else {
         return;
     };
-    let stale_seconds = crate::store::load_config(paths)
-        .map(|c| c.stale_seconds)
-        .ok();
+    let stale_seconds = store::load_config(paths).map(|c| c.stale_seconds).ok();
     for a in accounts {
         if !a["provider"]
             .as_str()
@@ -1289,7 +1279,7 @@ fn refresh_cached_accounts(paths: &Paths, value: &mut Value) {
     }
 }
 pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value>> {
-    let stale_seconds = crate::store::load_config(paths).map_or(300, |c| c.stale_seconds);
+    let stale_seconds = store::load_config(paths).map_or(300, |c| c.stale_seconds);
     // One process-table scan serves every Codex row.
     let codex_instances = accounts
         .iter()
@@ -1306,20 +1296,20 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
             let name = name.as_str();
             // A pre-provider supervisor could only report Codex accounts.
             let provider = ProviderId::parse(a["provider"].as_str().unwrap_or("codex"))?;
-            let removed = crate::accounts::removed(paths, provider, name)?;
+            let removed = accounts::removed(paths, provider, name)?;
             a["id"] = json!(format!("{provider}:{name}"));
             a["provider"] = json!(provider);
-            a["provider_capabilities"] = json!(crate::provider::capabilities(provider));
+            a["provider_capabilities"] = json!(provider::capabilities(provider));
             a["membership"] = json!(if removed { "removed" } else { "enrolled" });
             // The account home as used now (contract 1.29.0): an adopted Claude
             // home, else the managed `accounts/<platform>/<name>`, or its legacy
             // path while the layout migration deferred that home (in use).
-            let target = crate::layout::target_home(&paths.root, provider, name);
+            let target = layout::target_home(&paths.root, provider, name);
             let home = a["config_home"]
                 .as_str()
                 .filter(|h| !h.is_empty())
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| crate::layout::account_home(&paths.root, provider, name));
+                .unwrap_or_else(|| layout::account_home(&paths.root, provider, name));
             let deferred = a["config_home"].as_str().is_none_or(str::is_empty) && home != target; // raw-path: both derive from paths.root (one spelling)
             a["home_deferred"] = json!(deferred);
             a["home"] = json!(home);
@@ -1332,7 +1322,7 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
                 &mut a,
             );
             if let Some(id) = a["deletion_id"].as_str() {
-                a["deletion"] = json!(crate::account_deletion::status(paths, id)?);
+                a["deletion"] = json!(account_deletion::status(paths, id)?);
             }
             if ops::facts(provider).auth_modes {
                 project_gemini_auth_failure(paths, name, &mut a);
@@ -1346,10 +1336,10 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
                     .filter(|h| !h.is_empty())
                     .map(std::path::PathBuf::from)
                     .or_else(|| {
-                        crate::provider::native::default_home(paths, ProviderId::Claude, name).ok()
+                        provider::native::default_home(paths, ProviderId::Claude, name).ok()
                     })
                 {
-                    let row = crate::provider::claude::bypass::row(&home);
+                    let row = provider::claude::bypass::row(&home);
                     for key in [
                         "bypass_warning",
                         "bypass_warning_value",
@@ -1360,13 +1350,10 @@ pub fn project_accounts(paths: &Paths, accounts: Vec<Value>) -> Result<Vec<Value
                 }
             }
             // Contract 1.62.0 (SM8): an older supervisor sends no meter.
-            crate::provider::usage_meter::ensure(&mut a, daemon::now(), stale_seconds);
+            provider::usage_meter::ensure(&mut a, daemon::now(), stale_seconds);
             a["selectable"] = json!(account_selectable(&a, removed));
-            a["prefill"] = account_prefill(
-                &a,
-                daemon::now(),
-                crate::store::load_config(paths)?.stale_seconds,
-            );
+            a["prefill"] =
+                account_prefill(&a, daemon::now(), store::load_config(paths)?.stale_seconds);
             Ok(a)
         })
         .collect()
@@ -1387,7 +1374,7 @@ fn project_rename_state(
     a["folder_name"] = json!(name);
     a["name_mismatch"] = json!(mismatch);
     if a["generation"].is_null() {
-        a["generation"] = json!(crate::account_rename::generation(
+        a["generation"] = json!(account_rename::generation(
             provider.as_str(),
             name,
             a["display_name"].as_str(),
@@ -1397,7 +1384,7 @@ fn project_rename_state(
     let running = if ops::facts(provider).supervised {
         codex_instances.map(|all| {
             all.iter()
-                .filter(|i| crate::layout::same_home(&i.home, home))
+                .filter(|i| layout::same_home(&i.home, home))
                 .count()
         })
     } else if home.exists() {
@@ -1412,7 +1399,7 @@ fn project_rename_state(
         Some("ACCOUNT_REMOVED")
     } else if a["config_home"].as_str().is_some_and(|h| !h.is_empty()) {
         Some("ACCOUNT_HOME_ADOPTED")
-    } else if crate::account_rename::unresolved_for(paths, provider, name)
+    } else if account_rename::unresolved_for(paths, provider, name)
         .ok()
         .flatten()
         .is_some()
@@ -1434,9 +1421,9 @@ pub async fn gemini_auth(
     paths: &Paths,
     account: &AccountRef,
     mode: Option<&str>,
-    key: Option<crate::provider::gemini::auth_mode::ApiKey>,
+    key: Option<provider::gemini::auth_mode::ApiKey>,
 ) -> Result<Value> {
-    use crate::provider::gemini::{self, auth_failure, auth_mode};
+    use provider::gemini::{self, auth_failure, auth_mode};
     ops::require(
         ops::facts(account.provider).auth_modes,
         "authentication modes are a Gemini account setting",
@@ -1451,7 +1438,7 @@ pub async fn gemini_auth(
     let mut changed = false;
     let mut validation = Value::Null;
     if let Some(mode) = mode {
-        crate::accounts::ensure_available(paths, account.provider, &account.name)?;
+        accounts::ensure_available(paths, account.provider, &account.name)?;
         ensure!(
             home.is_dir(),
             "ACCOUNT_HOME_UNAVAILABLE: the Gemini home does not exist"
@@ -1471,14 +1458,10 @@ pub async fn gemini_auth(
             auth_failure::clear(paths, &account.name);
         }
         if mode == auth_mode::Mode::ApiKey && changed {
-            let config = crate::store::load_config(paths)?;
-            validation = crate::messaging::headless::validate_gemini_key(
-                paths,
-                &config,
-                &account.name,
-                &home,
-            )
-            .await;
+            let config = store::load_config(paths)?;
+            validation =
+                messaging::headless::validate_gemini_key(paths, &config, &account.name, &home)
+                    .await;
         }
     }
     // Let the supervisor observe the new state (auth_required) at once.
@@ -1537,7 +1520,7 @@ pub fn login_plan(paths: &Paths, account: &AccountRef) -> Result<Value> {
     Ok(
         json!({"account_id":account.id(),"provider":account.provider,"login":{
         "action":"exec","interactive":true,"credentials_in_client":false,
-        "argv":[crate::provider::claude::hooks::executable()?.to_string_lossy(),"--data-dir",paths.root.to_string_lossy(),"account","login",account.id()]}}),
+        "argv":[provider::claude::hooks::executable()?.to_string_lossy(),"--data-dir",paths.root.to_string_lossy(),"account","login",account.id()]}}),
     )
 }
 
@@ -1550,23 +1533,17 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
         } => {
             let account = account_ref(paths, &id)?;
             if let (Some(confirm), Some(request)) = (confirm, request_id) {
-                crate::account_deletion::start(
-                    paths,
-                    account.provider,
-                    &account.name,
-                    &request,
-                    &confirm,
-                )
-                .await
+                account_deletion::start(paths, account.provider, &account.name, &request, &confirm)
+                    .await
             } else {
-                crate::account_deletion::preview(paths, account.provider, &account.name).await
+                account_deletion::preview(paths, account.provider, &account.name).await
             }
         }
         AccountCommand::Deletions { request_id } => {
             if let Some(id) = request_id {
-                Ok(json!(crate::account_deletion::status(paths, &id)?))
+                Ok(json!(account_deletion::status(paths, &id)?))
             } else {
-                Ok(json!(crate::account_deletion::list(paths)?))
+                Ok(json!(account_deletion::list(paths)?))
             }
         }
         AccountCommand::Limits {
@@ -1576,7 +1553,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
         } => {
             let account = account_ref(paths, &id)?;
             let name = account.name.as_str();
-            crate::accounts::ensure_available(paths, account.provider, name)?;
+            accounts::ensure_available(paths, account.provider, name)?;
             if let (Some(short), Some(weekly)) = (short_used, weekly_used) {
                 ops::require(
                     ops::facts(account.provider).meter != Reader::None,
@@ -1624,13 +1601,13 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 // Contract 1.60.0: Claude limit resets are read on demand (cached 60 s).
                 if ops::facts(account.provider).meter == Reader::OAuth && a["deletion_id"].is_null()
                 {
-                    let home = crate::provider::claude::home(
+                    let home = provider::claude::home(
                         paths,
                         name,
                         a["config_home"].as_str().map(std::path::Path::new),
                     )?;
                     let (credits, read) =
-                        crate::reset_credit::claude::limits_read(paths, name, &home).await;
+                        reset_credit::claude::limits_read(paths, name, &home).await;
                     usage["reset_credits"] = credits;
                     value["reset_credits_read"] = read;
                     // Contract 1.62.0 (SM8): the meter is read on demand too (no session
@@ -1641,7 +1618,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                     {
                         Value::Null
                     } else {
-                        let client = crate::reset_credit::claude::client(paths)?;
+                        let client = reset_credit::claude::client(paths)?;
                         claude::meter::read(
                             &client,
                             &home,
@@ -1653,10 +1630,10 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                     };
                     let now = daemon::now();
                     let (fresh_usage, fresh, usage_state) = claude::project_usage(&home, now);
-                    let stale = crate::store::load_config(paths).map_or(300, |c| c.stale_seconds);
+                    let stale = store::load_config(paths).map_or(300, |c| c.stale_seconds);
                     usage = fresh_usage;
                     usage["meter"] =
-                        crate::provider::usage_meter::of(ProviderId::Claude, &usage, now, stale);
+                        provider::usage_meter::of(ProviderId::Claude, &usage, now, stale);
                     value["usage_fresh"] = json!(fresh);
                     value["usage_state"] = json!(usage_state);
                 }
@@ -1686,15 +1663,14 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
         } => {
             let account = account_ref(paths, &id)?;
             if let (Some(confirm), Some(revision)) = (confirm, revision) {
-                crate::accounts::remove(paths, account.provider, &account.name, &revision, &confirm)
-                    .await
+                accounts::remove(paths, account.provider, &account.name, &revision, &confirm).await
             } else {
-                crate::accounts::preview_for(paths, account.provider, &account.name).await
+                accounts::preview_for(paths, account.provider, &account.name).await
             }
         }
         AccountCommand::Restore { id } => {
             let account = account_ref(paths, &id)?;
-            crate::accounts::restore(paths, account.provider, &account.name)
+            accounts::restore(paths, account.provider, &account.name)
         }
         AccountCommand::Usage {
             id,
@@ -1721,7 +1697,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 config_dir.is_none() || ops::facts(account.provider).adopts_config_dir,
                 "INVALID_ARGUMENT: --config-dir is only supported for claude accounts"
             );
-            crate::accounts::ensure_available(paths, account.provider, &account.name)?;
+            accounts::ensure_available(paths, account.provider, &account.name)?;
             daemon::ensure_started(paths).await?;
             let mut params = json!({"name":account.name,"provider":account.provider});
             if let Some(dir) = config_dir {
@@ -1747,13 +1723,10 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 clear || display_name.is_some(),
                 "INVALID_ARGUMENT: pass --display-name NAME or --clear"
             );
-            daemon::ensure_started(paths).await?;
-            daemon::call(
-                paths,
-                "account/rename",
-                json!({"name":account.name,"provider":account.provider,"display_name":if clear {None} else {display_name},"expected_generation":expected_generation}),
-            )
-            .await
+            let display_name = if clear { None } else { display_name };
+            let extra =
+                json!({"display_name":display_name,"expected_generation":expected_generation});
+            account_call(paths, &account, "account/rename", extra).await
         }
         AccountCommand::RenameBackend {
             id,
@@ -1762,15 +1735,9 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             request_id,
         } => {
             let account = account_ref(paths, &id)?;
-            daemon::ensure_started(paths).await?;
             let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            daemon::call(
-                paths,
-                "account/rename-backend",
-                json!({"name":account.name,"provider":account.provider,"new_name":new_name,
-                    "expected_generation":expected_generation,"request_id":request_id}),
-            )
-            .await
+            let extra = json!({"new_name":new_name,"expected_generation":expected_generation,"request_id":request_id});
+            account_call(paths, &account, "account/rename-backend", extra).await
         }
         AccountCommand::ResetCredit {
             id,
@@ -1798,12 +1765,12 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
             if credits == Reader::OAuth {
                 let kind = kind
                     .as_deref()
-                    .map(crate::reset_credit::claude::parse_kind)
+                    .map(reset_credit::claude::parse_kind)
                     .transpose()?;
                 let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                crate::reset_credit::validate_request_id(&request_id)?;
-                crate::accounts::ensure_available(paths, account.provider, &account.name)?;
-                return crate::reset_credit::claude::command(
+                reset_credit::validate_request_id(&request_id)?;
+                accounts::ensure_available(paths, account.provider, &account.name)?;
+                return reset_credit::claude::command(
                     paths,
                     &account.name,
                     credit_id,
@@ -1819,56 +1786,49 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 );
             }
             let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            crate::reset_credit::validate_request_id(&request_id)?;
-            crate::accounts::ensure_available(paths, account.provider, &account.name)?;
-            daemon::ensure_started(paths).await?;
-            daemon::call(
-                paths,
-                "account/reset-credit",
-                json!({"name":account.name,"provider":account.provider,"credit_id":credit_id,"request_id":request_id}),
-            )
-            .await
-            // The supervisor's own code (UNSUPPORTED_PROVIDER_OPERATION, ...), not REQUEST_FAILED.
-            .map_err(|e| {
-                let text = e.to_string();
-                anyhow::anyhow!(
-                    "{}",
-                    text.strip_prefix("REQUEST_FAILED: ").unwrap_or(&text)
-                )
-            })
+            reset_credit::validate_request_id(&request_id)?;
+            accounts::ensure_available(paths, account.provider, &account.name)?;
+            let extra = json!({"credit_id":credit_id,"request_id":request_id});
+            account_call(paths, &account, "account/reset-credit", extra)
+                .await
+                // The supervisor's own code (UNSUPPORTED_PROVIDER_OPERATION, ...), not REQUEST_FAILED.
+                .map_err(|e| {
+                    let text = e.to_string();
+                    anyhow::anyhow!("{}", text.strip_prefix("REQUEST_FAILED: ").unwrap_or(&text))
+                })
         }
         AccountCommand::LiveSteering {
             id,
             enable,
             disable,
         } => {
-            let account = account_ref(paths, &id)?;
-            daemon::ensure_started(paths).await?;
-            daemon::call(
+            let enable = json!({"enable":switch(enable, disable)});
+            account_call(
                 paths,
+                &account_ref(paths, &id)?,
                 "account/live-steering",
-                json!({"name":account.name,"provider":account.provider,"enable":if enable {Some(true)} else if disable {Some(false)} else {None}}),
+                enable,
             )
             .await
         }
         AccountCommand::BypassWarning { id, skip, show } => {
-            let account = account_ref(paths, &id)?;
-            daemon::ensure_started(paths).await?;
-            daemon::call(
+            let skip = json!({"skip":switch(skip, show)});
+            account_call(
                 paths,
+                &account_ref(paths, &id)?,
                 "account/bypass-warning",
-                json!({"name":account.name,"provider":account.provider,"skip":if skip {Some(true)} else if show {Some(false)} else {None}}),
+                skip,
             )
             .await
         }
         AccountCommand::Reorder { id, position } => {
             let account = account_ref(paths, &id)?;
-            crate::accounts::ensure_available(paths, account.provider, &account.name)?;
-            daemon::ensure_started(paths).await?;
-            daemon::call(
+            accounts::ensure_available(paths, account.provider, &account.name)?;
+            account_call(
                 paths,
+                &account,
                 "account/reorder",
-                json!({"name":account.name,"provider":account.provider,"position":position}),
+                json!({"position":position}),
             )
             .await
         }
@@ -1879,8 +1839,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
         } => {
             let account = account_ref(paths, &id)?;
             let key = if key_stdin {
-                let mut bytes = vec![];
-                std::io::stdin().take(32769).read_to_end(&mut bytes)?;
+                let bytes = stdin_take(32769)?;
                 ensure!(
                     bytes.len() <= 32768,
                     "INVALID_REQUEST: the stdin request is too large"
@@ -1896,9 +1855,7 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                         "INVALID_REQUEST: stdin must be the JSON object {{\"api_key\":\"...\"}}"
                     )
                 })?;
-                Some(crate::provider::gemini::auth_mode::ApiKey::new(
-                    &request.api_key,
-                )?)
+                Some(provider::gemini::auth_mode::ApiKey::new(&request.api_key)?)
             } else {
                 None
             };
@@ -1920,16 +1877,37 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                 _ => unreachable!(),
             };
             let account = account_ref(paths, &id)?;
-            crate::accounts::ensure_available(paths, account.provider, &account.name)?;
-            daemon::ensure_started(paths).await?;
-            daemon::call(
-                paths,
-                method,
-                json!({"name":account.name,"provider":account.provider}),
-            )
-            .await
+            accounts::ensure_available(paths, account.provider, &account.name)?;
+            account_call(paths, &account, method, json!({})).await
         }
     }
+}
+
+/// `--on`/`--off` of a show-or-set flag pair: `Some(true)`, `Some(false)` or `None` (show).
+pub fn switch(on: bool, off: bool) -> Option<bool> {
+    if on {
+        Some(true)
+    } else if off {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// One supervisor call about an account (`name`, `provider` and the `extra` fields), after
+/// starting the supervisor.
+pub async fn account_call(
+    paths: &Paths,
+    account: &AccountRef,
+    method: &str,
+    extra: Value,
+) -> Result<Value> {
+    daemon::ensure_started(paths).await?;
+    let mut params = json!({"name":account.name,"provider":account.provider});
+    if let (Some(p), Value::Object(extra)) = (params.as_object_mut(), extra) {
+        p.extend(extra);
+    }
+    daemon::call(paths, method, params).await
 }
 
 /// The Gemini provider entry of `api capabilities` (built apart: the whole document
@@ -2033,9 +2011,9 @@ pub fn capabilities() -> Value {
     // Revision 15: steer replies are attributed after the steer's own input item.
     value["steering"]["reply_observation"] = json!({"since_revision":15,"command":"receipt","native_method":"thread/turns/list","items_view":"full","scope":"steered_turn_only","anchor":"user_message_client_id","window":"until_next_user_input_or_turn_end","max_pages":8,"max_text_bytes":65536,"final_only_when_turn_completed":true});
     // Revision 18: bounded receipt stores with tombstoned retirement.
-    let retention = crate::config::Config::default();
+    let retention = config::Config::default();
     // Revision 32: journaled inline run/resume with --name.
-    value["inline_launch"] = crate::inline::capability();
+    value["inline_launch"] = inline::capability();
     value["receipt_retention"] = json!({"since_revision":18,"capacity_per_store":10000,"default_terminal_retention_days":retention.receipt_retention_days,"default_unknown_horizon_days":retention.receipt_unknown_horizon_days,"age_from":"expires_at_or_last_update","horizon_state":"expired","horizon_reason":"outcome_unknown_at_retention_horizon","retired_ids":"tombstoned_never_reaccepted","retired_error":"RECEIPT_RETIRED","settings":["receipt_retention_days","receipt_unknown_horizon_days"],"recovery_journals_retained":true,
         "delivered_journal_states_retire_as_terminal":crate::messaging::DELIVERED_JOURNAL_STATES,
         "delivered_requires":{"since_contract":"1.52.0","phase":["written","complete"],"worker":"stopped",
@@ -2106,8 +2084,8 @@ pub fn capabilities() -> Value {
             "gemini":{"supported":false,"reason":crate::provider::conversation::GEMINI_UNSUPPORTED}},
         "batch":"api observations stays Codex-only"});
     // Contract 1.64.0 (SM5, SM6): session events and hook installation for every provider.
-    value["session_events"] = crate::provider::events::capability();
-    value["hooks"] = crate::provider::hooks::capability();
+    value["session_events"] = provider::events::capability();
+    value["hooks"] = provider::hooks::capability();
     value["stop_result"] = json!({"since_contract":"1.63.0","keys":crate::provider::stop_shape::KEYS,
         "both_session_ids_until":"1.64.0","unknown":"null",
         "providers":{"codex":{"supported":true},"claude":{"supported":true},"antigravity":{"supported":true},
@@ -2115,11 +2093,11 @@ pub fn capabilities() -> Value {
         "launch_exit":{"code":"PROVIDER_EXITED","window_seconds":crate::launch::LAUNCH_EXIT_WINDOW_SECONDS,"window_env":"SESSIONSATION_LAUNCH_EXIT_WINDOW_SECONDS"},
         "typing_guard":{"checked":["before_first_key","before_enter"],"codes":["TERMINAL_PROVIDER_EXITED","TERMINAL_PANE_IS_SHELL"]}});
     // Contract 1.64.0 (SM1): one live send request for every provider.
-    value["send_request"] = crate::provider::send::capability();
+    value["send_request"] = provider::send::capability();
     // Revision 21: per-account Claude bypass-permissions warning.
     value["claude_bypass_warning"] = json!({"since_revision":22,"setting":"skipDangerousModePermissionPrompt","config_file":"CLAUDE_CONFIG_DIR/settings.json","command":"account bypass-warning claude:NAME [--skip|--show]","values":["skip","show"],"new_accounts_default":"skip","account_row_fields":["bypass_warning","bypass_warning_value","bypass_warning_setting"],"event":"account.bypass_warning_skipped|shown","other_keys":"preserved","symlink":"refused","credentials_read":false});
     // 1.27.0: default statusLine for new managed Claude homes.
-    value["data_layout"] = json!({"since_contract":"1.29.0","version":crate::layout::VERSION,"directories":[crate::layout::REGISTRY,crate::layout::SESSIONS,crate::layout::OPERATIONS,crate::layout::MESSAGING,crate::layout::CACHE,crate::layout::LOGS,crate::layout::ACCOUNTS],"account_home":"accounts/<platform>/<name>","account_fields":{"home":"the account home in use (adopted, managed, or a deferred legacy path)","home_deferred":"true while the layout migration left an in-use home at its legacy path"},"commands":["layout status","layout migrate --backup DIR [--dry-run]","layout rollback [--dry-run]"],"legacy_root":"LAYOUT_MIGRATION_REQUIRED","interrupted":"LAYOUT_MIGRATION_IN_PROGRESS"});
+    value["data_layout"] = json!({"since_contract":"1.29.0","version":crate::layout::VERSION,"directories":[layout::REGISTRY,layout::SESSIONS,layout::OPERATIONS,layout::MESSAGING,layout::CACHE,layout::LOGS,layout::ACCOUNTS],"account_home":"accounts/<platform>/<name>","account_fields":{"home":"the account home in use (adopted, managed, or a deferred legacy path)","home_deferred":"true while the layout migration left an in-use home at its legacy path"},"commands":["layout status","layout migrate --backup DIR [--dry-run]","layout rollback [--dry-run]"],"legacy_root":"LAYOUT_MIGRATION_REQUIRED","interrupted":"LAYOUT_MIGRATION_IN_PROGRESS"});
     value["retention"] = crate::retention::describe();
     // 1.30.0: per-provider account names, display/backend names and the backend rename.
     value["account_names"] = json!({"since_contract":"1.30.0","unique_across_providers":false,"unique_per_provider":true,"id_format":"<provider>:<name>","ambiguous_bare_name_error":"ACCOUNT_AMBIGUOUS",
@@ -2139,15 +2117,15 @@ pub fn capabilities() -> Value {
     // Revision 20: create a new Space by label on resume, add-to-HERDR and move.
     value["pane_reuse"] = crate::pane_reuse::capability();
     // Contract 1.53.0: redeem a stored Codex rate-limit reset credit.
-    value["account_reset_credit"] = crate::reset_credit::capability();
+    value["account_reset_credit"] = reset_credit::capability();
     // Contract 1.54.0: root alias and re-key (`root status|migrate|rollback|finalize`).
     value["root_alias"] = crate::root_migrate::capability();
     value["new_space"] = json!({"since_revision":20,"version":1,"resume":true,"add_to_herdr":true,"move_space":true,"label_validation":"space_label","exists_error":"WORKSPACE_NAME_EXISTS"});
     value["resume_placement"] = json!({"version":1,"command":"resume","space":true,"name":true});
-    value["auto_recover"] = crate::auto_recover::capability();
-    value["auto_start"] = crate::auto_recover::capability_start();
-    value["session_compact"] = crate::messaging::compaction::capability();
-    value["session_model"] = crate::messaging::model_change::capability();
+    value["auto_recover"] = auto_recover::capability();
+    value["auto_start"] = auto_recover::capability_start();
+    value["session_compact"] = messaging::compaction::capability();
+    value["session_model"] = messaging::model_change::capability();
     value["stop_closes_pane"] = json!(true);
     value["stop_keep_pane"] = json!(true);
     // Contract 1.66.0: one resume-launch for every provider that can resume, the stable
@@ -2180,7 +2158,7 @@ pub fn capabilities() -> Value {
         "verification":"the caller must find process among its ancestors by pid and process_start; when env is set its own environment must also carry name=value; env alone is never trusted","cached_state":true});
     value["stop_pane_close"] = json!({"since_revision":36,"default":"close","flag":"--keep-pane","providers":["codex","antigravity"],"herdr":"closes the exact recorded pane only after the stop is verified and only while nothing but its shell runs in it","tmux":"never closed (pane_closed:false, PANE_CLOSE_UNSUPPORTED)","reasons":["KEEP_PANE","NO_PANE","PANE_BUSY","PANE_MISSING","PANE_STATE_UNVERIFIED","PANE_CLOSE_FAILED","PANE_CLOSE_UNSUPPORTED","PANE_TARGET_INVALID"]});
     value["launch_model"] = json!({"since_revision":38,"request_fields":["model","reasoning_effort"],"requests":["launch"],"providers":["codex"],"reasoning_efforts":crate::launch::REASONING_EFFORTS,"errors":["INVALID_MODEL","INVALID_REASONING_EFFORT",ops::UNSUPPORTED],"model_not_checked_against_account":true});
-    value["turn_notify"] = crate::turn_notify::capability();
+    value["turn_notify"] = turn_notify::capability();
     value["claude_native_delivery"] = native_delivery_capability();
     value["claude_idle_notify"] = crate::claude_idle::capability();
     value["disk_space"] = json!({"since_contract":"1.41.0","command":"disk-space","config":"min_free_disk_mb","default_mb":crate::disk_space::DEFAULT_MIN_FREE_MB,"refusal":"INSUFFICIENT_DISK_SPACE","write_failure":"DISK_FULL","state_fallback":"cached_snapshot_with_warning"});
@@ -2217,11 +2195,10 @@ pub fn capabilities() -> Value {
     }
     value["claude_input_delivery"] = claude_input_delivery();
     // Revision 17: Gemini submit/queue/steer as typed input into a HERDR pane.
-    value["gemini_input_delivery"] = crate::messaging::claude_steer::gemini::input_delivery();
+    value["gemini_input_delivery"] = messaging::claude_steer::gemini::input_delivery();
     // Revision 24: Antigravity submit/queue/steer as typed input into a HERDR pane.
-    value["antigravity_input_delivery"] =
-        crate::messaging::claude_steer::antigravity::input_delivery();
-    value["questions"] = crate::questions::capability();
+    value["antigravity_input_delivery"] = messaging::claude_steer::antigravity::input_delivery();
+    value["questions"] = questions::capability();
     value
 }
 
@@ -2394,7 +2371,7 @@ fn native_public(
     value["last_accessed"] = json!(
         observed
             .and_then(|o| o.transcript.as_deref())
-            .and_then(|t| crate::provider::activity::last_accessed(provider, t))
+            .and_then(|t| provider::activity::last_accessed(provider, t))
     );
     value["active_since"] = json!(
         observed
@@ -2409,7 +2386,7 @@ fn native_public(
         "stale" => Some("history_unavailable"),
         _ => Some("unverified_history"),
     });
-    let caps = crate::provider::capabilities(provider);
+    let caps = provider::capabilities(provider);
     let usable_directory = directory
         .as_deref()
         .is_some_and(|d| std::path::Path::new(d).is_absolute() && std::path::Path::new(d).is_dir());
@@ -2559,7 +2536,7 @@ fn snapshot_file(paths: &Paths, filter: ArchiveFilter) -> std::path::PathBuf {
         ArchiveFilter::Archived => "archived",
         ArchiveFilter::All => "all",
     };
-    crate::layout::state_snapshot(&paths.root, name)
+    layout::state_snapshot(&paths.root, name)
 }
 /// Every full `state` leaves its result for `state --cached` (atomic replace;
 /// best effort, never the catalog).
@@ -2591,7 +2568,7 @@ fn serve_snapshot_when_disk_full(
     filter: ArchiveFilter,
     error: anyhow::Error,
 ) -> Result<Value> {
-    if !crate::disk_space::is_disk_full(&error) {
+    if !disk_space::is_disk_full(&error) {
         return Err(error);
     }
     let Some(mut value) = read_snapshot(paths, filter) else {
@@ -2653,7 +2630,7 @@ pub async fn state_cached(paths: &Paths, filter: ArchiveFilter) -> Result<Value>
     .await
     .ok()
     .and_then(Result::ok);
-    let stale = crate::store::load_config(paths).map_or(300, |c| c.stale_seconds);
+    let stale = store::load_config(paths).map_or(300, |c| c.stale_seconds);
     overlay_codex_usage(&mut value, status.as_ref(), daemon::now(), stale);
     value["capabilities"] = capabilities();
     refresh_cached_accounts(paths, &mut value);
@@ -2707,7 +2684,7 @@ fn overlay_codex_usage(value: &mut Value, status: Option<&Value>, now: i64, stal
         if live.is_none() && a["usage"].is_object() {
             a["usage"]["meter"] = Value::Null;
         }
-        crate::provider::usage_meter::ensure(a, now, stale);
+        provider::usage_meter::ensure(a, now, stale);
     }
 }
 /// Queued session operations of one conversation that have not finished yet, so a
@@ -2757,7 +2734,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                 .clone(),
             "supervisor",
         ),
-        Err(_) if paths.root.join(crate::layout::REGISTRY_DB).exists() => {
+        Err(_) if paths.root.join(layout::REGISTRY_DB).exists() => {
             let state = store::load_state_snapshot(paths)?;
             let config = store::load_config(paths)?;
             let v = daemon::status(paths, &state, &config, "unavailable");
@@ -2780,7 +2757,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
     let archives = external::archiving::metadata(paths)?;
     let mut deleted_accounts = std::collections::HashMap::new();
     // Contract 1.64.0 (SM5): running sessions' turn facts, for the supervisor-observed events.
-    let mut turns: Vec<crate::provider::events::Turns> = vec![];
+    let mut turns: Vec<provider::events::Turns> = vec![];
     let mut sessions=catalog_sessions.into_iter().filter(|s|archives.get(&s.id).is_none_or(|a|a["state"]!="deleted")).map(|s| {
         if let Some(provider) = native::of(&s.provider) {
             let id = s.id.clone();
@@ -2795,7 +2772,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
             let facts = ops::facts(provider);
             value["pending_questions"] = if facts.detects_questions && running {
                     let conversation = value["conversation_id"].as_str().unwrap_or_default().to_owned();
-                    crate::questions::to_values(crate::questions::claude_pending(paths, &id, &conversation, observed.get(&id).map(|(_, h)| h.as_path())))
+                    questions::to_values(questions::claude_pending(paths, &id, &conversation, observed.get(&id).map(|(_, h)| h.as_path())))
             } else {
                 json!([])
             };
@@ -2805,7 +2782,7 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
             value["placement"] = placements["memberships"][id.as_str()].clone();
             if let Some((o, home)) = observed.get(&id) {
                 if let Some(facts) = crate::native_activity::apply(provider, home, &mut value, Some(o), now) {
-                    turns.push(crate::provider::events::Turns { session_id: id.clone(), provider, conversation_id: value["conversation_id"].as_str().unwrap_or_default().to_owned(), runtime: value["pid"].as_i64(), facts });
+                    turns.push(provider::events::Turns { session_id: id.clone(), provider, conversation_id: value["conversation_id"].as_str().unwrap_or_default().to_owned(), runtime: value["pid"].as_i64(), facts });
                 }
             }
             return value;
@@ -2833,12 +2810,12 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["live_activity"]=source.filter(|s|!s.inactive).map_or(Value::Null,|s|crate::live_activity::public(Some(&s.turn_facts.clone().unwrap_or_default()),now));
         codex_caller_binding(&mut value, source.filter(|_| running && !archived));
         if let Some(s) = source.filter(|s| !s.inactive) && let Some(facts) = s.turn_facts.clone() {
-            turns.push(crate::provider::events::Turns { session_id: value["id"].as_str().unwrap_or_default().to_owned(), provider: crate::provider::ProviderId::Codex, conversation_id: value["conversation_id"].as_str().unwrap_or_default().to_owned(), runtime: Some(i64::from(s.pid)), facts });
+            turns.push(provider::events::Turns { session_id: value["id"].as_str().unwrap_or_default().to_owned(), provider: provider::ProviderId::Codex, conversation_id: value["conversation_id"].as_str().unwrap_or_default().to_owned(), runtime: Some(i64::from(s.pid)), facts });
         }
         // Contract 1.62.0 (SM3): the context share from a running rollout's newest token count.
-        crate::provider::session_meters::apply_codex(&mut value, source.map(|s| s.rollout.as_path()), source.is_some_and(|s| !s.inactive));
+        provider::session_meters::apply_codex(&mut value, source.map(|s| s.rollout.as_path()), source.is_some_and(|s| !s.inactive));
         value["pending_questions"]=match source.filter(|i|!i.inactive && !archived) {
-            Some(i)=>crate::questions::to_values(crate::questions::codex_pending(paths,value["id"].as_str().unwrap_or_default(),&i.rollout)),
+            Some(i)=>questions::to_values(questions::codex_pending(paths,value["id"].as_str().unwrap_or_default(),&i.rollout)),
             None=>json!([]),
         };
         value["last_accessed"]=source.and_then(|s|s.last_accessed).map_or(Value::Null,|n|json!(n));
@@ -2856,8 +2833,8 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
         value["input_delivery"] = json!({"health":crate::messaging::input_health::public(paths,value["conversation_id"].as_str().unwrap_or_default())});
         value
     }).filter(|s|match filter { ArchiveFilter::All=>true, ArchiveFilter::Archived=>s["archived"]==true, ArchiveFilter::Active=>s["archived"]!=true }).collect::<Vec<_>>();
-    let _ = crate::provider::events::observe_turns(paths, &turns);
-    let _ = crate::provider::events::ingest(paths);
+    let _ = provider::events::observe_turns(paths, &turns);
+    let _ = provider::events::ingest(paths);
     let jobs = external::jobs(paths).unwrap_or_default();
     // One pass over the operation journals answers every session (contract 1.57.0).
     let pending_index = (!sessions.is_empty()).then(|| crate::lifecycle::PendingIndex::scan(paths));
@@ -2916,25 +2893,24 @@ pub async fn state_filtered(paths: &Paths, filter: ArchiveFilter) -> Result<Valu
                 });
         }
     }
-    let settings = crate::auto_recover::all(paths);
-    let turn_settings = crate::turn_notify::all(paths);
+    let settings = auto_recover::all(paths);
+    let turn_settings = turn_notify::all(paths);
     crate::session_model::annotate(paths, &mut sessions);
     for session in &mut sessions {
         let setting = settings.get(session["id"].as_str().unwrap_or_default());
         let enabled = setting.is_some_and(|s| s.enabled);
-        session["auto_recover"] = crate::auto_recover::public(setting);
-        session["auto_start"] = crate::auto_recover::public_start(setting);
-        session["turn_notify"] = crate::turn_notify::public(
-            turn_settings.get(session["id"].as_str().unwrap_or_default()),
-        );
-        let reason = crate::auto_recover::capability_reason(session, enabled).map(str::to_owned);
+        session["auto_recover"] = auto_recover::public(setting);
+        session["auto_start"] = auto_recover::public_start(setting);
+        session["turn_notify"] =
+            turn_notify::public(turn_settings.get(session["id"].as_str().unwrap_or_default()));
+        let reason = auto_recover::capability_reason(session, enabled).map(str::to_owned);
         session["capabilities"]["auto_recover"] = json!(reason.is_none());
         session["capability_reasons"]["auto_recover"] = json!(reason);
         session["capabilities"]["auto_start"] = json!(reason.is_none());
         session["capability_reasons"]["auto_start"] = json!(reason);
     }
     // Contract 1.66.0: availability reasons, and admitted launches not in the catalog yet.
-    crate::launch::annotate_availability(
+    launch::annotate_availability(
         paths,
         &mut sessions,
         !matches!(filter, ArchiveFilter::Archived),
@@ -3179,6 +3155,23 @@ pub async fn session_details(paths: &Paths, id: &str, generation: &str) -> Resul
     Ok(value)
 }
 
+/// At most `limit` bytes of stdin.
+pub(crate) fn stdin_take(limit: u64) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    std::io::stdin().take(limit).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+/// A stdin request of at most 32 KiB (`INPUT_TOO_LARGE`).
+fn stdin_request() -> Result<Vec<u8>> {
+    let bytes = stdin_take(32769)?;
+    ensure!(bytes.len() <= 32768, "INPUT_TOO_LARGE");
+    Ok(bytes)
+}
+/// A versioned JSON stdin request (`INPUT_TOO_LARGE`, `INVALID_REQUEST`).
+fn stdin_json<T: serde::de::DeserializeOwned>() -> Result<T> {
+    serde_json::from_slice(&stdin_request()?).context("INVALID_REQUEST")
+}
+
 pub fn print(result: Value) -> Result<()> {
     let mut out = std::io::stdout().lock();
     serde_json::to_writer(
@@ -3203,14 +3196,14 @@ fn space_hungry(command: &Command) -> Option<&'static str> {
         Command::Relocate { dry_run: false, .. } => "relocate",
         Command::MoveSpace { .. } => "move",
         Command::Launch {
-            command: crate::launch::Command::Start,
+            command: launch::Command::Start,
         } => "launch",
         Command::Session {
             action: Some(SessionAction::Launch { dry_run: false, .. }),
             ..
         } => "session launch",
         Command::ResumeLaunch {
-            command: crate::resume::Command::Start,
+            command: resume::Command::Start,
         } => "resume",
         Command::Account {
             command: AccountCommand::Delete { .. },
@@ -3323,10 +3316,11 @@ pub async fn run(paths: &Paths, command: Command) -> Result<()> {
     }
 }
 async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Value>) -> Result<()> {
+    use external::archiving::Kind;
     let mut command = command;
     resolve_session_args(paths, &mut command)?;
     if let Some(operation) = space_hungry(&command) {
-        crate::disk_space::preflight(paths, operation)?;
+        disk_space::preflight(paths, operation)?;
     }
     note_deliberate_action(paths, &command);
     let lifecycle = lifecycle_subject(paths, &command);
@@ -3358,230 +3352,17 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
         *discarded =
             Some(json!({"discarded_messages":[],"not_discarded":[],"discarded_native_items":[]}));
         if let Ok(s) = catalog::resolve(paths, session, expected_generation) {
-            let discard = crate::messaging::discard_queued(paths, &s.conversation_id);
+            let discard = messaging::discard_queued(paths, &s.conversation_id);
             let scope = external::STOP_DISCARD.scope(s.conversation_id.clone(), discard);
             *discarded = Some(scope.await?);
         }
     }
     let mut result = match command {
-        Command::ResumeLaunch { command } => crate::resume::api(paths, command).await?,
+        Command::ResumeLaunch { command } => resume::api(paths, command).await?,
         Command::Session {
-            action:
-                Some(SessionAction::AddToHerdr {
-                    session,
-                    expected_generation,
-                    herdr_session,
-                    herdr_socket,
-                    space,
-                    new_space,
-                    create_space,
-                    name,
-                }),
+            action: Some(action),
             ..
-        } => {
-            if let Ok(s) = catalog::resolve(paths, &session, &expected_generation)
-                && let Some(reason) =
-                    ops::facts_of(&s.provider).and_then(|f| f.herdr_attach_refusal)
-            {
-                return Err(ops::unsupported(reason));
-            }
-            claude::attach::add_to_herdr(
-                paths,
-                claude::attach::Request {
-                    session: &session,
-                    expected_generation: &expected_generation,
-                    herdr_session: &herdr_session,
-                    herdr_socket: herdr_socket.as_deref(),
-                    space: space.as_deref(),
-                    new_space: new_space.as_deref(),
-                    create_space,
-                    name: name.as_deref(),
-                },
-            )
-            .await?
-        }
-        Command::Session {
-            action: Some(SessionAction::RepairIdentity),
-            ..
-        } => repair_identity(paths)?,
-        Command::Session {
-            action:
-                Some(SessionAction::Resolve {
-                    session,
-                    expected_generation,
-                }),
-            ..
-        } => {
-            let s = catalog::resolve_target(paths, &session)?;
-            if let Some(generation) = &expected_generation {
-                ensure!(s.generation() == *generation, "STALE_TARGET");
-            }
-            let mut row = public_session(s);
-            crate::session_model::annotate(paths, std::slice::from_mut(&mut row));
-            overlay_resolve_snapshot(paths, &mut row, daemon::now());
-            row
-        }
-        Command::Session {
-            action:
-                Some(SessionAction::SetSpace {
-                    session,
-                    expected_generation,
-                    space,
-                    clear,
-                }),
-            ..
-        } => {
-            let s = catalog::resolve(paths, &session, &expected_generation)?;
-            ensure!(
-                !live_in_herdr(&s),
-                "ALREADY_IN_HERDR: the session runs in a HERDR terminal; use `api move-space`"
-            );
-            let space = if clear { None } else { space.as_deref() };
-            public_session(catalog::set_space(
-                paths,
-                &s.id,
-                &expected_generation,
-                space,
-            )?)
-        }
-        Command::Session {
-            action:
-                Some(SessionAction::Compact {
-                    session,
-                    expected_generation,
-                    when_idle,
-                    expires_at,
-                    operation,
-                }),
-            ..
-        } => {
-            ensure!(when_idle, "INVALID_REQUEST: --when-idle is required");
-            crate::messaging::compaction::request(
-                paths,
-                crate::messaging::compaction::Request {
-                    session: &session,
-                    expected_generation: &expected_generation,
-                    expires_at,
-                    operation: operation.as_deref(),
-                },
-            )?
-        }
-        Command::Session {
-            action: Some(SessionAction::CompactStatus { operation, session }),
-            ..
-        } => {
-            crate::messaging::compaction::status(paths, operation.as_deref(), session.as_deref())
-                .await?
-        }
-        Command::Session {
-            action: Some(SessionAction::CompactCancel { operation }),
-            ..
-        } => crate::messaging::compaction::cancel(paths, &operation).await?,
-        Command::Session {
-            action:
-                Some(SessionAction::SetModel {
-                    session,
-                    expected_generation,
-                    model,
-                    effort,
-                    when_idle,
-                    expires_at,
-                    operation,
-                    wait,
-                }),
-            ..
-        } => {
-            use crate::messaging::model_change as mc;
-            let wait = wait.unwrap_or(if when_idle { 0 } else { mc::DEFAULT_WAIT_NOW });
-            ensure!(
-                wait <= mc::MAX_WAIT_SECONDS,
-                "INVALID_ARGUMENT: --wait is at most {} seconds",
-                mc::MAX_WAIT_SECONDS
-            );
-            let v = mc::request_waiting(
-                paths,
-                mc::Request {
-                    session: &session,
-                    expected_generation: &expected_generation,
-                    model: &model,
-                    effort: effort.as_deref(),
-                    when_idle,
-                    expires_at,
-                    operation: operation.as_deref(),
-                },
-                wait,
-            )
-            .await?;
-            if wait > 0 {
-                mc::wait(paths, v["id"].as_str().unwrap_or_default(), wait).await?
-            } else {
-                v
-            }
-        }
-        Command::Session {
-            action: Some(SessionAction::SetModelStatus { operation, session }),
-            ..
-        } => {
-            crate::messaging::model_change::status(paths, operation.as_deref(), session.as_deref())
-                .await?
-        }
-        Command::Session {
-            action: Some(SessionAction::SetModelCancel { operation }),
-            ..
-        } => crate::messaging::model_change::cancel(paths, &operation).await?,
-        Command::Session {
-            action:
-                Some(SessionAction::Launch {
-                    space,
-                    create_space,
-                    name,
-                    account,
-                    model,
-                    effort,
-                    brief_file,
-                    when_ready,
-                    brief_delivery,
-                    directory,
-                    create_directory,
-                    permissions,
-                    herdr_session,
-                    herdr_socket,
-                    request_id,
-                    deadline,
-                    wait,
-                    dry_run,
-                }),
-            ..
-        } => {
-            crate::session_launch::launch(
-                paths,
-                crate::session_launch::Args {
-                    space,
-                    create_space,
-                    name,
-                    account,
-                    model,
-                    effort,
-                    brief_file,
-                    when_ready,
-                    initial_prompt: brief_delivery.as_deref() == Some("initial-prompt"),
-                    directory,
-                    create_directory,
-                    permissions,
-                    herdr_session,
-                    herdr_socket,
-                    request_id,
-                    deadline,
-                    wait,
-                    dry_run,
-                },
-            )
-            .await?
-        }
-        Command::Session {
-            action: Some(SessionAction::LaunchStatus { request_id }),
-            ..
-        } => crate::session_launch::status(paths, &request_id)?,
+        } => session_action(paths, action).await?,
         Command::Session {
             session,
             expected_generation,
@@ -3610,32 +3391,23 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             catalog::placement::project(paths, &catalog::list(paths)?)?
         }
         Command::Version => version_for(paths)?,
-        Command::DiskSpace => crate::disk_space::report(paths),
+        Command::DiskSpace => disk_space::report(paths),
         Command::Archives => external::archiving::list(paths)?,
         Command::Archive { target } if unknown_session(paths, &target.session) => {
             archive_unknown(paths, &target).await?
         }
-        Command::Archive { target } => {
-            queue_and_wait(paths, external::archiving::Kind::Archive, target).await?
-        }
-        Command::RestoreSession { target } => {
-            queue_and_wait(paths, external::archiving::Kind::Restore, target).await?
-        }
-        Command::DeleteSession { target } => {
-            queue_and_wait(paths, external::archiving::Kind::Delete, target).await?
-        }
-        Command::Launch { command } => crate::launch::api(paths, command).await?,
+        Command::Archive { target } => queue_and_wait(paths, Kind::Archive, target).await?,
+        Command::RestoreSession { target } => queue_and_wait(paths, Kind::Restore, target).await?,
+        Command::DeleteSession { target } => queue_and_wait(paths, Kind::Delete, target).await?,
+        Command::Launch { command } => launch::api(paths, command).await?,
         Command::Account { command } => account(paths, command).await?,
         Command::Launcher { command } => launcher(paths, command).await?,
-        Command::Hosted { command } => crate::provider::claude::hosted::api(paths, command).await?,
+        Command::Hosted { command } => provider::claude::hosted::api(paths, command).await?,
         Command::Observe {
             session,
             expected_generation,
             history,
-        } => {
-            crate::messaging::observe_command(paths, &session, &expected_generation, history)
-                .await?
-        }
+        } => messaging::observe_command(paths, &session, &expected_generation, history).await?,
         Command::State {
             watch,
             interval,
@@ -3653,26 +3425,17 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             tokio::time::sleep(Duration::from_secs(interval)).await;
         },
         Command::RecoveryReconcile { message } => {
-            crate::messaging::recovery::reconcile_recovery(paths, &message).await?
+            messaging::recovery::reconcile_recovery(paths, &message).await?
         }
-        Command::RecoveryPlan => {
-            let mut bytes = Vec::new();
-            std::io::stdin().take(32769).read_to_end(&mut bytes)?;
-            ensure!(bytes.len() <= 32768, "INPUT_TOO_LARGE");
-            crate::messaging::recovery::plan(
-                paths,
-                serde_json::from_slice(&bytes).context("INVALID_REQUEST")?,
-            )
-            .await?
-        }
+        Command::RecoveryPlan => messaging::recovery::plan(paths, stdin_json()?).await?,
         Command::TurnTarget {
             session,
             expected_generation,
-        } => crate::messaging::checkpoints::target(paths, &session, &expected_generation).await?,
+        } => messaging::checkpoints::target(paths, &session, &expected_generation).await?,
         Command::SteerTarget {
             session,
             expected_generation,
-        } => crate::messaging::steering_target(paths, &session, &expected_generation).await?,
+        } => messaging::steering_target(paths, &session, &expected_generation).await?,
         Command::Answer {
             session,
             expected_generation,
@@ -3681,73 +3444,42 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
         } => {
             let raw = match answers {
                 Some(raw) => raw,
-                None => {
-                    let mut bytes = Vec::new();
-                    std::io::stdin()
-                        .take(16 * 1024 + 1)
-                        .read_to_end(&mut bytes)?;
-                    String::from_utf8(bytes).context("INVALID_ANSWERS")?
-                }
+                None => String::from_utf8(stdin_take(16 * 1024 + 1)?).context("INVALID_ANSWERS")?,
             };
-            crate::questions::answer(
+            questions::answer(
                 paths,
-                crate::questions::AnswerRequest {
+                questions::AnswerRequest {
                     session,
                     expected_generation,
                     request_id,
-                    answers: crate::questions::parse_answers(&raw)?,
+                    answers: questions::parse_answers(&raw)?,
                 },
             )
             .await?
         }
-        Command::Checkpoints => {
-            let mut bytes = Vec::new();
-            std::io::stdin().take(32769).read_to_end(&mut bytes)?;
-            ensure!(bytes.len() <= 32768, "INPUT_TOO_LARGE");
-            crate::messaging::checkpoints::read(
-                paths,
-                serde_json::from_slice(&bytes).context("INVALID_REQUEST")?,
-            )
-            .await?
-        }
-        Command::Observations => {
-            let mut bytes = Vec::new();
-            std::io::stdin().take(32769).read_to_end(&mut bytes)?;
-            ensure!(bytes.len() <= 32768, "INPUT_TOO_LARGE");
-            crate::messaging::observations(
-                paths,
-                serde_json::from_slice(&bytes).context("INVALID_REQUEST")?,
-            )
-            .await?
-        }
+        Command::Checkpoints => messaging::checkpoints::read(paths, stdin_json()?).await?,
+        Command::Observations => messaging::observations(paths, stdin_json()?).await?,
         Command::Rename {
             session,
             expected_generation,
             name,
         } => {
             inventory(paths).await?;
-            if let Some(provider) =
-                native::of(&catalog::resolve(paths, &session, &expected_generation)?.provider)
-            {
-                // The same path as Codex: a HERDR-attached session renames its tab
-                // (name_source herdr_last_observed); otherwise the catalog label.
-                // Claude applies the label as --name on the next launch/resume; Gemini has no native title.
-                let (renamed, pane_label) =
-                    catalog::names::rename_reported(paths, &session, &expected_generation, &name)
-                        .await?;
-                let mut value = public_session(renamed);
-                value["pane_label"] = json!(pane_label);
+            let native =
+                native::of(&catalog::resolve(paths, &session, &expected_generation)?.provider);
+            // The same path for every provider: a HERDR-attached session renames its tab
+            // (name_source herdr_last_observed); otherwise the catalog label.
+            // Claude applies the label as --name on the next launch/resume; Gemini has no native title.
+            let (renamed, pane_label) =
+                catalog::names::rename_reported(paths, &session, &expected_generation, &name)
+                    .await?;
+            let mut value = public_session(renamed);
+            value["pane_label"] = json!(pane_label);
+            if let Some(provider) = native {
                 value["native_rename"] =
                     json!({"supported":false,"reason":native::label_only(provider)});
-                value
-            } else {
-                let (renamed, pane_label) =
-                    catalog::names::rename_reported(paths, &session, &expected_generation, &name)
-                        .await?;
-                let mut value = public_session(renamed);
-                value["pane_label"] = json!(pane_label);
-                value
             }
+            value
         }
         Command::TurnNotify {
             session,
@@ -3760,7 +3492,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
                 enable != disable,
                 "INVALID_ARGUMENT: pass exactly one of --enable or --disable"
             );
-            crate::turn_notify::set(
+            turn_notify::set(
                 paths,
                 &session,
                 &expected_generation,
@@ -3776,9 +3508,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             crate::claude_idle::start(paths, &session, &expected_generation, notify_session).await?
         }
         Command::Usage { account, cached } => usage_read(paths, account.as_deref(), cached).await?,
-        Command::TurnEvents { after, wait } => {
-            crate::turn_notify::events(paths, after, wait).await?
-        }
+        Command::TurnEvents { after, wait } => turn_notify::events(paths, after, wait).await?,
         Command::Events {
             after,
             wait,
@@ -3786,9 +3516,9 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             kind,
             limit,
         } => {
-            crate::provider::events::read(
+            provider::events::read(
                 paths,
-                crate::provider::events::Query {
+                provider::events::Query {
                     after,
                     wait,
                     session: session.as_deref(),
@@ -3800,9 +3530,9 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
         }
         Command::Hooks { action, account } => match action {
             Some(HooksAction::Install { account: one }) => {
-                crate::provider::hooks::report(paths, one.or(account).as_deref(), true)?
+                provider::hooks::report(paths, one.or(account).as_deref(), true)?
             }
-            None => crate::provider::hooks::report(paths, account.as_deref(), false)?,
+            None => provider::hooks::report(paths, account.as_deref(), false)?,
         },
         Command::AutoStart {
             session,
@@ -3811,20 +3541,19 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             prompt,
             all,
         } => {
-            let mode = crate::auto_recover::Mode::parse(&mode)?;
+            let mode = auto_recover::Mode::parse(&mode)?;
             if all {
                 ensure!(
-                    mode == crate::auto_recover::Mode::Disabled && prompt.is_none(),
+                    mode == auto_recover::Mode::Disabled && prompt.is_none(),
                     "INVALID_ARGUMENT: --all only supports --mode disabled"
                 );
-                crate::auto_recover::disable_all(paths)?
+                auto_recover::disable_all(paths)?
             } else {
                 let (Some(session), Some(expected_generation)) = (session, expected_generation)
                 else {
                     bail!("INVALID_ARGUMENT: --session and --expected-generation are required")
                 };
-                crate::auto_recover::set_mode(paths, &session, &expected_generation, mode, prompt)
-                    .await?
+                auto_recover::set_mode(paths, &session, &expected_generation, mode, prompt).await?
             }
         }
         Command::AutoRecover {
@@ -3838,7 +3567,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
                 enable != disable,
                 "INVALID_ARGUMENT: pass exactly one of --enable or --disable"
             );
-            crate::auto_recover::set(paths, &session, &expected_generation, enable, prompt).await?
+            auto_recover::set(paths, &session, &expected_generation, enable, prompt).await?
         }
         Command::Switch {
             session,
@@ -3848,8 +3577,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
         } if catalog::resolve(paths, &session, &expected_generation)
             .is_ok_and(|s| ops::holds(&s.provider, |f| f.native_account_switch)) =>
         {
-            crate::claude_switch::start(paths, &session, &expected_generation, &to, accept_risks)
-                .await?
+            claude_switch::start(paths, &session, &expected_generation, &to, accept_risks).await?
         }
         Command::Switch {
             session,
@@ -3872,11 +3600,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
                     paths,
                     source,
                     target,
-                    external::MoveOptions {
-                        pause: false,
-                        accept_risks,
-                        ..Default::default()
-                    },
+                    external::MoveOptions::new(false, accept_risks, false),
                     "account",
                 )
                 .await?,
@@ -3919,11 +3643,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
                     paths,
                     source,
                     "",
-                    external::MoveOptions {
-                        pause: false,
-                        accept_risks,
-                        ..Default::default()
-                    },
+                    external::MoveOptions::new(false, accept_risks, false),
                     "restart",
                 )
                 .await?,
@@ -3947,11 +3667,11 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             expected_generation,
             ..
         } if catalog::resolve(paths, &session, &expected_generation)
-            .is_ok_and(|s| crate::provider::stop_shape::unsupported(&s.provider).is_some()) =>
+            .is_ok_and(|s| provider::stop_shape::unsupported(&s.provider).is_some()) =>
         {
             let s = catalog::resolve(paths, &session, &expected_generation)?;
-            let reason = crate::provider::stop_shape::unsupported(&s.provider).unwrap_or_default();
-            return Err(crate::provider::stop_shape::Unsupported(reason).into());
+            let reason = provider::stop_shape::unsupported(&s.provider).unwrap_or_default();
+            return Err(provider::stop_shape::Unsupported(reason).into());
         }
         Command::Stop {
             session,
@@ -4012,10 +3732,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
                             paths,
                             source,
                             "",
-                            external::MoveOptions {
-                                close_pane: !keep_pane,
-                                ..Default::default()
-                            },
+                            external::MoveOptions::new(false, false, !keep_pane),
                             "terminate",
                         )
                         .await?,
@@ -4039,7 +3756,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
                     v["interrupted_turn"] = json!(interrupted);
                     v["process_start"] = json!(start);
                     v["signal"] = json!((v["phase"] == "complete").then_some("SIGTERM"));
-                    crate::provider::stop_shape::shape(v, &s)
+                    provider::stop_shape::shape(v, &s)
                 }
             }
         }
@@ -4051,69 +3768,39 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             new_space,
             name,
             create_space,
-        } if catalog::resolve(paths, &session, &expected_generation)
-            .is_ok_and(|s| native::of(&s.provider).is_some()) =>
-        {
-            let (s, observation) = native_selected(paths, &session, &expected_generation)?;
-            native::ensure_resumable(&s, &observation)?;
-            crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
-            let directory = native::resume_directory(&s, &observation)?;
-            let account = format!("{}:{}", s.provider, s.account);
-            resume_into(
-                paths,
-                s,
-                &expected_generation,
-                &herdr_session,
-                &account,
-                ResumeTarget {
-                    space: space.as_deref(),
-                    new_space: new_space.as_deref(),
-                    create_space,
-                    name: name.as_deref(),
-                    owner: None,
-                },
-                &directory,
-            )
-            .await?
-        }
-        Command::Resume {
-            session,
-            expected_generation,
-            herdr_session,
-            space,
-            new_space,
-            name,
-            create_space,
         } => {
-            let (s, source) = selected(paths, &session, &expected_generation).await?;
-            ensure!(
-                source.inactive && s.attachment.is_none(),
-                "SESSION_ALREADY_RUNNING"
-            );
-            crate::lifecycle::ensure_available(paths, &s.conversation_id, None)?;
-            ensure!(source.block_reason.is_none(), "SESSION_STATE_UNVERIFIED");
-            ensure!(
-                !matches!(s.account.as_str(), "external" | "unknown"),
-                "ACCOUNT_UNAVAILABLE"
-            );
-            let directory = resume_cwd(&source.cwd)?;
-            let account = s.account.clone();
-            resume_into(
-                paths,
-                s,
-                &expected_generation,
-                &herdr_session,
-                &account,
-                ResumeTarget {
-                    space: space.as_deref(),
-                    new_space: new_space.as_deref(),
-                    create_space,
-                    name: name.as_deref(),
-                    owner: None,
-                },
-                &directory,
-            )
-            .await?
+            let (account, s, directory) = if catalog::resolve(paths, &session, &expected_generation)
+                .is_ok_and(|s| native::of(&s.provider).is_some())
+            {
+                let (s, observation) = native_selected(paths, &session, &expected_generation)?;
+                native::ensure_resumable(&s, &observation)?;
+                messaging::headless::ensure_idle(paths, &s.conversation_id)?;
+                let directory =
+                    std::path::PathBuf::from(native::resume_directory(&s, &observation)?);
+                (format!("{}:{}", s.provider, s.account), s, directory)
+            } else {
+                let (s, source) = selected(paths, &session, &expected_generation).await?;
+                ensure!(
+                    source.inactive && s.attachment.is_none(),
+                    "SESSION_ALREADY_RUNNING"
+                );
+                crate::lifecycle::ensure_available(paths, &s.conversation_id, None)?;
+                ensure!(source.block_reason.is_none(), "SESSION_STATE_UNVERIFIED");
+                ensure!(
+                    !matches!(s.account.as_str(), "external" | "unknown"),
+                    "ACCOUNT_UNAVAILABLE"
+                );
+                (s.account.clone(), s, resume_cwd(&source.cwd)?)
+            };
+            let target = ResumeTarget {
+                space: space.as_deref(),
+                new_space: new_space.as_deref(),
+                create_space,
+                name: name.as_deref(),
+                owner: None,
+            };
+            let (generation, host) = (&expected_generation, &herdr_session);
+            resume_into(paths, s, generation, host, &account, target, &directory).await?
         }
         Command::Spaces {
             session,
@@ -4144,46 +3831,44 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             json!({"id":id,"response_recorded":true})
         }
         Command::AbandonOperation { operation, confirm } => {
-            if crate::auto_recover::exists(paths, &operation) {
-                crate::auto_recover::abandon(paths, &operation, &confirm)?
-            } else if crate::claude_switch::exists(paths, &operation) {
-                crate::claude_switch::abandon(paths, &operation, &confirm)?
-            } else if crate::account_rename::exists(paths, &operation) {
-                crate::account_rename::abandon(paths, &operation, &confirm)?
-            } else if crate::launch::status(paths, &operation).is_ok() {
-                crate::launch::abandon(paths, &operation, &confirm).await?
+            if auto_recover::exists(paths, &operation) {
+                auto_recover::abandon(paths, &operation, &confirm)?
+            } else if claude_switch::exists(paths, &operation) {
+                claude_switch::abandon(paths, &operation, &confirm)?
+            } else if account_rename::exists(paths, &operation) {
+                account_rename::abandon(paths, &operation, &confirm)?
+            } else if launch::status(paths, &operation).is_ok() {
+                launch::abandon(paths, &operation, &confirm).await?
             } else {
-                crate::resume::abandon(paths, &operation, &confirm).await?
+                resume::abandon(paths, &operation, &confirm).await?
             }
         }
-        Command::CancelOperation { operation: id }
-            if crate::messaging::compaction::exists(paths, &id) =>
-        {
-            crate::messaging::compaction::cancel(paths, &id).await?
+        Command::CancelOperation { operation: id } if messaging::compaction::exists(paths, &id) => {
+            messaging::compaction::cancel(paths, &id).await?
         }
         Command::CancelOperation { operation: id }
-            if crate::messaging::model_change::exists(paths, &id) =>
+            if messaging::model_change::exists(paths, &id) =>
         {
-            crate::messaging::model_change::cancel(paths, &id).await?
+            messaging::model_change::cancel(paths, &id).await?
         }
-        Command::CancelOperation { operation: id } if crate::session_launch::exists(paths, &id) => {
-            crate::session_launch::cancel(paths, &id)?
+        Command::CancelOperation { operation: id } if session_launch::exists(paths, &id) => {
+            session_launch::cancel(paths, &id)?
         }
         Command::CancelOperation { operation: id } => {
             managed_operation(paths, &id)?;
             external::cancel_move(paths, &id)?;
             json!({"id":id,"cancellation_requested":true})
         }
-        Command::Recover { operation: id } if crate::auto_recover::exists(paths, &id) => {
-            crate::auto_recover::recover(paths, &id).await?
+        Command::Recover { operation: id } if auto_recover::exists(paths, &id) => {
+            auto_recover::recover(paths, &id).await?
         }
-        Command::Recover { operation: id } if crate::claude_switch::exists(paths, &id) => {
-            crate::claude_switch::recover(paths, &id).await?
+        Command::Recover { operation: id } if claude_switch::exists(paths, &id) => {
+            claude_switch::recover(paths, &id).await?
         }
         Command::Recover { operation: id } if external::spaces::exists(paths, &id) => {
             external::spaces::recover(paths, &id)?
         }
-        Command::Recover { operation: id } if crate::account_rename::exists(paths, &id) => {
+        Command::Recover { operation: id } if account_rename::exists(paths, &id) => {
             daemon::ensure_started(paths).await?;
             daemon::call(
                 paths,
@@ -4192,29 +3877,20 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             )
             .await?
         }
-        Command::Recover { operation: id }
-            if crate::account_deletion::status(paths, &id).is_ok() =>
-        {
-            crate::account_deletion::recover(paths, &id)?
+        Command::Recover { operation: id } if account_deletion::status(paths, &id).is_ok() => {
+            account_deletion::recover(paths, &id)?
         }
         Command::Recover { operation: id } => {
             managed_operation(paths, &id)?;
             operation(paths, external::recover(paths, &id).await?)?
         }
         Command::Send => {
-            let mut bytes = Vec::new();
-            std::io::stdin().take(32769).read_to_end(&mut bytes)?;
-            ensure!(bytes.len() <= 32768, "INPUT_TOO_LARGE");
-            let env_component =
-                std::env::var(crate::provider::claude::native_peer::COMPONENT_ENV).ok();
-            crate::messaging::headless::dispatch_as(paths, &bytes, env_component).await?
+            let bytes = stdin_request()?;
+            let env_component = std::env::var(provider::claude::native_peer::COMPONENT_ENV).ok();
+            messaging::headless::dispatch_as(paths, &bytes, env_component).await?
         }
-        Command::Receipt { message } => {
-            crate::messaging::receipt_public(paths, &message, false).await?
-        }
-        Command::Cancel { message } => {
-            crate::messaging::receipt_public(paths, &message, true).await?
-        }
+        Command::Receipt { message } => messaging::receipt_public(paths, &message, false).await?,
+        Command::Cancel { message } => messaging::receipt_public(paths, &message, true).await?,
     };
     if let Some(Value::Object(map)) = discarded.as_ref() {
         for (k, v) in map {
@@ -4222,7 +3898,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
         }
     }
     if let Some(s) = disable_auto_start_of {
-        result["auto_start"] = crate::auto_recover::disable(paths, &s)?["auto_start"].take();
+        result["auto_start"] = auto_recover::disable(paths, &s)?["auto_start"].take();
     }
     if let Some(subject) = lifecycle {
         // A lifecycle operation changes the generation: the next `state --cached` and the
@@ -4251,6 +3927,189 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
     print(result)
 }
 
+/// `api session <action>`.
+async fn session_action(paths: &Paths, action: SessionAction) -> Result<Value> {
+    Ok(match action {
+        SessionAction::AddToHerdr {
+            session,
+            expected_generation,
+            herdr_session,
+            herdr_socket,
+            space,
+            new_space,
+            create_space,
+            name,
+        } => {
+            if let Ok(s) = catalog::resolve(paths, &session, &expected_generation)
+                && let Some(reason) =
+                    ops::facts_of(&s.provider).and_then(|f| f.herdr_attach_refusal)
+            {
+                return Err(ops::unsupported(reason));
+            }
+            claude::attach::add_to_herdr(
+                paths,
+                claude::attach::Request {
+                    session: &session,
+                    expected_generation: &expected_generation,
+                    herdr_session: &herdr_session,
+                    herdr_socket: herdr_socket.as_deref(),
+                    space: space.as_deref(),
+                    new_space: new_space.as_deref(),
+                    create_space,
+                    name: name.as_deref(),
+                },
+            )
+            .await?
+        }
+        SessionAction::RepairIdentity => repair_identity(paths)?,
+        SessionAction::Resolve {
+            session,
+            expected_generation,
+        } => {
+            let s = catalog::resolve_target(paths, &session)?;
+            if let Some(generation) = &expected_generation {
+                ensure!(s.generation() == *generation, "STALE_TARGET");
+            }
+            let mut row = public_session(s);
+            crate::session_model::annotate(paths, std::slice::from_mut(&mut row));
+            overlay_resolve_snapshot(paths, &mut row, daemon::now());
+            row
+        }
+        SessionAction::SetSpace {
+            session,
+            expected_generation,
+            space,
+            clear,
+        } => {
+            let s = catalog::resolve(paths, &session, &expected_generation)?;
+            ensure!(
+                !live_in_herdr(&s),
+                "ALREADY_IN_HERDR: the session runs in a HERDR terminal; use `api move-space`"
+            );
+            let space = if clear { None } else { space.as_deref() };
+            public_session(catalog::set_space(
+                paths,
+                &s.id,
+                &expected_generation,
+                space,
+            )?)
+        }
+        SessionAction::Compact {
+            session,
+            expected_generation,
+            when_idle,
+            expires_at,
+            operation,
+        } => {
+            ensure!(when_idle, "INVALID_REQUEST: --when-idle is required");
+            messaging::compaction::request(
+                paths,
+                messaging::compaction::Request {
+                    session: &session,
+                    expected_generation: &expected_generation,
+                    expires_at,
+                    operation: operation.as_deref(),
+                },
+            )?
+        }
+        SessionAction::CompactStatus { operation, session } => {
+            messaging::compaction::status(paths, operation.as_deref(), session.as_deref()).await?
+        }
+        SessionAction::CompactCancel { operation } => {
+            messaging::compaction::cancel(paths, &operation).await?
+        }
+        SessionAction::SetModel {
+            session,
+            expected_generation,
+            model,
+            effort,
+            when_idle,
+            expires_at,
+            operation,
+            wait,
+        } => {
+            use messaging::model_change as mc;
+            let wait = wait.unwrap_or(if when_idle { 0 } else { mc::DEFAULT_WAIT_NOW });
+            ensure!(
+                wait <= mc::MAX_WAIT_SECONDS,
+                "INVALID_ARGUMENT: --wait is at most {} seconds",
+                mc::MAX_WAIT_SECONDS
+            );
+            let v = mc::request_waiting(
+                paths,
+                mc::Request {
+                    session: &session,
+                    expected_generation: &expected_generation,
+                    model: &model,
+                    effort: effort.as_deref(),
+                    when_idle,
+                    expires_at,
+                    operation: operation.as_deref(),
+                },
+                wait,
+            )
+            .await?;
+            if wait > 0 {
+                mc::wait(paths, v["id"].as_str().unwrap_or_default(), wait).await?
+            } else {
+                v
+            }
+        }
+        SessionAction::SetModelStatus { operation, session } => {
+            messaging::model_change::status(paths, operation.as_deref(), session.as_deref()).await?
+        }
+        SessionAction::SetModelCancel { operation } => {
+            messaging::model_change::cancel(paths, &operation).await?
+        }
+        SessionAction::Launch {
+            space,
+            create_space,
+            name,
+            account,
+            model,
+            effort,
+            brief_file,
+            when_ready,
+            brief_delivery,
+            directory,
+            create_directory,
+            permissions,
+            herdr_session,
+            herdr_socket,
+            request_id,
+            deadline,
+            wait,
+            dry_run,
+        } => {
+            session_launch::launch(
+                paths,
+                session_launch::Args {
+                    space,
+                    create_space,
+                    name,
+                    account,
+                    model,
+                    effort,
+                    brief_file,
+                    when_ready,
+                    initial_prompt: brief_delivery.as_deref() == Some("initial-prompt"),
+                    directory,
+                    create_directory,
+                    permissions,
+                    herdr_session,
+                    herdr_socket,
+                    request_id,
+                    deadline,
+                    wait,
+                    dry_run,
+                },
+            )
+            .await?
+        }
+        SessionAction::LaunchStatus { request_id } => session_launch::status(paths, &request_id)?,
+    })
+}
+
 /// Commands that start, stop, move or switch a session. `Some(Some(id))` names the session
 /// whose new generation joins the result.
 fn lifecycle_subject(paths: &Paths, command: &Command) -> Option<Option<String>> {
@@ -4262,15 +4121,11 @@ fn lifecycle_subject(paths: &Paths, command: &Command) -> Option<Option<String>>
         // Status, list and validate only read receipts: no lifecycle refresh (1.46.6).
         Command::Launch {
             command:
-                crate::launch::Command::List
-                | crate::launch::Command::Validate
-                | crate::launch::Command::Status { .. },
+                launch::Command::List | launch::Command::Validate | launch::Command::Status { .. },
         }
         | Command::ResumeLaunch {
             command:
-                crate::resume::Command::List
-                | crate::resume::Command::Validate
-                | crate::resume::Command::Status { .. },
+                resume::Command::List | resume::Command::Validate | resume::Command::Status { .. },
         } => None,
         Command::MoveSpace { .. } | Command::ResumeLaunch { .. } | Command::Launch { .. } => {
             Some(None)
@@ -4318,7 +4173,7 @@ pub async fn refresh_active_snapshot(paths: &Paths) {
 pub(crate) fn refresh_active_snapshot_detached(paths: &Paths) {
     let log = paths
         .root
-        .join(format!("{}/snapshot-refresh.log", crate::layout::LOGS));
+        .join(format!("{}/snapshot-refresh.log", layout::LOGS));
     if let Ok(mut worker) = crate::background::self_worker(paths, &log, &["snapshot-refresh"]) {
         let _ = worker.spawn_reaped();
     }
@@ -4355,12 +4210,12 @@ fn note_deliberate_action(paths: &Paths, command: &Command) {
             ..
         } => {
             if let Some(s) = resolve(session, expected_generation) {
-                crate::auto_recover::explicit_stop(paths, &s.id);
+                auto_recover::explicit_stop(paths, &s.id);
             }
         }
         Command::Archive { target } | Command::DeleteSession { target } => {
             if let Some(s) = resolve(&target.session, &target.expected_generation) {
-                crate::auto_recover::retire(paths, &s.id);
+                auto_recover::retire(paths, &s.id);
             }
         }
         Command::Switch {
@@ -4374,7 +4229,7 @@ fn note_deliberate_action(paths: &Paths, command: &Command) {
             ..
         } => {
             if let Some(s) = resolve(session, expected_generation) {
-                crate::auto_recover::suppress(paths, &s.id);
+                auto_recover::suppress(paths, &s.id);
             }
         }
         _ => {}
@@ -4549,10 +4404,7 @@ async fn resume_into(
 }
 /// Contract 1.66.0: `api resume-launch` of a provider that resumes natively runs the
 /// `api resume --herdr-session` path with the request's server, Space and name.
-pub(crate) async fn resume_launch_native(
-    paths: &Paths,
-    r: &crate::resume::Request,
-) -> Result<Value> {
+pub(crate) async fn resume_launch_native(paths: &Paths, r: &resume::Request) -> Result<Value> {
     let (s, observation) = native_selected(paths, &r.session_id, &r.expected_generation)?;
     // Contract 1.66.2: no history: started again under the same id (`resumed_from`).
     if native::without_history(&s, &observation) {
@@ -4560,12 +4412,12 @@ pub(crate) async fn resume_launch_native(
     } else {
         native::ensure_resumable(&s, &observation)?;
     }
-    crate::messaging::headless::ensure_idle(paths, &s.conversation_id)?;
+    messaging::headless::ensure_idle(paths, &s.conversation_id)?;
     let directory = native::resume_directory(&s, &observation)?;
     let account = format!("{}:{}", s.provider, s.account);
     let (space, new_space) = match &r.space {
-        crate::launch::Space::Existing { id } => (Some(id.as_str()), None),
-        crate::launch::Space::New { label } => (None, Some(label.as_str())),
+        launch::Space::Existing { id } => (Some(id.as_str()), None),
+        launch::Space::New { label } => (None, Some(label.as_str())),
     };
     let target = ResumeTarget {
         space,
@@ -4647,10 +4499,10 @@ async fn stop_antigravity(
     let _lock = crate::external::conversation_lock(paths, &s.conversation_id)?;
     let (home, conversation) = (account.home.clone(), s.conversation_id.clone());
     let stopped = tokio::task::spawn_blocking(move || {
-        crate::provider::antigravity::stop(
+        provider::antigravity::stop(
             &home,
             &conversation,
-            std::time::Duration::from_secs(crate::provider::antigravity::STOP_SECONDS),
+            std::time::Duration::from_secs(provider::antigravity::STOP_SECONDS),
         )
     })
     .await??;
@@ -4661,7 +4513,7 @@ async fn stop_antigravity(
         .or(s.attachment.as_ref())
         .map(|a| a.target.clone());
     let (pane_closed, pane_close_reason) = close_stopped_pane(paths, keep_pane, target).await?;
-    Ok(crate::provider::stop_shape::shape(
+    Ok(provider::stop_shape::shape(
         json!({"id":uuid::Uuid::new_v4().to_string(),"source_session_id":s.id,"kind":"terminate","phase":"complete",
         "detail":"Antigravity received SIGTERM, flushed its conversation and exited; the session is saved and can be resumed.",
         "pane_closed":pane_closed,"pane_close_reason":pane_close_reason,
@@ -4705,7 +4557,7 @@ async fn stop_claude(paths: &Paths, id: &str, generation: &str, keep_pane: bool)
     ensure!(
         !claude::hosted::live(paths, &s.conversation_id),
         "{}",
-        crate::messaging::claude_steer::HOSTED_STOP
+        messaging::claude_steer::HOSTED_STOP
     );
     let (s, observation) = native_selected(paths, id, generation)?;
     match observation.availability {
@@ -4745,7 +4597,7 @@ async fn stop_claude(paths: &Paths, id: &str, generation: &str, keep_pane: bool)
         .or(s.attachment.as_ref())
         .map(|a| a.target.clone());
     let (pane_closed, pane_close_reason) = close_stopped_pane(paths, keep_pane, target).await?;
-    Ok(crate::provider::stop_shape::shape(
+    Ok(provider::stop_shape::shape(
         json!({"id":uuid::Uuid::new_v4().to_string(),"source_session_id":s.id,"kind":"terminate","phase":"complete",
         "detail":"Claude Code received SIGTERM and exited; its transcript is saved and the session can be resumed.",
         "pane_closed":pane_closed,"pane_close_reason":pane_close_reason,
@@ -4780,8 +4632,8 @@ async fn already_stopped(paths: &Paths, s: &catalog::Session, keep_pane: bool) -
     let archived = external::archiving::is_archived(paths, &s.id)?;
     // The pane of the newest resume-launch, else of the launch, else a recorded pane whose
     // process is gone.
-    let pane = crate::resume::resumed_pane(paths, &s.id)
-        .or_else(|| crate::launch::launched_pane(paths, &s.id))
+    let pane = resume::resumed_pane(paths, &s.id)
+        .or_else(|| launch::launched_pane(paths, &s.id))
         .or_else(|| {
             s.attachment
                 .as_ref()
@@ -4795,7 +4647,7 @@ async fn already_stopped(paths: &Paths, s: &catalog::Session, keep_pane: bool) -
         v["archived"] = json!(true);
         v["detail"] = json!("The session is archived; nothing of it runs and nothing was stopped.");
     }
-    Ok(crate::provider::stop_shape::shape(v, s))
+    Ok(provider::stop_shape::shape(v, s))
 }
 /// Contract 1.66.2: the catalog session `target` names, when it is archived.
 fn archived_session(paths: &Paths, target: &str) -> Option<catalog::Session> {
@@ -4816,16 +4668,16 @@ const NOT_FOUND_DETAIL: &str = "Sessionsation knows no session with this id; not
 /// `SESSION_LAUNCHING` (retryable) instead.
 async fn stop_unknown(paths: &Paths, id: &str, keep_pane: bool) -> Result<Value> {
     ensure!(
-        crate::launch::pending(paths, id).is_none(),
+        launch::pending(paths, id).is_none(),
         "{}",
-        crate::launch::SESSION_LAUNCHING
+        launch::SESSION_LAUNCHING
     );
-    let pane = crate::launch::launched_pane(paths, id);
+    let pane = launch::launched_pane(paths, id);
     let (pane_closed, pane_close_reason) = close_stopped_pane(paths, keep_pane, pane).await?;
     let mut v = json!({"kind":"terminate","session_id":id,"source_session_id":id,"phase":"complete",
         "detail":NOT_FOUND_DETAIL,"already_stopped":true,"not_found":true,"interrupted_turn":false,
         "pane_closed":pane_closed,"pane_close_reason":pane_close_reason});
-    for k in crate::provider::stop_shape::KEYS {
+    for k in provider::stop_shape::KEYS {
         if v.get(k).is_none() {
             v[k] = Value::Null;
         }
@@ -4838,11 +4690,11 @@ async fn stop_unknown(paths: &Paths, id: &str, keep_pane: bool) -> Result<Value>
 async fn archive_unknown(paths: &Paths, t: &external::archiving::Target) -> Result<Value> {
     ensure!(t.confirm == t.session, "CONFIRMATION_REQUIRED");
     ensure!(
-        crate::launch::pending(paths, &t.session).is_none(),
+        launch::pending(paths, &t.session).is_none(),
         "{}",
-        crate::launch::SESSION_LAUNCHING
+        launch::SESSION_LAUNCHING
     );
-    let pane = crate::launch::launched_pane(paths, &t.session);
+    let pane = launch::launched_pane(paths, &t.session);
     let (pane_closed, pane_close_reason) = close_stopped_pane(paths, false, pane).await?;
     Ok(
         json!({"id":t.request_id,"kind":"archive","session_id":t.session,"phase":"complete",
@@ -4871,7 +4723,7 @@ async fn stop_preflight(
             let q = c.request("thread/queue/list", list.clone()).await?;
             let items = q["data"].as_array().cloned().unwrap_or_default();
             let mut out = vec![];
-            for item in crate::messaging::discard_items(paths, &items, d).await {
+            for item in messaging::discard_items(paths, &items, d).await {
                 let done = c
                     .request("thread/queue/delete", json!({"threadId":s.thread_id,"queuedSubmissionId":item["id"]}))
                     .await;
@@ -4933,7 +4785,7 @@ fn operation(paths: &Paths, j: external::Job) -> Result<Value> {
         "target_account_id":format!("codex:{}",j.target),"provider_conversation_id":j.source.thread_id,
         "created_at":j.created_at,
         "can_cancel":external::can_cancel_move(&j),
-        "can_recover": crate::background::worker_stopped(&paths.root.join(crate::layout::HANDOFF_JOBS).join(format!("{}.worker-lock", j.id)))? && (j.phase == "failed" || (!matches!(j.phase.as_str(), "complete" | "cancelled" | "recovered") && daemon::now() - j.created_at > 10)),
+        "can_recover": crate::background::worker_stopped(&paths.root.join(layout::HANDOFF_JOBS).join(format!("{}.worker-lock", j.id)))? && (j.phase == "failed" || (!matches!(j.phase.as_str(), "complete" | "cancelled" | "recovered") && daemon::now() - j.created_at > 10)),
         "can_respond":j.phase.starts_with("awaiting_"),
         "non_steering":j.non_steering,
         "pane_closed":j.pane_closed.unwrap_or(false),"pane_close_reason":j.pane_close_reason}),
@@ -4995,7 +4847,7 @@ mod tests;
 /// Contract 1.40.0: agent-originated sends reach live Claude sessions through
 /// Claude Code's cross-session messaging (`delivery:"native"`, `origin:"agent"`).
 fn native_delivery_capability() -> Value {
-    use crate::provider::claude::native_peer as peer;
+    use provider::claude::native_peer as peer;
     json!({"since_contract":"1.40.0","version":1,"providers":["claude"],
         "request_fields":{"origin":["operator","agent"],"delivery":["auto","native","peer_message","terminal_input","hosted_stream_json"]},
         "selection":{"operator_auto":"terminal_input_before_peer_message","agent_auto":"native_then_terminal_input",

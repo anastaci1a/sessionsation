@@ -10,15 +10,20 @@ use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sessionsation::{
-    compatibility,
-    config::Config,
-    daemon, external,
+    accounts, alias,
+    api::{self, account_call},
+    catalog, cli_views, compatibility,
+    config::{self, Config},
+    daemon, disk_space,
+    external::{self, MoveOptions},
+    launch, layout, messaging,
     model::State,
     paths::{Paths, atomic_write, private_dir},
     provider::{
         self, AccountRef, ProviderId,
         ops::{self, Enrollment},
     },
+    resume, root_migrate,
     simulation::{self, Input},
     store,
 };
@@ -43,7 +48,7 @@ struct Cli {
         value_enum,
         help = "Permissions for provider processes this command starts: yolo (full access, no prompts) | default (provider prompts); overrides the launch_permissions setting"
     )]
-    permissions: Option<sessionsation::config::LaunchPermissions>,
+    permissions: Option<config::LaunchPermissions>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -121,16 +126,16 @@ enum Commands {
     },
     /// Versioned machine-readable backend contract (JSON/NDJSON).
     Api {
-        #[arg(long, default_value = "1", value_parser=sessionsation::api::parse_api_version)]
+        #[arg(long, default_value = "1", value_parser=api::parse_api_version)]
         api_version: u32,
         #[command(subcommand)]
-        command: sessionsation::api::Command,
+        command: api::Command,
     },
     /// Transport-neutral, attach-only messaging API (JSON).
     #[command(hide = true)]
     Message {
         #[command(subcommand)]
-        command: sessionsation::messaging::Command,
+        command: messaging::Command,
     },
     /// Initialize private state and start the metadata-only supervisor.
     Setup {
@@ -709,7 +714,7 @@ enum ConfigCommand {
 fn main() {
     // Before the runtime starts a thread: no provider, worker or pane command we start resolves
     // tools through the FUSE share (contract 1.67.0).
-    sessionsation::alias::normalize_process_path();
+    alias::normalize_process_path();
     run_main();
 }
 #[tokio::main]
@@ -743,7 +748,7 @@ async fn run_main() {
 }
 async fn run(cli: Cli) -> Result<()> {
     if let Some(mode) = cli.permissions {
-        sessionsation::config::override_launch_permissions(mode);
+        config::override_launch_permissions(mode);
     }
     // Offline simulation deliberately avoids creating a daemon or accessing user state.
     if let Commands::Simulate { scenario } = &cli.command {
@@ -768,7 +773,7 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Layout { .. }
             | Commands::Root { .. }
             | Commands::Api {
-                command: sessionsation::api::Command::Version,
+                command: api::Command::Version,
                 ..
             }
     );
@@ -781,12 +786,12 @@ async fn run(cli: Cli) -> Result<()> {
     };
     match cli.command {
         Commands::Layout { command } => {
-            use sessionsation::layout::migrate;
+            use layout::migrate;
             print_json(&match command {
                 LayoutCommand::Status => migrate::status(&paths.root)?,
                 LayoutCommand::Migrate { backup, dry_run } => {
                     if !dry_run {
-                        sessionsation::disk_space::preflight(&paths, "layout migrate")?;
+                        disk_space::preflight(&paths, "layout migrate")?;
                     }
                     migrate::migrate(&paths.root, &migrate::Options { backup, dry_run })?
                 }
@@ -816,7 +821,7 @@ async fn run(cli: Cli) -> Result<()> {
                         "ACCOUNT_PROVIDER_REQUIRED: shared state applies to claude:<name> accounts"
                     );
                     if !dry_run {
-                        sessionsation::disk_space::preflight(&paths, "shared migrate")?;
+                        disk_space::preflight(&paths, "shared migrate")?;
                     }
                     let result = shared::migrate::migrate(
                         &paths,
@@ -839,13 +844,13 @@ async fn run(cli: Cli) -> Result<()> {
             })?;
         }
         Commands::ConversationWorker { request_id } => {
-            sessionsation::external::archiving::worker(&paths, &request_id).await?;
+            external::archiving::worker(&paths, &request_id).await?;
         }
         Commands::ClaudeSwitchWorker { request_id } => {
             sessionsation::claude_switch::worker(&paths, &request_id).await?;
         }
         Commands::RootRekeyWorker { session_id } => {
-            sessionsation::root_migrate::session::worker(&paths, &session_id).await?;
+            root_migrate::session::worker(&paths, &session_id).await?;
         }
         Commands::Root { command } => {
             use sessionsation::root_migrate as root;
@@ -860,7 +865,7 @@ async fn run(cli: Cli) -> Result<()> {
                     ..
                 } => {
                     if !dry_run {
-                        sessionsation::disk_space::preflight(&paths, "root migrate")?;
+                        disk_space::preflight(&paths, "root migrate")?;
                     }
                     let v = root::migrate(
                         &paths,
@@ -930,212 +935,67 @@ async fn run(cli: Cli) -> Result<()> {
             println!("{}", serde_json::to_string(&outcomes)?);
         }
         Commands::ClaudeDeliveryWorker { message_id } => {
-            sessionsation::messaging::headless::worker(&paths, &message_id).await?
+            messaging::headless::worker(&paths, &message_id).await?
         }
         Commands::ClaudeHostWorker { conversation_id } => {
-            sessionsation::provider::claude::hosted::worker(&paths, &conversation_id).await?
+            provider::claude::hosted::worker(&paths, &conversation_id).await?
         }
         Commands::ClaudeIdleWorker { id } => {
             sessionsation::claude_idle::worker(&paths, &id).await?
         }
         Commands::ClaudePeerWorker { message_id } => {
-            sessionsation::messaging::claude_steer::peer_worker(&paths, &message_id).await?
+            messaging::claude_steer::peer_worker(&paths, &message_id).await?
         }
         Commands::ClaudeTerminalWorker { message_id } => {
-            sessionsation::messaging::claude_steer::terminal::worker(&paths, &message_id).await?
+            messaging::claude_steer::terminal::worker(&paths, &message_id).await?
         }
         Commands::GeminiTerminalWorker { message_id } => {
-            sessionsation::messaging::claude_steer::gemini::worker(&paths, &message_id).await?
+            messaging::claude_steer::gemini::worker(&paths, &message_id).await?
         }
         Commands::AntigravityTerminalWorker { message_id } => {
-            sessionsation::messaging::claude_steer::antigravity::worker(&paths, &message_id).await?
+            messaging::claude_steer::antigravity::worker(&paths, &message_id).await?
         }
         Commands::ModelChangeWorker { id } => {
-            sessionsation::messaging::model_change::claude::worker(&paths, &id).await?
+            messaging::model_change::claude::worker(&paths, &id).await?
         }
         Commands::View { session, once } => {
-            sessionsation::provider::claude::hosted::view(&paths, &session, once).await?
+            provider::claude::hosted::view(&paths, &session, once).await?
         }
         Commands::TakeOver { session } => {
-            sessionsation::provider::claude::hosted::take_over(&paths, &session).await?
+            provider::claude::hosted::take_over(&paths, &session).await?
         }
         Commands::AccountDeleteWorker { request_id } => {
             sessionsation::account_deletion::worker(&paths, &request_id).await?
         }
         Commands::MessageRecoveryWorker { message_id } => {
-            sessionsation::messaging::recovery::worker(&paths, &message_id).await?
+            messaging::recovery::worker(&paths, &message_id).await?
         }
         Commands::MessageRecoveryRun { message_id } => {
-            sessionsation::messaging::recovery::run(&paths, &message_id).await?
+            messaging::recovery::run(&paths, &message_id).await?
         }
-        Commands::SpaceMoveWorker { request_id } => {
-            sessionsation::external::spaces::worker(&paths, &request_id)?
-        }
-        Commands::ResumeWorker { request_id } => {
-            sessionsation::resume::worker(&paths, &request_id).await?
-        }
+        Commands::SpaceMoveWorker { request_id } => external::spaces::worker(&paths, &request_id)?,
+        Commands::ResumeWorker { request_id } => resume::worker(&paths, &request_id).await?,
         Commands::ClaudeAttach {
             session,
             expected_generation,
-        } => sessionsation::provider::claude::attach::exec_attach(
-            &paths,
-            &session,
-            &expected_generation,
-        )?,
-        Commands::ResumeRun { request_id } => {
-            sessionsation::resume::run(&paths, &request_id).await?
-        }
-        Commands::SnapshotRefresh => sessionsation::api::refresh_active_snapshot(&paths).await,
-        Commands::LaunchWorker { request_id } => {
-            sessionsation::launch::worker(&paths, &request_id).await?
-        }
+        } => provider::claude::attach::exec_attach(&paths, &session, &expected_generation)?,
+        Commands::ResumeRun { request_id } => resume::run(&paths, &request_id).await?,
+        Commands::SnapshotRefresh => api::refresh_active_snapshot(&paths).await,
+        Commands::LaunchWorker { request_id } => launch::worker(&paths, &request_id).await?,
         Commands::LaunchRun { request_id } => {
             // Contract 1.49.1: never return to the pane's shell silently.
-            if let Err(error) = sessionsation::launch::run(&paths, &request_id).await {
-                eprintln!("{}", sessionsation::launch::failure_line(&error));
+            if let Err(error) = launch::run(&paths, &request_id).await {
+                eprintln!("{}", launch::failure_line(&error));
                 std::process::exit(1);
             }
         }
-        Commands::Api { command, .. } => sessionsation::api::run(&paths, command).await?,
+        Commands::Api { command, .. } => api::run(&paths, command).await?,
         Commands::Session { session } => {
-            print_json(&sessionsation::cli_views::session(&paths, &session).await?)?;
+            print_json(&cli_views::session(&paths, &session).await?)?;
         }
-        Commands::Account {
-            command: AccountCommand::Reorder { name, position },
-        } => {
-            let account = resolve_account(&paths, &name)?;
-            daemon::ensure_started(&paths).await?;
-            let value = daemon::call(
-                &paths,
-                "account/reorder",
-                json!({"name":account.name,"provider":account.provider,"position":position}),
-            )
-            .await?;
-            print_json(&value)?;
-        }
-        Commands::Account {
-            command:
-                AccountCommand::LiveSteering {
-                    name,
-                    enable,
-                    disable,
-                },
-        } => {
-            let account = resolve_account(&paths, &name)?;
-            daemon::ensure_started(&paths).await?;
-            let value = daemon::call(
-                &paths,
-                "account/live-steering",
-                json!({"name":account.name,"provider":account.provider,"enable":if enable {Some(true)} else if disable {Some(false)} else {None}}),
-            )
-            .await?;
-            print_json(&value)?;
-        }
-        Commands::Account {
-            command:
-                AccountCommand::Auth {
-                    name,
-                    mode,
-                    key_stdin,
-                },
-        } => {
-            let account = resolve_account(&paths, &name)?;
-            let key = if key_stdin {
-                use std::io::Read;
-                let mut text = String::new();
-                std::io::stdin()
-                    .take(4097)
-                    .read_to_string(&mut text)
-                    .map_err(|_| anyhow::anyhow!("INVALID_API_KEY_FORMAT: stdin is not text"))?;
-                anyhow::ensure!(
-                    text.len() <= 4096,
-                    "INVALID_API_KEY_FORMAT: stdin is too large"
-                );
-                Some(sessionsation::provider::gemini::auth_mode::ApiKey::new(
-                    &text,
-                )?)
-            } else {
-                None
-            };
-            print_json(
-                &sessionsation::api::gemini_auth(&paths, &account, mode.as_deref(), key).await?,
-            )?;
-        }
-        Commands::Account {
-            command: AccountCommand::BypassWarning { name, skip, show },
-        } => {
-            let account = resolve_account(&paths, &name)?;
-            daemon::ensure_started(&paths).await?;
-            let value = daemon::call(
-                &paths,
-                "account/bypass-warning",
-                json!({"name":account.name,"provider":account.provider,"skip":if skip {Some(true)} else if show {Some(false)} else {None}}),
-            )
-            .await?;
-            print_json(&value)?;
-        }
-        Commands::Account {
-            command: AccountCommand::Logout { name },
-        } => {
-            let account = resolve_account(&paths, &name)?;
-            sessionsation::accounts::ensure_available(&paths, account.provider, &account.name)?;
-            daemon::ensure_started(&paths).await?;
-            let value = daemon::call(
-                &paths,
-                "account/logout",
-                json!({"name":account.name,"provider":account.provider}),
-            )
-            .await?;
-            println!(
-                "{} logged out ({}).\nLog in again: sessionsation account login {}",
-                account.id(),
-                value["method"].as_str().unwrap_or("provider logout"),
-                account.id()
-            );
-        }
-        Commands::Account {
-            command: AccountCommand::Show { name },
-        } => {
-            let account = resolve_account(&paths, &name)?;
-            let status = daemon::call(&paths, "status", json!({})).await?;
-            print_json(&sessionsation::cli_views::account(
-                &status,
-                account.provider.as_str(),
-                &account.name,
-            )?)?;
-        }
-        Commands::Account {
-            command:
-                AccountCommand::History {
-                    name,
-                    range,
-                    hours,
-                    start,
-                    end,
-                    step,
-                },
-        } => {
-            let at = daemon::now();
-            let hours = hours.unwrap_or(if range.as_deref() == Some("weekly") {
-                168
-            } else {
-                12
-            });
-            let (start, end, step) =
-                sessionsation::cli_views::history_range(at, hours, start, end, step)?;
-            let account = resolve_account(&paths, &name)?;
-            let history = daemon::call(
-                &paths,
-                "account/history",
-                json!({"name":account.name,"provider":account.provider,"start":start,"end":end,"step":step}),
-            )
-            .await?;
-            print_json(
-                &json!({"schema_version":1,"observed_at":at,"range":{"start":start,"end":end,"step":step},"history":history}),
-            )?;
-        }
+        Commands::Account { command } => account(paths, command).await?,
         Commands::Message { command } => {
-            if !sessionsation::messaging::run(&paths, command).await {
+            if !messaging::run(&paths, command).await {
                 std::process::exit(1);
             }
         }
@@ -1278,219 +1138,6 @@ async fn run(cli: Cli) -> Result<()> {
             }
             print_json(&daemon::call(&paths, "account/thresholds", params).await?)?;
         }
-        Commands::Account {
-            command: AccountCommand::Login { name },
-        } if provider::native::is_native(resolve_account(&paths, &name)?.provider) => {
-            // Interactive official login in this terminal, with the account's
-            // isolated environment. Credentials never pass through us.
-            let resolved = resolve_account(&paths, &name)?;
-            let account = provider::native::account(&paths, resolved.provider, &resolved.name)?;
-            let config = store::load_config(&paths)?;
-            if matches!(
-                ops::facts(resolved.provider).enrollment,
-                Enrollment::ClaudeHome
-            ) && sessionsation::layout::same_home(
-                &account.home,
-                &provider::claude::default_home(&paths, &resolved.name)?,
-            ) && !provider::claude::peer::settings_file(&account.home).exists()
-            {
-                // A brand-new managed home: the new-account defaults (skip, statusLine).
-                let _ = provider::claude::bypass::default_new(&account.home);
-                let _ = provider::claude::statusline_seed::default_new(
-                    &account.home,
-                    &sessionsation::alias::logical_words(&config.claude_default_statusline_command),
-                );
-            }
-            return provider::dispatch::exec_login(
-                &paths,
-                &resolved.name,
-                &config,
-                resolved.provider,
-                &account.home,
-            );
-        }
-        Commands::Account {
-            command:
-                AccountCommand::Add {
-                    platform,
-                    config_dir,
-                    no_login,
-                    name,
-                },
-        } if provider::native::is_native(platform) => {
-            anyhow::ensure!(
-                config_dir.is_none() || ops::facts(platform).adopts_config_dir,
-                "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
-            );
-            daemon::ensure_started(&paths).await?;
-            let adopted = config_dir.is_some();
-            let mut params = json!({"name":name,"provider":platform});
-            if let Some(dir) = config_dir {
-                params["config_dir"] = json!(dir);
-            }
-            let value = daemon::call(&paths, "account/add", params).await?;
-            let auth = match value["auth"]["problem"].as_str() {
-                None => ops::facts(platform)
-                    .logged_in
-                    .unwrap_or_default()
-                    .to_owned(),
-                Some("AUTH_REQUIRED") => {
-                    format!("not logged in; run: sessionsation account login {platform}:{name}")
-                }
-                Some(problem) => {
-                    format!("{problem}; run: sessionsation account login {platform}:{name}")
-                }
-            };
-            println!(
-                "Enrolled {platform}:{name} ({} home {}).\nAuth: {auth}\nCheck: sessionsation account list",
-                if value["existing_home"] == true {
-                    "registered existing"
-                } else {
-                    "created"
-                },
-                value["home"].as_str().unwrap_or("unknown")
-            );
-            // A fresh managed home goes straight into the same interactive login
-            // `account login` runs, when there is a terminal to run it in.
-            use std::io::IsTerminal;
-            if value["auth"]["problem"] == "AUTH_REQUIRED"
-                && !adopted
-                && value["existing_home"] != true
-                && !no_login
-                && std::io::stdin().is_terminal()
-            {
-                println!(
-                    "Starting {} login for {platform}:{name}...",
-                    provider::native::title(platform)
-                );
-                let account = provider::native::account(&paths, platform, &name)?;
-                let config = store::load_config(&paths)?;
-                return provider::dispatch::exec_login(
-                    &paths,
-                    &name,
-                    &config,
-                    platform,
-                    &account.home,
-                );
-            }
-        }
-        Commands::Account {
-            command:
-                AccountCommand::Rename {
-                    name,
-                    display_name,
-                    clear,
-                },
-        } => {
-            let account = resolve_account(&paths, &name)?;
-            daemon::ensure_started(&paths).await?;
-            let value = daemon::call(
-                &paths,
-                "account/rename",
-                json!({"name":account.name,"provider":account.provider,"display_name":if clear {None} else {display_name}}),
-            )
-            .await?;
-            match value["display_name"].as_str() {
-                Some(display) => println!("{} is now shown as {display}.", account.id()),
-                None => println!("{} display name cleared.", account.id()),
-            }
-        }
-        Commands::Account {
-            command:
-                AccountCommand::List {
-                    platform,
-                    json: as_json,
-                },
-        } => {
-            daemon::ensure_started(&paths).await?;
-            let value = daemon::call(&paths, "status", json!({})).await?;
-            let accounts = sessionsation::api::project_accounts(
-                &paths,
-                value["accounts"]
-                    .as_array()
-                    .context("INVALID_SUPERVISOR_RESPONSE")?
-                    .clone(),
-            )?
-            .into_iter()
-            .filter(|a| platform.is_none_or(|p| a["provider"] == p.as_str()))
-            .collect::<Vec<_>>();
-            if as_json {
-                print_json(&json!(accounts))?;
-            } else {
-                print!("{}", sessionsation::cli_views::account_table(&accounts));
-            }
-        }
-        Commands::Account { command } => {
-            daemon::ensure_started(&paths).await?;
-            let (method, name, config_dir) = match command {
-                // Native providers enroll through the arm above; the supervised one here.
-                AccountCommand::Add {
-                    platform,
-                    config_dir,
-                    name,
-                    ..
-                } if ops::facts(platform).supervised => (
-                    "account/add",
-                    AccountRef {
-                        provider: platform,
-                        name,
-                    },
-                    config_dir,
-                ),
-                AccountCommand::Login { name } => {
-                    ("account/login", resolve_account(&paths, &name)?, None)
-                }
-                AccountCommand::ManagedHome { name } => (
-                    "account/managed-home",
-                    resolve_account(&paths, &name)?,
-                    None,
-                ),
-                AccountCommand::Enable { name } => {
-                    ("account/enable", resolve_account(&paths, &name)?, None)
-                }
-                AccountCommand::Disable { name } => {
-                    ("account/disable", resolve_account(&paths, &name)?, None)
-                }
-                AccountCommand::Add { .. }
-                | AccountCommand::List { .. }
-                | AccountCommand::Rename { .. }
-                | AccountCommand::Logout { .. }
-                | AccountCommand::Auth { .. }
-                | AccountCommand::Reorder { .. }
-                | AccountCommand::LiveSteering { .. }
-                | AccountCommand::BypassWarning { .. }
-                | AccountCommand::Show { .. }
-                | AccountCommand::History { .. } => {
-                    unreachable!("handled above")
-                }
-            };
-            anyhow::ensure!(
-                config_dir.is_none(),
-                "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
-            );
-            sessionsation::accounts::ensure_available(&paths, name.provider, &name.name)?;
-            let value = daemon::call(
-                &paths,
-                method,
-                json!({"name":name.name,"provider":name.provider}),
-            )
-            .await?;
-            if method == "account/managed-home" {
-                print_json(&value)?;
-            } else if method == "account/add" || method == "account/login" {
-                println!(
-                    "Open {}\nEnter code: {}\nAccount monitoring will begin automatically after login.\nCheck: sessionsation account list",
-                    value["login"]["verificationUrl"]
-                        .as_str()
-                        .unwrap_or("the verification URL returned by Codex"),
-                    value["login"]["userCode"]
-                        .as_str()
-                        .unwrap_or("(no code returned)")
-                );
-            } else {
-                print_json(&value)?;
-            }
-        }
         Commands::Config { command } => {
             daemon::ensure_started(&paths).await?;
             let mut config = daemon::call(&paths, "config/get", json!({})).await?;
@@ -1520,12 +1167,12 @@ async fn run(cli: Cli) -> Result<()> {
             };
             if probe {
                 compatibility::save_report(
-                    &paths.root.join(sessionsation::layout::COMPATIBILITY_REPORT),
+                    &paths.root.join(layout::COMPATIBILITY_REPORT),
                     &report,
                 )?;
             }
             if as_json {
-                print_json(&serde_json::to_value(report)?)?;
+                print_json(report)?;
             } else {
                 println!("{}\nAutomatic switching ready: NO", report.codex_version);
                 for check in report.checks {
@@ -1533,9 +1180,7 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Commands::Instances => {
-            print_json(&serde_json::to_value(external::discover(&paths).await?)?)?
-        }
+        Commands::Instances => print_json(external::discover(&paths).await?)?,
         Commands::Archives => print_json(&external::opening::archives_snapshot(&paths)?)?,
         Commands::Open { session, name } => {
             print_json(&external::opening::open(&paths, &session, name.as_deref()).await?)?
@@ -1543,15 +1188,13 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Rename { session, name } => {
             // Claude sessions are addressed by stable catalog id and take the same
             // HERDR tab/catalog rename path as `api rename`.
-            let claude = sessionsation::catalog::list(&paths)?
+            let claude = catalog::list(&paths)?
                 .into_iter()
                 .find(|s| s.id == session && provider::native::of(&s.provider).is_some());
             if let Some(s) = claude {
-                let renamed =
-                    sessionsation::catalog::names::rename(&paths, &s.id, &s.generation(), &name)
-                        .await?;
+                let renamed = catalog::names::rename(&paths, &s.id, &s.generation(), &name).await?;
                 print_json(
-                    &json!({"schema_version":1,"id":renamed.id,"thread_id":renamed.conversation_id,"name":renamed.name}),
+                    json!({"schema_version":1,"id":renamed.id,"thread_id":renamed.conversation_id,"name":renamed.name}),
                 )?
             } else {
                 print_json(&external::catalog::rename(&paths, &session, &name).await?)?
@@ -1573,9 +1216,7 @@ async fn run(cli: Cli) -> Result<()> {
                     .await?,
                 )?;
             } else {
-                print_json(&serde_json::to_value(
-                    external::deletion::preview(&paths, &session).await?,
-                )?)?;
+                print_json(external::deletion::preview(&paths, &session).await?)?;
             }
         }
         Commands::Sessions {
@@ -1601,7 +1242,7 @@ async fn run(cli: Cli) -> Result<()> {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {}
             }
         },
-        Commands::Moves => print_json(&serde_json::to_value(external::jobs(&paths)?)?)?,
+        Commands::Moves => print_json(external::jobs(&paths)?)?,
         Commands::Move {
             pane,
             thread,
@@ -1610,20 +1251,9 @@ async fn run(cli: Cli) -> Result<()> {
             accept_risks,
         } => {
             daemon::ensure_started(&paths).await?;
-            print_json(&serde_json::to_value(
-                external::queue_move(
-                    &paths,
-                    pane.as_deref(),
-                    thread.as_deref(),
-                    &to,
-                    external::MoveOptions {
-                        pause,
-                        accept_risks,
-                        ..Default::default()
-                    },
-                )
-                .await?,
-            )?)?;
+            let options = MoveOptions::new(pause, accept_risks, false);
+            let (pane, thread) = (pane.as_deref(), thread.as_deref());
+            print_json(external::queue_move(&paths, pane, thread, &to, options).await?)?;
         }
         Commands::MoveResponse {
             job,
@@ -1631,11 +1261,11 @@ async fn run(cli: Cli) -> Result<()> {
             sequence,
         } => {
             external::respond_move_sequence(&paths, &job, answer == "yes", sequence)?;
-            print_json(&json!({"job":job,"response_recorded":true}))?;
+            print_json(json!({"job":job,"response_recorded":true}))?;
         }
         Commands::CancelMove { job } => {
             external::cancel_move(&paths, &job)?;
-            print_json(&json!({"job":job,"cancellation_requested":true}))?;
+            print_json(json!({"job":job,"cancellation_requested":true}))?;
         }
         Commands::Restart {
             pane,
@@ -1643,18 +1273,8 @@ async fn run(cli: Cli) -> Result<()> {
             accept_risks,
         } => {
             daemon::ensure_started(&paths).await?;
-            print_json(&serde_json::to_value(
-                external::relocation::queue_restart(
-                    &paths,
-                    &pane,
-                    external::MoveOptions {
-                        pause,
-                        accept_risks,
-                        ..Default::default()
-                    },
-                )
-                .await?,
-            )?)?;
+            let options = MoveOptions::new(pause, accept_risks, false);
+            print_json(external::relocation::queue_restart(&paths, &pane, options).await?)?;
         }
         Commands::PauseSession {
             pane,
@@ -1662,18 +1282,8 @@ async fn run(cli: Cli) -> Result<()> {
             accept_risks,
         } => {
             daemon::ensure_started(&paths).await?;
-            print_json(&serde_json::to_value(
-                external::session_control::queue_pause(
-                    &paths,
-                    &pane,
-                    external::MoveOptions {
-                        pause,
-                        accept_risks,
-                        ..Default::default()
-                    },
-                )
-                .await?,
-            )?)?;
+            let options = MoveOptions::new(pause, accept_risks, false);
+            print_json(external::session_control::queue_pause(&paths, &pane, options).await?)?;
         }
         Commands::Terminate {
             pane,
@@ -1682,18 +1292,9 @@ async fn run(cli: Cli) -> Result<()> {
             keep_pane,
         } => {
             daemon::ensure_started(&paths).await?;
-            print_json(&serde_json::to_value(
-                external::session_control::queue_termination(
-                    &paths,
-                    &pane,
-                    external::MoveOptions {
-                        pause,
-                        accept_risks,
-                        close_pane: !keep_pane,
-                    },
-                )
-                .await?,
-            )?)?;
+            let options = MoveOptions::new(pause, accept_risks, !keep_pane);
+            let queued = external::session_control::queue_termination(&paths, &pane, options);
+            print_json(queued.await?)?;
         }
         Commands::Relocate {
             pane,
@@ -1704,46 +1305,24 @@ async fn run(cli: Cli) -> Result<()> {
             pause,
             accept_risks,
         } => {
+            let (pane, thread) = (pane.as_deref(), thread.as_deref());
             if dry_run {
-                print_json(
-                    &external::relocation::preview(
-                        &paths,
-                        pane.as_deref(),
-                        thread.as_deref(),
-                        &to,
-                        move_files,
-                    )
-                    .await?,
-                )?;
+                let preview = external::relocation::preview(&paths, pane, thread, &to, move_files);
+                print_json(&preview.await?)?;
             } else {
                 daemon::ensure_started(&paths).await?;
-                print_json(&serde_json::to_value(
-                    external::relocation::queue(
-                        &paths,
-                        pane.as_deref(),
-                        thread.as_deref(),
-                        &to,
-                        move_files,
-                        external::MoveOptions {
-                            pause,
-                            accept_risks,
-                            ..Default::default()
-                        },
-                    )
-                    .await?,
-                )?)?;
+                let options = MoveOptions::new(pause, accept_risks, false);
+                let queued =
+                    external::relocation::queue(&paths, pane, thread, &to, move_files, options);
+                print_json(queued.await?)?;
             }
         }
         Commands::BackgroundResponse { job, answer } => {
             external::respond_background(&paths, &job, answer == "yes")?;
             println!("Response recorded.");
         }
-        Commands::Recover { job } => print_json(&serde_json::to_value(
-            external::recover(&paths, &job).await?,
-        )?)?,
-        Commands::Retry { job } => {
-            print_json(&serde_json::to_value(external::retry(&paths, &job).await?)?)?
-        }
+        Commands::Recover { job } => print_json(external::recover(&paths, &job).await?)?,
+        Commands::Retry { job } => print_json(external::retry(&paths, &job).await?)?,
         Commands::HandoffWorker { job } => external::worker(&paths, &job).await?,
         Commands::Run {
             host,
@@ -1781,7 +1360,7 @@ async fn run(cli: Cli) -> Result<()> {
                             && codex_options.is_empty(),
                         "INVALID_ARGUMENT: --hosted runs its viewer in this terminal (inline host, no provider options)"
                     );
-                    return sessionsation::provider::claude::hosted::run_in_terminal(
+                    return provider::claude::hosted::run_in_terminal(
                         &paths,
                         &account.name,
                         thread.as_deref(),
@@ -1815,7 +1394,7 @@ async fn run(cli: Cli) -> Result<()> {
                     );
                     ops::require(codex_options.is_empty(), ops::CLI_OPTIONS_CODEX_ONLY)?;
                     if let Some(thread) = thread {
-                        let s = sessionsation::catalog::list(&paths)?
+                        let s = catalog::list(&paths)?
                             .into_iter()
                             .find(|s| s.provider == account.provider.as_str() && s.conversation_id == thread && s.account == account.name)
                             .context("SESSION_NOT_FOUND: no cataloged session of this provider with this id on the account")?;
@@ -1876,7 +1455,7 @@ async fn run(cli: Cli) -> Result<()> {
             confirm_unfinished,
             name,
         } => {
-            sessionsation::api::resume_current(
+            api::resume_current(
                 &paths,
                 &session,
                 &expected_generation,
@@ -1903,11 +1482,304 @@ async fn run(cli: Cli) -> Result<()> {
     }
     Ok(())
 }
+/// `account <command>`.
+async fn account(paths: Paths, command: AccountCommand) -> Result<()> {
+    match command {
+        AccountCommand::Reorder { name, position } => {
+            let account = resolve_account(&paths, &name)?;
+            let position = json!({"position":position});
+            print_json(&account_call(&paths, &account, "account/reorder", position).await?)?;
+        }
+        AccountCommand::LiveSteering {
+            name,
+            enable,
+            disable,
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            let enable = json!({"enable":api::switch(enable, disable)});
+            print_json(&account_call(&paths, &account, "account/live-steering", enable).await?)?;
+        }
+        AccountCommand::Auth {
+            name,
+            mode,
+            key_stdin,
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            let key = if key_stdin {
+                use std::io::Read;
+                let mut text = String::new();
+                std::io::stdin()
+                    .take(4097)
+                    .read_to_string(&mut text)
+                    .map_err(|_| anyhow::anyhow!("INVALID_API_KEY_FORMAT: stdin is not text"))?;
+                anyhow::ensure!(
+                    text.len() <= 4096,
+                    "INVALID_API_KEY_FORMAT: stdin is too large"
+                );
+                Some(provider::gemini::auth_mode::ApiKey::new(&text)?)
+            } else {
+                None
+            };
+            print_json(&api::gemini_auth(&paths, &account, mode.as_deref(), key).await?)?;
+        }
+        AccountCommand::BypassWarning { name, skip, show } => {
+            let account = resolve_account(&paths, &name)?;
+            let skip = json!({"skip":api::switch(skip, show)});
+            print_json(&account_call(&paths, &account, "account/bypass-warning", skip).await?)?;
+        }
+        AccountCommand::Logout { name } => {
+            let account = resolve_account(&paths, &name)?;
+            accounts::ensure_available(&paths, account.provider, &account.name)?;
+            let value = account_call(&paths, &account, "account/logout", json!({})).await?;
+            println!(
+                "{} logged out ({}).\nLog in again: sessionsation account login {}",
+                account.id(),
+                value["method"].as_str().unwrap_or("provider logout"),
+                account.id()
+            );
+        }
+        AccountCommand::Show { name } => {
+            let account = resolve_account(&paths, &name)?;
+            let status = daemon::call(&paths, "status", json!({})).await?;
+            print_json(&cli_views::account(
+                &status,
+                account.provider.as_str(),
+                &account.name,
+            )?)?;
+        }
+        AccountCommand::History {
+            name,
+            range,
+            hours,
+            start,
+            end,
+            step,
+        } => {
+            let at = daemon::now();
+            let hours = hours.unwrap_or(if range.as_deref() == Some("weekly") {
+                168
+            } else {
+                12
+            });
+            let (start, end, step) = cli_views::history_range(at, hours, start, end, step)?;
+            let account = resolve_account(&paths, &name)?;
+            let history = daemon::call(
+                &paths,
+                "account/history",
+                json!({"name":account.name,"provider":account.provider,"start":start,"end":end,"step":step}),
+            )
+            .await?;
+            print_json(
+                json!({"schema_version":1,"observed_at":at,"range":{"start":start,"end":end,"step":step},"history":history}),
+            )?;
+        }
+        AccountCommand::Login { name }
+            if provider::native::is_native(resolve_account(&paths, &name)?.provider) =>
+        {
+            // Interactive official login in this terminal, with the account's
+            // isolated environment. Credentials never pass through us.
+            let resolved = resolve_account(&paths, &name)?;
+            let account = provider::native::account(&paths, resolved.provider, &resolved.name)?;
+            let config = store::load_config(&paths)?;
+            if matches!(
+                ops::facts(resolved.provider).enrollment,
+                Enrollment::ClaudeHome
+            ) && layout::same_home(
+                &account.home,
+                &provider::claude::default_home(&paths, &resolved.name)?,
+            ) && !provider::claude::peer::settings_file(&account.home).exists()
+            {
+                // A brand-new managed home: the new-account defaults (skip, statusLine).
+                let _ = provider::claude::bypass::default_new(&account.home);
+                let _ = provider::claude::statusline_seed::default_new(
+                    &account.home,
+                    &alias::logical_words(&config.claude_default_statusline_command),
+                );
+            }
+            return provider::dispatch::exec_login(
+                &paths,
+                &resolved.name,
+                &config,
+                resolved.provider,
+                &account.home,
+            );
+        }
+        AccountCommand::Add {
+            platform,
+            config_dir,
+            no_login,
+            name,
+        } if provider::native::is_native(platform) => {
+            anyhow::ensure!(
+                config_dir.is_none() || ops::facts(platform).adopts_config_dir,
+                "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
+            );
+            daemon::ensure_started(&paths).await?;
+            let adopted = config_dir.is_some();
+            let mut params = json!({"name":name,"provider":platform});
+            if let Some(dir) = config_dir {
+                params["config_dir"] = json!(dir);
+            }
+            let value = daemon::call(&paths, "account/add", params).await?;
+            let auth = match value["auth"]["problem"].as_str() {
+                None => ops::facts(platform)
+                    .logged_in
+                    .unwrap_or_default()
+                    .to_owned(),
+                Some("AUTH_REQUIRED") => {
+                    format!("not logged in; run: sessionsation account login {platform}:{name}")
+                }
+                Some(problem) => {
+                    format!("{problem}; run: sessionsation account login {platform}:{name}")
+                }
+            };
+            println!(
+                "Enrolled {platform}:{name} ({} home {}).\nAuth: {auth}\nCheck: sessionsation account list",
+                if value["existing_home"] == true {
+                    "registered existing"
+                } else {
+                    "created"
+                },
+                value["home"].as_str().unwrap_or("unknown")
+            );
+            // A fresh managed home goes straight into the same interactive login
+            // `account login` runs, when there is a terminal to run it in.
+            use std::io::IsTerminal;
+            if value["auth"]["problem"] == "AUTH_REQUIRED"
+                && !adopted
+                && value["existing_home"] != true
+                && !no_login
+                && std::io::stdin().is_terminal()
+            {
+                println!(
+                    "Starting {} login for {platform}:{name}...",
+                    provider::native::title(platform)
+                );
+                let account = provider::native::account(&paths, platform, &name)?;
+                let config = store::load_config(&paths)?;
+                return provider::dispatch::exec_login(
+                    &paths,
+                    &name,
+                    &config,
+                    platform,
+                    &account.home,
+                );
+            }
+        }
+        AccountCommand::Rename {
+            name,
+            display_name,
+            clear,
+        } => {
+            let account = resolve_account(&paths, &name)?;
+            let display_name = json!({"display_name":if clear { None } else { display_name }});
+            let value = account_call(&paths, &account, "account/rename", display_name).await?;
+            match value["display_name"].as_str() {
+                Some(display) => println!("{} is now shown as {display}.", account.id()),
+                None => println!("{} display name cleared.", account.id()),
+            }
+        }
+        AccountCommand::List {
+            platform,
+            json: as_json,
+        } => {
+            daemon::ensure_started(&paths).await?;
+            let value = daemon::call(&paths, "status", json!({})).await?;
+            let accounts = api::project_accounts(
+                &paths,
+                value["accounts"]
+                    .as_array()
+                    .context("INVALID_SUPERVISOR_RESPONSE")?
+                    .clone(),
+            )?
+            .into_iter()
+            .filter(|a| platform.is_none_or(|p| a["provider"] == p.as_str()))
+            .collect::<Vec<_>>();
+            if as_json {
+                print_json(json!(accounts))?;
+            } else {
+                print!("{}", cli_views::account_table(&accounts));
+            }
+        }
+        command => {
+            daemon::ensure_started(&paths).await?;
+            let (method, name, config_dir) = match command {
+                // Native providers enroll through the arm above; the supervised one here.
+                AccountCommand::Add {
+                    platform,
+                    config_dir,
+                    name,
+                    ..
+                } if ops::facts(platform).supervised => (
+                    "account/add",
+                    AccountRef {
+                        provider: platform,
+                        name,
+                    },
+                    config_dir,
+                ),
+                AccountCommand::Login { name } => {
+                    ("account/login", resolve_account(&paths, &name)?, None)
+                }
+                AccountCommand::ManagedHome { name } => (
+                    "account/managed-home",
+                    resolve_account(&paths, &name)?,
+                    None,
+                ),
+                AccountCommand::Enable { name } => {
+                    ("account/enable", resolve_account(&paths, &name)?, None)
+                }
+                AccountCommand::Disable { name } => {
+                    ("account/disable", resolve_account(&paths, &name)?, None)
+                }
+                AccountCommand::Add { .. }
+                | AccountCommand::List { .. }
+                | AccountCommand::Rename { .. }
+                | AccountCommand::Logout { .. }
+                | AccountCommand::Auth { .. }
+                | AccountCommand::Reorder { .. }
+                | AccountCommand::LiveSteering { .. }
+                | AccountCommand::BypassWarning { .. }
+                | AccountCommand::Show { .. }
+                | AccountCommand::History { .. } => {
+                    unreachable!("handled above")
+                }
+            };
+            anyhow::ensure!(
+                config_dir.is_none(),
+                "INVALID_ARGUMENT: --config-dir is only supported with --platform claude"
+            );
+            accounts::ensure_available(&paths, name.provider, &name.name)?;
+            let value = daemon::call(
+                &paths,
+                method,
+                json!({"name":name.name,"provider":name.provider}),
+            )
+            .await?;
+            if method == "account/managed-home" {
+                print_json(&value)?;
+            } else if method == "account/add" || method == "account/login" {
+                println!(
+                    "Open {}\nEnter code: {}\nAccount monitoring will begin automatically after login.\nCheck: sessionsation account list",
+                    value["login"]["verificationUrl"]
+                        .as_str()
+                        .unwrap_or("the verification URL returned by Codex"),
+                    value["login"]["userCode"]
+                        .as_str()
+                        .unwrap_or("(no code returned)")
+                );
+            } else {
+                print_json(&value)?;
+            }
+        }
+    }
+    Ok(())
+}
 /// Resolve NAME or PROVIDER:NAME against enrolled accounts (names are global).
 /// An unknown bare name stays on the Codex path, whose launcher reports it.
 fn resolve_account(paths: &Paths, id: &str) -> Result<AccountRef> {
     let (wanted, name) = AccountRef::parse_lookup(id)?;
-    let state = if paths.root.join(sessionsation::layout::REGISTRY_DB).exists() {
+    let state = if paths.root.join(layout::REGISTRY_DB).exists() {
         store::load_state_snapshot(paths).ok()
     } else {
         None
@@ -1947,8 +1819,11 @@ fn resolve_account(paths: &Paths, id: &str) -> Result<AccountRef> {
         name,
     })
 }
-fn print_json(value: &Value) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
+fn print_json(value: impl serde::Serialize) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::to_value(value)?)?
+    );
     Ok(())
 }
 
@@ -1986,7 +1861,7 @@ fn simulate(path: &std::path::Path) -> Result<()> {
 }
 fn install_systemd(paths: &Paths) -> Result<()> {
     let home = std::env::var_os("HOME").context("HOME missing")?;
-    let executable = sessionsation::provider::claude::hooks::executable()?;
+    let executable = provider::claude::hooks::executable()?;
     // systemd does not use shell quoting; quote specifiers and backslashes explicitly.
     let quote = |path: &std::path::Path| -> Result<String> {
         let s = path.to_str().context("systemd paths must be UTF-8")?;
@@ -2018,29 +1893,24 @@ fn install_systemd(paths: &Paths) -> Result<()> {
 fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
     let code = error_code(error);
     let message = if code == "DISK_FULL" {
-        sessionsation::disk_space::disk_full_message(error)
+        disk_space::disk_full_message(error)
     } else {
-        sessionsation::messaging::recovery::diagnostic(&code)
+        messaging::recovery::diagnostic(&code)
             .map(|help| format!("{code}: {help}"))
-            .unwrap_or_else(
-                || match error.downcast_ref::<sessionsation::api::Discarded>() {
-                    Some(d) => d.full.clone(),
-                    None => format!("{error:#}"),
-                },
-            )
+            .unwrap_or_else(|| match error.downcast_ref::<api::Discarded>() {
+                Some(d) => d.full.clone(),
+                None => format!("{error:#}"),
+            })
     };
-    let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<sessionsation::messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"OPERATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS"|"STOP_TIMEOUT"|"AUTH_STALE")}});
+    let mut envelope = json!({"api_version":1,"ok":false,"error":{"code":code,"native":error.downcast_ref::<messaging::NativeReadFailure>(),"message":message,"retryable":matches!(code.as_str(),"ADAPTER_BUSY"|"OPERATION_BUSY"|"OBSERVATION_TIMEOUT"|"OPERATION_TIMEOUT"|"ATTACHMENT_UNOBSERVED"|"SESSION_OPERATION_IN_PROGRESS"|"STOP_TIMEOUT"|"AUTH_STALE")}});
     // Contract 1.69.3: a stop that failed after `--discard-queued` reports what it discarded.
-    if let Some(Value::Object(d)) = error
-        .downcast_ref::<sessionsation::api::Discarded>()
-        .map(|d| &d.value)
-    {
+    if let Some(Value::Object(d)) = error.downcast_ref::<api::Discarded>().map(|d| &d.value) {
         for (k, v) in d {
             envelope["error"][k] = v.clone();
         }
     }
     // Contract 1.63.0: a provider that cannot perform the operation at all.
-    if let Some(u) = error.downcast_ref::<sessionsation::provider::stop_shape::Unsupported>() {
+    if let Some(u) = error.downcast_ref::<provider::stop_shape::Unsupported>() {
         envelope["error"]["supported"] = json!(false);
         envelope["error"]["reason"] = json!(u.0);
     }
@@ -2052,13 +1922,13 @@ fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
     }
     // Contract 1.58.0: a session that has not written its first status-line record yet.
     if error
-        .downcast_ref::<sessionsation::messaging::model_change::claude::HookNotRecorded>()
+        .downcast_ref::<messaging::model_change::claude::HookNotRecorded>()
         .is_some()
     {
         envelope["error"]["retryable"] = json!(true);
         envelope["error"]["detail"] = json!("hook_not_recorded");
     }
-    if let Some(space) = error.downcast_ref::<sessionsation::disk_space::InsufficientSpace>() {
+    if let Some(space) = error.downcast_ref::<disk_space::InsufficientSpace>() {
         envelope["error"]["free_bytes"] = json!(space.free_bytes);
         envelope["error"]["needed_bytes"] = json!(space.needed_bytes);
         envelope["error"]["operation"] = json!(space.operation);
@@ -2075,16 +1945,16 @@ fn error_envelope(error: &anyhow::Error) -> serde_json::Value {
 }
 
 fn error_code(error: &anyhow::Error) -> String {
-    if sessionsation::disk_space::is_disk_full(error) {
+    if disk_space::is_disk_full(error) {
         return "DISK_FULL".into();
     }
     if error
-        .downcast_ref::<sessionsation::messaging::NativeReadFailure>()
+        .downcast_ref::<messaging::NativeReadFailure>()
         .is_some()
     {
         return "NATIVE_REJECTED".into();
     }
-    if let Some(fault) = error.downcast_ref::<sessionsation::messaging::Fault>() {
+    if let Some(fault) = error.downcast_ref::<messaging::Fault>() {
         return fault.0.to_ascii_uppercase();
     }
     let text = error.to_string();

@@ -1,0 +1,1701 @@
+### api attachment --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api attachment --session no-such-name --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api observe --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api observe --session no-such-name --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api turn-target --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api turn-target --session no-such-name --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api steer-target --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api steer-target --session no-such-name --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api rename --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --name x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api rename --session no-such-name --expected-generation g --name x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api switch --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --to codex:g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api switch --session no-such-name --expected-generation g --to codex:g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api auto-recover --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --enable <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api auto-recover --session no-such-name --expected-generation g --enable <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api turn-notify --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --enable <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api turn-notify --session no-such-name --expected-generation g --enable <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api idle-notify --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api idle-notify --session no-such-name --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api relocate --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --to <project> --dry-run <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api relocate --session no-such-name --expected-generation g --to <project> --dry-run <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api relocate --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --to <project> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api relocate --session no-such-name --expected-generation g --to <project> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api restart --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api restart --session no-such-name --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api stop --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"already_stopped":true,"auto_start":null,"detail":"Sessionsation knows no session with this id; nothing of it runs here and nothing was stopped or archived.","id":null,"interrupted_turn":false,"kind":"terminate","not_found":true,"pane_close_reason":"NO_PANE","pane_closed":false,"phase":"complete","pid":null,"process_start":null,"provider":null,"provider_conversation_id":null,"session_id":"0f0f0f0f-0000-4000-8000-000000000000","signal":null,"source_account_id":null,"source_session_id":"0f0f0f0f-0000-4000-8000-000000000000"}}
+
+--- stderr
+
+### api stop --session no-such-name --expected-generation g <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"already_stopped":true,"auto_start":null,"detail":"Sessionsation knows no session with this id; nothing of it runs here and nothing was stopped or archived.","id":null,"interrupted_turn":false,"kind":"terminate","not_found":true,"pane_close_reason":"NO_PANE","pane_closed":false,"phase":"complete","pid":null,"process_start":null,"provider":null,"provider_conversation_id":null,"session_id":"no-such-name","signal":null,"source_account_id":null,"source_session_id":"no-such-name"}}
+
+--- stderr
+
+### api stop --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --disable-auto-start <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"already_stopped":true,"auto_start":null,"detail":"Sessionsation knows no session with this id; nothing of it runs here and nothing was stopped or archived.","id":null,"interrupted_turn":false,"kind":"terminate","not_found":true,"pane_close_reason":"NO_PANE","pane_closed":false,"phase":"complete","pid":null,"process_start":null,"provider":null,"provider_conversation_id":null,"session_id":"0f0f0f0f-0000-4000-8000-000000000000","signal":null,"source_account_id":null,"source_session_id":"0f0f0f0f-0000-4000-8000-000000000000"}}
+
+--- stderr
+
+### api stop --session no-such-name --expected-generation g --disable-auto-start <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"already_stopped":true,"auto_start":null,"detail":"Sessionsation knows no session with this id; nothing of it runs here and nothing was stopped or archived.","id":null,"interrupted_turn":false,"kind":"terminate","not_found":true,"pane_close_reason":"NO_PANE","pane_closed":false,"phase":"complete","pid":null,"process_start":null,"provider":null,"provider_conversation_id":null,"session_id":"no-such-name","signal":null,"source_account_id":null,"source_session_id":"no-such-name"}}
+
+--- stderr
+
+### api stop --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --discard-queued <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"already_stopped":true,"auto_start":null,"detail":"Sessionsation knows no session with this id; nothing of it runs here and nothing was stopped or archived.","discarded_messages":[],"discarded_native_items":[],"id":null,"interrupted_turn":false,"kind":"terminate","not_discarded":[],"not_found":true,"pane_close_reason":"NO_PANE","pane_closed":false,"phase":"complete","pid":null,"process_start":null,"provider":null,"provider_conversation_id":null,"session_id":"0f0f0f0f-0000-4000-8000-000000000000","signal":null,"source_account_id":null,"source_session_id":"0f0f0f0f-0000-4000-8000-000000000000"}}
+
+--- stderr
+
+### api stop --session no-such-name --expected-generation g --discard-queued <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"already_stopped":true,"auto_start":null,"detail":"Sessionsation knows no session with this id; nothing of it runs here and nothing was stopped or archived.","discarded_messages":[],"discarded_native_items":[],"id":null,"interrupted_turn":false,"kind":"terminate","not_discarded":[],"not_found":true,"pane_close_reason":"NO_PANE","pane_closed":false,"phase":"complete","pid":null,"process_start":null,"provider":null,"provider_conversation_id":null,"session_id":"no-such-name","signal":null,"source_account_id":null,"source_session_id":"no-such-name"}}
+
+--- stderr
+
+### api resume --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --herdr-session h <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api resume --session no-such-name --expected-generation g --herdr-session h <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api spaces --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api spaces --session no-such-name --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api spaces --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --herdr-session h <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api spaces --session no-such-name --expected-generation g --herdr-session h <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api answer --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --request-id r --answers {} <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api answer --session no-such-name --expected-generation g --request-id r --answers {} <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session --session no-such-name --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api auto-start --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --mode start <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api auto-start --session no-such-name --expected-generation g --mode start <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api launcher --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g resume <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--session' found\n\n  tip: a similar argument exists: '--permissions'\n\nUsage: sessionsation api launcher --permissions <PERMISSIONS> <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launcher --session no-such-name --expected-generation g resume <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--session' found\n\n  tip: a similar argument exists: '--permissions'\n\nUsage: sessionsation api launcher --permissions <PERMISSIONS> <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session add-to-herdr --herdr-session h --session  --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --space <SPACE>\n  --new-space <NEW_SPACE>\n\nUsage: sessionsation api session add-to-herdr --session <SESSION> --expected-generation <EXPECTED_GENERATION> --herdr-session <HERDR_SESSION> --space <SPACE> --new-space <NEW_SPACE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session compact --when-idle --session  --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session compact --session  --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session set-model --model m --session  --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session set-model --model m --wait 100000 --session  --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --wait is at most 600 seconds","native":null,"retryable":false},"ok":false}
+
+### api session set-space --space s --session  --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session resolve --session  --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api move-space --space s --session  --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n\nUsage: sessionsation api move-space --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --space <SPACE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api archive --session  --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api archive --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restore-session --session  --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api restore-session --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api delete-session --session  --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api delete-session --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session add-to-herdr --herdr-session h --session 0f0f --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --space <SPACE>\n  --new-space <NEW_SPACE>\n\nUsage: sessionsation api session add-to-herdr --session <SESSION> --expected-generation <EXPECTED_GENERATION> --herdr-session <HERDR_SESSION> --space <SPACE> --new-space <NEW_SPACE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session compact --when-idle --session 0f0f --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session compact --session 0f0f --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session set-model --model m --session 0f0f --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session set-model --model m --wait 100000 --session 0f0f --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --wait is at most 600 seconds","native":null,"retryable":false},"ok":false}
+
+### api session set-space --space s --session 0f0f --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session resolve --session 0f0f --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api move-space --space s --session 0f0f --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n\nUsage: sessionsation api move-space --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --space <SPACE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api archive --session 0f0f --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api archive --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restore-session --session 0f0f --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api restore-session --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api delete-session --session 0f0f --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api delete-session --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session add-to-herdr --herdr-session h --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --space <SPACE>\n  --new-space <NEW_SPACE>\n\nUsage: sessionsation api session add-to-herdr --session <SESSION> --expected-generation <EXPECTED_GENERATION> --herdr-session <HERDR_SESSION> --space <SPACE> --new-space <NEW_SPACE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session compact --when-idle --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session compact --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session set-model --model m --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session set-model --model m --wait 100000 --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --wait is at most 600 seconds","native":null,"retryable":false},"ok":false}
+
+### api session set-space --space s --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api session resolve --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_FOUND","message":"SESSION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api move-space --space s --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n\nUsage: sessionsation api move-space --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --space <SPACE>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api archive --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api archive --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restore-session --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api restore-session --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api delete-session --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --request-id <REQUEST_ID>\n  --confirm <CONFIRM>\n\nUsage: sessionsation api delete-session --session <SESSION> --expected-generation <EXPECTED_GENERATION> --request-id <REQUEST_ID> --confirm <CONFIRM>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api attachment --session <session-codex> --expected-generation <generation-codex> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_ATTACHED","message":"SESSION_NOT_ATTACHED: This session has no live terminal. Refresh the session list; Focus never starts an agent.","native":null,"retryable":false},"ok":false}
+
+### api switch --session <session-codex> --expected-generation <generation-codex> --to nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"ACCOUNT_PROVIDER_REQUIRED","message":"ACCOUNT_PROVIDER_REQUIRED","native":null,"retryable":false},"ok":false}
+
+### api turn-notify --session <session-codex> --expected-generation <generation-codex> --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api turn-notify --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-recover --session <session-codex> --expected-generation <generation-codex> --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api auto-recover --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restart --session <session-codex> --expected-generation <generation-codex> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_RUNNING","message":"SESSION_NOT_RUNNING","native":null,"retryable":false},"ok":false}
+
+### api spaces --session <session-codex> --expected-generation <generation-codex> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_IN_HERDR","message":"SESSION_NOT_IN_HERDR","native":null,"retryable":false},"ok":false}
+
+### api session --session <session-codex> --expected-generation <generation-codex> <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"account":"g","account_id":"codex:g","archive":{"archived":false,"archived_at":null,"kind":"none","provider_storage_archived":false,"source":"verified_history_location","state":"active"},"archived":false,"attachment":null,"availability":"saved","background_tasks":null,"background_tasks_observed_at":null,"background_tasks_reason":"Codex reports subagents and background terminals only per loaded thread over its app-server; state rows do not read them yet","background_tasks_source":null,"canonical":null,"context_pct":null,"context_pct_observed_at":null,"context_pct_reason":"read from the rollout of a running conversation by a full api state","context_pct_source":null,"context_tokens":null,"context_window_size":null,"conversation_created_at":null,"conversation_id":"0a0a0a0a-0000-4000-8000-00000000c0de","directory":"<project>","generation":"<generation-codex>","history_file_bytes":183,"id":"<session-codex>","model":null,"name":"codex-project","name_source":"catalog","original_host":null,"placement":{"catalog_generation":"<generation-codex>","checked_at":null,"host_id":null,"observed_at":null,"provenance":null,"reason":"no_verified_placement","space":null,"state":"unobserved","valid_until":null,"version":1},"provider":"codex","resume_block_reason":null,"revision":1,"space":null,"subagents_running":null,"subagents_running_observed_at":null,"subagents_running_reason":"Codex reports subagents and background terminals only per loaded thread over its app-server; state rows do not read them yet","subagents_running_source":null}}
+
+--- stderr
+
+### api auto-start --session <session-codex> --expected-generation <generation-codex> --mode bogus <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --mode must be disabled, start or start_prompt","native":null,"retryable":false},"ok":false}
+
+### api session compact --session <session-codex> --expected-generation <generation-codex> <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session resolve --session <session-codex> --expected-generation <generation-codex> <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"account":"g","account_id":"codex:g","activity":"inactive","attachment":null,"availability":"saved","background_tasks":null,"background_tasks_observed_at":null,"background_tasks_reason":"Codex reports subagents and background terminals only per loaded thread over its app-server; state rows do not read them yet","background_tasks_source":null,"canonical":null,"context_pct":null,"context_pct_observed_at":null,"context_pct_reason":"read from the rollout of a running conversation by a full api state","context_pct_source":null,"context_tokens":null,"context_window_size":null,"conversation_id":"0a0a0a0a-0000-4000-8000-00000000c0de","generation":"<generation-codex>","id":"<session-codex>","live_activity":null,"model":null,"name":"codex-project","name_source":"catalog","pid":null,"provider":"codex","revision":1,"snapshot":{"age_seconds":"<v>","cached":true,"fresh":true,"observed_at":"<v>","source":"state_snapshot"},"space":null,"subagents_running":null,"subagents_running_observed_at":null,"subagents_running_reason":"Codex reports subagents and background terminals only per loaded thread over its app-server; state rows do not read them yet","subagents_running_source":null}}
+
+--- stderr
+
+### api attachment --session <session-codex> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api switch --session <session-codex> --expected-generation stale --to nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api turn-notify --session <session-codex> --expected-generation stale --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api turn-notify --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-recover --session <session-codex> --expected-generation stale --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api auto-recover --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restart --session <session-codex> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api spaces --session <session-codex> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api session --session <session-codex> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api auto-start --session <session-codex> --expected-generation stale --mode bogus <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --mode must be disabled, start or start_prompt","native":null,"retryable":false},"ok":false}
+
+### api session compact --session <session-codex> --expected-generation stale <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session resolve --session <session-codex> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api rename --session <session-codex> --expected-generation stale --name x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api session set-space --session <session-codex> --expected-generation stale --space s <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api attachment --session <session-claude> --expected-generation <generation-claude> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_ATTACHED","message":"SESSION_NOT_ATTACHED: This session has no live terminal. Refresh the session list; Focus never starts an agent.","native":null,"retryable":false},"ok":false}
+
+### api switch --session <session-claude> --expected-generation <generation-claude> --to nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"ACCOUNT_PROVIDER_REQUIRED","message":"ACCOUNT_PROVIDER_REQUIRED: use <provider>:<name>, for example codex:nobody, claude:nobody or gemini:nobody","native":null,"retryable":false},"ok":false}
+
+### api turn-notify --session <session-claude> --expected-generation <generation-claude> --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api turn-notify --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-recover --session <session-claude> --expected-generation <generation-claude> --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api auto-recover --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restart --session <session-claude> --expected-generation <generation-claude> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNSUPPORTED_PROVIDER_OPERATION","message":"UNSUPPORTED_PROVIDER_OPERATION","native":null,"retryable":false},"ok":false}
+
+### api spaces --session <session-claude> --expected-generation <generation-claude> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNSUPPORTED_PROVIDER_OPERATION","message":"UNSUPPORTED_PROVIDER_OPERATION","native":null,"retryable":false},"ok":false}
+
+### api session --session <session-claude> --expected-generation <generation-claude> <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"account":"g","account_id":"claude:g","active_since":null,"activity":null,"archive":{"archived":false,"archived_at":null,"kind":"none","source":"provider_unsupported","state":"active"},"archived":false,"attachment":null,"availability":"stopped","background_tasks":null,"background_tasks_observed_at":null,"background_tasks_reason":"Claude Code reports a background task's start (PostToolUse with backgroundTaskId, journaled as background_task_started) but no hook when it finishes, so the running count is not known","background_tasks_source":null,"caller_binding":null,"caller_binding_reason":"NOT_RUNNING","canonical":null,"capabilities":{"add_to_herdr":false,"archive":true,"change_directory":false,"delete":true,"focus":false,"move_project":false,"move_space":false,"native_rename":false,"queue":false,"rename":true,"restart":false,"restore":false,"resume":true,"steer":false,"stop":false,"submit":false,"switch_account":true},"capability_reasons":{"add_to_herdr":"SESSION_NOT_RUNNING: a stopped session opens with Start Session (resume), which accepts a target Space and name","archive":null,"change_directory":"native session is bound to its account config home","delete":null,"move_project":"native session is bound to its account config home","move_space":"HERDR space moves are verified only for Codex","native_rename":"label applied as --name on next launch/resume; live native title unchanged","queue":"SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session, or start it hosted","restart":"no verified Claude restart: stop the session, then resume it","restore":"SESSION_NOT_ARCHIVED","resume":null,"steer":"SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session, or start it hosted","stop":"SESSION_NOT_RUNNING","submit":"SESSION_NOT_RUNNING: use mode resume (headless) for a stopped session, or start it hosted","switch_account":null},"context_pct":null,"context_pct_observed_at":null,"context_pct_reason":"no status-line payload with a context reading has been recorded for this conversation yet","context_pct_source":null,"context_tokens":null,"context_window_size":null,"conversation_created_at":"<v>","conversation_id":"0b0b0b0b-0000-4000-8000-0000000c1a0d","conversation_id_source":"native","directory":"<project>","discovery_warnings":[],"forked_from_conversation_id":null,"generation":"<generation-claude>","history_file_bytes":164,"host_known":false,"hosted":null,"id":"<session-claude>","input_delivery":{"available":[],"interrupt":false,"label":null,"modes":{"queue":null,"steer":null,"submit":null},"semantics":null,"steer":null,"terminal_input":{"available":false,"reason":"SESSION_NOT_RUNNING"}},"last_accessed":"<v>","model":null,"name":"project","name_source":"catalog","native":{"conversation_id":"0b0b0b0b-0000-4000-8000-0000000c1a0d","job_id":null,"kind":null,"name":null,"status":null},"native_name":null,"native_status":null,"original_host":null,"pid":null,"placement":{"catalog_generation":"<generation-claude>","checked_at":null,"host_id":null,"observed_at":null,"provenance":null,"reason":"no_verified_placement","space":null,"state":"unobserved","valid_until":null,"version":1},"previous_conversation_ids":[],"process_start":null,"provider":"claude","resume_block_reason":null,"revision":1,"space":null,"subagents_running":null,"subagents_running_observed_at":null,"subagents_running_reason":"the session is not running","subagents_running_source":null}}
+
+--- stderr
+
+### api auto-start --session <session-claude> --expected-generation <generation-claude> --mode bogus <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --mode must be disabled, start or start_prompt","native":null,"retryable":false},"ok":false}
+
+### api session compact --session <session-claude> --expected-generation <generation-claude> <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session resolve --session <session-claude> --expected-generation <generation-claude> <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"account":"g","account_id":"claude:g","activity":null,"attachment":null,"availability":"stopped","background_tasks":null,"background_tasks_observed_at":null,"background_tasks_reason":"Claude Code reports a background task's start (PostToolUse with backgroundTaskId, journaled as background_task_started) but no hook when it finishes, so the running count is not known","background_tasks_source":null,"canonical":null,"context_pct":null,"context_pct_observed_at":null,"context_pct_reason":"no status-line payload with a context reading has been recorded for this conversation yet","context_pct_source":null,"context_tokens":null,"context_window_size":null,"conversation_id":"0b0b0b0b-0000-4000-8000-0000000c1a0d","directory":"<project>","generation":"<generation-claude>","id":"<session-claude>","live_activity":null,"model":null,"name":"project","name_source":"catalog","pid":null,"provider":"claude","revision":1,"snapshot":{"age_seconds":"<v>","cached":true,"fresh":true,"observed_at":"<v>","source":"state_snapshot"},"space":null,"subagents_running":null,"subagents_running_observed_at":null,"subagents_running_reason":"the session is not running","subagents_running_source":null}}
+
+--- stderr
+
+### api attachment --session <session-claude> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api switch --session <session-claude> --expected-generation stale --to nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api turn-notify --session <session-claude> --expected-generation stale --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api turn-notify --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-recover --session <session-claude> --expected-generation stale --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api auto-recover --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restart --session <session-claude> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api spaces --session <session-claude> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api session --session <session-claude> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api auto-start --session <session-claude> --expected-generation stale --mode bogus <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --mode must be disabled, start or start_prompt","native":null,"retryable":false},"ok":false}
+
+### api session compact --session <session-claude> --expected-generation stale <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session resolve --session <session-claude> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api rename --session <session-claude> --expected-generation stale --name x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api session set-space --session <session-claude> --expected-generation stale --space s <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api attachment --session <session-gemini> --expected-generation <generation-gemini> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_ATTACHED","message":"SESSION_NOT_ATTACHED: This session has no live terminal. Refresh the session list; Focus never starts an agent.","native":null,"retryable":false},"ok":false}
+
+### api switch --session <session-gemini> --expected-generation <generation-gemini> --to nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNSUPPORTED_PROVIDER_OPERATION","message":"UNSUPPORTED_PROVIDER_OPERATION","native":null,"retryable":false},"ok":false}
+
+### api turn-notify --session <session-gemini> --expected-generation <generation-gemini> --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api turn-notify --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-recover --session <session-gemini> --expected-generation <generation-gemini> --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api auto-recover --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restart --session <session-gemini> --expected-generation <generation-gemini> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNSUPPORTED_PROVIDER_OPERATION","message":"UNSUPPORTED_PROVIDER_OPERATION","native":null,"retryable":false},"ok":false}
+
+### api spaces --session <session-gemini> --expected-generation <generation-gemini> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNSUPPORTED_PROVIDER_OPERATION","message":"UNSUPPORTED_PROVIDER_OPERATION","native":null,"retryable":false},"ok":false}
+
+### api session --session <session-gemini> --expected-generation <generation-gemini> <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"account":"g","account_id":"gemini:g","active_since":null,"activity":null,"archive":{"archived":false,"archived_at":null,"kind":"none","source":"provider_unsupported","state":"active"},"archived":false,"attachment":null,"availability":"stopped","background_tasks":null,"background_tasks_observed_at":null,"background_tasks_reason":"the provider reports no subagent or background task counts","background_tasks_source":null,"caller_binding":null,"caller_binding_reason":"NOT_RUNNING","canonical":null,"capabilities":{"add_to_herdr":false,"archive":true,"change_directory":false,"delete":true,"focus":false,"move_project":false,"move_space":false,"native_rename":false,"queue":false,"rename":true,"restart":false,"restore":false,"resume":true,"steer":false,"stop":false,"submit":false,"switch_account":false},"capability_reasons":{"add_to_herdr":"SESSION_NOT_RUNNING: a stopped session opens with Start Session (resume), which accepts a target Space and name","archive":null,"change_directory":"native session is bound to its account home","delete":null,"move_project":"native session is bound to its account home","move_space":"HERDR space moves are verified only for Codex","native_rename":"label is a Sessionsation catalog label; Gemini CLI has no native session rename","queue":"SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Gemini session","restart":"no verified Gemini process lifecycle control; stop it in its terminal","restore":"SESSION_NOT_ARCHIVED","resume":null,"steer":"SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Gemini session","stop":"Gemini CLI no longer supports individual accounts (migrate to Antigravity)","submit":"SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Gemini session","switch_account":"native session is bound to its account home"},"context_pct":null,"context_pct_observed_at":null,"context_pct_reason":"the Gemini context share is shown only in its terminal footer; screen reading lands with the shared typing engine","context_pct_source":null,"context_tokens":null,"context_window_size":null,"conversation_created_at":"<v>","conversation_id":"0c0c0c0c-0000-4000-8000-00000000003e","conversation_id_source":"native","directory":"<project>","discovery_warnings":[],"forked_from_conversation_id":null,"generation":"<generation-gemini>","history_file_bytes":187,"host_known":false,"id":"<session-gemini>","input_delivery":{"available":[],"interrupt":false,"label":null,"model_steering":{"configured":null,"enabled":false,"reason":null,"restart_required":false,"source":"default"},"modes":{"queue":null,"steer":null,"submit":null},"semantics":null,"steer":null,"terminal_input":{"available":false,"reason":"SESSION_NOT_RUNNING"}},"last_accessed":"<v>","model":null,"name":"project-2","name_source":"catalog","native":{"conversation_id":"0c0c0c0c-0000-4000-8000-00000000003e","job_id":null,"kind":null,"name":null,"status":null},"native_name":null,"native_status":null,"original_host":null,"pid":null,"placement":{"catalog_generation":"<generation-gemini>","checked_at":null,"host_id":null,"observed_at":null,"provenance":null,"reason":"no_verified_placement","space":null,"state":"unobserved","valid_until":null,"version":1},"previous_conversation_ids":[],"process_start":null,"provider":"gemini","resume_block_reason":null,"revision":1,"space":null,"subagents_running":null,"subagents_running_observed_at":null,"subagents_running_reason":"the provider reports no subagent or background task counts","subagents_running_source":null}}
+
+--- stderr
+
+### api auto-start --session <session-gemini> --expected-generation <generation-gemini> --mode bogus <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --mode must be disabled, start or start_prompt","native":null,"retryable":false},"ok":false}
+
+### api session compact --session <session-gemini> --expected-generation <generation-gemini> <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session resolve --session <session-gemini> --expected-generation <generation-gemini> <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"account":"g","account_id":"gemini:g","activity":null,"attachment":null,"availability":"stopped","background_tasks":null,"background_tasks_observed_at":null,"background_tasks_reason":"the provider reports no subagent or background task counts","background_tasks_source":null,"canonical":null,"context_pct":null,"context_pct_observed_at":null,"context_pct_reason":"the Gemini context share is shown only in its terminal footer; screen reading lands with the shared typing engine","context_pct_source":null,"context_tokens":null,"context_window_size":null,"conversation_id":"0c0c0c0c-0000-4000-8000-00000000003e","directory":"<project>","generation":"<generation-gemini>","id":"<session-gemini>","live_activity":null,"model":null,"name":"project-2","name_source":"catalog","pid":null,"provider":"gemini","revision":1,"snapshot":{"age_seconds":"<v>","cached":true,"fresh":true,"observed_at":"<v>","source":"state_snapshot"},"space":null,"subagents_running":null,"subagents_running_observed_at":null,"subagents_running_reason":"the provider reports no subagent or background task counts","subagents_running_source":null}}
+
+--- stderr
+
+### api attachment --session <session-gemini> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api switch --session <session-gemini> --expected-generation stale --to nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api turn-notify --session <session-gemini> --expected-generation stale --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api turn-notify --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-recover --session <session-gemini> --expected-generation stale --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api auto-recover --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restart --session <session-gemini> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api spaces --session <session-gemini> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api session --session <session-gemini> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api auto-start --session <session-gemini> --expected-generation stale --mode bogus <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --mode must be disabled, start or start_prompt","native":null,"retryable":false},"ok":false}
+
+### api session compact --session <session-gemini> --expected-generation stale <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session resolve --session <session-gemini> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api rename --session <session-gemini> --expected-generation stale --name x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api session set-space --session <session-gemini> --expected-generation stale --space s <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api attachment --session <session-antigravity> --expected-generation <generation-antigravity> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"SESSION_NOT_ATTACHED","message":"SESSION_NOT_ATTACHED: This session has no live terminal. Refresh the session list; Focus never starts an agent.","native":null,"retryable":false},"ok":false}
+
+### api switch --session <session-antigravity> --expected-generation <generation-antigravity> --to nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNSUPPORTED_PROVIDER_OPERATION","message":"UNSUPPORTED_PROVIDER_OPERATION","native":null,"retryable":false},"ok":false}
+
+### api turn-notify --session <session-antigravity> --expected-generation <generation-antigravity> --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api turn-notify --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-recover --session <session-antigravity> --expected-generation <generation-antigravity> --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api auto-recover --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restart --session <session-antigravity> --expected-generation <generation-antigravity> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNSUPPORTED_PROVIDER_OPERATION","message":"UNSUPPORTED_PROVIDER_OPERATION","native":null,"retryable":false},"ok":false}
+
+### api spaces --session <session-antigravity> --expected-generation <generation-antigravity> <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNSUPPORTED_PROVIDER_OPERATION","message":"UNSUPPORTED_PROVIDER_OPERATION","native":null,"retryable":false},"ok":false}
+
+### api session --session <session-antigravity> --expected-generation <generation-antigravity> <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"account":"g","account_id":"antigravity:g","active_since":null,"activity":null,"archive":{"archived":false,"archived_at":null,"kind":"none","source":"provider_unsupported","state":"active"},"archived":false,"attachment":null,"availability":"stopped","background_tasks":null,"background_tasks_observed_at":null,"background_tasks_reason":"the provider reports no subagent or background task counts","background_tasks_source":null,"caller_binding":null,"caller_binding_reason":"NOT_RUNNING","canonical":null,"capabilities":{"add_to_herdr":false,"archive":true,"change_directory":false,"delete":true,"focus":false,"move_project":false,"move_space":false,"native_rename":false,"queue":false,"rename":true,"restart":false,"restore":false,"resume":true,"steer":false,"stop":false,"submit":false,"switch_account":false},"capability_reasons":{"add_to_herdr":"SESSION_NOT_RUNNING: a stopped session opens with Start Session (resume), which accepts a target Space and name","archive":null,"change_directory":"native session is bound to its account home","delete":null,"move_project":"native session is bound to its account home","move_space":"HERDR space moves are verified only for Codex","native_rename":"label is a Sessionsation catalog label; Antigravity CLI renames only inside its own /rename","queue":"SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Antigravity session","restart":"restart is not supported for Antigravity CLI: stop the session, then resume it","restore":"SESSION_NOT_ARCHIVED","resume":null,"steer":"SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Antigravity session","stop":"SESSION_NOT_RUNNING","submit":"SESSION_NOT_RUNNING: use mode resume (headless) for a stopped Antigravity session","switch_account":"native session is bound to its account home"},"context_pct":null,"context_pct_observed_at":null,"context_pct_reason":"the Antigravity CLI reports no context usage","context_pct_source":null,"context_tokens":null,"context_window_size":null,"conversation_created_at":"<v>","conversation_id":"0d0d0d0d-0000-4000-8000-000000000a9e","conversation_id_source":"native","directory":"<project>","discovery_warnings":[],"forked_from_conversation_id":null,"generation":"<generation-antigravity>","history_file_bytes":0,"host_known":false,"id":"<session-antigravity>","input_delivery":{"available":[],"interrupt":false,"label":null,"modes":{"queue":null,"steer":null,"submit":null},"queued_messages":{"source":"default","value":"queue"},"semantics":null,"steer":null,"terminal_input":{"available":false,"reason":"SESSION_NOT_RUNNING"}},"last_accessed":"<v>","model":null,"name":"project-3","name_source":"catalog","native":{"conversation_id":"0d0d0d0d-0000-4000-8000-000000000a9e","job_id":null,"kind":null,"name":null,"status":null},"native_name":null,"native_status":null,"original_host":null,"pid":null,"placement":{"catalog_generation":"<generation-antigravity>","checked_at":null,"host_id":null,"observed_at":null,"provenance":null,"reason":"no_verified_placement","space":null,"state":"unobserved","valid_until":null,"version":1},"previous_conversation_ids":[],"process_start":null,"provider":"antigravity","resume_block_reason":null,"revision":1,"space":null,"subagents_running":null,"subagents_running_observed_at":null,"subagents_running_reason":"the provider reports no subagent or background task counts","subagents_running_source":null}}
+
+--- stderr
+
+### api auto-start --session <session-antigravity> --expected-generation <generation-antigravity> --mode bogus <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --mode must be disabled, start or start_prompt","native":null,"retryable":false},"ok":false}
+
+### api session compact --session <session-antigravity> --expected-generation <generation-antigravity> <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session resolve --session <session-antigravity> --expected-generation <generation-antigravity> <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"account":"g","account_id":"antigravity:g","activity":null,"attachment":null,"availability":"stopped","background_tasks":null,"background_tasks_observed_at":null,"background_tasks_reason":"the provider reports no subagent or background task counts","background_tasks_source":null,"canonical":null,"context_pct":null,"context_pct_observed_at":null,"context_pct_reason":"the Antigravity CLI reports no context usage","context_pct_source":null,"context_tokens":null,"context_window_size":null,"conversation_id":"0d0d0d0d-0000-4000-8000-000000000a9e","directory":"<project>","generation":"<generation-antigravity>","id":"<session-antigravity>","live_activity":null,"model":null,"name":"project-3","name_source":"catalog","pid":null,"provider":"antigravity","revision":1,"snapshot":{"age_seconds":"<v>","cached":true,"fresh":true,"observed_at":"<v>","source":"state_snapshot"},"space":null,"subagents_running":null,"subagents_running_observed_at":null,"subagents_running_reason":"the provider reports no subagent or background task counts","subagents_running_source":null}}
+
+--- stderr
+
+### api attachment --session <session-antigravity> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api switch --session <session-antigravity> --expected-generation stale --to nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api turn-notify --session <session-antigravity> --expected-generation stale --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api turn-notify --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api auto-recover --session <session-antigravity> --expected-generation stale --enable --disable <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the argument '--enable' cannot be used with '--disable'\n\nUsage: sessionsation api auto-recover --session <SESSION> --expected-generation <EXPECTED_GENERATION> --enable\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api restart --session <session-antigravity> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api spaces --session <session-antigravity> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api session --session <session-antigravity> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api auto-start --session <session-antigravity> --expected-generation stale --mode bogus <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --mode must be disabled, start or start_prompt","native":null,"retryable":false},"ok":false}
+
+### api session compact --session <session-antigravity> --expected-generation stale <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --when-idle\n\nUsage: sessionsation api session compact --session <SESSION> --expected-generation <EXPECTED_GENERATION> --when-idle\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api session resolve --session <session-antigravity> --expected-generation stale <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api rename --session <session-antigravity> --expected-generation stale --name x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api session set-space --session <session-antigravity> --expected-generation stale --space s <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"STALE_TARGET","message":"STALE_TARGET","native":null,"retryable":false},"ok":false}
+
+### api session --session 0f0f0f0f-0000-4000-8000-000000000000 <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --expected-generation is required","native":null,"retryable":false},"ok":false}
+
+### api session --expected-generation g <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --session is required","native":null,"retryable":false},"ok":false}
+
+### api auto-start --all --mode start <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --all only supports --mode disabled","native":null,"retryable":false},"ok":false}
+
+### api auto-start --all --mode disabled --prompt p <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --all only supports --mode disabled","native":null,"retryable":false},"ok":false}
+
+### api session compact-status --operation nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_OPERATION_ID","message":"INVALID_OPERATION_ID: invalid character: found `n` at 0","native":null,"retryable":false},"ok":false}
+
+### api session compact-cancel --operation nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_OPERATION_ID","message":"INVALID_OPERATION_ID: invalid character: found `n` at 0","native":null,"retryable":false},"ok":false}
+
+### api session set-model-status --operation nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_OPERATION_ID","message":"INVALID_OPERATION_ID: invalid character: found `n` at 0","native":null,"retryable":false},"ok":false}
+
+### api session set-model-cancel --operation nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_OPERATION_ID","message":"INVALID_OPERATION_ID: invalid character: found `n` at 0","native":null,"retryable":false},"ok":false}
+
+### api session launch-status --request-id nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST_ID","message":"INVALID_REQUEST_ID: invalid character: found `n` at 0","native":null,"retryable":false},"ok":false}
+
+### api respond nope --sequence 1 yes <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_NOT_FOUND","message":"OPERATION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api cancel-operation nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_NOT_FOUND","message":"OPERATION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api recover nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_NOT_FOUND","message":"OPERATION_NOT_FOUND","native":null,"retryable":false},"ok":false}
+
+### api abandon-operation --operation nope --confirm x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"CONFIRMATION_MISMATCH","message":"CONFIRMATION_MISMATCH","native":null,"retryable":false},"ok":false}
+
+### api receipt nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ID","message":"invalid_id","native":null,"retryable":false},"ok":false}
+
+### api cancel nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ID","message":"invalid_id","native":null,"retryable":false},"ok":false}
+
+### api recovery-reconcile nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ID","message":"invalid_id","native":null,"retryable":false},"ok":false}
+
+### api usage --account nobody:x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNKNOWN_PROVIDER","message":"UNKNOWN_PROVIDER: 'nobody' is not a provider; use codex, claude, gemini or antigravity","native":null,"retryable":false},"ok":false}
+
+### api hooks --account nobody:x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNKNOWN_PROVIDER","message":"UNKNOWN_PROVIDER: 'nobody' is not a provider; use codex, claude, gemini or antigravity","native":null,"retryable":false},"ok":false}
+
+### api events --limit 0 <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --limit is 1 to 2000","native":null,"retryable":false},"ok":false}
+
+### api launch status --request-id nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST_ID","message":"INVALID_REQUEST_ID","native":null,"retryable":false},"ok":false}
+
+### api resume-launch status --request-id nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST_ID","message":"INVALID_REQUEST_ID: invalid character: found `n` at 0","native":null,"retryable":false},"ok":false}
+
+### api account delete nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"ACCOUNT_PROVIDER_REQUIRED","message":"ACCOUNT_PROVIDER_REQUIRED: use <provider>:<name>, for example codex:nobody, claude:nobody or gemini:nobody","native":null,"retryable":false},"ok":false}
+
+### api account show nobody <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unrecognized subcommand 'show'\n\nUsage: sessionsation api account [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### api launcher new --account nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"ACCOUNT_PROVIDER_REQUIRED","message":"ACCOUNT_PROVIDER_REQUIRED: use <provider>:<name>, for example codex:nobody, claude:nobody or gemini:nobody","native":null,"retryable":false},"ok":false}
+
+### api operations <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":[]}
+
+--- stderr
+
+### api archives <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":[]}
+
+--- stderr
+
+### api placements <<< 
+exit 0
+--- stdout
+{"api_version":1,"ok":true,"result":{"hosts":[],"memberships":{"<session-antigravity>":{"catalog_generation":"<generation-antigravity>","checked_at":null,"host_id":null,"observed_at":null,"provenance":null,"reason":"no_verified_placement","space":null,"state":"unobserved","valid_until":null,"version":1},"<session-claude>":{"catalog_generation":"<generation-claude>","checked_at":null,"host_id":null,"observed_at":null,"provenance":null,"reason":"no_verified_placement","space":null,"state":"unobserved","valid_until":null,"version":1},"<session-codex>":{"catalog_generation":"<generation-codex>","checked_at":null,"host_id":null,"observed_at":null,"provenance":null,"reason":"no_verified_placement","space":null,"state":"unobserved","valid_until":null,"version":1},"<session-gemini>":{"catalog_generation":"<generation-gemini>","checked_at":null,"host_id":null,"observed_at":null,"provenance":null,"reason":"no_verified_placement","space":null,"state":"unobserved","valid_until":null,"version":1}},"observed_at":"<v>","sends_input":false,"starts_process":false,"version":1}}
+
+--- stderr
+
+### account show nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"unknown account","native":null,"retryable":false},"ok":false}
+
+### account logout nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"REQUEST_FAILED","message":"REQUEST_FAILED: ACCOUNT_NOT_FOUND: no enrolled account named codex:nobody","native":null,"retryable":false},"ok":false}
+
+### account rename nobody x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"REQUEST_FAILED","message":"REQUEST_FAILED: ACCOUNT_NOT_FOUND: no enrolled account named codex:nobody","native":null,"retryable":false},"ok":false}
+
+### account reorder nobody 1 <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '1' found\n\nUsage: sessionsation account reorder [OPTIONS] --position <POSITION> <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### account history nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"REQUEST_FAILED","message":"REQUEST_FAILED: ACCOUNT_NOT_FOUND: no enrolled account named codex:nobody","native":null,"retryable":false},"ok":false}
+
+### account enable nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"REQUEST_FAILED","message":"REQUEST_FAILED: ACCOUNT_NOT_FOUND: no enrolled account named codex:nobody","native":null,"retryable":false},"ok":false}
+
+### account disable nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"REQUEST_FAILED","message":"REQUEST_FAILED: ACCOUNT_NOT_FOUND: no enrolled account named codex:nobody","native":null,"retryable":false},"ok":false}
+
+### account login nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"REQUEST_FAILED","message":"REQUEST_FAILED: ACCOUNT_NOT_FOUND: no enrolled account named codex:nobody","native":null,"retryable":false},"ok":false}
+
+### account managed-home nobody <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"REQUEST_FAILED","message":"REQUEST_FAILED: ACCOUNT_NOT_FOUND: no enrolled account named codex:nobody","native":null,"retryable":false},"ok":false}
+
+### account add --platform codex --config-dir /x y <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --config-dir is only supported with --platform claude","native":null,"retryable":false},"ok":false}
+
+### account add --platform gemini --config-dir /x y <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --config-dir is only supported with --platform claude","native":null,"retryable":false},"ok":false}
+
+### account auth nobody --mode google <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNSUPPORTED_PROVIDER_OPERATION","message":"UNSUPPORTED_PROVIDER_OPERATION: authentication modes are a Gemini account setting","native":null,"retryable":false},"ok":false}
+
+### account live-steering nobody --enable <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"REQUEST_FAILED","message":"REQUEST_FAILED: ACCOUNT_NOT_FOUND: no enrolled account named codex:nobody","native":null,"retryable":false},"ok":false}
+
+### account bypass-warning nobody --skip <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"REQUEST_FAILED","message":"REQUEST_FAILED: ACCOUNT_NOT_FOUND: no enrolled account named codex:nobody","native":null,"retryable":false},"ok":false}
+
+### config set no_such_key 1 <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"unknown setting no_such_key","native":null,"retryable":false},"ok":false}
+
+### root migrate <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: root migrate needs --from F --to T --backup DIR, or --session S","native":null,"retryable":false},"ok":false}
+
+### root migrate --session 0f0f0f0f-0000-4000-8000-000000000000 --prompt-file /nonexistent/x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: cannot read --prompt-file /nonexistent/x: No such file or directory (os error 2)","native":null,"retryable":false},"ok":false}
+
+### shared migrate --account codex:x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"ACCOUNT_PROVIDER_REQUIRED","message":"ACCOUNT_PROVIDER_REQUIRED: shared state applies to claude:<name> accounts","native":null,"retryable":false},"ok":false}
+
+### run --account nobody --session x <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"--session is reserved for managed launching","native":null,"retryable":false},"ok":false}
+
+### run --account codex:g --hosted <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"UNSUPPORTED_PROVIDER_OPERATION","message":"UNSUPPORTED_PROVIDER_OPERATION: hosted sessions are Claude-only","native":null,"retryable":false},"ok":false}
+
+### run --account codex:g --name n --thread t <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"INVALID_ARGUMENT: --name names a new session started in this terminal (inline host, no --thread or --hosted)","native":null,"retryable":false},"ok":false}
+
+### run --account claude:g --host herdr <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"--host herdr requires --herdr-session","native":null,"retryable":false},"ok":false}
+
+### open --session 0f0f0f0f-0000-4000-8000-000000000000 <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"session is no longer available; refresh the inventory","native":null,"retryable":false},"ok":false}
+
+### rename --session 0f0f0f0f-0000-4000-8000-000000000000 --name n <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"session is no longer available; refresh Sessions","native":null,"retryable":false},"ok":false}
+
+### auto-switch --thread nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"invalid character: found `n` at 0","native":null,"retryable":false},"ok":false}
+
+### auto-start --thread nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"invalid character: found `n` at 0","native":null,"retryable":false},"ok":false}
+
+### resume --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g <<< 
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: unexpected argument '--session' found\n\n  tip: a similar argument exists: '--permissions'\n\nUsage: sessionsation resume --expected-generation <EXPECTED_GENERATION> --permissions <PERMISSIONS> <SESSION>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
+### session --session 0f0f0f0f-0000-4000-8000-000000000000 <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"use an exact session inventory ID, not a display name","native":null,"retryable":false},"ok":false}
+
+### cancel-move nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"No such file or directory (os error 2)","native":null,"retryable":false},"ok":false}
+
+### move-response nope yes <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"No such file or directory (os error 2)","native":null,"retryable":false},"ok":false}
+
+### recover nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"No such file or directory (os error 2)","native":null,"retryable":false},"ok":false}
+
+### retry nope <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"job not found","native":null,"retryable":false},"ok":false}
+
+### background-response nope yes <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"OPERATION_FAILED","message":"No such file or directory (os error 2)","native":null,"retryable":false},"ok":false}
+
+### api send <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: EOF while parsing a value at line 1 column 0","native":null,"retryable":false},"ok":false}
+
+### api send <<< {
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: EOF while parsing an object at line 1 column 1","native":null,"retryable":false},"ok":false}
+
+### api send <<< <32769 bytes>
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INPUT_TOO_LARGE","message":"INPUT_TOO_LARGE","native":null,"retryable":false},"ok":false}
+
+### api send <<< {"version":1}
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: unknown field `version`, expected one of `api_version`, `message_id`, `session_id`, `expected_generation`, `mode`, `text`, `expires_at`, `recovery`, `steering`, `origin`, `delivery`, `await_reply`, `if_busy`","native":null,"retryable":false},"ok":false}
+
+### api recovery-plan <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: EOF while parsing a value at line 1 column 0","native":null,"retryable":false},"ok":false}
+
+### api recovery-plan <<< {
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: EOF while parsing an object at line 1 column 1","native":null,"retryable":false},"ok":false}
+
+### api recovery-plan <<< <32769 bytes>
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INPUT_TOO_LARGE","message":"INPUT_TOO_LARGE","native":null,"retryable":false},"ok":false}
+
+### api recovery-plan <<< {"version":1}
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: unknown field `version`, expected one of `session_id`, `expected_generation`, `host` at line 1 column 10","native":null,"retryable":false},"ok":false}
+
+### api checkpoints <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: EOF while parsing a value at line 1 column 0","native":null,"retryable":false},"ok":false}
+
+### api checkpoints <<< {
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: EOF while parsing an object at line 1 column 1","native":null,"retryable":false},"ok":false}
+
+### api checkpoints <<< <32769 bytes>
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INPUT_TOO_LARGE","message":"INPUT_TOO_LARGE","native":null,"retryable":false},"ok":false}
+
+### api checkpoints <<< {"version":1}
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: missing field `session_id` at line 1 column 13","native":null,"retryable":false},"ok":false}
+
+### api observations <<< 
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: EOF while parsing a value at line 1 column 0","native":null,"retryable":false},"ok":false}
+
+### api observations <<< {
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: EOF while parsing an object at line 1 column 1","native":null,"retryable":false},"ok":false}
+
+### api observations <<< <32769 bytes>
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INPUT_TOO_LARGE","message":"INPUT_TOO_LARGE","native":null,"retryable":false},"ok":false}
+
+### api observations <<< {"version":1}
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_REQUEST","message":"INVALID_REQUEST: unknown field `version`, expected one of `api_version`, `sessions`, `policy` at line 1 column 10","native":null,"retryable":false},"ok":false}
+
+### api answer --session 0f0f0f0f-0000-4000-8000-000000000000 --expected-generation g --request-id r <<< {
+exit 1
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ANSWERS","message":"INVALID_ANSWERS: EOF while parsing an object at line 1 column 1","native":null,"retryable":false},"ok":false}
+
+### account auth gemini:g --key-stdin <<< <4097 bytes>
+exit 2
+--- stdout
+
+--- stderr
+{"api_version":1,"error":{"code":"INVALID_ARGUMENT","message":"error: the following required arguments were not provided:\n  --mode <google|api-key>\n\nUsage: sessionsation account auth --mode <google|api-key> --key-stdin <NAME>\n\nFor more information, try '--help'.\n","retryable":false},"ok":false}
+
