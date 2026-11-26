@@ -208,18 +208,14 @@ pub(super) async fn settle(paths: &Paths, receipt: &mut Receipt, verdict: Verdic
         Verdict::StillQueued => match cancel(paths, &mut ledger, receipt).await {
             Ok(()) if receipt.state == "cancelled" => {
                 // Removed before the session took it: nothing ran, safe to resend.
-                receipt.state = "failed".into();
-                receipt.reason = Some("input_not_consumed".into());
-                ledger.save(receipt)
+                receipt.set_state(&mut ledger, "failed", Some("input_not_consumed"))
             }
             // Consumed in the meantime or removal uncertain: cancel() already
             // recorded the honest state; a later receipt query refreshes it.
             _ => Ok(()),
         },
         Verdict::Unverified => {
-            receipt.state = "unknown".into();
-            receipt.reason = Some("consumption_unverified".into());
-            ledger.save(receipt)
+            receipt.set_state(&mut ledger, "unknown", Some("consumption_unverified"))
         }
     }
 }

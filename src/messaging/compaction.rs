@@ -373,10 +373,7 @@ pub async fn status(
 ) -> anyhow::Result<Value> {
     let r = Record::find(paths, operation, session)?;
     let mut v = public(&r);
-    v["held_messages"] = match held_ids(paths, &r.conversation_id).await {
-        Some(ids) => json!(ids),
-        None => Value::Null,
-    };
+    v["held_messages"] = json!(held_ids(paths, &r.conversation_id).await);
     Ok(v)
 }
 

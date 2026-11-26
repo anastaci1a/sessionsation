@@ -715,7 +715,7 @@ pub const LEDGER_PREFIX_DIGEST: &str =
     "ed08070acb6d556ff4c0dad1e0851a9569760526b92059d2a1360de04dd0c0ff";
 /// sha256 of baseline `steps` and `trajectory` (see `guard::tables_digest`): loosening a row is
 /// a reviewed change of this file.
-pub const TABLES_DIGEST: &str = "aafa72b2f07edc9762fcefe39f82c0f9af2b8abcf4507b274ad21898fa4bd05f";
+pub const TABLES_DIGEST: &str = "f5e8f4193812e0479c6c42579fe0522d614b59e7219555718f15dd49fff6d244";
 /// Existing modules (file stems; `<stem>.rs` and `<stem>/`) that have no budget row. A production
 /// file in neither `MODULES` nor here fails `every_production_file_is_listed`.
 pub const UNLISTED_OK: &[&str] = &[

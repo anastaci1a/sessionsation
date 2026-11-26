@@ -459,10 +459,7 @@ pub async fn wait(paths: &Paths, id: &str, seconds: u64) -> anyhow::Result<Value
 async fn status_value(paths: &Paths, r: &Record) -> Value {
     let mut v = public(r);
     v["held_messages"] = if via_app_server(&r.provider) {
-        match super::compaction::held_ids(paths, &r.conversation_id).await {
-            Some(ids) => json!(ids),
-            None => Value::Null,
-        }
+        json!(super::compaction::held_ids(paths, &r.conversation_id).await)
     } else {
         json!([])
     };

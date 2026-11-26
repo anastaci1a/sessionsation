@@ -24,11 +24,8 @@
 //! and Ctrl+C / Ctrl+D arm agy's exit; Ctrl+K approves a subagent, up/down
 //! edit queued messages or history: none of these is ever sent.
 use super::{
-    Record, Request, abandon_unsent, change, finish, is_terminal, pane_lock, read,
-    terminal::{
-        self, CONFIRM_SECONDS, Cell, Host, Terminal, columns, now_ms, reason, row_text, squash,
-        timestamp_ms,
-    },
+    Record, Request, abandon_unsent, change, close, pane_lock, read,
+    terminal::{self, Cell, Host, Terminal, Turn, columns, reason, row_text, squash, timestamp_ms},
     typing::{
         self, ClearKeys, Draft, Key, Prefix, Screen, ScreenProfile, SessionInput, Typing, code,
     },
@@ -471,10 +468,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         return Ok(());
     }
     if r.request.expires_at <= crate::daemon::now() {
-        return change(paths, id, |r| {
-            finish(r, "expired", Some("EXPIRED_BEFORE_DELIVERY"));
-            Ok(())
-        });
+        return close(paths, id, "expired", Some("EXPIRED_BEFORE_DELIVERY"));
     }
     let (t, home) = match typing::recheck::<Antigravity>(paths, &r) {
         Ok((t, home, _)) => (t, home),
@@ -606,40 +600,9 @@ pub(crate) fn find(path: &Path, offset: u64, text: &str, since_ms: i64) -> Resul
 
 /// Apply transcript evidence to a written agy terminal record (never regressed).
 pub(crate) fn observe(paths: &Paths, id: &str, idle: bool) -> Result<()> {
-    let r = read(paths, id)?;
-    if r.terminal.is_none() || is_terminal(&r) || !r.facts.written {
-        return Ok(());
-    }
-    let t = r.terminal.clone().unwrap_or_default();
-    let Some(path) = antigravity_log(paths, &r).filter(|p| p.is_file()) else {
-        return change(paths, id, |r| {
-            r.observation_error = Some("transcript_unavailable".into());
-            Ok(())
-        });
-    };
-    let found = find(
-        &path,
-        t.anchor_offset.unwrap_or(0),
-        &t.delivered_text,
-        t.submitted_at_ms.unwrap_or(0),
-    );
-    change(paths, id, |r| {
-        if is_terminal(r) {
-            return Ok(());
-        }
-        let Ok(found) = found else {
-            r.observation_error = Some("transcript_unreadable".into());
-            return Ok(());
-        };
-        let Some(t) = r.terminal.as_mut() else {
-            return Ok(());
-        };
-        t.transcript = Some(path.clone());
-        let Some(step) = found.id else {
-            r.observation_error = Some("terminal_input_not_found".into());
-            return Ok(());
-        };
-        r.observation_error = None;
+    let locate = |r: &Record| antigravity_log(paths, r).filter(|p| p.is_file());
+    terminal::observe_terminal(paths, id, idle, locate, find, |t, found| {
+        let step = found.id?;
         let facts = t.antigravity.get_or_insert_with(Facts::default);
         let outcome = match (facts.busy_at_submit, facts.expected.as_deref()) {
             (Some(true), Some("native_queue")) => "queued",
@@ -649,68 +612,26 @@ pub(crate) fn observe(paths: &Paths, id: &str, idle: bool) -> Result<()> {
         facts.outcome = Some(outcome.into());
         t.input_uuid = Some(step);
         t.input_record = Some("user".into());
-        t.turn_ended |= found.turn_ended;
-        let ended = t.turn_ended || (idle && !found.reply.is_empty());
-        r.facts.input_recorded = true;
-        r.facts.folded = outcome == "sent_immediately";
-        r.facts.shared_with_turn = outcome == "sent_immediately" || !found.exact;
-        r.evidence_at = Some(crate::daemon::now());
-        r.reply_text.clear();
-        r.reply_truncated = false;
-        for text in &found.reply {
-            super::append_reply(r, text);
-        }
-        if r.started_at.is_none() {
-            r.started_at = Some(crate::daemon::now());
-        }
-        if ended {
-            if r.reply_text.is_empty() {
-                finish(r, "completed_without_reply", None);
-            } else {
-                finish(r, "completed_with_reply", None);
-            }
-        } else {
-            r.state = "execution_started".into();
-        }
-        Ok(())
+        let immediately = outcome == "sent_immediately";
+        Some(Turn {
+            reply: found.reply,
+            turn_ended: found.turn_ended,
+            folded: immediately,
+            shared: immediately || !found.exact,
+            running: "execution_started",
+        })
     })
 }
 
 /// A queued message is recorded only when the turn reaches it, so it may wait
 /// the whole request timeout; anything else 60 seconds.
-fn confirm_window(r: &Record) -> Duration {
-    let timeout = r
-        .request
-        .timeout_seconds
-        .unwrap_or(super::DEFAULT_TIMEOUT_SECONDS);
+pub(crate) fn confirm_window(r: &Record) -> Duration {
     let pending = r
         .terminal
         .as_ref()
         .and_then(|t| t.antigravity.as_ref())
         .is_some_and(|a| a.busy_at_submit == Some(true) && a.screen_evidence.is_some());
-    Duration::from_secs(if pending {
-        timeout
-    } else {
-        timeout.min(CONFIRM_SECONDS)
-    })
-}
-
-/// With the worker gone, a submit never matched within its window stays
-/// uncertain for good: `delivery_unknown`.
-pub(crate) fn unconfirmed_after_exit(paths: &Paths, id: &str) -> Result<()> {
-    change(paths, id, |r| {
-        let window = confirm_window(r).as_millis() as i64;
-        let Some(t) = r.terminal.as_ref() else {
-            return Ok(());
-        };
-        let late = t
-            .submitted_at_ms
-            .is_some_and(|at| now_ms() - at > window + 5000);
-        if !is_terminal(r) && r.facts.written && t.input_uuid.is_none() && late {
-            finish(r, "delivery_unknown", Some("TERMINAL_INPUT_UNCONFIRMED"));
-        }
-        Ok(())
-    })
+    typing::confirm_window(r, pending)
 }
 
 // ---------------------------------------------------------------- receipts

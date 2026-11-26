@@ -72,6 +72,39 @@ impl Binding {
     pub(super) fn into_request(self) -> PublicRequest {
         self.request
     }
+    /// A new binding of `request` to its `native` target, its caller origin resolved now.
+    fn new(
+        paths: &Paths,
+        native: Enqueue,
+        request: PublicRequest,
+        plan: Option<crate::provider::send::Plan>,
+    ) -> Self {
+        let (origin, source) = crate::caller_origin::resolve(paths, request.origin.as_deref());
+        Binding {
+            request,
+            native,
+            cancelled: false,
+            released_hold: false,
+            origin: Some(origin),
+            origin_source: Some(source.to_owned()),
+            evidence_observed_at: None,
+            plan,
+        }
+    }
+    /// Write the binding row: a new one, or the row of `id` replaced.
+    fn put(&self, ledger: &Ledger, id: Option<&str>) -> anyhow::Result<()> {
+        let json = serde_json::to_string(self)?;
+        if let Some(id) = id {
+            let sql = "UPDATE public_messages SET binding=? WHERE id=?";
+            ledger.db.execute(sql, params![json, id])?;
+        } else {
+            let sql = "INSERT INTO public_messages VALUES(?,?)";
+            ledger
+                .db
+                .execute(sql, params![self.request.message_id, json])?;
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn get(ledger: &impl Reads, id: &str) -> Result<Option<Binding>> {
@@ -204,10 +237,7 @@ pub(super) async fn send_released(paths: &Paths, id: &str) -> anyhow::Result<Val
     let mut binding = get(&ledger, id)?.ok_or(Fault("receipt_not_found"))?;
     if !binding.released_hold {
         binding.released_hold = true;
-        ledger.db.execute(
-            "UPDATE public_messages SET binding=? WHERE id=?",
-            params![serde_json::to_string(&binding)?, id],
-        )?;
+        binding.put(&ledger, Some(id))?;
     }
     let request = binding.into_request();
     drop(ledger);
@@ -374,18 +404,7 @@ pub(super) async fn send_planned(
                 request.expires_at > now && request.expires_at <= now + 86400,
                 "INVALID_EXPIRY"
             );
-            let (origin, origin_source) =
-                crate::caller_origin::resolve(paths, request.origin.as_deref());
-            let binding = Binding {
-                request,
-                native,
-                cancelled: false,
-                released_hold: false,
-                origin: Some(origin),
-                origin_source: Some(origin_source.to_owned()),
-                evidence_observed_at: None,
-                plan: plan.clone(),
-            };
+            let binding = Binding::new(paths, native, request, plan.clone());
             // Bind the logical request before any native mutation. A crash here is
             // provably unsent; later retries retain the exact original native target.
             let count = |l: &Ledger| -> rusqlite::Result<i64> {
@@ -398,10 +417,7 @@ pub(super) async fn send_planned(
             }
             let count = count_now;
             anyhow::ensure!(count < 10000, "RECEIPT_CAPACITY_REACHED");
-            ledger.db.execute(
-                "INSERT INTO public_messages VALUES(?,?)",
-                params![binding.request.message_id, serde_json::to_string(&binding)?],
-            )?;
+            binding.put(&ledger, None)?;
             binding
         };
     if binding.cancelled {
@@ -686,10 +702,7 @@ async fn receipt_write(
     let Some(mut receipt) = ledger.get(id)? else {
         if cancelling {
             binding.cancelled = true;
-            ledger.db.execute(
-                "UPDATE public_messages SET binding=? WHERE id=?",
-                params![serde_json::to_string(&binding)?, id],
-            )?;
+            binding.put(&ledger, Some(id))?;
             return super::recovery::decorate(
                 paths,
                 id,
@@ -716,9 +729,7 @@ async fn receipt_write(
                 "STEERING_CANCELLATION_UNSUPPORTED"
             );
             if receipt.state == "pending_local" {
-                receipt.state = "cancelled".into();
-                receipt.reason = None;
-                ledger.save(&receipt)?;
+                receipt.set_state(&mut ledger, "cancelled", None)?;
             }
         }
         if !steering::observable(&receipt) {
@@ -747,10 +758,7 @@ async fn receipt_write(
                 Ok(Some(observed)) => {
                     steering::commit(&mut ledger, &mut receipt, observed)?;
                     binding.evidence_observed_at = Some(crate::daemon::now());
-                    ledger.db.execute(
-                        "UPDATE public_messages SET binding=? WHERE id=?",
-                        params![serde_json::to_string(&binding)?, id],
-                    )?;
+                    binding.put(&ledger, Some(id))?;
                     json!({"state":"observed"})
                 }
                 Ok(None) => json!({"state":"uncorrelated"}),
@@ -795,10 +803,7 @@ async fn receipt_write(
     };
     if value["observation"]["state"] == "observed" {
         binding.evidence_observed_at = Some(crate::daemon::now());
-        ledger.db.execute(
-            "UPDATE public_messages SET binding=? WHERE id=?",
-            params![serde_json::to_string(&binding)?, id],
-        )?;
+        binding.put(&ledger, Some(id))?;
     }
     reconcile_recovered_stop(paths, &binding, &receipt)?;
     super::recovery::decorate(paths, id, wrap(&binding, value))
@@ -818,9 +823,7 @@ fn settle_pending(paths: &Paths, ledger: &mut Ledger, receipt: &mut Receipt) -> 
         && attachment(paths, &receipt.session_id)
             .is_ok_and(|a| a.generation() != receipt.generation)
     {
-        receipt.state = "rejected".into();
-        receipt.reason = Some("generation_mismatch".into());
-        ledger.save(receipt)?;
+        receipt.set_state(ledger, "rejected", Some("generation_mismatch"))?;
     }
     Ok(())
 }
@@ -855,28 +858,15 @@ pub(super) async fn deliver_recovered(
             ledger.get(&request.message_id)?.is_none(),
             "MESSAGE_ID_CONFLICT"
         );
-        let (origin, origin_source) =
-            crate::caller_origin::resolve(paths, request.origin.as_deref());
-        let b = Binding {
-            native: Enqueue {
-                message_id: request.message_id.clone(),
-                session_id: session.conversation_id,
-                text: request.text.clone(),
-                expires_at: request.expires_at,
-                expected_generation: a.generation(),
-            },
-            request,
-            cancelled: false,
-            released_hold: false,
-            origin: Some(origin),
-            origin_source: Some(origin_source.to_owned()),
-            evidence_observed_at: None,
-            plan: None,
+        let native = Enqueue {
+            message_id: request.message_id.clone(),
+            session_id: session.conversation_id,
+            text: request.text.clone(),
+            expires_at: request.expires_at,
+            expected_generation: a.generation(),
         };
-        ledger.db.execute(
-            "INSERT INTO public_messages VALUES(?,?)",
-            params![b.request.message_id, serde_json::to_string(&b)?],
-        )?;
+        let b = Binding::new(paths, native, request, None);
+        b.put(&ledger, None)?;
         b
     };
     let mut r = ledger.accept(&binding.native, crate::daemon::now())?;

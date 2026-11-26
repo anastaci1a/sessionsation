@@ -22,7 +22,7 @@
 //! leaves, how the draft is accounted for when a restore cannot be verified, and the
 //! transcript anchoring.
 use super::{
-    Record, change, finish, is_terminal, read,
+    Record, change, complete, finish, is_terminal, read,
     terminal::{
         self, Cell, Terminal, cells, now_ms, reason, reject, reject_screen, row_text, squash, step,
     },
@@ -194,14 +194,24 @@ pub(crate) trait ScreenProfile {
     fn record_evidence(_t: &mut Terminal, _evidence: &str) {}
     /// How long a submit may go unrecorded.
     fn confirm_window(r: &Record) -> Duration {
-        let timeout = r
-            .request
-            .timeout_seconds
-            .unwrap_or(super::DEFAULT_TIMEOUT_SECONDS);
-        Duration::from_secs(timeout.min(CONFIRM_SECONDS))
+        confirm_window(r, false)
     }
     /// Apply transcript evidence to the written record.
     fn apply_transcript(paths: &Paths, id: &str, idle: bool) -> Result<()>;
+}
+
+/// How long a submit may go unrecorded: `CONFIRM_SECONDS` within the request timeout, or the
+/// whole timeout when `pending` (a busy submit the screen showed waiting for the turn).
+pub(crate) fn confirm_window(r: &Record, pending: bool) -> Duration {
+    let timeout = r
+        .request
+        .timeout_seconds
+        .unwrap_or(super::DEFAULT_TIMEOUT_SECONDS);
+    Duration::from_secs(if pending {
+        timeout
+    } else {
+        timeout.min(CONFIRM_SECONDS)
+    })
 }
 
 // ---------------------------------------------------------------- payload
@@ -1076,11 +1086,7 @@ pub(crate) async fn observe_loop<P: ScreenProfile>(
                 if let Some(t) = r.terminal.as_mut() {
                     t.turn_ended = true;
                 }
-                if r.reply_text.is_empty() {
-                    finish(r, "completed_without_reply", None);
-                } else {
-                    finish(r, "completed_with_reply", None);
-                }
+                complete(r);
                 Ok(())
             });
         }

@@ -480,11 +480,7 @@ fn finish(paths: &Paths, r: &mut Record, state: &str, reason: Option<String>) ->
     save(paths, r)
 }
 fn code(e: &anyhow::Error) -> String {
-    e.to_string()
-        .split(':')
-        .next()
-        .unwrap_or("REJECTED")
-        .to_owned()
+    super::claude_steer::typing::code(&e.to_string()).to_owned()
 }
 
 /// Detached worker: recheck, journal `executing`, run once, record the outcome.

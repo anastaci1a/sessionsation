@@ -472,6 +472,12 @@ fn attempt(paths: &Paths, access: Access, stats: &mut Stats) -> Result<(Connecti
     Err(Fault("storage_error"))
 }
 
+/// Append one receipt version to the event journal, keeping its last 1000 entries.
+fn journal(tx: &rusqlite::Transaction, receipt: &str) -> rusqlite::Result<()> {
+    tx.execute("INSERT INTO events(receipt) VALUES (?)", [receipt])?;
+    let trim = "DELETE FROM events WHERE seq <= (SELECT coalesce(max(seq),0)-1000 FROM events)";
+    tx.execute(trim, []).map(drop)
+}
 fn lease(stats: Stats, lock: Lock) -> Lease {
     Lease {
         lock: Some(lock),
@@ -623,11 +629,7 @@ impl Ledger {
             "UPDATE receipts SET receipt=? WHERE id=?",
             params![data, receipt.message_id],
         )?;
-        tx.execute("INSERT INTO events(receipt) VALUES (?)", [data])?;
-        tx.execute(
-            "DELETE FROM events WHERE seq <= (SELECT coalesce(max(seq),0)-1000 FROM events)",
-            [],
-        )?;
+        journal(&tx, &data)?;
         tx.commit()?;
         Ok(())
     }
@@ -754,11 +756,7 @@ impl Ledger {
                 params![input.message_id, mode],
             )?;
         }
-        tx.execute("INSERT INTO events(receipt) VALUES (?)", [data])?;
-        tx.execute(
-            "DELETE FROM events WHERE seq <= (SELECT coalesce(max(seq),0)-1000 FROM events)",
-            [],
-        )?;
+        journal(&tx, &data)?;
         tx.commit()?;
         Ok(receipt)
     }

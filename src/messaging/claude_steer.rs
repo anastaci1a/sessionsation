@@ -60,7 +60,6 @@ pub const PEER_SEMANTICS: &str = "peer_message";
 pub const PEER_LABEL: &str = "Delivered as a Claude Code peer message: the session sees it as a message from another Claude session and may only partially comply";
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 600;
 const MAX_REPLY_TEXT: usize = 64 * 1024;
-const MAX_TRANSCRIPT_SCAN: u64 = 16 * 1024 * 1024;
 const ADMITTED_GRACE_SECONDS: i64 = 10;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -407,6 +406,97 @@ fn append_reply(r: &mut Record, text: &str) {
         }
         r.reply_text.truncate(end);
         r.reply_truncated = true;
+    }
+}
+/// [`finish`] one record under the records lock.
+fn close(paths: &Paths, id: &str, state: &str, reason: Option<&str>) -> Result<()> {
+    change(paths, id, |r| {
+        finish(r, state, reason);
+        Ok(())
+    })
+}
+/// A finished turn: `completed_with_reply` or `completed_without_reply`.
+fn complete(r: &mut Record) {
+    let state = if r.reply_text.is_empty() {
+        "completed_without_reply"
+    } else {
+        "completed_with_reply"
+    };
+    finish(r, state, None);
+}
+fn observation_error(r: &mut Record, code: &str) -> Result<()> {
+    r.observation_error = Some(code.into());
+    Ok(())
+}
+/// Transcript evidence for a written record (never regressed): `slot` is its kind's stored
+/// transcript path (`None`: another kind); the transcript `locate`d is `scan`ned outside the
+/// lock, then the scan is `apply`ed to the still open record.
+fn observe_transcript<S>(
+    paths: &Paths,
+    id: &str,
+    slot: fn(&mut Record) -> Option<&mut Option<PathBuf>>,
+    locate: impl FnOnce(&Record) -> Option<PathBuf>,
+    scan: impl FnOnce(&Record, &Path) -> Result<S>,
+    apply: impl FnOnce(&mut Record, S) -> Result<()>,
+) -> Result<()> {
+    let mut r = read(paths, id)?;
+    if slot(&mut r).is_none() || is_terminal(&r) || !r.facts.written {
+        return Ok(());
+    }
+    let Some(path) = locate(&r) else {
+        return change(paths, id, |r| {
+            observation_error(r, "transcript_unavailable")
+        });
+    };
+    let scanned = scan(&r, &path);
+    change(paths, id, |r| {
+        if is_terminal(r) {
+            return Ok(());
+        }
+        let Ok(s) = scanned else {
+            return observation_error(r, "transcript_unreadable");
+        };
+        let Some(stored) = slot(r) else {
+            return Ok(());
+        };
+        *stored = Some(path);
+        apply(r, s)
+    })
+}
+/// With the worker gone, a submit never matched in the transcript within its confirmation
+/// `window` stays uncertain for good: `delivery_unknown`.
+fn unconfirmed_after_exit(paths: &Paths, id: &str, window: fn(&Record) -> Duration) -> Result<()> {
+    change(paths, id, |r| {
+        let window = window(r).as_millis() as i64;
+        let Some(t) = r.terminal.as_ref() else {
+            return Ok(());
+        };
+        let late = t
+            .submitted_at_ms
+            .is_some_and(|at| terminal::now_ms() - at > window + 5000);
+        if !is_terminal(r) && r.facts.written && t.input_uuid.is_none() && late {
+            finish(r, "delivery_unknown", Some("TERMINAL_INPUT_UNCONFIRMED"));
+        }
+        Ok(())
+    })
+}
+/// The shared end of transcript evidence: the input recorded, the reply replaced, the record
+/// started, and complete once the turn `ended` (else in the `running` state).
+fn record_turn(r: &mut Record, reply: &[String], ended: bool, running: &str) {
+    r.facts.input_recorded = true;
+    r.evidence_at = Some(crate::daemon::now());
+    r.reply_text.clear();
+    r.reply_truncated = false;
+    for text in reply {
+        append_reply(r, text);
+    }
+    if r.started_at.is_none() {
+        r.started_at = Some(crate::daemon::now());
+    }
+    if ended {
+        complete(r);
+    } else {
+        r.state = running.into();
     }
 }
 
@@ -926,10 +1016,8 @@ fn settle(r: &mut Record) {
         finish(r, "interrupted", Some("TURN_INTERRUPTED"));
     } else if result_is_error(r) {
         finish(r, "failed", Some("PROVIDER_REPORTED_ERROR"));
-    } else if r.reply_text.is_empty() {
-        finish(r, "completed_without_reply", None);
     } else {
-        finish(r, "completed_with_reply", None);
+        complete(r);
     }
 }
 /// Inputs whose result arrived but whose terminal lifecycle never did, once a
@@ -1098,21 +1186,13 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
         return Ok(());
     }
     if r.request.expires_at <= crate::daemon::now() {
-        return change(paths, id, |r| {
-            finish(r, "expired", Some("EXPIRED_BEFORE_DELIVERY"));
-            Ok(())
-        });
+        return close(paths, id, "expired", Some("EXPIRED_BEFORE_DELIVERY"));
     }
     let checked = peer_recheck(paths, &r);
     let peer = match checked {
         Ok(p) => p,
         Err(e) => {
-            let reason = e
-                .to_string()
-                .split(':')
-                .next()
-                .unwrap_or("REJECTED")
-                .to_owned();
+            let reason = typing::code(&e.to_string()).to_owned();
             if fall_back_to_terminal(paths, id, &reason, "delivery")? {
                 drop(lock);
                 return hand_to_terminal(paths, id).await;
@@ -1136,13 +1216,7 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
         ));
     }
     if let Err(e) = native_peer::encode(&frames) {
-        let reason = e
-            .to_string()
-            .split(':')
-            .next()
-            .unwrap_or("REJECTED")
-            .to_owned();
-        return abandon_unsent(paths, id, &reason);
+        return abandon_unsent(paths, id, typing::code(&e.to_string()));
     }
     let reply = native_peer::bind_reply(&peer.socket, &paths.runtime.join("peer"))?;
     let from = reply.address();
@@ -1186,10 +1260,7 @@ pub async fn peer_worker(paths: &Paths, id: &str) -> Result<()> {
                 drop(lock);
                 return hand_to_terminal(paths, id).await;
             }
-            return change(paths, id, |r| {
-                finish(r, "rejected", Some("PEER_SOCKET_UNREACHABLE"));
-                Ok(())
-            });
+            return close(paths, id, "rejected", Some("PEER_SOCKET_UNREACHABLE"));
         }
     };
     let (read_half, mut write_half) = stream.into_split();
@@ -1607,13 +1678,8 @@ pub(crate) struct Scan {
 /// message id (the injected peer message), then collect assistant text until
 /// the next real input. Reads at most 16 MiB; user text is never retained.
 pub(crate) fn scan(path: &Path, offset: u64, id: &str) -> Result<Scan> {
-    let mut f = fs::File::open(path)?;
-    let len = f.metadata()?.len();
-    let start = if offset <= len { offset } else { 0 };
-    f.seek(std::io::SeekFrom::Start(start))?;
-    let reader = std::io::BufReader::new(f.take(MAX_TRANSCRIPT_SCAN));
     let mut out = Scan::default();
-    for line in reader.split(b'\n') {
+    for line in transcript_lines(path, offset)? {
         let line = line?;
         if !out.anchor_found {
             let hit = line.windows(id.len()).any(|w| w == id.as_bytes());
@@ -1653,64 +1719,42 @@ pub(crate) fn scan(path: &Path, offset: u64, id: &str) -> Result<Scan> {
 
 /// Positive transcript evidence for a delivered peer message (never regressed).
 fn peer_observe(paths: &Paths, id: &str) -> Result<()> {
-    let r = read(paths, id)?;
-    let Some(peer) = r.peer.clone() else {
-        return Ok(());
-    };
-    if is_terminal(&r) || !r.facts.written {
-        return Ok(());
-    }
-    let transcript = peer.transcript.clone().or_else(|| {
+    observe_transcript(
+        paths,
+        id,
+        |r| r.peer.as_mut().map(|p| &mut p.transcript),
+        |r| claude_transcript(paths, r, r.peer.as_ref()?.transcript.clone()),
+        |r, path| {
+            scan(
+                path,
+                r.peer.as_ref().and_then(|p| p.anchor_offset).unwrap_or(0),
+                id,
+            )
+        },
+        |r, s| {
+            if !s.anchor_found {
+                return observation_error(r, "peer_anchor_not_found");
+            }
+            r.observation_error = None;
+            let ended = r.peer.as_mut().is_some_and(|p| {
+                p.anchor_found = true;
+                p.turn_ended |= s.turn_ended;
+                p.turn_ended
+            }) || r.facts.idle_notice.is_some();
+            record_turn(r, &s.reply, ended, "execution_started");
+            Ok(())
+        },
+    )
+}
+/// The stored transcript, else the Claude account's transcript of the conversation.
+pub(crate) fn claude_transcript(
+    paths: &Paths,
+    r: &Record,
+    stored: Option<PathBuf>,
+) -> Option<PathBuf> {
+    stored.or_else(|| {
         let account = claude::account(paths, &r.account).ok()?;
         claude::find_transcript(&account.home, &r.conversation_id)
-    });
-    let Some(path) = transcript else {
-        return change(paths, id, |r| {
-            r.observation_error = Some("transcript_unavailable".into());
-            Ok(())
-        });
-    };
-    let scanned = scan(&path, peer.anchor_offset.unwrap_or(0), id);
-    change(paths, id, |r| {
-        if is_terminal(r) {
-            return Ok(());
-        }
-        let Ok(s) = scanned else {
-            r.observation_error = Some("transcript_unreadable".into());
-            return Ok(());
-        };
-        let Some(p) = r.peer.as_mut() else {
-            return Ok(());
-        };
-        p.transcript = Some(path.clone());
-        if !s.anchor_found {
-            r.observation_error = Some("peer_anchor_not_found".into());
-            return Ok(());
-        }
-        r.observation_error = None;
-        p.anchor_found = true;
-        p.turn_ended |= s.turn_ended;
-        let ended = p.turn_ended || r.facts.idle_notice.is_some();
-        r.facts.input_recorded = true;
-        r.evidence_at = Some(crate::daemon::now());
-        r.reply_text.clear();
-        r.reply_truncated = false;
-        for text in &s.reply {
-            append_reply(r, text);
-        }
-        if r.started_at.is_none() {
-            r.started_at = Some(crate::daemon::now());
-        }
-        if ended {
-            if r.reply_text.is_empty() {
-                finish(r, "completed_without_reply", None);
-            } else {
-                finish(r, "completed_with_reply", None);
-            }
-        } else {
-            r.state = "execution_started".into();
-        }
-        Ok(())
     })
 }
 
@@ -1744,20 +1788,19 @@ async fn reconcile(paths: &Paths, id: &str, supervisor: bool) -> Result<Record> 
         _ => {
             let stopped = crate::background::worker_stopped(&worker_lock(paths, id)?)?;
             let typed = r.kind == "terminal";
-            if r.facts.written && typed && gemini::is_gemini(&r) {
-                gemini::observe(paths, id, false)?;
+            if r.facts.written && typed {
+                let window: fn(&Record) -> Duration = if gemini::is_gemini(&r) {
+                    gemini::observe(paths, id, false)?;
+                    gemini::confirm_window
+                } else if antigravity::is_antigravity(&r) {
+                    antigravity::observe(paths, id, false)?;
+                    antigravity::confirm_window
+                } else {
+                    terminal::observe(paths, id, false)?;
+                    |_| Duration::from_secs(typing::CONFIRM_SECONDS)
+                };
                 if stopped {
-                    gemini::unconfirmed_after_exit(paths, id)?;
-                }
-            } else if r.facts.written && typed && antigravity::is_antigravity(&r) {
-                antigravity::observe(paths, id, false)?;
-                if stopped {
-                    antigravity::unconfirmed_after_exit(paths, id)?;
-                }
-            } else if r.facts.written && typed {
-                terminal::observe(paths, id, false)?;
-                if stopped {
-                    terminal::unconfirmed_after_exit(paths, id)?;
+                    unconfirmed_after_exit(paths, id, window)?;
                 }
             } else if r.facts.written {
                 peer_observe(paths, id)?;

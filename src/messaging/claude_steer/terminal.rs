@@ -27,9 +27,10 @@
 //! 7. The transcript is read for the human record carrying exactly the typed
 //!    text after the submit; its uuid anchors the reply. Without it the
 //!    receipt is `delivery_unknown`. Nothing is ever re-sent.
-pub(crate) use super::typing::{CONFIRM_SECONDS, Host};
+pub(crate) use super::typing::Host;
 use super::{
-    Record, Request, abandon_unsent, all, change, finish, is_terminal, pane_lock, read,
+    Record, Request, abandon_unsent, all, change, close, finish, observation_error, pane_lock,
+    read, record_turn,
     typing::{self, ClearKeys, Draft, Leave, Prefix, Screen, ScreenProfile, Typing, is_main},
     worker_lock,
 };
@@ -698,10 +699,7 @@ pub(crate) fn reject_screen(paths: &Paths, id: &str, code: &str, rows: &[Vec<Cel
     })
 }
 pub(crate) fn reject(paths: &Paths, id: &str, code: &str) -> Result<()> {
-    change(paths, id, |r| {
-        finish(r, "rejected", Some(code));
-        Ok(())
-    })
+    close(paths, id, "rejected", Some(code))
 }
 
 pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
@@ -721,10 +719,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         return Ok(());
     }
     if r.request.expires_at <= crate::daemon::now() {
-        return change(paths, id, |r| {
-            finish(r, "expired", Some("EXPIRED_BEFORE_DELIVERY"));
-            Ok(())
-        });
+        return close(paths, id, "expired", Some("EXPIRED_BEFORE_DELIVERY"));
     }
     let t = match typing::recheck::<Claude>(paths, &r) {
         Ok((t, _, _)) => t,
@@ -1011,79 +1006,76 @@ pub(crate) fn find(path: &Path, offset: u64, text: &str, since_ms: i64) -> Resul
     Ok(out)
 }
 
+/// What a terminal transcript shows once the typed input was found there.
+pub(crate) struct Turn {
+    pub reply: Vec<String>,
+    pub turn_ended: bool,
+    /// `facts.folded` and `facts.shared_with_turn`.
+    pub folded: bool,
+    pub shared: bool,
+    /// The state while the turn runs.
+    pub running: &'static str,
+}
+
+/// Apply transcript evidence to a written terminal record (never regressed): `find(path,
+/// anchor offset, typed text, submit ms)` in the `locate`d transcript, then `apply` the
+/// finding to the terminal facts (`None`: the input is not there yet).
+pub(crate) fn observe_terminal<F>(
+    paths: &Paths,
+    id: &str,
+    idle: bool,
+    locate: impl FnOnce(&Record) -> Option<PathBuf>,
+    find: impl FnOnce(&Path, u64, &str, i64) -> Result<F>,
+    apply: impl FnOnce(&mut Terminal, F) -> Option<Turn>,
+) -> Result<()> {
+    super::observe_transcript(
+        paths,
+        id,
+        |r| r.terminal.as_mut().map(|t| &mut t.transcript),
+        locate,
+        |r, path| {
+            let t = r.terminal.clone().unwrap_or_default();
+            let (offset, at) = (t.anchor_offset.unwrap_or(0), t.submitted_at_ms.unwrap_or(0));
+            find(path, offset, &t.delivered_text, at)
+        },
+        |r, found| {
+            let Some(t) = r.terminal.as_mut() else {
+                return Ok(());
+            };
+            let Some(turn) = apply(t, found) else {
+                return observation_error(r, "terminal_input_not_found");
+            };
+            t.turn_ended |= turn.turn_ended;
+            let ended = t.turn_ended || (idle && !turn.reply.is_empty());
+            r.observation_error = None;
+            r.facts.folded = turn.folded;
+            r.facts.shared_with_turn = turn.shared;
+            record_turn(r, &turn.reply, ended, turn.running);
+            Ok(())
+        },
+    )
+}
+
 /// Apply transcript evidence to a written terminal record (never regressed).
 pub(crate) fn observe(paths: &Paths, id: &str, idle: bool) -> Result<()> {
-    let r = read(paths, id)?;
-    let Some(t) = r.terminal.clone() else {
-        return Ok(());
-    };
-    if is_terminal(&r) || !r.facts.written {
-        return Ok(());
-    }
-    let path = t.transcript.clone().or_else(|| {
-        let account = claude::account(paths, &r.account).ok()?;
-        claude::find_transcript(&account.home, &r.conversation_id)
-    });
-    let Some(path) = path else {
-        return change(paths, id, |r| {
-            r.observation_error = Some("transcript_unavailable".into());
-            Ok(())
-        });
-    };
-    let found = find(
-        &path,
-        t.anchor_offset.unwrap_or(0),
-        &t.delivered_text,
-        t.submitted_at_ms.unwrap_or(0),
-    );
-    change(paths, id, |r| {
-        if is_terminal(r) {
-            return Ok(());
-        }
-        let Ok(found) = found else {
-            r.observation_error = Some("transcript_unreadable".into());
-            return Ok(());
-        };
-        let Some(t) = r.terminal.as_mut() else {
-            return Ok(());
-        };
-        t.transcript = Some(path.clone());
-        let Some(uuid) = found.uuid else {
-            r.observation_error = Some("terminal_input_not_found".into());
-            return Ok(());
-        };
-        r.observation_error = None;
-        t.input_uuid = Some(uuid);
+    let locate =
+        |r: &Record| super::claude_transcript(paths, r, r.terminal.as_ref()?.transcript.clone());
+    observe_terminal(paths, id, idle, locate, find, |t, found| {
+        t.input_uuid = Some(found.uuid?);
         t.input_record = found.record.clone();
-        t.turn_ended |= found.turn_ended;
-        let ended = t.turn_ended || (idle && !found.reply.is_empty());
         let queued = found.record.as_deref() == Some("queued_command");
-        r.facts.input_recorded = true;
-        r.facts.folded = queued;
-        r.facts.shared_with_turn = queued;
-        r.evidence_at = Some(crate::daemon::now());
-        r.reply_text.clear();
-        r.reply_truncated = false;
-        for text in &found.reply {
-            super::append_reply(r, text);
-        }
-        if r.started_at.is_none() {
-            r.started_at = Some(crate::daemon::now());
-        }
-        if ended {
-            if r.reply_text.is_empty() {
-                finish(r, "completed_without_reply", None);
-            } else {
-                finish(r, "completed_with_reply", None);
-            }
+        let running = if queued && found.reply.is_empty() {
+            "native_accepted"
         } else {
-            r.state = if queued && found.reply.is_empty() {
-                "native_accepted".into()
-            } else {
-                "execution_started".into()
-            };
-        }
-        Ok(())
+            "execution_started"
+        };
+        Some(Turn {
+            reply: found.reply,
+            turn_ended: found.turn_ended,
+            folded: queued,
+            shared: queued,
+            running,
+        })
     })
 }
 
@@ -1106,23 +1098,6 @@ pub fn receipt_fields(r: &Record, v: &mut Value) {
         "draft":{"present":t.draft_chars.map(|n| n > 0),"chars":t.draft_chars,"restored":t.draft_restored,
             "restore_error":t.restore_error,"left_in_input":t.left_in_input,"left_chars":t.left_chars},
         "steps":t.steps,"refusal_layout":t.refusal_layout});
-}
-
-/// With the worker gone, a submit never matched in the transcript within the
-/// confirmation window stays uncertain for good: `delivery_unknown`.
-pub(crate) fn unconfirmed_after_exit(paths: &Paths, id: &str) -> Result<()> {
-    change(paths, id, |r| {
-        let Some(t) = r.terminal.as_ref() else {
-            return Ok(());
-        };
-        let late = t
-            .submitted_at_ms
-            .is_some_and(|at| now_ms() - at > (CONFIRM_SECONDS as i64 + 5) * 1000);
-        if !is_terminal(r) && r.facts.written && t.input_uuid.is_none() && late {
-            finish(r, "delivery_unknown", Some("TERMINAL_INPUT_UNCONFIRMED"));
-        }
-        Ok(())
-    })
 }
 
 #[cfg(test)]

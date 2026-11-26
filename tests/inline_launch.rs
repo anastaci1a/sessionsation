@@ -232,13 +232,13 @@ fn kill_ref(child: &mut Child) {
 async fn capabilities_advertise_named_journaled_inline_launches() {
     let f = fixture().await;
     let caps = f.api(&["capabilities"]);
-    assert_eq!(caps["contract_version"], "1.72.3");
+    assert_eq!(caps["contract_version"], "1.73.0");
     assert_eq!(caps["session_compact"]["command"], "session compact");
     assert_eq!(
         caps["session_compact"]["provider"],
         serde_json::json!(["codex", "claude"])
     );
-    assert_eq!(caps["contract_revision"], 72);
+    assert_eq!(caps["contract_revision"], 73);
     let c = &caps["inline_launch"];
     assert_eq!(c["name"], true);
     assert_eq!(c["journaled"], true);

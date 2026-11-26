@@ -20,6 +20,7 @@ and package history are in Git.
 
 ## Versions
 
+- **1.73.0** Internal: shared send receipt and journal helpers; no change.
 - **1.72.1** Session processes get a private per-account `TMPDIR`/`TMP`/`TEMP` (and `CLAUDE_CODE_TMPDIR`) under `<data_root>/tmp`; `capabilities.session_tmp`, setting `session_tmp_root`.
 - **1.72.2** The Codex account app-server (whose tool commands run as its children) is started with the same temp variables; `capabilities.session_tmp.codex_app_server`, applies at its next start or restart.
 - **1.72.3** `api account restart-server ID` restarts a Codex account's shared app-server and returns the new server's `pid` and `process_start`; `operations.account_restart_server`; refusals `SESSION_OPERATION_IN_PROGRESS`, `ACCOUNT_BUSY`, `ACCOUNT_POLL_IN_PROGRESS`, `UNSUPPORTED_PROVIDER_OPERATION`.

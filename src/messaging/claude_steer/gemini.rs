@@ -26,11 +26,8 @@
 //! faster Enter into a newline). Esc and Ctrl+C cancel a running request in
 //! Gemini and are never sent; neither are Ctrl+D or Ctrl+L.
 use super::{
-    Record, Request, abandon_unsent, change, dir, finish, is_terminal, read,
-    terminal::{
-        self, CONFIRM_SECONDS, Cell, Host, Terminal, columns, now_ms, reason, row_text, squash,
-        timestamp_ms,
-    },
+    Record, Request, abandon_unsent, change, close, is_terminal, pane_lock, read,
+    terminal::{self, Cell, Host, Terminal, Turn, columns, reason, row_text, squash, timestamp_ms},
     typing::{
         self, ClearKeys, Draft, Key, Leave, Prefix, Screen, ScreenProfile, SessionInput, Typing,
         code,
@@ -39,7 +36,7 @@ use super::{
 };
 use crate::{
     catalog,
-    paths::{Paths, lock_file, private_dir},
+    paths::{Paths, lock_file},
     provider::{ProviderId, claude, gemini, gemini::steering},
 };
 use anyhow::{Result, ensure};
@@ -524,10 +521,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
         return Ok(());
     }
     if r.request.expires_at <= crate::daemon::now() {
-        return change(paths, id, |r| {
-            finish(r, "expired", Some("EXPIRED_BEFORE_DELIVERY"));
-            Ok(())
-        });
+        return close(paths, id, "expired", Some("EXPIRED_BEFORE_DELIVERY"));
     }
     // Same catalog entry, live process and pane; the steering state re-read.
     let (t, s) = match typing::recheck::<Gemini>(paths, &r) {
@@ -537,13 +531,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     if let Some(refusal) = mode_refusal(&r.request.mode, &s, None) {
         return abandon_unsent(paths, id, code(refusal));
     }
-    private_dir(&dir(paths))?;
-    let key: String = t
-        .target
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let pane_lock = lock_file(&dir(paths).join(format!("terminal-{key}.lock")))?;
+    let pane_lock = pane_lock(paths, &t.target)?;
     pane_lock.lock_exclusive()?;
     change(paths, id, |r| {
         let mut t = t.clone();
@@ -677,46 +665,14 @@ pub(crate) fn find(path: &Path, offset: u64, text: &str, since_ms: i64) -> Resul
 
 /// Apply transcript evidence to a written Gemini terminal record (never regressed).
 pub(crate) fn observe(paths: &Paths, id: &str, idle: bool) -> Result<()> {
-    let r = read(paths, id)?;
-    let Some(t) = r.terminal.clone() else {
-        return Ok(());
+    let locate = |r: &Record| {
+        r.terminal.as_ref()?.transcript.clone().or_else(|| {
+            let account = gemini::account(paths, &r.account).ok()?;
+            gemini::find_transcript(&account.home, &r.conversation_id)
+        })
     };
-    if is_terminal(&r) || !r.facts.written {
-        return Ok(());
-    }
-    let path = t.transcript.clone().or_else(|| {
-        let account = gemini::account(paths, &r.account).ok()?;
-        gemini::find_transcript(&account.home, &r.conversation_id)
-    });
-    let Some(path) = path else {
-        return change(paths, id, |r| {
-            r.observation_error = Some("transcript_unavailable".into());
-            Ok(())
-        });
-    };
-    let found = find(
-        &path,
-        t.anchor_offset.unwrap_or(0),
-        &t.delivered_text,
-        t.submitted_at_ms.unwrap_or(0),
-    );
-    change(paths, id, |r| {
-        if is_terminal(r) {
-            return Ok(());
-        }
-        let Ok(found) = found else {
-            r.observation_error = Some("transcript_unreadable".into());
-            return Ok(());
-        };
-        let Some(t) = r.terminal.as_mut() else {
-            return Ok(());
-        };
-        t.transcript = Some(path.clone());
-        let Some(uuid) = found.id else {
-            r.observation_error = Some("terminal_input_not_found".into());
-            return Ok(());
-        };
-        r.observation_error = None;
+    terminal::observe_terminal(paths, id, idle, locate, find, |t, found| {
+        let uuid = found.id?;
         let facts = t.gemini.get_or_insert_with(Facts::default);
         let busy = facts.busy_at_submit == Some(true);
         let outcome = match found.outcome {
@@ -729,69 +685,27 @@ pub(crate) fn observe(paths: &Paths, id: &str, idle: bool) -> Result<()> {
         facts.batched = Some(!steering && !found.exact);
         t.input_uuid = Some(uuid);
         t.input_record = Some(if steering { "steering_update" } else { "user" }.into());
-        t.turn_ended |= found.turn_ended;
-        let ended = t.turn_ended || (idle && !found.reply.is_empty());
-        r.facts.input_recorded = true;
-        r.facts.folded = outcome == "steering_applied";
-        r.facts.shared_with_turn = outcome == "steering_applied" || !found.exact && !steering;
-        r.evidence_at = Some(crate::daemon::now());
-        r.reply_text.clear();
-        r.reply_truncated = false;
-        for text in &found.reply {
-            super::append_reply(r, text);
-        }
-        if r.started_at.is_none() {
-            r.started_at = Some(crate::daemon::now());
-        }
-        if ended {
-            if r.reply_text.is_empty() {
-                finish(r, "completed_without_reply", None);
-            } else {
-                finish(r, "completed_with_reply", None);
-            }
-        } else {
-            r.state = "execution_started".into();
-        }
-        Ok(())
+        let applied = outcome == "steering_applied";
+        Some(Turn {
+            reply: found.reply,
+            turn_ended: found.turn_ended,
+            folded: applied,
+            shared: applied || !found.exact && !steering,
+            running: "execution_started",
+        })
     })
 }
 
 /// How long a submit may go unrecorded: a busy Enter that Gemini visibly
 /// queued or took as a steering hint is recorded only when the turn reaches
 /// it, so it may wait the whole request timeout; anything else 60 seconds.
-fn confirm_window(r: &Record) -> Duration {
-    let timeout = r
-        .request
-        .timeout_seconds
-        .unwrap_or(super::DEFAULT_TIMEOUT_SECONDS);
+pub(crate) fn confirm_window(r: &Record) -> Duration {
     let pending = r
         .terminal
         .as_ref()
         .and_then(|t| t.gemini.as_ref())
         .is_some_and(|g| g.busy_at_submit == Some(true) && g.screen_evidence.is_some());
-    Duration::from_secs(if pending {
-        timeout
-    } else {
-        timeout.min(CONFIRM_SECONDS)
-    })
-}
-
-/// With the worker gone, a submit never matched within its window stays
-/// uncertain for good: `delivery_unknown`.
-pub(crate) fn unconfirmed_after_exit(paths: &Paths, id: &str) -> Result<()> {
-    change(paths, id, |r| {
-        let window = confirm_window(r).as_millis() as i64;
-        let Some(t) = r.terminal.as_ref() else {
-            return Ok(());
-        };
-        let late = t
-            .submitted_at_ms
-            .is_some_and(|at| now_ms() - at > window + 5000);
-        if !is_terminal(r) && r.facts.written && t.input_uuid.is_none() && late {
-            finish(r, "delivery_unknown", Some("TERMINAL_INPUT_UNCONFIRMED"));
-        }
-        Ok(())
-    })
+    typing::confirm_window(r, pending)
 }
 
 // ---------------------------------------------------------------- receipts

@@ -133,6 +133,14 @@ pub struct Receipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing: Option<Timing>,
 }
+impl Receipt {
+    /// Move to state `to` with reason `why` and save the receipt.
+    fn set_state(&mut self, ledger: &mut Ledger, to: &str, why: Option<&str>) -> Result<()> {
+        self.state = to.into();
+        self.reason = why.map(str::to_owned);
+        ledger.save(self)
+    }
+}
 /// Contract 1.71.2: per-send timings in milliseconds, recorded once when they happen: the
 /// readiness wait before admission, the admission's ledger wait and hold, and the provider
 /// call (Codex `thread/queue/add`, Claude peer frame write; `None` until one ran).
@@ -561,9 +569,7 @@ async fn submit(
     // Persist uncertainty before touching the socket, under the lease. No automatic
     // replay, even on crash. Every other process now sees `unknown` and can only
     // reconcile, so exactly one process ever reaches the add below for an id.
-    receipt.state = "unknown".into();
-    receipt.reason = Some("submission_uncertain".into());
-    ledger.save(receipt)?;
+    receipt.set_state(ledger, "unknown", Some("submission_uncertain"))?;
     let budget = wait_budget(&ledger.paths, Wait::Send);
     let (result, took): (Result<Added>, _) = ledger.during(budget, async {
         let started = std::time::Instant::now();
@@ -746,9 +752,7 @@ async fn cancel(paths: &Paths, ledger: &mut Ledger, receipt: &mut Receipt) -> Re
     match receipt.state.as_str() {
         "cancelled" => return Ok(()),
         "pending_local" => {
-            receipt.state = "cancelled".into();
-            receipt.reason = None;
-            return ledger.save(receipt);
+            return receipt.set_state(ledger, "cancelled", None);
         }
         "unknown" => return Err(Fault("unknown")),
         "execution_started" | "completed_with_reply" => return Err(Fault("already_started")),
@@ -780,9 +784,7 @@ async fn cancel(paths: &Paths, ledger: &mut Ledger, receipt: &mut Receipt) -> Re
     struct Deleted {
         deleted: bool,
     }
-    receipt.state = "unknown".into();
-    receipt.reason = Some("cancellation_uncertain".into());
-    ledger.save(receipt)?;
+    receipt.set_state(ledger, "unknown", Some("cancellation_uncertain"))?;
     let result: Result<Deleted> = ledger
         .during(
             budget,
@@ -797,15 +799,9 @@ async fn cancel(paths: &Paths, ledger: &mut Ledger, receipt: &mut Receipt) -> Re
         return changed_during_cancel(receipt);
     }
     match result {
-        Ok(result) if result.deleted => {
-            receipt.state = "cancelled".into();
-            receipt.reason = None;
-            ledger.save(receipt)
-        }
+        Ok(result) if result.deleted => receipt.set_state(ledger, "cancelled", None),
         Ok(_) => {
-            receipt.state = "native_accepted".into();
-            receipt.reason = Some("already_submitted".into());
-            ledger.save(receipt)?;
+            receipt.set_state(ledger, "native_accepted", Some("already_submitted"))?;
             Err(Fault("already_submitted"))
         }
         Err(_) => Err(Fault("unknown")),
