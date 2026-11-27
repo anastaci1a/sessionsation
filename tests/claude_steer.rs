@@ -298,6 +298,12 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
     let launch = launched(&home, &conversation);
     // Contract 1.62.0 (SM7): the hosted worker's provider names its session.
     assert_eq!(launch["session_env"], id.as_str(), "{launch}");
+    // Contract 1.73.2: the hosted provider gets the account's temp directory.
+    let d = f.paths.root.join("tmp/claude/personal");
+    assert_eq!(
+        launch["tmp"],
+        [&d; 4].map(|d| d.display().to_string()).join(",")
+    );
     let args: Vec<String> = serde_json::from_value(launch["args"].clone()).unwrap();
     assert!(
         args.windows(2)
@@ -632,6 +638,11 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
             .starts_with("SESSION_NOT_RUNNING")
     );
     let generation = s["generation"].as_str().unwrap().to_owned();
+    assert!(
+        f.run(&["config", "set", "session_tmp_root", "none"])
+            .status
+            .success()
+    );
     let again = f.api(&[
         "hosted",
         "start",
@@ -649,6 +660,7 @@ async fn hosted_sessions_correlate_replies_fold_inputs_and_keep_one_writer() {
         launched(&home, &conversation)["mode"] == "resume"
     });
     let launch = launched(&home, &conversation);
+    assert_eq!(launch["tmp"], ",,,", "\"none\" sets nothing");
     let args: Vec<String> = serde_json::from_value(launch["args"].clone()).unwrap();
     assert!(
         args.windows(2)

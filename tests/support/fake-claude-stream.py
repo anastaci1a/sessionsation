@@ -66,6 +66,7 @@ with open(os.path.join(home, "fake-stream-launch.json"), "w") as f:
             "config_dir": home,
             "autoupdater": os.environ.get("DISABLE_AUTOUPDATER"),
             "session_env": os.environ.get("SESSIONSATION_SESSION_ID", ""),
+            "tmp": ",".join(os.environ.get(n, "") for n in ("TMPDIR", "TMP", "TEMP", "CLAUDE_CODE_TMPDIR")),
         },
         f,
     )

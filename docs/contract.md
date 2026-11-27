@@ -2226,6 +2226,14 @@ replaced only when the supervisor finds no server (`account/prepare`, the first 
 after the server exited or was stopped), on `account/restart-server`, or after the server exits.
 A supervisor restart adopts a running server and does not restart it. An unsafe directory
 fails that start with `SESSION_TMP_UNSAFE`; the supervisor keeps running. `"none"` passes nothing.
+From 1.73.2 they are also set on headless runs (every provider), the hosted Claude process, `claude
+attach` and the private stdio `codex app-server` the supervisor starts for an enrolled account when no
+shared server runs; each takes its session's (or that account's) own provider and account. An unsafe
+directory refuses that start (`SESSION_TMP_UNSAFE`: a headless receipt is `rejected`, a hosted start
+`failed`). `capabilities.session_tmp.covers` lists the covered starts. Not covered: auth and version
+probes, login and logout (including the Codex re-login server), the Gemini API-key validation run,
+the `agy` run that creates an empty conversation before a launch or headless new, the
+`doctor --probe` handshake and the stdio server for a Codex `account add` (no enrolled account yet).
 
 ### Move a running session between Spaces
 

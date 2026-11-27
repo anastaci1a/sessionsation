@@ -55,7 +55,7 @@ pub async fn probe(binary: &str, _paths: &Paths) -> Result<Report> {
     let mut report = Report::unverified(version(binary).await?);
     let temp = tempfile::tempdir()?;
     let home = temp.path().join("home");
-    match Rpc::spawn(binary, &home, temp.path()).await {
+    match Rpc::spawn(binary, &home, temp.path(), None).await {
         Ok(rpc) => {
             let result = rpc
                 .request("account/read", json!({"refreshToken":false}))

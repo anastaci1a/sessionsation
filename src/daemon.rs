@@ -647,7 +647,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                     if !helper.is_running().await {helpers.remove(&name);}
                                 }
                                 if !helpers.contains_key(&name) {
-                                    match Rpc::spawn(&config.codex_binary,&paths.account(&name)?,&paths.root).await {
+                                    match Rpc::spawn(&config.codex_binary,&paths.account(&name)?,&paths.root,Some((&paths,&name))).await {
                                         Ok(rpc) => {helpers.insert(name.clone(),rpc);},
                                         Err(e) => {
                                             let reason = format!("the app-server could not be reached or started: {e}");
@@ -786,7 +786,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             }
                             ensure!(config_dir.is_none(), "INVALID_ARGUMENT: --config-dir is only supported for claude accounts");
                             let home = paths.account(name)?; private_dir(&home)?;
-                            let rpc = Rpc::spawn(&config.codex_binary,&home,&paths.root).await?;
+                            let rpc = Rpc::spawn(&config.codex_binary,&home,&paths.root,None).await?;
                             let login = rpc.request("account/login/start",json!({"type":"chatgptDeviceCode"})).await;
                             match login {
                                 Ok(login) => {
@@ -803,7 +803,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             ops::require(ops::facts(state.accounts[name].provider).supervised, format_args!("Claude and Gemini login is interactive; run `sessionsation account login <provider>:{name}` in a terminal"))?;
                             ensure!(state.accounts[name].deletion_id.is_none(),"ACCOUNT_DELETION_IN_PROGRESS");
                             ensure!(!pending.contains(name), "account poll is in progress; retry shortly");
-                            if !helpers.contains_key(name) {let rpc = Rpc::spawn(&config.codex_binary,&paths.account(name)?,&paths.root).await?; helpers.insert(name.into(),rpc);}
+                            if !helpers.contains_key(name) {let rpc = Rpc::spawn(&config.codex_binary,&paths.account(name)?,&paths.root,None).await?; helpers.insert(name.into(),rpc);}
                             let login = helpers[name].request("account/login/start",json!({"type":"chatgptDeviceCode"})).await?;
                             state.accounts.get_mut(name).unwrap().auth_required = true;
                             store.save(&state,now(),"account_login_started",name)?;
@@ -945,7 +945,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                             if let Some(helper) = helpers.get(&name) && !helper.is_running().await { helpers.remove(&name); }
                             if !helpers.contains_key(&name) {
                                 // Adopts the account's shared app-server when it runs (Rpc::spawn).
-                                match Rpc::spawn(&config.codex_binary,&paths.account(&name)?,&paths.root).await {
+                                match Rpc::spawn(&config.codex_binary,&paths.account(&name)?,&paths.root,Some((&paths,&name))).await {
                                     Ok(rpc) => {helpers.insert(name.clone(),rpc);}
                                     Err(e) => {
                                         crate::reset_credit::finish(&paths,&mut record,"failed",None,"the account app-server could not start; nothing was sent")?;
@@ -1101,7 +1101,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                                 ensure!(result.status.success(), "Codex account server could not start");
                             }
                             crate::control::Control::connect(&home).await.context("Codex started without a reachable control socket")?;
-                            let rpc = Rpc::spawn(&config.codex_binary,&home,&paths.root).await?;
+                            let rpc = Rpc::spawn(&config.codex_binary,&home,&paths.root,Some((&paths,name))).await?;
                             helpers.insert(name.into(),rpc);
                             Ok(json!({"socket":home.join("app-server-control/app-server-control.sock")}))
                         }
@@ -1197,7 +1197,7 @@ pub async fn serve(paths: Paths) -> Result<()> {
                         if !helper.is_running().await {helpers.remove(&a.name);}
                     }
                     if !helpers.contains_key(&a.name) {
-                        match Rpc::spawn(&config.codex_binary,&paths.account(&a.name)?,&paths.root).await {
+                        match Rpc::spawn(&config.codex_binary,&paths.account(&a.name)?,&paths.root,Some((&paths,&a.name))).await {
                             Ok(rpc) => {helpers.insert(a.name.clone(),rpc);}, Err(e) => { set_meter_note(&a.name, Some(format!("the app-server could not be reached or started: {e}"))); continue; }
                         }
                     }

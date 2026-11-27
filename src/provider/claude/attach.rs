@@ -357,6 +357,7 @@ pub fn exec_attach(paths: &Paths, id: &str, generation: &str) -> Result<()> {
     let mut command = claude::command(&config, &account.home);
     // Contract 1.62.0 (SM7).
     crate::provider::set_session_env(&mut command, &session.id);
+    command.envs(crate::provider::session_tmp_of(paths, &session)?);
     command.args(["attach", &job]);
     Err(command.exec()).context("could not run claude attach")
 }

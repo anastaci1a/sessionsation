@@ -34,11 +34,7 @@ async fn rejects_oversized_frames_before_unbounded_allocation() {
             .is_err()
     );
 }
-#[tokio::test]
-async fn fake_app_server_round_trip_and_graceful_stop() {
-    let tmp = tempfile::tempdir().unwrap();
-    let binary = tmp.path().join("fake-codex");
-    std::fs::write(&binary,r##"#!/bin/sh
+const FAKE: &str = r##"
 while IFS= read -r line; do
  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
  case "$line" in
@@ -47,12 +43,18 @@ while IFS= read -r line; do
   *'"method":"fail"'*) printf '{"id":%s,"error":{"code":401,"message":"SECRET_SENTINEL"}}\n' "$id" ;;
  esac
 done
-"##).unwrap();
+"##;
+#[tokio::test]
+async fn fake_app_server_round_trip_and_graceful_stop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let binary = tmp.path().join("fake-codex");
+    std::fs::write(&binary, format!("#!/bin/sh\n{FAKE}")).unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
     let rpc = Rpc::spawn(
         binary.to_str().unwrap(),
         &tmp.path().join("home"),
         tmp.path(),
+        None,
     )
     .await
     .unwrap();
@@ -65,4 +67,35 @@ done
     assert!(!error.contains("SECRET_SENTINEL"));
     assert!(error.contains("401"));
     rpc.stop_idle().await.unwrap();
+}
+#[tokio::test]
+async fn the_private_stdio_app_server_gets_the_account_temp_directory_unless_none() {
+    // Contract 1.73.2.
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = sessionsation::paths::Paths::new(Some(tmp.path().join("root"))).unwrap();
+    let (binary, record) = (tmp.path().join("fake-codex"), tmp.path().join("record"));
+    let dump = format!("echo \"$TMPDIR|$TMP|$TEMP\" >> {}", record.display());
+    std::fs::write(&binary, format!("#!/bin/sh\n{dump}\n{FAKE}")).unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let spawn = || async {
+        let home = paths.account("a").unwrap();
+        let account = Some((&paths, "a"));
+        Rpc::spawn(binary.to_str().unwrap(), &home, &paths.root, account).await
+    };
+    spawn().await.unwrap().stop_idle().await.unwrap();
+    std::fs::write(
+        paths.root.join("config.json"),
+        r#"{"session_tmp_root":"none"}"#,
+    )
+    .unwrap();
+    spawn().await.unwrap().stop_idle().await.unwrap();
+    let d = paths.root.join("tmp/codex/a");
+    let d = d.display();
+    let lines = std::fs::read_to_string(&record).unwrap();
+    assert_eq!(lines, format!("{d}|{d}|{d}\n||\n"));
+    std::fs::write(paths.root.join("config.json"), "{}").unwrap();
+    std::fs::remove_dir(paths.root.join("tmp/codex/a")).unwrap();
+    std::os::unix::fs::symlink(tmp.path(), paths.root.join("tmp/codex/a")).unwrap();
+    let err = format!("{:#}", spawn().await.err().unwrap());
+    assert!(err.contains("SESSION_TMP_UNSAFE"), "{err}");
 }

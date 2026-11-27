@@ -1141,6 +1141,13 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
         "{launch}"
     );
     assert_eq!(read(&home.join("fake-print-count")).trim(), "1");
+    // Contract 1.73.2: the headless run gets the account's temp directory.
+    let d = f.paths.root.join("tmp/claude/personal");
+    let d = d.display();
+    assert!(
+        launch.contains(&format!("tmp={d},{d},{d},{d}\n")),
+        "{launch}"
+    );
 
     // Idempotent retry returns the same receipt without executing again.
     let again = f.send_ok(&body);
@@ -1170,9 +1177,19 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     )
     .unwrap();
     let mismatch = uuid::Uuid::new_v4().to_string();
+    assert!(
+        f.run(&["config", "set", "session_tmp_root", "none"])
+            .status
+            .success()
+    );
     f.send_ok(&resume_body(&mismatch, &f.session(&id), "mismatch"));
     let r = f.settled(&mismatch);
     std::fs::remove_file(home.join("fake-print-session")).unwrap();
+    let launch = read(&home.join("fake-print-resume"));
+    assert!(
+        launch.contains("tmp=,,,\n"),
+        "\"none\" sets nothing: {launch}"
+    );
     assert_eq!(r["state"], "delivery_unknown", "{r}");
     assert_eq!(r["reason"], "SESSION_ID_MISMATCH");
     assert_eq!(r["correlation"]["matched"], false);
@@ -2090,6 +2107,13 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
         "{attach}"
     );
     assert!(attach.contains(&format!("config_dir={}", home.display())));
+    // Contract 1.73.2: `claude attach` gets the account's temp directory.
+    let d = f.paths.root.join("tmp/claude/personal");
+    let d = d.display();
+    assert!(
+        attach.contains(&format!("tmp={d},{d},{d},{d}\n")),
+        "{attach}"
+    );
     let client: u32 = read(&state.join("pid-w1:p2")).trim().parse().unwrap();
     assert_eq!(added["attachment"]["pid"], client);
     let after = find(&bg);
@@ -2168,7 +2192,21 @@ async fn add_to_herdr_attaches_background_sessions_only_and_never_duplicates() {
         !calls().contains("workspace create"),
         "refusals create nothing"
     );
+    std::fs::remove_file(home.join("fake-attach")).unwrap();
+    assert!(
+        f.run(&["config", "set", "session_tmp_root", "none"])
+            .status
+            .success()
+    );
     let fresh = run(&["--new-space", "Fresh Space", "--name", "new-view"]);
+    wait_for("second attach", || home.join("fake-attach").exists());
+    wait_for("attach env", || {
+        read(&home.join("fake-attach")).contains("tmp=")
+    });
+    assert!(
+        read(&home.join("fake-attach")).contains("tmp=,,,\n"),
+        "\"none\" sets nothing"
+    );
     assert!(
         fresh.status.success(),
         "{}",

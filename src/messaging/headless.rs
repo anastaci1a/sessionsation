@@ -652,6 +652,10 @@ async fn execute(
     let mut std_command = native::command(r.provider, config, home);
     // Contract 1.62.0 (SM7): a headless run works for the session it delivers to.
     crate::provider::set_session_env(&mut std_command, &r.session_id);
+    match crate::provider::session_tmp_env(paths, r.provider, &r.account) {
+        Ok(tmp) => std_command.envs(tmp),
+        Err(e) => return Outcome::NotStarted(e.to_string()),
+    };
     let facts = ops::facts(r.provider);
     // Headless runs cannot answer the folder-trust prompt (Gemini); the directory is
     // the session's recorded one, chosen by the operator.

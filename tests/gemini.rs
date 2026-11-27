@@ -813,6 +813,10 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     assert!(launch.contains(&format!("session={native}")), "{launch}");
     // Contract 1.62.0 (SM7): a headless run names the session it delivers to.
     assert!(launch.contains(&format!("session_env={id}\n")), "{launch}");
+    // Contract 1.73.2: the headless run gets the account's temp directory.
+    let d = f.paths.root.join("tmp/gemini/personal");
+    let d = d.display();
+    assert!(launch.contains(&format!("tmp={d},{d},{d}\n")), "{launch}");
     assert!(launch.contains("message=hello world"), "{launch}");
     assert!(
         launch.contains(&format!("cwd={}", f.project.display())),
@@ -876,9 +880,19 @@ async fn headless_resume_and_new_deliver_once_with_durable_receipts() {
     )
     .unwrap();
     let mismatch = uuid::Uuid::new_v4().to_string();
+    assert!(
+        f.run(&["config", "set", "session_tmp_root", "none"])
+            .status
+            .success()
+    );
     f.send_ok(&resume_body(&mismatch, &f.session(&id), "mismatch"));
     let r = f.settled(&mismatch);
     std::fs::remove_file(home.join("fake-print-session")).unwrap();
+    let launch = read(&home.join("fake-print-resume"));
+    assert!(
+        launch.contains("tmp=,,\n"),
+        "\"none\" sets nothing: {launch}"
+    );
     assert_eq!(r["state"], "delivery_unknown", "{r}");
     assert_eq!(r["reason"], "SESSION_ID_MISMATCH");
     assert_eq!(r["correlation"]["matched"], false);

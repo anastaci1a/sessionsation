@@ -1,5 +1,6 @@
 //! Bounded JSON-lines transport for a private stdio app-server worker.
 //! No raw protocol data is logged: frames can contain credentials and private text.
+use crate::provider::{ProviderId::Codex, session_tmp_env};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::{
@@ -78,7 +79,13 @@ pub struct Rpc {
     pub initialized: Value,
 }
 impl Rpc {
-    pub async fn spawn(binary: &str, home: &Path, cwd: &Path) -> Result<Self> {
+    /// `account`: an enrolled Codex account; its child gets the session temp directory (1.73.2).
+    pub async fn spawn(
+        binary: &str,
+        home: &Path,
+        cwd: &Path,
+        account: Option<(&crate::paths::Paths, &str)>,
+    ) -> Result<Self> {
         crate::paths::private_dir(home)?;
         if crate::control::available(home) {
             let control = crate::control::Control::connect(home).await?;
@@ -113,6 +120,9 @@ impl Rpc {
         .stderr(Stdio::null());
         // Owned workers have a separate process group; no interaction with the invoking agent.
         cmd.process_group(0);
+        if let Some((p, n)) = account {
+            cmd.envs(session_tmp_env(p, Codex, n)?);
+        }
         // SAFETY: close_inherited_fds only makes raw async-signal-safe syscalls.
         unsafe { cmd.pre_exec(crate::background::close_inherited_fds) };
         let mut child = cmd

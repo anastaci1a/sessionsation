@@ -12,7 +12,7 @@ case "$1" in
     exit 0 ;;
   attach)
     # `claude attach <job>`: a viewer client of a running background session.
-    printf "attach=%s\nconfig_dir=%s\napi_key=%s\nsession_env=%s\n" "$2" "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY:+present}" "${SESSIONSATION_SESSION_ID:-}" > "$home/fake-attach"
+    printf "attach=%s\nconfig_dir=%s\napi_key=%s\nsession_env=%s\ntmp=%s,%s,%s,%s\n" "$2" "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY:+present}" "${SESSIONSATION_SESSION_ID:-}" "${TMPDIR:-}" "${TMP:-}" "${TEMP:-}" "${CLAUDE_CODE_TMPDIR:-}" > "$home/fake-attach"
     while :; do sleep 1; done ;;
   auth)
     case "$2" in
@@ -74,6 +74,7 @@ for arg in "$@"; do
       printf 'api_key=%s\nauth_token=%s\nbase_url=%s\n' "${ANTHROPIC_API_KEY:+present}" "${ANTHROPIC_AUTH_TOKEN:+present}" "${ANTHROPIC_BASE_URL:+present}"
       printf 'autoupdater=%s\nconfig_dir=%s\n' "$DISABLE_AUTOUPDATER" "$CLAUDE_CONFIG_DIR"
       printf 'session_env=%s\n' "${SESSIONSATION_SESSION_ID:-}"
+      printf 'tmp=%s,%s,%s,%s\n' "${TMPDIR:-}" "${TMP:-}" "${TEMP:-}" "${CLAUDE_CODE_TMPDIR:-}"
     } > "$home/fake-print-$mode"
     [ -f "$home/fake-print-sleep" ] && sleep "$(cat "$home/fake-print-sleep")"
     slug=$(printf '%s' "$PWD" | tr '/' '-')

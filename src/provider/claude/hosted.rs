@@ -538,9 +538,9 @@ pub async fn worker(paths: &Paths, c: &str) -> Result<()> {
     }
     let epoch = h.epoch;
     let me = std::process::id();
-    let prepared = prepare(paths, &h).await;
-    let home = match prepared {
-        Ok(home) => home,
+    let tmp = || crate::provider::session_tmp_env(paths, ProviderId::Claude, &h.account);
+    let (home, tmp) = match prepare(paths, &h).await.and_then(|home| Ok((home, tmp()?))) {
+        Ok(v) => v,
         Err(e) => {
             update(paths, c, |h| {
                 h.state = "failed".into();
@@ -571,6 +571,7 @@ pub async fn worker(paths: &Paths, c: &str) -> Result<()> {
     }
     // Contract 1.62.0 (SM7).
     crate::provider::set_session_env(&mut std_command, &h.session_id);
+    std_command.envs(tmp);
     if h.effective_permission_mode.as_deref() == Some("bypassPermissions") {
         claude::allow_bypass(&mut std_command);
         if config.claude_pretrust_folders {
