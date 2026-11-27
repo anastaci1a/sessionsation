@@ -1105,6 +1105,15 @@ pub fn check_name(paths: &Paths, space: Option<&str>, name: &str, request: &str)
         Ok(())
     })
 }
+/// Contract 1.73.1: the requests whose reservations claim `name` in `space`.
+pub(crate) fn reservation_holders(paths: &Paths, space: Option<&str>, name: &str) -> Vec<String> {
+    let claims =
+        |(k, r): (&String, &String)| scope::reservation_claims(k, space, name).then(|| r.clone());
+    read_catalog(paths, |c| {
+        Ok(c.reservations.iter().filter_map(claims).collect())
+    })
+    .unwrap_or_default()
+}
 pub fn reserve_name(paths: &Paths, space: Option<&str>, name: &str, request: &str) -> Result<()> {
     validate_name(name)?;
     transaction(paths, |c| {

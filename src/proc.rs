@@ -195,5 +195,47 @@ pub mod identity {
     }
 }
 
+/// Contract 1.73.1: whether another live process carries session `id`, as an exact argument
+/// (a `launch-run`/`launch-worker`) or as `SESSIONSATION_SESSION_ID` (a provider). `None`
+/// when that cannot be shown: the process table, or a process of this user, is unreadable.
+/// "This user" is any `Uid:` in `/proc/<pid>/status` (not the directory owner, which is root
+/// for a non-dumpable process); an unreadable status is unknown unless the process exited.
+pub fn carries_session(id: &str) -> Option<bool> {
+    let env = format!("{}={id}", crate::provider::SESSION_ENV);
+    let (me, uid) = (
+        std::process::id().to_string(),
+        unsafe { libc::geteuid() }.to_string(),
+    );
+    for e in std::fs::read_dir("/proc").ok()? {
+        let e = e.ok()?;
+        let pid = e.file_name().to_string_lossy().into_owned();
+        if pid == me || !pid.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let has = |file, want: &[u8]| {
+            std::fs::read(e.path().join(file)).map(|v| v.split(|b| *b == 0).any(|a| a == want))
+        };
+        match (
+            has("cmdline", id.as_bytes()),
+            has("environ", env.as_bytes()),
+        ) {
+            (Ok(true), _) | (_, Ok(true)) => return Some(true),
+            (Ok(false), Ok(false)) => {}
+            _ => match std::fs::read_to_string(e.path().join("status")) {
+                // Exited meanwhile.
+                Err(x) if x.kind() == std::io::ErrorKind::NotFound => {}
+                Err(x) if x.raw_os_error() == Some(libc::ESRCH) => {}
+                // Another user's process (never one Sessionsation started): no Uid is ours.
+                Ok(s)
+                    if s.lines()
+                        .find_map(|l| l.strip_prefix("Uid:"))
+                        .is_some_and(|u| u.split_whitespace().all(|v| v != uid)) => {}
+                _ => return None,
+            },
+        }
+    }
+    Some(false)
+}
+
 #[cfg(test)]
 mod tests;

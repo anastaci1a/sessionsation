@@ -345,7 +345,7 @@ pub(crate) fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
         && r.worker
             .is_none_or(|w| crate::proc::identity::gone(w.pid, w.start))
         && let Some((phase, detail)) = crate::background::interrupted_launch(&r.phase)
-        && crate::background::worker_stopped(&location(paths, id)?.with_extension("worker.lock"))?
+        && worker_stopped(paths, id)?
     {
         // 1.68.1: a running recorded worker is only slow. `admitted` with none recorded: its
         // starter was killed before the worker ran (nothing was done); dispatch it once more.
@@ -360,6 +360,15 @@ pub(crate) fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
                 }
                 current.phase = phase.into();
                 current.detail = Some(detail.into());
+            }
+            Ok(())
+        });
+    }
+    if provably_dead(paths, &r) {
+        return change(paths, id, |c| {
+            if c.phase == "uncertain" && c.updated_at == r.updated_at {
+                catalog::release_reservation(paths, id)?;
+                (c.phase, c.detail) = ("failed".into(), Some(SETTLED_DEAD.into()));
             }
             Ok(())
         });
@@ -401,6 +410,27 @@ pub(crate) fn reconcile_status(paths: &Paths, id: &str) -> Result<Receipt> {
         }
         Ok(())
     })
+}
+/// No `launch-worker` holds the launch's worker lock.
+fn worker_stopped(paths: &Paths, id: &str) -> Result<bool> {
+    crate::background::worker_stopped(&location(paths, id)?.with_extension("worker.lock"))
+}
+/// Contract 1.73.1: the detail of an `uncertain` launch settled because it is provably dead.
+pub const SETTLED_DEAD: &str = "settled: launch worker gone, no session was bound (a provider conversation may have been allocated with no turn); no live process carries the session id, the name is released. Nothing was started or sent by this step";
+/// Contract 1.73.1: `uncertain`, and provably dead: the recorded worker (pid and start time) is
+/// gone with its lock free, no conversation or catalog entry was bound, and no other live
+/// process carries the request id. Anything unknown (no worker recorded, unreadable) is not.
+fn provably_dead(paths: &Paths, r: &Receipt) -> bool {
+    let id = &r.request.request_id;
+    r.phase == "uncertain"
+        && r.inline.is_none()
+        && r.conversation_id.is_none()
+        && r.session_id.is_none()
+        && r.worker
+            .is_some_and(|w| crate::proc::identity::gone(w.pid, w.start))
+        && worker_stopped(paths, id).unwrap_or(false)
+        && catalog::list(paths).is_ok_and(|l| !l.iter().any(|s| s.id == *id))
+        && crate::proc::carries_session(id) == Some(false)
 }
 pub(crate) fn change(
     paths: &Paths,
@@ -491,7 +521,13 @@ pub async fn host_call(host: &Host, args: &[&str]) -> Result<Value> {
 async fn validate(paths: &Paths, r: &Request, label: Option<&str>) -> Result<()> {
     shape(r)?;
     directory_check(&r.directory)?;
-    catalog::check_name(paths, label, &r.name, &r.request_id)?;
+    catalog::check_name(paths, label, &r.name, &r.request_id).map_err(|e| {
+        let mut held = catalog::reservation_holders(paths, label, &r.name).into_iter();
+        match held.find(|id| status(paths, id).is_ok_and(|x| x.phase == "uncertain")) {
+            Some(id) => anyhow::anyhow!("{e:#}; held by the uncertain launch {id}, which may have started a session (api abandon-operation --operation {id} --confirm {id} once nothing runs)"),
+            None => e,
+        }
+    })?;
     let account = AccountRef::parse(&r.account_id)?;
     crate::accounts::ensure_available(paths, account.provider, &account.name)?;
     let state = daemon::call(paths, "status", json!({})).await?;
@@ -545,6 +581,12 @@ pub(crate) async fn admit(paths: &Paths, mut r: Request, validate_only: bool) ->
     let label = resolve_space(&r.host, &mut r.space).await?;
     let known = label.is_some();
     bare_request_name(&mut r.name, label.as_deref(), known)?;
+    // 1.73.1: a provably dead uncertain launch holding the name settles first.
+    for held in catalog::reservation_holders(paths, label.as_deref(), &r.name) {
+        if held != r.request_id && !validate_only {
+            let _ = reconcile_status(paths, &held);
+        }
+    }
     if validate_only {
         validate(paths, &r, label.as_deref()).await?;
         return Ok(json!({"valid":true,"request_id":r.request_id}));
@@ -858,6 +900,12 @@ fn settle_run_failure(
     may_have_started: bool,
 ) -> Result<()> {
     change(paths, id, |r| {
+        if matches!(
+            r.phase.as_str(),
+            "running" | "complete" | "failed" | "abandoned"
+        ) {
+            return Ok(());
+        }
         if !may_have_started && r.phase == "starting_provider" && r.session_id.is_none() {
             catalog::release_reservation(paths, id)?;
             r.phase = "failed".into();
@@ -974,10 +1022,7 @@ pub async fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
     let r = status(paths, id)?;
     crate::resume::ensure_unsettled(&r.phase)?;
     ensure!(r.phase == "uncertain", "OPERATION_NOT_STUCK");
-    ensure!(
-        crate::background::worker_stopped(&location(paths, id)?.with_extension("worker.lock"))?,
-        "OPERATION_WORKER_ACTIVE"
-    );
+    ensure!(worker_stopped(paths, id)?, "OPERATION_WORKER_ACTIVE");
     ensure!(
         !catalog::list(paths)?.iter().any(|s| s.id == id),
         "SESSION_EXISTS"

@@ -160,7 +160,7 @@ pub(super) fn scope_key(space: Option<&str>, name: &str) -> String {
 }
 /// Whether a reservation key claims `name` in `space` (keys written before 1.48.0
 /// are the bare name, exact).
-fn reservation_claims(key: &str, space: Option<&str>, name: &str) -> bool {
+pub(super) fn reservation_claims(key: &str, space: Option<&str>, name: &str) -> bool {
     if key.contains('/') {
         key == scope_key(space, name)
     } else {

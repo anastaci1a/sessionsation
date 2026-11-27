@@ -267,6 +267,9 @@ fn a_pre_start_refusal_is_failed_but_a_possible_start_stays_uncertain() {
     let r = status(&paths, &id).unwrap();
     assert_eq!(r.phase, "failed");
     assert!(r.detail.unwrap().starts_with("ACCOUNT_BUSY"));
+    // 1.73.1: a later failure report never turns a final phase back into `uncertain`.
+    settle_run_failure(&paths, &id, &anyhow::anyhow!("late"), true).unwrap();
+    assert_eq!(status(&paths, &id).unwrap().phase, "failed");
     catalog::reserve_name(&paths, None, "pre-start", "other").unwrap();
     let id = fixture_named(&paths, "starting_provider", "maybe-started");
     settle_run_failure(&paths, &id, &anyhow::anyhow!("lost reply"), true).unwrap();

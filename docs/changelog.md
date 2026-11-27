@@ -20,6 +20,7 @@ and package history are in Git.
 
 ## Versions
 
+- **1.73.1** A new launch left `uncertain` that is provably dead (worker gone, no process carries the session id, no conversation bound) settles `failed` with a `settled: launch worker gone, no session was bound` detail and frees its name, on `api launch status` and on a retry with that name; otherwise the `SESSION_NAME_EXISTS` names the holding launch ([launch acknowledgement](contract.md#launch-acknowledgement-and-abandoning-uncertain-operations)).
 - **1.73.0** Internal: shared send receipt and journal helpers; no change.
 - **1.72.1** Session processes get a private per-account `TMPDIR`/`TMP`/`TEMP` (and `CLAUDE_CODE_TMPDIR`) under `<data_root>/tmp`; `capabilities.session_tmp`, setting `session_tmp_root`.
 - **1.72.2** The Codex account app-server (whose tool commands run as its children) is started with the same temp variables; `capabilities.session_tmp.codex_app_server`, applies at its next start or restart.

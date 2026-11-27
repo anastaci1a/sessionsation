@@ -1996,3 +1996,71 @@ async fn a_session_that_never_had_a_conversation_archives_and_restores() {
     assert_ne!(back["availability"], "archived", "{back}");
     assert!(f.gemini_sessions().iter().any(|x| x["id"] == id.as_str()));
 }
+
+/// Kernel start time of `pid` (field 22 of `/proc/<pid>/stat`), None once it is gone.
+fn start_time(pid: u64) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(") ")?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
+/// Contract 1.73.1, the live defect of 2026-11-26: a launch left `uncertain` whose worker died
+/// and that no process ever carried held its name, so every retry got SESSION_NAME_EXISTS.
+/// The retry now settles it (`failed`, `settled: ...`) and is admitted as a fresh launch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_is_admitted_over_a_dead_uncertain_launch_of_the_same_name() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    let dir = f.paths.root.parent().unwrap().to_owned();
+    let mut exited = Command::new("true").spawn().unwrap();
+    let worker = json!({"pid":exited.id(),"start":start_time(exited.id().into()).unwrap()});
+    exited.wait().unwrap();
+    let dead = uuid::Uuid::new_v4().to_string();
+    let receipt = json!({"version":1,"request":{"version":1,"request_id":dead,
+        "account_id":"gemini:personal","name":"ui","host":{"session":"fixture",
+        "socket":dir.join("host.sock")},"space":{"kind":"existing","id":"w1"},
+        "directory":{"path":dir.join("ui"),"create":[],"confirmed_existing":true}},
+        "phase":"uncertain","detail":"LAUNCH_ACK_UNCERTAIN","workspace_id":null,"tab_id":null,
+        "pane_id":null,"conversation_id":null,"session_id":null,"generation":null,
+        "created_directories":[],"created_at":now(),"updated_at":now(),
+        "space_label":"fixture","worker":worker});
+    let file = f
+        .paths
+        .root
+        .join(sessionsation::layout::LAUNCHES)
+        .join(format!("{dead}.json"));
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, receipt.to_string()).unwrap();
+    sessionsation::catalog::reserve_name(&f.paths, Some("fixture"), "ui", &dead).unwrap();
+    let pane = fake_launch_host::launch(binary(), &f.paths.root, &dir, "gemini:personal", "ui");
+    let fresh = f.api(&["launch", "status", "--request-id", &pane.request_id]);
+    // Stop the retry's own launch-worker by its exact recorded pid and start time.
+    let (pid, start) = (
+        fresh["worker"]["pid"].as_u64().unwrap(),
+        fresh["worker"]["start"].as_u64(),
+    );
+    if start.is_some() && start_time(pid) == start {
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    }
+    assert!(
+        matches!(
+            fresh["phase"].as_str(),
+            Some("starting_provider" | "attached" | "running")
+        ),
+        "{fresh}"
+    );
+    assert_eq!(fresh["request"]["name"], "ui");
+    let old: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(old["phase"], "failed", "{old}");
+    assert!(
+        old["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("settled: launch worker gone"),
+        "{old}"
+    );
+}

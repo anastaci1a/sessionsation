@@ -210,3 +210,142 @@ fn a_launch_worker_that_dies_early_leaves_its_stderr_in_the_log() {
     assert_eq!(r["worker"], worker, "dispatched more than once: {r}");
     assert!(Path::new(&f.file("worker.log")).exists());
 }
+
+// ------------------------------------------- contract 1.73.1: a dead uncertain launch settles
+
+/// An `uncertain` receipt holding the name `probe` in Space `fixture`, its worker `worker`.
+fn uncertain(worker: Option<(u32, u64)>) -> Fixture {
+    let f = Fixture::admitted(|r| {
+        r["phase"] = json!("uncertain");
+        r["detail"] = json!("LAUNCH_ACK_UNCERTAIN");
+        r["space_label"] = json!("fixture");
+        if let Some((pid, start)) = worker {
+            r["worker"] = json!({"pid":pid,"start":start});
+        }
+    });
+    let paths = sessionsation::paths::Paths::new(Some(f.root.clone())).unwrap();
+    sessionsation::catalog::reserve_name(&paths, Some("fixture"), "probe", &f.id).unwrap();
+    f
+}
+/// A worker identity (pid, start time) whose process has exited.
+fn dead_worker() -> (u32, u64) {
+    let mut child = Command::new("true").spawn().unwrap();
+    let identity = (child.id(), start_time(child.id()));
+    child.wait().unwrap();
+    identity
+}
+/// `api launch start` of `request` against a scripted HERDR that only lists Space `fixture`.
+fn start(f: &Fixture, request: &Value) -> (bool, String) {
+    let dir = f.root.parent().unwrap();
+    let socket = dir.join("host.sock");
+    let _host = std::os::unix::net::UnixListener::bind(&socket);
+    let script = dir.join("herdr");
+    std::fs::write(&script, "#!/bin/sh\n[ \"$1 $2\" = 'workspace list' ] || exit 42\nprintf '%s\\n' '{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"fixture\"}]}}'\n").unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let mut child = Command::new(binary())
+        .arg("--data-dir")
+        .arg(&f.root)
+        .args(["api", "launch", "start"])
+        .env(
+            "PATH",
+            format!("{}:{}", dir.display(), std::env::var("PATH").unwrap()),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(request.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    (out.status.success(), text)
+}
+/// The same request under a new request id: a retry of the launch with the same name.
+fn retry(f: &Fixture) -> Value {
+    let mut request = f.receipt()["request"].clone();
+    request["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    request
+}
+
+/// The live defect (2026-11-26): a launch went `uncertain`, its worker died and nothing ever
+/// ran the session. The reconcile (`launch status`, the supervisor) settles it and frees the
+/// name; the admission path is `a_retry_is_admitted_over_a_dead_uncertain_launch_…` (gemini).
+#[test]
+fn a_dead_uncertain_launch_settles_on_the_reconcile_and_frees_its_name() {
+    let f = uncertain(Some(dead_worker()));
+    let r = f.status();
+    assert_eq!(r["phase"], "failed", "{r}");
+    assert!(
+        r["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("settled: launch worker gone, no session was bound"),
+        "{r}"
+    );
+    let paths = sessionsation::paths::Paths::new(Some(f.root.clone())).unwrap();
+    sessionsation::catalog::reserve_name(&paths, Some("fixture"), "probe", "retry").unwrap();
+    assert_eq!(f.status()["phase"], "failed");
+}
+
+/// Anything less certain keeps the name: no recorded worker, or a live process carrying the
+/// session id (a provider's session env, or a `launch-run` argument). The refusal names the
+/// uncertain launch and its abandon.
+#[test]
+fn a_live_or_unknown_uncertain_launch_still_refuses_the_name() {
+    let refused = |f: &Fixture| {
+        let (ok, text) = start(f, &retry(f));
+        assert!(!ok && text.contains("SESSION_NAME_EXISTS"), "{text}");
+        assert!(
+            text.contains(&format!("held by the uncertain launch {}", f.id)),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "api abandon-operation --operation {0} --confirm {0}",
+                f.id
+            )),
+            "{text}"
+        );
+        assert_eq!(f.receipt()["phase"], "uncertain");
+    };
+    refused(&uncertain(None));
+    let f = uncertain(Some(dead_worker()));
+    let env = sessionsation::provider::SESSION_ENV;
+    let mut provider = Command::new("sleep")
+        .arg("30")
+        .env(env, &f.id)
+        .spawn()
+        .unwrap();
+    let mut launch_run = Command::new("sh")
+        .args(["-c", "sleep 30; :", "launch-run", &f.id])
+        .spawn()
+        .unwrap();
+    refused(&f);
+    let _ = provider.kill();
+    let _ = provider.wait();
+    refused(&f);
+    let _ = launch_run.kill();
+    let _ = launch_run.wait();
+    assert_eq!(f.status()["phase"], "failed");
+}
+
+/// A retry with the request id of the uncertain record is the same request: it is replayed
+/// as recorded (still `uncertain`, no new worker), never settled or dispatched by admission.
+#[test]
+fn a_retry_with_the_same_request_id_stays_idempotent() {
+    let f = uncertain(Some(dead_worker()));
+    let before = f.receipt();
+    let (ok, text) = start(&f, &before["request"]);
+    assert!(ok, "{text}");
+    let after = f.receipt();
+    assert_eq!(after["phase"], "uncertain", "{after}");
+    assert_eq!(after["worker"], before["worker"]);
+    assert_eq!(after["updated_at"], before["updated_at"]);
+}

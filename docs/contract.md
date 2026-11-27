@@ -776,6 +776,21 @@ released; `uncertain` is kept for failures after a provider start may have happe
 point). On any error `launch-run` prints `sessionsation launch failed: <CODE>:
 <reason>` to the pane's stderr and exits 1.
 
+Contract 1.73.1: an `uncertain` new launch that is provably dead settles on its own as
+`failed` (detail `settled: launch worker gone, no session was bound ...`; a provider
+conversation may have been allocated with no turn) and its name is released. Provably
+dead: the recorded `launch-worker` (pid and start time) is gone and its lock free, no
+conversation or catalog entry was bound, and no other live process carries the request
+id as an argument or as `SESSIONSATION_SESSION_ID`; an unreadable process table or
+process of the same user means not dead. Liveness is judged in the caller's pid
+namespace, which assumes every caller runs on the host. The check runs in the launch
+reconcile (`api launch status` and `list`, and the supervisor following a `session
+launch`) and, before the admission lock, when `api launch start` checks a name such a
+launch holds, so a retry right after succeeds; the settle itself requires the phase
+still `uncertain` and an unchanged `updated_at`. Anything less certain stays `uncertain` and
+keeps the name; its `SESSION_NAME_EXISTS` names the holding launch and the
+`abandon-operation` to run. A retry with the same request id is replayed unchanged.
+
 `api abandon-operation --operation ID --confirm ID` (`capabilities.abandon_operation`,
 `applies_to:["resume_launch","launch"]`, `launch_phases:["uncertain"]`) releases an
 operation that is deliberately never replayed. It moves the receipt to the terminal
