@@ -1165,6 +1165,176 @@ async fn switching_a_saved_session_only_rehomes_it_and_a_later_resume_starts_it_
     );
 }
 
+/// Contract 1.73.5: `api switch` of a saved Codex session re-homes it through the saved move job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api_switch_of_a_saved_codex_session_rehomes_it_through_the_move_job() {
+    let f = Fixture::new().await;
+    let work = f.paths.account("work").unwrap();
+    // Unfinished history: the job waits for risk consent, so the repeat below meets it running.
+    let path = history(&f.paths.account("personal").unwrap(), f.tmp.path(), ID);
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        text.lines()
+            .take(2)
+            .map(|l| format!("{l}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let row = |f: &Fixture| {
+        f.invoke(&["api", "state"])["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["conversation_id"] == ID)
+            .unwrap()
+            .clone()
+    };
+    let before = row(&f);
+    assert_eq!(before["capabilities"]["switch_account"], true, "{before}");
+    let (id, generation) = (
+        before["id"].as_str().unwrap(),
+        before["generation"].as_str().unwrap(),
+    );
+    let switch = |generation: &str| {
+        let args = [
+            "api",
+            "switch",
+            "--session",
+            id,
+            "--expected-generation",
+            generation,
+            "--to",
+            "codex:work",
+        ];
+        let out = command(&f.paths.root, &f.socket, &args);
+        serde_json::from_slice::<Value>(if out.status.success() {
+            &out.stdout
+        } else {
+            &out.stderr
+        })
+        .unwrap()
+    };
+    let stale = switch("0");
+    assert_eq!(stale["error"]["code"], "STALE_TARGET", "{stale}");
+    let job = switch(generation);
+    let r = &job["result"];
+    // The same operation shape as a running Codex switch.
+    assert_eq!(
+        (r["kind"].as_str(), r["source_session_id"].as_str()),
+        (Some("account"), Some(id)),
+        "{job}"
+    );
+    assert_eq!(
+        (
+            r["source_account_id"].as_str(),
+            r["target_account_id"].as_str()
+        ),
+        (Some("codex:personal"), Some("codex:work"))
+    );
+    assert_eq!(
+        (
+            r["non_steering"].as_bool(),
+            r["provider_conversation_id"].as_str()
+        ),
+        (Some(true), Some(ID))
+    );
+    let job_id = r["id"].as_str().unwrap();
+    let prompt = f.wait(job_id, "awaiting_risk_confirmation").await;
+    // A repeat while it runs answers the same job, as for a running session.
+    assert_eq!(switch(generation)["result"]["id"], job_id);
+    f.invoke(&[
+        "move-response",
+        job_id,
+        "yes",
+        "--sequence",
+        &prompt["confirmation_seq"].to_string(),
+    ]);
+    let done = f.wait(job_id, "complete").await;
+    assert!(
+        done["detail"].as_str().unwrap().contains("stays saved"),
+        "{done}"
+    );
+    assert!(
+        find_rollout(&work, ID).is_some(),
+        "history moved to the target home"
+    );
+    assert!(!work.join("launch-args").exists(), "nothing was started");
+    let after = row(&f);
+    assert_eq!(
+        (after["id"].as_str(), after["account"].as_str()),
+        (Some(id), Some("work")),
+        "{after}"
+    );
+    assert_ne!(after["generation"], before["generation"]);
+    // Afterwards: the old generation is stale; the current one names the account it is on.
+    assert_eq!(switch(generation)["error"]["code"], "STALE_TARGET");
+    let again = switch(after["generation"].as_str().unwrap());
+    assert_eq!(
+        again["error"]["code"], "ACCOUNT_ALREADY_SELECTED",
+        "{again}"
+    );
+}
+
+/// Contract 1.73.5 (review): a pending saved resume to the same account is never answered by a switch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api_switch_never_answers_a_pending_saved_resume_job() {
+    let f = Fixture::new().await;
+    let path = history(&f.paths.account("personal").unwrap(), f.tmp.path(), ID);
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        text.lines()
+            .take(2)
+            .map(|l| format!("{l}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let row = f.invoke(&["api", "state"])["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap()
+        .clone();
+    let (id, generation) = (
+        row["id"].as_str().unwrap(),
+        row["generation"].as_str().unwrap(),
+    );
+    let args = [
+        "api",
+        "switch",
+        "--session",
+        id,
+        "--expected-generation",
+        generation,
+        "--to",
+        "codex:work",
+    ];
+    // A real saved switch journal, cancelled, then replayed as a pending saved resume (no worker).
+    let switch = f.invoke(&args);
+    let first = switch["result"]["id"].as_str().unwrap();
+    f.wait(first, "awaiting_risk_confirmation").await;
+    f.invoke(&["cancel-move", first]);
+    f.wait(first, "cancelled").await;
+    let jobs = f.paths.root.join(sessionsation::layout::HANDOFF_JOBS);
+    let mut resume: Value =
+        serde_json::from_slice(&fs::read(jobs.join(format!("{first}.json"))).unwrap()).unwrap();
+    let resume_id = "33333333-3333-4333-8333-333333333333";
+    resume["id"] = json!(resume_id);
+    resume["phase"] = json!("awaiting_risk_confirmation");
+    resume["resume_destination"] = json!("herdr/main/w3:p1");
+    fs::write(jobs.join(format!("{resume_id}.json")), resume.to_string()).unwrap();
+    let out = command(&f.paths.root, &f.socket, &args);
+    assert!(
+        !out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let err: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(err["error"]["code"], "SESSION_STATE_UNVERIFIED", "{err}");
+}
+
 fn paginated(f: &Fixture, id: &str) {
     let path = find_rollout(&f.paths.account("personal").unwrap(), id).unwrap();
     let text = fs::read_to_string(&path).unwrap();
@@ -3598,6 +3768,25 @@ async fn public_busy_switch_waits_without_steering_and_keeps_original_process() 
             .iter()
             .any(|(m, _)| m == "turn/steer")
     );
+    // A repeat with the current generation answers the same job (unchanged by 1.73.5).
+    let state = f.invoke(&["api", "state"]);
+    let current = state["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["conversation_id"] == ID)
+        .unwrap();
+    let repeat = f.invoke(&[
+        "api",
+        "switch",
+        "--session",
+        current["id"].as_str().unwrap(),
+        "--expected-generation",
+        current["generation"].as_str().unwrap(),
+        "--to",
+        "codex:work",
+    ]);
+    assert_eq!(repeat["result"]["id"], id, "{repeat}");
     f.invoke(&["cancel-move", id]);
     f.wait(id, "cancelled").await;
     assert_eq!(f.invoke(&["sessions"])["sessions"][0]["pane"], pane);

@@ -23,8 +23,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 73;
-pub const CONTRACT_PATCH: u32 = 4;
-pub const CONTRACT_VERSION: &str = "1.73.4";
+pub const CONTRACT_PATCH: u32 = 5;
+pub const CONTRACT_VERSION: &str = "1.73.5";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -3603,24 +3603,39 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
         } => {
             let (_, source) = selected(paths, &session, &expected_generation).await?;
             let target = ops::supervised_name(&to).context("ACCOUNT_PROVIDER_REQUIRED")?;
+            // Contract 1.73.5: repeating a saved switch while it runs answers its job, as a running one does.
+            let queued = match source.move_id.as_ref().filter(|_| source.inactive) {
+                Some(id) => external::jobs(paths)?.into_iter().find(|j| {
+                    &j.id == id
+                        && j.kind == "account"
+                        && j.target == target
+                        && j.non_steering
+                        && j.resume_destination.is_none()
+                }),
+                None => None,
+            };
             // A stopped session is only re-homed (never started).
             ensure!(
-                !source.inactive
+                queued.is_some()
+                    || !source.inactive
                     || (source.move_id.is_none()
                         && matches!(source.block_reason.as_deref(), None | Some("unfinished"))),
                 "SESSION_STATE_UNVERIFIED"
             );
-            operation(
-                paths,
-                external::queue_snapshot(
-                    paths,
-                    source,
-                    target,
-                    external::MoveOptions::new(false, accept_risks, false),
-                    "account",
-                )
-                .await?,
-            )?
+            let job = match queued {
+                Some(job) => job,
+                None => {
+                    external::queue_snapshot(
+                        paths,
+                        source,
+                        target,
+                        external::MoveOptions::new(false, accept_risks, false),
+                        "account",
+                    )
+                    .await?
+                }
+            };
+            operation(paths, job)?
         }
         Command::Relocate {
             session,

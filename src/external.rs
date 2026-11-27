@@ -2518,8 +2518,9 @@ pub async fn queue_snapshot(
     options: MoveOptions,
     kind: &str,
 ) -> Result<Job> {
+    // Contract 1.73.5: a saved session's account switch is the saved move (rehome only).
     ensure!(
-        !source.inactive && !source.thread_id.is_empty(),
+        (kind == "account" || !source.inactive) && !source.thread_id.is_empty(),
         "SESSION_NOT_RUNNING"
     );
     let owner = source.account.clone();

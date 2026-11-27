@@ -1159,7 +1159,9 @@ and byte-verifies the rollout and child histories in the target home, retires th
 copy and lets discovery list the session as `saved` on the target account (new
 catalog account and generation), without loading the thread on the target
 app-server, opening a pane or starting Codex (`complete` detail says the session
-stays saved). A later resume starts it there with the recorded permissions. A
+stays saved). Since 1.73.5 `api switch` admits a saved Codex session (before:
+`SESSION_NOT_RUNNING`) through that handoff job; a repeat while it runs answers that
+job. A later resume starts it there with the recorded permissions. A
 resume launch that chooses an account (`resume_destination`) and switching a live
 Codex session use the non-steering transfer worker, which waits for positive idle and
 never forces interruption.

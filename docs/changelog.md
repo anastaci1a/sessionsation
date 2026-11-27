@@ -24,6 +24,7 @@ and package history are in Git.
 - **1.73.2** Headless runs (all providers), hosted Claude, `claude attach` and the private stdio Codex app-server get the same temp variables; `capabilities.session_tmp.covers`.
 - **1.73.3** A `queued` archive, restore or delete whose worker never recorded itself (over 10 s, `.lock` free) is started once more by the supervisor, then `failed`; a failed worker spawn fails the record; `api abandon-operation` ends one whose recorded worker is gone. No new code or phase.
 - **1.73.4** A stop holding the generation from right before the sync detached its exited (or switched) process answers `already_stopped` instead of `STALE_TARGET` ([stop](contract.md#stop-and-restart)).
+- **1.73.5** `api switch` of a saved Codex session re-homes it through the saved-session handoff job (it answered `SESSION_NOT_RUNNING`), with the running-switch operation keys; a repeat while it runs answers that job ([account switch](contract.md#account-switch)).
 - **1.73.0** Internal: shared send receipt and journal helpers; no change.
 - **1.72.1** Session processes get a private per-account `TMPDIR`/`TMP`/`TEMP` (and `CLAUDE_CODE_TMPDIR`) under `<data_root>/tmp`; `capabilities.session_tmp`, setting `session_tmp_root`.
 - **1.72.2** The Codex account app-server (whose tool commands run as its children) is started with the same temp variables; `capabilities.session_tmp.codex_app_server`, applies at its next start or restart.
