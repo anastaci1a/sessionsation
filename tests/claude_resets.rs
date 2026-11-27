@@ -145,7 +145,7 @@ printf '%s\n%s' "$(cat "$d/$k-body" 2>/dev/null)" "$(cat "$d/$k-status" 2>/dev/n
         caps["account_reset_credit"]["providers"],
         json!(["codex", "claude"])
     );
-    assert_eq!(caps["contract_version"], "1.73.2");
+    assert_eq!(caps["contract_version"], "1.73.3");
 
     // Limits: an on-demand status read.
     fs::write(fake.join("usage-status"), "200").unwrap();

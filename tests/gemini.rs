@@ -2011,6 +2011,71 @@ async fn a_session_that_never_had_a_conversation_archives_and_restores() {
     assert!(f.gemini_sessions().iter().any(|x| x["id"] == id.as_str()));
 }
 
+/// Contract 1.73.3: a queued archive whose worker never started (no worker_pid, no `.lock`)
+/// is started once by the supervisor sweep and completes; the session is then free again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_queued_archive_whose_worker_never_started_is_started_by_the_supervisor() {
+    let f = fixture().await;
+    f.add_logged_in("personal");
+    std::fs::write(f.home("personal").join("fake-launch-exit"), "0").unwrap();
+    let status = f
+        .command(&["run", "--account", "personal"])
+        .current_dir(&f.project)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let s = f
+        .gemini_sessions()
+        .into_iter()
+        .next()
+        .expect("the launch is recorded");
+    let id = s["id"].as_str().unwrap().to_owned();
+    let session = sessionsation::catalog::find(&f.paths, &id).unwrap();
+    let op = uuid::Uuid::new_v4().to_string();
+    let at = daemon::now() - 60;
+    let dir = f.paths.root.join("operations/conversation-operations");
+    std::fs::create_dir_all(&dir).unwrap();
+    let record = json!({"id":op,"kind":"archive","session":session,"expected_generation":s["generation"],
+        "phase":"queued","detail":"Confirmed; waiting for conversation checks.","created_at":at,"updated_at":at,
+        "source":null,"worker_pid":null,"worker_start":null,"nothing_to_archive":false});
+    std::fs::write(
+        dir.join(format!("{op}.json")),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let done = loop {
+        let ops = f.api(&["operations"]);
+        let found = ops
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(ops["operations"].as_array().into_iter().flatten())
+            .find(|o| o["id"] == op.as_str())
+            .cloned();
+        assert!(
+            found.as_ref().is_none_or(|o| o["phase"] != "failed"),
+            "{found:?}"
+        );
+        if let Some(o) = found.filter(|o| o["phase"] == "complete") {
+            break o;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "not started: {:?}",
+            std::fs::read_to_string(dir.join(format!("{op}.json")))
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(done["nothing_to_archive"], true, "{done}");
+    let journal: Value =
+        serde_json::from_slice(&std::fs::read(dir.join(format!("{op}.json"))).unwrap()).unwrap();
+    assert!(journal["respawned_at"].is_i64(), "{journal}");
+    assert!(journal["worker_pid"].is_u64(), "{journal}");
+}
+
 /// Kernel start time of `pid` (field 22 of `/proc/<pid>/stat`), None once it is gone.
 fn start_time(pid: u64) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;

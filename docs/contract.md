@@ -792,7 +792,7 @@ keeps the name; its `SESSION_NAME_EXISTS` names the holding launch and the
 `abandon-operation` to run. A retry with the same request id is replayed unchanged.
 
 `api abandon-operation --operation ID --confirm ID` (`capabilities.abandon_operation`,
-`applies_to:["resume_launch","launch"]`, `launch_phases:["uncertain"]`) releases an
+`applies_to:["resume_launch","launch","conversation"]`, `launch_phases:["uncertain"]`) releases an
 operation that is deliberately never replayed. It moves the receipt to the terminal
 phase `abandoned` (`abandoned_from`, `abandoned_at`, a `detail` stating that nothing
 was sent), sends, resumes and replays nothing, and only releases the reservation.
@@ -2337,7 +2337,7 @@ account lock (backoff 50 ms to 1 s; phase
 120s`). `--wait` polls until `complete` (`ok:true` with the operation) or `failed`
 (`OPERATION_FAILED`, `error.operation`, retryable when the detail starts with
 `ACCOUNT_BUSY`), at most 300 s (`OPERATION_TIMEOUT`). Every record carries
-`nothing_to_archive`.
+`nothing_to_archive`. From 1.73.3 a worker that cannot be built or spawned leaves the job `failed` ("Worker did not start: …"), and a `queued` job whose worker never recorded itself, over 10 s old with its `.lock` free, is started once more by the supervisor (about every 20 s, and on an archive, restore or delete refused because of it); the record keeps `respawned_at`. `api operations` and `--wait` report such a job `queued` until the sweep itself writes `failed` under its lock, which it does on a later pass if that worker never recorded itself either ("Worker did not start after one automatic retry; nothing was changed."). A job whose recorded worker died is never restarted: `api abandon-operation --operation ID --confirm ID` ends it `failed` ("Abandoned by the operator: worker gone; original history or the prepared archive is retained for review") once that exact worker is gone and its `.lock` is free, which frees the session (otherwise `OPERATION_WORKER_ACTIVE`; a never-started job `OPERATION_NOT_STUCK`, since the sweep is its only exit; a settled one `OPERATION_ALREADY_TERMINAL`), and its `SESSION_OPERATION_IN_PROGRESS` names that command. No new error code or phase.
 
 Archive/Restore/Delete invalidate the captured generation. Archive hides the session
 from normal state (`availability:"archived"`, `archived:true`,

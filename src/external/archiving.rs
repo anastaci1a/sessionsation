@@ -53,6 +53,9 @@ struct Operation {
     /// Contract 1.63.0: an archive (or its restore) of a session that never had a conversation.
     #[serde(default)]
     nothing_to_archive: bool,
+    /// Contract 1.73.3: when the supervisor started the one automatic worker retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    respawned_at: Option<i64>,
 }
 impl Operation {
     fn public(&self) -> Value {
@@ -133,9 +136,13 @@ fn optional(paths: &Paths, id: &str) -> Result<Option<Archive>> {
         Ok(None)
     }
 }
+const RETRY_FAILED: &str = "Worker did not start after one automatic retry; nothing was changed.";
 fn effective(o: &Operation) -> Value {
     let mut v = o.public();
-    if !matches!(o.phase.as_str(), "complete" | "failed")
+    // 1.73.3: a workerless queued record reports its stored phase; only the sweep fails it.
+    if unstarted(o) {
+        return v;
+    } else if !matches!(o.phase.as_str(), "complete" | "failed")
         && daemon::now() - o.updated_at > 10
         && o.worker_pid.zip(o.worker_start).is_none_or(|(pid, ticks)| {
             process_info(pid).map_or(true, |p| {
@@ -317,6 +324,7 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
             worker_pid: None,
             worker_start: None,
             nothing_to_archive: false,
+            respawned_at: None,
         }
         .public();
         v[flag] = json!(true);
@@ -342,7 +350,12 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         crate::provider::ops::supervised(&session.provider) || native_target.is_some(),
         "PROVIDER_UNSUPPORTED"
     );
-    let _admission = crate::lifecycle::admit(paths, &session.conversation_id, Some(&t.request_id))?;
+    let admitted = crate::lifecycle::admit(paths, &session.conversation_id, Some(&t.request_id));
+    if admitted.is_err() {
+        let p = paths.clone(); // 1.73.3: a refusal may be a workerless queued record
+        let _ = tokio::task::spawn_blocking(move || start_stalled(&p)).await;
+    }
+    let _admission = admitted?;
     crate::lifecycle::ensure_no_handoff(paths, &session.conversation_id, Some(&t.request_id))?;
     ensure!(
         !operations(paths)?
@@ -364,22 +377,103 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         worker_pid: None,
         worker_start: None,
         nothing_to_archive: false,
+        respawned_at: None,
     };
     op_save(paths, &o)?;
-    let log = op_path(paths, &o.id)?.with_extension("worker.log");
-    let worker = crate::background::self_worker(paths, &log, &["conversation-worker", &o.id]);
-    let spawned = worker?.spawn_reaped();
-    if let Err(e) = spawned {
-        let mut failed = o.clone();
-        phase(
-            paths,
-            &mut failed,
-            "failed",
-            &format!("Worker did not start: {e}"),
-        )?;
-        return Err(e.into());
-    }
+    launch(paths, &o)?;
     Ok(o.public())
+}
+/// Starts `o`'s worker; failing to build or spawn it leaves the record failed (1.73.3).
+fn launch(paths: &Paths, o: &Operation) -> Result<()> {
+    launch_with(paths, o, |log| {
+        let args = ["conversation-worker", o.id.as_str()];
+        crate::background::self_worker(paths, log, &args)?.spawn_reaped()?;
+        Ok(())
+    })
+}
+fn launch_with(
+    paths: &Paths,
+    o: &Operation,
+    spawn: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    let spawned = spawn(&op_path(paths, &o.id)?.with_extension("worker.log"));
+    if let Err(e) = &spawned {
+        // Under the lock, and only while no worker recorded itself: never over a running one.
+        if let Some((_lock, mut o)) = locked(paths, &o.id).filter(|(_, o)| unstarted(o)) {
+            phase(
+                paths,
+                &mut o,
+                "failed",
+                &format!("Worker did not start: {e}"),
+            )?;
+        }
+    }
+    spawned
+}
+fn unstarted(o: &Operation) -> bool {
+    o.phase == "queued" && o.worker_pid.is_none()
+}
+/// The record read under its free `.lock` (None: a worker holds it, or it cannot be read).
+fn locked(paths: &Paths, id: &str) -> Option<(File, Operation)> {
+    let lock = crate::paths::lock_file(&op_path(paths, id).ok()?.with_extension("lock")).ok()?;
+    crate::paths::try_lock_brief(&lock).ok()?;
+    Some((lock, op_load(paths, id).ok()?))
+}
+/// Contract 1.73.3 (supervisor sweep): a `queued` operation whose worker never recorded itself,
+/// past the 10 s start grace and with its `.lock` free, gets one more worker (`respawned_at`
+/// saved first, so a crash loop cannot repeat it); still unrecorded after that, it fails.
+pub fn start_stalled(paths: &Paths) -> Result<()> {
+    start_stalled_with(paths, launch)
+}
+fn start_stalled_with(
+    paths: &Paths,
+    launch: impl Fn(&Paths, &Operation) -> Result<()>,
+) -> Result<()> {
+    let stalled = |o: &Operation| unstarted(o) && daemon::now() - o.updated_at > 10;
+    for e in crate::paths::journal_paths(&ops_root(paths)?)? {
+        let id = e.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        if !op_load(paths, id).is_ok_and(|o| stalled(&o)) {
+            continue;
+        }
+        let Some((lock, mut o)) = locked(paths, id).filter(|(_, o)| stalled(o)) else {
+            continue; // A worker holds it, or it just started.
+        };
+        if o.respawned_at.is_some() {
+            let _ = phase(paths, &mut o, "failed", RETRY_FAILED);
+            continue;
+        }
+        o.respawned_at = Some(daemon::now());
+        let retry = "Worker did not start; starting it once more.";
+        if phase(paths, &mut o, "queued", retry).is_ok() {
+            drop(lock);
+            let _ = launch(paths, &o);
+        }
+    }
+    Ok(())
+}
+/// Contract 1.73.3: operator abandon of a conversation operation whose recorded worker is
+/// provably gone (its `.lock` free): `failed`, nothing replayed, the session admits again.
+pub fn abandon(paths: &Paths, id: &str, confirm: &str) -> Result<Value> {
+    ensure!(id == confirm, "CONFIRMATION_MISMATCH");
+    let (_lock, mut o) = locked(paths, id).context("OPERATION_WORKER_ACTIVE")?;
+    ensure!(
+        !matches!(o.phase.as_str(), "complete" | "failed"),
+        "OPERATION_ALREADY_TERMINAL"
+    );
+    let worker = o
+        .worker_pid
+        .zip(o.worker_start)
+        .context("OPERATION_NOT_STUCK")?;
+    ensure!(
+        crate::proc::identity::gone(worker.0, worker.1),
+        "OPERATION_WORKER_ACTIVE"
+    );
+    let detail = "Abandoned by the operator: worker gone; original history or the prepared archive is retained for review";
+    phase(paths, &mut o, "failed", detail)?;
+    Ok(o.public())
+}
+pub fn exists(paths: &Paths, id: &str) -> bool {
+    op_path(paths, id).is_ok_and(|p| p.is_file())
 }
 fn digest(p: &Path) -> Result<String> {
     let mut f = crate::layout::open_nofollow(p)?;
@@ -768,7 +862,7 @@ pub async fn worker(paths: &Paths, id: &str) -> Result<()> {
     let lock = crate::paths::lock_file(&op_path(paths, id)?.with_extension("lock"))?;
     lock.try_lock_exclusive()?;
     let mut o = op_load(paths, id)?;
-    if o.phase != "queued" {
+    if !unstarted(&o) {
         return Ok(());
     } // Never automatically replay an uncertain native mutation.
     o.worker_pid = Some(std::process::id());

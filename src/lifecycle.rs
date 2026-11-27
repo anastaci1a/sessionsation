@@ -35,6 +35,8 @@ impl Pending {
     pub fn message(&self) -> String {
         let how = if self.unresolved() {
             "; api recover it or api abandon-operation it (operator) to unblock the session"
+        } else if self.kind == "conversation" {
+            "; retry when it finishes, or api abandon-operation it (operator) if its worker is gone"
         } else {
             "; retry when it finishes"
         };
