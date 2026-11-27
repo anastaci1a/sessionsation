@@ -113,3 +113,80 @@ fn each_window_has_its_own_freshness_and_age_from_its_own_observed_at() {
     assert_eq!(none["all_windows_fresh"], false);
     assert!(none["windows"]["five_hour"].is_null());
 }
+
+#[test]
+fn upstream_identity_is_a_provider_scoped_fingerprint_or_null() {
+    let dir = tempfile::tempdir().unwrap();
+    let (codex, claude) = (dir.path().join("codex"), dir.path().join("claude"));
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::create_dir_all(&claude).unwrap();
+    let id = |p, h: &std::path::Path| upstream_identity(p, h);
+    assert!(id(ProviderId::Codex, &codex).is_null(), "no auth.json");
+    std::fs::write(codex.join("auth.json"), "{").unwrap();
+    assert!(id(ProviderId::Codex, &codex).is_null(), "invalid auth.json");
+    std::fs::write(
+        codex.join("auth.json"),
+        r#"{"tokens":{"account_id":"fixture-upstream"}}"#,
+    )
+    .unwrap();
+    let uuid = "0b7c1e2a-4d5f-4a6b-8c9d-1e2f3a4b5c6d";
+    std::fs::write(
+        claude.join(".claude.json"),
+        json!({"oauthAccount":{"accountUuid":uuid}}).to_string(),
+    )
+    .unwrap();
+    use sha2::{Digest, Sha256};
+    let want = |s: &str| json!(format!("{:x}", Sha256::digest(s)));
+    assert_eq!(
+        id(ProviderId::Codex, &codex),
+        want("codex:fixture-upstream")
+    );
+    assert_eq!(
+        id(ProviderId::Claude, &claude),
+        want(&format!("claude:{uuid}"))
+    );
+    for p in [ProviderId::Gemini, ProviderId::Antigravity] {
+        assert!(id(p, &codex).is_null());
+    }
+}
+
+/// Contract 1.73.6 (review): a Codex workspace `account_id` is narrowed to the id_token's
+/// user (`chatgpt_user_id`, else `sub`); a rewritten file is read again (mtime/size cache).
+#[test]
+fn codex_upstream_identity_names_the_user_within_a_workspace() {
+    use sha2::{Digest, Sha256};
+    let want = |s: &str| json!(format!("{:x}", Sha256::digest(s)));
+    // Base64url payloads (no padding) of fixture claims; header and signature are ignored.
+    const USER1: &str = "eyJzdWIiOiJGSVhUVVJFLVNVQi0xIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6IkZJWFRVUkUtVVNFUi0xIn19";
+    const USER2: &str = "eyJzdWIiOiJGSVhUVVJFLVNVQi0yIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6IkZJWFRVUkUtVVNFUi0yIn19";
+    const SUB_ONLY: &str = "eyJzdWIiOiJGSVhUVVJFLVNVQi0zIn0";
+    let dir = tempfile::tempdir().unwrap();
+    let write = |token: Option<&str>| {
+        let mut tokens = json!({"account_id":"FIXTURE-WORKSPACE"});
+        if let Some(t) = token {
+            tokens["id_token"] = json!(t);
+        }
+        std::fs::write(
+            dir.path().join("auth.json"),
+            json!({"tokens":tokens}).to_string(),
+        )
+        .unwrap();
+        upstream_identity(ProviderId::Codex, dir.path())
+    };
+    let seat1 = write(Some(&format!("h.{USER1}.s")));
+    assert_eq!(seat1, want("codex:FIXTURE-WORKSPACE:FIXTURE-USER-1"));
+    let seat2 = write(Some(&format!("h.{USER2}.sig")));
+    assert_eq!(seat2, want("codex:FIXTURE-WORKSPACE:FIXTURE-USER-2"));
+    assert_ne!(seat1, seat2, "two seats of one workspace");
+    assert_eq!(
+        write(Some(&format!("hd.{SUB_ONLY}.s"))),
+        want("codex:FIXTURE-WORKSPACE:FIXTURE-SUB-3"),
+        "sub without chatgpt_user_id"
+    );
+    assert_eq!(write(None), want("codex:FIXTURE-WORKSPACE"), "no id_token");
+    assert_eq!(
+        write(Some("not-a-jwt!")),
+        want("codex:FIXTURE-WORKSPACE"),
+        "an undecodable id_token falls back to the account"
+    );
+}

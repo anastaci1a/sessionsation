@@ -427,3 +427,96 @@ async fn the_supervisor_reads_idle_claude_meters_and_never_renews_a_token() {
         64.0
     );
 }
+
+/// Contract 1.73.6: every meter carries `upstream_identity`, a fingerprint of the upstream
+/// account id (`sha256("<provider>:" + id)`); the raw id never reaches any output.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_meter_fingerprints_its_upstream_account_and_never_shows_the_id() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new("0").await;
+    let root = f.root().to_path_buf();
+    let (shared, other) = ("FIXTURE-UPSTREAM-SHARED", "FIXTURE-UPSTREAM-OTHER");
+    let claude_uuid = "0b7c1e2a-4d5f-4a6b-8c9d-1e2f3a4b5c6d";
+    // id_token payloads (base64url): chatgpt_user_id FIXTURE-USER-1 and FIXTURE-USER-2.
+    let user1 = "h.eyJzdWIiOiJGSVhUVVJFLVNVQi0xIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6IkZJWFRVUkUtVVNFUi0xIn19.s";
+    let user2 = "h.eyJzdWIiOiJGSVhUVVJFLVNVQi0yIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6IkZJWFRVUkUtVVNFUi0yIn19.s";
+    let seat =
+        |token: &str| Some(json!({"tokens":{"account_id":shared,"id_token":token}}).to_string());
+    for (name, auth) in [
+        ("one", seat(user1)),
+        ("two", seat(user1)),
+        ("seat", seat(user2)),
+        (
+            "three",
+            Some(json!({"tokens":{"account_id":other}}).to_string()),
+        ),
+        ("broken", Some("not json".to_owned())),
+        ("missing", None),
+    ] {
+        daemon::call(&f.paths, "account/add", json!({"name":name}))
+            .await
+            .unwrap();
+        let file = root.join(format!("accounts/codex/{name}/auth.json"));
+        // The fake login wrote a fixture auth.json; replace or remove it.
+        match auth {
+            Some(text) => fs::write(&file, text).unwrap(),
+            None => fs::remove_file(&file).unwrap(),
+        }
+    }
+    let home = f.add_claude("personal", (daemon::now() + 3_600) * 1000);
+    fs::write(
+        home.join(".claude.json"),
+        json!({"oauthAccount":{"accountUuid":claude_uuid,"organizationUuid":"9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d"}})
+            .to_string(),
+    )
+    .unwrap();
+    ok(&root, &["account", "add", "gemini:g"]);
+    let print = |p: &str, id: &str| format!("{:x}", Sha256::digest(format!("{p}:{id}")));
+    let usage = ok(&root, &["usage", "--cached"]);
+    let state = ok(&root, &["state"]);
+    for text in [usage.to_string(), state.to_string()] {
+        for raw in [
+            shared,
+            other,
+            claude_uuid,
+            "FIXTURE-USER-1",
+            "FIXTURE-USER-2",
+            user1,
+            user2,
+        ] {
+            assert!(!text.contains(raw), "a raw upstream id reached the output");
+        }
+    }
+    let id = |name: &str| row(&usage, name)["meter"]["upstream_identity"].clone();
+    let one = format!("{shared}:FIXTURE-USER-1");
+    assert_eq!(id("codex:one"), json!(print("codex", &one)));
+    assert_eq!(
+        id("codex:one"),
+        id("codex:two"),
+        "one upstream user and account"
+    );
+    assert_ne!(
+        id("codex:one"),
+        id("codex:seat"),
+        "another seat of the same workspace"
+    );
+    assert_eq!(id("codex:three"), json!(print("codex", other)));
+    assert_ne!(id("codex:one"), id("codex:three"));
+    assert_eq!(id("claude:personal"), json!(print("claude", claude_uuid)));
+    for name in ["codex:broken", "codex:missing", "gemini:g"] {
+        assert!(id(name).is_null(), "{name}: {}", id(name));
+    }
+    // `api state` account rows carry the same meter field.
+    for a in state["accounts"].as_array().unwrap() {
+        let account = format!(
+            "{}:{}",
+            a["provider"].as_str().unwrap(),
+            a["name"].as_str().unwrap()
+        );
+        assert_eq!(
+            a["usage"]["meter"]["upstream_identity"],
+            id(&account),
+            "{account}"
+        );
+    }
+}

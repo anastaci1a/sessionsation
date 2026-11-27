@@ -146,9 +146,16 @@ fn login_of(value: &Value) -> Option<Login> {
 }
 /// `oauthAccount.organizationUuid` of the account's `.claude.json` (not a secret).
 pub fn organization_uuid(home: &Path) -> Option<String> {
+    oauth_account_uuid(home, "organizationUuid")
+}
+/// `oauthAccount.accountUuid` of the same file (contract 1.73.6; only ever fingerprinted).
+pub fn account_uuid(home: &Path) -> Option<String> {
+    oauth_account_uuid(home, "accountUuid")
+}
+fn oauth_account_uuid(home: &Path, key: &str) -> Option<String> {
     let bytes = fs::read(home.join(".claude.json")).ok()?;
     let v: Value = serde_json::from_slice(&bytes).ok()?;
-    v["oauthAccount"]["organizationUuid"]
+    v["oauthAccount"][key]
         .as_str()
         .filter(|u| uuid::Uuid::parse_str(u).is_ok())
         .map(str::to_owned)

@@ -23,8 +23,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 73;
-pub const CONTRACT_PATCH: u32 = 5;
-pub const CONTRACT_VERSION: &str = "1.73.5";
+pub const CONTRACT_PATCH: u32 = 6;
+pub const CONTRACT_VERSION: &str = "1.73.6";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -1177,6 +1177,10 @@ async fn usage_read(paths: &Paths, account: Option<&str>, cached: bool) -> Resul
     for a in selected {
         let (mut usage, fresh, usage_state) = daemon::account_usage(paths, a, &config, now);
         let mut meter = provider::usage_meter::of(a.provider, &usage, now, config.stale_seconds);
+        if let Ok(home) = provider::account_home(paths, a) {
+            meter["upstream_identity"] =
+                provider::usage_meter::upstream_identity(a.provider, &home);
+        }
         if ops::facts(a.provider).meter == Reader::Supervisor && meter["fresh"] == false {
             let reason = codex_reads
                 .get(&a.name)
@@ -1632,6 +1636,8 @@ async fn account(paths: &Paths, command: AccountCommand) -> Result<Value> {
                     usage = fresh_usage;
                     usage["meter"] =
                         provider::usage_meter::of(ProviderId::Claude, &usage, now, stale);
+                    usage["meter"]["upstream_identity"] =
+                        provider::usage_meter::upstream_identity(ProviderId::Claude, &home);
                     value["usage_fresh"] = json!(fresh);
                     value["usage_state"] = json!(usage_state);
                 }
@@ -2054,7 +2060,9 @@ pub fn capabilities() -> Value {
         "codex":"the thread's tool shells (shell_environment_policy.set on thread/start and thread/resume) and the TUI",
         "inherited":"scrubbed: a child never carries its caller's id"});
     value["usage_meter"] = json!({"since_contract":"1.62.0","field":"accounts[].usage.meter","command":"usage","args":["--account","--cached"],
-        "keys":["supported","requires_session","source","fresh","all_windows_fresh","observed_at","age_seconds","windows","reason"],
+        "keys":["supported","requires_session","source","fresh","all_windows_fresh","observed_at","age_seconds","windows","reason","upstream_identity"],
+        // Contract 1.73.6: a fingerprint of the upstream account, never the raw id.
+        "upstream_identity":{"since_contract":"1.73.6","value":"lowercase hex sha256(\"<provider>:\" + upstream account id)","cached":"per file by mtime and size","state_cached":"as old as the snapshot (snapshot.fresh)","null":"the provider has no upstream account id here, or it is unreadable","meaning":{"codex":"the same user in the same ChatGPT account or workspace; without an id_token user claim, the same account_id (a whole Business/Team/Enterprise workspace)","claude":"the same Claude user account"},"sources":{"codex":"auth.json tokens.account_id + \":\" + the id_token payload https://api.openai.com/auth.chatgpt_user_id, else sub (unverified; account_id alone without one)","claude":".claude.json oauthAccount.accountUuid (the user account, not the organization)","gemini":null,"antigravity":null},"raw_id_returned":false},
         "windows":["five_hour","seven_day"],
         // Contract 1.67.0: each present window has its own freshness; meter.fresh is the newest reading's.
         "window_fields":{"since_contract":"1.67.0","per_window":["fresh","age_seconds"],"meter":["all_windows_fresh"],
@@ -2696,10 +2704,14 @@ fn overlay_codex_usage(value: &mut Value, status: Option<&Value>, now: i64, stal
             a["usage_fresh"] = json!(false);
         }
         // Contract 1.62.0: the meter follows the usage it was computed from.
+        let upstream = a["usage"]["meter"]["upstream_identity"].clone(); // 1.73.6: kept
         if live.is_none() && a["usage"].is_object() {
             a["usage"]["meter"] = Value::Null;
         }
         provider::usage_meter::ensure(a, now, stale);
+        if a["usage"]["meter"].is_object() {
+            a["usage"]["meter"]["upstream_identity"] = upstream;
+        }
     }
 }
 /// Queued session operations of one conversation that have not finished yet, so a

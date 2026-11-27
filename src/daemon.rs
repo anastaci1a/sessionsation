@@ -299,6 +299,10 @@ pub fn status(paths: &Paths, state: &State, config: &Config, version: &str) -> V
         let (mut usage, fresh, usage_state) = account_usage(paths, a, config, at);
         // Contract 1.62.0 (SM8): one meter shape for every provider.
         usage["meter"] = crate::provider::usage_meter::of(a.provider, &usage, at, config.stale_seconds);
+        // Contract 1.73.6: a fingerprint of the upstream account, never the raw id.
+        if let Ok(home) = crate::provider::account_home(paths, a) {
+            usage["meter"]["upstream_identity"] = crate::provider::usage_meter::upstream_identity(a.provider, &home);
+        }
         let supervised = ops::facts(a.provider).supervised;
         if supervised && usage["meter"]["fresh"] == false {
             explain_stale_meter(&mut usage["meter"], codex_stale_reason(paths, &a.name));

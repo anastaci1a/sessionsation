@@ -35,7 +35,7 @@ fn unsupported(reason: &str) -> Value {
     json!({"supported":false,"requires_session":Value::Null,"source":Value::Null,"fresh":false,"all_windows_fresh":false,
         "observed_at":Value::Null,"age_seconds":Value::Null,
         "windows":{"five_hour":Value::Null,"seven_day":Value::Null},
-        "window_reasons":{"five_hour":reason,"seven_day":reason},"reason":reason})
+        "window_reasons":{"five_hour":reason,"seven_day":reason},"reason":reason,"upstream_identity":Value::Null})
 }
 
 /// The meter of one account from its projected `usage` (the shared account shape: `short` /
@@ -134,7 +134,39 @@ pub fn of(provider: ProviderId, usage: &Value, now: i64, stale_seconds: u64) -> 
         "age_seconds":observed_at.map(|t| (now - t).max(0)),
         "windows":{"five_hour":five,"seven_day":seven},
         "window_reasons":window_reasons,
-        "reason":reason})
+        "reason":reason,"upstream_identity":Value::Null})
+}
+/// Contract 1.73.6: `meter.upstream_identity`, lowercase hex `sha256("<provider>:" + id)` of the
+/// provider's upstream account id (Codex [`crate::identity::upstream_account`], Claude
+/// `oauthAccount.accountUuid` of .claude.json); null when the provider has none or it is unreadable.
+/// The raw id is never returned. Cached per file by (mtime, len): a changed file is read again.
+pub fn upstream_identity(provider: ProviderId, home: &std::path::Path) -> Value {
+    type Cache = std::collections::HashMap<std::path::PathBuf, (Stamp, Value)>;
+    type Stamp = (Option<std::time::SystemTime>, u64);
+    static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
+    let file = home.join(match provider {
+        ProviderId::Codex => "auth.json",
+        ProviderId::Claude => claude::trust::CONFIG_FILE,
+        ProviderId::Gemini | ProviderId::Antigravity => return Value::Null,
+    });
+    let Ok(m) = std::fs::metadata(&file) else {
+        return Value::Null;
+    };
+    let stamp = (m.modified().ok(), m.len());
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_default();
+    if let Some((_, v)) = cache.get(&file).filter(|(s, _)| *s == stamp) {
+        return v.clone();
+    }
+    let id = match provider {
+        ProviderId::Codex => crate::identity::upstream_account(home),
+        _ => claude::oauth::account_uuid(home),
+    };
+    let v = id.map_or(Value::Null, |id| {
+        json!(crate::generation::hex(format!("{provider}:{id}")))
+    });
+    cache.insert(file, (stamp, v.clone()));
+    v
 }
 /// Why a window past its own reset is not current (contract 1.65.0).
 pub fn reset_reason(resets_at: i64) -> String {

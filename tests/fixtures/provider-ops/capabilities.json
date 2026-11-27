@@ -3023,7 +3023,8 @@
       "observed_at",
       "age_seconds",
       "windows",
-      "reason"
+      "reason",
+      "upstream_identity"
     ],
     "never_lowers_within_reset_cycle": true,
     "providers": {
@@ -3073,6 +3074,23 @@
       "codex": [],
       "codex_rule": "every window of account/rateLimits/read carries resetsAt (a reading without one is refused), so a Codex window never starts on first use",
       "field": "windows.*.starts_on_first_use"
+    },
+    "upstream_identity": {
+      "cached": "per file by mtime and size",
+      "meaning": {
+        "claude": "the same Claude user account",
+        "codex": "the same user in the same ChatGPT account or workspace; without an id_token user claim, the same account_id (a whole Business/Team/Enterprise workspace)"
+      },
+      "null": "the provider has no upstream account id here, or it is unreadable",
+      "raw_id_returned": false,
+      "sources": {
+        "antigravity": null,
+        "claude": ".claude.json oauthAccount.accountUuid (the user account, not the organization)",
+        "codex": "auth.json tokens.account_id + \":\" + the id_token payload https://api.openai.com/auth.chatgpt_user_id, else sub (unverified; account_id alone without one)",
+        "gemini": null
+      },
+      "state_cached": "as old as the snapshot (snapshot.fresh)",
+      "value": "lowercase hex sha256(\"<provider>:\" + upstream account id)"
     },
     "window_fields": {
       "meter": [

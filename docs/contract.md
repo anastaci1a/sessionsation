@@ -2673,6 +2673,19 @@ contacts a provider) carry `usage.meter`:
   younger than the provider's limit (Codex `stale_seconds`, Claude 1800 s). A meter that
   is not fresh always has a `reason`. A missing window is null, never 0%.
   `usage.observed_at` is null without a real observation.
+- `meter.upstream_identity` (1.73.6, every provider): lowercase hex
+  `sha256("<provider>:" + id)` of the provider's upstream account, or null when there is
+  none or it is unreadable; the raw id is never output. Codex: id `<account_id>:<user>`
+  from the account's `auth.json` (`tokens.account_id`; the user is the unverified
+  `tokens.id_token` payload's `https://api.openai.com/auth`.`chatgpt_user_id`, else
+  `sub`), so equal values mean the same user in the same ChatGPT account or workspace;
+  without a user claim the id is `<account_id>` alone, which for a Business, Team or
+  Enterprise login is the whole workspace (seats with separate limits can then be equal).
+  Claude: `oauthAccount.accountUuid` of its `.claude.json` (the user account, not the
+  organization, whose members have their own limits), so equal values mean one Claude
+  account. Gemini, Antigravity: null. Each file is re-read only when its mtime or size
+  changes. In `state --cached` the value is as old as the snapshot (at most about 30 s
+  while the supervisor runs, unbounded while it is down; see `snapshot.fresh`).
 - The row's `read` (`api usage`) or `meter_read` (`api account limits`) is
   `{attempted, ok, code|reason, message, attempted_at, retryable}` or null when no
   read was needed; codes `AUTH_REQUIRED`, `AUTH_STALE`, `USAGE_READ_FAILED`. A failed
