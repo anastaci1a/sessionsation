@@ -23,8 +23,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 73;
-pub const CONTRACT_PATCH: u32 = 6;
-pub const CONTRACT_VERSION: &str = "1.73.6";
+pub const CONTRACT_PATCH: u32 = 7;
+pub const CONTRACT_VERSION: &str = "1.73.7";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -3346,7 +3346,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
     use external::archiving::Kind;
     let mut command = command;
     resolve_session_args(paths, &mut command)?;
-    let via_detach = detached_stop(paths, &mut command).await?;
+    let via_detach = detached_target(paths, &mut command).await?;
     if let Some(operation) = space_hungry(&command) {
         disk_space::preflight(paths, operation)?;
     }
@@ -3704,7 +3704,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             let s = archived_session(paths, &session).context("SESSION_NOT_FOUND")?;
             already_stopped(paths, &s, keep_pane).await?
         }
-        // Contract 1.73.4: a detached generation never signals (see `detached_stop`).
+        // Contract 1.73.4: a detached generation never signals (see `detached_target`).
         Command::Stop {
             session, keep_pane, ..
         } if via_detach => {
@@ -4680,23 +4680,25 @@ async fn queue_and_wait(
     }
 }
 
-/// Contract 1.73.4: whether this stop holds the generation from right before a dead-process
-/// detach while nothing runs the conversation (it then carries the current generation); a
-/// running process keeps the STALE_TARGET refusal of the held generation.
-async fn detached_stop(paths: &Paths, command: &mut Command) -> Result<bool> {
-    let Command::Stop {
-        session,
-        expected_generation,
-        ..
-    } = command
-    else {
-        return Ok(false);
+/// Contract 1.73.4 (stop), 1.73.7 (archive): whether this command holds the generation from
+/// right before a dead-process detach while nothing runs the conversation (it then carries the
+/// current generation; only a stop answers true); a running process keeps the STALE_TARGET
+/// refusal of the held generation.
+async fn detached_target(paths: &Paths, command: &mut Command) -> Result<bool> {
+    let (session, expected_generation, stop) = match command {
+        Command::Stop {
+            session,
+            expected_generation,
+            ..
+        } => (&*session, expected_generation, true),
+        Command::Archive { target } => (&target.session, &mut target.expected_generation, false),
+        _ => return Ok(false),
     };
     let Some(s) = catalog::dead_detached(paths, session, expected_generation) else {
         return Ok(false);
     };
     // No stop at all (Gemini): exactly the refusal of the current generation.
-    if provider::stop_shape::unsupported(&s.provider).is_some() {
+    if stop && provider::stop_shape::unsupported(&s.provider).is_some() {
         *expected_generation = s.generation();
         return Ok(false);
     }
@@ -4715,7 +4717,7 @@ async fn detached_stop(paths: &Paths, command: &mut Command) -> Result<bool> {
         return Ok(false);
     }
     *expected_generation = s.generation();
-    Ok(true)
+    Ok(stop)
 }
 fn unavailable(e: &anyhow::Error) -> bool {
     format!("{e:#}").starts_with("SESSION_UNAVAILABLE")

@@ -853,6 +853,12 @@ pub fn dead_detached(paths: &Paths, id: &str, generation: &str) -> Option<Sessio
     .flatten()
 }
 
+/// Contract 1.73.7: whether the last dead-process detach of `id` went from `held` to `to`.
+pub fn detached_to(paths: &Paths, id: &str, held: &str, to: &str) -> bool {
+    let pair = [held.to_owned(), to.to_owned()];
+    read_catalog(paths, |c| Ok(c.detached.get(id) == Some(&pair))).unwrap_or(false)
+}
+
 pub fn resolve(paths: &Paths, id: &str, generation: &str) -> Result<Session> {
     read_catalog(paths, |c| {
         let s = live_ref(c, id)?;

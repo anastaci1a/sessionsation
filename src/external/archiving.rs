@@ -276,7 +276,14 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         ensure!(
             o.session.id == t.session
                 && o.kind == kind
-                && o.expected_generation == t.expected_generation,
+                && (o.expected_generation == t.expected_generation
+                    // 1.73.7: a repeat of an archive accepted from before a dead-process detach
+                    || kind == Kind::Archive && crate::catalog::detached_to(
+                        paths,
+                        &o.session.id,
+                        &t.expected_generation,
+                        &o.expected_generation,
+                    )),
             "REQUEST_ID_CONFLICT"
         );
         return Ok(o.public());

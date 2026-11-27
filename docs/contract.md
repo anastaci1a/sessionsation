@@ -2417,6 +2417,10 @@ ok with `already_archived:true`, and `api restore-session` of an active one `alr
 both `phase:"complete"` with the usual job keys (`kind` `archive_session` or `restore_session`, no
 job is journaled). The generation is not checked on a repeat, as for `stop` of an archived
 session; the row reasons `SESSION_ALREADY_ARCHIVED` and `SESSION_NOT_ARCHIVED` are unchanged.
+Since 1.73.7 an `api archive` holding the generation the session had right before the sync
+detached its exited process is an archive at the current generation while nothing else changed it
+and nothing runs the conversation (hosted counts as running), with that archive's answer and a
+repeat of its request id; otherwise still `STALE_TARGET`.
 
 ## Accounts
 

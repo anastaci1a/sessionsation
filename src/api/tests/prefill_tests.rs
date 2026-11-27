@@ -107,7 +107,7 @@ fn rows_and_capabilities_carry_the_space_scoped_names() {
         json!({"version":1,"live_herdr_source":"host_tab_label","retained_when_unobserved":true,"host_labels_unique":false,"rename_updates_host":true})
     );
     assert_eq!(c["session_spaces"]["since_contract"], "1.48.0");
-    assert_eq!(c["contract_version"], "1.73.6");
+    assert_eq!(c["contract_version"], "1.73.7");
     assert_eq!(c["send_request"]["since_contract"], "1.64.0");
     let root = &c["root_alias"];
     assert_eq!(root["since_contract"], "1.54.0");

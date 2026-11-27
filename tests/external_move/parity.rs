@@ -250,6 +250,114 @@ async fn codex_stop_holding_the_generation_before_a_dead_process_detach_is_alrea
     assert_eq!(v["error"]["code"], "STALE_TARGET", "{v}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_archive_holding_the_generation_before_a_dead_process_detach_archives() {
+    // Contract 1.73.7 (defect 17499).
+    let f = Fixture::new().await;
+    // The running session's generation, then the one after the sync detached its dead process.
+    let exit = async |held: Value| {
+        let pid = held["attachment"]["pid"].as_u64().expect("attached") as i32;
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        let until = Instant::now() + Duration::from_secs(10);
+        while Path::new(&format!("/proc/{pid}")).exists() {
+            assert!(Instant::now() < until, "the fake codex did not exit");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let detached = session(&f);
+        assert!(detached["attachment"].is_null(), "{detached}");
+        assert_ne!(held["generation"], detached["generation"]);
+        (held, detached)
+    };
+    let live = async || {
+        f.live(ID, false);
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let s = session(&f);
+            if !s["attachment"].is_null() {
+                return s;
+            }
+            assert!(Instant::now() < until, "the fake codex never attached: {s}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    let archive = |s: &Value, generation: &Value, request: &str| {
+        let id = s["id"].as_str().unwrap();
+        let generation = generation.as_str().unwrap();
+        let args = [
+            "archive",
+            "--session",
+            id,
+            "--expected-generation",
+            generation,
+        ];
+        let rest = ["--request-id", request, "--confirm", id, "--wait"];
+        run(&f, &[&args[..], &rest[..]].concat(), &[])
+    };
+    let stale = |s: &Value, generation: &Value| {
+        let (ok, v) = archive(s, generation, &uuid::Uuid::new_v4().to_string());
+        assert!(!ok);
+        assert_eq!(v["error"]["code"], "STALE_TARGET", "{v}");
+        let archives = f.invoke(&["api", "archives"]);
+        assert_eq!(archives["result"], json!([]), "nothing was archived");
+    };
+    // Any other change since (a rename) makes the old generation stale.
+    let (g1, g2) = exit(live().await).await;
+    stale(&g1, &json!("0".repeat(64)));
+    let id = g2["id"].as_str().unwrap();
+    let g2_generation = g2["generation"].as_str().unwrap();
+    let args = [
+        "rename",
+        "--session",
+        id,
+        "--expected-generation",
+        g2_generation,
+    ];
+    let (ok, v) = run(&f, &[&args[..], &["--name", "renamed"]].concat(), &[]);
+    assert!(ok, "{v}");
+    stale(&g1, &g1["generation"]);
+    // Resumed and running again: refused, nothing archived, the process keeps running.
+    let (g1, _) = exit(live().await).await;
+    let running = live().await;
+    stale(&g1, &g1["generation"]);
+    let pid = running["attachment"]["pid"].as_u64().unwrap();
+    assert!(Path::new(&format!("/proc/{pid}")).exists(), "not signalled");
+    // Only the dead process changed it: the archive of the current generation.
+    let (g1, g2) = exit(running).await;
+    // Codex unloads the thread of an exited TUI (archive refuses a loaded one).
+    let mut a = f.a.lock().unwrap();
+    a.threads.get_mut(ID).unwrap()["status"]["type"] = json!("notLoaded");
+    drop(a);
+    let rid = uuid::Uuid::new_v4().to_string();
+    let (ok, v) = archive(&g1, &g1["generation"], &rid);
+    assert!(ok, "{v}");
+    assert_eq!(v["result"]["phase"], "complete", "{v}");
+    assert_eq!(v["result"]["kind"], "archive_session", "{v}");
+    assert_eq!(v["result"]["session_id"], g2["id"], "{v}");
+    let archives = f.invoke(&["api", "archives"]);
+    assert_eq!(archives["result"][0]["id"], g2["id"], "{archives}");
+    // A repeat of that request is that operation (not REQUEST_ID_CONFLICT).
+    let (ok, again) = archive(&g1, &g1["generation"], &rid);
+    assert!(ok, "{again}");
+    assert_eq!(again["result"]["id"], rid.as_str(), "{again}");
+    assert_eq!(again["result"]["phase"], "complete", "{again}");
+    // A new request: the already_archived answer, as with the current generation.
+    let mut answers = [&g1, &g2].map(|s| {
+        let (ok, v) = archive(
+            &g2,
+            &s["generation"],
+            "4b4b4b4b-4b4b-44b4-84b4-4b4b4b4b4b4b",
+        );
+        assert!(ok, "{v}");
+        assert_eq!(v["result"]["already_archived"], true, "{v}");
+        v["result"].clone()
+    });
+    for a in &mut answers {
+        a["created_at"] = Value::Null;
+        a["updated_at"] = Value::Null;
+    }
+    assert_eq!(answers[0], answers[1]);
+}
+
 // -------------------------------- contract 1.63.0: observe parity (SM4), one stop shape (P1)
 
 #[path = "../support/parity_keys.rs"]
