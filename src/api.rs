@@ -23,8 +23,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 73;
-pub const CONTRACT_PATCH: u32 = 3;
-pub const CONTRACT_VERSION: &str = "1.73.3";
+pub const CONTRACT_PATCH: u32 = 4;
+pub const CONTRACT_VERSION: &str = "1.73.4";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -3334,6 +3334,7 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
     use external::archiving::Kind;
     let mut command = command;
     resolve_session_args(paths, &mut command)?;
+    let via_detach = detached_stop(paths, &mut command).await?;
     if let Some(operation) = space_hungry(&command) {
         disk_space::preflight(paths, operation)?;
     }
@@ -3676,6 +3677,12 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             let s = archived_session(paths, &session).context("SESSION_NOT_FOUND")?;
             already_stopped(paths, &s, keep_pane).await?
         }
+        // Contract 1.73.4: a detached generation never signals (see `detached_stop`).
+        Command::Stop {
+            session, keep_pane, ..
+        } if via_detach => {
+            already_stopped(paths, &catalog::find(paths, &session)?, keep_pane).await?
+        }
         // Contract 1.63.0: Gemini CLI cannot run sessions for individual accounts any more.
         Command::Stop {
             session,
@@ -3721,9 +3728,15 @@ async fn run_command(paths: &Paths, command: Command, discarded: &mut Option<Val
             let found = match selected(paths, &session, &expected_generation).await {
                 Ok((s, source)) if source.inactive => Err(s),
                 Ok((s, source)) => Ok((s, source)),
-                Err(e) if format!("{e:#}").starts_with("SESSION_UNAVAILABLE") => {
+                Err(e) if unavailable(&e) => {
                     Err(catalog::resolve(paths, &session, &expected_generation)?)
                 }
+                // Contract 1.73.4: this inventory's own sync just detached the exited Codex process.
+                Err(e) if format!("{e:#}").starts_with("STALE_TARGET") => Err(
+                    catalog::dead_detached(paths, &session, &expected_generation)
+                        .filter(|s| ops::holds(&s.provider, |f| f.supervised))
+                        .ok_or(e)?,
+                ),
                 Err(e) => return Err(e),
             };
             match found {
@@ -4638,6 +4651,47 @@ async fn queue_and_wait(
     } else {
         Ok(queued)
     }
+}
+
+/// Contract 1.73.4: whether this stop holds the generation from right before a dead-process
+/// detach while nothing runs the conversation (it then carries the current generation); a
+/// running process keeps the STALE_TARGET refusal of the held generation.
+async fn detached_stop(paths: &Paths, command: &mut Command) -> Result<bool> {
+    let Command::Stop {
+        session,
+        expected_generation,
+        ..
+    } = command
+    else {
+        return Ok(false);
+    };
+    let Some(s) = catalog::dead_detached(paths, session, expected_generation) else {
+        return Ok(false);
+    };
+    // No stop at all (Gemini): exactly the refusal of the current generation.
+    if provider::stop_shape::unsupported(&s.provider).is_some() {
+        *expected_generation = s.generation();
+        return Ok(false);
+    }
+    let idle = if ops::holds(&s.provider, |f| f.supervised) {
+        match selected(paths, &s.id, &s.generation()).await {
+            Ok((_, source)) => source.inactive,
+            Err(e) => unavailable(&e),
+        }
+    } else {
+        !claude::hosted::live(paths, &s.conversation_id)
+            && native_selected(paths, &s.id, &s.generation())
+                .is_ok_and(|(_, o)| matches!(o.availability, "stopped" | "stale"))
+    };
+    if !idle {
+        catalog::resolve(paths, session, expected_generation)?;
+        return Ok(false);
+    }
+    *expected_generation = s.generation();
+    Ok(true)
+}
+fn unavailable(e: &anyhow::Error) -> bool {
+    format!("{e:#}").starts_with("SESSION_UNAVAILABLE")
 }
 
 /// Idempotent stop (contract 1.55.0): the session exists, is not archived and has no

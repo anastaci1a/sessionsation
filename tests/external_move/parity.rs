@@ -190,6 +190,66 @@ async fn codex_stop_wait_disables_auto_start_after_completion() {
     assert_eq!(session(&f)["auto_start"]["mode"], "disabled");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_stop_holding_the_generation_before_a_dead_process_detach_is_already_stopped() {
+    // Contract 1.73.4 (defect 27588).
+    let f = Fixture::new().await;
+    f.live(ID, false);
+    auto_start(&f, "start");
+    let g1 = session(&f);
+    let pid = g1["attachment"]["pid"].as_u64().expect("attached") as i32;
+    // The agent's own process exits; the next sync detaches it (a new generation).
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    let until = Instant::now() + Duration::from_secs(10);
+    while Path::new(&format!("/proc/{pid}")).exists() {
+        assert!(Instant::now() < until, "the fake codex did not exit");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let g2 = session(&f);
+    assert!(g2["attachment"].is_null(), "{g2}");
+    assert_ne!(g1["generation"], g2["generation"]);
+    let with = |s: &Value, generation: &str, extra: &[&str]| {
+        let mut args = vec!["stop", "--session", s["id"].as_str().unwrap()];
+        args.extend(["--expected-generation", generation]);
+        args.extend(extra);
+        run(&f, &args, &[])
+    };
+    let (ok, v) = with(&g1, &"0".repeat(64), &[]);
+    assert!(!ok);
+    assert_eq!(v["error"]["code"], "STALE_TARGET", "{v}");
+    let g1_generation = g1["generation"].as_str().unwrap();
+    let (ok, v) = with(&g1, g1_generation, &["--wait", "--disable-auto-start"]);
+    assert!(ok, "{v}");
+    assert_eq!(v["result"]["already_stopped"], true, "{v}");
+    assert_eq!(v["result"]["auto_start"]["mode"], "disabled", "{v}");
+    assert_eq!(session(&f)["auto_start"]["mode"], "disabled");
+    let (ok, plain) = with(&g2, g2["generation"].as_str().unwrap(), &[]);
+    assert!(ok, "{plain}");
+    let (ok, again) = with(&g1, g1_generation, &[]);
+    assert!(ok, "{again}");
+    assert_eq!(again["result"], plain["result"]);
+    // Resumed and running again: the old generation is refused and nothing is signalled.
+    f.live(ID, false);
+    let (ok, v) = with(&g1, g1_generation, &[]);
+    assert!(!ok);
+    assert_eq!(v["error"]["code"], "STALE_TARGET", "{v}");
+    let resumed = session(&f);
+    let p2 = resumed["attachment"]["pid"].as_u64().expect("attached");
+    assert!(
+        Path::new(&format!("/proc/{p2}")).exists(),
+        "the resumed process was not signalled"
+    );
+    // Any other change since makes the old generation stale again.
+    let current = resumed["generation"].as_str().unwrap();
+    let id = g2["id"].as_str().unwrap();
+    let args = ["rename", "--session", id, "--expected-generation", current];
+    let (ok, v) = run(&f, &[&args[..], &["--name", "renamed"]].concat(), &[]);
+    assert!(ok, "{v}");
+    let (ok, v) = with(&g1, g1_generation, &[]);
+    assert!(!ok);
+    assert_eq!(v["error"]["code"], "STALE_TARGET", "{v}");
+}
+
 // -------------------------------- contract 1.63.0: observe parity (SM4), one stop shape (P1)
 
 #[path = "../support/parity_keys.rs"]

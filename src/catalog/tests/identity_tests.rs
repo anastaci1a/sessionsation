@@ -111,9 +111,21 @@ fn codex_process_switching_threads_is_attached_to_exactly_one_entry() {
     let b = record_launch(&p, "acct", "thread-b", "second", None).unwrap();
     // The same TUI process now verifiably holds thread-b.
     let i: crate::external::Instance = serde_json::from_value(serde_json::json!({"pane":"%7","tmux_session":"t","pid":pid,"start_time":start,"cwd":"/tmp","thread_id":"thread-b","rollout":"/tmp/r","home":"/tmp/h","binary":"codex","resume_options":[],"account":"acct"})).unwrap();
+    let a1 = list(&p)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == a.id)
+        .unwrap();
     let all = reconcile(&p, &[i]).unwrap();
     assert_eq!(all.len(), 2, "no duplicate entry is created");
     let a2 = all.iter().find(|s| s.id == a.id).unwrap();
+    // Contract 1.73.4: the generation before the release still names the released entry.
+    assert_eq!(
+        dead_detached(&p, &a.id, &a1.generation()).as_ref(),
+        Some(a2)
+    );
+    assert!(dead_detached(&p, &a.id, &a2.generation()).is_none());
+    assert!(dead_detached(&p, &b.id, &b.generation()).is_none());
     let b2 = all.iter().find(|s| s.id == b.id).unwrap();
     assert!(a2.attachment.is_none(), "the entry it left is released");
     assert_eq!(a2.name, "first");

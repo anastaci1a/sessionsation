@@ -3532,23 +3532,16 @@ async fn public_catalog_ids_names_and_stale_targets_survive_runtime_changes() {
     assert_eq!(saved["name"], "unique-name");
     assert_eq!(saved["account"], "personal");
     assert!(saved["attachment"].is_null());
-    assert!(
-        command(
-            &f.paths.root,
-            &f.socket,
-            &[
-                "api",
-                "stop",
-                "--session",
-                id,
-                "--expected-generation",
-                generation
-            ]
-        )
-        .status
-        .code()
-        .is_some_and(|c| c != 0)
-    );
+    // Contract 1.73.4: only the exited process changed it since: already stopped, not STALE_TARGET.
+    let again = f.invoke(&[
+        "api",
+        "stop",
+        "--session",
+        id,
+        "--expected-generation",
+        generation,
+    ]);
+    assert_eq!(again["result"]["already_stopped"], true, "{again}");
     // Contract 1.55.0: with the current generation, stopping a stopped session is idempotent.
     let current = f.invoke(&["api", "state"]);
     let current = current["result"]["sessions"]

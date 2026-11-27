@@ -79,6 +79,9 @@ struct Catalog {
     /// Catalog ids merged into another entry by a verified continuation link.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     aliases: BTreeMap<String, String>,
+    /// Contract 1.73.4: id -> [generation before, generation after] its last dead-process detach.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    detached: BTreeMap<String, [String; 2]>,
     /// Transient: why a transaction changed an entry's space (sidecar `source`).
     #[serde(skip)]
     space_notes: BTreeMap<String, &'static str>,
@@ -505,12 +508,28 @@ pub fn observe_provider_sessions(
     paths: &Paths,
     observations: Vec<(Session, Option<Attachment>, Option<String>)>,
 ) -> Result<()> {
+    // A process another entry now holds switched conversations (released, as when gone).
+    let held: Vec<_> = observations
+        .iter()
+        .filter_map(|(_, a, _)| a.clone())
+        .collect();
     transaction(paths, |c| {
         for (before, attachment, directory) in observations {
             let Some(current) = c.sessions.get_mut(&before.id) else {
                 continue;
             };
             if current.generation() != before.generation() {
+                continue;
+            }
+            if let Some(a) = &current.attachment
+                && attachment.is_none()
+                && (current.directory.is_some() || directory.is_none())
+                && (held
+                    .iter()
+                    .any(|h| (h.pid, h.process_start) == (a.pid, a.process_start))
+                    || crate::external::attachment_definitely_gone(a.pid, a.process_start))
+            {
+                detach(&mut c.detached, current);
                 continue;
             }
             let mut changed = false;
@@ -554,6 +573,7 @@ fn merge(c: &mut Catalog, dup: &str, survivor: &str, merged: &mut Vec<(String, S
     let Some(d) = c.sessions.remove(dup) else {
         return;
     };
+    c.detached.remove(dup);
     for target in c.aliases.values_mut() {
         if *target == d.id {
             *target = survivor.to_owned();
@@ -734,7 +754,9 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
                 {
                     continue;
                 }
-                if s.account != i.account || s.attachment != attachment {
+                if s.account == i.account && s.attachment.is_some() && attachment.is_none() {
+                    detach(&mut c.detached, s);
+                } else if s.account != i.account || s.attachment != attachment {
                     s.account = i.account.clone();
                     s.attachment = attachment;
                     s.revision += 1;
@@ -793,8 +815,7 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
                         && i.start_time == a.process_start
                 })
             {
-                s.attachment = None;
-                s.revision += 1;
+                detach(&mut c.detached, s);
                 continue;
             }
             if s.attachment.is_some()
@@ -805,12 +826,31 @@ pub fn reconcile(paths: &Paths, instances: &[crate::external::Instance]) -> Resu
                     .iter()
                     .any(|i| !i.inactive && i.thread_id == s.conversation_id)
             {
-                s.attachment = None;
-                s.revision += 1;
+                detach(&mut c.detached, s);
             }
         }
         Ok(c.sessions.values().cloned().collect())
     })
+}
+
+/// Release `s` from its exited (or reassigned) process, remembering its generation before.
+fn detach(detached: &mut BTreeMap<String, [String; 2]>, s: &mut Session) {
+    let before = s.generation();
+    s.attachment = None;
+    s.revision += 1;
+    detached.insert(s.id.clone(), [before, s.generation()]);
+}
+
+/// Contract 1.73.4: the entry `id`, when `generation` is the one it had right before its last
+/// dead-process detach and nothing changed it since.
+pub fn dead_detached(paths: &Paths, id: &str, generation: &str) -> Option<Session> {
+    read_catalog(paths, |c| {
+        let s = live_ref(c, id)?;
+        let hit = c.detached.get(&s.id) == Some(&[generation.to_owned(), s.generation()]);
+        Ok(hit.then(|| s.clone()))
+    })
+    .ok()
+    .flatten()
 }
 
 pub fn resolve(paths: &Paths, id: &str, generation: &str) -> Result<Session> {
@@ -864,6 +904,7 @@ pub(crate) fn remove(paths: &Paths, before: &Session) -> Result<Session> {
             "STALE_TARGET"
         );
         let removed = c.sessions.remove(&before.id).context("SESSION_NOT_FOUND")?;
+        c.detached.remove(&removed.id);
         c.aliases.retain(|_, target| *target != removed.id);
         Ok(removed)
     })

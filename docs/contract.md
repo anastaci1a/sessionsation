@@ -1104,6 +1104,12 @@ Every result has the same keys (`capabilities.stop_result`): `id`, `kind`,
   the pane of the session's newest resume-launch or of its launch (else a recorded pane
   whose process is gone) is closed as below. An archived session gives the same answer
   with `archived:true` whatever generation the caller holds (the archive changed it).
+  Since 1.73.4 a stop holding the generation the session had right before the sync
+  detached its exited process (or a process that now runs another conversation) is a
+  stop of the detached session while nothing else changed it and nothing runs the
+  conversation: that answer, never a signal; otherwise still `STALE_TARGET`. `--wait`,
+  `--interrupt` and `--discard-queued` then act as on any stopped session; a provider
+  without stop keeps its refusal, and a hosted session is `STALE_TARGET` (it runs).
 - **Unknown session** (`capabilities.session_lifecycle.unknown_session`): stop or
   archive of an id (or name) that names no catalog session and no merged id is one
   terminal answer, so a retire always finishes: `ok` with `phase:"complete"`,

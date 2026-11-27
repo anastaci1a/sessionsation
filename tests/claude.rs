@@ -3796,6 +3796,108 @@ async fn stop_of_an_archived_claude_session_answers_already_stopped() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_holding_the_generation_before_a_dead_process_detach_is_already_stopped() {
+    // Contract 1.73.4 (defect 27588).
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let id = uuid::Uuid::new_v4().to_string();
+    transcript(&home, &f.project, &id);
+    let mut agent = Process(
+        Command::new("sleep")
+            .arg("600")
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = agent.0.id();
+    wait_for("agent exec", || {
+        read(Path::new(&format!("/proc/{pid}/cmdline"))).starts_with("sleep")
+    });
+    registry(&home, pid, &id, &f.project, "interactive", None);
+    let s = by_conversation(&f, &id);
+    assert_eq!(s["availability"], "running", "{s}");
+    // The process is hosted in a pane (what a HERDR launch records).
+    let entry = sessionsation::catalog::find(&f.paths, s["id"].as_str().unwrap()).unwrap();
+    let pane = sessionsation::catalog::Attachment {
+        host: "herdr".into(),
+        target: "herdr/fixture/w1:p9".into(),
+        pid,
+        process_start: proc_start(pid),
+    };
+    sessionsation::catalog::observe_provider_sessions(&f.paths, vec![(entry, Some(pane), None)])
+        .unwrap();
+    let g1 = by_conversation(&f, &id);
+    assert_eq!(g1["attachment"]["pid"], pid, "{g1}");
+    // The agent exits; the next sync detaches it (a new generation).
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    agent.0.wait().unwrap();
+    let g2 = by_conversation(&f, &id);
+    assert!(g2["attachment"].is_null(), "{g2}");
+    assert_ne!(g1["generation"], g2["generation"]);
+    let mut stale = g1.clone();
+    stale["generation"] = json!("0".repeat(64));
+    let e = f.api_error(
+        &stop_args(&stale)
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    assert!(e.contains("STALE_TARGET"), "{e}");
+    // A process resumed since (not in a pane: the generation stays) is never signalled.
+    let mut resumed = Process(
+        Command::new("sleep")
+            .arg("600")
+            .env("CLAUDE_CONFIG_DIR", &home)
+            .spawn()
+            .unwrap(),
+    );
+    let p2 = resumed.0.id();
+    wait_for("resumed exec", || {
+        read(Path::new(&format!("/proc/{p2}/cmdline"))).starts_with("sleep")
+    });
+    registry(&home, p2, &id, &f.project, "interactive", None);
+    let live = by_conversation(&f, &id);
+    assert_eq!(live["availability"], "running", "{live}");
+    assert_eq!(live["generation"], g2["generation"]);
+    let e = f.api_error(
+        &stop_args(&g1)
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    assert!(e.contains("STALE_TARGET"), "{e}");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        resumed.0.try_wait().unwrap().is_none(),
+        "the resumed process was not signalled"
+    );
+    unsafe { libc::kill(p2 as i32, libc::SIGKILL) };
+    resumed.0.wait().unwrap();
+    assert_eq!(by_conversation(&f, &id)["generation"], g2["generation"]);
+    let done = stop(&f, &g1);
+    assert_eq!(done["already_stopped"], true, "{done}");
+    assert_eq!(done, stop(&f, &g2));
+    // Any other change since makes the old generation stale again.
+    let renamed = f.api(&[
+        "rename",
+        "--session",
+        g2["id"].as_str().unwrap(),
+        "--expected-generation",
+        g2["generation"].as_str().unwrap(),
+        "--name",
+        "renamed",
+    ]);
+    assert_eq!(renamed["name"], "renamed", "{renamed}");
+    let e = f.api_error(
+        &stop_args(&g1)
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    assert!(e.contains("STALE_TARGET"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_rows_carry_context_and_task_meters_with_sources_or_reasons() {
     // Contract 1.62.0 (SM3).
     let f = fixture().await;
