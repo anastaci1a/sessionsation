@@ -7,8 +7,8 @@ fn status_body() -> Value {
         "cedar_ember":{"eligible":true,"at_limit":true,"exhausted":["five_hour"],
         "grants":[
             {"id":"grant_5h_a","label":"5-hour reset","resets_total":2,"resets_left":2,"starts_at":"2026-11-20T00:00:00Z",
-             "ends_at":"2026-11-27T12:30:00.000Z","clears":["five_hour"],"paused":false,"usable_now":true,"type":"session"},
-            {"id":"grant_wk","resets_total":1,"resets_left":1,"ends_at":"2026-11-28T00:00:00+02:00","clears":["seven_day"],
+             "ends_at":"2036-11-27T12:30:00.000Z","clears":["five_hour"],"paused":false,"usable_now":true,"type":"session"},
+            {"id":"grant_wk","resets_total":1,"resets_left":1,"ends_at":"2036-11-28T00:00:00+02:00","clears":["seven_day"],
              "paused":true,"usable_now":false},
             {"id":"grant-fable","resets_left":1,"clears":["seven_day_overage_included"],"gives_back_weekly":true,"usable_now":true},
             {"id":"BAD ID","resets_left":5},
@@ -54,14 +54,14 @@ fn a_cedar_ember_block_becomes_reset_credits() {
     assert_eq!(rows[0].id, "grant_5h_a");
     assert_eq!(rows[0].status.as_deref(), Some("available"));
     assert_eq!(rows[0].kind.as_deref(), Some("session"));
-    assert_eq!(rows[0].expires_at, Some(1_795_782_600));
+    assert_eq!(rows[0].expires_at, Some(2_111_401_800));
     assert_eq!(
         (rows[0].resets_left, rows[0].resets_total),
         (Some(2), Some(2))
     );
     assert_eq!(rows[1].status.as_deref(), Some("paused"));
     assert_eq!(rows[1].kind.as_deref(), Some("weekly"));
-    assert_eq!(rows[1].expires_at, Some(1_795_816_800), "offset applied");
+    assert_eq!(rows[1].expires_at, Some(2_111_436_000), "offset applied");
     assert_eq!(rows[2].kind.as_deref(), Some("fable"));
     assert_eq!(rows[2].expires_at, None);
     // The serialized shape keeps the Codex keys and adds the Claude ones.
@@ -80,7 +80,7 @@ fn a_cedar_ember_block_becomes_reset_credits() {
     assert_eq!(choose(&c, None, 0).as_deref(), Some("grant_5h_a"));
     assert_eq!(choose(&c, Some("fable"), 0).as_deref(), Some("grant-fable"));
     assert_eq!(choose(&c, Some("weekly"), 0), None, "paused is not usable");
-    assert_eq!(choose(&c, Some("session"), 1_795_782_600), None, "ended");
+    assert_eq!(choose(&c, Some("session"), 2_111_401_800), None, "ended");
     // No block: not offered.
     assert!(parse_status(&json!({"five_hour":{}}), 1).unwrap().is_none());
     assert!(

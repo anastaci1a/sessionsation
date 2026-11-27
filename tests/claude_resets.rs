@@ -152,7 +152,7 @@ printf '%s\n%s' "$(cat "$d/$k-body" 2>/dev/null)" "$(cat "$d/$k-status" 2>/dev/n
     fs::write(
         fake.join("usage-body"),
         json!({"cedar_ember":{"eligible":true,"grants":[{"id":"g5h","resets_left":2,"usable_now":true,
-            "type":"session","ends_at":"2026-12-01T00:00:00Z"}],"next_grant_id":"g5h"}})
+            "type":"session","ends_at":"2036-12-01T00:00:00Z"}],"next_grant_id":"g5h"}})
         .to_string(),
     )
     .unwrap();
