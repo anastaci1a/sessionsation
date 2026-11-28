@@ -56,6 +56,9 @@ struct Operation {
     /// Contract 1.73.3: when the supervisor started the one automatic worker retry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     respawned_at: Option<i64>,
+    /// Contract 1.73.8: the generation before a dead-process detach (a delete drops the entry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    detached_from: Option<String>,
 }
 impl Operation {
     fn public(&self) -> Value {
@@ -277,13 +280,13 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
             o.session.id == t.session
                 && o.kind == kind
                 && (o.expected_generation == t.expected_generation
-                    // 1.73.7: a repeat of an archive accepted from before a dead-process detach
-                    || kind == Kind::Archive && crate::catalog::detached_to(
-                        paths,
-                        &o.session.id,
-                        &t.expected_generation,
-                        &o.expected_generation,
-                    )),
+                    // 1.73.7 (archive), 1.73.8 (delete, whose entry goes): a repeat of a
+                    // request accepted from before a dead-process detach
+                    || matches!(kind, Kind::Archive | Kind::Delete)
+                        && o.detached_from.clone().or_else(|| {
+                            let to = &o.expected_generation;
+                            crate::catalog::detached_from(paths, &o.session.id, to)
+                        }) == Some(t.expected_generation.clone())),
             "REQUEST_ID_CONFLICT"
         );
         return Ok(o.public());
@@ -332,6 +335,7 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
             worker_start: None,
             nothing_to_archive: false,
             respawned_at: None,
+            detached_from: None,
         }
         .public();
         v[flag] = json!(true);
@@ -376,6 +380,7 @@ pub async fn start(paths: &Paths, kind: Kind, t: Target) -> Result<Value> {
         kind,
         session,
         source,
+        detached_from: crate::catalog::detached_from(paths, &t.session, &t.expected_generation),
         expected_generation: t.expected_generation,
         phase: "queued".into(),
         detail: "Confirmed; waiting for conversation checks.".into(),

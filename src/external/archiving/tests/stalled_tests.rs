@@ -20,6 +20,7 @@ fn stalled(paths: &Paths, age: i64) -> Operation {
         worker_start: None,
         nothing_to_archive: false,
         respawned_at: None,
+        detached_from: None,
     };
     op_save(paths, &o).unwrap();
     o

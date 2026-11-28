@@ -2420,7 +2420,8 @@ session; the row reasons `SESSION_ALREADY_ARCHIVED` and `SESSION_NOT_ARCHIVED` a
 Since 1.73.7 an `api archive` holding the generation the session had right before the sync
 detached its exited process is an archive at the current generation while nothing else changed it
 and nothing runs the conversation (hosted counts as running), with that archive's answer and a
-repeat of its request id; otherwise still `STALE_TARGET`.
+repeat of its request id; otherwise still `STALE_TARGET`. Since 1.73.8 `api delete-session` does the
+same, with the same confirmation required and its request id repeatable after the entry is gone.
 
 ## Accounts
 

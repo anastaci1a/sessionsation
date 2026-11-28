@@ -853,10 +853,10 @@ pub fn dead_detached(paths: &Paths, id: &str, generation: &str) -> Option<Sessio
     .flatten()
 }
 
-/// Contract 1.73.7: whether the last dead-process detach of `id` went from `held` to `to`.
-pub fn detached_to(paths: &Paths, id: &str, held: &str, to: &str) -> bool {
-    let pair = [held.to_owned(), to.to_owned()];
-    read_catalog(paths, |c| Ok(c.detached.get(id) == Some(&pair))).unwrap_or(false)
+/// Contract 1.73.7: the generation `id` had right before the dead-process detach that left `to`.
+pub fn detached_from(paths: &Paths, id: &str, to: &str) -> Option<String> {
+    let [held, last] = read_catalog(paths, |c| Ok(c.detached.get(id).cloned())).ok()??;
+    (last == to).then_some(held)
 }
 
 pub fn resolve(paths: &Paths, id: &str, generation: &str) -> Result<Session> {

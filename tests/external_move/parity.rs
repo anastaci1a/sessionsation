@@ -358,6 +358,121 @@ async fn codex_archive_holding_the_generation_before_a_dead_process_detach_archi
     assert_eq!(answers[0], answers[1]);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_delete_holding_the_generation_before_a_dead_process_detach_deletes() {
+    // Contract 1.73.8.
+    let f = Fixture::new().await;
+    let file = f
+        .paths
+        .account("personal")
+        .unwrap()
+        .join(format!("sessions/2026/10/09/rollout-{ID}.jsonl"));
+    let exit = async |held: Value| {
+        let pid = held["attachment"]["pid"].as_u64().expect("attached") as i32;
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        let until = Instant::now() + Duration::from_secs(10);
+        while Path::new(&format!("/proc/{pid}")).exists() {
+            assert!(Instant::now() < until, "the fake codex did not exit");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let detached = session(&f);
+        assert!(detached["attachment"].is_null(), "{detached}");
+        assert_ne!(held["generation"], detached["generation"]);
+        (held, detached)
+    };
+    let live = async || {
+        f.live(ID, false);
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let s = session(&f);
+            if !s["attachment"].is_null() {
+                return s;
+            }
+            assert!(Instant::now() < until, "the fake codex never attached: {s}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    let delete = |s: &Value, generation: &Value, request: &str, confirm: &str| {
+        let id = s["id"].as_str().unwrap();
+        let generation = generation.as_str().unwrap();
+        let args = ["delete-session", "--session", id, "--expected-generation"];
+        let rest = [
+            generation,
+            "--request-id",
+            request,
+            "--confirm",
+            confirm,
+            "--wait",
+        ];
+        run(&f, &[&args[..], &rest[..]].concat(), &[])
+    };
+    // Refused with `code`; nothing was deleted.
+    let refused = |s: &Value, generation: &Value, confirm: &str, code: &str| {
+        let request = uuid::Uuid::new_v4().to_string();
+        let (ok, v) = delete(s, generation, &request, confirm);
+        assert!(!ok);
+        assert_eq!(v["error"]["code"], code, "{v}");
+        assert!(file.exists(), "nothing was deleted");
+        assert_eq!(session(&f)["id"], s["id"]);
+    };
+    // Any other change since (a rename) makes the old generation stale.
+    let (g1, g2) = exit(live().await).await;
+    let id = g2["id"].as_str().unwrap();
+    refused(&g1, &json!("0".repeat(64)), id, "STALE_TARGET");
+    let args = ["rename", "--session", id, "--expected-generation"];
+    let rest = [g2["generation"].as_str().unwrap(), "--name", "renamed"];
+    let (ok, v) = run(&f, &[&args[..], &rest[..]].concat(), &[]);
+    assert!(ok, "{v}");
+    refused(&g1, &g1["generation"], id, "STALE_TARGET");
+    // Resumed and running again (a new generation): refused, the process keeps running; an
+    // unconfirmed request is refused first, as with any other generation.
+    let (g1, _) = exit(live().await).await;
+    let running = live().await;
+    refused(&g1, &g1["generation"], id, "STALE_TARGET");
+    refused(&g1, &g1["generation"], "wrong", "CONFIRMATION_REQUIRED");
+    refused(
+        &running,
+        &running["generation"],
+        "wrong",
+        "CONFIRMATION_REQUIRED",
+    );
+    let pid = running["attachment"]["pid"].as_u64().unwrap();
+    assert!(Path::new(&format!("/proc/{pid}")).exists(), "not signalled");
+    // Only the dead process changed it: the delete of the current generation.
+    let (g1, g2) = exit(running).await;
+    let mut a = f.a.lock().unwrap();
+    a.threads.get_mut(ID).unwrap()["status"]["type"] = json!("notLoaded");
+    drop(a);
+    // The same confirmation is required as with the current generation.
+    for s in [&g1, &g2] {
+        refused(&g1, &s["generation"], "wrong", "CONFIRMATION_REQUIRED");
+    }
+    let rid = uuid::Uuid::new_v4().to_string();
+    let (ok, v) = delete(&g1, &g1["generation"], &rid, id);
+    assert!(ok, "{v}");
+    assert_eq!(v["result"]["phase"], "complete", "{v}");
+    assert_eq!(v["result"]["kind"], "delete_session", "{v}");
+    assert_eq!(v["result"]["session_id"], g2["id"], "{v}");
+    assert!(!file.exists(), "the history was deleted");
+    let sessions = f.invoke(&["api", "state"])["result"]["sessions"].clone();
+    assert!(!sessions.as_array().unwrap().iter().any(|s| s["id"] == id));
+    // A repeat of that request is that operation (not REQUEST_ID_CONFLICT).
+    for s in [&g1, &g2] {
+        let (ok, again) = delete(&g1, &s["generation"], &rid, id);
+        assert!(ok, "{again}");
+        assert_eq!(again["result"]["id"], rid.as_str(), "{again}");
+        assert_eq!(again["result"]["phase"], "complete", "{again}");
+    }
+    // A new request: the same answer as with the current generation.
+    let answers = [&g1, &g2].map(|s| {
+        let request = uuid::Uuid::new_v4().to_string();
+        let (ok, v) = delete(&g1, &s["generation"], &request, id);
+        assert!(!ok, "{v}");
+        v["error"]["code"].clone()
+    });
+    assert_eq!(answers[0], answers[1]);
+}
+
 // -------------------------------- contract 1.63.0: observe parity (SM4), one stop shape (P1)
 
 #[path = "../support/parity_keys.rs"]

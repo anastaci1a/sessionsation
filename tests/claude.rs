@@ -4027,6 +4027,158 @@ async fn archive_holding_the_generation_before_a_dead_process_detach_archives() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_holding_the_generation_before_a_dead_process_detach_deletes() {
+    // Contract 1.73.8.
+    let f = fixture().await;
+    let home = claude_account(&f);
+    let sleeper = || {
+        let p = Process(
+            Command::new("sleep")
+                .arg("600")
+                .env("CLAUDE_CONFIG_DIR", &home)
+                .spawn()
+                .unwrap(),
+        );
+        let pid = p.0.id();
+        wait_for("sleep exec", || {
+            read(Path::new(&format!("/proc/{pid}/cmdline"))).starts_with("sleep")
+        });
+        p
+    };
+    // A conversation whose pane process exited: its file, generations before and after the detach.
+    let detached = |id: &str| {
+        let file = transcript(&home, &f.project, id);
+        let mut agent = sleeper();
+        let pid = agent.0.id();
+        registry(&home, pid, id, &f.project, "interactive", None);
+        let entry =
+            sessionsation::catalog::find(&f.paths, by_conversation(&f, id)["id"].as_str().unwrap())
+                .unwrap();
+        let pane = sessionsation::catalog::Attachment {
+            host: "herdr".into(),
+            target: "herdr/fixture/w1:p9".into(),
+            pid,
+            process_start: proc_start(pid),
+        };
+        sessionsation::catalog::observe_provider_sessions(
+            &f.paths,
+            vec![(entry, Some(pane), None)],
+        )
+        .unwrap();
+        let g1 = by_conversation(&f, id);
+        assert_eq!(g1["attachment"]["pid"], pid, "{g1}");
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        agent.0.wait().unwrap();
+        let g2 = by_conversation(&f, id);
+        assert!(g2["attachment"].is_null(), "{g2}");
+        assert_ne!(g1["generation"], g2["generation"]);
+        (file, g1, g2)
+    };
+    let delete_args = |s: &Value, generation: &Value, request: &str, confirm: &str| {
+        let id = s["id"].as_str().unwrap();
+        let generation = generation.as_str().unwrap();
+        ["delete-session", "--session", id, "--expected-generation"]
+            .into_iter()
+            .chain([
+                generation,
+                "--request-id",
+                request,
+                "--confirm",
+                confirm,
+                "--wait",
+            ])
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let delete = |s: &Value, generation: &Value, request: &str| {
+        let args = delete_args(s, generation, request, s["id"].as_str().unwrap());
+        f.api(&args.iter().map(String::as_str).collect::<Vec<_>>())
+    };
+    // Refused with `code`; nothing was deleted.
+    let refused = |file: &Path, s: &Value, generation: &Value, confirm: &str, code: &str| {
+        let request = uuid::Uuid::new_v4().to_string();
+        let args = delete_args(s, generation, &request, confirm);
+        let e = f.api_error(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(e.contains(code), "{e}");
+        assert!(file.exists(), "nothing was deleted");
+        assert!(f.claude_sessions().iter().any(|c| c["id"] == s["id"]));
+    };
+    // Any other change since (a rename) makes the old generation stale.
+    let (file, g1, g2) = detached(&uuid::Uuid::new_v4().to_string());
+    let id = g2["id"].as_str().unwrap();
+    refused(&file, &g1, &json!("0".repeat(64)), id, "STALE_TARGET");
+    let g2_generation = g2["generation"].as_str().unwrap();
+    let rename = [
+        "rename",
+        "--session",
+        id,
+        "--expected-generation",
+        g2_generation,
+    ];
+    let renamed = f.api(&[&rename[..], &["--name", "renamed"]].concat());
+    assert_eq!(renamed["name"], "renamed", "{renamed}");
+    refused(&file, &g1, &g1["generation"], id, "STALE_TARGET");
+    // A process resumed since (not in a pane: the generation stays) is never deleted from.
+    let conversation = uuid::Uuid::new_v4().to_string();
+    let (file, g1, g2) = detached(&conversation);
+    let id = g2["id"].as_str().unwrap();
+    let mut resumed = sleeper();
+    let p2 = resumed.0.id();
+    registry(&home, p2, &conversation, &f.project, "interactive", None);
+    let live = by_conversation(&f, &conversation);
+    assert_eq!(live["availability"], "running", "{live}");
+    assert_eq!(live["generation"], g2["generation"]);
+    refused(&file, &g1, &g1["generation"], id, "STALE_TARGET");
+    refused(&file, &g1, &g1["generation"], "wrong", "STALE_TARGET");
+    refused(
+        &file,
+        &g2,
+        &g2["generation"],
+        "wrong",
+        "CONFIRMATION_REQUIRED",
+    );
+    assert!(resumed.0.try_wait().unwrap().is_none(), "not signalled");
+    unsafe { libc::kill(p2 as i32, libc::SIGKILL) };
+    resumed.0.wait().unwrap();
+    assert_eq!(
+        by_conversation(&f, &conversation)["generation"],
+        g2["generation"]
+    );
+    // The same confirmation is required as with the current generation.
+    for s in [&g1, &g2] {
+        refused(
+            &file,
+            &g1,
+            &s["generation"],
+            "wrong",
+            "CONFIRMATION_REQUIRED",
+        );
+    }
+    // Only the dead process changed it: the delete of the current generation.
+    let rid = uuid::Uuid::new_v4().to_string();
+    let done = delete(&g1, &g1["generation"], &rid);
+    assert_eq!(done["phase"], "complete", "{done}");
+    assert_eq!(done["kind"], "delete_session", "{done}");
+    assert_eq!(done["session_id"], g2["id"], "{done}");
+    assert!(!file.exists(), "the conversation was deleted");
+    assert!(!f.claude_sessions().iter().any(|c| c["id"] == g2["id"]));
+    // A repeat of that request is that operation (not REQUEST_ID_CONFLICT).
+    for s in [&g1, &g2] {
+        let again = delete(&g1, &s["generation"], &rid);
+        assert_eq!(again["id"], rid.as_str(), "{again}");
+        assert_eq!(again["phase"], "complete", "{again}");
+    }
+    // A new request: the same answer as with the current generation.
+    let answers = [&g1, &g2].map(|s| {
+        let request = uuid::Uuid::new_v4().to_string();
+        let args = delete_args(&g1, &s["generation"], &request, id);
+        let e = f.api_error(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        serde_json::from_str::<Value>(e.trim()).map_or(json!(e), |v| v["error"]["code"].clone())
+    });
+    assert_eq!(answers[0], answers[1]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_rows_carry_context_and_task_meters_with_sources_or_reasons() {
     // Contract 1.62.0 (SM3).
     let f = fixture().await;

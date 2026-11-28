@@ -23,8 +23,8 @@ pub const VERSION: u32 = 1;
 /// Contract semantic version: MAJOR breaking, MINOR additive (= `contract_revision`), PATCH fixes.
 pub const CONTRACT_MAJOR: u32 = VERSION;
 pub const CONTRACT_MINOR: u32 = 73;
-pub const CONTRACT_PATCH: u32 = 7;
-pub const CONTRACT_VERSION: &str = "1.73.7";
+pub const CONTRACT_PATCH: u32 = 8;
+pub const CONTRACT_VERSION: &str = "1.73.8";
 
 /// Accept `--api-version` MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH when MAJOR matches.
 pub fn parse_api_version(text: &str) -> Result<u32, String> {
@@ -4680,10 +4680,10 @@ async fn queue_and_wait(
     }
 }
 
-/// Contract 1.73.4 (stop), 1.73.7 (archive): whether this command holds the generation from
-/// right before a dead-process detach while nothing runs the conversation (it then carries the
-/// current generation; only a stop answers true); a running process keeps the STALE_TARGET
-/// refusal of the held generation.
+/// Contract 1.73.4 (stop), 1.73.7 (archive), 1.73.8 (delete): whether this command holds the
+/// generation from right before a dead-process detach while nothing runs the conversation (it
+/// then carries the current generation; only a stop answers true); a running process keeps the
+/// STALE_TARGET refusal of the held generation.
 async fn detached_target(paths: &Paths, command: &mut Command) -> Result<bool> {
     let (session, expected_generation, stop) = match command {
         Command::Stop {
@@ -4691,7 +4691,9 @@ async fn detached_target(paths: &Paths, command: &mut Command) -> Result<bool> {
             expected_generation,
             ..
         } => (&*session, expected_generation, true),
-        Command::Archive { target } => (&target.session, &mut target.expected_generation, false),
+        Command::Archive { target } | Command::DeleteSession { target } => {
+            (&target.session, &mut target.expected_generation, false)
+        }
         _ => return Ok(false),
     };
     let Some(s) = catalog::dead_detached(paths, session, expected_generation) else {

@@ -18,6 +18,7 @@ fn queued(paths: &Paths, phase_name: &str, detail: &str) -> Value {
         worker_start: None,
         nothing_to_archive: false,
         respawned_at: None,
+        detached_from: None,
     };
     op_save(paths, &o).unwrap();
     o.public()
