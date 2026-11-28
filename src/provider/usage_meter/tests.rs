@@ -190,3 +190,54 @@ fn codex_upstream_identity_names_the_user_within_a_workspace() {
         "an undecodable id_token falls back to the account"
     );
 }
+
+/// Contract 1.73.9: a cache miss reads with the lock released (another file is served meanwhile).
+#[test]
+fn upstream_identity_miss_reads_outside_the_cache_lock() {
+    let stamp = (None, 1, 1, 0, 0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let slow = fingerprint_cached("/fixture/slow".into(), stamp, || {
+        std::thread::spawn(move || {
+            tx.send(fingerprint_cached("/fixture/other".into(), stamp, || {
+                json!("b")
+            }))
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("another lookup waited on the slow read")
+    });
+    assert_eq!(slow, json!("b"));
+}
+
+/// Contract 1.73.9: a file atomically replaced at the same mtime and length is read again.
+#[test]
+fn upstream_identity_rereads_a_replaced_file_with_the_same_mtime_and_len() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let at = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+    let put = |name: &str, account: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, json!({"tokens":{"account_id":account}}).to_string()).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+        path
+    };
+    put("auth.json", "FIXTURE-A");
+    let first = upstream_identity(ProviderId::Codex, dir.path());
+    assert_eq!(
+        first,
+        json!(format!("{:x}", Sha256::digest("codex:FIXTURE-A")))
+    );
+    std::fs::rename(
+        put("auth.json.tmp", "FIXTURE-B"),
+        dir.path().join("auth.json"),
+    )
+    .unwrap();
+    assert_eq!(
+        upstream_identity(ProviderId::Codex, dir.path()),
+        json!(format!("{:x}", Sha256::digest("codex:FIXTURE-B")))
+    );
+}

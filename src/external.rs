@@ -2035,6 +2035,7 @@ struct EnqueuePolicy<'a> {
     resume_directory: Option<&'a Path>,
     expected: Option<(&'a str, &'a str)>,
     unfinished_history_confirmed: bool,
+    join_only: bool,
 }
 
 fn enqueue_with_id(
@@ -2098,6 +2099,8 @@ fn enqueue_with_id(
         );
         return Ok(existing);
     }
+    // Contract 1.73.9: a saved switch whose holding job settled joins only (never queues).
+    ensure!(!policy.join_only, "SESSION_STATE_UNVERIFIED");
     let _conversation_lock = if !source.thread_id.is_empty() {
         let lock = catalog::operation_lock(paths, &source.thread_id)?;
         catalog::ensure_available(paths, &source.thread_id)?;
@@ -2554,6 +2557,7 @@ pub async fn queue_snapshot(
         matches!(kind, "account" | "restart" | "terminate"),
         "UNSUPPORTED_OPERATION"
     );
+    let join_only = source.inactive && source.move_id.is_some();
     enqueue_with_id(
         paths,
         source,
@@ -2563,6 +2567,7 @@ pub async fn queue_snapshot(
         kind,
         EnqueuePolicy {
             non_steering: true,
+            join_only,
             ..Default::default()
         },
     )
@@ -2604,6 +2609,7 @@ pub(crate) async fn queue_saved_resume(
             resume_directory: directory,
             expected: Some(expected),
             unfinished_history_confirmed,
+            join_only: false,
         },
     )
 }

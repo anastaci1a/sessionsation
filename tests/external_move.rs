@@ -1332,7 +1332,123 @@ async fn api_switch_never_answers_a_pending_saved_resume_job() {
         String::from_utf8_lossy(&out.stdout)
     );
     let err: Value = serde_json::from_slice(&out.stderr).unwrap();
-    assert_eq!(err["error"]["code"], "SESSION_STATE_UNVERIFIED", "{err}");
+    // Contract 1.73.9: the conflict code a running switch gives (was SESSION_STATE_UNVERIFIED).
+    assert_eq!(
+        err["error"]["code"], "SESSION_OPERATION_IN_PROGRESS",
+        "{err}"
+    );
+    assert!(!out.stdout.windows(36).any(|w| w == resume_id.as_bytes()));
+}
+
+/// Contract 1.73.9: a saved switch meeting another pending job answers the code a running
+/// switch gives for the same job (steering UI move, different target), never UNVERIFIED.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn saved_switch_conflicts_answer_like_running_ones() {
+    let f = Fixture::new().await;
+    let path = history(&f.paths.account("personal").unwrap(), f.tmp.path(), ID);
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        text.lines()
+            .take(2)
+            .map(|l| format!("{l}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let switch = |f: &Fixture| {
+        let state = f.invoke(&["api", "state"]);
+        let row = state["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["conversation_id"] == ID)
+            .unwrap()
+            .clone();
+        let (id, generation) = (
+            row["id"].as_str().unwrap(),
+            row["generation"].as_str().unwrap(),
+        );
+        let args = [
+            "api",
+            "switch",
+            "--session",
+            id,
+            "--expected-generation",
+            generation,
+            "--to",
+            "codex:work",
+        ];
+        let out = command(&f.paths.root, &f.socket, &args);
+        serde_json::from_slice::<Value>(if out.status.success() {
+            &out.stdout
+        } else {
+            &out.stderr
+        })
+        .unwrap()
+    };
+    let first = switch(&f)["result"]["id"].as_str().unwrap().to_owned();
+    f.wait(&first, "awaiting_risk_confirmation").await;
+    f.invoke(&["cancel-move", &first]);
+    f.wait(&first, "cancelled").await;
+    let jobs = f.paths.root.join(sessionsation::layout::HANDOFF_JOBS);
+    let base: Value =
+        serde_json::from_slice(&fs::read(jobs.join(format!("{first}.json"))).unwrap()).unwrap();
+    let other = "44444444-4444-4444-8444-444444444444";
+    // One pending job (no worker) holding the conversation, per conflict kind.
+    let hold = |edit: fn(&mut Value)| {
+        let mut job = base.clone();
+        job["id"] = json!(other);
+        job["phase"] = json!("awaiting_risk_confirmation");
+        job["created_at"] = json!(daemon::now());
+        edit(&mut job);
+        fs::write(jobs.join(format!("{other}.json")), job.to_string()).unwrap();
+    };
+    type Edit = fn(&mut Value);
+    let kinds: [(&str, Edit); 2] = [
+        ("steering UI move", |j| j["non_steering"] = json!(false)),
+        ("different target", |j| j["target"] = json!("personal")),
+    ];
+    let mut saved = Vec::new();
+    for (kind, edit) in kinds {
+        hold(edit);
+        saved.push((kind, switch(&f)["error"]["code"].clone()));
+    }
+    // The held job settles after the held check (here: after discovery): join only, never queue.
+    hold(|_| {});
+    let source = sessionsation::external::discover(&f.paths)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|s| s.thread_id == ID && s.move_id.as_deref() == Some(other))
+        .unwrap();
+    hold(|j| j["phase"] = json!("cancelled"));
+    let count = || fs::read_dir(&jobs).unwrap().count();
+    let before = count();
+    let err = sessionsation::external::queue_snapshot(
+        &f.paths,
+        source,
+        "work",
+        sessionsation::external::MoveOptions::new(false, false, false),
+        "account",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(format!("{err:#}"), "SESSION_STATE_UNVERIFIED");
+    assert_eq!(count(), before, "no new job");
+    f.live(ID, false);
+    for ((kind, edit), (_, code)) in kinds.into_iter().zip(&saved) {
+        hold(edit);
+        let running = switch(&f);
+        assert_eq!(&running["error"]["code"], code, "{kind}: {running}");
+        assert_ne!(code, "SESSION_STATE_UNVERIFIED", "{kind}");
+    }
+    assert_eq!(
+        saved
+            .iter()
+            .map(|(_, c)| c.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["OPERATION_POLICY_CONFLICT", "SESSION_OPERATION_IN_PROGRESS"]
+    );
 }
 
 fn paginated(f: &Fixture, id: &str) {

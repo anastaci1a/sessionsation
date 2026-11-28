@@ -139,11 +139,10 @@ pub fn of(provider: ProviderId, usage: &Value, now: i64, stale_seconds: u64) -> 
 /// Contract 1.73.6: `meter.upstream_identity`, lowercase hex `sha256("<provider>:" + id)` of the
 /// provider's upstream account id (Codex [`crate::identity::upstream_account`], Claude
 /// `oauthAccount.accountUuid` of .claude.json); null when the provider has none or it is unreadable.
-/// The raw id is never returned. Cached per file by (mtime, len): a changed file is read again.
+/// The raw id is never returned. Cached per file by (mtime, len, inode, ctime): a changed or
+/// replaced file is read again, outside the cache lock (1.73.9).
 pub fn upstream_identity(provider: ProviderId, home: &std::path::Path) -> Value {
-    type Cache = std::collections::HashMap<std::path::PathBuf, (Stamp, Value)>;
-    type Stamp = (Option<std::time::SystemTime>, u64);
-    static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
+    use std::os::unix::fs::MetadataExt;
     let file = home.join(match provider {
         ProviderId::Codex => "auth.json",
         ProviderId::Claude => claude::trust::CONFIG_FILE,
@@ -152,20 +151,45 @@ pub fn upstream_identity(provider: ProviderId, home: &std::path::Path) -> Value 
     let Ok(m) = std::fs::metadata(&file) else {
         return Value::Null;
     };
-    let stamp = (m.modified().ok(), m.len());
-    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    let cache = cache.get_or_insert_default();
-    if let Some((_, v)) = cache.get(&file).filter(|(s, _)| *s == stamp) {
-        return v.clone();
+    let stamp = (
+        m.modified().ok(),
+        m.len(),
+        m.ino(),
+        m.ctime(),
+        m.ctime_nsec(),
+    );
+    fingerprint_cached(file, stamp, || {
+        let id = match provider {
+            ProviderId::Codex => crate::identity::upstream_account(home),
+            _ => claude::oauth::account_uuid(home),
+        };
+        id.map_or(Value::Null, |id| {
+            json!(crate::generation::hex(format!("{provider}:{id}")))
+        })
+    })
+}
+type Stamp = (Option<std::time::SystemTime>, u64, u64, i64, i64);
+/// The cached fingerprint at `stamp`, else `read()` with the lock released, then inserted.
+fn fingerprint_cached(
+    file: std::path::PathBuf,
+    stamp: Stamp,
+    read: impl FnOnce() -> Value,
+) -> Value {
+    type Cache = std::collections::HashMap<std::path::PathBuf, (Stamp, Value)>;
+    static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
+    let lock = || CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let hit = lock()
+        .get_or_insert_default()
+        .get(&file)
+        .filter(|(s, _)| *s == stamp)
+        .map(|(_, v)| v.clone());
+    if let Some(v) = hit {
+        return v;
     }
-    let id = match provider {
-        ProviderId::Codex => crate::identity::upstream_account(home),
-        _ => claude::oauth::account_uuid(home),
-    };
-    let v = id.map_or(Value::Null, |id| {
-        json!(crate::generation::hex(format!("{provider}:{id}")))
-    });
-    cache.insert(file, (stamp, v.clone()));
+    let v = read();
+    lock()
+        .get_or_insert_default()
+        .insert(file, (stamp, v.clone()));
     v
 }
 /// Why a window past its own reset is not current (contract 1.65.0).
